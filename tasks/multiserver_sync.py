@@ -30,14 +30,15 @@ Main Features:
 * ``sweep_server`` / ``sweep_all_secondary_servers`` RQ entry points with live
   percentage progress, one-line status, and cooperative cancellation.
 * Zero-download alignment: matching from catalogue metadata only.
-* Bounded memory: the target catalogue is condensed into a slim CandidateIndex
-  and the local catalogue streams through it in keyset-paginated chunks with
-  per-chunk upserts, so neither side is ever fully materialized at once.
+* Lean memory: the fetched target catalogue is condensed into a slim
+  CandidateIndex right after the fetch, and the local catalogue streams
+  through it in keyset-paginated chunks with per-chunk upserts, so the local
+  side is never fully materialized.
 * ``recover_abandoned_sweeps`` (run by the RQ janitor) revokes sweeps whose RQ
   job died mid-run - e.g. killed by the worker restart a default-server change
-  publishes - and enqueues one replacement alignment of all enabled servers,
-  at most once per 10 minutes; rows with no RQ job at all (union analysis runs
-  sweeps inline under synthetic task ids) are left alone.
+  publishes - and enqueues one replacement alignment of all servers, at most
+  once per 10 minutes; rows with no RQ job at all (union analysis runs sweeps
+  inline under synthetic task ids) are left alone.
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
   per-server counts stay truthful; pruning is skipped when the fetch looks
   partial so a transient provider error never mass-deletes valid mappings.
@@ -85,7 +86,7 @@ def _sweep_job_state(task_id):
     return 'alive' if value in _RQ_ALIVE_STATUSES else 'dead'
 
 
-_recovery_state = {'last': 0.0}
+_recovery_state = {'last': None}
 
 
 def recover_abandoned_sweeps():
@@ -96,7 +97,7 @@ def recover_abandoned_sweeps():
     as failed/abandoned while its task_status row stays stuck in PROGRESS and
     the servers it covered are never aligned. Called periodically by the RQ
     janitor: every non-terminal sweep row whose RQ job exists but is dead is
-    marked REVOKED and one fresh alignment covering all enabled servers is
+    marked REVOKED and one fresh alignment covering all servers is
     enqueued in their place. Rows with no RQ job at all are skipped: union
     analysis runs sweeps inline under synthetic task ids that never had an RQ
     job (revoking one would cancel a live sweep and race the running analysis),
@@ -110,7 +111,8 @@ def recover_abandoned_sweeps():
     import config
     from app_helper import rq_queue_default
 
-    if time.monotonic() - _recovery_state['last'] < 600:
+    last = _recovery_state['last']
+    if last is not None and time.monotonic() - last < 600:
         return None
 
     db = connect_raw()
@@ -147,7 +149,7 @@ def recover_abandoned_sweeps():
             )
             new_task_id = str(uuid.uuid4())
             queued = json.dumps({
-                'message': 'Server alignment queued for all enabled servers.',
+                'message': 'Server alignment queued for all servers.',
             })
             cur.execute(
                 "INSERT INTO task_status "
@@ -395,7 +397,18 @@ def _prune_stale_mappings(db, server_id, present_ids):
         )
         removed = cur.rowcount
         cur.execute("DROP TABLE sweep_present_ids")
+        if removed:
+            cur.execute(
+                "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
+                (server_id,),
+            )
         db.commit()
+        if removed:
+            try:
+                from tasks.paged_ivf import invalidate_availability_cache
+                invalidate_availability_cache(server_id)
+            except Exception:
+                logger.debug("Availability-cache invalidation failed", exc_info=True)
         return removed
     finally:
         cur.close()
@@ -425,12 +438,6 @@ def _store_server_track_count(db, server_id, track_count):
 def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     stype = server['server_type']
     server_id = server['server_id']
-    if server.get('music_libraries') and stype in ('jellyfin', 'emby', 'lyrion'):
-        logger.warning(
-            "Library filter for '%s' (%s) is not applied by this provider's "
-            "full-catalogue fetch; the sweep covers the whole server",
-            server['name'], stype,
-        )
     total_local = _local_track_count(db)
     unmapped_count = _unmapped_local_count(db, server_id)
     if not unmapped_count and not full_refresh:
@@ -453,6 +460,12 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
 
     target_total = len(target_tracks)
     present_ids = {str(t['id']) for t in target_tracks if t.get('id')}
+    already_mapped = _already_mapped_ids(db, server_id)
+    index = CandidateIndex(
+        t for t in target_tracks
+        if t.get('id') and str(t.get('id')) not in already_mapped
+    )
+    target_tracks = None
     _store_server_track_count(db, server_id, target_total)
     pruned = 0
     if full_refresh:
@@ -463,13 +476,6 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
                 server['name'], pruned,
             )
             unmapped_count = _unmapped_local_count(db, server_id)
-
-    already_mapped = _already_mapped_ids(db, server_id)
-    index = CandidateIndex(
-        t for t in target_tracks
-        if t.get('id') and str(t.get('id')) not in already_mapped
-    )
-    target_tracks = None
     report(
         f"Aligning {server['name']}: {unmapped_count} tracks to match "
         f"({total_local - unmapped_count} already aligned)...",
@@ -529,9 +535,6 @@ def sweep_server(server_id, task_id=None, conn=None):
         if server is None:
             report("Server no longer exists; nothing to align.", 100, task_state=TASK_STATUS_SUCCESS)
             return {'server_id': server_id, 'skipped': 'deleted', 'matched': 0}
-        if not server['enabled']:
-            report("Server is disabled; skipping sweep.", 100, task_state=TASK_STATUS_SUCCESS)
-            return {'server_id': server_id, 'skipped': 'disabled', 'matched': 0}
 
         report(f"Starting alignment for {server['name']}...", 2, task_state=TASK_STATUS_STARTED)
         cancel()
@@ -553,6 +556,10 @@ def sweep_server(server_id, task_id=None, conn=None):
         return {'server_id': server_id, 'cancelled': True}
     except Exception:
         logger.exception("Multi-server sweep failed for server %s", server_id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after failed sweep failed", exc_info=True)
         report(
             "Alignment failed; check the container logs for details.",
             100,
@@ -566,11 +573,13 @@ def sweep_server(server_id, task_id=None, conn=None):
 
 
 def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_refresh=None):
-    """Align enabled servers, optionally limited to ``server_ids``.
+    """Align configured servers, optionally limited to ``server_ids``.
 
-    ``full_refresh`` defaults to True for unfiltered (manual/setup) sweeps so
-    aligned servers are still re-fetched and their stale mappings pruned;
-    callers passing an explicit ``server_ids`` subset get matching only.
+    ``server_ids=None`` means every server; an explicit EMPTY list is a no-op,
+    never a sweep-everything. ``full_refresh`` defaults to True for unfiltered
+    (manual/setup) sweeps so aligned servers are still re-fetched and their
+    stale mappings pruned; callers passing an explicit ``server_ids`` subset
+    get matching only.
     """
     import config
 
@@ -585,10 +594,10 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
 
-        selected = {str(server_id) for server_id in server_ids} if server_ids else None
+        selected = {str(server_id) for server_id in server_ids} if server_ids is not None else None
         servers = [
             s for s in registry.list_servers(conn=db)
-            if s['enabled'] and (selected is None or s['server_id'] in selected)
+            if selected is None or s['server_id'] in selected
         ]
         report(
             f"Starting alignment for {len(servers)} selected server(s)...",

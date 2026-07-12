@@ -185,9 +185,7 @@ def get_all_songs(user_creds=None, provider_type=None, apply_filter=True):
     provider = _provider(provider_type)
     if provider is None:
         return []
-    if provider_type == 'navidrome':
-        return provider.get_all_songs(user_creds=user_creds, apply_filter=apply_filter)
-    return provider.get_all_songs(user_creds=user_creds)
+    return provider.get_all_songs(user_creds=user_creds, apply_filter=apply_filter)
 
 
 def list_libraries(user_creds=None, provider_type=None):
@@ -251,10 +249,12 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
 
 def _to_server_ids(item_ids):
     """Translate canonical catalogue ids to the active (or default) server's
-    real track ids, dropping any the server does not have. This is the SINGLE
-    translation point for playlist creation: callers pass canonical ids and must
-    never pre-translate. Legacy provider ids map to themselves on the default
-    server, so mixed catalogues pass through unchanged."""
+    real track ids. This is the SINGLE translation point for playlist creation:
+    callers pass canonical ids and must never pre-translate. Legacy provider
+    ids map to themselves on the default server, so mixed catalogues pass
+    through unchanged. Raises ValueError when the server has NONE of the
+    requested tracks, so no caller can report a playlist that was never sent
+    to the provider."""
     from .registry import translate_ids
 
     server_id = context.active_server_id()
@@ -273,10 +273,9 @@ def _to_server_ids(item_ids):
             return list(item_ids)
     translated = [mapping[str(i)] for i in item_ids if str(i) in mapping]
     if item_ids and not translated:
-        logger.warning(
-            "Playlist id translation dropped all %d input ids for server %s; "
-            "the provider call becomes a no-op",
-            len(item_ids), server_id or 'default',
+        raise ValueError(
+            f"None of the {len(item_ids)} requested tracks are available on "
+            f"server {server_id or 'default'}; playlist not created."
         )
     return translated
 
@@ -300,8 +299,6 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 
     user_creds = context.active_creds(user_creds)
     item_ids = _to_server_ids(item_ids)
-    if not item_ids:
-        return None
     provider = _provider()
     if provider is None:
         return None
@@ -318,8 +315,6 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
 
     user_creds = context.active_creds(user_creds)
     item_ids = _to_server_ids(item_ids)
-    if not item_ids:
-        return None
     provider = _provider()
     if provider is None:
         raise NotImplementedError(

@@ -665,12 +665,24 @@ def get_recent_albums(limit):
     return filtered_albums
 
 
-def get_all_songs(user_creds=None):
-    user_creds = context.active_creds(user_creds)
-    target_paths = _get_target_paths_for_filtering()
+def _song_in_target_paths(song, target_paths):
+    for field in ('url', 'FilePath'):
+        value = song.get(field)
+        if not value:
+            continue
+        track_path = str(value).lower()
+        for target_path in target_paths:
+            if target_path in track_path:
+                return True
+            target_parts = target_path.strip('/').split('/')
+            if len(target_parts) >= 2 and target_parts[-1] in track_path:
+                return True
+    return False
 
-    if target_paths is not None:
-        logger.warning("LYRION FOLDER FILTERING IS DISABLED - fetching all songs instead")
+
+def get_all_songs(user_creds=None, apply_filter=True):
+    user_creds = context.active_creds(user_creds)
+    target_paths = _get_target_paths_for_filtering() if apply_filter else None
 
     logger.info("Fetching all songs from Lyrion")
     response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyR"], user_creds=user_creds)
@@ -705,9 +717,15 @@ def get_all_songs(user_creds=None):
                 'Rating': int(int(song.get('rating')) / 20) if song.get('rating') else None,
                 'FilePath': _decode_lyrion_url(song.get('url')),
             }
-            all_songs.append(mapped_song)
+            if target_paths is None or _song_in_target_paths(mapped_song, target_paths):
+                all_songs.append(mapped_song)
 
-        logger.info(f"Found {len(songs)} total songs")
+        if target_paths is None:
+            logger.info(f"Found {len(songs)} total songs")
+        else:
+            logger.info(
+                f"Found {len(all_songs)} songs in configured folders ({len(songs)} total on server)"
+            )
 
     return all_songs
 

@@ -700,7 +700,7 @@
                 ? null : (s.server_songs || 0);
             const matched = s.matched_songs || 0;
             const nameTd = document.createElement('td');
-            nameTd.textContent = s.name + (s.enabled ? '' : ' [disabled]');
+            nameTd.textContent = s.name;
             const typeTd = document.createElement('td');
             typeTd.textContent = s.server_type;
             const defTd = document.createElement('td');

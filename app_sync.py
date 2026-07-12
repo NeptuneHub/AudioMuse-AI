@@ -142,9 +142,20 @@ def sync_endpoint():
     try:
         server = registry.get_server(server_id) if server_id else registry.get_default_server()
     except Exception:
-        # Single-server/unit-test compatibility: the historical sync feed can
-        # still operate directly from config when the registry is unavailable.
-        logger.warning("Music-server registry unavailable for sync; using config default")
+        # A canonicalized catalogue must NEVER be served with raw fp_ ids: a
+        # client keying on provider ids would read that as a mass delete+add.
+        # Fail closed (retryable 503) unless the catalogue holds no canonical
+        # ids at all, where the historical config-default identity feed is
+        # still exact (single-server/unit-test compatibility).
+        logger.exception("Music-server registry unavailable for sync")
+        if _catalogue_has_canonical_ids():
+            return jsonify(
+                {'error': 'Music-server registry unavailable; retry shortly'}
+            ), 503
+        logger.warning(
+            "Registry unavailable but the catalogue has no canonical ids; "
+            "using the config default"
+        )
         server = None
     if server is not None:
         server_id = server['server_id']
@@ -203,12 +214,23 @@ def _server_ids_for_rows(rows, server_id):
         raise _IdTranslationError() from exc
 
 
+def _catalogue_has_canonical_ids():
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
+            )
+            return bool(cur.fetchone()[0])
+    except Exception:
+        logger.exception("Canonical-id probe failed; failing closed")
+        return True
+
+
 def _availability_sql(alias='s'):
-    return (
-        "(EXISTS (SELECT 1 FROM track_server_map availability "
-        f"WHERE availability.item_id = {alias}.item_id AND availability.server_id = %s) "
-        f"OR (%s AND left({alias}.item_id, 3) <> 'fp_'))"
-    )
+    from tasks.mediaserver.registry import availability_sql
+
+    return availability_sql(alias)
 
 
 def _manifest_page(cur, page, limit, server_id, provider_type):

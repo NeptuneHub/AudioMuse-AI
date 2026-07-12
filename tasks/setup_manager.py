@@ -102,8 +102,8 @@ class SetupManager:
                     finally:
                         cur.execute("SELECT pg_advisory_unlock(726354821)")
                 conn.commit()
-        except Exception as exc:
-            self.logger.warning(f"Could not ensure setup config table: {exc}")
+        except Exception:
+            self.logger.warning("Could not ensure setup config table", exc_info=True)
 
     def config_table_exists(self):
         try:
@@ -114,8 +114,8 @@ class SetupManager:
                         (DEFAULT_CONFIG_TABLE,),
                     )
                     return bool(cur.fetchone()[0])
-        except Exception as exc:
-            self.logger.warning(f"Unable to determine app_config table existence: {exc}")
+        except Exception:
+            self.logger.warning("Unable to determine app_config table existence", exc_info=True)
             return False
 
     def get_raw_overrides(self, ensure_table=True):
@@ -130,8 +130,8 @@ class SetupManager:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(f"SELECT key, value FROM {DEFAULT_CONFIG_TABLE}")
                     return {row["key"]: row["value"] for row in cur.fetchall()}
-        except Exception as exc:
-            self.logger.warning(f"Unable to read setup config overrides from DB: {exc}")
+        except Exception:
+            self.logger.warning("Unable to read setup config overrides from DB", exc_info=True)
             return {}
 
     def is_config_table_empty(self):
@@ -141,8 +141,8 @@ class SetupManager:
                 with conn.cursor() as cur:
                     cur.execute(f"SELECT EXISTS (SELECT 1 FROM {DEFAULT_CONFIG_TABLE})")
                     return not cur.fetchone()[0]
-        except Exception as exc:
-            self.logger.warning(f"Unable to determine app_config state: {exc}")
+        except Exception:
+            self.logger.warning("Unable to determine app_config state", exc_info=True)
             return True
 
     def get_default_music_server(self):
@@ -176,8 +176,8 @@ class SetupManager:
                 'creds': creds or {},
                 'music_libraries': row[2] or '',
             }
-        except Exception as exc:
-            self.logger.warning(f"Unable to read default music server from registry: {exc}")
+        except Exception:
+            self.logger.warning("Unable to read default music server from registry", exc_info=True)
             return None
 
     def _looks_like_placeholder(self, value):
@@ -333,8 +333,8 @@ class SetupManager:
                             (key, self.format_value(value)),
                         )
                 conn.commit()
-        except Exception as exc:
-            self.logger.warning(f"Unable to save setup config values: {exc}")
+        except Exception:
+            self.logger.warning("Unable to save setup config values", exc_info=True)
             raise
         try:
             import config
@@ -354,8 +354,8 @@ class SetupManager:
                         f"DELETE FROM {DEFAULT_CONFIG_TABLE} WHERE key = ANY(%s)", (list(keys),)
                     )
                 conn.commit()
-        except Exception as exc:
-            self.logger.warning(f"Unable to delete setup config values: {exc}")
+        except Exception:
+            self.logger.warning("Unable to delete setup config values", exc_info=True)
             raise
 
     def is_setup_complete(self, config_module):

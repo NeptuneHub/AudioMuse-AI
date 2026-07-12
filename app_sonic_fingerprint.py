@@ -28,6 +28,7 @@ from config import (
     MEDIASERVER_TYPE,
     JELLYFIN_USER_ID,
     JELLYFIN_TOKEN,
+    EMBY_TOKEN,
     NAVIDROME_USER,
     NAVIDROME_PASSWORD,
 )  # Import configs
@@ -196,30 +197,34 @@ def generate_sonic_fingerprint_endpoint():
 
         with ms_context.use_server(ms_registry.context_for(server_id)):
             user_creds = {}
-            if stype == 'jellyfin':
+            if stype in ('jellyfin', 'emby'):
+                # Emby shares Jellyfin's user-resolution flow and accepts the
+                # same jellyfin_* request fields the UI already sends.
+                label = 'Jellyfin' if stype == 'jellyfin' else 'Emby'
                 user_identifier = data.get('jellyfin_user_identifier')
                 if not user_identifier:
-                    return jsonify({"error": "Jellyfin User Identifier is required."}), 400
+                    return jsonify({"error": f"{label} User Identifier is required."}), 400
 
+                fallback_token = JELLYFIN_TOKEN if stype == 'jellyfin' else EMBY_TOKEN
                 token = data.get('jellyfin_token') or (
-                    server_creds.get('token') if server_row else JELLYFIN_TOKEN
+                    server_creds.get('token') if server_row else fallback_token
                 )
 
                 if not token:
                     return jsonify(
                         {
-                            "error": "Jellyfin API Token is required. Please provide one or set it in the server configuration."
+                            "error": f"{label} API Token is required. Please provide one or set it in the server configuration."
                         }
                     ), 400
 
-                logger.info(f"Resolving Jellyfin user identifier: '{user_identifier}'")
+                logger.info(f"Resolving {label} user identifier: '{user_identifier}'")
                 resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
                 if not resolved_user_id:
                     return jsonify(
-                        {"error": f"Could not resolve Jellyfin user '{user_identifier}'."}
+                        {"error": f"Could not resolve {label} user '{user_identifier}'."}
                     ), 400
 
-                logger.info(f"Resolved Jellyfin user ID: '{resolved_user_id}'")
+                logger.info(f"Resolved {label} user ID: '{resolved_user_id}'")
                 user_creds['user_id'] = resolved_user_id
                 user_creds['token'] = token
 

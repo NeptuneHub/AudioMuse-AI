@@ -642,7 +642,7 @@ def test_availability_mask_single_server_fast_path_skips_db(monkeypatch):
     conn = MagicMock()
     cur = conn.cursor.return_value.__enter__.return_value
     cur.fetchall.return_value = [('fp_a',)]
-    cur.fetchone.return_value = (False,)
+    cur.fetchone.return_value = (False, '2026-01-01 00:00:00')
     monkeypatch.setattr(registry, 'has_secondary_servers', lambda conn=None: True)
     idx_secondary = _make_availability_index(pv, 'fast_idx', 'genA', ['fp_a'], lambda: conn)
     mask = idx_secondary._availability_mask()
@@ -661,7 +661,7 @@ def test_availability_mask_new_generation_evicts_stale_entries(monkeypatch):
     conn = MagicMock()
     cur = conn.cursor.return_value.__enter__.return_value
     cur.fetchall.return_value = [('fp_a',)]
-    cur.fetchone.return_value = (False,)
+    cur.fetchone.return_value = (False, '2026-01-01 00:00:00')
 
     idx_a = _make_availability_index(pv, 'gen_idx', 'genA', ['fp_a', 'fp_b'], lambda: conn)
     mask_a = idx_a._availability_mask()

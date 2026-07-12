@@ -1321,11 +1321,9 @@ def search_tracks_unified(
         availability_sql = ""
         availability_params: list = []
         if server_id:
-            availability_sql = (
-                " AND (EXISTS (SELECT 1 FROM track_server_map availability "
-                "WHERE availability.item_id = score.item_id AND availability.server_id = %s) "
-                "OR (%s AND left(score.item_id, 3) <> 'fp_'))"
-            )
+            from tasks.mediaserver.registry import availability_sql as _availability_sql
+
+            availability_sql = " AND " + _availability_sql('score')
             availability_params = [server_id, bool(include_legacy_default)]
 
         all_params = (

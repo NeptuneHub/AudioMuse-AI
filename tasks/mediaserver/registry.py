@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 _COLUMNS = (
     "server_id", "name", "server_type", "creds",
-    "music_libraries", "is_default", "enabled",
+    "music_libraries", "is_default",
 )
 _DEFAULT_CACHE_TTL = 10.0
 _default_cache = {'expires': 0.0, 'row': None, 'secondary_expires': 0.0, 'secondary': None}
@@ -92,7 +92,6 @@ def normalize_row(row):
         "creds": dict(row["creds"] or {}),
         "music_libraries": row["music_libraries"] or "",
         "is_default": bool(row["is_default"]),
-        "enabled": bool(row["enabled"]),
     }
 
 
@@ -100,7 +99,7 @@ def _rows(db, where="", params=()):
     cur = db.cursor(cursor_factory=DictCursor)
     try:
         cur.execute(
-            "SELECT server_id, name, server_type, creds, music_libraries, is_default, enabled "
+            "SELECT server_id, name, server_type, creds, music_libraries, is_default "
             "FROM music_servers " + where,
             params,
         )
@@ -158,26 +157,35 @@ def servers_for_scope(scope, conn=None):
 
     Returns a list of normalized server dicts; a ``None`` element means 'legacy
     config default, bind no context'. An empty/unreadable registry yields
-    ``[None]`` so single-server installs behave exactly as before; an
-    all-disabled registry yields ``[]`` (nothing to do). ``scope == 'default'``
-    returns only the enabled default server (possibly ``[]`` when the default
-    is disabled); any other scope returns every enabled server.
+    ``[None]`` so single-server installs behave exactly as before.
+    ``scope == 'default'`` returns only the default server; ``'all'`` (or any
+    falsy scope) returns every configured server; anything else is treated as
+    one specific server's id or display name and returns just that server
+    (``[]`` when it matches nothing).
     """
     try:
         servers = list_servers(conn)
     except Exception:
         logger.exception("Server registry unavailable; using the legacy config default")
         return [None]
-    enabled = [s for s in servers if s['enabled']]
-    if not enabled:
-        return [None] if not servers else []
+    if not servers:
+        return [None]
     if scope == 'default':
-        return [s for s in enabled if s['is_default']]
-    return enabled
+        return [s for s in servers if s['is_default']]
+    if scope and scope != 'all':
+        wanted = str(scope)
+        matched = [
+            s for s in servers
+            if s['server_id'] == wanted or s['name'].lower() == wanted.lower()
+        ]
+        if not matched:
+            logger.warning("Server scope %r matches no configured server", scope)
+        return matched
+    return servers
 
 
 def has_secondary_servers(conn=None):
-    """True when any enabled non-default server exists (cached like the default row)."""
+    """True when any non-default server exists (cached like the default row)."""
     if conn is None:
         now = time.monotonic()
         with _default_cache_lock:
@@ -187,7 +195,7 @@ def has_secondary_servers(conn=None):
     cur = db.cursor()
     try:
         cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM music_servers WHERE enabled AND NOT is_default)"
+            "SELECT EXISTS (SELECT 1 FROM music_servers WHERE NOT is_default)"
         )
         result = bool(cur.fetchone()[0])
     finally:
@@ -221,7 +229,7 @@ def _clear_default(db):
         cur.close()
 
 
-def add_server(name, server_type, creds, music_libraries="", enabled=True, make_default=False, conn=None):
+def add_server(name, server_type, creds, music_libraries="", make_default=False, conn=None):
     db = conn or get_db()
     server_id = uuid.uuid4().hex
     cur = db.cursor()
@@ -232,10 +240,10 @@ def add_server(name, server_type, creds, music_libraries="", enabled=True, make_
             _clear_default(db)
         cur.execute(
             "INSERT INTO music_servers "
-            "(server_id, name, server_type, creds, music_libraries, is_default, enabled) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "(server_id, name, server_type, creds, music_libraries, is_default) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
             (server_id, name, server_type, Json(dict(creds or {})),
-             music_libraries or "", bool(make_default), bool(enabled)),
+             music_libraries or "", bool(make_default)),
         )
         db.commit()
         invalidate_server_cache()
@@ -248,7 +256,7 @@ def add_server(name, server_type, creds, music_libraries="", enabled=True, make_
 
 
 def update_server(server_id, name=None, server_type=None, creds=None,
-                  music_libraries=None, enabled=None, conn=None):
+                  music_libraries=None, conn=None):
     db = conn or get_db()
     sets, params = [], []
     if name is not None:
@@ -263,9 +271,6 @@ def update_server(server_id, name=None, server_type=None, creds=None,
     if music_libraries is not None:
         sets.append("music_libraries = %s")
         params.append(music_libraries)
-    if enabled is not None:
-        sets.append("enabled = %s")
-        params.append(bool(enabled))
     if not sets:
         return
     sets.append("updated_at = now()")
@@ -288,7 +293,7 @@ def set_default(server_id, conn=None):
     try:
         _clear_default(db)
         cur.execute(
-            "UPDATE music_servers SET is_default = TRUE, enabled = TRUE, updated_at = now() WHERE server_id = %s",
+            "UPDATE music_servers SET is_default = TRUE, updated_at = now() WHERE server_id = %s",
             (server_id,),
         )
         db.commit()
@@ -338,19 +343,12 @@ def save_default_server_settings(server_type, creds, music_libraries="", conn=No
     server_type = (server_type or "").strip().lower()
     default = get_default_server(db if conn is not None else None)
     if default is None:
-        cur = db.cursor()
-        try:
-            cur.execute("SELECT COUNT(*) FROM music_servers")
-            has_any = cur.fetchone()[0] > 0
-        finally:
-            cur.close()
         add_server(
             name=_default_server_name(server_type),
             server_type=server_type,
             creds=creds,
             music_libraries=music_libraries or "",
-            enabled=True,
-            make_default=not has_any,
+            make_default=False,
             conn=db,
         )
         return
@@ -365,6 +363,23 @@ def save_default_server_settings(server_type, creds, music_libraries="", conn=No
 
 def _default_server_name(server_type):
     return (server_type or "media server").capitalize()
+
+
+def availability_sql(alias='s'):
+    """SQL fragment: the aliased score row is present on a server.
+
+    Takes two params in order: ``server_id`` and ``include_legacy_default``
+    (bool). A row counts as present when it has a track_server_map row for the
+    server, or - when the flag is true, i.e. the target is the default server -
+    when it is a legacy provider-keyed row (non ``fp_`` id) predating
+    canonicalization. The ONE spelling of this rule; every query filtering by
+    server availability must build it here.
+    """
+    return (
+        "(EXISTS (SELECT 1 FROM track_server_map availability "
+        f"WHERE availability.item_id = {alias}.item_id AND availability.server_id = %s) "
+        f"OR (%s AND left({alias}.item_id, 3) <> 'fp_'))"
+    )
 
 
 def translate_ids(item_ids, server_id=None, conn=None):
@@ -463,6 +478,31 @@ def canonical_input_ids(item_ids, server_id=None, conn=None):
     return {i: mapped.get(i, i) for i in ids}
 
 
+def _staged_map_upsert(db, rows, stage_ddl, stage_insert, conflict_delete,
+                       final_insert, final_template, pre_commit=None):
+    """Shared transactional scaffold for the *_server_map bulk upserts.
+
+    Stages ``rows`` into a temp table, deletes rows conflicting on the
+    alternate unique key, ON CONFLICT-upserts the batch, then runs the optional
+    ``pre_commit(cur)`` hook and commits; any failure rolls back.
+    """
+    cur = db.cursor()
+    try:
+        cur.execute(stage_ddl)
+        execute_values(cur, stage_insert, rows, page_size=5000)
+        cur.execute(conflict_delete)
+        execute_values(cur, final_insert, rows, template=final_template, page_size=5000)
+        if pre_commit is not None:
+            pre_commit(cur)
+        db.commit()
+        return len(rows)
+    except Exception:
+        _rollback(db)
+        raise
+    finally:
+        cur.close()
+
+
 def upsert_artist_maps(server_id, mapping, conn=None):
     """Bulk-upsert ``{artist_name: provider_artist_id}`` for one server."""
     rows_by_provider = {}
@@ -475,98 +515,80 @@ def upsert_artist_maps(server_id, mapping, conn=None):
     if not rows:
         return 0
     db = conn or get_db()
-    cur = db.cursor()
-    try:
-        cur.execute(
+    return _staged_map_upsert(
+        db,
+        rows,
+        stage_ddl=(
             "CREATE TEMP TABLE incoming_artist_server_map "
             "(artist_name TEXT, server_id TEXT, provider_artist_id TEXT) ON COMMIT DROP"
-        )
-        execute_values(
-            cur, "INSERT INTO incoming_artist_server_map VALUES %s", rows, page_size=5000
-        )
-        cur.execute(
+        ),
+        stage_insert="INSERT INTO incoming_artist_server_map VALUES %s",
+        conflict_delete=(
             "DELETE FROM artist_server_map current USING incoming_artist_server_map incoming "
             "WHERE current.server_id = incoming.server_id "
             "AND current.provider_artist_id = incoming.provider_artist_id "
             "AND current.artist_name <> incoming.artist_name"
-        )
-        execute_values(
-            cur,
+        ),
+        final_insert=(
             "INSERT INTO artist_server_map "
             "(artist_name, server_id, provider_artist_id, updated_at) VALUES %s "
             "ON CONFLICT (artist_name, server_id) DO UPDATE SET "
-            "provider_artist_id = EXCLUDED.provider_artist_id, updated_at = now()",
-            rows,
-            template="(%s, %s, %s, now())",
-            page_size=1000,
+            "provider_artist_id = EXCLUDED.provider_artist_id, updated_at = now()"
+        ),
+        final_template="(%s, %s, %s, now())",
+    )
+
+
+def _artist_lookup(values, server_id, conn, map_columns, legacy_columns):
+    """Directional artist_server_map lookup with the default-server legacy
+    fallback to artist_mapping; ``map_columns``/``legacy_columns`` are constant
+    (source, result) column pairs, never caller input."""
+    wanted = [str(value) for value in values if value]
+    if not wanted:
+        return {}
+    db = conn or get_db()
+    default_id = get_default_server_id(db)
+    target = server_id or default_id
+    if not target:
+        return {}
+    src, dst = map_columns
+    cur = db.cursor()
+    try:
+        cur.execute(
+            f"SELECT {src}, {dst} FROM artist_server_map "
+            f"WHERE server_id = %s AND {src} = ANY(%s)",
+            (target, wanted),
         )
-        db.commit()
-        return len(rows)
-    except Exception:
-        _rollback(db)
-        raise
+        result = {str(row[0]): str(row[1]) for row in cur.fetchall()}
+        if target == default_id:
+            missing = [value for value in wanted if value not in result]
+            if missing:
+                legacy_src, legacy_dst = legacy_columns
+                cur.execute(
+                    f"SELECT {legacy_src}, {legacy_dst} FROM artist_mapping "
+                    f"WHERE {legacy_src} = ANY(%s)",
+                    (missing,),
+                )
+                result.update({str(row[0]): str(row[1]) for row in cur.fetchall()})
+        return result
     finally:
         cur.close()
 
 
 def artist_names_for_ids(provider_artist_ids, server_id=None, conn=None):
-    ids = [str(value) for value in provider_artist_ids if value]
-    if not ids:
-        return {}
-    db = conn or get_db()
-    target = server_id or get_default_server_id(db)
-    if not target:
-        return {}
-    cur = db.cursor()
-    try:
-        cur.execute(
-            "SELECT provider_artist_id, artist_name FROM artist_server_map "
-            "WHERE server_id = %s AND provider_artist_id = ANY(%s)",
-            (target, ids),
-        )
-        result = {str(row[0]): str(row[1]) for row in cur.fetchall()}
-        if target == get_default_server_id(db):
-            missing = [value for value in ids if value not in result]
-            if missing:
-                cur.execute(
-                    "SELECT artist_id, artist_name FROM artist_mapping "
-                    "WHERE artist_id = ANY(%s)",
-                    (missing,),
-                )
-                result.update({str(row[0]): str(row[1]) for row in cur.fetchall()})
-        return result
-    finally:
-        cur.close()
+    return _artist_lookup(
+        provider_artist_ids, server_id, conn,
+        map_columns=('provider_artist_id', 'artist_name'),
+        legacy_columns=('artist_id', 'artist_name'),
+    )
 
 
 def artist_ids_for_names(artist_names, server_id=None, conn=None):
-    names = [str(value) for value in artist_names if value]
-    if not names:
-        return {}
-    db = conn or get_db()
-    target = server_id or get_default_server_id(db)
-    if not target:
-        return {}
-    cur = db.cursor()
-    try:
-        cur.execute(
-            "SELECT artist_name, provider_artist_id FROM artist_server_map "
-            "WHERE server_id = %s AND artist_name = ANY(%s)",
-            (target, names),
-        )
-        result = {str(row[0]): str(row[1]) for row in cur.fetchall()}
-        if target == get_default_server_id(db):
-            missing = [value for value in names if value not in result]
-            if missing:
-                cur.execute(
-                    "SELECT artist_name, artist_id FROM artist_mapping "
-                    "WHERE artist_name = ANY(%s)",
-                    (missing,),
-                )
-                result.update({str(row[0]): str(row[1]) for row in cur.fetchall()})
-        return result
-    finally:
-        cur.close()
+    return _artist_lookup(
+        artist_names, server_id, conn,
+        map_columns=('artist_name', 'provider_artist_id'),
+        legacy_columns=('artist_name', 'artist_id'),
+    )
 
 
 def artist_track_counts(artist_names, server_id=None, conn=None):
@@ -575,18 +597,17 @@ def artist_track_counts(artist_names, server_id=None, conn=None):
     if not names:
         return {}
     db = conn or get_db()
-    target = server_id or get_default_server_id(db)
+    default_id = get_default_server_id(db)
+    target = server_id or default_id
     if not target:
         return {}
-    default_id = get_default_server_id(db)
     cur = db.cursor()
     try:
         cur.execute(
-            "SELECT s.author, COUNT(*) FROM score s WHERE s.author = ANY(%s) AND ("
-            "EXISTS (SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id "
-            "AND m.server_id = %s) OR (%s = %s AND s.item_id NOT LIKE 'fp\\_%%')) "
-            "GROUP BY s.author",
-            (names, target, target, default_id),
+            "SELECT s.author, COUNT(*) FROM score s WHERE s.author = ANY(%s) AND "
+            + availability_sql('s')
+            + " GROUP BY s.author",
+            (names, target, target == default_id),
         )
         return {str(row[0]): int(row[1]) for row in cur.fetchall()}
     finally:
@@ -613,49 +634,44 @@ def upsert_track_maps(server_id, mapping, conn=None):
     rows = list(rows_by_provider.values())
     if not rows:
         return 0
-    cur = db.cursor()
-    try:
-        cur.execute(
-            "CREATE TEMP TABLE incoming_track_server_map "
-            "(item_id TEXT, server_id TEXT, provider_track_id TEXT, match_tier TEXT) "
-            "ON COMMIT DROP"
-        )
-        execute_values(
-            cur, "INSERT INTO incoming_track_server_map VALUES %s", rows, page_size=5000
-        )
-        cur.execute(
-            "DELETE FROM track_server_map current USING incoming_track_server_map incoming "
-            "WHERE current.server_id = incoming.server_id "
-            "AND current.provider_track_id = incoming.provider_track_id "
-            "AND current.item_id <> incoming.item_id"
-        )
-        execute_values(
-            cur,
-            "INSERT INTO track_server_map "
-            "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
-            "ON CONFLICT (item_id, server_id) DO UPDATE SET "
-            "provider_track_id = EXCLUDED.provider_track_id, "
-            "match_tier = EXCLUDED.match_tier, updated_at = now()",
-            rows,
-            template="(%s, %s, %s, %s, now())",
-            page_size=5000,
-        )
+
+    def _touch_server(cur):
         cur.execute(
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (server_id,),
         )
-        db.commit()
-        try:
-            from tasks.paged_ivf import invalidate_availability_cache
-            invalidate_availability_cache(server_id)
-        except Exception:
-            logger.debug("Availability-cache invalidation failed", exc_info=True)
-        return len(rows)
+
+    written = _staged_map_upsert(
+        db,
+        rows,
+        stage_ddl=(
+            "CREATE TEMP TABLE incoming_track_server_map "
+            "(item_id TEXT, server_id TEXT, provider_track_id TEXT, match_tier TEXT) "
+            "ON COMMIT DROP"
+        ),
+        stage_insert="INSERT INTO incoming_track_server_map VALUES %s",
+        conflict_delete=(
+            "DELETE FROM track_server_map current USING incoming_track_server_map incoming "
+            "WHERE current.server_id = incoming.server_id "
+            "AND current.provider_track_id = incoming.provider_track_id "
+            "AND current.item_id <> incoming.item_id"
+        ),
+        final_insert=(
+            "INSERT INTO track_server_map "
+            "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
+            "ON CONFLICT (item_id, server_id) DO UPDATE SET "
+            "provider_track_id = EXCLUDED.provider_track_id, "
+            "match_tier = EXCLUDED.match_tier, updated_at = now()"
+        ),
+        final_template="(%s, %s, %s, %s, now())",
+        pre_commit=_touch_server,
+    )
+    try:
+        from tasks.paged_ivf import invalidate_availability_cache
+        invalidate_availability_cache(server_id)
     except Exception:
-        _rollback(db)
-        raise
-    finally:
-        cur.close()
+        logger.debug("Availability-cache invalidation failed", exc_info=True)
+    return written
 
 
 def mapped_count(server_id, conn=None):

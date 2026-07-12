@@ -255,7 +255,6 @@
             tr.appendChild(cell(s.name));
             tr.appendChild(cell(s.server_type));
             tr.appendChild(cell(s.is_default ? 'yes' : '', true));
-            tr.appendChild(cell(s.enabled ? 'yes' : 'no', true));
 
             var actions = document.createElement('div');
             actions.style.whiteSpace = 'nowrap';

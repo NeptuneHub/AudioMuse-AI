@@ -145,7 +145,7 @@ def get_cron_entries():
                 'enabled': bool(r['enabled']),
                 'last_run': r['last_run'],
                 'created_at': str(r['created_at']),
-                'options': dict(r['options'] or {}),
+                'options': r['options'] if isinstance(r['options'], dict) else {},
             }
         )
     # Remove the special-case append for sonic_fingerprint; now handled by DB init
@@ -194,6 +194,9 @@ def save_cron_entry():
     """
     data = request.json or {}
     # Expected fields: id (optional), name, task_type, cron_expr, enabled
+    options = data.get('options') or {}
+    if not isinstance(options, dict):
+        return jsonify({'error': "'options' must be a JSON object"}), 400
     db = get_db()
     cur = db.cursor()
     if data.get('id'):
@@ -204,7 +207,7 @@ def save_cron_entry():
                 data.get('task_type'),
                 data.get('cron_expr'),
                 bool(data.get('enabled')),
-                Json(data.get('options') or {}),
+                Json(options),
                 data.get('id'),
             ),
         )
@@ -224,7 +227,7 @@ def save_cron_entry():
                     data.get('task_type'),
                     data.get('cron_expr'),
                     bool(data.get('enabled')),
-                    Json(data.get('options') or {}),
+                    Json(options),
                     existing[0],
                 ),
             )
@@ -236,7 +239,7 @@ def save_cron_entry():
                     data.get('task_type'),
                     data.get('cron_expr'),
                     bool(data.get('enabled')),
-                    Json(data.get('options') or {}),
+                    Json(options),
                 ),
             )
     db.commit()

@@ -11,13 +11,15 @@
 Drives identify_and_clean_orphaned_albums_task with the media-server registry,
 provider fetches and DB helpers faked, asserting that cleanup NEVER deletes
 catalogue rows: it only prunes each healthy server's own track_server_map rows,
-skips servers whose library view is incomplete, and reports (without touching)
-the tracks currently bound to no server.
+skips servers whose library fetch fails or returns nothing, and reports
+(without touching) the tracks currently bound to no server.
 
 Main Features:
+* Uses the same full-catalogue fetch the alignment sweeps use (fetch_all_tracks)
 * A failed or empty fetch skips ONLY that server's unbinding, others proceed
 * Per-server pruning receives exactly that server's present provider ids
 * Full coverage across servers unbinds nothing and reports zero orphans
+* The legacy [None] registry fallback still counts its tracks as present
 * Tracks on no server are reported as kept, never deleted
 """
 
@@ -34,11 +36,11 @@ import config
 def _server(server_id, name, default=False):
     return {
         'server_id': server_id, 'name': name, 'server_type': 'jellyfin',
-        'creds': {}, 'music_libraries': '', 'is_default': default, 'enabled': True,
+        'creds': {}, 'music_libraries': '', 'is_default': default,
     }
 
 
-def _run_cleaning(monkeypatch, servers, albums_by_server, tracks_by_album,
+def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   reverse_by_server, db_track_ids, author_by_id=None,
                   prune_results=None):
     from tasks import cleaning
@@ -90,7 +92,7 @@ def _run_cleaning(monkeypatch, servers, albums_by_server, tracks_by_album,
     monkeypatch.setattr(
         cleaning.registry, 'servers_for_scope', lambda scope, conn=None: servers
     )
-    by_id = {s['server_id']: s for s in servers}
+    by_id = {s['server_id']: s for s in servers if s}
     monkeypatch.setattr(
         cleaning.registry, 'context_for', lambda sid, conn=None: by_id[sid]
     )
@@ -101,17 +103,14 @@ def _run_cleaning(monkeypatch, servers, albums_by_server, tracks_by_album,
 
     monkeypatch.setattr(cleaning.registry, 'reverse_translate_ids', fake_reverse)
 
-    def fake_recent_albums(limit):
+    def fake_fetch(stype, creds, apply_filter=False):
         sid = cleaning.ms_context.active_server_id()
-        result = albums_by_server[sid]
+        result = tracks_by_server[sid]
         if isinstance(result, Exception):
             raise result
         return result
 
-    monkeypatch.setattr(cleaning, 'get_recent_albums', fake_recent_albums)
-    monkeypatch.setattr(
-        cleaning, 'get_tracks_from_album', lambda album_id: tracks_by_album[album_id]
-    )
+    monkeypatch.setattr(cleaning.provider_probe, 'fetch_all_tracks', fake_fetch)
 
     def fake_prune(db, server_id, present_ids):
         pruned_calls.append((server_id, sorted(present_ids)))
@@ -128,11 +127,10 @@ class TestCleaningSkipsUnreadableServers:
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
-            albums_by_server={
+            tracks_by_server={
                 's1': RuntimeError('fetch failed'),
-                's2': [{'Id': 'alb2', 'Name': 'A2'}],
+                's2': [{'id': 'n1'}],
             },
-            tracks_by_album={'alb2': [{'Id': 'n1'}]},
             reverse_by_server={'s2': {'n1': 'fp_1'}},
             db_track_ids={'fp_1', 'fp_2'},
             prune_results={'s2': 3},
@@ -144,15 +142,14 @@ class TestCleaningSkipsUnreadableServers:
         assert result['unbound_mappings'] == 3
         assert statuses[-1][0] == config.TASK_STATUS_FAILURE
 
-    def test_zero_albums_skips_that_server_and_reports_no_orphans(self, monkeypatch):
+    def test_zero_tracks_skips_that_server_and_reports_no_orphans(self, monkeypatch):
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
-            albums_by_server={
+            tracks_by_server={
                 's1': [],
-                's2': [{'Id': 'alb2', 'Name': 'A2'}],
+                's2': [{'id': 'n1'}],
             },
-            tracks_by_album={'alb2': [{'Id': 'n1'}]},
             reverse_by_server={'s2': {'n1': 'fp_1'}},
             db_track_ids={'fp_1', 'fp_2'},
         )
@@ -167,13 +164,9 @@ class TestCleaningUnbindOnly:
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
-            albums_by_server={
-                's1': [{'Id': 'alb1', 'Name': 'A1'}],
-                's2': [{'Id': 'alb2', 'Name': 'A2'}],
-            },
-            tracks_by_album={
-                'alb1': [{'Id': 'j1'}, {'Id': 'j2'}],
-                'alb2': [{'Id': 'n1'}],
+            tracks_by_server={
+                's1': [{'id': 'j1'}, {'id': 'j2'}],
+                's2': [{'id': 'n1'}],
             },
             reverse_by_server={
                 's1': {'j1': 'fp_1', 'j2': 'fp_2'},
@@ -192,13 +185,9 @@ class TestCleaningUnbindOnly:
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
-            albums_by_server={
-                's1': [{'Id': 'alb1', 'Name': 'A1'}],
-                's2': [{'Id': 'alb2', 'Name': 'A2'}],
-            },
-            tracks_by_album={
-                'alb1': [{'Id': 'j1'}, {'Id': 'j9'}],
-                'alb2': [{'Id': 'n1'}],
+            tracks_by_server={
+                's1': [{'id': 'j1'}, {'id': 'j9'}],
+                's2': [{'id': 'n1'}],
             },
             reverse_by_server={
                 's1': {'j1': 'fp_1'},
@@ -218,4 +207,20 @@ class TestCleaningUnbindOnly:
             for t in album['tracks']
         }
         assert reported == {'fp_3', 'fp_4'}
+        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+
+
+class TestCleaningLegacyFallback:
+    def test_none_server_fallback_counts_tracks_present_and_never_prunes(self, monkeypatch):
+        result, statuses, pruned = _run_cleaning(
+            monkeypatch,
+            servers=[None],
+            tracks_by_server={None: [{'id': 'a1'}, {'id': 'a2'}]},
+            reverse_by_server={None: {'a1': 'a1', 'a2': 'a2'}},
+            db_track_ids={'a1', 'a2'},
+        )
+        assert result['status'] == 'SUCCESS'
+        assert result['orphaned_tracks_count'] == 0
+        assert result['unbound_mappings'] == 0
+        assert pruned == []
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS

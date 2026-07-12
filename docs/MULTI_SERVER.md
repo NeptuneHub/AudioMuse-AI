@@ -36,17 +36,18 @@ Optional ?server=<id> (menu dropdown / API param)
 
 Open the **Setup** page (admin only). Under **Music Servers** you can:
 
-- See every configured server, which one is the default, and whether it is enabled.
+- See every configured server and which one is the default.
 - Add a server: pick a type, fill its credentials and (optionally) a library
   filter, test the connection, and save.
-- Edit, enable/disable, set-as-default, delete, or trigger a matching sweep.
+- Edit, set-as-default, delete, or trigger a matching sweep. Every
+  configured server is always active; there is no enable/disable state.
 
 Secrets (tokens, passwords) are never sent back to the browser; leave a secret
 field blank when editing to keep the stored value.
 
 ## How analysis keeps servers aligned (no sweeps)
 
-Analysis processes every enabled server sequentially, with the **default**
+Analysis processes every configured server sequentially, with the **default**
 server first, and NEVER runs an alignment sweep: every track resolves against
 the shared catalogue at analyze time.
 
@@ -92,13 +93,13 @@ cancelled sweep keeps everything matched so far.
 
 Adding or editing servers back to back never leaves a stale alignment running:
 each save cancels any queued or running sweep (matches found so far are kept)
-and enqueues one fresh alignment covering every enabled server, so the newest
+and enqueues one fresh alignment covering every server, so the newest
 sweep always reflects the full server list. Plex servers can be linked without
 hunting for a token: the add/edit form offers the same sign-in-with-Plex
 (plex.tv/link PIN) flow as the setup wizard and fills the token automatically.
 
 The library cleaning task is multi-server aware: it fetches the current track
-set of every enabled server, translates each server's provider ids to canonical
+set of every server, translates each server's provider ids to canonical
 catalogue ids, and deletes only tracks that no server still has. If any
 server's catalogue cannot be fully fetched, the run aborts without deleting
 anything.
@@ -198,7 +199,9 @@ never sent to that provider as canonical ids.
 
 ## Cleaning never shrinks the catalogue
 
-The cleaning task fetches each enabled server's current tracks and removes
+The cleaning task fetches each server's current tracks with the same
+full-catalogue enumeration the alignment sweeps use (library filter applied)
+and removes
 ONLY that server's stale `track_server_map` rows. Analysis rows, embeddings
 and other servers' mappings are NEVER deleted: a song that disappeared from
 one server keeps playing from the others, and a song on no server at all stays
@@ -224,13 +227,14 @@ hardware sizing for very large libraries is the operator's call.
 
 Analysis, Clustering, Sonic Fingerprint and Radio schedules have an **All music
 servers** / **Default server only** selector. Analysis deduplicates work across
-sources. Clustering is computed once and its playlists are translated per target
-server. Sonic Fingerprint and Radio run inside each selected server context, so
-their listening history and results remain valid for that server.
+sources. Clustering, Sonic Fingerprint and Radio all run once per selected
+server, inside that server's context and against that server's own available
+tracks - results are never computed once and pushed to other servers. From the
+UI, these features target the server selected in the server dropdown.
 
 ## Limitations to know
 
-- Analysis and indexes cover the union of enabled server catalogues. Each song
+- Analysis and indexes cover the union of the configured server catalogues. Each song
   is stored once under its canonical id and may have mappings on one or many
   servers.
 - Search and similarity results are scoped to tracks mapped on the selected

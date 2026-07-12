@@ -554,11 +554,10 @@ def download_track(temp_dir, item):
         return None
 
 
-def get_all_songs(user_creds=None):
-    user_creds = context.active_creds(user_creds)
+def _fetch_songs_paged(user_creds, library_id=None):
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
-    all_items = []
+    collected = []
     start_index = 0
     limit = 1000
 
@@ -570,6 +569,8 @@ def get_all_songs(user_creds=None):
             "Limit": limit,
             "Fields": "UserData,Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
         }
+        if library_id:
+            params["ParentId"] = library_id
         try:
             r = requests.get(
                 url,
@@ -589,7 +590,7 @@ def get_all_songs(user_creds=None):
                 item['Year'] = item.get('ProductionYear')
                 item['FilePath'] = item.get('Path')
 
-            all_items.extend(items)
+            collected.extend(items)
 
             if len(items) < limit:
                 break
@@ -599,6 +600,22 @@ def get_all_songs(user_creds=None):
             logger.exception(f"Emby get_all_songs failed at index {start_index}")
             raise
 
+    return collected
+
+
+def get_all_songs(user_creds=None, apply_filter=True):
+    user_creds = context.active_creds(user_creds)
+    target_library_ids = _get_target_library_ids() if apply_filter else None
+    if isinstance(target_library_ids, set) and not target_library_ids:
+        logger.warning(
+            "Library filtering is active, but no matching libraries were found on the server. Returning no songs."
+        )
+        return []
+    if target_library_ids is None:
+        return _fetch_songs_paged(user_creds)
+    all_items = []
+    for library_id in sorted(target_library_ids):
+        all_items.extend(_fetch_songs_paged(user_creds, library_id))
     return all_items
 
 

@@ -8,19 +8,22 @@
 
 """Library cleanup task: unbind server mappings for tracks a server no longer has.
 
-Runs as an RQ job. Fetches the current track set of every enabled media server
-and removes ONLY that server's rows from track_server_map for tracks it no
-longer has. The centralized catalogue is NEVER touched: a song that disappeared
-from one server keeps its analysis, embeddings and mappings on every other
-server, and a song present on no server at all stays in the catalogue as
-unbound (it simply stops appearing in server-scoped results via the
-availability mask). Because no catalogue row changes, no index rebuild is
-needed. A server whose fetch fails or looks partial is skipped, so an
-incomplete library view can never unbind valid mappings.
+Runs as an RQ job. Fetches the current track set of every configured media
+server with the SAME full-catalogue enumeration the alignment sweeps use
+(get_all_songs, library filter applied), so the prune baseline can never
+disagree with the enumeration that created the mappings, and removes ONLY that
+server's rows from track_server_map for tracks it no longer has. The
+centralized catalogue is NEVER touched: a song that disappeared from one
+server keeps its analysis, embeddings and mappings on every other server, and
+a song present on no server at all stays in the catalogue as unbound (it
+simply stops appearing in server-scoped results via the availability mask).
+Because no catalogue row changes, no index rebuild is needed. A server whose
+fetch fails, returns nothing, or looks partial is skipped, so an incomplete
+library view can never unbind valid mappings.
 
 Main Features:
 * identify_and_clean_orphaned_albums_task: the RQ entry point that fetches each
-  enabled server's tracks and prunes that server's stale mappings only.
+  server's tracks and prunes that server's stale mappings only.
 * Reports (never deletes) the catalogue tracks currently bound to no server.
 """
 
@@ -31,13 +34,14 @@ from collections import defaultdict
 
 from rq import get_current_job
 
+import config
 from config import CLEANING_SAFETY_LIMIT
 
 from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
 
+from . import provider_probe
 from .mediaserver import context as ms_context, registry
-from .mediaserver import get_recent_albums, get_tracks_from_album
 
 from psycopg2 import OperationalError
 
@@ -100,7 +104,7 @@ def identify_and_clean_orphaned_albums_task():
             servers = registry.servers_for_scope('all')
             if not servers:
                 abort_message = (
-                    "Nothing to clean: no enabled media servers found. "
+                    "Nothing to clean: no configured media servers found. "
                     "The catalogue was not modified."
                 )
                 summary = {
@@ -123,63 +127,41 @@ def identify_and_clean_orphaned_albums_task():
             failed_servers = []
             unbound_total = 0
             unbound_by_server = {}
-            total_albums = 0
+            total_tracks_on_servers = 0
 
             for server_idx, server in enumerate(servers):
                 server_name = server['name'] if server else 'default server'
                 server_id = server['server_id'] if server else None
+                stype = server['server_type'] if server else config.MEDIASERVER_TYPE
+                creds = server['creds'] if server else None
                 ctx = registry.context_for(server_id) if server else None
                 window_start = 10 + int(70 * server_idx / len(servers))
-                provider_ids = set()
-                album_fetch_failures = 0
+                log_and_update_main(
+                    f"Fetching the track list from {server_name}...", window_start
+                )
                 with ms_context.use_server(ctx):
                     try:
-                        server_albums = get_recent_albums(0)
-                    except Exception:
-                        logger.exception(f"Failed to fetch albums from {server_name}")
-                        failed_servers.append(server_name)
-                        continue
-                    if not server_albums:
-                        logger.warning(
-                            f"No albums found on {server_name}; skipping its cleanup "
-                            "so a fetch problem cannot unbind everything."
+                        tracks = provider_probe.fetch_all_tracks(
+                            stype, creds, apply_filter=True
                         )
+                    except Exception:
+                        logger.exception(f"Failed to fetch the library from {server_name}")
                         failed_servers.append(server_name)
                         continue
-                    total_albums += len(server_albums)
-                    log_and_update_main(
-                        f"Found {len(server_albums)} albums on {server_name}", window_start
-                    )
-                    for idx, album in enumerate(server_albums):
-                        try:
-                            album_tracks = get_tracks_from_album(album['Id'])
-                            for track in album_tracks or []:
-                                provider_ids.add(str(track['Id']))
-
-                            if idx % 10 == 0:
-                                progress = window_start + int(
-                                    (70.0 / len(servers)) * (idx / float(len(server_albums)))
-                                )
-                                log_and_update_main(
-                                    f"Processed {idx + 1}/{len(server_albums)} albums on {server_name}...",
-                                    progress,
-                                )
-                        except Exception:
-                            album_fetch_failures += 1
-                            logger.warning(
-                                f"Failed to get tracks for album {album.get('Name', 'Unknown')} on {server_name}",
-                                exc_info=True,
-                            )
-                            continue
-
-                if album_fetch_failures:
+                if not tracks:
                     logger.warning(
-                        "Skipping cleanup for %s: %d album(s) could not be fetched, "
-                        "the library view is incomplete.",
-                        server_name, album_fetch_failures,
+                        f"No tracks found on {server_name}; skipping its cleanup "
+                        "so a fetch problem cannot unbind everything."
                     )
                     failed_servers.append(server_name)
                     continue
+                provider_ids = {str(t['id']) for t in tracks if t.get('id')}
+                tracks = None
+                total_tracks_on_servers += len(provider_ids)
+                log_and_update_main(
+                    f"Found {len(provider_ids)} tracks on {server_name}",
+                    window_start + int(35 / len(servers)),
+                )
 
                 if server_id:
                     unbound = _prune_stale_mappings(get_db(), server_id, sorted(provider_ids))
@@ -191,12 +173,11 @@ def identify_and_clean_orphaned_albums_task():
                             "(kept in the shared catalogue).",
                             window_start + int(70 / len(servers)),
                         )
-                    mapping = {}
-                    provider_list = sorted(provider_ids)
-                    for start in range(0, len(provider_list), 5000):
-                        chunk = provider_list[start:start + 5000]
-                        mapping = registry.reverse_translate_ids(chunk, server_id)
-                        present_canonical_ids.update(str(v) for v in mapping.values())
+                provider_list = sorted(provider_ids)
+                for start in range(0, len(provider_list), 5000):
+                    chunk = provider_list[start:start + 5000]
+                    mapping = registry.reverse_translate_ids(chunk, server_id)
+                    present_canonical_ids.update(str(v) for v in mapping.values())
 
             log_and_update_main("Checking for catalogue tracks bound to no server...", 85)
             with get_db() as conn, conn.cursor() as cur:
@@ -234,8 +215,8 @@ def identify_and_clean_orphaned_albums_task():
             orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
 
             summary = {
-                "total_media_server_albums": total_albums,
-                "total_media_server_tracks": len(present_canonical_ids),
+                "total_media_server_tracks": total_tracks_on_servers,
+                "total_catalogue_tracks_present": len(present_canonical_ids),
                 "total_database_tracks": len(database_track_ids),
                 "orphaned_tracks_count": len(fully_unbound),
                 "orphaned_albums_count": len(orphaned_albums_list),

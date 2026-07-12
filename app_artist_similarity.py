@@ -103,19 +103,16 @@ def search_artists_endpoint():
     offset = start
 
     try:
-        from tasks.mediaserver import registry
-
         try:
-            server_id = app_server_context.resolve_request_server_id()
+            server_id, include_legacy = app_server_context.selected_server_scope()
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
-        server_id = server_id or registry.get_default_server_id()
         results = search_artists_by_name(
             query,
             limit=limit,
             offset=offset,
             server_id=server_id,
-            include_legacy_default=(server_id == registry.get_default_server_id()),
+            include_legacy_default=include_legacy,
         )
         results = app_server_context.scope_artist_results(results)
         return jsonify(results)

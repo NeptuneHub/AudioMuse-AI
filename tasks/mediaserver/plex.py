@@ -280,9 +280,9 @@ def download_track(temp_dir, item):
         return None
 
 
-def get_all_songs(user_creds=None):
+def get_all_songs(user_creds=None, apply_filter=True):
     user_creds = context.active_creds(user_creds)
-    sections = _target_sections(user_creds)
+    sections = _target_sections(user_creds) if apply_filter else _music_sections(user_creds)
     all_items = []
     for section in sections:
         try:

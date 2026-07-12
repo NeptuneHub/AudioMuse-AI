@@ -502,6 +502,9 @@ def _run_migration_transaction(
 
     _clear_index_tables(cur)
 
+    _write_provider_to_default_server(
+        cur, target_type, target_creds, selected_libraries=selected_libraries
+    )
     _write_provider_to_app_config(
         cur, target_type, target_creds, selected_libraries=selected_libraries
     )
@@ -525,6 +528,41 @@ _CREDS_TO_CONFIG = {
     'lyrion': {'url': 'LYRION_URL'},
     'plex': {'url': 'PLEX_URL', 'token': 'PLEX_TOKEN'},
 }
+
+
+def _cleaned_libraries_value(selected_libraries):
+    cleaned = [str(name).strip() for name in (selected_libraries or []) if str(name).strip()]
+    cleaned = [name for name in cleaned if ',' not in name]
+    return ','.join(cleaned)
+
+
+def _write_provider_to_default_server(cur, target_type, target_creds, selected_libraries=None):
+    """Point the music_servers default row at the migration target.
+
+    The registry row is the source of truth the config globals are projected
+    from (and init_db deletes the mediaserver app_config keys on boot), so
+    without this update the provider switch would silently revert to the old
+    server on the next config refresh.
+    """
+    from psycopg2.extras import Json
+
+    cur.execute("SELECT to_regclass('public.music_servers') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return
+    cur.execute(
+        "UPDATE music_servers SET server_type = %s, creds = %s, music_libraries = %s, "
+        "track_count = NULL, updated_at = now() WHERE is_default",
+        (
+            target_type,
+            Json(dict(target_creds or {})),
+            _cleaned_libraries_value(selected_libraries),
+        ),
+    )
+    if cur.rowcount:
+        logger.info(
+            "provider migration: music_servers default row now targets '%s'",
+            target_type,
+        )
 
 
 def _write_provider_to_app_config(cur, target_type, target_creds, selected_libraries=None):
@@ -559,9 +597,7 @@ def _write_provider_to_app_config(cur, target_type, target_creds, selected_libra
             (_sanitize_text(key), _sanitize_text(value)),
         )
 
-    cleaned = [str(name).strip() for name in (selected_libraries or []) if str(name).strip()]
-    cleaned = [name for name in cleaned if ',' not in name]
-    ml_value = ','.join(cleaned)
+    ml_value = _cleaned_libraries_value(selected_libraries)
     if ml_value:
         cur.execute(
             "INSERT INTO app_config (key, value) VALUES ('MUSIC_LIBRARIES', %s) "
@@ -581,6 +617,12 @@ def _write_provider_to_app_config(cur, target_type, target_creds, selected_libra
 
 
 def _post_commit_reload(redis):
+    try:
+        from tasks.mediaserver import registry
+
+        registry.invalidate_server_cache()
+    except Exception as e:
+        logger.warning("registry cache invalidation failed: %s", e)
     try:
         import config
 

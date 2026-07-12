@@ -187,7 +187,7 @@ class TestRegistryPureHelpers:
         row = {
             'server_id': 's1', 'name': 'Home', 'server_type': 'jellyfin',
             'creds': {'url': 'u', 'token': 't'}, 'music_libraries': None,
-            'is_default': True, 'enabled': True,
+            'is_default': True,
         }
         norm = registry.normalize_row(row)
         assert norm['music_libraries'] == ''
@@ -229,10 +229,10 @@ class TestRegistryPureHelpers:
 
 class TestServerScopes:
     @staticmethod
-    def _server(server_id, enabled=True, default=False):
+    def _server(server_id, default=False):
         return {
             'server_id': server_id, 'name': server_id, 'server_type': 'jellyfin',
-            'creds': {}, 'music_libraries': '', 'is_default': default, 'enabled': enabled,
+            'creds': {}, 'music_libraries': '', 'is_default': default,
         }
 
     def test_empty_registry_means_legacy_default(self, monkeypatch):
@@ -251,15 +251,7 @@ class TestServerScopes:
         monkeypatch.setattr(registry, 'list_servers', boom)
         assert registry.servers_for_scope('all') == [None]
 
-    def test_all_disabled_means_nothing_to_do(self, monkeypatch):
-        from tasks.mediaserver import registry
-
-        servers = [self._server('a', enabled=False, default=True)]
-        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: servers)
-        assert registry.servers_for_scope('all') == []
-        assert registry.servers_for_scope('default') == []
-
-    def test_default_scope_returns_only_enabled_default(self, monkeypatch):
+    def test_default_scope_returns_only_default(self, monkeypatch):
         from tasks.mediaserver import registry
 
         default = self._server('a', default=True)
@@ -268,13 +260,15 @@ class TestServerScopes:
         assert registry.servers_for_scope('default') == [default]
         assert registry.servers_for_scope('all') == [default, secondary]
 
-    def test_default_scope_empty_when_default_disabled(self, monkeypatch):
+    def test_specific_scope_matches_id_or_name(self, monkeypatch):
         from tasks.mediaserver import registry
 
-        servers = [self._server('a', enabled=False, default=True), self._server('b')]
-        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: servers)
-        assert registry.servers_for_scope('default') == []
-        assert registry.servers_for_scope('all') == [servers[1]]
+        default = self._server('a', default=True)
+        secondary = self._server('b')
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: [default, secondary])
+        assert registry.servers_for_scope('b') == [secondary]
+        assert registry.servers_for_scope('B') == [secondary]
+        assert registry.servers_for_scope('nope') == []
 
     def test_has_secondary_servers_queries_registry(self):
         from tasks.mediaserver import registry
@@ -627,10 +621,44 @@ class TestSingleTranslationPoint:
 
 
 def _legacy_cursor(legacy_rows):
+    blobs = {old_id: blob for old_id, blob in legacy_rows}
+
+    class FetchCursor:
+        def __init__(self):
+            self._row = None
+
+        def execute(self, sql, params=None):
+            blob = blobs.get(params[0]) if params else None
+            self._row = (blob,) if blob is not None else None
+
+        def fetchone(self):
+            return self._row
+
+        def close(self):
+            pass
+
+    class ScanCursor:
+        def __init__(self):
+            self._batches = [list(legacy_rows), []]
+            self.itersize = None
+
+        def execute(self, sql, params=None):
+            pass
+
+        def fetchmany(self, size):
+            return self._batches.pop(0)
+
+        def close(self):
+            pass
+
+    class FakeConn:
+        def cursor(self, name=None):
+            return ScanCursor() if name else FetchCursor()
+
     cursor = MagicMock()
-    cursor.fetchall.return_value = []
+    cursor.connection = FakeConn()
     cursor.fetchone.return_value = (len(legacy_rows),)
-    cursor.fetchmany.side_effect = [legacy_rows, []]
+    cursor.fetchmany.side_effect = [[]]
     return cursor
 
 
@@ -1158,9 +1186,9 @@ class TestSweepAlignment:
         monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: next(counts))
         cur = MagicMock()
         cur.fetchall.return_value = [
-            ('s1', 'Jellyfin', 'jellyfin', True, True, None, 188032),
-            ('s2', 'PLEX', 'plex', False, True, 120, 46),
-            ('s3', 'Fresh', 'navidrome', False, True, None, 0),
+            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032),
+            ('s2', 'PLEX', 'plex', False, 120, 46),
+            ('s3', 'Fresh', 'navidrome', False, None, 0),
         ]
         rows = dash._collect_music_server_metrics(cur)
         assert rows[0]['matched_songs'] == 188057

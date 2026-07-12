@@ -9,9 +9,11 @@
 """REST API for the media-server registry (multi-server support).
 
 Lets the setup wizard and the shared server dropdown list, add, edit, test,
-enable, delete and set-default the configured media servers, and trigger the
-cross-server matching sweep. Listing is available to any authenticated user
-(credentials masked); every mutation is admin-only, mirroring the setup page.
+delete and set-default the configured media servers, and trigger the
+cross-server matching sweep. Every configured server is always active; there
+is no per-server enable/disable state. Listing is available to any
+authenticated user (credentials masked); every mutation is admin-only,
+mirroring the setup page.
 
 Main Features:
 * CRUD over the registry with masked secrets and a preserve-on-mask update.
@@ -101,7 +103,7 @@ def _cancel_active_sweeps():
             save_task_status(
                 stale_task_id, 'server_sweep', config.TASK_STATUS_REVOKED,
                 progress=100,
-                details={'message': 'Superseded by a new alignment covering all enabled servers.'},
+                details={'message': 'Superseded by a new alignment covering all servers.'},
             )
             cancelled.append(stale_task_id)
         except Exception:
@@ -122,7 +124,7 @@ def _cancel_active_sweeps():
 
 
 def _enqueue_sweep(at_front=False):
-    """Replace any queued/running sweep with one alignment of every enabled server.
+    """Replace any queued/running sweep with one alignment of every server.
 
     Adding several servers back to back cancels the previous alignment each time
     and starts a fresh one, so the newest sweep always covers every not-yet-aligned
@@ -133,7 +135,7 @@ def _enqueue_sweep(at_front=False):
     try:
         save_task_status(
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={'message': 'Server alignment queued for all enabled servers.'},
+            details={'message': 'Server alignment queued for all servers.'},
         )
         rq_queue_default.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
@@ -233,18 +235,16 @@ def add_server():
     if _name_taken(name):
         return jsonify({"error": f"A server named '{name}' already exists; names must be unique."}), 400
     make_default = bool(data.get('make_default', False))
-    if not make_default:
-        missing = _missing_cred_keys(server_type, creds)
-        if missing:
-            return jsonify(
-                {"error": f"Missing required credentials for {server_type}: {', '.join(missing)}."}
-            ), 400
+    missing = _missing_cred_keys(server_type, creds)
+    if missing:
+        return jsonify(
+            {"error": f"Missing required credentials for {server_type}: {', '.join(missing)}."}
+        ), 400
     server_id = registry.add_server(
         name=name,
         server_type=server_type,
         creds=creds,
         music_libraries=data.get('music_libraries') or '',
-        enabled=bool(data.get('enabled', True)),
         make_default=make_default,
     )
     sweep_task_id = None
@@ -294,20 +294,17 @@ def update_server(server_id):
         server_type=server_type,
         creds=creds,
         music_libraries=data.get('music_libraries'),
-        enabled=data.get('enabled'),
     )
     sweep_task_id = None
     if is_default:
         _apply_default_to_config()
-    # Sweep only on changes that can alter track matching; renames and
-    # disable-toggles never re-match the catalogue.
+    # Sweep only on changes that can alter track matching; renames never
+    # re-match the catalogue.
     new_libraries = data.get('music_libraries')
-    new_enabled = data.get('enabled')
     needs_sweep = (
         (server_type is not None and server_type != existing['server_type'])
         or (creds is not None and creds != (existing['creds'] or {}))
         or (new_libraries is not None and new_libraries != existing['music_libraries'])
-        or (new_enabled is not None and bool(new_enabled) and not existing['enabled'])
     )
     if needs_sweep:
         sweep_task_id = _enqueue_sweep()

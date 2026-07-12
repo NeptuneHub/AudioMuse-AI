@@ -47,18 +47,23 @@ from tasks.provider_migration_tasks import (
 logger = logging.getLogger(__name__)
 
 _CHUNK_ROWS = 20000
+_CURRENT_SCHEME_SQL = "(s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s)"
+_LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL
 
 
 def _migration_workers():
     return max(2, (os.cpu_count() or 4) // 2)
 
 
-def _resolve_legacy_rows(row_batches, resolver, total):
+def _resolve_legacy_rows(row_batches, resolver, total, new_to_old):
     """Assign every legacy row its identity: relabel new content, merge duplicates.
 
     ``row_batches`` yields lists of ``(old_id, embedding_blob, signature)``.
     Identity is decided purely from the audio: the signature proposes, the raw
-    embedding cosine (the Similar Songs duplicate rule) confirms.
+    embedding cosine (the Similar Songs duplicate rule) confirms. Embeddings
+    are never retained in the resolver: ``new_to_old`` lets the fetcher find a
+    freshly minted id's embedding under its legacy key when a later duplicate
+    needs the exact-cosine confirmation.
     """
     mapping = {}
     duplicate_mapping = {}
@@ -66,12 +71,15 @@ def _resolve_legacy_rows(row_batches, resolver, total):
     next_pct = 10
     for batch in row_batches:
         for old_id, embedding_blob, signature in batch:
-            kind, resolved = resolver.resolve(embedding_blob, signature=signature)
+            kind, resolved = resolver.resolve(
+                embedding_blob, signature=signature, store_embedding=False
+            )
             if resolved is not None:
                 if kind == 'existing':
                     duplicate_mapping[str(old_id)] = resolved
                 else:
                     mapping[str(old_id)] = resolved
+                    new_to_old[resolved] = str(old_id)
             done += 1
             if total >= 10 and done * 100 >= next_pct * total:
                 logger.info(
@@ -82,31 +90,42 @@ def _resolve_legacy_rows(row_batches, resolver, total):
     return mapping, duplicate_mapping
 
 
+def _make_embedding_fetcher(conn, new_to_old):
+    def fetch(item_id):
+        lookup_id = new_to_old.get(item_id, item_id)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT embedding FROM embedding "
+                "WHERE item_id = %s AND embedding IS NOT NULL",
+                (lookup_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        return bytes(row[0]) if row and row[0] is not None else None
+
+    return fetch
+
+
 def _build_mapping(cur):
     """{legacy_id: canonical_id} to relabel plus {legacy_id: existing_id} to merge.
 
     Legacy rows are everything whose item_id is not a current-scheme signature
-    id: provider ids and ids minted by retired schemes alike. Signatures are
-    computed vectorized in chunks across a small thread pool (max(2, half the
-    cores)) so the one-time startup migration finishes as fast as the machine
-    allows; resolution then runs in submission order, so the outcome is
-    identical to a sequential pass.
+    id: provider ids and ids minted by retired schemes alike. The legacy COUNT
+    runs FIRST so a fully migrated catalogue returns instantly without loading
+    anything; canonical rows then register by id alone (the id encodes the
+    signature) and raw embeddings are fetched lazily only when a candidate
+    match needs the exact-cosine confirmation, so memory stays bounded even on
+    huge libraries. Signatures are computed vectorized in chunks across a small
+    thread pool (max(2, half the cores)); resolution runs in submission order,
+    so the outcome is identical to a sequential pass.
     """
     head_len = simhash.CANONICAL_ID_LEN
-    resolver = simhash.CatalogResolver()
-    cur.execute(
-        "SELECT s.item_id, e.embedding FROM score s "
-        "JOIN embedding e ON e.item_id = s.item_id "
-        "WHERE s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s",
-        (head_len,),
-    )
-    for item_id, embedding_blob in cur.fetchall():
-        resolver.register(item_id, embedding=bytes(embedding_blob))
     cur.execute(
         "SELECT COUNT(*) FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
-        "WHERE e.embedding IS NOT NULL "
-        "AND (s.item_id NOT LIKE 'fp\\_2%%' OR length(s.item_id) <> %s)",
+        "WHERE e.embedding IS NOT NULL AND " + _LEGACY_ROW_SQL,
         (head_len,),
     )
     total = cur.fetchone()[0]
@@ -123,38 +142,58 @@ def _build_mapping(cur):
         _migration_workers(),
     )
     logger.info("=" * 64)
+
+    new_to_old = {}
+    resolver = simhash.CatalogResolver(
+        embedding_fetcher=_make_embedding_fetcher(cur.connection, new_to_old)
+    )
     cur.execute(
+        "SELECT s.item_id FROM score s WHERE " + _CURRENT_SCHEME_SQL,
+        (head_len,),
+    )
+    while True:
+        id_rows = cur.fetchmany(_CHUNK_ROWS)
+        if not id_rows:
+            break
+        for (item_id,) in id_rows:
+            resolver.register(item_id)
+
+    scan_cur = cur.connection.cursor(name='legacy_row_scan')
+    scan_cur.itersize = _CHUNK_ROWS
+    scan_cur.execute(
         "SELECT s.item_id, e.embedding FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
-        "WHERE e.embedding IS NOT NULL "
-        "AND (s.item_id NOT LIKE 'fp\\_2%%' OR length(s.item_id) <> %s)",
+        "WHERE e.embedding IS NOT NULL AND " + _LEGACY_ROW_SQL,
         (head_len,),
     )
 
     def _signed_batches():
-        with ThreadPoolExecutor(max_workers=_migration_workers()) as pool:
-            pending = []
-            while True:
-                rows = cur.fetchmany(_CHUNK_ROWS)
-                if rows:
-                    chunk = [(str(r[0]), bytes(r[1])) for r in rows]
-                    pending.append(
-                        (chunk, pool.submit(
-                            simhash.signature_batch,
-                            [blob for _old, blob in chunk],
-                        ))
-                    )
-                while pending and (len(pending) > _migration_workers() or not rows):
-                    chunk, future = pending.pop(0)
-                    signatures = future.result()
-                    yield [
-                        (old_id, blob, signature)
-                        for (old_id, blob), signature in zip(chunk, signatures)
-                    ]
-                if not rows:
-                    break
+        try:
+            with ThreadPoolExecutor(max_workers=_migration_workers()) as pool:
+                pending = []
+                while True:
+                    rows = scan_cur.fetchmany(_CHUNK_ROWS)
+                    if rows:
+                        chunk = [(str(r[0]), bytes(r[1])) for r in rows]
+                        pending.append(
+                            (chunk, pool.submit(
+                                simhash.signature_batch,
+                                [blob for _old, blob in chunk],
+                            ))
+                        )
+                    while pending and (len(pending) > _migration_workers() or not rows):
+                        chunk, future = pending.pop(0)
+                        signatures = future.result()
+                        yield [
+                            (old_id, blob, signature)
+                            for (old_id, blob), signature in zip(chunk, signatures)
+                        ]
+                    if not rows:
+                        break
+        finally:
+            scan_cur.close()
 
-    return _resolve_legacy_rows(_signed_batches(), resolver, total)
+    return _resolve_legacy_rows(_signed_batches(), resolver, total, new_to_old)
 
 
 def _merge_duplicate_rows(cur, duplicate_mapping):
@@ -166,18 +205,18 @@ def _merge_duplicate_rows(cur, duplicate_mapping):
     """
     if not duplicate_mapping:
         return
+    from psycopg2.extras import execute_values
+
     cur.execute(
         "CREATE TEMP TABLE duplicate_item_id_map ("
         "old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) ON COMMIT DROP"
     )
-    rows = list(duplicate_mapping.items())
-    for i in range(0, len(rows), 1000):
-        chunk = rows[i:i + 1000]
-        placeholders = ",".join(["(%s,%s)"] * len(chunk))
-        cur.execute(
-            "INSERT INTO duplicate_item_id_map (old_id, new_id) VALUES " + placeholders,
-            [value for pair in chunk for value in pair],
-        )
+    execute_values(
+        cur,
+        "INSERT INTO duplicate_item_id_map (old_id, new_id) VALUES %s",
+        list(duplicate_mapping.items()),
+        page_size=5000,
+    )
     cur.execute(
         "CREATE TEMP TABLE duplicate_server_map_rows ON COMMIT DROP AS "
         "SELECT d.new_id, t.server_id, t.provider_track_id, t.match_tier "
@@ -259,15 +298,39 @@ def _relabel_item_ids(cur, lyrics_exists):
         )
 
 
+def _enqueue_index_rebuild():
+    """Queue one index rebuild after a successful relabel so similarity
+    features resolve the new ids without waiting for the next analysis."""
+    try:
+        from app_helper import rq_queue_default
+
+        rq_queue_default.enqueue(
+            'tasks.analysis.rebuild_all_indexes_task',
+            job_timeout=-1,
+            description='Post-migration index rebuild',
+        )
+        logger.info(
+            "Enqueued the post-migration index rebuild; similarity features "
+            "will use the new catalogue ids as soon as it completes."
+        )
+    except Exception:
+        logger.warning(
+            "Could not enqueue the post-migration index rebuild; the next "
+            "analysis will rebuild the indexes instead.",
+            exc_info=True,
+        )
+
+
 def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None):
     """Relabel legacy item_ids to the canonical signature id.
 
-    Pure database alignment: no downloads, no index rebuild (the next analysis
-    rebuilds the indexes exactly as it always has). ``log_fn`` receives
-    ``(message, progress)`` step updates for a caller's progress bar. The
-    session's statement_timeout is lifted and autocommit forced off for the
-    rewrite (both restored on a caller-provided connection) so large catalogues
-    are not cancelled mid-relabel.
+    Pure database alignment: no downloads. When rows were actually relabelled,
+    an index rebuild job is enqueued right after the commit so the similarity
+    features work on the new ids immediately instead of waiting for the next
+    analysis. ``log_fn`` receives ``(message, progress)`` step updates for a
+    caller's progress bar. The session's statement_timeout is lifted and
+    autocommit forced off for the rewrite (both restored on a caller-provided
+    connection) so large catalogues are not cancelled mid-relabel.
     """
     def _log(message):
         if log_fn is not None:
@@ -347,6 +410,10 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             template="(%s, %s, %s, 'default', now())",
             page_size=5000,
         )
+        cur.execute(
+            "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
+            (source_id,),
+        )
         db.commit()
         relabelled = len(mapping) + duplicates
         logger.info("=" * 64)
@@ -357,6 +424,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             len(mapping), duplicates,
         )
         logger.info("=" * 64)
+        _enqueue_index_rebuild()
     except Exception:
         try:
             db.rollback()

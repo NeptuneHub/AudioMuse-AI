@@ -293,11 +293,11 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         return None, None
 
 
-def rebuild_all_indexes_task(log_fn=None):
+def rebuild_all_indexes_task():
     logger.info("Starting index rebuild task (enqueued as subtask)...")
     with app.app_context():
         try:
-            _run_all_index_builds(log_fn=log_fn)
+            _run_all_index_builds()
             logger.info("OK Index rebuild task completed successfully")
             return {"status": "SUCCESS", "message": "All indexes rebuilt"}
         except Exception as e:
@@ -724,10 +724,9 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             )
                         elif kind == 'existing':
                             if source_server_id:
-                                registry.upsert_track_maps(
-                                    source_server_id,
-                                    {resolved_id: (provider_id, 'fingerprint')},
-                                )
+                                pending_track_maps.setdefault(source_server_id, {})[
+                                    resolved_id
+                                ] = (provider_id, 'fingerprint')
                             logger.info(
                                 "Embedding signature + cosine matched '%s' to existing "
                                 "catalogue id %s; marked it for this server and "
@@ -735,8 +734,25 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                                 track_name_full,
                                 resolved_id,
                             )
-                            tracks_analyzed_count += 1
-                            continue
+                            item['_catalog_item_id'] = resolved_id
+                            track_id_str = resolved_id
+                            musicnn_analysis = musicnn_embedding = None
+                            needs_clap = needs_clap and bool(
+                                _ah.get_missing_ids_in_table('clap_embedding', [resolved_id])
+                            )
+                            needs_lyrics = needs_lyrics and bool(
+                                _ah.get_missing_ids_in_table('lyrics_embedding', [resolved_id])
+                            )
+                            if not (needs_clap or needs_lyrics):
+                                tracks_analyzed_count += 1
+                                continue
+                            logger.info(
+                                "Existing catalogue row %s still needs%s%s; running the "
+                                "missing stages for it.",
+                                resolved_id,
+                                " CLAP" if needs_clap else "",
+                                " lyrics" if needs_lyrics else "",
+                            )
                         else:
                             item['_catalog_item_id'] = resolved_id
                             track_id_str = resolved_id

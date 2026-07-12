@@ -253,22 +253,17 @@ def search_tracks_endpoint():
     offset = start
 
     try:
-        from tasks.mediaserver import registry
-
         try:
-            requested_server_id = app_server_context.resolve_request_server_id()
+            selected_server_id, include_legacy = app_server_context.selected_server_scope()
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
-        selected_server_id = requested_server_id or registry.get_default_server_id()
         raw_results = search_tracks_unified(
             search_query,
             limit=limit,
             offset=offset,
             item_id_filter=item_id_filter,
             server_id=selected_server_id,
-            include_legacy_default=(
-                selected_server_id == registry.get_default_server_id()
-            ),
+            include_legacy_default=include_legacy,
         )
         results = []
         for r in raw_results:

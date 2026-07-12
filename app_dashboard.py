@@ -215,7 +215,7 @@ def _collect_music_server_metrics(cur):
             return servers
         catalogue_total = _safe_count(cur, "SELECT COUNT(*) FROM score")
         cur.execute(
-            "SELECT ms.server_id, ms.name, ms.server_type, ms.is_default, ms.enabled, "
+            "SELECT ms.server_id, ms.name, ms.server_type, ms.is_default, "
             "ms.track_count, COALESCE(m.cnt, 0) "
             "FROM music_servers ms LEFT JOIN "
             "(SELECT server_id, COUNT(*) AS cnt FROM track_server_map GROUP BY server_id) m "
@@ -223,7 +223,7 @@ def _collect_music_server_metrics(cur):
             "ORDER BY ms.is_default DESC, ms.name ASC"
         )
         for r in cur.fetchall():
-            matched = int(r[6] or 0)
+            matched = int(r[5] or 0)
             if r[3] and not _LEGACY_UNMAPPED_DONE.get(r[0]):
                 # Legacy rows keep their provider id and are implicitly on the
                 # default server until canonicalization maps them explicitly.
@@ -238,7 +238,7 @@ def _collect_music_server_metrics(cur):
                 if legacy == 0:
                     _LEGACY_UNMAPPED_DONE[r[0]] = True
                 matched += legacy
-            server_songs = r[5]
+            server_songs = r[4]
             if server_songs is None and r[3] and matched:
                 # The default server's library defined the catalogue before the
                 # first sweep stored its real size, so matched = its library.
@@ -248,7 +248,6 @@ def _collect_music_server_metrics(cur):
                     'name': r[1],
                     'server_type': r[2],
                     'is_default': bool(r[3]),
-                    'enabled': bool(r[4]),
                     'matched_songs': matched,
                     'server_songs': int(server_songs) if server_songs is not None else None,
                     'catalogue_songs': catalogue_total,

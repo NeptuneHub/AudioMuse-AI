@@ -26,6 +26,7 @@ Main Features:
 import gc
 import importlib
 import logging
+import time
 
 import numpy as np
 import librosa
@@ -505,6 +506,10 @@ def _fetch_embedding_blob(item_id):
     return bytes(row[0]) if row and row[0] is not None else None
 
 
+_FINGERPRINT_INDEX_TTL_SECONDS = 300.0
+_fingerprint_index_cache = {'built': 0.0, 'resolver': None}
+
+
 def load_fingerprint_index():
     """Identity resolver over every canonical row already in the catalogue.
 
@@ -512,8 +517,19 @@ def load_fingerprint_index():
     loading it never reads embedding blobs; a candidate row's raw embedding is
     fetched lazily only when the signature proposes it, and the exact cosine
     (the Similar Songs duplicate rule) takes the final same/different decision.
+    Cached per worker process for a few minutes: resolve() registers every id
+    this worker mints, so the cache stays current between refreshes and album
+    jobs stop rebuilding the full index each time.
     """
     from tasks.simhash import CANONICAL_ID_LEN, CatalogResolver
+
+    now = time.monotonic()
+    cached = _fingerprint_index_cache
+    if (
+        cached['resolver'] is not None
+        and now - cached['built'] < _FINGERPRINT_INDEX_TTL_SECONDS
+    ):
+        return cached['resolver']
 
     resolver = CatalogResolver(embedding_fetcher=_fetch_embedding_blob)
     with get_db() as conn, conn.cursor() as cur:
@@ -524,6 +540,8 @@ def load_fingerprint_index():
         )
         for (item_id,) in cur.fetchall():
             resolver.register(item_id)
+    cached['built'] = now
+    cached['resolver'] = resolver
     return resolver
 
 
@@ -667,8 +685,6 @@ def run_lyrics_for_track(
             source_path=str(path) if path is not None else None,
             artist=item.get('AlbumArtist') or item.get('Artist'),
             track=item.get('Name'),
-            # Provider lyrics APIs require the selected server's real track id;
-            # only database persistence uses the canonical catalogue id.
             track_id=str(item.get('Id') or item.get('id') or catalog_item_id(item)),
             top_moods=top_moods,
             audio_loader=audio_loader,

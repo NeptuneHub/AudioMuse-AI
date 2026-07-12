@@ -26,7 +26,7 @@
             // or a stale/deleted selection would 400 every request forever.
             return !state.loaded;
         }
-        return state.servers.some(function (s) { return s.server_id === id && s.enabled; });
+        return state.servers.some(function (s) { return s.server_id === id; });
     }
 
     function shouldInject(pathname) {
@@ -85,12 +85,9 @@
         var current = selectedId() || state.defaultId || '';
         var html = '<select id="server-selector" class="server-selector" aria-label="Music server">';
         state.servers.forEach(function (s) {
-            var label = s.name
-                + (s.is_default ? ' (default)' : '')
-                + (s.enabled ? '' : ' [disabled]');
+            var label = s.name + (s.is_default ? ' (default)' : '');
             var sel = (s.server_id === current) ? ' selected' : '';
-            var disabled = s.enabled ? '' : ' disabled';
-            html += '<option value="' + escapeHtml(s.server_id) + '"' + sel + disabled + '>' + escapeHtml(label) + '</option>';
+            html += '<option value="' + escapeHtml(s.server_id) + '"' + sel + '>' + escapeHtml(label) + '</option>';
         });
         html += '</select>';
         mount.innerHTML = html;
@@ -117,7 +114,7 @@
                 state.servers = data.servers || [];
                 state.defaultId = data.default_id;
                 var current = selectedId();
-                if (current && !state.servers.some(function (s) { return s.server_id === current && s.enabled; })) {
+                if (current && !state.servers.some(function (s) { return s.server_id === current; })) {
                     localStorage.removeItem(STORAGE_KEY);
                 }
                 render();

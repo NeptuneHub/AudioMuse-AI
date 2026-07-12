@@ -866,16 +866,21 @@ class PagedIvfIndex:
         conn = self._conn_factory()
         with conn.cursor() as cur:
             cur.execute(
+                "SELECT is_default, updated_at FROM music_servers WHERE server_id = %s",
+                (server_id,),
+            )
+            row = cur.fetchone()
+            is_default = bool(row[0]) if row else False
+            token = str(row[1]) if row else None
+            if cached is not None and token is not None and token == cached[2]:
+                with _AVAILABILITY_CACHE_LOCK:
+                    _AVAILABILITY_CACHE[key] = (now, cached[1], token)
+                return cached[1]
+            cur.execute(
                 "SELECT item_id FROM track_server_map WHERE server_id = %s",
                 (server_id,),
             )
             available = {str(row[0]) for row in cur.fetchall()}
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM music_servers "
-                "WHERE server_id = %s AND is_default)",
-                (server_id,),
-            )
-            is_default = bool(cur.fetchone()[0])
         if is_default:
             from tasks.simhash import is_fingerprint_id
 
@@ -896,7 +901,7 @@ class PagedIvfIndex:
             ]
             for stale_key in stale_keys:
                 _AVAILABILITY_CACHE.pop(stale_key, None)
-            _AVAILABILITY_CACHE[key] = (now, mask)
+            _AVAILABILITY_CACHE[key] = (now, mask, token)
         return mask
 
     def __len__(self) -> int:

@@ -54,8 +54,6 @@ def resolve_request_server_id(data=None):
     server = registry.get_server(requested) or registry.get_server_by_name(requested)
     if server is None:
         raise ValueError(f"Unknown server '{requested}'")
-    if not server.get('enabled', True):
-        raise ValueError(f"Server '{server['name']}' is disabled")
     return server['server_id']
 
 
@@ -64,6 +62,21 @@ def is_default_server(server_id):
     if not server_id:
         return True
     return server_id == registry.get_default_server_id()
+
+
+def selected_server_scope(data=None):
+    """The request's effective server id plus whether legacy default-keyed rows
+    count as present on it (i.e. the selection IS the default server).
+
+    The single implementation of the ``resolve or default / compare to
+    default`` pairing every availability-filtered endpoint needs. Raises
+    ValueError for an unknown ``server`` parameter.
+    """
+    from tasks.mediaserver import registry
+
+    default_id = registry.get_default_server_id()
+    server_id = resolve_request_server_id(data) or default_id
+    return server_id, server_id == default_id
 
 
 def resolve_input_item_ids(item_ids, data=None):
@@ -178,7 +191,7 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
     """Drop result rows whose track is not on the request's selected server.
 
     ``id_key`` is a dict key or a callable that extracts the canonical item_id.
-    Raises ValueError for an unknown or disabled ``server`` parameter so the
+    Raises ValueError for an unknown ``server`` parameter so the
     endpoint can answer 400; a registry failure fails open (rows unchanged).
     Single-server installs with no explicit selection skip translation entirely.
     """
@@ -236,7 +249,6 @@ def server_public_dict(server):
         'creds': mask_creds(server['creds']),
         'music_libraries': server['music_libraries'],
         'is_default': server['is_default'],
-        'enabled': server['enabled'],
     }
 
 

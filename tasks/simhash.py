@@ -263,11 +263,14 @@ class CatalogResolver:
                 return False
         return True
 
-    def resolve(self, embedding, duration=None, signature=None):
+    def resolve(self, embedding, duration=None, signature=None, store_embedding=True):
         """('existing', id) when the audio is already catalogued, else ('new', id).
 
         A 'new' resolution registers the returned id (with this embedding), so
-        the next copy of the same audio in the same run resolves to it.
+        the next copy of the same audio in the same run resolves to it. Pass
+        ``store_embedding=False`` to register the id only and rely on the
+        ``embedding_fetcher`` for later confirmations - bulk migrations use
+        this to keep memory bounded.
         """
         if signature is None:
             signature = embedding_signature(embedding)
@@ -281,5 +284,10 @@ class CatalogResolver:
         while new_id in self._taken:
             value = (value + 1) & _SIGNATURE_MASK
             new_id = canonical_id_str(value)
-        self.register(new_id, embedding=embedding, duration=duration, signature=value)
+        self.register(
+            new_id,
+            embedding=embedding if store_embedding else None,
+            duration=duration,
+            signature=value,
+        )
         return ('new', new_id)

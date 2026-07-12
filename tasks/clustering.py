@@ -8,15 +8,20 @@
 
 """Clustering orchestrator: evolutionary search that turns embeddings into playlists.
 
-The main clustering RQ job. run_clustering_task drives an evolutionary/elitist
-search over clustering method and parameters, dispatching run_clustering_batch_task
-child jobs and monitoring them, then names and materializes the best playlists.
-Delegates the per-iteration work to clustering_helper, the models to clustering_gpu,
-and dedup/size/diversity filtering to clustering_postprocessing.
+The main clustering RQ job. run_clustering_task runs the WHOLE pipeline once per
+target server, sequentially: each server clusters only its own availability-scoped
+catalogue (servers hold different libraries), runs its own evolutionary/elitist
+search via run_clustering_batch_task child jobs, and gets its own playlists -
+results are never computed once and pushed to other servers. Delegates the
+per-iteration work to clustering_helper, the models to clustering_gpu, and
+dedup/size/diversity filtering to clustering_postprocessing.
 
 Main Features:
-* run_clustering_task / _monitor_and_process_batches / _launch_batch_job: fan out
-  parameter sets into batch jobs, track elites, and adapt sampling each generation.
+* run_clustering_task: sequential per-server loop over the requested scope
+  (a specific server, 'default', or 'all'); _cluster_one_server runs one
+  server's full pipeline with per-server batch job ids.
+* _monitor_and_process_batches / _launch_batch_job: fan out parameter sets into
+  batch jobs, track elites, and adapt sampling each generation.
 * Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
   so playlists span the library rather than one dominant genre.
 * _name_and_prepare_playlists: score, name (optionally via AI) and persist results;
@@ -76,6 +81,7 @@ from database import update_playlist_table, get_child_tasks_from_db
 from sanitization import sanitize_for_json
 
 from .mediaserver import create_playlist, delete_automatic_playlists
+from .mediaserver import context as server_context, registry
 from .clustering_helper import (
     _get_stratified_song_subset,
     get_job_result_safely,
@@ -447,289 +453,119 @@ def run_clustering_task(
         try:
             _log_and_update("Initializing clustering process...", 0, task_state=TASK_STATUS_STARTED)
 
-            _log_and_update("Fetching lightweight track data for stratification...", 1)
-            db = get_db()
-            cur = db.cursor(cursor_factory=DictCursor)
-            cur.execute(
-                "SELECT item_id, author, mood_vector FROM score WHERE mood_vector IS NOT NULL AND mood_vector != ''"
-            )
-            lightweight_rows = cur.fetchall()
-            cur.close()
-
-            if len(lightweight_rows) < (num_clusters_min or 2):
-                raise ValueError(
-                    f"Not enough tracks in DB ({len(lightweight_rows)}) for clustering."
-                )
-
-            genre_map = _prepare_genre_map(lightweight_rows)
-            target_songs_per_genre = _calculate_target_songs_per_genre(
-                genre_map,
-                stratified_sampling_target_percentile_param,
-                min_songs_per_genre_for_stratification_param,
-            )
-            _log_and_update(
-                f"Target songs per genre for stratification: {target_songs_per_genre}", 5
-            )
-
-            num_total_batches = (
-                (num_clustering_runs + ITERATIONS_PER_BATCH_JOB - 1) // ITERATIONS_PER_BATCH_JOB
-                if ITERATIONS_PER_BATCH_JOB > 0
-                else 0
-            )
-            next_batch_to_launch = 0
-
-            child_tasks_from_db = get_child_tasks_from_db(current_task_id)
-            if child_tasks_from_db:
-                logger.info(
-                    f"Found {len(child_tasks_from_db)} existing child tasks. Attempting state recovery."
-                )
-                _monitor_and_process_batches(
-                    _main_task_accumulated_details, current_task_id, initial_check=True
-                )
-
-                runs_accounted_for = _main_task_accumulated_details["runs_completed"]
-                next_batch_to_launch = runs_accounted_for // ITERATIONS_PER_BATCH_JOB
-
-                logger.info(
-                    f"Recovery complete. Resuming. Runs accounted for: {runs_accounted_for}/{num_clustering_runs}. Next batch index to launch: {next_batch_to_launch}"
-                )
-
-            if not _main_task_accumulated_details["last_subset_ids"]:
-                initial_subset_data = _get_stratified_song_subset(genre_map, target_songs_per_genre)
-                _main_task_accumulated_details["last_subset_ids"] = [
-                    t['item_id'] for t in initial_subset_data
-                ]
-
-            last_progress_time = time.time()
-            last_known_runs = _main_task_accumulated_details["runs_completed"]
-            progress = 5
-
-            while _main_task_accumulated_details["runs_completed"] < num_clustering_runs:
-                if current_job and (
-                    current_job.is_stopped
-                    or get_task_info_from_db(current_task_id).get('status') == TASK_STATUS_REVOKED
-                ):
-                    _log_and_update(
-                        "Task revoked, stopping.",
-                        _main_task_accumulated_details['runs_completed'],
-                        task_state=TASK_STATUS_REVOKED,
-                    )
-                    return {"status": "REVOKED", "message": "Main clustering task revoked."}
-
-                _monitor_and_process_batches(_main_task_accumulated_details, current_task_id)
-
-                if _main_task_accumulated_details["runs_completed"] > last_known_runs:
-                    last_known_runs = _main_task_accumulated_details["runs_completed"]
-                    last_progress_time = time.time()
-                elif time.time() - last_progress_time > CLUSTERING_BATCH_TIMEOUT_MINUTES * 60:
-                    stale_minutes = (time.time() - last_progress_time) / 60
-                    _log_and_update(
-                        f"STALENESS WATCHDOG: No progress for {stale_minutes:.1f} min (limit: {CLUSTERING_BATCH_TIMEOUT_MINUTES} min). "
-                        f"Forcing completion at {last_known_runs}/{num_clustering_runs} runs.",
-                        progress,
-                    )
-                    logger.warning(
-                        f"STALENESS WATCHDOG triggered. runs_completed stuck at {last_known_runs}/{num_clustering_runs} for {stale_minutes:.1f} min."
-                    )
-                    _main_task_accumulated_details["runs_completed"] = num_clustering_runs
-
-                failed_batch_count = len(
-                    _main_task_accumulated_details.get("failed_batches", set())
-                )
-                if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES:
-                    logger.warning(
-                        f"Stopping new batch launches: {failed_batch_count} batches have failed (max: {CLUSTERING_MAX_FAILED_BATCHES})"
-                    )
-                    remaining_runs = (
-                        num_clustering_runs - _main_task_accumulated_details["runs_completed"]
-                    )
-                    if remaining_runs > 0:
-                        _main_task_accumulated_details["runs_completed"] = num_clustering_runs
-                        logger.warning(
-                            f"Forced completion of {remaining_runs} remaining runs due to batch failures"
-                        )
-
-                while (
-                    len(_main_task_accumulated_details["active_jobs"]) < MAX_CONCURRENT_BATCH_JOBS
-                    and next_batch_to_launch < num_total_batches
-                    and failed_batch_count < CLUSTERING_MAX_FAILED_BATCHES
-                ):
-                    _launch_batch_job(
-                        _main_task_accumulated_details,
-                        current_task_id,
-                        next_batch_to_launch,
-                        num_clustering_runs,
-                        genre_map,
-                        target_songs_per_genre,
-                        clustering_method,
-                        num_clusters_min,
-                        num_clusters_max,
-                        dbscan_eps_min,
-                        dbscan_eps_max,
-                        dbscan_min_samples_min,
-                        dbscan_min_samples_max,
-                        gmm_n_components_min,
-                        gmm_n_components_max,
-                        spectral_n_clusters_min,
-                        spectral_n_clusters_max,
-                        pca_components_min,
-                        pca_components_max,
-                        max_songs_per_cluster_val,
-                        score_weight_diversity_param,
-                        score_weight_silhouette_param,
-                        score_weight_davies_bouldin_param,
-                        score_weight_calinski_harabasz_param,
-                        score_weight_purity_param,
-                        score_weight_other_feature_diversity_param,
-                        score_weight_other_feature_purity_param,
-                        top_n_moods_for_clustering_param,
-                        enable_clustering_embeddings_param,
-                    )
-                    next_batch_to_launch += 1
-
-                progress = (
-                    5
-                    + int(
-                        85 * _main_task_accumulated_details["runs_completed"] / num_clustering_runs
-                    )
-                    if num_clustering_runs > 0
-                    else 5
-                )
-                _log_and_update(
-                    f"Progress: {_main_task_accumulated_details['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(_main_task_accumulated_details['active_jobs'])}. Best score: {_main_task_accumulated_details['best_score']:.2f}",
-                    progress,
-                )
-
-                if (
-                    _main_task_accumulated_details["runs_completed"] >= num_clustering_runs
-                    and len(_main_task_accumulated_details["active_jobs"]) == 0
-                ):
-                    _log_and_update(
-                        f"All runs ({_main_task_accumulated_details['runs_completed']}) are processed or accounted for. Forcing loop exit to prevent starvation.",
-                        progress,
-                    )
-                    break
-
-                time.sleep(3)
-
-            _monitor_and_process_batches(_main_task_accumulated_details, current_task_id)
-
-            _log_and_update("All batches completed. Finalizing...", 90)
-
-            if not _main_task_accumulated_details["best_result"]:
-                raise ValueError("No valid clustering solution found after all runs.")
-
-            best_result = _main_task_accumulated_details["best_result"]
-
-            initial_playlist_count = len(best_result.get("named_playlists", {}))
-            _log_and_update(
-                f"Starting post-processing with {initial_playlist_count} playlists", 90.2
-            )
-
-            _log_and_update("Applying duplicate filtering to remove similar songs...", 90.5)
-            _log_and_update(
-                f"Before duplicate filtering: {len(best_result.get('named_playlists', {}))} playlists",
-                90.5,
-            )
-            best_result = apply_duplicate_filtering_to_clustering_result(
-                best_result, log_prefix="[DuplicateFilter] "
-            )
-            _log_and_update(
-                f"After duplicate filtering: {len(best_result.get('named_playlists', {}))} playlists",
-                90.5,
-            )
-
-            min_size_threshold = MIN_PLAYLIST_SIZE_FOR_TOP_N
-            _log_and_update(f"Applying minimum size filter (>= {min_size_threshold} songs)...", 91)
-            _log_and_update(
-                f"Before minimum size filtering: {len(best_result.get('named_playlists', {}))} playlists",
-                91,
-            )
-            best_result = apply_minimum_size_filter_to_clustering_result(
-                best_result, min_size_threshold, log_prefix="[MinSizeFilter] "
-            )
-            _log_and_update(
-                f"After minimum size filtering: {len(best_result.get('named_playlists', {}))} playlists",
-                91,
-            )
-
-            if (
-                top_n_playlists_param > 0
-                and len(best_result.get("named_playlists", {})) > top_n_playlists_param
-            ):
-                _log_and_update(
-                    f"Filtering for Top {top_n_playlists_param} most diverse playlists...", 91.5
-                )
-                best_result = select_top_n_diverse_playlists(best_result, top_n_playlists_param)
-                _main_task_accumulated_details["best_result"] = best_result
-
-            final_playlist_count = len(best_result.get("named_playlists", {}))
-            _log_and_update(
-                f"Post-processing complete: {initial_playlist_count} -> {final_playlist_count} playlists",
-                91.8,
-            )
-
-            _log_and_update(
-                f"Best clustering found with score: {_main_task_accumulated_details['best_score']:.2f}. Creating playlists...",
-                92,
-            )
-
-            final_playlists_with_details = _name_and_prepare_playlists(
-                best_result,
-                ai_model_provider_param,
-                ollama_server_url_param,
-                ollama_model_name_param,
-                openai_server_url_param,
-                openai_model_name_param,
-                openai_api_key_param,
-                gemini_api_key_param,
-                gemini_model_name_param,
-                mistral_api_key_param,
-                mistral_model_name_param,
-            )
-
-            final_shuffled_playlists = final_playlists_with_details
-            from .mediaserver import context as server_context, registry
-
             target_servers = registry.servers_for_scope(output_server_scope)
+            if not target_servers:
+                raise ValueError(f"No music servers match scope '{output_server_scope}'.")
 
-            _log_and_update(
-                f"Creating {len(final_shuffled_playlists)} playlists on "
-                f"{len(target_servers)} server(s)...",
-                98,
-            )
-            for target_server in target_servers:
-                if target_server and not target_server.get('is_default'):
-                    try:
-                        mapped = registry.mapped_count(target_server['server_id'])
-                    except Exception:
-                        logger.exception(
-                            "Could not check track mappings for server '%s'; skipping it.",
-                            target_server.get('name'),
-                        )
-                        continue
-                    if mapped <= 0:
-                        logger.warning(
-                            "Server '%s' has no mapped tracks yet; skipping playlist "
-                            "cleanup and creation on it.",
-                            target_server.get('name'),
-                        )
-                        continue
-                ctx = (
-                    registry.context_for(target_server['server_id'])
-                    if target_server
-                    else None
+            multi_server = len(target_servers) > 1
+            server_span = 92.0 / len(target_servers)
+            aggregated_playlists = {}
+            per_server_summary = []
+            best_score_overall = -1.0
+            best_params_overall = None
+
+            for server_idx, target_server in enumerate(target_servers):
+                server_name = target_server['name'] if target_server else 'default server'
+                report = _make_server_reporter(
+                    _log_and_update,
+                    server_name if multi_server else None,
+                    3.0 + server_idx * server_span,
+                    server_span,
                 )
-                with server_context.use_server(ctx):
-                    if CLUSTERING_CLEANING:
-                        delete_automatic_playlists()
-                    for name, songs_with_details in final_shuffled_playlists.items():
-                        item_ids = [item_id for item_id, _, _ in songs_with_details]
-                        create_playlist(name, item_ids)
 
-            update_playlist_table(final_shuffled_playlists)
+                _main_task_accumulated_details.update({
+                    "runs_completed": 0,
+                    "best_score": -1.0,
+                    "best_result": None,
+                    "active_jobs": {},
+                    "elite_solutions": [],
+                    "last_subset_ids": [],
+                    "processed_job_ids": set(),
+                    "batch_start_times": {},
+                    "failed_batches": set(),
+                    "timed_out_batches": set(),
+                    "job_prefix": f"{current_task_id}_s{server_idx}",
+                })
 
-            final_message = "Clustering task completed successfully!"
+                status, payload = _cluster_one_server(
+                    target_server,
+                    _main_task_accumulated_details,
+                    report,
+                    current_job,
+                    current_task_id,
+                    clustering_method,
+                    num_clusters_min,
+                    num_clusters_max,
+                    dbscan_eps_min,
+                    dbscan_eps_max,
+                    dbscan_min_samples_min,
+                    dbscan_min_samples_max,
+                    pca_components_min,
+                    pca_components_max,
+                    num_clustering_runs,
+                    max_songs_per_cluster_val,
+                    gmm_n_components_min,
+                    gmm_n_components_max,
+                    spectral_n_clusters_min,
+                    spectral_n_clusters_max,
+                    min_songs_per_genre_for_stratification_param,
+                    stratified_sampling_target_percentile_param,
+                    score_weight_diversity_param,
+                    score_weight_silhouette_param,
+                    score_weight_davies_bouldin_param,
+                    score_weight_calinski_harabasz_param,
+                    score_weight_purity_param,
+                    score_weight_other_feature_diversity_param,
+                    score_weight_other_feature_purity_param,
+                    ai_model_provider_param,
+                    ollama_server_url_param,
+                    ollama_model_name_param,
+                    openai_server_url_param,
+                    openai_model_name_param,
+                    openai_api_key_param,
+                    gemini_api_key_param,
+                    gemini_model_name_param,
+                    mistral_api_key_param,
+                    mistral_model_name_param,
+                    top_n_moods_for_clustering_param,
+                    top_n_playlists_param,
+                    enable_clustering_embeddings_param,
+                )
+
+                if status == 'revoked':
+                    return {"status": "REVOKED", "message": "Main clustering task revoked."}
+                if status != 'success':
+                    per_server_summary.append(
+                        {'server': server_name, 'status': status, 'reason': payload}
+                    )
+                    continue
+                for name, cluster in payload['playlists'].items():
+                    aggregated_playlists.setdefault(name, []).extend(cluster)
+                if payload['best_score'] > best_score_overall:
+                    best_score_overall = payload['best_score']
+                    best_params_overall = payload['best_params']
+                per_server_summary.append({
+                    'server': server_name,
+                    'status': 'success',
+                    'best_score': payload['best_score'],
+                    'playlists_created': len(payload['playlists']),
+                })
+
+            successes = [s for s in per_server_summary if s['status'] == 'success']
+            if not successes:
+                raise ValueError(
+                    "No valid clustering solution found on any server: "
+                    + "; ".join(
+                        f"{s['server']}: {s.get('reason')}" for s in per_server_summary
+                    )
+                )
+
+            update_playlist_table(aggregated_playlists)
+
+            final_message = (
+                f"Clustering task completed successfully on {len(successes)}/"
+                f"{len(target_servers)} server(s)!"
+            )
 
             log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {final_message}"
             _main_task_accumulated_details["log"].append(log_entry)
@@ -741,9 +577,10 @@ def run_clustering_task(
             final_db_summary = {
                 "status_message": final_message,
                 "running_parameters": initial_params,
-                "best_score": _main_task_accumulated_details["best_score"],
-                "best_params": _main_task_accumulated_details["best_result"].get("parameters"),
-                "num_playlists_created": len(final_playlists_with_details),
+                "best_score": best_score_overall,
+                "best_params": best_params_overall,
+                "num_playlists_created": len(aggregated_playlists),
+                "per_server": per_server_summary,
                 "log": truncated_log,
                 "log_storage_info": f"Log truncated to last {len(truncated_log)} entries. Original length: {len(final_log)}."
                 if len(final_log) > 10
@@ -765,7 +602,7 @@ def run_clustering_task(
 
             return {
                 "status": "SUCCESS",
-                "message": f"Playlists created. Best score: {_main_task_accumulated_details['best_score']:.2f}",
+                "message": f"Playlists created per server. Best score: {best_score_overall:.2f}",
             }
 
         except Exception as e:
@@ -780,6 +617,315 @@ def run_clustering_task(
                 task_state=TASK_STATUS_FAILURE,
             )
             raise
+
+
+def _make_server_reporter(log_and_update, server_label, base_progress, span):
+    def report(message, local_pct, task_state=TASK_STATUS_PROGRESS):
+        scoped = f"[{server_label}] {message}" if server_label else message
+        pct = base_progress + (max(0.0, min(100.0, float(local_pct))) / 100.0) * span
+        log_and_update(scoped, pct, task_state=task_state)
+
+    return report
+
+
+def _cluster_one_server(
+    target_server,
+    state,
+    report,
+    current_job,
+    current_task_id,
+    clustering_method,
+    num_clusters_min,
+    num_clusters_max,
+    dbscan_eps_min,
+    dbscan_eps_max,
+    dbscan_min_samples_min,
+    dbscan_min_samples_max,
+    pca_components_min,
+    pca_components_max,
+    num_clustering_runs,
+    max_songs_per_cluster_val,
+    gmm_n_components_min,
+    gmm_n_components_max,
+    spectral_n_clusters_min,
+    spectral_n_clusters_max,
+    min_songs_per_genre_for_stratification_param,
+    stratified_sampling_target_percentile_param,
+    score_weight_diversity_param,
+    score_weight_silhouette_param,
+    score_weight_davies_bouldin_param,
+    score_weight_calinski_harabasz_param,
+    score_weight_purity_param,
+    score_weight_other_feature_diversity_param,
+    score_weight_other_feature_purity_param,
+    ai_model_provider_param,
+    ollama_server_url_param,
+    ollama_model_name_param,
+    openai_server_url_param,
+    openai_model_name_param,
+    openai_api_key_param,
+    gemini_api_key_param,
+    gemini_model_name_param,
+    mistral_api_key_param,
+    mistral_model_name_param,
+    top_n_moods_for_clustering_param,
+    top_n_playlists_param,
+    enable_clustering_embeddings_param,
+):
+    """One complete clustering pipeline for ONE server's catalogue.
+
+    Every server clusters only the tracks it actually has (availability-scoped
+    input), runs its own evolutionary search, and receives its own playlists;
+    results are never computed once and pushed to other servers. Returns
+    ``(status, payload)`` where status is 'success', 'skipped', 'failed', or
+    'revoked'.
+    """
+    server_name = target_server['name'] if target_server else 'default server'
+    report("Fetching lightweight track data for stratification...", 1)
+    db = get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    if target_server is not None:
+        cur.execute(
+            "SELECT s.item_id, s.author, s.mood_vector FROM score s "
+            "WHERE s.mood_vector IS NOT NULL AND s.mood_vector != '' AND "
+            + registry.availability_sql('s'),
+            (target_server['server_id'], bool(target_server.get('is_default'))),
+        )
+    else:
+        cur.execute(
+            "SELECT item_id, author, mood_vector FROM score "
+            "WHERE mood_vector IS NOT NULL AND mood_vector != ''"
+        )
+    lightweight_rows = cur.fetchall()
+    cur.close()
+
+    if len(lightweight_rows) < (num_clusters_min or 2):
+        reason = f"only {len(lightweight_rows)} clusterable tracks available"
+        report(f"Skipping this server: {reason}.", 100)
+        return 'skipped', reason
+
+    genre_map = _prepare_genre_map(lightweight_rows)
+    target_songs_per_genre = _calculate_target_songs_per_genre(
+        genre_map,
+        stratified_sampling_target_percentile_param,
+        min_songs_per_genre_for_stratification_param,
+    )
+    report(f"Target songs per genre for stratification: {target_songs_per_genre}", 3)
+
+    num_total_batches = (
+        (num_clustering_runs + ITERATIONS_PER_BATCH_JOB - 1) // ITERATIONS_PER_BATCH_JOB
+        if ITERATIONS_PER_BATCH_JOB > 0
+        else 0
+    )
+    next_batch_to_launch = 0
+
+    job_prefix = state.get("job_prefix") or current_task_id
+    child_tasks_from_db = [
+        t for t in get_child_tasks_from_db(current_task_id)
+        if str(t.get('task_id', '')).startswith(job_prefix + "_batch_")
+    ]
+    if child_tasks_from_db:
+        logger.info(
+            f"Found {len(child_tasks_from_db)} existing child tasks for '{server_name}'. Attempting state recovery."
+        )
+        _monitor_and_process_batches(state, current_task_id, initial_check=True)
+
+        runs_accounted_for = state["runs_completed"]
+        next_batch_to_launch = runs_accounted_for // ITERATIONS_PER_BATCH_JOB
+
+        logger.info(
+            f"Recovery complete. Resuming. Runs accounted for: {runs_accounted_for}/{num_clustering_runs}. Next batch index to launch: {next_batch_to_launch}"
+        )
+
+    if not state["last_subset_ids"]:
+        initial_subset_data = _get_stratified_song_subset(genre_map, target_songs_per_genre)
+        state["last_subset_ids"] = [t['item_id'] for t in initial_subset_data]
+
+    last_progress_time = time.time()
+    last_known_runs = state["runs_completed"]
+    local_pct = 5
+
+    while state["runs_completed"] < num_clustering_runs:
+        if current_job and (
+            current_job.is_stopped
+            or get_task_info_from_db(current_task_id).get('status') == TASK_STATUS_REVOKED
+        ):
+            report("Task revoked, stopping.", local_pct, task_state=TASK_STATUS_REVOKED)
+            return 'revoked', None
+
+        _monitor_and_process_batches(state, current_task_id)
+
+        if state["runs_completed"] > last_known_runs:
+            last_known_runs = state["runs_completed"]
+            last_progress_time = time.time()
+        elif time.time() - last_progress_time > CLUSTERING_BATCH_TIMEOUT_MINUTES * 60:
+            stale_minutes = (time.time() - last_progress_time) / 60
+            report(
+                f"STALENESS WATCHDOG: No progress for {stale_minutes:.1f} min (limit: {CLUSTERING_BATCH_TIMEOUT_MINUTES} min). "
+                f"Forcing completion at {last_known_runs}/{num_clustering_runs} runs.",
+                local_pct,
+            )
+            logger.warning(
+                f"STALENESS WATCHDOG triggered. runs_completed stuck at {last_known_runs}/{num_clustering_runs} for {stale_minutes:.1f} min."
+            )
+            state["runs_completed"] = num_clustering_runs
+
+        failed_batch_count = len(state.get("failed_batches", set()))
+        if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES:
+            logger.warning(
+                f"Stopping new batch launches: {failed_batch_count} batches have failed (max: {CLUSTERING_MAX_FAILED_BATCHES})"
+            )
+            remaining_runs = num_clustering_runs - state["runs_completed"]
+            if remaining_runs > 0:
+                state["runs_completed"] = num_clustering_runs
+                logger.warning(
+                    f"Forced completion of {remaining_runs} remaining runs due to batch failures"
+                )
+
+        while (
+            len(state["active_jobs"]) < MAX_CONCURRENT_BATCH_JOBS
+            and next_batch_to_launch < num_total_batches
+            and failed_batch_count < CLUSTERING_MAX_FAILED_BATCHES
+        ):
+            _launch_batch_job(
+                state,
+                current_task_id,
+                next_batch_to_launch,
+                num_clustering_runs,
+                genre_map,
+                target_songs_per_genre,
+                clustering_method,
+                num_clusters_min,
+                num_clusters_max,
+                dbscan_eps_min,
+                dbscan_eps_max,
+                dbscan_min_samples_min,
+                dbscan_min_samples_max,
+                gmm_n_components_min,
+                gmm_n_components_max,
+                spectral_n_clusters_min,
+                spectral_n_clusters_max,
+                pca_components_min,
+                pca_components_max,
+                max_songs_per_cluster_val,
+                score_weight_diversity_param,
+                score_weight_silhouette_param,
+                score_weight_davies_bouldin_param,
+                score_weight_calinski_harabasz_param,
+                score_weight_purity_param,
+                score_weight_other_feature_diversity_param,
+                score_weight_other_feature_purity_param,
+                top_n_moods_for_clustering_param,
+                enable_clustering_embeddings_param,
+            )
+            next_batch_to_launch += 1
+
+        local_pct = (
+            5 + int(75 * state["runs_completed"] / num_clustering_runs)
+            if num_clustering_runs > 0
+            else 5
+        )
+        report(
+            f"Progress: {state['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(state['active_jobs'])}. Best score: {state['best_score']:.2f}",
+            local_pct,
+        )
+
+        if state["runs_completed"] >= num_clustering_runs and len(state["active_jobs"]) == 0:
+            report(
+                f"All runs ({state['runs_completed']}) are processed or accounted for. Forcing loop exit to prevent starvation.",
+                local_pct,
+            )
+            break
+
+        time.sleep(3)
+
+    _monitor_and_process_batches(state, current_task_id)
+
+    report("All batches completed. Finalizing...", 82)
+
+    if not state["best_result"]:
+        report("No valid clustering solution found after all runs.", 100)
+        return 'failed', 'no valid clustering solution found after all runs'
+
+    best_result = state["best_result"]
+
+    initial_playlist_count = len(best_result.get("named_playlists", {}))
+    report(f"Starting post-processing with {initial_playlist_count} playlists", 83)
+
+    report("Applying duplicate filtering to remove similar songs...", 84)
+    best_result = apply_duplicate_filtering_to_clustering_result(
+        best_result, log_prefix="[DuplicateFilter] "
+    )
+    report(
+        f"After duplicate filtering: {len(best_result.get('named_playlists', {}))} playlists",
+        85,
+    )
+
+    min_size_threshold = MIN_PLAYLIST_SIZE_FOR_TOP_N
+    report(f"Applying minimum size filter (>= {min_size_threshold} songs)...", 86)
+    best_result = apply_minimum_size_filter_to_clustering_result(
+        best_result, min_size_threshold, log_prefix="[MinSizeFilter] "
+    )
+    report(
+        f"After minimum size filtering: {len(best_result.get('named_playlists', {}))} playlists",
+        87,
+    )
+
+    if (
+        top_n_playlists_param > 0
+        and len(best_result.get("named_playlists", {})) > top_n_playlists_param
+    ):
+        report(f"Filtering for Top {top_n_playlists_param} most diverse playlists...", 88)
+        best_result = select_top_n_diverse_playlists(best_result, top_n_playlists_param)
+        state["best_result"] = best_result
+
+    final_playlist_count = len(best_result.get("named_playlists", {}))
+    report(
+        f"Post-processing complete: {initial_playlist_count} -> {final_playlist_count} playlists",
+        89,
+    )
+
+    report(
+        f"Best clustering found with score: {state['best_score']:.2f}. Creating playlists...",
+        90,
+    )
+
+    final_playlists_with_details = _name_and_prepare_playlists(
+        best_result,
+        ai_model_provider_param,
+        ollama_server_url_param,
+        ollama_model_name_param,
+        openai_server_url_param,
+        openai_model_name_param,
+        openai_api_key_param,
+        gemini_api_key_param,
+        gemini_model_name_param,
+        mistral_api_key_param,
+        mistral_model_name_param,
+    )
+
+    ctx = registry.context_for(target_server['server_id']) if target_server else None
+    report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
+    with server_context.use_server(ctx):
+        if CLUSTERING_CLEANING:
+            delete_automatic_playlists()
+        for name, songs_with_details in final_playlists_with_details.items():
+            item_ids = [item_id for item_id, _, _ in songs_with_details]
+            try:
+                create_playlist(name, item_ids)
+            except ValueError:
+                logger.warning(
+                    "Playlist '%s' skipped on server '%s': none of its "
+                    "tracks are available there.",
+                    name,
+                    server_name,
+                )
+
+    return 'success', {
+        'playlists': final_playlists_with_details,
+        'best_score': state['best_score'],
+        'best_params': (state['best_result'] or {}).get('parameters'),
+    }
 
 
 def _prepare_genre_map(lightweight_rows):
@@ -848,6 +994,12 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
             del state_dict["active_jobs"][job_id]
 
     all_child_tasks = get_child_tasks_from_db(parent_task_id)
+    job_prefix = state_dict.get("job_prefix")
+    if job_prefix:
+        all_child_tasks = [
+            t for t in all_child_tasks
+            if str(t.get('task_id', '')).startswith(job_prefix + "_batch_")
+        ]
 
     jobs_for_status_check = []
     for task_info in all_child_tasks:
@@ -1010,7 +1162,7 @@ def _launch_batch_job(
         enable_embeddings,
     ) = args
 
-    batch_job_id = f"{parent_task_id}_batch_{batch_idx}"
+    batch_job_id = f"{state_dict.get('job_prefix') or parent_task_id}_batch_{batch_idx}"
     start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
     num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
 

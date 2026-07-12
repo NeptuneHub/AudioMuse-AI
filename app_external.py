@@ -39,19 +39,14 @@ def _resolve_external_id(raw_id):
 
     External callers (media-server plugins, scripts) send THEIR server's track
     id; the optional ``server`` parameter (unique display name or internal id)
-    says which server that is - default when absent. Canonical ids pass through
-    unchanged via the identity fallback. Raises ValueError on an unknown server.
+    says which server that is - default when absent. The shared input resolver
+    guarantees canonical or unknown ids pass through unchanged on EVERY server,
+    so external endpoints resolve exactly like internal ones. Raises ValueError
+    on an unknown server.
     """
-    from app_server_context import resolve_request_server_id
-    from tasks.mediaserver import registry
+    from app_server_context import resolve_input_item_id
 
-    server_id = resolve_request_server_id()
-    try:
-        mapping = registry.reverse_translate_ids([raw_id], server_id)
-    except Exception:
-        logger.exception("External id resolution failed; using the id as-is")
-        return str(raw_id)
-    return mapping.get(str(raw_id))
+    return resolve_input_item_id(raw_id)
 
 
 @external_bp.route('/get_score', methods=['GET'])
@@ -225,23 +220,14 @@ def search_tracks_endpoint():
         return jsonify({"error": "Query must be at least 1 character long"}), 400
 
     try:
-        from app_server_context import resolve_request_server_id
+        from app_server_context import resolve_request_server_id, selected_server_scope
         from tasks.mediaserver import registry
 
         try:
             server_id = resolve_request_server_id()
+            selected_server_id, include_legacy = selected_server_scope()
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        selected_server_id = server_id
-        include_legacy = False
-        try:
-            default_id = registry.get_default_server_id()
-            selected_server_id = server_id or default_id
-            include_legacy = selected_server_id == default_id
-        except Exception:
-            logger.exception(
-                "Default server resolution failed; searching without availability filter"
-            )
         results = search_tracks_unified(
             search_query,
             server_id=selected_server_id,

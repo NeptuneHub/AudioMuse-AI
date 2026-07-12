@@ -892,6 +892,10 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)"
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
+                "WHERE item_id NOT LIKE 'fp\\_%'"
+            )
 
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"
@@ -1154,7 +1158,6 @@ def init_db():
                     creds JSONB NOT NULL DEFAULT '{}'::jsonb,
                     music_libraries TEXT NOT NULL DEFAULT '',
                     is_default BOOLEAN NOT NULL DEFAULT FALSE,
-                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1163,6 +1166,7 @@ def init_db():
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_servers_single_default "
                 "ON music_servers (is_default) WHERE is_default"
             )
+            cur.execute("ALTER TABLE music_servers DROP COLUMN IF EXISTS enabled")
             cur.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'music_servers' AND column_name = 'track_count'"
@@ -1224,8 +1228,8 @@ def init_db():
                 _seed_type = config.MEDIASERVER_TYPE
                 cur.execute(
                     "INSERT INTO music_servers "
-                    "(server_id, name, server_type, creds, music_libraries, is_default, enabled) "
-                    "VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)",
+                    "(server_id, name, server_type, creds, music_libraries, is_default) "
+                    "VALUES (%s, %s, %s, %s, %s, TRUE)",
                     (uuid.uuid4().hex, _default_server_name(_seed_type),
                      _seed_type, Json(creds_from_config(_seed_type)), config.MUSIC_LIBRARIES or ""),
                 )
