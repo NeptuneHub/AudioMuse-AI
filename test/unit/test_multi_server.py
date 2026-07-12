@@ -635,26 +635,26 @@ class TestEmbeddingCanonicalization:
         from tasks import audio_fingerprint as afp
         from tasks import fingerprint_canonicalize as canonicalize
 
-        chromaprint = 'AQAAE0mUaEkSRZEGAA'
+        embedding = [0.5, -1.25, 2.0, 0.75]
         cursor = MagicMock()
         cursor.fetchall.side_effect = [
-            [('legacy-provider-id', chromaprint)],
             [],
+            [('legacy-provider-id', embedding)],
         ]
         mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
         assert mapping == {
-            'legacy-provider-id': afp.chromaprint_canonical_id(chromaprint)
+            'legacy-provider-id': afp.embedding_canonical_id(embedding)
         }
         assert duplicate_mapping == {}
 
     def test_duplicate_embeddings_keep_one_canonical_row(self):
         from tasks import fingerprint_canonicalize as canonicalize
 
-        chromaprint = 'AQAAE0mUaEkSRZEGAA'
+        embedding = [0.5, -1.25, 2.0, 0.75]
         cursor = MagicMock()
         cursor.fetchall.side_effect = [
-            [('copy-one', chromaprint), ('copy-two', chromaprint)],
             [],
+            [('copy-one', embedding), ('copy-two', embedding)],
         ]
         mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
         assert list(mapping.keys()) == ['copy-one']
