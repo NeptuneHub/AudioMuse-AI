@@ -20,21 +20,29 @@ normalized path, path tail, and metadata, storing confident pairs in
 track_server_map. Unmatched secondary tracks are simply left unmapped - the
 default server's catalogue is never touched or reduced. Already-mapped tracks
 are skipped, so re-sweeps are incremental and an aligned server is a no-op.
+Catalogue fetches run bound to the target server so its own library filter
+applies, and a full-refresh sweep (the manual sweep/align actions) prunes
+mappings whose provider track is no longer on that server - only map rows are
+removed, never analyzed tracks.
 
 Main Features:
 * ``sweep_server`` / ``sweep_all_secondary_servers`` RQ entry points with live
   percentage progress, one-line status, and cooperative cancellation.
 * Zero-download alignment: canonical ids from stored embeddings, matching from
   catalogue metadata only.
+* Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
+  per-server counts stay truthful.
 """
 
 import logging
 import time
 import uuid
 
+from psycopg2.extras import execute_values
+
 from database import connect_raw
 from tasks import provider_probe
-from tasks.mediaserver import registry
+from tasks.mediaserver import context as ms_context, registry
 from tasks.provider_migration_matcher import match_tracks
 
 logger = logging.getLogger(__name__)
@@ -227,12 +235,48 @@ def _write_matches(db, server_id, result):
     return registry.upsert_track_maps(server_id, mapping, conn=db)
 
 
-def _sweep_one(server, db, report, base, span, cancel):
+def _prune_stale_mappings(db, server_id, target_tracks):
+    """Remove map rows whose provider track is no longer on (or is filtered out
+    of) the server. Only track_server_map shrinks; the catalogue never does.
+    Skipped entirely when the fetch produced nothing, so a fetch problem can
+    never wipe a server's mappings."""
+    present = [(str(t['id']),) for t in target_tracks if t.get('id')]
+    if not present:
+        return 0
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS sweep_present_ids "
+            "(provider_track_id TEXT PRIMARY KEY)"
+        )
+        cur.execute("DELETE FROM sweep_present_ids")
+        execute_values(
+            cur,
+            "INSERT INTO sweep_present_ids (provider_track_id) VALUES %s "
+            "ON CONFLICT DO NOTHING",
+            present,
+            page_size=5000,
+        )
+        cur.execute(
+            "DELETE FROM track_server_map t WHERE t.server_id = %s "
+            "AND NOT EXISTS (SELECT 1 FROM sweep_present_ids p "
+            "WHERE p.provider_track_id = t.provider_track_id)",
+            (server_id,),
+        )
+        removed = cur.rowcount
+        cur.execute("DROP TABLE sweep_present_ids")
+        db.commit()
+        return removed
+    finally:
+        cur.close()
+
+
+def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     stype = server['server_type']
     server_id = server['server_id']
     total_local = _local_track_count(db)
     unmapped = _unmapped_local_rows(db, server_id)
-    if not unmapped:
+    if not unmapped and not full_refresh:
         report(
             f"{server['name']} is already aligned ({total_local} tracks mapped); nothing to do.",
             base + span,
@@ -244,8 +288,21 @@ def _sweep_one(server, db, report, base, span, cancel):
         }
 
     report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
-    target_tracks = provider_probe.fetch_all_tracks(stype, server['creds'])
+    with ms_context.use_server(server):
+        target_tracks = provider_probe.fetch_all_tracks(
+            stype, server['creds'], apply_filter=True
+        )
     cancel()
+
+    pruned = 0
+    if full_refresh:
+        pruned = _prune_stale_mappings(db, server_id, target_tracks)
+        if pruned:
+            logger.info(
+                "Multi-server sweep for '%s': pruned %d stale mappings no longer on the server",
+                server['name'], pruned,
+            )
+            unmapped = _unmapped_local_rows(db, server_id)
 
     already_mapped = _already_mapped_ids(db, server_id)
     candidates = [
@@ -270,6 +327,7 @@ def _sweep_one(server, db, report, base, span, cancel):
         'local_tracks': total_local,
         'unmapped': len(unmapped),
         'matched': written,
+        'pruned': pruned,
         'tier_counts': result['tier_counts'],
     }
 
@@ -297,13 +355,15 @@ def sweep_server(server_id, task_id=None, conn=None):
         report(f"Starting alignment for {server['name']}...", 2, task_state=TASK_STATUS_STARTED)
         _canonicalize_catalog(report, 5, 55)
         cancel()
-        summary = _sweep_one(server, db, report, 60, 40, cancel)
+        summary = _sweep_one(server, db, report, 60, 40, cancel, full_refresh=True)
         if summary.get('aligned'):
             message = f"{server['name']} is already aligned; nothing to do."
         else:
             message = (
                 f"Alignment complete: {summary['matched']}/{summary['unmapped']} pending tracks "
-                f"matched on {server['name']}."
+                f"matched on {server['name']}"
+                + (f", {summary['pruned']} stale mappings removed." if summary.get('pruned')
+                   else ".")
             )
         report(message, 100, task_state=TASK_STATUS_SUCCESS)
         return summary
@@ -325,13 +385,19 @@ def sweep_server(server_id, task_id=None, conn=None):
             db.close()
 
 
-def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None):
+def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_refresh=None):
     """Align enabled servers, optionally limited to ``server_ids``.
 
     The optional filter lets union analysis align only sources that have not had
     their own analysis phase yet. Existing callers with no filter still sweep all.
+    ``full_refresh`` defaults to True for unfiltered (manual) sweeps so aligned
+    servers are still re-fetched and their stale mappings pruned, and to False
+    for the filtered post-phase sweeps analysis runs, which only need matching.
     """
     import config
+
+    if full_refresh is None:
+        full_refresh = server_ids is None
 
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
@@ -361,7 +427,12 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None):
         results = []
         for i, server in enumerate(servers):
             try:
-                results.append(_sweep_one(server, db, report, 60 + i * span, span, cancel))
+                results.append(
+                    _sweep_one(
+                        server, db, report, 60 + i * span, span, cancel,
+                        full_refresh=full_refresh,
+                    )
+                )
             except SweepCancelled:
                 report("Alignment cancelled; matches found so far are kept.", 100,
                        task_state=config.TASK_STATUS_REVOKED)

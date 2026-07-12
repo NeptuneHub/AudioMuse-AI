@@ -515,7 +515,7 @@ class TestSweepAlignment:
         fetched = []
         monkeypatch.setattr(
             sync.provider_probe, 'fetch_all_tracks',
-            lambda *a: fetched.append(1) or [],
+            lambda *a, **k: fetched.append(1) or [],
         )
         summary = sync._sweep_one(
             {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
@@ -535,7 +535,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
         monkeypatch.setattr(sync, '_unmapped_local_rows', lambda conn, sid: rows)
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
-        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a: target)
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
         written = {}
         monkeypatch.setattr(
             sync, '_write_matches',
@@ -546,4 +546,36 @@ class TestSweepAlignment:
             MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
         )
         assert summary['matched'] == 1
+        assert summary['pruned'] == 0
         assert written == {'fp_1': 'nav1'}
+
+    def test_full_refresh_binds_server_filters_and_prunes(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
+        monkeypatch.setattr(sync, '_unmapped_local_rows', lambda conn, sid: [])
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        seen = {}
+
+        def fake_fetch(stype, creds, apply_filter=False):
+            seen['apply_filter'] = apply_filter
+            seen['bound_server'] = sync.ms_context.active_server_id()
+            return [{'id': 'nav1'}]
+
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', fake_fetch)
+
+        def fake_prune(db, sid, tracks):
+            seen['pruned_for'] = sid
+            return 2
+
+        monkeypatch.setattr(sync, '_prune_stale_mappings', fake_prune)
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        summary = sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1',
+             'creds': {}, 'music_libraries': 'Rock', 'is_default': False, 'enabled': True},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None, full_refresh=True,
+        )
+        assert seen['apply_filter'] is True
+        assert seen['bound_server'] == 's1'
+        assert seen['pruned_for'] == 's1'
+        assert summary['pruned'] == 2

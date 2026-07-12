@@ -76,9 +76,9 @@ def _normalize_provider_type(provider_type):
     return t
 
 
-def fetch_all_tracks(provider_type, creds):
+def fetch_all_tracks(provider_type, creds, apply_filter=False):
     t = _normalize_provider_type(provider_type)
-    items = mediaserver.get_all_songs(user_creds=creds, provider_type=t, apply_filter=False)
+    items = mediaserver.get_all_songs(user_creds=creds, provider_type=t, apply_filter=apply_filter)
     return [_normalize_track(item) for item in items or []]
 
 

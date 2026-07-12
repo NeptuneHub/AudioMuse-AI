@@ -187,29 +187,44 @@ def _collect_task_metrics(cur):
 
 def _collect_music_server_metrics(cur):
     """Per-configured-server matched-track counts for the Music Server Status
-    section. The default server owns the whole analyzed catalogue; secondary
-    servers count their rows in track_server_map. Empty list when the registry
-    tables do not exist yet or only one server is configured upstream."""
+    section. The catalogue is the UNION of all servers, so every server (the
+    default included) counts its own track_server_map rows; the default also
+    counts legacy provider-keyed rows that predate canonicalization, mirroring
+    the availability-mask semantics. Empty list when the registry tables do
+    not exist yet."""
     servers = []
     try:
         if not _table_exists(cur, 'music_servers'):
             return servers
         total = _safe_count(cur, "SELECT COUNT(*) FROM score")
         cur.execute(
-            "SELECT ms.name, ms.server_type, ms.is_default, ms.enabled, COALESCE(m.cnt, 0) "
+            "SELECT ms.server_id, ms.name, ms.server_type, ms.is_default, ms.enabled, "
+            "COALESCE(m.cnt, 0) "
             "FROM music_servers ms LEFT JOIN "
             "(SELECT server_id, COUNT(*) AS cnt FROM track_server_map GROUP BY server_id) m "
             "ON m.server_id = ms.server_id "
             "ORDER BY ms.is_default DESC, ms.name ASC"
         )
         for r in cur.fetchall():
+            matched = int(r[5] or 0)
+            if r[3]:
+                # Legacy rows keep their provider id and are implicitly on the
+                # default server until canonicalization maps them explicitly.
+                matched += _safe_count(
+                    cur,
+                    "SELECT COUNT(*) FROM score s "
+                    "WHERE s.item_id NOT LIKE 'fp\\_%%' AND NOT EXISTS ("
+                    "SELECT 1 FROM track_server_map m "
+                    "WHERE m.item_id = s.item_id AND m.server_id = %s)",
+                    (r[0],),
+                )
             servers.append(
                 {
-                    'name': r[0],
-                    'server_type': r[1],
-                    'is_default': bool(r[2]),
-                    'enabled': bool(r[3]),
-                    'matched_songs': total if r[2] else int(r[4] or 0),
+                    'name': r[1],
+                    'server_type': r[2],
+                    'is_default': bool(r[3]),
+                    'enabled': bool(r[4]),
+                    'matched_songs': min(matched, total) if total else matched,
                     'total_songs': total,
                 }
             )
