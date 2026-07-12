@@ -6,30 +6,30 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Align the analyzed catalogue with secondary media servers.
+"""Setup-time alignment of the analyzed catalogue with media servers.
+
+The EASY match: a pure metadata pairing of a server's catalogue against tracks
+the shared database already holds under their canonical embedding-hash ids -
+normalized path, path tail, and metadata tiers, NEVER a download or an
+analysis. It exists for the initial setup moment (adding a server, the Align
+button): it gives an immediate mapping for content both sides already share.
+Day-to-day alignment does not need it - analysis itself resolves every track to
+the shared catalogue and records its server mapping at analyze time.
 
 Runs as an RQ job and reports progress into ``task_status`` (task type
-``server_sweep``) so the setup wizard can show a live bar; it is cancellable via
-the standard /api/cancel endpoint (cooperative checks). The sweep NEVER analyzes
-or downloads songs. It first ensures the catalogue uses the canonical
-Chromaprint-hash ids (a database relabel after analysis has backfilled legacy
-Chromaprints, so a
-legacy install is fixed the moment a second server is added), then matches each
-secondary server's catalogue against the still-unmapped analyzed tracks by
-normalized path, path tail, and metadata, storing confident pairs in
-track_server_map. Unmatched secondary tracks are simply left unmapped - the
-default server's catalogue is never touched or reduced. Already-mapped tracks
-are skipped, so re-sweeps are incremental and an aligned server is a no-op.
-Catalogue fetches run bound to the target server so its own library filter
-applies, and a full-refresh sweep (the manual sweep/align actions) prunes
-mappings whose provider track is no longer on that server - only map rows are
-removed, never analyzed tracks.
+``server_sweep``) so the setup wizard can show a live bar; it is cancellable
+via the standard /api/cancel endpoint (cooperative checks). Unmatched tracks
+are simply left unmapped - the analyzed catalogue is never touched or reduced.
+Already-mapped tracks are skipped, so re-sweeps are incremental. Catalogue
+fetches run bound to the target server so its own library filter applies, and
+a full-refresh sweep (the manual sweep/align actions) prunes mappings whose
+provider track is no longer on that server - only map rows are removed, never
+analyzed tracks.
 
 Main Features:
 * ``sweep_server`` / ``sweep_all_secondary_servers`` RQ entry points with live
   percentage progress, one-line status, and cooperative cancellation.
-* Zero-download alignment: canonical ids from stored embeddings, matching from
-  catalogue metadata only.
+* Zero-download alignment: matching from catalogue metadata only.
 * Bounded memory: the target catalogue is condensed into a slim CandidateIndex
   and the local catalogue streams through it in keyset-paginated chunks with
   per-chunk upserts, so neither side is ever fully materialized at once.
@@ -41,10 +41,6 @@ Main Features:
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
   per-server counts stay truthful; pruning is skipped when the fetch looks
   partial so a transient provider error never mass-deletes valid mappings.
-* Optional per-run ``catalog_cache`` lets callers reuse an already fetched
-  server catalogue instead of re-fetching it; the cache holds at most
-  ``MULTISERVER_CATALOG_CACHE_MAX_TRACKS`` tracks across all servers so
-  analysis-time memory stays bounded (oversized catalogues are refetched).
 """
 
 import json
@@ -54,7 +50,6 @@ import uuid
 
 from psycopg2.extras import execute_values
 
-from config import MULTISERVER_CATALOG_CACHE_MAX_TRACKS
 from database import connect_raw
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
@@ -274,45 +269,6 @@ def _resolve_task_id(task_id):
     return str(uuid.uuid4())
 
 
-def _canonicalize_catalog(report, base, span):
-    """Ensure item_ids with stored Chromaprints use canonical hash ids.
-
-    The relabel itself is pure DB work (seconds), but the first run on a legacy
-    install also rebuilds every similarity index, which takes a while on a large
-    library - so each canonicalization/rebuild step advances the progress bar
-    through the ``base``..``base+span`` window. A canonicalization or rebuild
-    failure never aborts the sweep: the relabel is transactional (on failure the
-    ids are unchanged, and a rebuild-only failure leaves mappings unaffected),
-    so matching safely continues with the current catalogue ids."""
-    from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
-
-    step = {'n': 0}
-
-    def log_fn(message, _progress=None):
-        step['n'] += 1
-        pct = min(base + span * 0.1 + step['n'] * (span * 0.85 / 12), base + span * 0.95)
-        report(message, pct)
-
-    report("Checking catalogue ids (Chromaprint hash)...", base)
-    try:
-        result = canonicalize_fingerprinted_ids(rebuild=True, log_fn=log_fn)
-    except Exception:
-        logger.exception("Catalogue canonicalization failed; sweep continues with current ids")
-        report(
-            "Canonicalization failed; continuing alignment with current catalogue ids.",
-            base + span,
-        )
-        return
-    relabelled = result.get('relabelled', 0) if isinstance(result, dict) else 0
-    if relabelled:
-        report(
-            f"Relabelled {relabelled} tracks to canonical ids and rebuilt the indexes.",
-            base + span,
-        )
-    else:
-        report("Catalogue ids already canonical.", base + span)
-
-
 def _unmapped_local_count(conn, server_id):
     """How many analyzed tracks still lack a mapping for ``server_id``.
 
@@ -466,7 +422,7 @@ def _store_server_track_count(db, server_id, track_count):
         cur.close()
 
 
-def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catalog_cache=None):
+def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     stype = server['server_type']
     server_id = server['server_id']
     if server.get('music_libraries') and stype in ('jellyfin', 'emby', 'lyrion'):
@@ -488,26 +444,11 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catal
             'matched': 0, 'aligned': True, 'tier_counts': {},
         }
 
-    if catalog_cache is not None and server_id in catalog_cache:
-        report(f"Reusing fetched catalogue for {server['name']} ({stype})...", base + span * 0.1)
-        target_tracks = catalog_cache[server_id]
-    else:
-        report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
-        with ms_context.use_server(server):
-            target_tracks = provider_probe.fetch_all_tracks(
-                stype, server['creds'], apply_filter=True
-            )
-        if catalog_cache is not None:
-            cached_total = sum(len(v) for v in catalog_cache.values())
-            if cached_total + len(target_tracks) <= MULTISERVER_CATALOG_CACHE_MAX_TRACKS:
-                catalog_cache[server_id] = target_tracks
-            else:
-                logger.info(
-                    "Catalogue for '%s' (%d tracks) not cached to bound memory "
-                    "(%d already cached, cap %d); it will be refetched if needed",
-                    server['name'], len(target_tracks), cached_total,
-                    MULTISERVER_CATALOG_CACHE_MAX_TRACKS,
-                )
+    report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
+    with ms_context.use_server(server):
+        target_tracks = provider_probe.fetch_all_tracks(
+            stype, server['creds'], apply_filter=True
+        )
     cancel()
 
     target_total = len(target_tracks)
@@ -528,8 +469,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catal
         t for t in target_tracks
         if t.get('id') and str(t.get('id')) not in already_mapped
     )
-    if catalog_cache is None or server_id not in catalog_cache:
-        target_tracks = None
+    target_tracks = None
     report(
         f"Aligning {server['name']}: {unmapped_count} tracks to match "
         f"({total_local - unmapped_count} already aligned)...",
@@ -594,9 +534,8 @@ def sweep_server(server_id, task_id=None, conn=None):
             return {'server_id': server_id, 'skipped': 'disabled', 'matched': 0}
 
         report(f"Starting alignment for {server['name']}...", 2, task_state=TASK_STATUS_STARTED)
-        _canonicalize_catalog(report, 5, 55)
         cancel()
-        summary = _sweep_one(server, db, report, 60, 40, cancel, full_refresh=True)
+        summary = _sweep_one(server, db, report, 5, 95, cancel, full_refresh=True)
         if summary.get('aligned'):
             message = f"{server['name']} is already aligned; nothing to do."
         else:
@@ -626,17 +565,12 @@ def sweep_server(server_id, task_id=None, conn=None):
             db.close()
 
 
-def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_refresh=None,
-                                catalog_cache=None):
+def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_refresh=None):
     """Align enabled servers, optionally limited to ``server_ids``.
 
-    The optional filter lets union analysis align only sources that have not had
-    their own analysis phase yet. Existing callers with no filter still sweep all.
-    ``full_refresh`` defaults to True for unfiltered (manual) sweeps so aligned
-    servers are still re-fetched and their stale mappings pruned, and to False
-    for the filtered post-phase sweeps analysis runs, which only need matching.
-    ``catalog_cache`` (a per-run dict) lets a caller that already fetched a
-    server's catalogue share it with the sweep instead of re-fetching.
+    ``full_refresh`` defaults to True for unfiltered (manual/setup) sweeps so
+    aligned servers are still re-fetched and their stale mappings pruned;
+    callers passing an explicit ``server_ids`` subset get matching only.
     """
     import config
 
@@ -660,21 +594,20 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
             f"Starting alignment for {len(servers)} selected server(s)...",
             2, task_state=TASK_STATUS_STARTED,
         )
-        _canonicalize_catalog(report, 5, 55)
         cancel()
         if not servers:
-            report("Catalogue ids up to date; no selected servers to align.", 100,
+            report("No selected servers to align.", 100,
                    task_state=TASK_STATUS_SUCCESS)
             return []
 
-        span = 40 / len(servers)
+        span = 95 / len(servers)
         results = []
         for i, server in enumerate(servers):
             try:
                 results.append(
                     _sweep_one(
-                        server, db, report, 60 + i * span, span, cancel,
-                        full_refresh=full_refresh, catalog_cache=catalog_cache,
+                        server, db, report, 5 + i * span, span, cancel,
+                        full_refresh=full_refresh,
                     )
                 )
             except SweepCancelled:

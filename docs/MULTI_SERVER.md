@@ -44,15 +44,27 @@ Open the **Setup** page (admin only). Under **Music Servers** you can:
 Secrets (tokens, passwords) are never sent back to the browser; leave a secret
 field blank when editing to keep the stored value.
 
-## How analysis matches additional servers
+## How analysis keeps servers aligned (no sweeps)
 
 Analysis processes every enabled server sequentially, with the **default**
-server first. After each source phase a matching sweep aligns the canonical
-catalogue to the servers that have not had their own phase yet, and a final
-alignment pass across all enabled servers runs once the last phase completes,
-before the shared indexes are rebuilt. Tracks already mapped to an analyzed
-canonical id are skipped, while tracks unique to the next server are analyzed
-once and added to the union catalogue. Alignment uses these tiers:
+server first, and NEVER runs an alignment sweep: every track resolves against
+the shared catalogue at analyze time.
+
+Per server, per album: a track whose provider id already has a mapping is
+skipped outright. An unmapped track is downloaded and run through MusiCNN; its
+embedding hash id is then checked against the catalogue (Hamming-tolerant). If
+the content is already there - analyzed earlier from another server - the track
+just gains a `track_server_map` row for this server and everything else is
+skipped. Only genuinely new content runs the full pipeline (CLAP, lyrics) and
+is stored once under its hash id. The indexes are rebuilt once at the end of
+the run. Servers therefore stay aligned by construction.
+
+## The setup-time Align (easy match, zero downloads)
+
+The **Align music servers** action (and the per-server Sweep) exists for the
+initial setup moment: it instantly maps a server's catalogue onto tracks the
+database already holds, using pure metadata matching - no downloads, no
+analysis, no id calculation. Matching uses these tiers:
 
 1. Normalised file path
 2. Path tail (last path components)
@@ -76,11 +88,7 @@ Matching runs in bounded memory even on very large libraries: the fetched
 catalogue is condensed into a slim lookup index and released, and the local
 catalogue streams through it in chunks (20k tracks at a time) with matches
 written after every chunk, so neither side is ever held fully in RAM and a
-cancelled sweep keeps everything matched so far. During union analysis, fetched
-catalogues are cached for reuse across alignment passes only up to
-`MULTISERVER_CATALOG_CACHE_MAX_TRACKS` total cached tracks (default 300000);
-larger catalogues are refetched when needed instead of cached, keeping
-analysis-time memory bounded.
+cancelled sweep keeps everything matched so far.
 
 Adding or editing servers back to back never leaves a stale alignment running:
 each save cancels any queued or running sweep (matches found so far are kept)
@@ -156,24 +164,38 @@ All under `/api/servers`. Listing is available to any authenticated user
 | POST | `/api/servers/test` | Test a connection (before saving) |
 | POST | `/api/servers/<id>/sweep` | Re-run the matching sweep for one server |
 
-## Stable content id from Chromaprint
+## Content id from the MusiCNN embedding
 
-Every analyzed track is downloaded from its source server when its Chromaprint
-is missing. The bundled `fpcalc` tool computes the Chromaprint; the complete,
-unchanged value is stored in `score.chromaprint`. A SHA-256 digest of that value
-becomes the stable `fp_<hex>` `score.item_id`. MusiCNN/CLAP model changes cannot
-mint a new content id.
+The canonical `score.item_id` IS the content fingerprint: the analysis
+embedding every track already gets is projected onto 64 fixed seeded
+hyperplanes and the sign bits form a 64-bit SimHash, encoded as `fp_<16hex>`.
+Nothing extra is downloaded, no external binary is needed, and no extra column
+is stored - the id itself encodes the hash. The hash is similarity-preserving:
+the same song analyzed from two servers (different file, encoder, bitrate)
+lands within a few bits, so catalogue membership is checked with a
+Hamming-tolerant lookup rather than exact equality, and the two copies become
+ONE row with two server mappings.
 
-Legacy rows are backfilled by the next analysis. Relabelling then becomes a
-database-only operation. The media server's real id is preserved in
-`track_server_map` and translated back whenever a playlist is sent to a server.
-If two provider rows produce the same Chromaprint id, their analysis rows are
-merged and both provider mappings are retained.
+Legacy installs migrate ONCE, at Flask container startup: item_ids are
+relabelled from the already-stored embeddings (a pure database operation,
+seconds even on 180k tracks) and the index rebuild is queued in the
+background. Every later boot is an instant no-op. The media server's real id
+is preserved in `track_server_map` and translated back whenever a playlist is
+sent to a server. Rows whose hash collides with an existing catalogue row are
+the same content and are merged into it, keeping every server mapping.
 
-Cross-server matching uses normalized path, path tail, and metadata tiers; in
-practice these align 99%+ of a same-library pair instantly with zero downloads.
 Tracks unavailable on the selected server are filtered from results and are
 never sent to that provider as canonical ids.
+
+## Cleaning never shrinks the catalogue
+
+The cleaning task fetches each enabled server's current tracks and removes
+ONLY that server's stale `track_server_map` rows. Analysis rows, embeddings
+and other servers' mappings are NEVER deleted: a song that disappeared from
+one server keeps playing from the others, and a song on no server at all stays
+in the catalogue as unbound (hidden by the per-server availability filter, and
+re-bound automatically if it ever comes back). A server whose library cannot
+be fully read is skipped, so a partial view can never unbind valid mappings.
 
 ## One shared index, bounded build memory
 
@@ -182,10 +204,12 @@ The index abstraction maintains a small cached availability mask for the active
 server and applies it before ranking candidates. Existing search, Path, Alchemy,
 Map and similarity call sites continue using the same index API.
 
-Index construction caps the clustering training sample (50,000 rows by default),
-writes completed cells to PostgreSQL incrementally instead of retaining every
-cell in RAM, and uses a temporary disk-backed matrix for SemGrove. The cap is
-configurable with `IVF_TRAIN_SAMPLE_MAX`.
+Index construction trains k-means on a sample that scales with the library
+(50 vectors per cell), streamed through the trainer in small batches so build
+RAM stays flat; completed cells are written to PostgreSQL incrementally instead
+of being retained in RAM, and SemGrove merges through a temporary disk-backed
+matrix. There is no training-sample cap: quality scales with the library, and
+hardware sizing for very large libraries is the operator's call.
 
 ## Scheduled tasks
 

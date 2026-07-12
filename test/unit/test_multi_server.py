@@ -556,11 +556,8 @@ class TestAnalysisCanonicalResolution:
             existing_ids,
         )
         monkeypatch.setattr(helper, 'get_missing_ids_in_table', lambda table, ids: set())
-        monkeypatch.setattr(
-            helper, 'get_missing_chromaprint_ids', lambda ids: {'provider-new'}
-        )
 
-        existing, needs_clap, needs_lyrics, needs_chromaprint = helper.compute_album_needs(
+        existing, needs_clap, needs_lyrics = helper.compute_album_needs(
             tracks, False, False, server_id='server-b'
         )
 
@@ -568,7 +565,6 @@ class TestAnalysisCanonicalResolution:
         assert existing == 1
         assert needs_clap is False
         assert needs_lyrics is False
-        assert needs_chromaprint is True
 
 
 class TestSingleTranslationPoint:
@@ -787,7 +783,6 @@ class TestSweepAlignment:
              'music_libraries': '', 'is_default': False, 'enabled': True},
         ]
         monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
-        monkeypatch.setattr(sync, '_canonicalize_catalog', lambda report, base, span: None)
         reports = []
         monkeypatch.setattr(
             sync, '_make_reporter',
@@ -801,8 +796,7 @@ class TestSweepAlignment:
             sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
         )
 
-        def fake_sweep(server, db, report, base, span, cancel,
-                       full_refresh=False, catalog_cache=None):
+        def fake_sweep(server, db, report, base, span, cancel, full_refresh=False):
             if server['server_id'] == 's1':
                 raise RuntimeError('provider down')
             return {'server_id': server['server_id'], 'matched': 3}
@@ -898,35 +892,7 @@ class TestSweepAlignment:
         assert seen['present_ids'] == {'nav1'}
         assert summary['pruned'] == 2
 
-    def test_catalog_cache_avoids_refetch(self, monkeypatch):
-        from tasks import multiserver_sync as sync
-
-        rows = [{
-            'item_id': 'fp_1', 'title': 't', 'author': 'a', 'album': 'al',
-            'album_artist': 'a', 'file_path': '/x.flac',
-        }]
-        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
-        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([rows]))
-        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
-        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
-        calls = {'n': 0}
-
-        def fake_fetch(*a, **k):
-            calls['n'] += 1
-            return [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
-
-        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', fake_fetch)
-        cache = {}
-        server = {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}}
-        sync._sweep_one(server, MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
-                        catalog_cache=cache)
-        sync._sweep_one(server, MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
-                        catalog_cache=cache)
-        assert calls['n'] == 1
-        assert 's1' in cache
-
-    def test_catalog_cache_cap_skips_storing_and_releases_catalogue(self, monkeypatch):
+    def test_fetched_catalogue_is_released_after_indexing(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         class TrackList(list):
@@ -940,7 +906,6 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
-        monkeypatch.setattr(sync, 'MULTISERVER_CATALOG_CACHE_MAX_TRACKS', 2)
         holder = {}
 
         def fake_fetch(*a, **k):
@@ -961,13 +926,10 @@ class TestSweepAlignment:
             return iter([rows])
 
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', fake_iter)
-        cache = {}
         sync._sweep_one(
             {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
             MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
-            catalog_cache=cache,
         )
-        assert cache == {}
         assert released.get('catalogue_freed') is True
 
     def test_chunked_matching_never_maps_one_provider_track_twice(self, monkeypatch):

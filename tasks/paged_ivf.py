@@ -1393,11 +1393,16 @@ def build_and_store_paged_ivf(
     base_nlist = int(round(8.0 * np.sqrt(max(1, n_items))))
     nlist = max(1, min(config.IVF_NLIST_MAX, base_nlist, n_items))
 
-    sample_n = min(
+    sample_n = min(n_items, config.IVF_TRAIN_POINTS_PER_CELL * nlist)
+    logger.info(
+        "IVF build '%s': training %d cells on %d sampled vectors (N=%d, dim=%d).",
+        index_name,
+        nlist,
+        sample_n,
         n_items,
-        config.IVF_TRAIN_POINTS_PER_CELL * nlist,
-        max(1, config.IVF_TRAIN_SAMPLE_MAX),
+        dim,
     )
+    km = MiniBatchKMeans(n_clusters=nlist, batch_size=10000, n_init=1, max_iter=25, random_state=0)
     if sample_n < n_items:
         sample_keys = np.fromiter(
             (
@@ -1413,22 +1418,15 @@ def build_and_store_paged_ivf(
             count=n_items,
         )
         sample_idx = np.sort(np.argpartition(sample_keys, sample_n - 1)[:sample_n])
-        sample = train_mat[sample_idx]
+        del sample_keys
+        init_take = int(min(sample_n, max(10000, 3 * nlist)))
+        km.partial_fit(train_mat[sample_idx[:init_take]])
+        for start in range(init_take, sample_n, 10000):
+            km.partial_fit(train_mat[sample_idx[start : start + 10000]])
+        del sample_idx
     else:
-        sample = train_mat
-
-    logger.info(
-        "IVF build '%s': training %d cells on %d sampled vectors (N=%d, dim=%d).",
-        index_name,
-        nlist,
-        sample_n,
-        n_items,
-        dim,
-    )
-    km = MiniBatchKMeans(n_clusters=nlist, batch_size=10000, n_init=1, max_iter=25, random_state=0)
-    km.fit(sample)
+        km.fit(train_mat)
     centroids = km.cluster_centers_.astype(np.float32)
-    del sample
 
     labels = np.empty(n_items, dtype=np.int64)
     for start in range(0, n_items, 20000):

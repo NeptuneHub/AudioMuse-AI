@@ -260,6 +260,29 @@ if not _is_worker:
         # init_db migrates legacy app_config rows into it and deletes them, so
         # no config<->registry sync is needed here anymore.
 
+        # One-time legacy catalogue migration, Flask startup ONLY: relabel any
+        # provider-keyed (or retired-scheme) rows to the canonical embedding-hash
+        # id. Pure DB work from stored embeddings (seconds); an instant no-op on
+        # every later boot. The index rebuild is enqueued, not run inline, so a
+        # first boot after upgrade does not block on it.
+        try:
+            from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
+            _relabel = canonicalize_fingerprinted_ids(rebuild=False)
+            if _relabel.get('relabelled'):
+                app.logger.info(
+                    "Startup migration relabelled %s catalogue ids; enqueuing index rebuild.",
+                    _relabel['relabelled'],
+                )
+                from app_helper import rq_queue_default as _rq_default
+                _rq_default.enqueue(
+                    'tasks.analysis.rebuild_all_indexes_task', job_timeout=-1
+                )
+        except Exception as _migrate_exc:
+            app.logger.warning(
+                "Startup catalogue-id migration failed (will retry next boot): %s",
+                _migrate_exc,
+            )
+
         # Finalize JWT_SECRET - must happen after DB init so the value can be
         # persisted and shared across all gunicorn workers.
         _jwt_secret = resolve_jwt_secret(setup_manager)

@@ -33,7 +33,7 @@ from tasks.analysis import (
 )
 
 
-def test_union_analysis_runs_features_before_only_remaining_alignments(monkeypatch):
+def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
     import tasks.analysis as analysis
     import tasks.multiserver_sync as sync
 
@@ -54,27 +54,20 @@ def test_union_analysis_runs_features_before_only_remaining_alignments(monkeypat
         lambda *args, server_id=None, **kwargs: events.append(('analyze', server_id))
         or {'status': 'SUCCESS'},
     )
-    caches = []
 
-    def fake_sweep(*args, server_ids=None, catalog_cache=None, **kwargs):
-        caches.append(catalog_cache)
-        events.append(('align', tuple(server_ids or ())))
+    def forbidden_sweep(*args, **kwargs):
+        raise AssertionError('analysis must never run an alignment sweep')
 
-    monkeypatch.setattr(sync, 'sweep_all_secondary_servers', fake_sweep)
+    monkeypatch.setattr(sync, 'sweep_all_secondary_servers', forbidden_sweep)
 
     result = analysis.run_analysis_task(0, 5)
 
     assert result['status'] == 'SUCCESS'
     assert events == [
         ('analyze', 'a'),
-        ('align', ('b', 'c')),
         ('analyze', 'b'),
-        ('align', ('c',)),
         ('analyze', 'c'),
-        ('align', ()),
     ]
-    assert caches and caches[0] is not None
-    assert all(cache is caches[0] for cache in caches)
 
 
 def test_run_analysis_task_skips_when_no_enabled_server_matches_scope(monkeypatch):
@@ -117,16 +110,13 @@ def test_enabled_analysis_servers_registry_failure_keeps_config_default(monkeypa
     assert analysis._enabled_analysis_servers('all') == [None]
 
 
-def test_chromaprint_failure_is_fail_soft_and_marks_sentinel(monkeypatch, tmp_path):
+def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map_upserts):
     import importlib
     import tasks.analysis as analysis
     import tasks.analysis_helper as helper
-    import tasks.audio_fingerprint as afp
     import tasks.clap_analyzer as clap
 
     registry = importlib.import_module('tasks.mediaserver.registry')
-
-    item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
 
     monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
     monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
@@ -152,16 +142,16 @@ def test_chromaprint_failure_is_fail_soft_and_marks_sentinel(monkeypatch, tmp_pa
                 'scale': 'major',
                 'moods': {'happy': 0.9},
             },
-            np.zeros(4, dtype=np.float32),
+            np.ones(8, dtype=np.float32),
         ),
     )
 
     monkeypatch.setattr(clap, 'is_clap_available', lambda: False)
-    monkeypatch.setattr(afp, 'compute_chromaprint', lambda path, max_seconds=120: None)
-
-    map_upserts = []
+    monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 'srv-def')
     monkeypatch.setattr(
-        registry, 'upsert_track_maps', lambda *args, **kwargs: map_upserts.append(args)
+        registry,
+        'upsert_track_maps',
+        lambda server_id, mapping, conn=None: map_upserts.append((server_id, mapping)),
     )
 
     monkeypatch.setattr(
@@ -169,74 +159,63 @@ def test_chromaprint_failure_is_fail_soft_and_marks_sentinel(monkeypatch, tmp_pa
         'attach_catalog_item_ids',
         lambda tracks, server_id=None, conn=None: tracks,
     )
-    monkeypatch.setattr(helper, 'get_existing_track_ids', lambda ids: set())
+    monkeypatch.setattr(
+        helper,
+        'get_existing_track_ids',
+        lambda ids: {i for i in ids if str(i).startswith('fp_')},
+    )
     monkeypatch.setattr(helper, 'get_missing_ids_in_table', lambda table, ids: set())
-    monkeypatch.setattr(helper, 'get_missing_chromaprint_ids', lambda ids: {'prov1'})
+    monkeypatch.setattr(helper, 'load_fingerprint_index', lambda: known_index)
     monkeypatch.setattr(
         helper, 'upsert_artist_mappings_for_tracks', lambda tracks, album_name=None: None
     )
     monkeypatch.setattr(helper, 'run_song_analyzed_hook', lambda *args, **kwargs: None)
-    persisted_ids = []
     monkeypatch.setattr(
         helper,
         'persist_musicnn_results',
         lambda track, *args, **kwargs: persisted_ids.append(helper.catalog_item_id(track)),
     )
-    sentinel_ids = []
     monkeypatch.setattr(
-        helper,
-        'mark_chromaprint_failed',
-        lambda item_id: sentinel_ids.append(item_id) or True,
+        helper, 'persist_clap_embedding', lambda *args, **kwargs: False
     )
 
-    result = analysis._analyze_album_task_impl('album1', 'Album One', 5, 'parent1')
+    return analysis._analyze_album_task_impl('album1', 'Album One', 5, 'parent1')
+
+
+def test_new_track_persists_under_embedding_hash_id_and_maps_it(monkeypatch, tmp_path):
+    import tasks.audio_fingerprint as afp
+
+    item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch, tmp_path, item, afp.FingerprintIndex(), persisted_ids, map_upserts
+    )
+
+    expected_id = afp.embedding_canonical_id(np.ones(8, dtype=np.float32))
+    assert result['status'] == 'SUCCESS'
+    assert result['tracks_analyzed'] == 1
+    assert persisted_ids == [expected_id]
+    assert item['_catalog_item_id'] == expected_id
+    assert map_upserts == [('srv-def', {expected_id: ('prov1', 'fingerprint')})]
+
+
+def test_known_hash_skips_duplicate_persist_and_just_maps_the_server(monkeypatch, tmp_path):
+    import tasks.audio_fingerprint as afp
+
+    fingerprint = afp.embedding_fingerprint(np.ones(8, dtype=np.float32))
+    known_index = afp.FingerprintIndex()
+    known_index.add('fp_known', fingerprint)
+
+    item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch, tmp_path, item, known_index, persisted_ids, map_upserts
+    )
 
     assert result['status'] == 'SUCCESS'
     assert result['tracks_analyzed'] == 1
-    assert persisted_ids == ['prov1']
-    assert sentinel_ids == ['prov1']
-    assert item.get('_catalog_item_id') is None
-    assert not map_upserts
-
-
-def test_missing_chromaprint_ids_treats_empty_sentinel_as_done(monkeypatch):
-    import tasks.analysis_helper as helper
-    import tasks.audio_fingerprint as afp
-
-    executed = []
-
-    class FakeCursor:
-        def execute(self, query, params=None):
-            executed.append(query)
-
-        def fetchall(self):
-            return [('done-real',), ('done-sentinel',)]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    class FakeConn:
-        def cursor(self):
-            return FakeCursor()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    monkeypatch.setattr(afp, 'fpcalc_available', lambda: True)
-    monkeypatch.setattr(helper, 'get_db', lambda: FakeConn())
-
-    missing = helper.get_missing_chromaprint_ids(['done-real', 'done-sentinel', 'todo'])
-
-    assert missing == {'todo'}
-    assert len(executed) == 1
-    assert 'chromaprint IS NOT NULL' in executed[0]
-    assert "<> ''" not in executed[0]
+    assert persisted_ids == []
+    assert map_upserts == [('srv-def', {'fp_known': ('prov1', 'fingerprint')})]
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():
@@ -248,8 +227,7 @@ def test_unknown_catalogue_track_requires_real_musicnn_analysis():
         missing_clap={'provider-new'},
         missing_lyrics={'provider-new'},
         lyrics_enabled=True,
-        missing_chromaprint={'provider-new'},
-    ) == (True, True, True, True)
+    ) == (True, True, True)
 
 
 class TestFindOnnxName:

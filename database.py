@@ -655,27 +655,6 @@ def save_track_analysis_and_embedding(
         cur.close()
 
 
-def save_track_chromaprint(item_id, chromaprint):
-    """Persist the intact Chromaprint separately from its hashed item_id."""
-    if not item_id or not chromaprint:
-        return False
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "UPDATE score SET chromaprint = %s WHERE item_id = %s",
-            (str(chromaprint), str(item_id)),
-        )
-        conn.commit()
-        return bool(cur.rowcount)
-    except Exception:
-        conn.rollback()
-        logger.exception("Error saving Chromaprint for %s", item_id)
-        raise
-    finally:
-        cur.close()
-
-
 def save_clap_embedding(item_id, clap_embedding_vector):
     if clap_embedding_vector is None or (
         isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0
@@ -831,7 +810,7 @@ def init_db():
             cur.execute("DROP INDEX IF EXISTS idx_score_fingerprint")
             cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS fingerprint")
             cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS mbid")
-            cur.execute("ALTER TABLE score ADD COLUMN IF NOT EXISTS chromaprint TEXT")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS chromaprint")
 
             cur.execute(
                 "SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'"

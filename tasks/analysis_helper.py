@@ -18,9 +18,9 @@ Main Features:
   build sessions, resolve execution providers, and retry inference on OOM.
 * compute_album_needs / decide_track_needs: per-track dedup deciding which of
   musicnn, CLAP and lyrics embeddings are missing (the real analysis dedup).
-* persist_* helpers upsert mood tags, embeddings, CLAP and lyrics vectors;
-  mark_chromaprint_failed stores an empty-string sentinel so tracks whose
-  fingerprinting failed are never re-selected by get_missing_chromaprint_ids.
+* load_fingerprint_index: Hamming-tolerant catalogue index over the canonical
+  embedding-hash ids, consulted after MusiCNN to dedup cross-server content.
+* persist_* helpers upsert mood tags, embeddings, CLAP and lyrics vectors.
 """
 
 import gc
@@ -37,7 +37,6 @@ from database import (
     get_db,
     get_clap_embedding,
     save_track_analysis_and_embedding,
-    save_track_chromaprint,
     save_clap_embedding,
     save_lyrics_embedding,
 )
@@ -476,15 +475,11 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
             logger.warning(f"No artist_id for '{name}'{scope}")
 
 
-def decide_track_needs(
-    track_id, existing, missing_clap, missing_lyrics, lyrics_enabled,
-    missing_chromaprint=None,
-):
+def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_enabled):
     return (
         track_id not in existing,
         track_id in missing_clap,
         lyrics_enabled and track_id in missing_lyrics,
-        missing_chromaprint is not None and track_id in missing_chromaprint,
     )
 
 
@@ -500,48 +495,28 @@ def compute_album_needs(tracks, clap_available, lyrics_enabled, server_id=None):
         existing,
         needs_in(clap_available, 'clap_embedding'),
         needs_in(lyrics_enabled, 'lyrics_embedding'),
-        bool(get_missing_chromaprint_ids(ids)),
     )
 
 
-def get_missing_chromaprint_ids(track_ids):
-    from tasks.audio_fingerprint import fpcalc_available
+def load_fingerprint_index():
+    """Hamming-tolerant index over every canonical id already in the catalogue.
 
-    if not track_ids or not fpcalc_available():
-        return set()
-    ids = _str_ids(track_ids)
+    Built from the item_id strings alone (the id encodes the hash), so loading
+    it never reads embedding blobs. Analysis consults it after MusiCNN to decide
+    whether a just-analyzed track is content the catalogue already has.
+    """
+    from tasks.audio_fingerprint import FingerprintIndex
+
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT item_id FROM score WHERE item_id IN %s "
-            "AND chromaprint IS NOT NULL",
-            (tuple(ids),),
+            "SELECT item_id FROM score "
+            "WHERE item_id LIKE 'fp\\_%' AND length(item_id) = 19"
         )
-        existing = {str(row[0]) for row in cur.fetchall()}
-    return set(ids) - existing
-
-
-def persist_chromaprint(item_id, chromaprint):
-    if not chromaprint:
-        return False
-    return save_track_chromaprint(item_id, chromaprint)
-
-
-def mark_chromaprint_failed(item_id):
-    if not item_id:
-        return False
-    with get_db() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE score SET chromaprint = '' "
-            "WHERE item_id = %s AND chromaprint IS NULL",
-            (str(item_id),),
-        )
-        changed = cur.rowcount
-        conn.commit()
-    return bool(changed)
+        return FingerprintIndex.from_item_ids(row[0] for row in cur.fetchall())
 
 
 def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
-    parts = ["MusiCNN", "Chromaprint"]
+    parts = ["MusiCNN"]
     if clap_available:
         parts.append("CLAP")
     if lyrics_enabled:

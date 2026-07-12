@@ -140,13 +140,13 @@ MEDIASERVER_CONFIG_KEYS = frozenset(
     {'MEDIASERVER_TYPE', 'MUSIC_LIBRARIES'} | set(MEDIASERVER_CRED_KEY_BY_FIELD)
 )
 
-# The content fingerprint is the catalogue standard, not an option: every
-# analyzed track is fingerprinted by the bundled fpcalc/Chromaprint tool. The
-# intact Chromaprint is retained and its SHA-256 digest IS the canonical item_id
-# used by every index and
-# search, and each media server's own track id (including the single/default
+# The content fingerprint is the catalogue standard, not an option: the
+# canonical item_id IS the 64-bit SimHash of each track's MusiCNN embedding
+# (fp_<16hex>, similarity-preserving so near-identical audio matches within a
+# few bits), minted at analyze time with zero extra downloads or binaries.
+# Legacy rows are relabelled once at Flask startup from their stored
+# embeddings. Each media server's own track id (including the single/default
 # server) is kept in the track_server_map table and translated back on output.
-# The cross-server matching sweep fingerprints both sides for exact matching.
 # There are deliberately no feature flags for this behaviour.
 
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
@@ -633,8 +633,6 @@ IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored cell-vector precision: 'i8' (int8; angular only, euclidean/dot auto-fall to f16), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
-IVF_TRAIN_SAMPLE_MAX = int(os.environ.get("IVF_TRAIN_SAMPLE_MAX", "50000"))  # Hard cap on in-RAM IVF training rows; MiniBatchKMeans does not need the whole catalogue
-MULTISERVER_CATALOG_CACHE_MAX_TRACKS = int(os.environ.get("MULTISERVER_CATALOG_CACHE_MAX_TRACKS", "400000"))  # Cap on tracks kept in the per-run sweep catalogue cache (across all servers); catalogues that would exceed it are refetched instead of cached
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
 IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "1024"))  # Cells probed per query (X): the dominant recall/latency knob
@@ -793,7 +791,7 @@ SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
 )
 
 # --- Database Cleaning Safety ---
-CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max orphaned albums to delete in one run
+CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report (nothing is ever deleted from the catalogue)
 
 # --- Stratified Sampling Constants (New) ---
 # Genres for which to enforce equal representation during stratified sampling

@@ -390,17 +390,6 @@ def server_libraries():
         return jsonify({"libraries": [], "unsupported": True}), 200
 
 
-@music_servers_bp.route('/api/servers/canonicalize', methods=['POST'])
-def canonicalize_catalog():
-    forbidden = _forbid_non_admin()
-    if forbidden:
-        return forbidden
-    job = rq_queue_default.enqueue(
-        'tasks.fingerprint_canonicalize.canonicalize_fingerprinted_ids', job_timeout=-1
-    )
-    return jsonify({"enqueued": True, "job_id": job.id}), 202
-
-
 @music_servers_bp.route('/api/servers/align', methods=['POST'])
 def align_servers():
     """Align every secondary server against the default (no-op when aligned)."""

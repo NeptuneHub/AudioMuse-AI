@@ -6,22 +6,26 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Relabel the catalogue so item_id becomes the content fingerprint.
+"""Relabel legacy catalogue rows so item_id becomes the embedding fingerprint.
 
-The canonical id is a SHA-256 digest of each track's stored Chromaprint. The
-Chromaprint itself remains intact in ``score.chromaprint`` for future matching
-or migrations. It runs at the end of every analysis and at
-the start of every server sweep, rewriting each analyzed track's item_id from
-the media server's id to the canonical ``fp_<hex>`` id using the same proven,
+The canonical id is the similarity-preserving 64-bit SimHash of each track's
+stored MusiCNN embedding, so this is a pure database operation: no downloads,
+no binaries, no audio decoding, seconds even on a 180k-track legacy install.
+It runs ONCE per lifetime of a legacy row, at Flask container startup, and is
+an instant no-op afterwards; analysis mints canonical ids directly at analyze
+time so nothing here runs during analysis. The rewrite uses the same proven
 transactional key-rewrite the provider-migration feature uses (score, playlist,
 and all embedding tables, with the embedding foreign keys dropped and re-added
-around it). The server's real ids are preserved in track_server_map so output
-can be translated back; rows without a Chromaprint keep their provider id and
-keep working via the identity translation fallback.
+around it). Rows whose hash lands within Hamming tolerance of an existing
+catalogue row are the same content and are merged into it, keeping every
+server mapping. The source server's real ids are preserved in track_server_map
+so output can be translated back; rows without an embedding keep their provider
+id and keep working via the identity translation fallback.
 
 Main Features:
-* Idempotent relabel of Chromaprint-bearing rows, merging duplicate content rows.
-* Records the source-server mapping and rebuilds all similarity indexes.
+* One-time, idempotent startup relabel of embedding-bearing legacy rows.
+* Hamming-tolerant duplicate merge into existing canonical rows.
+* Records the source-server mapping in track_server_map.
 """
 
 import logging
@@ -41,31 +45,59 @@ logger = logging.getLogger(__name__)
 
 
 def _build_mapping(cur):
+    """{legacy_id: canonical_id} to relabel plus {legacy_id: existing_id} to merge.
+
+    Legacy rows are everything whose item_id is not a current-scheme embedding
+    hash id: provider ids and ids minted by retired schemes alike. A legacy row
+    whose hash lands within Hamming tolerance of a row already in the catalogue
+    (or of another legacy row processed first) is the same content and is merged
+    into that id instead of claiming its own.
+    """
     cur.execute(
-        "SELECT s.item_id, s.chromaprint FROM score s "
-        "WHERE s.chromaprint IS NOT NULL AND s.chromaprint <> '' "
-        "AND s.item_id <> 'fp_' || "
-        "left(encode(sha256(convert_to(s.chromaprint, 'UTF8')), 'hex'), 32)"
+        "SELECT s.item_id FROM score s "
+        "WHERE s.item_id LIKE 'fp\\_%' AND length(s.item_id) = 19"
     )
-    candidates = []
-    for old_id, chromaprint in cur.fetchall():
-        canonical = audio_fingerprint.chromaprint_canonical_id(chromaprint)
-        if canonical is None or canonical == old_id:
-            continue
-        candidates.append((str(old_id), canonical))
+    index = audio_fingerprint.FingerprintIndex.from_item_ids(
+        r[0] for r in cur.fetchall()
+    )
+    cur.execute(
+        "SELECT s.item_id, e.embedding FROM score s "
+        "JOIN embedding e ON e.item_id = s.item_id "
+        "WHERE e.embedding IS NOT NULL "
+        "AND (s.item_id NOT LIKE 'fp\\_%' OR length(s.item_id) <> 19)"
+    )
+    rows = cur.fetchall()
+    total = len(rows)
+    if total:
+        logger.info("=" * 64)
+        logger.info(
+            "LEGACY CATALOGUE MIGRATION STARTING: computing content ids for "
+            "%d tracks from their stored embeddings.", total,
+        )
+        logger.info(
+            "One-time step (first start after upgrade only); no downloads, "
+            "pure database work. Progress every 10%%."
+        )
+        logger.info("=" * 64)
     mapping = {}
     duplicate_mapping = {}
-    if candidates:
-        canonicals = list({canonical for _, canonical in candidates})
-        cur.execute("SELECT item_id FROM score WHERE item_id = ANY(%s)", (canonicals,))
-        taken = {r[0] for r in cur.fetchall()}
-        claimed = set(taken)
-        for old_id, canonical in candidates:
-            if canonical in claimed:
-                duplicate_mapping[old_id] = canonical
+    next_pct = 10
+    for done, (old_id, embedding_blob) in enumerate(rows, 1):
+        fingerprint = audio_fingerprint.embedding_fingerprint(embedding_blob)
+        canonical = audio_fingerprint.canonical_id_str(fingerprint)
+        if canonical is not None:
+            existing = index.find(fingerprint)
+            if existing is not None:
+                duplicate_mapping[str(old_id)] = existing
             else:
-                mapping[old_id] = canonical
-                claimed.add(canonical)
+                mapping[str(old_id)] = canonical
+                index.add(canonical, fingerprint)
+        if total >= 10 and done * 100 >= next_pct * total:
+            logger.info(
+                "Legacy catalogue migration: %d%% (%d/%d content ids computed)",
+                next_pct, done, total,
+            )
+            next_pct += 10
     return mapping, duplicate_mapping
 
 
@@ -174,7 +206,7 @@ def canonicalize_fingerprinted_ids(
                 "provider ids; relabelling now would lose them"
             )
             return {'skipped': 'no_default'}
-        _log("Computing canonical ids from stored Chromaprints...")
+        _log("Computing canonical ids from stored embeddings...")
         mapping, duplicate_mapping = _build_mapping(cur)
         duplicates = len(duplicate_mapping)
         if not mapping and not duplicate_mapping:
@@ -183,6 +215,11 @@ def canonicalize_fingerprinted_ids(
         _log(
             f"Rewriting {len(mapping)} catalogue keys and merging "
             f"{duplicates} duplicate rows..."
+        )
+        logger.info(
+            "Legacy catalogue migration: rewriting %d catalogue keys and merging "
+            "%d duplicate rows (transactional, may take a moment)...",
+            len(mapping), duplicates,
         )
         all_changes = dict(mapping)
         all_changes.update(duplicate_mapping)
@@ -218,10 +255,14 @@ def canonicalize_fingerprinted_ids(
             )
         db.commit()
         relabelled = len(mapping) + duplicates
+        logger.info("=" * 64)
         logger.info(
-            "Fingerprint canonicalization: relabelled %d item_ids (%d duplicates skipped)",
-            relabelled, duplicates,
+            "LEGACY CATALOGUE MIGRATION COMPLETE: %d tracks relabelled to "
+            "content ids, %d duplicate rows merged into existing ones, "
+            "provider ids preserved in track_server_map.",
+            len(mapping), duplicates,
         )
+        logger.info("=" * 64)
     except Exception:
         try:
             db.rollback()

@@ -16,12 +16,12 @@ similarity and radio features consume the vectors this stage produces.
 
 Main Features:
 * analyze_track / analyze_album_task / run_analysis_task: decode audio and extract
-  mood tags, MusiCNN embeddings, CLAP and lyrics embeddings, then upsert to the DB.
+  mood tags, MusiCNN embeddings, CLAP and lyrics embeddings, then upsert to the DB
+  under the canonical embedding-hash id; a Hamming-tolerant catalogue check makes a
+  song already analyzed from another server just gain a server mapping instead of a
+  duplicate row.
 * Per-track failures are logged and skipped so one bad track cannot abort a whole
   album; the album is still marked FAILURE afterwards so RQ retries the remainder.
-  Chromaprint fingerprint failures are fail-soft: the track is analyzed under its
-  provider id and an empty-string sentinel marks the fingerprint as permanently
-  failed so it is never re-attempted.
 * run_analysis_task skips (instead of falling back to the config default) when no
   enabled server matches the requested scope.
 * Media-server reachability and auth probing before enqueuing, so a bad server aborts
@@ -462,7 +462,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
 
 def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     from .clap_analyzer import is_clap_available, get_or_cache_other_feature_text_embeddings
-    from .audio_fingerprint import chromaprint_canonical_id, compute_chromaprint
+    from .audio_fingerprint import canonical_id_str, embedding_fingerprint
     from .mediaserver import context as server_context, registry
 
     current_job = get_current_job(redis_conn)
@@ -546,19 +546,17 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 if LYRICS_ENABLED
                 else set()
             )
-            missing_chromaprint_ids_set = _ah.get_missing_chromaprint_ids(track_ids_all)
             total_tracks_in_album = len(tracks)
 
             logger.info(
-                "Feature plan for album '%s': MusiCNN=%d, DCLAP=%d, Lyrics=%d, "
-                "Chromaprint=%d of %d tracks.",
+                "Feature plan for album '%s': MusiCNN=%d, DCLAP=%d, Lyrics=%d of %d tracks.",
                 album_name,
                 total_tracks_in_album - len(existing_track_ids_set),
                 len(missing_clap_ids_set),
                 len(missing_lyrics_ids_set),
-                len(missing_chromaprint_ids_set),
                 total_tracks_in_album,
             )
+            fingerprint_index = None
 
             any_track_needs_musicnn = len(existing_track_ids_set) < total_tracks_in_album
             if any_track_needs_musicnn and is_clap_available():
@@ -627,19 +625,16 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 )
 
                 track_id_str = _ah.catalog_item_id(item)
-                needs_musicnn, needs_clap, needs_lyrics, needs_chromaprint = (
-                    _ah.decide_track_needs(
-                        track_id_str,
-                        existing_track_ids_set,
-                        missing_clap_ids_set,
-                        missing_lyrics_ids_set,
-                        LYRICS_ENABLED,
-                        missing_chromaprint_ids_set,
-                    )
+                needs_musicnn, needs_clap, needs_lyrics = _ah.decide_track_needs(
+                    track_id_str,
+                    existing_track_ids_set,
+                    missing_clap_ids_set,
+                    missing_lyrics_ids_set,
+                    LYRICS_ENABLED,
                 )
                 track_audio, track_sr = None, None
 
-                if not (needs_musicnn or needs_clap or needs_lyrics or needs_chromaprint):
+                if not (needs_musicnn or needs_clap or needs_lyrics):
                     tracks_skipped_count += 1
                     status_parts = _ah.build_feature_status_parts(
                         is_clap_available(),
@@ -653,7 +648,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
 
                 path = None
                 try:
-                    needs_audio_upfront = needs_musicnn or needs_clap or needs_chromaprint
+                    needs_audio_upfront = needs_musicnn or needs_clap
                     if needs_audio_upfront:
                         path = download_track(TEMP_DIR, item)
                         if not path:
@@ -668,65 +663,6 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         return path
 
                     track_processed = False
-                    chromaprint = None
-                    chromaprint_failed = False
-                    if needs_chromaprint:
-                        chromaprint = compute_chromaprint(path)
-                        candidate_id = chromaprint_canonical_id(chromaprint)
-                        if not candidate_id or not chromaprint:
-                            logger.warning(
-                                "Chromaprint calculation failed for '%s'; continuing "
-                                "analysis under provider id %s without a fingerprint.",
-                                track_name_full,
-                                track_id_str,
-                            )
-                            chromaprint = None
-                            chromaprint_failed = True
-                            needs_chromaprint = False
-                        else:
-                            source_server_id = (
-                                server_context.active_server_id()
-                                or registry.get_default_server_id()
-                            )
-                            provider_id = str(item.get('Id') or item.get('id'))
-                            candidate_exists = bool(
-                                _ah.get_existing_track_ids([candidate_id])
-                            )
-                            if source_server_id:
-                                if candidate_exists:
-                                    registry.upsert_track_maps(
-                                        source_server_id,
-                                        {candidate_id: (provider_id, 'chromaprint')},
-                                    )
-                                else:
-                                    pending_track_maps.setdefault(source_server_id, {})[
-                                        candidate_id
-                                    ] = (provider_id, 'chromaprint')
-                            if candidate_id != track_id_str:
-                                item['_catalog_item_id'] = candidate_id
-                                track_id_str = candidate_id
-                            if candidate_exists:
-                                needs_musicnn = False
-                                needs_clap = bool(
-                                    is_clap_available()
-                                    and _ah.get_missing_ids_in_table(
-                                        'clap_embedding', [candidate_id]
-                                    )
-                                )
-                                needs_lyrics = bool(
-                                    LYRICS_ENABLED
-                                    and _ah.get_missing_ids_in_table(
-                                        'lyrics_embedding', [candidate_id]
-                                    )
-                                )
-                                needs_chromaprint = False
-                                chromaprint = None
-                                logger.info(
-                                    "Chromaprint matched '%s' to existing catalogue id %s; "
-                                    "skipping duplicate MusiCNN analysis.",
-                                    track_name_full,
-                                    candidate_id,
-                                )
 
                     if needs_musicnn:
                         if onnx_sessions is None:
@@ -771,6 +707,47 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         track_processed = True
                         session_recycler.increment()
                         cleanup_cuda_memory(force=False)
+
+                        fingerprint = embedding_fingerprint(musicnn_embedding)
+                        candidate_id = canonical_id_str(fingerprint)
+                        source_server_id = (
+                            server_context.active_server_id()
+                            or registry.get_default_server_id()
+                        )
+                        provider_id = str(item.get('Id') or item.get('id'))
+                        if candidate_id:
+                            if fingerprint_index is None:
+                                fingerprint_index = _ah.load_fingerprint_index()
+                            existing_id = fingerprint_index.find(fingerprint)
+                            if existing_id is not None:
+                                if source_server_id:
+                                    registry.upsert_track_maps(
+                                        source_server_id,
+                                        {existing_id: (provider_id, 'fingerprint')},
+                                    )
+                                logger.info(
+                                    "Embedding hash matched '%s' to existing catalogue "
+                                    "id %s; marked it for this server and skipped the "
+                                    "duplicate persist.",
+                                    track_name_full,
+                                    existing_id,
+                                )
+                                tracks_analyzed_count += 1
+                                continue
+                            item['_catalog_item_id'] = candidate_id
+                            track_id_str = candidate_id
+                            fingerprint_index.add(candidate_id, fingerprint)
+                            if source_server_id:
+                                pending_track_maps.setdefault(source_server_id, {})[
+                                    candidate_id
+                                ] = (provider_id, 'fingerprint')
+                        else:
+                            logger.warning(
+                                "Embedding fingerprint unavailable for '%s'; keeping "
+                                "provider id %s for this row.",
+                                track_name_full,
+                                track_id_str,
+                            )
                     else:
                         musicnn_analysis = musicnn_embedding = None
                         top_moods = existing_top_moods_by_id.get(track_id_str) or None
@@ -820,11 +797,6 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         _ah.persist_musicnn_results(
                             item, musicnn_analysis, top_moods, musicnn_embedding, other_features
                         )
-
-                    if chromaprint and _ah.persist_chromaprint(track_id_str, chromaprint):
-                        track_processed = True
-                    elif chromaprint_failed:
-                        _ah.mark_chromaprint_failed(track_id_str)
 
                     _ah.persist_clap_embedding(
                         track_id_str, clap_embedding_for_track, needs_clap
@@ -999,7 +971,6 @@ def run_analysis_server_task(
     top_n_moods,
     server_id=None,
     finalize_indexes=True,
-    enqueue_sweep=True,
     task_id=None,
     progress_base=0.0,
     progress_span=100.0,
@@ -1014,7 +985,6 @@ def run_analysis_server_task(
             top_n_moods,
             server_id=server_id,
             finalize_indexes=finalize_indexes,
-            enqueue_sweep=enqueue_sweep,
             task_id=task_id,
             progress_base=progress_base,
             progress_span=progress_span,
@@ -1027,7 +997,6 @@ def _run_analysis_server_task_impl(
     top_n_moods,
     server_id=None,
     finalize_indexes=True,
-    enqueue_sweep=True,
     task_id=None,
     progress_base=0.0,
     progress_span=100.0,
@@ -1095,14 +1064,6 @@ def _run_analysis_server_task_impl(
 
         try:
             log_and_update_main("Starting main analysis process...", 0)
-            from .audio_fingerprint import fpcalc_available
-
-            if not fpcalc_available():
-                logger.warning(
-                    "Chromaprint executable 'fpcalc' is not available in this worker; "
-                    "content-id fingerprinting is disabled and the catalogue stays "
-                    "keyed by provider ids."
-                )
             clean_temp(TEMP_DIR)
             all_albums = get_recent_albums(num_recent_albums)
             if not all_albums:
@@ -1122,7 +1083,6 @@ def _run_analysis_server_task_impl(
             albums_needing_musicnn = 0
             albums_needing_clap = 0
             albums_needing_lyrics = 0
-            albums_needing_chromaprint = 0
             last_monitor_db_check = float('-inf')
 
             def monitor_and_clear_jobs():
@@ -1217,7 +1177,6 @@ def _run_analysis_server_task_impl(
                         existing_count,
                         needs_clap_analysis,
                         needs_lyrics_analysis,
-                        needs_chromaprint_analysis,
                     ) = (
                         _ah.compute_album_needs(
                             tracks,
@@ -1240,9 +1199,7 @@ def _run_analysis_server_task_impl(
                 needs_musicnn_analysis = existing_count < len(tracks)
 
                 if existing_count >= len(tracks) and not (
-                    needs_clap_analysis
-                    or needs_lyrics_analysis
-                    or needs_chromaprint_analysis
+                    needs_clap_analysis or needs_lyrics_analysis
                 ):
                     for item in tracks:
                         _ah.refresh_track_metadata(item, album.get('Name'))
@@ -1269,17 +1226,14 @@ def _run_analysis_server_task_impl(
                 albums_needing_musicnn += int(needs_musicnn_analysis)
                 albums_needing_clap += int(needs_clap_analysis)
                 albums_needing_lyrics += int(needs_lyrics_analysis)
-                albums_needing_chromaprint += int(needs_chromaprint_analysis)
                 checked_album_ids.add(album['Id'])
 
                 logger.info(
-                    "Queued album '%s' for feature work: MusiCNN=%s, DCLAP=%s, "
-                    "Lyrics=%s, Chromaprint=%s.",
+                    "Queued album '%s' for feature work: MusiCNN=%s, DCLAP=%s, Lyrics=%s.",
                     album.get('Name'),
                     needs_musicnn_analysis,
                     needs_clap_analysis,
                     needs_lyrics_analysis,
-                    needs_chromaprint_analysis,
                 )
 
                 progress = 5 + int(85 * (idx / float(total_albums_to_check)))
@@ -1293,7 +1247,6 @@ def _run_analysis_server_task_impl(
                         'musicnn': albums_needing_musicnn,
                         'dclap': albums_needing_clap,
                         'lyrics': albums_needing_lyrics,
-                        'chromaprint': albums_needing_chromaprint,
                     },
                 )
 
@@ -1330,20 +1283,6 @@ def _run_analysis_server_task_impl(
                 log_and_update_main(status_message, progress)
                 time.sleep(5)
 
-            log_and_update_main("Relabelling catalogue to content fingerprint ids...", 93)
-            try:
-                from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
-                canonicalize_fingerprinted_ids(
-                    rebuild=False, source_server_id=server_id
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Fingerprint canonicalization failed; analysis cannot safely continue"
-                )
-                raise RuntimeError(
-                    "Feature analysis completed, but Chromaprint canonicalization failed"
-                ) from exc
-
             if finalize_indexes:
                 log_and_update_main("Performing final index rebuild...", 95)
                 try:
@@ -1361,25 +1300,13 @@ def _run_analysis_server_task_impl(
                 'Analysis complete. CLAP text search uses default queries (no auto-regeneration).'
             )
 
-            if enqueue_sweep:
-                try:
-                    rq_queue_default.enqueue(
-                        'tasks.multiserver_sync.sweep_all_secondary_servers',
-                        job_id=str(uuid.uuid4()),
-                        job_timeout=-1,
-                    )
-                    logger.info("Enqueued multi-server matching sweep for configured servers.")
-                except Exception:
-                    logger.exception("Failed to enqueue multi-server matching sweep.")
-
             failed_count, failed_errors = get_failed_child_summary(current_task_id)
             final_message = (
                 f"Main analysis complete. Launched {albums_launched}, "
                 f"Skipped {albums_skipped}, Errored {albums_errored}, "
                 f"Failed {failed_count}. "
                 f"Feature albums: MusiCNN {albums_needing_musicnn}, "
-                f"DCLAP {albums_needing_clap}, Lyrics {albums_needing_lyrics}, "
-                f"Chromaprint {albums_needing_chromaprint}."
+                f"DCLAP {albums_needing_clap}, Lyrics {albums_needing_lyrics}."
             )
             phase_status = TASK_STATUS_FAILURE if failed_count else TASK_STATUS_SUCCESS
             final_kwargs = {"task_state": phase_status}
@@ -1440,8 +1367,9 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     a 'high' worker while the album jobs run on the 'default' workers. Nesting a
     per-server job on the 'default' queue instead would let a phase occupy the only
     default worker while waiting for album jobs on that same queue, which deadlocks.
-    After the last phase a final full alignment sweep maps late-phase duplicate
-    content onto earlier servers before the single final index build.
+    Analysis never sweeps: each track resolves to the shared catalogue at analyze
+    time (mapped provider id -> skip; new hash -> persist; known hash -> just map),
+    so the servers stay aligned by construction and one index build ends the run.
     """
     current_job = get_current_job(redis_conn)
     parent_id = current_job.id if current_job else str(uuid.uuid4())
@@ -1466,7 +1394,6 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
 
     summaries = []
     failed = []
-    catalog_cache = {}
     span = 90.0 / len(servers)
     for index, server in enumerate(servers):
         with app.app_context():
@@ -1482,7 +1409,6 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 top_n_moods,
                 server_id=server['server_id'],
                 finalize_indexes=False,
-                enqueue_sweep=False,
                 task_id=parent_id,
                 progress_base=index * span,
                 progress_span=span,
@@ -1494,30 +1420,6 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
         except Exception:
             failed.append(server['name'])
             logger.exception("Union analysis phase failed for %s", server['name'])
-
-        remaining_server_ids = [
-            remaining['server_id'] for remaining in servers[index + 1:]
-        ]
-        if remaining_server_ids:
-            try:
-                from tasks.multiserver_sync import sweep_all_secondary_servers
-
-                sweep_all_secondary_servers(
-                    task_id=str(uuid.uuid4()),
-                    server_ids=remaining_server_ids,
-                    catalog_cache=catalog_cache,
-                )
-            except Exception:
-                logger.exception("Post-phase server alignment failed after %s", server['name'])
-
-    try:
-        from tasks.multiserver_sync import sweep_all_secondary_servers
-
-        sweep_all_secondary_servers(
-            task_id=str(uuid.uuid4()), full_refresh=False, catalog_cache=catalog_cache
-        )
-    except Exception:
-        logger.exception("Final cross-server alignment sweep failed")
 
     with app.app_context():
         save_task_status(

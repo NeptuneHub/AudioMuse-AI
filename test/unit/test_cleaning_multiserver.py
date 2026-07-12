@@ -6,20 +6,19 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Multi-server orphan cleaning: abort rules and orphan identification.
+"""Multi-server library cleanup: unbind-only semantics.
 
 Drives identify_and_clean_orphaned_albums_task with the media-server registry,
-provider fetches and DB helpers faked, asserting the multi-server abort rules
-(any failed or empty server aborts the run with zero deletions) and that only
-canonical ids uncovered by every server's reverse-translated catalogue reach
-the deletion helper.
+provider fetches and DB helpers faked, asserting that cleanup NEVER deletes
+catalogue rows: it only prunes each healthy server's own track_server_map rows,
+skips servers whose library view is incomplete, and reports (without touching)
+the tracks currently bound to no server.
 
 Main Features:
-* A failed album fetch on any server aborts the run and never deletes
-* Zero albums on one of several servers aborts the run and never deletes
-* Full canonical coverage across servers finishes clean with no deletion
-* Uncovered canonical ids are exactly what reaches delete_orphaned_albums_sync
-* The safety cap limits deletion to the largest orphaned albums
+* A failed or empty fetch skips ONLY that server's unbinding, others proceed
+* Per-server pruning receives exactly that server's present provider ids
+* Full coverage across servers unbinds nothing and reports zero orphans
+* Tracks on no server are reported as kept, never deleted
 """
 
 import sys
@@ -41,11 +40,12 @@ def _server(server_id, name, default=False):
 
 def _run_cleaning(monkeypatch, servers, albums_by_server, tracks_by_album,
                   reverse_by_server, db_track_ids, author_by_id=None,
-                  safety_limit=None):
+                  prune_results=None):
     from tasks import cleaning
+    from tasks import multiserver_sync
 
     statuses = []
-    deleted = []
+    pruned_calls = []
     authors = author_by_id or {}
 
     fake_flask_app = types.ModuleType('flask_app')
@@ -86,13 +86,7 @@ def _run_cleaning(monkeypatch, servers, albums_by_server, tracks_by_album,
     )
     monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
 
-    fake_analysis = types.ModuleType('tasks.analysis')
-    fake_analysis._run_all_index_builds = lambda log_fn=None: None
-    monkeypatch.setitem(sys.modules, 'tasks.analysis', fake_analysis)
-
     monkeypatch.setattr(cleaning, 'get_current_job', lambda *a, **k: None)
-    if safety_limit is not None:
-        monkeypatch.setattr(cleaning, 'CLEANING_SAFETY_LIMIT', safety_limit)
     monkeypatch.setattr(
         cleaning.registry, 'servers_for_scope', lambda scope, conn=None: servers
     )
@@ -119,22 +113,19 @@ def _run_cleaning(monkeypatch, servers, albums_by_server, tracks_by_album,
         cleaning, 'get_tracks_from_album', lambda album_id: tracks_by_album[album_id]
     )
 
-    def fake_delete(ids):
-        deleted.append(sorted(ids))
-        return {
-            'status': 'SUCCESS', 'message': 'ok',
-            'deleted_count': len(ids), 'failed_deletions': [],
-        }
+    def fake_prune(db, server_id, present_ids):
+        pruned_calls.append((server_id, sorted(present_ids)))
+        return (prune_results or {}).get(server_id, 0)
 
-    monkeypatch.setattr(cleaning, 'delete_orphaned_albums_sync', fake_delete)
+    monkeypatch.setattr(multiserver_sync, '_prune_stale_mappings', fake_prune)
 
     result = cleaning.identify_and_clean_orphaned_albums_task()
-    return result, statuses, deleted
+    return result, statuses, pruned_calls
 
 
-class TestCleaningAbortRules:
-    def test_failed_album_fetch_on_one_server_aborts_without_deleting(self, monkeypatch):
-        result, statuses, deleted = _run_cleaning(
+class TestCleaningSkipsUnreadableServers:
+    def test_failed_fetch_skips_that_server_but_prunes_the_healthy_one(self, monkeypatch):
+        result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
             albums_by_server={
@@ -144,15 +135,17 @@ class TestCleaningAbortRules:
             tracks_by_album={'alb2': [{'Id': 'n1'}]},
             reverse_by_server={'s2': {'n1': 'fp_1'}},
             db_track_ids={'fp_1', 'fp_2'},
+            prune_results={'s2': 3},
         )
-        assert result['status'] == 'ABORTED'
+        assert result['status'] == 'FAILURE'
         assert result['deleted_count'] == 0
         assert 'One' in result['failed_servers']
-        assert deleted == []
+        assert pruned == [('s2', ['n1'])]
+        assert result['unbound_mappings'] == 3
         assert statuses[-1][0] == config.TASK_STATUS_FAILURE
 
-    def test_zero_albums_on_one_of_two_servers_aborts_without_deleting(self, monkeypatch):
-        result, statuses, deleted = _run_cleaning(
+    def test_zero_albums_skips_that_server_and_reports_no_orphans(self, monkeypatch):
+        result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
             albums_by_server={
@@ -163,16 +156,15 @@ class TestCleaningAbortRules:
             reverse_by_server={'s2': {'n1': 'fp_1'}},
             db_track_ids={'fp_1', 'fp_2'},
         )
-        assert result['status'] == 'ABORTED'
         assert result['deleted_count'] == 0
         assert 'One' in result['failed_servers']
-        assert deleted == []
-        assert statuses[-1][0] == config.TASK_STATUS_FAILURE
+        assert pruned == [('s2', ['n1'])]
+        assert result['orphaned_tracks_count'] == 0
 
 
-class TestCleaningOrphanIdentification:
-    def test_full_coverage_across_servers_deletes_nothing(self, monkeypatch):
-        result, statuses, deleted = _run_cleaning(
+class TestCleaningUnbindOnly:
+    def test_full_coverage_unbinds_nothing_and_reports_clean(self, monkeypatch):
+        result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
             albums_by_server={
@@ -192,11 +184,12 @@ class TestCleaningOrphanIdentification:
         assert result['status'] == 'SUCCESS'
         assert result['orphaned_tracks_count'] == 0
         assert result['deleted_count'] == 0
-        assert deleted == []
+        assert result['unbound_mappings'] == 0
+        assert pruned == [('s1', ['j1', 'j2']), ('s2', ['n1'])]
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
 
-    def test_uncovered_canonical_ids_are_exactly_what_gets_deleted(self, monkeypatch):
-        result, statuses, deleted = _run_cleaning(
+    def test_tracks_on_no_server_are_reported_kept_never_deleted(self, monkeypatch):
+        result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
             albums_by_server={
@@ -212,35 +205,17 @@ class TestCleaningOrphanIdentification:
                 's2': {'n1': 'fp_2'},
             },
             db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4'},
+            prune_results={'s1': 1, 's2': 2},
         )
         assert result['status'] == 'SUCCESS'
         assert result['orphaned_tracks_count'] == 2
-        assert result['deleted_count'] == 2
-        assert deleted == [['fp_3', 'fp_4']]
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
-
-    def test_safety_cap_limits_deletion_to_largest_orphaned_albums(self, monkeypatch):
-        result, statuses, deleted = _run_cleaning(
-            monkeypatch,
-            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
-            albums_by_server={
-                's1': [{'Id': 'alb1', 'Name': 'A1'}],
-                's2': [{'Id': 'alb2', 'Name': 'A2'}],
-            },
-            tracks_by_album={
-                'alb1': [{'Id': 'j1'}],
-                'alb2': [{'Id': 'n1'}],
-            },
-            reverse_by_server={
-                's1': {'j1': 'fp_1'},
-                's2': {'n1': 'fp_2'},
-            },
-            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4', 'fp_5'},
-            author_by_id={'fp_3': 'ArtistA', 'fp_4': 'ArtistA', 'fp_5': 'ArtistB'},
-            safety_limit=1,
-        )
-        assert result['status'] == 'SUCCESS'
-        assert deleted == [['fp_3', 'fp_4']]
-        assert result['deleted_count'] == 2
-        assert result['orphaned_albums_count'] == 1
+        assert result['deleted_count'] == 0
+        assert result['unbound_mappings'] == 3
+        assert result['unbound_by_server'] == {'One': 1, 'Two': 2}
+        reported = {
+            t['item_id']
+            for album in result['orphaned_albums']
+            for t in album['tracks']
+        }
+        assert reported == {'fp_3', 'fp_4'}
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS

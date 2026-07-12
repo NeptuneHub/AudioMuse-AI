@@ -6,61 +6,117 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Chromaprint catalogue-id behaviour.
+"""Embedding-SimHash catalogue-id behaviour.
 
-Verifies that compute_chromaprint keeps fpcalc's raw fingerprint text, that
-chromaprint_canonical_id hashes it into a deterministic fp_<hex> id, and that
-is_fingerprint_id recognizes only canonical ids.
+Verifies that the MusiCNN-embedding fingerprint is deterministic and
+similarity-preserving (near-identical embeddings differ by few bits, distinct
+ones by many), that the fp_<16hex> id round-trips back to its hash, and that
+the Hamming-tolerant FingerprintIndex matches near hashes but never distant
+ones.
 
 Main Features:
-* Raw Chromaprint retention and deterministic canonical-id hashing.
-* Graceful None on a missing fpcalc binary.
-* fp_ prefix recognition and rejection of non-canonical ids.
+* Deterministic SimHash from arrays and raw float32 bytes.
+* Similarity preservation and id round-trip, retired-scheme ids rejected.
+* FingerprintIndex tolerance window (0..3 bits in, 4+ bits out).
 """
 
-from types import SimpleNamespace
+import numpy as np
 
 from tasks import audio_fingerprint as afp
 
 
-class TestChromaprintIdentity:
-    def test_keeps_raw_value_and_hashes_deterministically(self, monkeypatch):
-        raw = 'AQAAE0mUaEkSRZEGAA'
-        monkeypatch.setitem(afp._fpcalc_state, 'available', True)
-        monkeypatch.setattr(
-            afp.subprocess,
-            'run',
-            lambda *args, **kwargs: SimpleNamespace(
-                stdout='{"duration": 123.0, "fingerprint": "' + raw + '"}'
-            ),
-        )
-
-        assert afp.compute_chromaprint('/tmp/song.flac') == raw
-        first = afp.chromaprint_canonical_id(raw)
-        assert first == afp.chromaprint_canonical_id(raw)
-        assert first.startswith('fp_') and len(first) == 35
-        assert first != afp.chromaprint_canonical_id(raw + 'different')
-
-    def test_missing_fpcalc_returns_none(self, monkeypatch):
-        monkeypatch.setitem(afp._fpcalc_state, 'available', True)
-        def missing(*args, **kwargs):
-            raise FileNotFoundError('fpcalc')
-
-        monkeypatch.setattr(afp.subprocess, 'run', missing)
-        assert afp.compute_chromaprint('/tmp/song.flac') is None
-
-    def test_empty_chromaprint_has_no_canonical_id(self):
-        assert afp.chromaprint_canonical_id(None) is None
-        assert afp.chromaprint_canonical_id('') is None
+def _embedding(seed, dim=200):
+    rng = np.random.RandomState(seed)
+    return rng.standard_normal(dim).astype(np.float32)
 
 
-class TestIsFingerprintId:
-    def test_canonical_ids_recognized(self):
-        cid = afp.chromaprint_canonical_id('AQAAE0mUaEkSRZEGAA')
+class TestEmbeddingFingerprint:
+    def test_deterministic_across_input_forms(self):
+        emb = _embedding(1)
+        from_array = afp.embedding_fingerprint(emb)
+        from_bytes = afp.embedding_fingerprint(emb.tobytes())
+        from_list = afp.embedding_fingerprint(list(emb))
+        assert from_array == from_bytes == from_list
+        assert isinstance(from_array, int)
+
+    def test_similar_embeddings_land_within_tolerance(self):
+        emb = _embedding(2)
+        nudged = emb + np.float32(1e-4) * _embedding(3)
+        a = afp.embedding_fingerprint(emb)
+        b = afp.embedding_fingerprint(nudged)
+        assert afp.hamming_distance(a, b) <= afp.FINGERPRINT_MATCH_MAX_HAMMING
+
+    def test_distinct_embeddings_land_far_apart(self):
+        a = afp.embedding_fingerprint(_embedding(4))
+        b = afp.embedding_fingerprint(_embedding(5))
+        assert afp.hamming_distance(a, b) > afp.FINGERPRINT_MATCH_MAX_HAMMING
+
+    def test_invalid_embeddings_have_no_fingerprint(self):
+        assert afp.embedding_fingerprint(None) is None
+        assert afp.embedding_fingerprint([]) is None
+        assert afp.embedding_fingerprint(np.zeros(200, dtype=np.float32)) is None
+        assert afp.embedding_canonical_id(None) is None
+
+
+class TestCanonicalIdRoundTrip:
+    def test_id_encodes_and_recovers_the_hash(self):
+        fingerprint = afp.embedding_fingerprint(_embedding(6))
+        cid = afp.canonical_id_str(fingerprint)
+        assert cid.startswith('fp_') and len(cid) == 19
         assert afp.is_fingerprint_id(cid)
-        assert afp.is_fingerprint_id('fp_deadbeef')
+        assert afp.fingerprint_from_canonical_id(cid) == fingerprint
 
-    def test_non_fingerprint_ids_rejected(self):
-        assert not afp.is_fingerprint_id('abc123')
+    def test_retired_scheme_and_provider_ids_do_not_decode(self):
+        assert afp.fingerprint_from_canonical_id('fp_' + 'a' * 32) is None
+        assert afp.fingerprint_from_canonical_id('jellyfin-track-1') is None
+        assert afp.fingerprint_from_canonical_id(None) is None
+        assert not afp.is_fingerprint_id('plain-id')
         assert not afp.is_fingerprint_id(None)
-        assert not afp.is_fingerprint_id(42)
+
+    def test_signed_bigint_round_trip(self):
+        high_bit = afp.to_signed_bigint((1 << 63) | 5)
+        assert high_bit < 0
+        assert afp.from_signed_bigint(high_bit) == (1 << 63) | 5
+
+
+class TestFingerprintIndex:
+    def test_finds_exact_and_near_hashes(self):
+        base = afp.embedding_fingerprint(_embedding(7))
+        index = afp.FingerprintIndex()
+        index.add('fp_base', base)
+        assert index.find(base) == 'fp_base'
+        flipped = afp.to_signed_bigint(afp.from_signed_bigint(base) ^ 0b101)
+        assert afp.hamming_distance(base, flipped) == 2
+        assert index.find(flipped) == 'fp_base'
+
+    def test_rejects_hashes_beyond_tolerance(self):
+        base = afp.embedding_fingerprint(_embedding(8))
+        index = afp.FingerprintIndex()
+        index.add('fp_base', base)
+        far = afp.to_signed_bigint(afp.from_signed_bigint(base) ^ 0b11110000)
+        assert afp.hamming_distance(base, far) == 4
+        assert index.find(far) is None
+
+    def test_from_item_ids_skips_undecodable_ids(self):
+        fingerprint = afp.embedding_fingerprint(_embedding(9))
+        cid = afp.canonical_id_str(fingerprint)
+        index = afp.FingerprintIndex.from_item_ids(
+            [cid, 'provider-1', 'fp_' + 'a' * 32]
+        )
+        assert index.find(fingerprint) == cid
+
+    def test_prefers_the_closest_match(self):
+        base = afp.from_signed_bigint(afp.embedding_fingerprint(_embedding(10)))
+        near = afp.to_signed_bigint(base ^ 0b1)
+        exact = afp.to_signed_bigint(base)
+        index = afp.FingerprintIndex()
+        index.add('one-bit', near)
+        index.add('exact', exact)
+        assert index.find(afp.to_signed_bigint(base)) == 'exact'
+
+    def test_find_similar_fingerprint_helper(self):
+        base = afp.embedding_fingerprint(_embedding(11))
+        near = afp.to_signed_bigint(afp.from_signed_bigint(base) ^ 0b11)
+        assert afp.find_similar_fingerprint(base, [near]) == near
+        far = afp.to_signed_bigint(afp.from_signed_bigint(base) ^ 0b1111100000)
+        assert afp.find_similar_fingerprint(base, [far]) is None
