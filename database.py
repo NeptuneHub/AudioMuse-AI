@@ -745,6 +745,25 @@ ARTIST_PROJECTION_CACHE = None
 _SCHEMA_ADVISORY_LOCK = 726354821
 
 
+def purge_media_keys_from_app_config(cur):
+    """Delete every media-server setting from app_config, returning the count.
+
+    The music_servers registry is their ONLY home (the config globals are a
+    read-only projection of its default row). Boot and the provider migration
+    both call this single implementation, so a legacy copy can never survive in
+    app_config and quietly override - or leak the credentials of - a server that
+    no longer exists.
+    """
+    cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return 0
+    cur.execute(
+        "DELETE FROM app_config WHERE key = ANY(%s)",
+        (sorted(config.MEDIASERVER_CONFIG_KEYS),),
+    )
+    return cur.rowcount or 0
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -1237,18 +1256,13 @@ def init_db():
                     "Migrated media-server settings for '%s' into the music_servers registry",
                     _seed_type,
                 )
-            cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
-            if cur.fetchone()[0]:
-                cur.execute(
-                    "DELETE FROM app_config WHERE key = ANY(%s)",
-                    (sorted(config.MEDIASERVER_CONFIG_KEYS),),
+            removed_media_keys = purge_media_keys_from_app_config(cur)
+            if removed_media_keys:
+                logger.info(
+                    "Removed %d legacy media-server keys from app_config; "
+                    "the music_servers registry is now their only home",
+                    removed_media_keys,
                 )
-                if cur.rowcount:
-                    logger.info(
-                        "Removed %d legacy media-server keys from app_config; "
-                        "the music_servers registry is now their only home",
-                        cur.rowcount,
-                    )
 
             _create_plugins_table(cur)
 

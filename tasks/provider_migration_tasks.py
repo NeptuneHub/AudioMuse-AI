@@ -270,6 +270,11 @@ def _merge_mapping(state):
 def _load_new_meta_from_table(cur, session_id):
     cur.execute("SELECT to_regclass('public.migration_target_meta')")
     if cur.fetchone()[0] is None:
+        logger.warning(
+            "provider migration: migration_target_meta does not exist; item ids "
+            "will be rewritten but the target's path/title/artist/album will not "
+            "be applied to the catalogue"
+        )
         return {}
     cur.execute(
         "SELECT new_id, path, title, artist, album, album_artist, year "
@@ -286,6 +291,13 @@ def _load_new_meta_from_table(cur, session_id):
             'album_artist': r[5],
             'year': r[6],
         }
+    if not out:
+        logger.warning(
+            "provider migration: session %s has no target metadata rows; the "
+            "catalogue keeps the SOURCE provider's metadata (re-run the dry run "
+            "to collect it again)",
+            session_id,
+        )
     return out
 
 
@@ -464,6 +476,30 @@ def _clear_index_tables(cur):
             cur.execute(f"DELETE FROM {table}")
 
 
+def _clear_default_server_artist_map(cur):
+    """Drop the default server's artist ids: they belong to the OLD provider.
+
+    The migration repoints the default server at a new provider, so every
+    ``provider_artist_id`` stored for it is now a dead id - the same reason the
+    legacy ``artist_mapping`` table is cleared above. Track ids are repointed
+    instead of dropped because the matcher produced a new id for each one;
+    artists have no such mapping, so they are cleared and the next analysis
+    rebuilds them. Secondary servers did not migrate: their rows stay.
+    """
+    cur.execute("SELECT to_regclass('public.artist_server_map')")
+    if cur.fetchone()[0] is None:
+        return
+    cur.execute(
+        "DELETE FROM artist_server_map a USING music_servers s "
+        "WHERE s.is_default AND a.server_id = s.server_id"
+    )
+    if cur.rowcount:
+        logger.info(
+            "provider migration: cleared %d stale artist id(s) of the default server",
+            cur.rowcount,
+        )
+
+
 def _run_migration_transaction(
     cur,
     mapping,
@@ -501,6 +537,7 @@ def _run_migration_transaction(
     index_rebuild_needed = _rewrite_index_id_maps(cur, mapping)
 
     _clear_index_tables(cur)
+    _clear_default_server_artist_map(cur)
 
     _write_provider_to_default_server(
         cur, target_type, target_creds, selected_libraries=selected_libraries
@@ -553,25 +590,18 @@ def _write_provider_to_default_server(cur, target_type, target_creds, selected_l
 def _purge_media_keys_from_app_config(cur):
     """Drop any media-server rows a legacy install still has in app_config.
 
-    The music_servers registry is the ONLY home of these settings (config
-    globals are a read-only projection of its default row, and init_db deletes
-    these keys at boot). The migration therefore writes the registry and clears
-    the legacy copies instead of maintaining a second one, which would leave a
-    stale provider - credentials included - behind until the next restart.
+    The registry is the ONLY home of these settings, so the migration writes it
+    and clears the legacy copies instead of maintaining a second one, which
+    would leave a stale provider - credentials included - behind until the next
+    restart. Boot does the same, through the same single implementation.
     """
-    import config as cfg
+    from database import purge_media_keys_from_app_config
 
-    cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
-    if not cur.fetchone()[0]:
-        return
-    cur.execute(
-        "DELETE FROM app_config WHERE key = ANY(%s)",
-        (sorted(cfg.MEDIASERVER_CONFIG_KEYS),),
-    )
-    if cur.rowcount:
+    removed = purge_media_keys_from_app_config(cur)
+    if removed:
         logger.info(
             "provider migration: removed %d legacy media-server key(s) from app_config",
-            cur.rowcount,
+            removed,
         )
 
 

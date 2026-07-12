@@ -19,6 +19,7 @@ Main Features:
 """
 
 import json
+import logging
 import os
 import sys
 import importlib.util
@@ -176,6 +177,10 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
         (
             lambda up: _matches(up, 'TO_REGCLASS', 'APP_CONFIG'),
             lambda up, params: _set_one((True,)),
+        ),
+        (
+            lambda up: _matches(up, 'TO_REGCLASS', 'ARTIST_SERVER_MAP'),
+            lambda up, params: _set_one(('artist_server_map',)),
         ),
         (
             lambda up: _matches(up, 'FROM MIGRATION_SESSION', 'SELECT'),
@@ -462,3 +467,56 @@ class TestExecuteProviderMigrationForwardsSelectedLibraries:
 
         kwargs = mock_tx.call_args.kwargs
         assert kwargs.get('selected_libraries') is None
+
+
+class TestMigrationClearsStaleArtistIds:
+    """The default server's artist ids belong to the OLD provider after a migration.
+
+    Track ids are repointed (the matcher produced a new id for each), but artists
+    have no such mapping - so, exactly like the legacy artist_mapping table, the
+    default server's artist_server_map rows are cleared and rebuilt by the next
+    analysis. Secondary servers did not migrate and keep theirs.
+    """
+
+    def test_default_servers_artist_rows_are_deleted(self, mig):
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        deletes = [s for s in executed if 'DELETE FROM artist_server_map' in s]
+        assert len(deletes) == 1
+        # Scoped to the default server only.
+        assert 'music_servers s' in deletes[0]
+        assert 's.is_default' in deletes[0]
+
+    def test_missing_table_is_tolerated(self, mig):
+        cur = MagicMock()
+        cur.fetchone.return_value = (None,)
+        executed = []
+        cur.execute.side_effect = lambda sql, p=None: executed.append(sql)
+
+        mig._clear_default_server_artist_map(cur)
+
+        assert not any('DELETE FROM artist_server_map' in s for s in executed)
+
+
+class TestMigrationWarnsOnMissingTargetMetadata:
+    def test_zero_meta_rows_is_logged(self, mig, caplog):
+        cur = MagicMock()
+        cur.fetchone.return_value = ('migration_target_meta',)
+        cur.fetchall.return_value = []
+
+        with caplog.at_level(logging.WARNING):
+            assert mig._load_new_meta_from_table(cur, 7) == {}
+
+        assert 'no target metadata rows' in caplog.text
+
+    def test_missing_table_is_logged(self, mig, caplog):
+        cur = MagicMock()
+        cur.fetchone.return_value = (None,)
+
+        with caplog.at_level(logging.WARNING):
+            assert mig._load_new_meta_from_table(cur, 7) == {}
+
+        assert 'migration_target_meta does not exist' in caplog.text
