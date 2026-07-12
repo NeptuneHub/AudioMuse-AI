@@ -20,6 +20,9 @@ Main Features:
 * Zombie worker hashes reaped: a job-count increment landing after the worker
   key expired recreates it without a TTL, leaving a permanent ghost row with no
   heartbeat - any registration without a last_heartbeat is deregistered.
+* Interrupted server-alignment sweeps recovered: a sweep whose RQ job died
+  (e.g. killed by a worker restart) is revoked and replaced with a fresh
+  alignment covering all enabled servers.
 * Logs only when something is actually reaped, and survives per-iteration errors.
 """
 
@@ -35,6 +38,7 @@ try:
     from rq.worker_registration import clean_worker_registry
     from app_helper import rq_queue_high, rq_queue_default, redis_conn
     from app_logging import configure_logging
+    from tasks.multiserver_sync import recover_abandoned_sweeps
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")
@@ -121,5 +125,10 @@ if __name__ == '__main__':
                 )
         except Exception:
             logger.exception("Error in RQ Janitor loop")
+
+        try:
+            recover_abandoned_sweeps()
+        except Exception:
+            logger.exception("Janitor sweep recovery failed")
 
         time.sleep(10)

@@ -186,27 +186,33 @@ def _collect_task_metrics(cur):
 
 
 def _collect_music_server_metrics(cur):
-    """Per-configured-server matched-track counts for the Music Server Status
-    section. The catalogue is the UNION of all servers, so every server (the
-    default included) counts its own track_server_map rows; the default also
-    counts legacy provider-keyed rows that predate canonicalization, mirroring
-    the availability-mask semantics. Empty list when the registry tables do
-    not exist yet."""
+    """Per-configured-server alignment status for the Music Server Status
+    section. Servers hold DIFFERENT catalogues that may only partially overlap,
+    so each server is measured against its OWN library size (``track_count``,
+    captured by the last alignment sweep), never against the union catalogue.
+    ``matched_songs`` = this server's tracks present in the shared analyzed
+    catalogue (its track_server_map rows; the default also counts legacy
+    provider-keyed rows predating canonicalization). ``server_songs`` is None
+    until a sweep has fetched the server's catalogue at least once.
+    ``catalogue_songs`` carries the union total for the section caption.
+    Recomputed live on every dashboard request (not part of the hourly cache)
+    so new servers and running sweeps show up immediately. Empty list when the
+    registry tables do not exist yet."""
     servers = []
     try:
         if not _table_exists(cur, 'music_servers'):
             return servers
-        total = _safe_count(cur, "SELECT COUNT(*) FROM score")
+        catalogue_total = _safe_count(cur, "SELECT COUNT(*) FROM score")
         cur.execute(
             "SELECT ms.server_id, ms.name, ms.server_type, ms.is_default, ms.enabled, "
-            "COALESCE(m.cnt, 0) "
+            "ms.track_count, COALESCE(m.cnt, 0) "
             "FROM music_servers ms LEFT JOIN "
             "(SELECT server_id, COUNT(*) AS cnt FROM track_server_map GROUP BY server_id) m "
             "ON m.server_id = ms.server_id "
             "ORDER BY ms.is_default DESC, ms.name ASC"
         )
         for r in cur.fetchall():
-            matched = int(r[5] or 0)
+            matched = int(r[6] or 0)
             if r[3]:
                 # Legacy rows keep their provider id and are implicitly on the
                 # default server until canonicalization maps them explicitly.
@@ -218,14 +224,20 @@ def _collect_music_server_metrics(cur):
                     "WHERE m.item_id = s.item_id AND m.server_id = %s)",
                     (r[0],),
                 )
+            server_songs = r[5]
+            if server_songs is None and r[3] and matched:
+                # The default server's library defined the catalogue before the
+                # first sweep stored its real size, so matched = its library.
+                server_songs = matched
             servers.append(
                 {
                     'name': r[1],
                     'server_type': r[2],
                     'is_default': bool(r[3]),
                     'enabled': bool(r[4]),
-                    'matched_songs': min(matched, total) if total else matched,
-                    'total_songs': total,
+                    'matched_songs': matched,
+                    'server_songs': int(server_songs) if server_songs is not None else None,
+                    'catalogue_songs': catalogue_total,
                 }
             )
     except Exception as e:
@@ -440,6 +452,11 @@ def dashboard_summary():
         recent = _collect_task_metrics(cur)
         cron_rows = _collect_cron(cur)
         content, stats_updated_at = _load_dashboard_stats(cur)
+        # Server alignment counts are cheap and change while sweeps run, so
+        # they bypass the hourly cache: new servers and fresh matches show up
+        # on the next page load instead of after the next stats refresh.
+        content = dict(content or {})
+        content['music_servers'] = _collect_music_server_metrics(cur)
     finally:
         cur.close()
 

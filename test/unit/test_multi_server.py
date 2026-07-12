@@ -789,6 +789,91 @@ class TestSweepAlignment:
         assert msrv._cancel_active_sweeps() == ['t1', 't2']
         assert revoked == ['t1', 't2']
 
+    def test_recover_abandoned_sweeps_replaces_dead_sweep(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchall.return_value = [('dead-sweep',)]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_job_is_alive', lambda task_id: False)
+        enqueued = {}
+
+        def fake_enqueue(func, **kwargs):
+            enqueued['func'] = func
+            enqueued.update(kwargs)
+
+        import app_helper
+        monkeypatch.setattr(app_helper.rq_queue_default, 'enqueue', fake_enqueue)
+        new_task_id = sync.recover_abandoned_sweeps()
+        assert new_task_id is not None
+        assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
+        assert enqueued['job_id'] == new_task_id
+        revoke_calls = [e for e in executed if e[0].startswith('UPDATE task_status')]
+        assert revoke_calls and revoke_calls[0][1][-1] == ['dead-sweep']
+
+    def test_recover_abandoned_sweeps_leaves_healthy_sweeps_alone(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchall.return_value = [('live-sweep',)]
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_job_is_alive', lambda task_id: True)
+        import app_helper
+        called = []
+        monkeypatch.setattr(
+            app_helper.rq_queue_default, 'enqueue',
+            lambda *a, **k: called.append(1),
+        )
+        assert sync.recover_abandoned_sweeps() is None
+        assert called == []
+
+    def test_dashboard_metrics_measure_each_server_against_its_own_catalogue(self, monkeypatch):
+        import app_dashboard as dash
+
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        counts = iter([188057, 25])
+        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: next(counts))
+        cur = MagicMock()
+        cur.fetchall.return_value = [
+            ('s1', 'Jellyfin', 'jellyfin', True, True, None, 188032),
+            ('s2', 'PLEX', 'plex', False, True, 120, 46),
+            ('s3', 'Fresh', 'navidrome', False, True, None, 0),
+        ]
+        rows = dash._collect_music_server_metrics(cur)
+        assert rows[0]['matched_songs'] == 188057
+        assert rows[0]['server_songs'] == 188057
+        assert rows[1]['matched_songs'] == 46
+        assert rows[1]['server_songs'] == 120
+        assert rows[2]['server_songs'] is None
+        assert all(r['catalogue_songs'] == 188057 for r in rows)
+
+    def test_sweep_stores_server_track_count(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        target = [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
+        stored = {}
+        monkeypatch.setattr(
+            sync, '_store_server_track_count',
+            lambda db, sid, count: stored.update({sid: count}),
+        )
+        sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+        )
+        assert stored == {'s1': 1}
+
     def test_prune_skipped_when_fetch_looks_partial(self, caplog):
         from tasks import multiserver_sync as sync
 

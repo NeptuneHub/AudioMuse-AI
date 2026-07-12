@@ -223,7 +223,7 @@
         <h2>Music Server Status
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">How many analyzed songs are matched (playable) on each configured music server. The default server owns the analyzed catalogue; the other servers are filled in by the background matching sweep.</span>
+                <span class="tooltip-text">Each server holds its own library; the analyzed catalogue is the union of all of them. "In catalogue" counts how many of THAT server's songs are matched to the shared catalogue, measured against the server's own library size (captured by its last alignment sweep). Overlap between servers can be anything from 0% to 100%.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
@@ -233,9 +233,10 @@
                     <th>Server</th>
                     <th class="col-medium">Type</th>
                     <th class="col-narrow">Default</th>
-                    <th>Matched Songs</th>
+                    <th class="col-medium">Songs on server</th>
+                    <th>In catalogue</th>
                 </tr></thead>
-                <tbody><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -284,7 +285,7 @@
 
     <!-- Content metrics -->
     <section>
-        <h2>Content / Library</h2>
+        <h2>Content / Library (shared catalogue)</h2>
         <p class="muted dash-updated" id="content-updated">Loading…</p>
 
         <div class="dash-subsection">
@@ -695,31 +696,42 @@
         tbody.innerHTML = '';
         servers.forEach(s => {
             const tr = document.createElement('tr');
-            const total = s.total_songs || 0;
+            const serverSongs = (s.server_songs === null || s.server_songs === undefined)
+                ? null : (s.server_songs || 0);
             const matched = s.matched_songs || 0;
-            const pct = total ? Math.round(100 * matched / total) : 0;
             const nameTd = document.createElement('td');
             nameTd.textContent = s.name + (s.enabled ? '' : ' [disabled]');
             const typeTd = document.createElement('td');
             typeTd.textContent = s.server_type;
             const defTd = document.createElement('td');
             defTd.textContent = s.is_default ? 'yes' : '';
+            const songsTd = document.createElement('td');
+            songsTd.textContent = serverSongs === null ? 'not yet aligned' : serverSongs.toLocaleString();
             const matchTd = document.createElement('td');
-            const wrap = document.createElement('div');
-            wrap.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
-            const barOuter = document.createElement('div');
-            barOuter.style.cssText = 'flex:1; max-width:160px; height:10px; border-radius:5px; background:rgba(128,128,128,0.25); overflow:hidden;';
-            const barInner = document.createElement('div');
-            barInner.style.cssText = 'height:100%; width:' + pct + '%; background:var(--color-primary, #4a90d9);';
-            barOuter.appendChild(barInner);
-            const label = document.createElement('span');
-            label.textContent = matched.toLocaleString() + ' / ' + total.toLocaleString() + ' (' + pct + '%)';
-            wrap.appendChild(barOuter);
-            wrap.appendChild(label);
-            matchTd.appendChild(wrap);
+            if (serverSongs === null && !matched) {
+                matchTd.textContent = 'run an alignment sweep';
+                matchTd.className = 'muted';
+            } else {
+                const denom = serverSongs === null ? matched : serverSongs;
+                const pct = denom ? Math.min(100, Math.round(100 * matched / denom)) : 0;
+                const wrap = document.createElement('div');
+                wrap.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
+                const barOuter = document.createElement('div');
+                barOuter.style.cssText = 'flex:1; max-width:160px; height:10px; border-radius:5px; background:rgba(128,128,128,0.25); overflow:hidden;';
+                const barInner = document.createElement('div');
+                barInner.style.cssText = 'height:100%; width:' + pct + '%; background:var(--color-primary, #4a90d9);';
+                barOuter.appendChild(barInner);
+                const label = document.createElement('span');
+                label.textContent = matched.toLocaleString()
+                    + (serverSongs === null ? '' : ' of ' + serverSongs.toLocaleString() + ' (' + pct + '%)');
+                wrap.appendChild(barOuter);
+                wrap.appendChild(label);
+                matchTd.appendChild(wrap);
+            }
             tr.appendChild(nameTd);
             tr.appendChild(typeTd);
             tr.appendChild(defTd);
+            tr.appendChild(songsTd);
             tr.appendChild(matchTd);
             tbody.appendChild(tr);
         });
@@ -744,19 +756,19 @@
             const libStamp = d.stats_updated_at;
             setText('keynumbers-updated',
                 libStamp
-                    ? 'Library stats as of: ' + libStamp + ' (refreshed hourly)'
-                    : 'Library stats: still collecting\u2026');
+                    ? 'Shared catalogue (union of all music servers) - stats as of: ' + libStamp + ' (refreshed hourly)'
+                    : 'Shared catalogue stats: still collecting\u2026');
             setText('content-updated',
                 libStamp
-                    ? 'Library stats as of: ' + libStamp + ' (refreshed hourly)'
-                    : 'Library stats: still collecting\u2026');
+                    ? 'Shared catalogue (union of all music servers) - stats as of: ' + libStamp + ' (refreshed hourly)'
+                    : 'Shared catalogue stats: still collecting\u2026');
             const liveSuffix = liveStamp
                 ? 'Last updated: ' + liveStamp + ' (auto-refresh every 30s)'
                 : '';
             setText('music-servers-updated',
-                libStamp
-                    ? 'As of: ' + libStamp + ' (refreshed hourly)'
-                    : 'Still collecting…');
+                liveStamp
+                    ? 'Live - last updated: ' + liveStamp + ' (auto-refresh every 30s)'
+                    : 'Loading…');
             setText('workers-updated', liveSuffix);
             setText('recent-updated', liveSuffix);
             setText('cron-updated', liveSuffix);

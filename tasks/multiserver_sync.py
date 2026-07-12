@@ -33,6 +33,9 @@ Main Features:
 * Bounded memory: the target catalogue is condensed into a slim CandidateIndex
   and the local catalogue streams through it in keyset-paginated chunks with
   per-chunk upserts, so neither side is ever fully materialized at once.
+* ``recover_abandoned_sweeps`` (run by the RQ janitor) revokes sweeps whose RQ
+  job died mid-run - e.g. killed by the worker restart a default-server change
+  publishes - and enqueues one replacement alignment of all enabled servers.
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
   per-server counts stay truthful; pruning is skipped when the fetch looks
   partial so a transient provider error never mass-deletes valid mappings.
@@ -40,6 +43,7 @@ Main Features:
   server catalogue instead of re-fetching it.
 """
 
+import json
 import logging
 import time
 import uuid
@@ -55,10 +59,101 @@ logger = logging.getLogger(__name__)
 
 SWEEP_TASK_TYPE = 'server_sweep'
 _PRUNE_MIN_FETCH_RATIO = 0.5
+_RQ_ALIVE_STATUSES = ('queued', 'started', 'deferred', 'scheduled')
 
 
 class SweepCancelled(Exception):
     pass
+
+
+def _job_is_alive(task_id):
+    from rq.job import Job
+    from app_helper import redis_conn
+
+    try:
+        job = Job.fetch(task_id, connection=redis_conn)
+        return str(job.get_status(refresh=True)) in _RQ_ALIVE_STATUSES
+    except Exception:
+        return False
+
+
+def recover_abandoned_sweeps():
+    """Replace alignment sweeps whose RQ job died before finishing.
+
+    A worker restart (for example the one published right after changing the
+    default server) can kill a queued or running sweep; RQ later parks the job
+    as failed/abandoned while its task_status row stays stuck in PROGRESS and
+    the servers it covered are never aligned. Called periodically by the RQ
+    janitor: every non-terminal sweep row whose job is no longer alive in RQ is
+    marked REVOKED and one fresh alignment covering all enabled servers is
+    enqueued in their place. Returns the replacement task id, or None when all
+    sweeps are healthy. Uses its own raw connection so it needs no Flask app
+    context.
+    """
+    import config
+    from app_helper import rq_queue_default
+
+    db = connect_raw()
+    db.autocommit = True
+    try:
+        cur = db.cursor()
+        try:
+            cur.execute(
+                "SELECT task_id FROM task_status WHERE task_type = %s "
+                "AND status NOT IN (%s, %s, %s)",
+                (SWEEP_TASK_TYPE, config.TASK_STATUS_SUCCESS,
+                 config.TASK_STATUS_FAILURE, config.TASK_STATUS_REVOKED),
+            )
+            candidates = [r[0] for r in cur.fetchall()]
+        finally:
+            cur.close()
+        stale = [task_id for task_id in candidates if not _job_is_alive(task_id)]
+        if not stale:
+            return None
+
+        now = time.time()
+        message = (
+            "Alignment was interrupted (worker restarted); "
+            "a fresh alignment of all servers was enqueued."
+        )
+        details = json.dumps({'message': message, 'status_message': message})
+        cur = db.cursor()
+        try:
+            cur.execute(
+                "UPDATE task_status SET status = %s, progress = 100, details = %s, "
+                "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
+                "WHERE task_id = ANY(%s)",
+                (config.TASK_STATUS_REVOKED, details, now, stale),
+            )
+            new_task_id = str(uuid.uuid4())
+            queued = json.dumps({
+                'message': 'Server alignment queued for all enabled servers.',
+            })
+            cur.execute(
+                "INSERT INTO task_status "
+                "(task_id, task_type, status, progress, details, timestamp, start_time) "
+                "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
+                "ON CONFLICT (task_id) DO NOTHING",
+                (new_task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_PENDING, queued, now),
+            )
+        finally:
+            cur.close()
+        rq_queue_default.enqueue(
+            'tasks.multiserver_sync.sweep_all_secondary_servers',
+            kwargs={'task_id': new_task_id},
+            job_id=new_task_id,
+            job_timeout=-1,
+        )
+        logger.warning(
+            "Recovered %d interrupted alignment sweep(s); enqueued replacement %s",
+            len(stale), new_task_id,
+        )
+        return new_task_id
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Recovery connection close failed", exc_info=True)
 
 
 def _make_reporter(task_id, label):
@@ -313,6 +408,27 @@ def _prune_stale_mappings(db, server_id, present_ids):
         cur.close()
 
 
+def _store_server_track_count(db, server_id, track_count):
+    """Persist the server's own catalogue size (from the sweep fetch) so the
+    dashboard can report alignment against the server's real library instead of
+    the union catalogue."""
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE music_servers SET track_count = %s WHERE server_id = %s",
+            (int(track_count), server_id),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("Could not persist track count for server %s", server_id, exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Track-count rollback failed", exc_info=True)
+    finally:
+        cur.close()
+
+
 def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catalog_cache=None):
     stype = server['server_type']
     server_id = server['server_id']
@@ -344,6 +460,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catal
 
     target_total = len(target_tracks)
     present_ids = {str(t['id']) for t in target_tracks if t.get('id')}
+    _store_server_track_count(db, server_id, target_total)
     pruned = 0
     if full_refresh:
         pruned = _prune_stale_mappings(db, server_id, present_ids)

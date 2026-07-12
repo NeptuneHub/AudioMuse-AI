@@ -1184,6 +1184,12 @@ def init_db():
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_servers_single_default "
                 "ON music_servers (is_default) WHERE is_default"
             )
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'music_servers' AND column_name = 'track_count'"
+            )
+            if not cur.fetchone():
+                cur.execute("ALTER TABLE music_servers ADD COLUMN track_count INTEGER")
             cur.execute("SAVEPOINT ms_unique_name")
             try:
                 cur.execute(
