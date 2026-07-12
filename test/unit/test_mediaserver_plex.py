@@ -304,13 +304,13 @@ class TestPlexMusicLibrariesFilter:
 
     @patch('tasks.mediaserver.plex.requests.get')
     @patch('tasks.mediaserver.plex.config')
-    def test_user_creds_skip_music_libraries_filter(self, mock_config, mock_get):
+    def test_bound_creds_still_apply_active_library_filter(self, mock_config, mock_get):
         from tasks.mediaserver.plex import _target_sections
 
         _set_config(mock_config, music_libraries='Nonexistent')
         mock_get.return_value = _resp(_sections_payload())
 
-        assert _target_sections({'url': PLEX_URL, 'token': 'x'}) == [{'id': '5', 'name': 'Music'}]
+        assert _target_sections({'url': PLEX_URL, 'token': 'x'}) == []
 
 
 class TestPlexGetAllSongsPagination:

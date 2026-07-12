@@ -131,9 +131,9 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
 }
 
 # The content fingerprint is the catalogue standard, not an option: every
-# analyzed track is fingerprinted (Chromaprint when its library is present,
-# otherwise a librosa chroma fingerprint with the identical 64-bit SimHash
-# pipeline), that fingerprint id IS the canonical item_id used by every index and
+# analyzed track is fingerprinted by the bundled fpcalc/Chromaprint tool. The
+# intact Chromaprint is retained and its SHA-256 digest IS the canonical item_id
+# used by every index and
 # search, and each media server's own track id (including the single/default
 # server) is kept in the track_server_map table and translated back on output.
 # The cross-server matching sweep fingerprints both sides for exact matching.
@@ -622,6 +622,7 @@ IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored cell-vector precision: 'i8' (int8; angular only, euclidean/dot auto-fall to f16), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
+IVF_TRAIN_SAMPLE_MAX = int(os.environ.get("IVF_TRAIN_SAMPLE_MAX", "50000"))  # Hard cap on in-RAM IVF training rows; MiniBatchKMeans does not need the whole catalogue
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
 IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "1024"))  # Cells probed per query (X): the dominant recall/latency knob

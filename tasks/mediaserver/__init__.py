@@ -311,6 +311,8 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
 
     user_creds = context.active_creds(user_creds)
     item_ids = _to_server_ids(item_ids)
+    if not item_ids:
+        return None
     provider = _provider()
     if provider is None:
         raise NotImplementedError(

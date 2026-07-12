@@ -550,6 +550,44 @@ def _pin_blas_single_thread() -> None:
 
 
 _LIVE_INDEXES: "weakref.WeakSet[PagedIvfIndex]" = weakref.WeakSet()
+_AVAILABILITY_CACHE = {}
+_AVAILABILITY_CACHE_LOCK = threading.Lock()
+_AVAILABILITY_CACHE_TTL = 30.0
+
+
+def invalidate_availability_cache(server_id=None):
+    """Invalidate cached per-server index masks after mapping changes."""
+    with _AVAILABILITY_CACHE_LOCK:
+        if server_id is None:
+            _AVAILABILITY_CACHE.clear()
+            return
+        sid = str(server_id)
+        for key in [key for key in _AVAILABILITY_CACHE if key[1] == sid]:
+            _AVAILABILITY_CACHE.pop(key, None)
+
+
+def active_availability_scope():
+    """Return the current request/job server, or None for union/background scope."""
+    try:
+        from tasks.mediaserver import context
+
+        active = context.active_server_id()
+        if active:
+            return str(active)
+    except Exception:
+        pass
+    try:
+        from flask import has_request_context
+
+        if not has_request_context():
+            return None
+        from app_server_context import resolve_request_server_id
+        from tasks.mediaserver import registry
+
+        requested = resolve_request_server_id()
+        return str(requested or registry.get_default_server_id() or '') or None
+    except Exception:
+        return None
 
 
 def end_all_requests() -> None:
@@ -755,8 +793,10 @@ class PagedIvfIndex:
         storage_dtype: int = 0,
         mmap_obj=None,
         cell_offsets: Optional[Dict[int, Tuple[int, int]]] = None,
+        track_scoped: bool = True,
     ):
         self._dim = int(dim)
+        self._track_scoped = bool(track_scoped)
         self._metric = (metric or "angular").lower()
         self._normalized = bool(normalized)
         self._storage_dtype = int(storage_dtype)
@@ -766,6 +806,7 @@ class PagedIvfIndex:
         self._mmap = mmap_obj
         self._cell_offsets = cell_offsets or {}
         self._n_items = len(item_ids)
+        self._item_ids = list(item_ids)
         self._record_size = 4 + self._dim * quant.elem_size(self._storage_dtype)
         self._id2cell = np.ascontiguousarray(id2cell, dtype=np.uint32)
         self._nprobe = int(nprobe if nprobe is not None else config.IVF_NPROBE)
@@ -788,6 +829,51 @@ class PagedIvfIndex:
         self._last_mmap_access = time.monotonic()
         self._mmap_pages_dropped = False
         _LIVE_INDEXES.add(self)
+
+    def _availability_mask(self):
+        if not self._track_scoped:
+            return None
+        server_id = active_availability_scope()
+        if server_id is None:
+            return None
+        # Include the live index instance so a rebuild with the same name can
+        # never reuse a mask whose length/order belongs to the previous id map.
+        key = (self._index_name, server_id, id(self))
+        now = time.monotonic()
+        with _AVAILABILITY_CACHE_LOCK:
+            cached = _AVAILABILITY_CACHE.get(key)
+            if cached is not None and now - cached[0] < _AVAILABILITY_CACHE_TTL:
+                return cached[1]
+        conn = self._conn_factory()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT item_id FROM track_server_map WHERE server_id = %s",
+                (server_id,),
+            )
+            available = {str(row[0]) for row in cur.fetchall()}
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM music_servers "
+                "WHERE server_id = %s AND is_default)",
+                (server_id,),
+            )
+            is_default = bool(cur.fetchone()[0])
+        if is_default:
+            # A legacy default-server catalogue may predate track_server_map.
+            # Its provider ids are safe identity ids; canonical fp_ ids are not.
+            from tasks.audio_fingerprint import is_fingerprint_id
+
+            available.update(
+                item_id for item_id in self._item_ids
+                if not is_fingerprint_id(item_id)
+            )
+        mask = np.fromiter(
+            (item_id in available for item_id in self._item_ids),
+            dtype=np.bool_,
+            count=self._n_items,
+        )
+        with _AVAILABILITY_CACHE_LOCK:
+            _AVAILABILITY_CACHE[key] = (now, mask)
+        return mask
 
     def __len__(self) -> int:
         return self._n_items
@@ -957,6 +1043,7 @@ class PagedIvfIndex:
         cache = self._cache()
         probe = order[: max(1, self._nprobe)]
         cells = self._read_cells(probe, cache)
+        allowed = self._availability_mask()
         cand_ids: List[np.ndarray] = []
         cand_vecs: List[np.ndarray] = []
         for cell_id in probe:
@@ -966,6 +1053,12 @@ class PagedIvfIndex:
             ids, vecs = cell
             if ids.shape[0] == 0:
                 continue
+            if allowed is not None:
+                keep = allowed[ids]
+                if not keep.any():
+                    continue
+                ids = ids[keep]
+                vecs = vecs[keep]
             cand_ids.append(ids)
             cand_vecs.append(vecs)
         if not cand_ids:
@@ -1075,10 +1168,17 @@ class PagedIvfIndex:
         cell_ids = self._max_distance_cell_ids(q, k)
         state = {"max_d": float("-inf"), "far_id": None}
         qp = self._prep_query(q)
+        allowed = self._availability_mask()
 
         def _consume(ids: np.ndarray, vecs: np.ndarray) -> None:
             if vecs.shape[0] == 0:
                 return
+            if allowed is not None:
+                keep = allowed[ids]
+                if not keep.any():
+                    return
+                ids = ids[keep]
+                vecs = vecs[keep]
             dists = self._cell_distances(qp, vecs)
             mask = ids != int(int_id)
             if not mask.any():
@@ -1239,6 +1339,7 @@ def build_and_store_paged_ivf(
     item_ids: List[str],
     dim: int,
     metric: str,
+    consume_vectors: bool = False,
 ) -> bool:
     from sklearn.cluster import MiniBatchKMeans
 
@@ -1258,12 +1359,23 @@ def build_and_store_paged_ivf(
     metric = (metric or "angular").lower()
     normalized = metric == "angular"
     storage_dtype = quant.effective_code(quant.dtype_code(config.IVF_STORAGE_DTYPE), metric)
-    train_mat = _normalize_rows(vectors) if normalized else vectors
+    if normalized:
+        train_mat = vectors if consume_vectors else vectors.copy()
+        norms = np.linalg.norm(train_mat, axis=1, keepdims=True).astype(np.float32)
+        norms[norms == 0.0] = np.float32(1.0)
+        train_mat /= norms
+        del norms
+    else:
+        train_mat = vectors
 
     base_nlist = int(round(8.0 * np.sqrt(max(1, n_items))))
     nlist = max(1, min(config.IVF_NLIST_MAX, base_nlist, n_items))
 
-    sample_n = min(n_items, config.IVF_TRAIN_POINTS_PER_CELL * nlist)
+    sample_n = min(
+        n_items,
+        config.IVF_TRAIN_POINTS_PER_CELL * nlist,
+        max(1, config.IVF_TRAIN_SAMPLE_MAX),
+    )
     if sample_n < n_items:
         sample_keys = np.fromiter(
             (
@@ -1304,30 +1416,39 @@ def build_and_store_paged_ivf(
     max_cell_records = max(1, max_cell_bytes // (4 + dim * quant.elem_size(storage_dtype)))
     int_ids = np.arange(n_items, dtype=np.int32)
 
-    cells: List[Tuple[int, np.ndarray, np.ndarray]] = []
     id2cell = np.empty(n_items, dtype=np.uint32)
     centroid_list: List[np.ndarray] = [centroids[c] for c in range(nlist)]
     next_cell_id = nlist
-
-    for c in range(nlist):
-        members = np.where(labels == c)[0]
-        if members.shape[0] == 0:
-            cells.append((c, np.empty(0, dtype=np.int32), np.empty((0, dim), dtype=np.float32)))
-            continue
-        reused_c = False
-        for grp, centroid in _bounded_cell_groups(
-            members, train_mat[members], centroids[c], max_cell_records
-        ):
-            if not reused_c:
-                assigned_cell = c
-                centroid_list[c] = centroid
-                reused_c = True
-            else:
-                assigned_cell = next_cell_id
-                centroid_list.append(centroid)
-                next_cell_id += 1
-            cells.append((assigned_cell, int_ids[grp], train_mat[grp]))
-            id2cell[grp] = assigned_cell
+    with db_conn.cursor() as cur:
+        cur.execute(f"DELETE FROM {IVF_CELL_TABLE} WHERE index_name = %s", (index_name,))
+        for c in range(nlist):
+            members = np.where(labels == c)[0]
+            if members.shape[0] == 0:
+                continue
+            reused_c = False
+            member_vecs = train_mat[members]
+            for grp, centroid in _bounded_cell_groups(
+                members, member_vecs, centroids[c], max_cell_records
+            ):
+                if not reused_c:
+                    assigned_cell = c
+                    centroid_list[c] = centroid
+                    reused_c = True
+                else:
+                    assigned_cell = next_cell_id
+                    centroid_list.append(centroid)
+                    next_cell_id += 1
+                cell_ids = int_ids[grp]
+                cell_vecs = train_mat[grp]
+                id2cell[grp] = assigned_cell
+                packed = pack_cell(cell_ids, cell_vecs, storage_dtype)
+                cur.execute(
+                    f"INSERT INTO {IVF_CELL_TABLE} "
+                    "(index_name, cell_id, cell_data) VALUES (%s, %s, %s)",
+                    (index_name, int(assigned_cell), psycopg2.Binary(packed)),
+                )
+                del cell_ids, cell_vecs, packed
+            del member_vecs
 
     final_centroids = np.ascontiguousarray(np.vstack(centroid_list), dtype=np.float32)
     logger.info(
@@ -1337,19 +1458,17 @@ def build_and_store_paged_ivf(
         max_cell_records,
         quant.dtype_name(storage_dtype),
     )
-    store_paged_ivf(
-        db_conn,
-        index_name,
-        final_centroids,
-        id2cell,
-        list(item_ids),
-        cells,
-        dim,
-        metric,
-        max_part_size_mb=config.IVF_MAX_PART_SIZE_MB,
-        normalized=normalized,
-        storage_dtype=storage_dtype,
+    from .index_build_helpers import store_segmented_blob
+
+    dir_blob = pack_directory(
+        final_centroids, id2cell, list(item_ids), dim, metric,
+        normalized=normalized, storage_dtype=storage_dtype,
     )
+    store_segmented_blob(
+        db_conn, IVF_DIR_TABLE, f"{index_name}__ivf_dir", dir_blob,
+        max_part_size_mb=config.IVF_MAX_PART_SIZE_MB,
+    )
+    invalidate_global_cell_cache(index_name)
     return True
 
 
@@ -1397,6 +1516,7 @@ def load_paged_ivf_index(
     metric: str,
     conn_factory: Optional[Callable[[], "psycopg2.extensions.connection"]] = None,
     label: Optional[str] = None,
+    track_scoped: bool = True,
 ):
     from .index_build_helpers import load_segmented_blob
 
@@ -1454,6 +1574,7 @@ def load_paged_ivf_index(
         storage_dtype=storage_dtype,
         mmap_obj=mmap_obj,
         cell_offsets=cell_offsets,
+        track_scoped=track_scoped,
     )
     id_map = {i: item_id for i, item_id in enumerate(item_ids)}
     reverse_id_map = {item_id: i for i, item_id in id_map.items()}

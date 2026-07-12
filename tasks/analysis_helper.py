@@ -35,6 +35,7 @@ from database import (
     get_db,
     get_clap_embedding,
     save_track_analysis_and_embedding,
+    save_track_chromaprint,
     save_clap_embedding,
     save_lyrics_embedding,
 )
@@ -330,6 +331,29 @@ def _str_ids(ids):
     return [str(i) for i in ids]
 
 
+def catalog_item_id(item):
+    """Return the canonical catalogue id attached to a provider track."""
+    return str(item.get('_catalog_item_id') or item.get('Id') or item.get('id'))
+
+
+def attach_catalog_item_ids(tracks, server_id=None, conn=None):
+    """Attach canonical ids resolved from this server's provider ids.
+
+    Unknown provider tracks retain their provider id temporarily. After their
+    first analysis canonicalization rewrites that id and records the server map.
+    """
+    if not tracks:
+        return tracks
+    from tasks.mediaserver import context, registry
+
+    provider_ids = [str(t.get('Id') or t.get('id')) for t in tracks]
+    active_server_id = server_id or context.active_server_id()
+    mapped = registry.reverse_translate_ids(provider_ids, active_server_id, conn=conn)
+    for item, provider_id in zip(tracks, provider_ids):
+        item['_catalog_item_id'] = str(mapped.get(provider_id, provider_id))
+    return tracks
+
+
 def get_existing_track_ids(track_ids):
     if not track_ids:
         return set()
@@ -416,7 +440,7 @@ def refresh_track_metadata(item, album_name):
     query = pgsql.SQL("UPDATE score SET {} WHERE item_id = %s AND ({})").format(
         set_parts, where_parts
     )
-    params = (*values, str(item['Id']), *(p for v in values for p in (v, v)))
+    params = (*values, catalog_item_id(item), *(p for v in values for p in (v, v)))
     try:
         with get_db() as conn, conn.cursor() as cur:
             cur.execute(query, params)
@@ -443,16 +467,21 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
             logger.warning(f"No artist_id for '{name}'{scope}")
 
 
-def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_enabled):
+def decide_track_needs(
+    track_id, existing, missing_clap, missing_lyrics, lyrics_enabled,
+    missing_chromaprint=None,
+):
     return (
         track_id not in existing,
         track_id in missing_clap,
         lyrics_enabled and track_id in missing_lyrics,
+        missing_chromaprint is not None and track_id in missing_chromaprint,
     )
 
 
-def compute_album_needs(tracks, clap_available, lyrics_enabled):
-    ids = [str(t['Id']) for t in tracks]
+def compute_album_needs(tracks, clap_available, lyrics_enabled, server_id=None):
+    attach_catalog_item_ids(tracks, server_id=server_id)
+    ids = [catalog_item_id(t) for t in tracks]
     existing = len(get_existing_track_ids(ids))
 
     def needs_in(flag, table):
@@ -462,11 +491,34 @@ def compute_album_needs(tracks, clap_available, lyrics_enabled):
         existing,
         needs_in(clap_available, 'clap_embedding'),
         needs_in(lyrics_enabled, 'lyrics_embedding'),
+        bool(get_missing_chromaprint_ids(ids)),
     )
 
 
+def get_missing_chromaprint_ids(track_ids):
+    from tasks.audio_fingerprint import fpcalc_available
+
+    if not track_ids or not fpcalc_available():
+        return set()
+    ids = _str_ids(track_ids)
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT item_id FROM score WHERE item_id IN %s "
+            "AND chromaprint IS NOT NULL AND chromaprint <> ''",
+            (tuple(ids),),
+        )
+        existing = {str(row[0]) for row in cur.fetchall()}
+    return set(ids) - existing
+
+
+def persist_chromaprint(item_id, chromaprint):
+    if not chromaprint:
+        return False
+    return save_track_chromaprint(item_id, chromaprint)
+
+
 def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
-    parts = ["MusiCNN"]
+    parts = ["MusiCNN", "Chromaprint"]
     if clap_available:
         parts.append("CLAP")
     if lyrics_enabled:
@@ -518,7 +570,7 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
 
 def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):
     save_track_analysis_and_embedding(
-        item['Id'],
+        catalog_item_id(item),
         item['Name'],
         item.get('AlbumArtist', 'Unknown'),
         analysis['tempo'],
@@ -605,7 +657,7 @@ def run_lyrics_for_track(
             source_path=str(path) if path is not None else None,
             artist=item.get('AlbumArtist') or item.get('Artist'),
             track=item.get('Name'),
-            track_id=item.get('Id') or item.get('id'),
+            track_id=catalog_item_id(item),
             top_moods=top_moods,
             audio_loader=audio_loader,
         )
@@ -613,7 +665,7 @@ def run_lyrics_for_track(
         if emb is None or getattr(emb, 'size', 0) == 0:
             logger.warning(f"  - Lyrics analysis produced no embedding for {track_name_full}")
             return False
-        save_lyrics_embedding(item['Id'], emb, result.get('axis_vector'))
+        save_lyrics_embedding(catalog_item_id(item), emb, result.get('axis_vector'))
         logger.info("  - Lyrics embedding saved")
         return True
     except Exception as e:

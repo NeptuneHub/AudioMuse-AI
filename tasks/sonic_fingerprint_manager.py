@@ -45,14 +45,12 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
 
     provider_ids = [str(song['Id']) for song in top_songs]
     from .mediaserver import context as ms_context
-    from .mediaserver.registry import reverse_translate_ids
-    try:
-        top_song_ids = list(
-            reverse_translate_ids(provider_ids, ms_context.active_server_id()).values()
-        )
-    except Exception:
-        logger.exception("Top-played id translation failed; using provider ids as-is")
-        top_song_ids = provider_ids
+    from .mediaserver.registry import canonical_input_ids
+    canonical_by_provider = canonical_input_ids(
+        provider_ids, ms_context.active_server_id()
+    )
+    top_song_ids = [canonical_by_provider.get(pid, pid) for pid in provider_ids]
+    provider_by_canonical = {c: p for p, c in canonical_by_provider.items()}
     logger.info(f"Found {len(top_song_ids)} top played songs to create fingerprint from.")
     logger.debug(f"Top played song IDs: {top_song_ids[:5]}...")
 
@@ -94,7 +92,9 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
 
         embedding_vector = embeddings_map[song_id]
 
-        last_played_str = get_last_played_time(song_id, user_creds=user_creds)
+        last_played_str = get_last_played_time(
+            provider_by_canonical.get(song_id, song_id), user_creds=user_creds
+        )
 
         weight = 1.0
         days_since_played = "N/A"

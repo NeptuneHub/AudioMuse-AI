@@ -140,8 +140,6 @@ def list_libraries(user_creds=None):
 def _target_sections(user_creds=None):
     user_creds = context.active_creds(user_creds)
     sections = _music_sections(user_creds)
-    if user_creds:
-        return sections
     names_str = context.active_libraries(config.MUSIC_LIBRARIES)
     if not names_str or not names_str.strip():
         return sections

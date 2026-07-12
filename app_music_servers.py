@@ -253,8 +253,11 @@ def set_default_server(server_id):
     if registry.get_server(server_id) is None:
         return jsonify({"error": "Unknown server."}), 404
     registry.set_default(server_id)
+    sweep_task_id = _enqueue_sweep(server_id)
     _apply_default_to_config()
-    return jsonify(servers_for_ui())
+    payload = servers_for_ui()
+    payload['sweep_task_id'] = sweep_task_id
+    return jsonify(payload)
 
 
 @music_servers_bp.route('/api/servers/test', methods=['POST'])

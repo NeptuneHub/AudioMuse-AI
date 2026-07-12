@@ -340,7 +340,8 @@ def build_and_store_artist_index(db_conn=None):
         )
         metadata_blob = pack_artist_metadata(artist_map_dict, artist_gmms)
         ok = build_and_store_paged_ivf(
-            db_conn, ARTIST_INDEX_NAME, vectors, list(artist_names_list), gmm_vector_dim, "angular"
+            db_conn, ARTIST_INDEX_NAME, vectors, list(artist_names_list), gmm_vector_dim, "angular",
+            consume_vectors=True,
         )
         if not ok:
             db_conn.rollback()
@@ -394,7 +395,8 @@ def load_artist_index_for_querying(force_reload=False):
                 _reset_cache()
                 return
             loaded = load_paged_ivf_index(
-                conn, ARTIST_INDEX_NAME, None, "angular", conn_factory=get_db, label="artist"
+                conn, ARTIST_INDEX_NAME, None, "angular", conn_factory=get_db,
+                label="artist", track_scoped=False,
             )
             if loaded is None:
                 _reset_cache()

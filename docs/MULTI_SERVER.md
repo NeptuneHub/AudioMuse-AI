@@ -11,7 +11,7 @@ configures one server behaves exactly as it always has.
 Existing APIs / plugins (no server param)
         |
         v
-   Default server ---- current config, item_ids, tables and API responses unchanged
+   Default server ---- current config and unchanged API defaults
 
 Optional ?server=<id> (menu dropdown / API param)
         |
@@ -19,14 +19,13 @@ Optional ?server=<id> (menu dropdown / API param)
    Server registry -> bound provider client -> that server's catalogue
 ```
 
-- The **default server** is the one you configure in the Setup wizard. Its track
-  ids are the canonical `item_id` used everywhere in the database. Analysis,
-  search, similarity and every existing API keep working against it unchanged.
+- The **default server** is the one you configure in the Setup wizard. It is
+  analyzed first and remains the target when an API omits `server`.
 - **Additional servers** are stored in a registry (`music_servers` table). Each
   keeps its own credentials and library filter.
-- A **mapping table** (`track_server_map`) records, per analyzed track, the id of
-  the same song on each additional server, so a playlist can be translated to any
-  server. The default server needs no mapping - its ids are the canonical ones.
+- A **mapping table** (`track_server_map`) records, per analyzed track, the real
+  provider id on every server, including the default. Database `item_id` values
+  are content ids, never Jellyfin/Navidrome/Plex ids after canonicalization.
 
 ## Configuring servers
 
@@ -42,15 +41,16 @@ field blank when editing to keep the stored value.
 
 ## How analysis matches additional servers
 
-Analysis always runs against the **default** server. When it finishes, a
-background **matching sweep** pulls each additional server's catalogue and pairs
-it to the analyzed library using the same tiered matcher as provider migration:
+Analysis processes every enabled server sequentially, with the **default**
+server first. After each source phase a matching sweep aligns the canonical
+catalogue to the remaining servers. Tracks already mapped to an analyzed
+canonical id are skipped, while tracks unique to the next server are analyzed
+once and added to the union catalogue. Alignment uses these tiers:
 
-1. MusicBrainz id (when both sides expose one)
-2. Normalised file path
-3. Path tail (last path components)
-4. Exact metadata (title, artist, album)
-5. Noise-word-normalised metadata
+1. Normalised file path
+2. Path tail (last path components)
+3. Exact metadata (title, artist, album)
+4. Noise-word-normalised metadata
 
 Confident pairs are written to `track_server_map`. A track that does not match on
 an additional server is simply left unmapped - never guessed. You can re-run the
@@ -68,11 +68,25 @@ display NAME - the friendly, unique value from the setup wizard, e.g.
 `?server=Office%20Jellyfin` - or the internal id. External callers (media-server
 plugins, scripts) should use the name, or omit the parameter for the default.
 When it is absent, the request targets the default server exactly as before.
-When it names another server, similarity/search endpoints over-fetch and return
-only tracks available on it, and playlist creation translates the selected track
+When it names another server, the shared index filters candidates to tracks
+available on it before distance ranking, and playlist creation translates the selected track
 ids and creates the playlist there, reporting how many tracks were unavailable.
 Tracks that do not exist on the target server are dropped rather than sent with
 the wrong id.
+
+Input ids follow one symmetric contract. Every seed or track id a caller sends
+(similar-song seed, Alchemy song or playlist anchor, Path start/end, SemGrove
+seed, Sonic Fingerprint listening history) is first resolved through the single
+input resolver (`registry.canonical_input_ids`, request-side
+`resolve_input_item_id(s)`): the selected server's provider id becomes the
+canonical catalogue id before touching any shared index, while canonical or
+unknown ids pass through unchanged. On output the same mapping runs in reverse,
+so a client can round-trip its own server's ids end to end:
+
+```
+provider input id -> canonical id -> shared index (+ availability mask)
+                  -> canonical results -> provider ids -> provider action
+```
 
 The matching sweep reports live progress: the setup wizard's Music Servers
 section shows a progress bar and a one-line status while it runs, and the
@@ -103,35 +117,49 @@ All under `/api/servers`. Listing is available to any authenticated user
 | POST | `/api/servers/test` | Test a connection (before saving) |
 | POST | `/api/servers/<id>/sweep` | Re-run the matching sweep for one server |
 
-## Content id from the MusiCNN embedding
+## Stable content id from Chromaprint
 
-The canonical catalogue id is derived from data every analyzed track already
-has: its MusiCNN embedding. The embedding is projected onto 64 fixed, seeded
-random hyperplanes and the sign of each projection becomes one bit of a 64-bit
-SimHash-LSH value, encoded as the `fp_<hex>` item_id. Nothing is downloaded, no
-external service is contacted, and no extra column is stored - the id itself
-encodes the hash.
+Every analyzed track is downloaded from its source server when its Chromaprint
+is missing. The bundled `fpcalc` tool computes the Chromaprint; the complete,
+unchanged value is stored in `score.chromaprint`. A SHA-256 digest of that value
+becomes the stable `fp_<hex>` `score.item_id`. MusiCNN/CLAP model changes cannot
+mint a new content id.
 
-Because the id comes from the stored embedding, relabelling is a pure database
-operation: a 180k-track legacy install canonicalizes in seconds. It happens
-automatically at the end of every analysis and at the start of every server
-sweep, so a legacy install is fixed either by its next analysis or the moment a
-secondary server is added - whichever comes first. The media server's real id is
-preserved in `track_server_map` (also for the default/single server) and
-translated back whenever a playlist is sent to a server. Rows analyzed without
-an embedding keep their provider id and keep working unchanged.
+Legacy rows are backfilled by the next analysis. Relabelling then becomes a
+database-only operation. The media server's real id is preserved in
+`track_server_map` and translated back whenever a playlist is sent to a server.
+If two provider rows produce the same Chromaprint id, their analysis rows are
+merged and both provider mappings are retained.
 
 Cross-server matching uses normalized path, path tail, and metadata tiers; in
 practice these align 99%+ of a same-library pair instantly with zero downloads.
-Secondary tracks that do not match are simply left unmapped - the default
-server's catalogue is never touched or reduced.
+Tracks unavailable on the selected server are filtered from results and are
+never sent to that provider as canonical ids.
+
+## One shared index, bounded build memory
+
+AudioMuse builds one index for the union catalogue, not one index per server.
+The index abstraction maintains a small cached availability mask for the active
+server and applies it before ranking candidates. Existing search, Path, Alchemy,
+Map and similarity call sites continue using the same index API.
+
+Index construction caps the clustering training sample (50,000 rows by default),
+writes completed cells to PostgreSQL incrementally instead of retaining every
+cell in RAM, and uses a temporary disk-backed matrix for SemGrove. The cap is
+configurable with `IVF_TRAIN_SAMPLE_MAX`.
+
+## Scheduled tasks
+
+Analysis, Clustering, Sonic Fingerprint and Radio schedules have an **All music
+servers** / **Default server only** selector. Analysis deduplicates work across
+sources. Clustering is computed once and its playlists are translated per target
+server. Sonic Fingerprint and Radio run inside each selected server context, so
+their listening history and results remain valid for that server.
 
 ## Limitations to know
 
-- The default server is treated as the superset library. Music that exists **only**
-  on an additional server is not analyzed or searchable; only tracks that match a
-  canonical (default-server) track become playable on that additional server.
-- Search and similarity results always come from the analyzed (default) library;
-  the `server` selection changes only where playlists are created.
-- Set `MULTI_SERVER_ENABLED=false` to hide the feature entirely and run as a
-  strict single-server install.
+- Analysis and indexes cover the union of enabled server catalogues. Each song
+  is stored once under its canonical id and may have mappings on one or many
+  servers.
+- Search and similarity results are scoped to tracks mapped on the selected
+  server before provider ids are emitted.

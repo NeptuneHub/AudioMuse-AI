@@ -24,7 +24,9 @@ Main Features:
 import gc
 import logging
 import math
+import os
 import sys
+import tempfile
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -118,6 +120,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
 
     W_LYRICS, W_AUDIO = _get_weights()
 
+    merged_path = None
     try:
         logger.info("SemGrove: streaming lyrics embeddings…")
         lyrics_buf, lyrics_ids = stream_embeddings_to_buffer(
@@ -184,7 +187,13 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             len(common_ids),
             merged_dim,
         )
-        merged = np.empty((len(common_ids), merged_dim), dtype=np.float32)
+        tmp = tempfile.NamedTemporaryFile(prefix='audiomuse_sem_grove_', suffix='.f32', delete=False)
+        merged_path = tmp.name
+        tmp.close()
+        merged = np.memmap(
+            merged_path, mode='w+', dtype=np.float32,
+            shape=(len(common_ids), merged_dim),
+        )
         kept_ids: List[str] = []
         w = 0
         for item_id in common_ids:
@@ -209,7 +218,8 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         merged = merged[:w]
 
         ok = build_and_store_paged_ivf(
-            db_conn, SEM_GROVE_INDEX_NAME, merged, kept_ids, merged_dim, "angular"
+            db_conn, SEM_GROVE_INDEX_NAME, merged, kept_ids, merged_dim, "angular",
+            consume_vectors=True,
         )
         if not ok:
             db_conn.rollback()
@@ -225,6 +235,15 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         except Exception:
             pass
         return False
+    finally:
+        try:
+            if 'merged' in locals():
+                merged.flush()
+                del merged
+            if merged_path and os.path.exists(merged_path):
+                os.remove(merged_path)
+        except OSError:
+            logger.debug("Could not remove SemGrove build memmap %s", merged_path)
 
 
 def _load_sem_grove_index_from_db() -> bool:

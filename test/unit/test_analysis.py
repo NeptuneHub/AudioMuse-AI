@@ -29,6 +29,60 @@ from tasks.analysis import (
 )
 
 
+def test_union_analysis_runs_features_before_only_remaining_alignments(monkeypatch):
+    import tasks.analysis as analysis
+    import tasks.multiserver_sync as sync
+
+    servers = [
+        {'server_id': 'a', 'name': 'A', 'is_default': True},
+        {'server_id': 'b', 'name': 'B', 'is_default': False},
+        {'server_id': 'c', 'name': 'C', 'is_default': False},
+    ]
+    events = []
+    monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
+    monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        analysis,
+        'run_analysis_server_task',
+        lambda *args, server_id=None, **kwargs: events.append(('analyze', server_id))
+        or {'status': 'SUCCESS'},
+    )
+    monkeypatch.setattr(
+        sync,
+        'sweep_all_secondary_servers',
+        lambda *args, server_ids=None, **kwargs: events.append(
+            ('align', tuple(server_ids or ()))
+        ),
+    )
+
+    result = analysis.run_analysis_task(0, 5)
+
+    assert result['status'] == 'SUCCESS'
+    assert events == [
+        ('analyze', 'a'),
+        ('align', ('b', 'c')),
+        ('analyze', 'b'),
+        ('align', ('c',)),
+        ('analyze', 'c'),
+    ]
+
+
+def test_unknown_catalogue_track_requires_real_musicnn_analysis():
+    from tasks.analysis_helper import decide_track_needs
+
+    assert decide_track_needs(
+        'provider-new',
+        existing={'fp_existing'},
+        missing_clap={'provider-new'},
+        missing_lyrics={'provider-new'},
+        lyrics_enabled=True,
+        missing_chromaprint={'provider-new'},
+    ) == (True, True, True, True)
+
+
 class TestFindOnnxName:
     def test_direct_match(self):
         names = ['model/Placeholder', 'model/dense/BiasAdd']

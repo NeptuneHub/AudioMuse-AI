@@ -21,7 +21,7 @@ Main Features:
 """
 
 from flask import Blueprint, render_template, jsonify, request
-from psycopg2.extras import DictCursor
+from psycopg2.extras import DictCursor, Json
 from database import get_db, save_task_status
 from taskqueue import rq_queue_high, rq_queue_default
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
@@ -129,7 +129,8 @@ def get_cron_entries():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute(
-        "SELECT id, name, task_type, cron_expr, enabled, last_run, created_at FROM cron ORDER BY id"
+        "SELECT id, name, task_type, cron_expr, enabled, last_run, created_at, options "
+        "FROM cron ORDER BY id"
     )
     rows = cur.fetchall()
     cur.close()
@@ -144,6 +145,7 @@ def get_cron_entries():
                 'enabled': bool(r['enabled']),
                 'last_run': r['last_run'],
                 'created_at': str(r['created_at']),
+                'options': dict(r['options'] or {}),
             }
         )
     # Remove the special-case append for sonic_fingerprint; now handled by DB init
@@ -196,12 +198,13 @@ def save_cron_entry():
     cur = db.cursor()
     if data.get('id'):
         cur.execute(
-            "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s WHERE id=%s",
+            "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
             (
                 data.get('name'),
                 data.get('task_type'),
                 data.get('cron_expr'),
                 bool(data.get('enabled')),
+                Json(data.get('options') or {}),
                 data.get('id'),
             ),
         )
@@ -215,23 +218,25 @@ def save_cron_entry():
         existing = cur.fetchone()
         if existing:
             cur.execute(
-                "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s WHERE id=%s",
+                "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
                 (
                     data.get('name'),
                     data.get('task_type'),
                     data.get('cron_expr'),
                     bool(data.get('enabled')),
+                    Json(data.get('options') or {}),
                     existing[0],
                 ),
             )
         else:
             cur.execute(
-                "INSERT INTO cron (name, task_type, cron_expr, enabled) VALUES (%s,%s,%s,%s)",
+                "INSERT INTO cron (name, task_type, cron_expr, enabled, options) VALUES (%s,%s,%s,%s,%s)",
                 (
                     data.get('name'),
                     data.get('task_type'),
                     data.get('cron_expr'),
                     bool(data.get('enabled')),
+                    Json(data.get('options') or {}),
                 ),
             )
     db.commit()
@@ -355,7 +360,8 @@ def run_due_cron_jobs():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute(
-        "SELECT id, name, task_type, cron_expr, enabled, last_run FROM cron WHERE enabled = true"
+        "SELECT id, name, task_type, cron_expr, enabled, last_run, options "
+        "FROM cron WHERE enabled = true"
     )
     rows = cur.fetchall()
     now_ts = time.time()
@@ -367,6 +373,8 @@ def run_due_cron_jobs():
                 continue
             if cron_matches_now(r['cron_expr'], now_ts):
                 task_type = r['task_type']
+                options = dict(r.get('options') or {})
+                server_scope = options.get('server_scope', 'all')
                 job_id = str(uuid.uuid4())
                 if task_type == 'analysis':
                     # mark queued in task_status
@@ -379,6 +387,7 @@ def run_due_cron_jobs():
                     rq_queue_high.enqueue(
                         'tasks.analysis.run_analysis_task',
                         args=(0, TOP_N_MOODS),
+                        kwargs={'server_scope': server_scope},
                         job_id=job_id,
                         description='Cron Analysis',
                         job_timeout=-1,
@@ -440,6 +449,7 @@ def run_due_cron_jobs():
                         "mistral_model_name_param": MISTRAL_MODEL_NAME,
                         "top_n_moods_for_clustering_param": int(TOP_N_MOODS),
                         "enable_clustering_embeddings_param": bool(ENABLE_CLUSTERING_EMBEDDINGS),
+                        "output_server_scope": server_scope,
                     }
                     rq_queue_high.enqueue(
                         'tasks.clustering.run_clustering_task',
@@ -455,20 +465,38 @@ def run_due_cron_jobs():
                     # keeps tracking the same server playlist across runs (issue #336).
                     from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
                     from tasks.mediaserver import create_or_replace_playlist
+                    from tasks.mediaserver import context as server_context, registry
                     from tasks.ivf_manager import create_playlist_from_ids
                     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
 
                     try:
-                        fingerprint_results = generate_sonic_fingerprint()
-                        if not fingerprint_results:
-                            logger.warning(
-                                f"Cron: sonic fingerprint found no results - preserving previous playlist (job_id={job_id})"
+                        try:
+                            servers = [s for s in registry.list_servers() if s['enabled']]
+                        except Exception:
+                            logger.debug(
+                                "Server registry unavailable; using legacy default context",
+                                exc_info=True,
                             )
-                        else:
-                            track_ids = [
-                                r['item_id'] for r in fingerprint_results if 'item_id' in r
-                            ]
-                            try:
+                            servers = []
+                        if server_scope == 'default' and servers:
+                            servers = [servers[0]]
+                        if not servers:
+                            servers = [None]
+                        for server in servers:
+                            ctx = registry.context_for(server['server_id']) if server else None
+                            with server_context.use_server(ctx):
+                                fingerprint_results = generate_sonic_fingerprint()
+                                if not fingerprint_results:
+                                    logger.warning(
+                                        "Cron: sonic fingerprint found no results on %s; "
+                                        "preserving previous playlist (job_id=%s)",
+                                        server['name'] if server else 'default server', job_id,
+                                    )
+                                    continue
+                                track_ids = [
+                                    row['item_id'] for row in fingerprint_results
+                                    if 'item_id' in row
+                                ]
                                 try:
                                     upserted = create_or_replace_playlist(
                                         SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
@@ -488,10 +516,6 @@ def run_due_cron_jobs():
                                         f"Cron: created sonic fingerprint playlist '{legacy_name}' "
                                         f"(playlist_id={playlist_id}, job_id={job_id})"
                                     )
-                            except Exception:
-                                logger.exception(
-                                    "Cron: error creating/updating playlist for sonic fingerprint"
-                                )
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
                     except Exception:
                         logger.exception("Cron: error running sonic fingerprint")
@@ -499,7 +523,7 @@ def run_due_cron_jobs():
                     from tasks.radio_manager import run_radio_playlists
 
                     try:
-                        summary = run_radio_playlists()
+                        summary = run_radio_playlists(server_scope=server_scope)
                         logger.info(
                             f"Cron: ran radio playlists synchronously (job_id={job_id}, summary={summary})"
                         )

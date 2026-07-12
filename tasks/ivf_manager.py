@@ -333,7 +333,8 @@ def build_and_store_ivf_index(db_conn=None):
             logger.warning("No valid audio embeddings found for IVF index build. Aborting.")
             return
         if build_and_store_paged_ivf(
-            db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC
+            db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC,
+            consume_vectors=True,
         ):
             db_conn.commit()
             logger.info("Audio IVF index build and database storage complete.")
@@ -1045,7 +1046,11 @@ def _find_nearest_neighbors_by_id_impl(
         else eliminate_duplicates
     )
     eff_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
-    _result_key = (target_item_id, int(n), bool(eff_eliminate), bool(eff_mood), bool(eff_radius))
+    from .paged_ivf import active_availability_scope
+    _result_key = (
+        active_availability_scope(), target_item_id, int(n), bool(eff_eliminate),
+        bool(eff_mood), bool(eff_radius),
+    )
     _cached = _neighbor_result_cache.get(_result_key)
     if _cached is not None:
         return [dict(r) for r in _cached]
@@ -1202,7 +1207,9 @@ def get_max_distance_for_id(target_item_id: str):
     if target_vec_id is None:
         return None
 
-    _cached = _max_distance_cache.get(target_item_id)
+    from .paged_ivf import active_availability_scope
+    cache_key = (active_availability_scope(), target_item_id)
+    _cached = _max_distance_cache.get(cache_key)
     if _cached is not None:
         return dict(_cached)
 
@@ -1217,7 +1224,7 @@ def get_max_distance_for_id(target_item_id: str):
         return None
     far_item_id = id_map.get(far_vec_id) if far_vec_id is not None else None
     result = {'max_distance': float(max_d), 'farthest_item_id': far_item_id}
-    _max_distance_cache.put(target_item_id, result)
+    _max_distance_cache.put(cache_key, result)
     return dict(result)
 
 

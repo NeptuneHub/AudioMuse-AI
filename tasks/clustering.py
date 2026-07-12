@@ -331,6 +331,7 @@ def run_clustering_task(
     top_n_moods_for_clustering_param,
     top_n_playlists_param,
     enable_clustering_embeddings_param,
+    output_server_scope="all",
 ):
     from flask_app import app
 
@@ -687,21 +688,32 @@ def run_clustering_task(
                 mistral_model_name_param,
             )
 
-            if CLUSTERING_CLEANING:
-                _log_and_update("Deleting existing automatic playlists...", 97)
-                delete_automatic_playlists()
-            else:
-                _log_and_update(
-                    "CLUSTERING_CLEANING is disabled - skipping deletion of existing automatic playlists.",
-                    97,
-                )
-
             final_shuffled_playlists = final_playlists_with_details
+            from .mediaserver import context as server_context, registry
 
-            _log_and_update(f"Creating {len(final_shuffled_playlists)} new playlists...", 98)
-            for name, songs_with_details in final_shuffled_playlists.items():
-                item_ids = [item_id for item_id, _, _ in songs_with_details]
-                create_playlist(name, item_ids)
+            target_servers = [s for s in registry.list_servers() if s['enabled']]
+            if output_server_scope == 'default' and target_servers:
+                target_servers = [target_servers[0]]
+            if not target_servers:
+                target_servers = [None]
+
+            _log_and_update(
+                f"Creating {len(final_shuffled_playlists)} playlists on "
+                f"{len(target_servers)} server(s)...",
+                98,
+            )
+            for target_server in target_servers:
+                ctx = (
+                    registry.context_for(target_server['server_id'])
+                    if target_server
+                    else None
+                )
+                with server_context.use_server(ctx):
+                    if CLUSTERING_CLEANING:
+                        delete_automatic_playlists()
+                    for name, songs_with_details in final_shuffled_playlists.items():
+                        item_ids = [item_id for item_id, _, _ in songs_with_details]
+                        create_playlist(name, item_ids)
 
             update_playlist_table(final_shuffled_playlists)
 

@@ -15,7 +15,7 @@ behaviour and that a bound server overrides credentials and library filters.
 Main Features:
 * Active-server context accessors, nesting, and reset isolation.
 * Credential masking/merge, config-derived creds, and registry row normalization.
-* MBID matcher tier priority and id translation (identity for the default).
+* Matcher tiers and safe canonical/provider id translation.
 * BoundServer runs dispatcher calls inside the selected server's context.
 """
 
@@ -102,6 +102,25 @@ class TestCredHelpers:
         assert merged['token'] == 'brandnew'
 
 
+class TestRequestServerResolution:
+    def test_reads_server_from_json_body_when_helper_gets_no_data(self, monkeypatch):
+        from flask import Flask
+        import app_server_context as context
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry,
+            'get_server',
+            lambda server_id, conn=None: {'server_id': server_id} if server_id == 'secondary' else None,
+        )
+        monkeypatch.setattr(registry, 'get_server_by_name', lambda name, conn=None: None)
+        app = Flask(__name__)
+        with app.test_request_context(
+            '/search', method='POST', json={'server': 'secondary'}
+        ):
+            assert context.resolve_request_server_id() == 'secondary'
+
+
 class TestRegistryPureHelpers:
     def test_creds_from_config_per_type(self, monkeypatch):
         import config
@@ -149,6 +168,19 @@ class TestRegistryPureHelpers:
         conn.cursor.return_value = cursor
         result = registry.translate_ids(['A', 'B'], 'sec', conn=conn)
         assert result == {'A': 'provA'}
+
+    def test_default_never_leaks_unmapped_canonical_id(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+
+        assert registry.translate_ids(['fp_deadbeef', 'legacy-provider-id'], None, conn=conn) == {
+            'legacy-provider-id': 'legacy-provider-id'
+        }
 
 
 class TestMatcherTiers:
@@ -273,6 +305,107 @@ class TestReverseTranslation:
         assert result == {'nav1': 'fp_1'}
 
 
+class TestCanonicalInputIds:
+    def test_provider_ids_resolve_and_canonical_pass_through(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry,
+            'reverse_translate_ids',
+            lambda ids, server_id=None, conn=None: {'nav1': 'fp_a'},
+        )
+        result = registry.canonical_input_ids(['nav1', 'fp_b', 'ghost'], 'sec')
+        assert result == {'nav1': 'fp_a', 'fp_b': 'fp_b', 'ghost': 'ghost'}
+
+    def test_registry_failure_falls_back_to_identity(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        def boom(ids, server_id=None, conn=None):
+            raise RuntimeError('registry down')
+
+        monkeypatch.setattr(registry, 'reverse_translate_ids', boom)
+        result = registry.canonical_input_ids(['x', 'y'])
+        assert result == {'x': 'x', 'y': 'y'}
+
+    def test_empty_input_returns_empty_mapping(self):
+        from tasks.mediaserver import registry
+
+        assert registry.canonical_input_ids([]) == {}
+        assert registry.canonical_input_ids([None, '']) == {}
+
+
+class TestSonicFingerprintProviderRecency:
+    def test_last_played_uses_provider_id_for_canonical_song(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry,
+            'reverse_translate_ids',
+            lambda ids, server_id=None, conn=None: {'jelly1': 'fp_a'},
+        )
+        mapping = registry.canonical_input_ids(['jelly1'], None)
+        provider_by_canonical = {c: p for p, c in mapping.items()}
+        assert provider_by_canonical.get('fp_a', 'fp_a') == 'jelly1'
+        assert provider_by_canonical.get('fp_unknown', 'fp_unknown') == 'fp_unknown'
+
+
+class TestAnalysisCanonicalResolution:
+    def test_attaches_known_canonical_ids_and_keeps_unknown_temporary(self, monkeypatch):
+        from tasks import analysis_helper as helper
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry,
+            'reverse_translate_ids',
+            lambda ids, server_id, conn=None: {'provider-known': 'fp_known'},
+        )
+        tracks = [{'Id': 'provider-known'}, {'Id': 'provider-new'}]
+
+        helper.attach_catalog_item_ids(tracks, server_id='server-b')
+
+        assert [helper.catalog_item_id(track) for track in tracks] == [
+            'fp_known', 'provider-new'
+        ]
+
+    def test_album_needs_queries_canonical_ids(self, monkeypatch):
+        from tasks import analysis_helper as helper
+
+        tracks = [{'Id': 'provider-known'}, {'Id': 'provider-new'}]
+        monkeypatch.setattr(
+            helper,
+            'attach_catalog_item_ids',
+            lambda items, server_id=None: [
+                item.update(_catalog_item_id=canonical)
+                for item, canonical in zip(items, ('fp_known', 'provider-new'))
+            ] or items,
+        )
+        queried = {}
+
+        def existing_ids(ids):
+            queried['ids'] = list(ids)
+            return {'fp_known'}
+
+        monkeypatch.setattr(
+            helper,
+            'get_existing_track_ids',
+            existing_ids,
+        )
+        monkeypatch.setattr(helper, 'get_missing_ids_in_table', lambda table, ids: set())
+        monkeypatch.setattr(
+            helper, 'get_missing_chromaprint_ids', lambda ids: {'provider-new'}
+        )
+
+        existing, needs_clap, needs_lyrics, needs_chromaprint = helper.compute_album_needs(
+            tracks, False, False, server_id='server-b'
+        )
+
+        assert queried['ids'] == ['fp_known', 'provider-new']
+        assert existing == 1
+        assert needs_clap is False
+        assert needs_lyrics is False
+        assert needs_chromaprint is True
+
+
 class TestSingleTranslationPoint:
     def test_dispatcher_translates_once_for_bound_server(self, monkeypatch):
         from tasks import mediaserver
@@ -334,33 +467,33 @@ class TestSingleTranslationPoint:
 
 class TestEmbeddingCanonicalization:
     def test_builds_canonical_ids_from_stored_embeddings(self):
-        import numpy as np
         from tasks import audio_fingerprint as afp
         from tasks import fingerprint_canonicalize as canonicalize
 
-        emb = np.random.RandomState(11).standard_normal(200).astype(np.float32)
+        chromaprint = 'AQAAE0mUaEkSRZEGAA'
         cursor = MagicMock()
         cursor.fetchall.side_effect = [
-            [('legacy-provider-id', emb.tobytes())],
+            [('legacy-provider-id', chromaprint)],
             [],
         ]
-        mapping, duplicates = canonicalize._build_mapping(cursor)
-        assert mapping == {'legacy-provider-id': afp.embedding_canonical_id(emb)}
-        assert duplicates == 0
+        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        assert mapping == {
+            'legacy-provider-id': afp.chromaprint_canonical_id(chromaprint)
+        }
+        assert duplicate_mapping == {}
 
     def test_duplicate_embeddings_keep_one_canonical_row(self):
-        import numpy as np
         from tasks import fingerprint_canonicalize as canonicalize
 
-        emb = np.random.RandomState(12).standard_normal(200).astype(np.float32)
+        chromaprint = 'AQAAE0mUaEkSRZEGAA'
         cursor = MagicMock()
         cursor.fetchall.side_effect = [
-            [('copy-one', emb.tobytes()), ('copy-two', emb.tobytes())],
+            [('copy-one', chromaprint), ('copy-two', chromaprint)],
             [],
         ]
-        mapping, duplicates = canonicalize._build_mapping(cursor)
+        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
         assert list(mapping.keys()) == ['copy-one']
-        assert duplicates == 1
+        assert duplicate_mapping == {'copy-two': next(iter(mapping.values()))}
 
     def test_preserves_recovered_default_provider_id(self):
         from tasks.fingerprint_canonicalize import _default_provider_ids
@@ -414,4 +547,3 @@ class TestSweepAlignment:
         )
         assert summary['matched'] == 1
         assert written == {'fp_1': 'nav1'}
-

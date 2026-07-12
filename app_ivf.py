@@ -470,7 +470,7 @@ def get_similar_tracks_endpoint():
     target_item_id = None
 
     if item_id:
-        target_item_id = item_id
+        target_item_id = app_server_context.resolve_input_item_id(item_id)
     elif title and artist:
         resolved_id = get_item_id_by_title_and_artist(title, artist)
         if not resolved_id:
@@ -542,6 +542,7 @@ def get_max_distance_endpoint():
     item_id = request.args.get('item_id')
     if not item_id:
         return jsonify({"error": "Missing 'item_id' parameter."}), 400
+    item_id = app_server_context.resolve_input_item_id(item_id)
 
     try:
         result = get_max_distance_for_id(item_id)

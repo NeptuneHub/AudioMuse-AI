@@ -243,6 +243,13 @@ def find_path_endpoint():
     """
     start_song_id = request.args.get('start_song_id')
     end_song_id = request.args.get('end_song_id')
+    resolved_endpoints = app_server_context.resolve_input_item_ids(
+        [i for i in (start_song_id, end_song_id) if i]
+    )
+    if start_song_id:
+        start_song_id = resolved_endpoints.get(start_song_id, start_song_id)
+    if end_song_id:
+        end_song_id = resolved_endpoints.get(end_song_id, end_song_id)
     start_mood = request.args.get('start_mood')
     end_mood = request.args.get('end_mood')
     start_anchor = request.args.get('start_anchor')

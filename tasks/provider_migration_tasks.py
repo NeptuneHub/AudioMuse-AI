@@ -490,6 +490,14 @@ def _run_migration_transaction(
     _rewrite_item_ids(cur, lyrics_exists)
     _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding)
 
+    # FK cascades keep map item_ids aligned, but provider_track_id is ordinary
+    # data and must follow the new default provider explicitly.
+    cur.execute(
+        "UPDATE track_server_map t SET provider_track_id = m.new_id, updated_at = now() "
+        "FROM item_id_migration_map m, music_servers s "
+        "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.new_id"
+    )
+
     _apply_new_meta(cur, new_meta)
 
     index_rebuild_needed = _rewrite_index_id_maps(cur, mapping)

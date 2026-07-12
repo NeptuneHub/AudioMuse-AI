@@ -237,6 +237,17 @@ def alchemy_api():
         if i.get('op', '').upper() == 'SUBTRACT' and i.get('id')
     ]
 
+    # Song seeds may arrive as the selected server's provider ids; canonicalize
+    # them before they reach the shared index (canonical ids pass through).
+    seed_ids = [
+        entry['id'] for entry in add_items + subtract_items
+        if entry.get('type', 'song') == 'song'
+    ]
+    resolved_seed_ids = app_server_context.resolve_input_item_ids(seed_ids, payload)
+    for entry in add_items + subtract_items:
+        if entry.get('type', 'song') == 'song':
+            entry['id'] = resolved_seed_ids.get(str(entry['id']), entry['id'])
+
     # Allow optional override for subtract distance (from frontend slider)
     subtract_distance = payload.get('subtract_distance')
     try:

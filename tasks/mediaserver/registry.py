@@ -10,7 +10,7 @@
 
 Persists every configured media server (the ``music_servers`` table) plus the
 per-track mapping from a canonical library ``item_id`` to that track's id on
-each secondary server (the ``track_server_map`` table). The default server's
+each server (the ``track_server_map`` table). The default server's
 credentials are mirrored from the global ``config`` (still edited by the setup
 wizard), so single-server installs keep one source of truth and behave exactly
 as before; secondary servers store their own credentials in the registry.
@@ -19,13 +19,16 @@ Main Features:
 * CRUD over the server registry with a single enforced default server.
 * Builds the default server's creds from config and keeps its row in sync.
 * Resolves a normalized server context by id and translates canonical item_ids
-  to a target server's provider track ids (identity for the default server).
+  to a target server's provider track ids (legacy raw ids may use identity on
+  the default server; canonical ids always require a mapping).
+* ``canonical_input_ids`` is the single input-side resolver turning
+  caller-supplied provider ids into canonical ids (fail-open pass-through).
 """
 
 import logging
 import uuid
 
-from psycopg2.extras import DictCursor, Json
+from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
 from database import get_db
@@ -208,6 +211,11 @@ def delete_server(server_id, conn=None):
     try:
         cur.execute("DELETE FROM music_servers WHERE server_id = %s", (server_id,))
         db.commit()
+        try:
+            from tasks.paged_ivf import invalidate_availability_cache
+            invalidate_availability_cache(server_id)
+        except Exception:
+            logger.debug("Availability-cache invalidation failed", exc_info=True)
         return True
     finally:
         cur.close()
@@ -271,7 +279,8 @@ def translate_ids(item_ids, server_id=None, conn=None):
     is_default = (not server_id) or server_id == default_id
     target = server_id or default_id
     if target is None:
-        return {i: i for i in ids}
+        from tasks.audio_fingerprint import is_fingerprint_id
+        return {i: i for i in ids if not is_fingerprint_id(i)}
     cur = db.cursor()
     try:
         cur.execute(
@@ -283,7 +292,12 @@ def translate_ids(item_ids, server_id=None, conn=None):
     finally:
         cur.close()
     if is_default:
-        return {i: mapped.get(i, i) for i in ids}
+        from tasks.audio_fingerprint import is_fingerprint_id
+        return {
+            i: mapped.get(i, i)
+            for i in ids
+            if i in mapped or not is_fingerprint_id(i)
+        }
     return mapped
 
 
@@ -320,32 +334,61 @@ def reverse_translate_ids(provider_ids, server_id=None, conn=None):
     return mapped
 
 
+def canonical_input_ids(item_ids, server_id=None, conn=None):
+    """Resolve caller-supplied track ids to canonical catalogue ids.
+
+    The single input-side resolver: a provider id known on ``server_id`` (active
+    or default when None) maps to its canonical id; canonical or unknown ids pass
+    through unchanged, so every feature accepts either form. Never raises - a
+    registry failure falls back to the ids as given.
+    """
+    ids = [str(i) for i in item_ids if i]
+    if not ids:
+        return {}
+    try:
+        mapped = reverse_translate_ids(ids, server_id, conn=conn)
+    except Exception:
+        logger.exception("Input id resolution failed; using ids as-is")
+        return {i: i for i in ids}
+    return {i: mapped.get(i, i) for i in ids}
+
+
 def upsert_track_maps(server_id, mapping, conn=None):
     """Bulk-upsert ``{item_id: (provider_track_id, match_tier)}`` for a server."""
     if not mapping:
         return 0
     db = conn or get_db()
+    rows = []
+    for item_id, value in mapping.items():
+        if isinstance(value, (tuple, list)):
+            provider_track_id, match_tier = value[0], (value[1] if len(value) > 1 else None)
+        else:
+            provider_track_id, match_tier = value, None
+        if provider_track_id is None or provider_track_id == '':
+            continue
+        rows.append((str(item_id), server_id, str(provider_track_id), match_tier))
+    if not rows:
+        return 0
     cur = db.cursor()
-    written = 0
     try:
-        for item_id, value in mapping.items():
-            if isinstance(value, (tuple, list)):
-                provider_track_id, match_tier = value[0], (value[1] if len(value) > 1 else None)
-            else:
-                provider_track_id, match_tier = value, None
-            if provider_track_id is None or provider_track_id == '':
-                continue
-            cur.execute(
-                "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier, updated_at) "
-                "VALUES (%s, %s, %s, %s, now()) "
-                "ON CONFLICT (item_id, server_id) DO UPDATE SET "
-                "provider_track_id = EXCLUDED.provider_track_id, "
-                "match_tier = EXCLUDED.match_tier, updated_at = now()",
-                (str(item_id), server_id, str(provider_track_id), match_tier),
-            )
-            written += 1
+        execute_values(
+            cur,
+            "INSERT INTO track_server_map "
+            "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
+            "ON CONFLICT (item_id, server_id) DO UPDATE SET "
+            "provider_track_id = EXCLUDED.provider_track_id, "
+            "match_tier = EXCLUDED.match_tier, updated_at = now()",
+            rows,
+            template="(%s, %s, %s, %s, now())",
+            page_size=5000,
+        )
         db.commit()
-        return written
+        try:
+            from tasks.paged_ivf import invalidate_availability_cache
+            invalidate_availability_cache(server_id)
+        except Exception:
+            logger.debug("Availability-cache invalidation failed", exc_info=True)
+        return len(rows)
     finally:
         cur.close()
 

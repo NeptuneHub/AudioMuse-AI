@@ -297,7 +297,9 @@ def build_and_store_index_streaming(
         if buf.shape[0] == 0:
             logger.warning("No valid %s vectors found for IVF index build.", label)
             return False
-        ok = build_and_store_paged_ivf(db_conn, index_name, buf, item_ids, dim, metric)
+        ok = build_and_store_paged_ivf(
+            db_conn, index_name, buf, item_ids, dim, metric, consume_vectors=True
+        )
         if ok:
             db_conn.commit()
             logger.info("%s IVF index build successful.", label)

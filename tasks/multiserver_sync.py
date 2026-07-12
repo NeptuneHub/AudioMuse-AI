@@ -12,7 +12,8 @@ Runs as an RQ job and reports progress into ``task_status`` (task type
 ``server_sweep``) so the setup wizard can show a live bar; it is cancellable via
 the standard /api/cancel endpoint (cooperative checks). The sweep NEVER analyzes
 or downloads songs. It first ensures the catalogue uses the canonical
-embedding-hash ids (a pure database relabel via fingerprint_canonicalize, so a
+Chromaprint-hash ids (a database relabel after analysis has backfilled legacy
+Chromaprints, so a
 legacy install is fixed the moment a second server is added), then matches each
 secondary server's catalogue against the still-unmapped analyzed tracks by
 normalized path, path tail, and metadata, storing confident pairs in
@@ -138,7 +139,7 @@ def _resolve_task_id(task_id):
 
 
 def _canonicalize_catalog(report, base, span):
-    """Ensure item_ids are the canonical embedding-hash ids before matching.
+    """Ensure item_ids with stored Chromaprints use canonical hash ids.
 
     The relabel itself is pure DB work (seconds), but the first run on a legacy
     install also rebuilds every similarity index, which takes a while on a large
@@ -274,7 +275,7 @@ def _sweep_one(server, db, report, base, span, cancel):
 
 
 def sweep_server(server_id, task_id=None, conn=None):
-    """Match the local library against one secondary server and store the mapping."""
+    """Match the local library against any configured server and store mappings."""
     import config
 
     task_id = _resolve_task_id(task_id)
@@ -289,9 +290,6 @@ def sweep_server(server_id, task_id=None, conn=None):
         if server is None:
             report("Server no longer exists; nothing to align.", 100, task_state=TASK_STATUS_SUCCESS)
             return {'server_id': server_id, 'skipped': 'deleted', 'matched': 0}
-        if server['is_default']:
-            report("Default server needs no sweep.", 100, task_state=TASK_STATUS_SUCCESS)
-            return {'server_id': server_id, 'skipped': 'default', 'matched': 0}
         if not server['enabled']:
             report("Server is disabled; skipping sweep.", 100, task_state=TASK_STATUS_SUCCESS)
             return {'server_id': server_id, 'skipped': 'disabled', 'matched': 0}
@@ -327,8 +325,12 @@ def sweep_server(server_id, task_id=None, conn=None):
             db.close()
 
 
-def sweep_all_secondary_servers(task_id=None, conn=None):
-    """Align every enabled non-default server; never raises for one bad server."""
+def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None):
+    """Align enabled servers, optionally limited to ``server_ids``.
+
+    The optional filter lets union analysis align only sources that have not had
+    their own analysis phase yet. Existing callers with no filter still sweep all.
+    """
     import config
 
     task_id = _resolve_task_id(task_id)
@@ -339,17 +341,19 @@ def sweep_all_secondary_servers(task_id=None, conn=None):
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
 
+        selected = {str(server_id) for server_id in server_ids} if server_ids else None
         servers = [
-            s for s in registry.list_servers(conn=db) if not s['is_default'] and s['enabled']
+            s for s in registry.list_servers(conn=db)
+            if s['enabled'] and (selected is None or s['server_id'] in selected)
         ]
         report(
-            f"Starting alignment for {len(servers)} secondary server(s)...",
+            f"Starting alignment for {len(servers)} selected server(s)...",
             2, task_state=TASK_STATUS_STARTED,
         )
         _canonicalize_catalog(report, 5, 55)
         cancel()
         if not servers:
-            report("Catalogue ids up to date; no secondary servers to align.", 100,
+            report("Catalogue ids up to date; no selected servers to align.", 100,
                    task_state=TASK_STATUS_SUCCESS)
             return []
 

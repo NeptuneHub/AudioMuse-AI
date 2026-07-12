@@ -154,13 +154,17 @@ def _get_mood_label(item_id: str) -> str:
 
 def _get_playlist_components(playlist_id: str) -> Tuple[List[np.ndarray], List[float]]:
     import random
-    from tasks.mediaserver import get_playlist_track_ids
+    from tasks.mediaserver import context as ms_context, get_playlist_track_ids
+    from tasks.mediaserver.registry import canonical_input_ids
     from .ivf_manager import get_cell_groups_for_items
 
     track_ids = get_playlist_track_ids(playlist_id)
     if not track_ids:
         logger.warning(f"Playlist '{playlist_id}' returned no tracks")
         return [], []
+    track_ids = list(
+        canonical_input_ids(track_ids, ms_context.active_server_id()).values()
+    )
 
     total = len(track_ids)
     if total > config.ALCHEMY_PLAYLIST_MAX_SONGS:
