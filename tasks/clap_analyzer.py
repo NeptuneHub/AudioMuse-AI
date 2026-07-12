@@ -108,8 +108,11 @@ def _load_audio_model():
 
     from tasks.analysis_helper import resolve_providers
 
+    # DCLAP's Resize op (keep_aspect_ratio_policy) isn't parseable by MIGraphX,
+    # so this model runs on CPU on ROCm; CUDA is unaffected.
     provider_options = resolve_providers(
         allow_coreml=True,
+        allow_migraphx=False,
         cuda_options={
             'device_id': 0,
             'arena_extend_strategy': 'kSameAsRequested',
@@ -213,6 +216,12 @@ def _load_text_model():
         logger.info(
             f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})"
         )
+    elif 'MIGraphXExecutionProvider' in available_providers:
+        provider_options = [
+            ('MIGraphXExecutionProvider', {'device_id': 0}),
+            ('CPUExecutionProvider', {}),
+        ]
+        logger.info("MIGraphX provider available - will attempt to use GPU (AMD ROCm)")
     else:
         provider_options = [('CPUExecutionProvider', {})]
         logger.info("CUDA provider not available - using CPU only")

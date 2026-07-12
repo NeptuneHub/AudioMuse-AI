@@ -90,7 +90,7 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
-def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
+def resolve_providers(allow_coreml=False, role=None, cuda_options=None, allow_migraphx=True):
     available = ort.get_available_providers()
     chain = []
     accel_ok = role != 'flask'
@@ -108,6 +108,12 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
                 },
             )
         )
+
+    # MIGraphX: ROCm's GPU provider (ORT dropped its ROCm EP). Only present on
+    # the ROCm image, so it never competes with CUDA above. allow_migraphx=False
+    # opts a model out (e.g. graphs MIGraphX can't parse) without affecting CUDA.
+    if accel_ok and allow_migraphx and 'MIGraphXExecutionProvider' in available:
+        chain.append(('MIGraphXExecutionProvider', {'device_id': 0}))
 
     if accel_ok and allow_coreml and 'CoreMLExecutionProvider' in available:
         chain.append(
@@ -189,9 +195,12 @@ def _default_sess_options():
 
 
 def create_onnx_session(
-    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False
+    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False,
+    allow_migraphx=True,
 ):
-    opts = provider_options or resolve_providers(allow_coreml=allow_coreml)
+    opts = provider_options or resolve_providers(
+        allow_coreml=allow_coreml, allow_migraphx=allow_migraphx
+    )
     if sess_options is None:
         sess_options = _default_sess_options()
     extra = {'sess_options': sess_options}

@@ -1,0 +1,9 @@
+# ROCm (AMD GPU) extra requirements, installed alongside common.txt by
+# Dockerfile-rocm. Deliberately empty of ONNX/GPU wheels:
+#
+#   * onnxruntime -> supplied by the rocm/onnxruntime base image. Adding it
+#                    here would clobber the MIGraphX build with a CPU-only one.
+#   * cupy / cuml -> RAPIDS cuML has no ROCm port; GPU clustering stays CPU.
+#   * faster-whisper / ctranslate2 -> installed by hand in Dockerfile-rocm
+#                    (ROCm wheel is a GitHub release asset, not on PyPI).
+tqdm

@@ -1,0 +1,115 @@
+# AudioMuse-AI - AMD ROCm (MIGraphX) local build + test compose.
+#
+# Builds Dockerfile-rocm from the repo root and passes an AMD GPU to the worker.
+# Prereqs: ROCm 7.x kernel driver (amdgpu), host user in `render`/`video` groups.
+#
+# Usage (from repo root):
+#   docker compose -f deployment/docker-compose-rocm.yaml up --build
+#
+# See docs/GPU-AMD.md for details and verification steps.
+
+x-rocm-build: &rocm-build
+  context: ..
+  dockerfile: Dockerfile-rocm
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    environment:
+      TZ: "${TZ:-UTC}"
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      TZ: "${TZ:-UTC}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: "audiomusedb"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  audiomuse-ai-flask:
+    build: *rocm-build
+    image: audiomuse-ai-rocm:local
+    container_name: audiomuse-ai-flask-rocm
+    ports:
+      - "${FRONTEND_PORT:-8000}:8000"
+    environment:
+      SERVICE_TYPE: "flask"
+      TZ: "${TZ:-UTC}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-flask:/app/temp_audio
+      - plugins-flask:/app/plugin/installed
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  audiomuse-ai-worker:
+    build: *rocm-build
+    image: audiomuse-ai-rocm:local
+    container_name: audiomuse-ai-worker-rocm
+    environment:
+      SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0"
+      TEMP_DIR: "/app/temp_audio"
+      # cuML has no ROCm port; GPU clustering stays CPU. ONNX analysis uses the GPU.
+      USE_GPU_CLUSTERING: "false"
+      # Uncomment to pin to a specific AMD GPU (index or UUID):
+      # HIP_VISIBLE_DEVICES: "0"
+    # --- AMD GPU passthrough ---
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    # Base image has no `render` group; pass host's numeric GIDs instead.
+    # Find yours with: getent group render video
+    group_add:
+      - "${RENDER_GID:-105}"
+      - "${VIDEO_GID:-39}"
+    security_opt:
+      - seccomp:unconfined
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+      - plugins-worker:/app/plugin/installed
+      # Persist the MIOpen kernel cache so GPU kernels are not recompiled on every
+      # restart (matches MIOPEN_CUSTOM_CACHE_DIR baked into Dockerfile-rocm).
+      - miopen-cache:/app/.cache/miopen
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
+  temp-audio-flask:
+  temp-audio-worker:
+  plugins-flask:
+  plugins-worker:
+  miopen-cache:

@@ -82,10 +82,13 @@ def is_lyrics_loaded() -> bool:
     if not _LYRICS_ENABLED:
         return False
     try:
-        from . import whisper_onnx, gte_onnx, silero_onnx
+        from ._asr_backend import get_asr_backend
+        from . import gte_onnx, silero_onnx
+
+        whisper_mod = get_asr_backend()
     except Exception:
         return False
-    for mod in (whisper_onnx, gte_onnx, silero_onnx):
+    for mod in (whisper_mod, gte_onnx, silero_onnx):
         try:
             if mod.is_loaded():
                 return True
@@ -100,12 +103,13 @@ def unload_lyrics_models() -> bool:
     released_any = False
     try:
         try:
-            from . import whisper_onnx
+            from ._asr_backend import get_asr_backend
 
-            if whisper_onnx.is_loaded():
-                released_any = bool(_safe_call('whisper_onnx.unload', whisper_onnx.unload))
+            whisper_mod = get_asr_backend()
+            if whisper_mod.is_loaded():
+                released_any = bool(_safe_call('whisper.unload', whisper_mod.unload))
         except Exception as exc:
-            _logger.warning("Lyrics whisper_onnx release failed: %s", exc)
+            _logger.warning("Lyrics whisper release failed: %s", exc)
 
         try:
             from . import gte_onnx

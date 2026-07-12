@@ -12,6 +12,7 @@ nav:
   - Deployment: DEPLOYMENT.md
   - FAQ: FAQ.md
   - GPU: GPU.md
+  - GPU (AMD/ROCm): GPU-AMD.md
   - Parameters: PARAMETERS.md
   - Authentication: AUTH.md
 

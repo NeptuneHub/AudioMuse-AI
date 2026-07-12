@@ -266,11 +266,17 @@ class _OnnxWhisperPipeline:
         try:
             from tasks.analysis_helper import create_onnx_session
 
+            # MIGraphX can't parse the decoder's dynamic If/KV-cache subgraphs.
+            # Only matters if LYRICS_WHISPER_BACKEND=onnx is forced on ROCm
+            # (default there is faster-whisper, which does use the GPU);
+            # this keeps that override on CPU instead of failing. CUDA unaffected.
             self.encoder_session = create_onnx_session(
-                str(encoder_path), sess_options=sess_opts, label='whisper_encoder'
+                str(encoder_path), sess_options=sess_opts, label='whisper_encoder',
+                allow_migraphx=False,
             )
             self.decoder_session = create_onnx_session(
-                str(decoder_path), sess_options=sess_opts, label='whisper_decoder'
+                str(decoder_path), sess_options=sess_opts, label='whisper_decoder',
+                allow_migraphx=False,
             )
         except Exception as exc:
             logger.warning('Whisper: provider helper unavailable (%s) - CPU only', exc)

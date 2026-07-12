@@ -94,6 +94,9 @@ def reset_onnx_memory_pool() -> bool:
         if 'CUDAExecutionProvider' in providers:
             preferred_provider = 'CUDAExecutionProvider'
             logger.debug("Using CUDA provider for ONNX memory pool reset")
+        elif 'MIGraphXExecutionProvider' in providers:
+            preferred_provider = 'MIGraphXExecutionProvider'
+            logger.debug("Using MIGraphX provider for ONNX memory pool reset (AMD ROCm)")
         elif 'CPUExecutionProvider' in providers:
             preferred_provider = 'CPUExecutionProvider'
             logger.debug("Using CPU provider for ONNX memory pool reset")
