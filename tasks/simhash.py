@@ -136,7 +136,12 @@ def hamming_distance(signature_a, signature_b):
 
 
 def cosine_distance(embedding_a, embedding_b):
-    """Cosine distance between two raw embeddings (the Similar Songs metric)."""
+    """Cosine distance between two raw embeddings (the Similar Songs metric).
+
+    Clipped to [0, 2] like the index's own distance, so floating-point drift on
+    a near-identical pair can never produce a tiny negative value that reads as
+    "closer than identical" against the duplicate threshold.
+    """
     a = _as_matrix([embedding_a])[0].astype(np.float64)
     b = _as_matrix([embedding_b])[0].astype(np.float64)
     if a.size != b.size or a.size == 0:
@@ -144,7 +149,8 @@ def cosine_distance(embedding_a, embedding_b):
     denominator = float(np.linalg.norm(a) * np.linalg.norm(b))
     if denominator <= 0:
         return 1.0
-    return 1.0 - float(np.dot(a, b)) / denominator
+    similarity = float(np.dot(a, b)) / denominator
+    return float(np.clip(1.0 - similarity, 0.0, 2.0))
 
 
 def _band_key(signature, band):

@@ -78,6 +78,14 @@ def _validate_type(server_type):
     return isinstance(server_type, str) and server_type.lower() in _SUPPORTED_TYPES
 
 
+def _as_bool(value):
+    """Parse a JSON flag. A non-UI caller may send the STRING "false", which is
+    truthy in Python - and would silently promote its server to default."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('true', '1', 'yes', 'on')
+    return bool(value)
+
+
 def _apply_default_to_config():
     """Propagate a default-server change to every process.
 
@@ -290,7 +298,7 @@ def add_server():
         return jsonify({"error": "creds must be an object."}), 400
     if _name_taken(name):
         return jsonify({"error": f"A server named '{name}' already exists; names must be unique."}), 400
-    make_default = bool(data.get('make_default', False))
+    make_default = _as_bool(data.get('make_default', False))
     missing = _missing_cred_keys(server_type, creds)
     if missing:
         return jsonify(
@@ -344,7 +352,10 @@ def update_server(server_id):
     if 'creds' in data and isinstance(data['creds'], dict):
         creds = merge_creds(existing['creds'], data['creds'])
     is_default = registry.get_default_server_id(get_db()) == server_id
-    if not is_default and (server_type is not None or creds is not None):
+    # The DEFAULT server is validated too: it is the one config projects onto
+    # every unbound provider call, so saving it credential-less breaks the whole
+    # install (and the providers would silently fall back to stale config values).
+    if server_type is not None or creds is not None:
         effective_type = server_type or existing['server_type']
         effective_creds = creds if creds is not None else existing['creds']
         missing = _missing_cred_keys(effective_type, effective_creds)

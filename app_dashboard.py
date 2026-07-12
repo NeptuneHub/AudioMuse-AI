@@ -79,6 +79,19 @@ def _safe_count(cur, sql, params=None):
         return 0
 
 
+def _counted_or_none(cur, sql, params=None):
+    """Like ``_safe_count`` but returns None on failure instead of 0, so a
+    caller can tell "counted zero" apart from "the query did not run"."""
+    try:
+        cur.execute(sql, params or ())
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except Exception as e:
+        logger.debug(f"dashboard count failed for [{sql}]: {e}")
+        _safe_rollback(cur)
+        return None
+
+
 def _table_exists(cur, name):
     try:
         cur.execute(
@@ -227,7 +240,7 @@ def _collect_music_server_metrics(cur):
             if r[3] and not _LEGACY_UNMAPPED_DONE.get(r[0]):
                 # Legacy rows keep their provider id and are implicitly on the
                 # default server until canonicalization maps them explicitly.
-                legacy = _safe_count(
+                legacy = _counted_or_none(
                     cur,
                     "SELECT COUNT(*) FROM score s "
                     "WHERE s.item_id NOT LIKE 'fp\\_%%' AND NOT EXISTS ("
@@ -235,9 +248,12 @@ def _collect_music_server_metrics(cur):
                     "WHERE m.item_id = s.item_id AND m.server_id = %s)",
                     (r[0],),
                 )
+                # Only a real zero retires the scan. A failed query must not be
+                # read as "no legacy rows left", or the count stays wrong for
+                # the life of the process.
                 if legacy == 0:
                     _LEGACY_UNMAPPED_DONE[r[0]] = True
-                matched += legacy
+                matched += legacy or 0
             server_songs = r[4]
             if server_songs is None and r[3] and matched:
                 # The default server's library defined the catalogue before the

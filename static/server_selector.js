@@ -47,6 +47,7 @@
 
     var chainedFetch = window.fetch;
     window.fetch = function (input, init) {
+        var injected = null;
         try {
             var id = selectedId();
             if (isNonDefaultSelection(id) && (typeof input === 'string' || input instanceof Request)) {
@@ -55,6 +56,7 @@
                 var u = new URL(rawUrl, window.location.origin);
                 if (name && u.origin === window.location.origin && shouldInject(u.pathname) && !u.searchParams.has('server')) {
                     u.searchParams.set('server', name);
+                    injected = id;
                     input = input instanceof Request
                         ? new Request(u.toString(), input)
                         : u.pathname + u.search + u.hash;
@@ -63,7 +65,16 @@
         } catch (e) {
             // Never let selection logic break a request.
         }
-        return chainedFetch.call(this, input, init);
+        return chainedFetch.call(this, input, init).then(function (response) {
+            if (injected && response.status === 400) {
+                response.clone().json().then(function (body) {
+                    if (body && typeof body.error === 'string' && /unknown server/i.test(body.error)) {
+                        forgetStaleSelection(injected);
+                    }
+                }).catch(function () { /* not JSON: leave the selection alone */ });
+            }
+            return response;
+        });
     };
 
     function escapeHtml(s) {
@@ -99,7 +110,22 @@
             } else {
                 localStorage.setItem(STORAGE_KEY, this.value);
             }
+            // Pages render server-specific state (the Sonic Fingerprint form's
+            // credential fields, cached results, counts). Reload so the whole
+            // page speaks to the newly selected server instead of keeping the
+            // previous one's view.
+            window.location.reload();
         });
+    }
+
+    function forgetStaleSelection(id) {
+        // The selected server was deleted (in another tab, or by another admin):
+        // every request would keep 400ing with it. Drop it and show the default.
+        if (!id || localStorage.getItem(STORAGE_KEY) !== id) {
+            return;
+        }
+        localStorage.removeItem(STORAGE_KEY);
+        window.location.reload();
     }
 
     function load() {

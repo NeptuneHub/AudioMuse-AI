@@ -51,6 +51,13 @@ def resolve_request_server_id(data=None):
         requested = request.args.get('server') or request.args.get('server_id')
     if not requested:
         return None
+    # A JSON body can carry any type here. Coerce to text: an int or a list
+    # would otherwise reach the registry's SQL and raise, which the availability
+    # scope treats as "no selection" - failing OPEN to the union catalogue.
+    if not isinstance(requested, str):
+        if isinstance(requested, (dict, list, tuple, set, bool)):
+            raise ValueError("The 'server' parameter must be a server name or id")
+        requested = str(requested)
     server = registry.get_server(requested) or registry.get_server_by_name(requested)
     if server is None:
         raise ValueError(f"Unknown server '{requested}'")

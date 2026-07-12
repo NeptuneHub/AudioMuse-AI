@@ -1086,6 +1086,12 @@ def _run_analysis_server_task_impl(
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}
 
             total_albums_to_check = len(all_albums)
+            # Every server phase of a union run files its album children under the
+            # SAME parent task id, so the failure count is cumulative. Take a
+            # baseline now (earlier phases are finished) and report only the
+            # failures THIS server produced - otherwise one bad server marks every
+            # healthy one that follows it as failed too.
+            baseline_failed_count, _baseline_errors = get_failed_child_summary(current_task_id)
             active_jobs = {}
             launched_job_ids = set()
             albums_skipped, albums_launched, albums_completed = 0, 0, 0
@@ -1149,7 +1155,14 @@ def _run_analysis_server_task_impl(
                     except Exception:
                         logger.exception("Failed to reconcile child tasks from DB")
 
-                if albums_completed - last_rebuild_count >= REBUILD_INDEX_BATCH_SIZE:
+                # Gated exactly like the final rebuild below: a union run sets
+                # finalize_indexes=False on every phase and builds the indexes ONCE
+                # at the end, so a per-phase mid-run rebuild would be thrown away
+                # by the next phase and by the consolidated build.
+                if (
+                    finalize_indexes
+                    and albums_completed - last_rebuild_count >= REBUILD_INDEX_BATCH_SIZE
+                ):
                     log_and_update_main(
                         f"Batch of {albums_completed - last_rebuild_count} albums complete. Enqueueing index rebuild...",
                         current_progress,
@@ -1312,7 +1325,11 @@ def _run_analysis_server_task_impl(
                 'Analysis complete. CLAP text search uses default queries (no auto-regeneration).'
             )
 
-            failed_count, failed_errors = get_failed_child_summary(current_task_id)
+            total_failed_count, failed_errors = get_failed_child_summary(current_task_id)
+            # Only this phase's own failures (see the baseline above).
+            failed_count = max(0, total_failed_count - baseline_failed_count)
+            if not failed_count:
+                failed_errors = []
             final_message = (
                 f"Main analysis complete. Launched {albums_launched}, "
                 f"Skipped {albums_skipped}, Errored {albums_errored}, "

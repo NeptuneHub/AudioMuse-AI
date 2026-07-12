@@ -419,25 +419,38 @@ def get_missing_ids_in_table(table_name, track_ids):
 
 
 _REFRESH_FIELDS = ('album', 'album_artist', 'year', 'rating', 'file_path')
+_SHARED_REFRESH_FIELDS = ('album', 'album_artist', 'year', 'rating')
 
 
 def refresh_track_metadata(item, album_name):
+    """Refresh the shared catalogue row from the server currently being analyzed.
+
+    ``file_path`` is written ONLY by the default server. The catalogue row is
+    shared by every server that has the track, but it holds a single path - and
+    that path is the top-priority tier of the matcher that onboards the NEXT
+    server and drives provider migration. Letting whichever server ran last
+    stamp its own path layout onto the shared row would silently demote those
+    tracks to the weaker metadata tiers forever.
+    """
+    from tasks.mediaserver import context as ms_context
+
+    on_default_server = ms_context.active_server_id() is None
+    fields = _REFRESH_FIELDS if on_default_server else _SHARED_REFRESH_FIELDS
     values = (
         album_name,
         item.get('OriginalAlbumArtist'),
         item.get('Year'),
         item.get('Rating'),
-        item.get('FilePath'),
-    )
+    ) + ((item.get('FilePath'),) if on_default_server else ())
     if not any(v is not None for v in values):
         return False
     set_parts = pgsql.SQL(", ").join(
         pgsql.SQL("{} = COALESCE(%s, {})").format(pgsql.Identifier(f), pgsql.Identifier(f))
-        for f in _REFRESH_FIELDS
+        for f in fields
     )
     where_parts = pgsql.SQL(" OR ").join(
         pgsql.SQL("(%s IS NOT NULL AND {} IS DISTINCT FROM %s)").format(pgsql.Identifier(f))
-        for f in _REFRESH_FIELDS
+        for f in fields
     )
     query = pgsql.SQL("UPDATE score SET {} WHERE item_id = %s AND ({})").format(
         set_parts, where_parts

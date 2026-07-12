@@ -139,10 +139,20 @@ def list_libraries(user_creds=None):
     return _music_sections(user_creds)
 
 
-def _target_sections(user_creds=None):
+def _target_sections(user_creds=None, force_filter=False):
+    """The music sections to scan, honouring the active server's library filter.
+
+    ``force_filter`` is for callers that operate a CONFIGURED server (catalogue
+    fetches, cleaning, sweeps): they pass that server's credentials explicitly
+    even for the default one, whose bound context is None - without this the
+    heuristic below would read them as "probing a foreign server" and silently
+    scan every section, ignoring the library filter. Probes of an unregistered
+    server (connection test, provider migration) still pass no flag and are not
+    filtered by the CURRENT install's libraries.
+    """
     user_creds = context.active_creds(user_creds)
     sections = _music_sections(user_creds)
-    if user_creds and context.active_server() is None:
+    if not force_filter and user_creds and context.active_server() is None:
         return sections
     names_str = context.active_libraries(config.MUSIC_LIBRARIES)
     if not names_str or not names_str.strip():
@@ -282,7 +292,10 @@ def download_track(temp_dir, item):
 
 def get_all_songs(user_creds=None, apply_filter=True):
     user_creds = context.active_creds(user_creds)
-    sections = _target_sections(user_creds) if apply_filter else _music_sections(user_creds)
+    sections = (
+        _target_sections(user_creds, force_filter=True) if apply_filter
+        else _music_sections(user_creds)
+    )
     all_items = []
     for section in sections:
         try:

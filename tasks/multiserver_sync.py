@@ -485,7 +485,9 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     written = 0
     processed = 0
     tier_counts = {}
-    claimed = set()
+    # {provider_track_id: tier_rank} - shared across chunks so one provider track
+    # never maps to two canonical rows, and a later, stronger match can take it.
+    claimed = {}
     if index.size:
         for chunk in _iter_unmapped_local_rows(db, server_id):
             cancel()

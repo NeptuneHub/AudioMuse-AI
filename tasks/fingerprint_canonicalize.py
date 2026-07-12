@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 _CHUNK_ROWS = 20000
 _CURRENT_SCHEME_SQL = "(s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s)"
 _LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL
+_RELABEL_ADVISORY_LOCK = 726354822
 
 
 def _migration_workers():
@@ -355,6 +356,11 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             cur.execute("SHOW statement_timeout")
             prev_timeout = cur.fetchone()[0]
         cur.execute("SET statement_timeout = 0")
+        # Several Flask replicas boot at once on a multi-replica deployment.
+        # This lock makes exactly one of them do the relabel: the others wait,
+        # then find nothing left to migrate and return immediately, instead of
+        # racing the same key rewrite and DDL through the FK drop/re-add.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_RELABEL_ADVISORY_LOCK,))
         source_id = source_server_id or registry.get_default_server_id(db)
         if source_id is None:
             logger.warning(

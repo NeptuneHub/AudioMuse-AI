@@ -756,7 +756,7 @@ def _tiered_catalogue():
 
 def _run_chunked(matcher, old_rows, new_tracks, chunk_size):
     index = matcher.CandidateIndex(new_tracks)
-    claimed = set()
+    claimed = {}
     matches = {}
     tiers = {}
     for start in range(0, len(old_rows), chunk_size):
@@ -785,3 +785,63 @@ class TestChunkedEquivalence:
         matches, tiers = _run_chunked(matcher, old_rows, new_tracks, chunk_size)
         assert matches == baseline['matches'] == expected_matches
         assert tiers == baseline['match_tiers'] == expected_tiers
+
+
+class TestClaimStealingAcrossChunks:
+    """A later chunk with a STRONGER tier must be able to take a provider track.
+
+    The `claimed` map spans chunks while the best-match tie-break only sees one
+    chunk, so without a tier rank the first chunk to touch a provider track owned
+    it forever - a normalized-metadata guess would permanently outrank an exact
+    path match that arrives later, and nothing ever re-matched it.
+    """
+
+    def test_stronger_later_tier_takes_the_track(self, matcher):
+        new_tracks = [{
+            'id': 'p1', 'path': '/music/song.flac',
+            'title': 'Song', 'artist': 'Artist', 'album': 'Album',
+        }]
+        weak = {
+            'item_id': 'fp_weak', 'file_path': '/elsewhere/other.flac',
+            'title': 'Song', 'author': 'Artist', 'album': 'Album', 'album_artist': 'Artist',
+        }
+        strong = {
+            'item_id': 'fp_strong', 'file_path': '/music/song.flac',
+            'title': 'Different', 'author': 'Other', 'album': 'Other', 'album_artist': 'Other',
+        }
+
+        index = matcher.CandidateIndex(new_tracks)
+        claimed = {}
+        first = index.match_chunk([weak], claimed)
+        second = index.match_chunk([strong], claimed)
+
+        assert first['matches'] == {'fp_weak': 'p1'}
+        # The exact-path row wins it in the next chunk...
+        assert second['matches'] == {'fp_strong': 'p1'}
+        assert second['match_tiers']['fp_strong'] == 'path'
+        # ...and the weak owner is left for a later sweep (the upsert moves the
+        # provider id, so the database never holds both).
+        assert claimed['p1'] == index._tier_rank['path']
+
+    def test_weaker_later_tier_does_not_steal(self, matcher):
+        new_tracks = [{
+            'id': 'p1', 'path': '/music/song.flac',
+            'title': 'Song', 'artist': 'Artist', 'album': 'Album',
+        }]
+        strong = {
+            'item_id': 'fp_strong', 'file_path': '/music/song.flac',
+            'title': 'Song', 'author': 'Artist', 'album': 'Album', 'album_artist': 'Artist',
+        }
+        weak = {
+            'item_id': 'fp_weak', 'file_path': '/elsewhere/other.flac',
+            'title': 'Song', 'author': 'Artist', 'album': 'Album', 'album_artist': 'Artist',
+        }
+
+        index = matcher.CandidateIndex(new_tracks)
+        claimed = {}
+        first = index.match_chunk([strong], claimed)
+        second = index.match_chunk([weak], claimed)
+
+        assert first['matches'] == {'fp_strong': 'p1'}
+        assert second['matches'] == {}
+        assert [row['item_id'] for row in second['unmatched']] == ['fp_weak']

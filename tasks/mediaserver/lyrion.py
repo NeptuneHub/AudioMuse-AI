@@ -665,6 +665,23 @@ def get_recent_albums(limit):
     return filtered_albums
 
 
+def _path_is_under(track_path, target_path):
+    """True when ``track_path`` is inside the ``target_path`` folder.
+
+    Anchored on whole path components: a bare substring test would put
+    '/music/Kid Rock Anthology/x.flac' inside a folder configured as 'Rock'.
+    """
+    target = target_path.strip('/')
+    if not target:
+        return False
+    normalized = track_path.replace('\\', '/')
+    return (
+        normalized.startswith(target + '/')
+        or normalized.startswith('/' + target + '/')
+        or ('/' + target + '/') in normalized
+    )
+
+
 def _song_in_target_paths(song, target_paths):
     for field in ('url', 'FilePath'):
         value = song.get(field)
@@ -672,10 +689,7 @@ def _song_in_target_paths(song, target_paths):
             continue
         track_path = str(value).lower()
         for target_path in target_paths:
-            if target_path in track_path:
-                return True
-            target_parts = target_path.strip('/').split('/')
-            if len(target_parts) >= 2 and target_parts[-1] in track_path:
+            if _path_is_under(track_path, target_path):
                 return True
     return False
 

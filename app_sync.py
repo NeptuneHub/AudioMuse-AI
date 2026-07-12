@@ -163,15 +163,24 @@ def sync_endpoint():
 
     ids_raw = request.args.get('ids')
     id_filter = None
-    if ids_raw is not None:
-        provider_ids = [i for i in ids_raw.split(',') if i][:_MAX_PAYLOAD_LIMIT]
-        id_filter = (
-            list(registry.reverse_translate_ids(provider_ids, server_id).values())
-            if server_id
-            else provider_ids
-        )
 
     try:
+        if ids_raw is not None:
+            provider_ids = [i for i in ids_raw.split(',') if i][:_MAX_PAYLOAD_LIMIT]
+            if server_id:
+                # Same contract as the page translation below: a registry failure
+                # is retryable (503), never an empty page the client reads as a
+                # mass deletion.
+                try:
+                    id_filter = list(
+                        registry.reverse_translate_ids(provider_ids, server_id).values()
+                    )
+                except Exception as exc:
+                    logger.exception("Sync input id translation failed")
+                    raise _IdTranslationError() from exc
+            else:
+                id_filter = provider_ids
+
         conn = get_db()
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             if manifest_mode:

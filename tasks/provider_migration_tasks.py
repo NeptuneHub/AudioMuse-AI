@@ -564,27 +564,41 @@ def _write_provider_to_default_server(cur, target_type, target_creds, selected_l
     The registry row is the source of truth the config globals are projected
     from (and init_db deletes the mediaserver app_config keys on boot), so
     without this update the provider switch would silently revert to the old
-    server on the next config refresh.
+    server on the next config refresh. When there is no default row at all the
+    row is CREATED: silently updating nothing would leave the whole install with
+    a rewritten catalogue and no server to reach it with.
     """
+    import uuid as _uuid
+
     from psycopg2.extras import Json
 
     cur.execute("SELECT to_regclass('public.music_servers') IS NOT NULL")
     if not cur.fetchone()[0]:
         return
+    creds = Json(dict(target_creds or {}))
+    libraries = _cleaned_libraries_value(selected_libraries)
     cur.execute(
         "UPDATE music_servers SET server_type = %s, creds = %s, music_libraries = %s, "
         "track_count = NULL, updated_at = now() WHERE is_default",
-        (
-            target_type,
-            Json(dict(target_creds or {})),
-            _cleaned_libraries_value(selected_libraries),
-        ),
+        (target_type, creds, libraries),
     )
     if cur.rowcount:
         logger.info(
             "provider migration: music_servers default row now targets '%s'",
             target_type,
         )
+        return
+    cur.execute(
+        "INSERT INTO music_servers "
+        "(server_id, name, server_type, creds, music_libraries, is_default) "
+        "VALUES (%s, %s, %s, %s, %s, TRUE)",
+        (_uuid.uuid4().hex, (target_type or 'media server').capitalize(),
+         target_type, creds, libraries),
+    )
+    logger.warning(
+        "provider migration: no default server existed; created one for '%s'",
+        target_type,
+    )
 
 
 def _purge_media_keys_from_app_config(cur):

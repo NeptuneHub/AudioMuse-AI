@@ -299,10 +299,12 @@
         if (!taskId) { return; }
         stopSweepPolling();
         currentSweepTaskId = taskId;
+        var consecutiveErrors = 0;
         function tick() {
             fetch('/api/status/' + encodeURIComponent(taskId), { headers: { 'Accept': 'application/json' } })
                 .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
                 .then(function (d) {
+                    consecutiveErrors = 0;
                     var msg = (d.details && (d.details.status_message || d.details.message)) || d.status_message || d.state || '';
                     var state = d.state || '';
                     var terminal = ['SUCCESS', 'FAILURE', 'REVOKED', 'finished', 'failed', 'canceled'].indexOf(state) !== -1;
@@ -313,7 +315,17 @@
                         loadServers();
                     }
                 })
-                .catch(function () { stopSweepPolling(); });
+                .catch(function () {
+                    // A blip (worker restart, brief 5xx) must not freeze the bar
+                    // forever: keep polling, and only give up - visibly - after
+                    // the sweep has been unreachable for ~30s.
+                    consecutiveErrors += 1;
+                    if (consecutiveErrors < 10) {
+                        return;
+                    }
+                    stopSweepPolling();
+                    renderSweepProgress(100, 'Lost contact with the alignment task; reload to see its final state.', false, true);
+                });
         }
         tick();
         sweepTimer = setInterval(tick, 3000);

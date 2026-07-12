@@ -289,16 +289,24 @@ class CandidateIndex:
     def match_chunk(self, old_rows, claimed_new_ids=None):
         """Match ``old_rows`` against the index and return the usual result dict.
 
-        ``claimed_new_ids`` (mutated in place when given) carries the already
-        assigned provider track ids across chunks so one provider track never
-        maps to two canonical rows, matching the unique DB constraint.
+        ``claimed_new_ids`` (mutated in place when given) carries the provider
+        track ids already assigned by EARLIER chunks, as ``{new_id: tier_rank}``,
+        so one provider track never maps to two canonical rows (the unique DB
+        constraint). A later chunk holding a STRICTLY BETTER tier still takes it:
+        the upsert moves the mapping and the weaker previous owner is simply left
+        unmapped for a later sweep. Without the rank, the first chunk to see a
+        provider track would own it forever - a normalized-metadata guess made in
+        chunk 1 would permanently outrank an exact path match in chunk 2, and the
+        best-match tie-break (which only looks inside one chunk) would never see
+        the pair.
         """
-        claimed = claimed_new_ids if claimed_new_ids is not None else set()
+        claimed = claimed_new_ids if claimed_new_ids is not None else {}
         proposals = []
         for old in old_rows:
             tier, new_id = self._propose(old)
             if tier is not None and new_id in claimed:
-                tier, new_id = None, None
+                if self._tier_rank[tier] >= claimed[new_id]:
+                    tier, new_id = None, None
             proposals.append((tier, old, new_id))
 
         best_for_new = {}
@@ -320,7 +328,7 @@ class CandidateIndex:
                 matches[old['item_id']] = new_id
                 match_tiers[old['item_id']] = tier
                 tier_counts[tier] += 1
-                claimed.add(new_id)
+                claimed[new_id] = self._tier_rank[tier]
             else:
                 unmatched.append(old)
 

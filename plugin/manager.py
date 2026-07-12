@@ -986,10 +986,25 @@ def _run_per_server(func, server_scope, args, kwargs):
     if not server_scope:
         return func(*args, **kwargs)
 
+    servers = ms_registry.servers_for_scope(server_scope)
     results = []
-    for server in ms_registry.servers_for_scope(server_scope):
-        with ms_registry.bind(server):
-            results.append(func(*args, **kwargs))
+    failures = []
+    for server in servers:
+        name = server['name'] if server else 'default server'
+        try:
+            with ms_registry.bind(server):
+                results.append(func(*args, **kwargs))
+        except Exception as exc:
+            # One unreachable server must not cancel the run on the others.
+            logger.exception('Plugin task failed on %s; continuing', name)
+            failures.append(f'{name}: {exc}')
+    if failures and not results:
+        raise RuntimeError('Plugin task failed on every server: ' + '; '.join(failures))
+    if failures:
+        logger.warning(
+            'Plugin task completed on %d/%d servers (%s)',
+            len(results), len(servers), '; '.join(failures),
+        )
     return results[0] if len(results) == 1 else results
 
 

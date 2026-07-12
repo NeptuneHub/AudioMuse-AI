@@ -780,12 +780,15 @@ class TestEmbeddingCanonicalization:
 
         assert result == {'relabelled': 0, 'duplicates': 0}
         sqls = [sql for sql, _params in conn.executed]
+        # The advisory lock makes exactly one replica relabel; the others wait
+        # and then find nothing to do.
         assert sqls == [
             "SHOW statement_timeout",
             "SET statement_timeout = 0",
+            "SELECT pg_advisory_xact_lock(%s)",
             "SET statement_timeout = %s",
         ]
-        assert conn.executed[2][1] == ('600s',)
+        assert conn.executed[3][1] == ('600s',)
         assert conn.autocommit_events == [False, True]
         assert conn.autocommit is True
         assert conn.commits >= 1
@@ -1182,8 +1185,10 @@ class TestSweepAlignment:
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        counts = iter([188057, 25])
-        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: next(counts))
+        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: 188057)
+        # The legacy count must distinguish "counted zero" from "query failed",
+        # or a transient error latches the scan as done forever.
+        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
         cur = MagicMock()
         cur.fetchall.return_value = [
             ('s1', 'Jellyfin', 'jellyfin', True, None, 188032),
@@ -1533,3 +1538,79 @@ class TestRegistrySeeding:
         database._drop_unconfigured_servers(cur)
 
         assert not any('DELETE FROM music_servers' in sql for sql, _p in cur.executed)
+
+
+class TestDashboardLegacyCountLatch:
+    def test_failed_count_is_not_latched_as_done(self, monkeypatch):
+        """A transient DB error must not be read as 'no legacy rows left'."""
+        import app_dashboard as dash
+
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: 100)
+        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: None)
+        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
+        cur = MagicMock()
+        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40)]
+
+        rows = dash._collect_music_server_metrics(cur)
+
+        assert rows[0]['matched_songs'] == 40
+        assert dash._LEGACY_UNMAPPED_DONE == {}
+
+    def test_real_zero_retires_the_scan(self, monkeypatch):
+        import app_dashboard as dash
+
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: 100)
+        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 0)
+        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
+        cur = MagicMock()
+        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40)]
+
+        dash._collect_music_server_metrics(cur)
+
+        assert dash._LEGACY_UNMAPPED_DONE == {'d1': True}
+
+
+class TestLyrionFolderFilterIsAnchored:
+    def test_substring_of_a_folder_name_does_not_match(self):
+        from tasks.mediaserver import lyrion
+
+        song = {'FilePath': '/music/kid rock anthology/01.flac', 'url': ''}
+        assert lyrion._song_in_target_paths(song, {'rock'}) is False
+
+    def test_real_folder_matches(self):
+        from tasks.mediaserver import lyrion
+
+        song = {'FilePath': '/music/rock/queen/01.flac', 'url': ''}
+        assert lyrion._song_in_target_paths(song, {'rock'}) is True
+
+    def test_full_configured_path_matches(self):
+        from tasks.mediaserver import lyrion
+
+        song = {'FilePath': '/music/myfolder/x.flac', 'url': ''}
+        assert lyrion._song_in_target_paths(song, {'/music/myfolder'}) is True
+
+
+class TestServerParamCoercion:
+    def test_non_string_server_id_is_a_clean_400_not_a_crash(self, monkeypatch):
+        from flask import Flask
+        import app_server_context as ctx
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'get_server', lambda sid, conn=None: None)
+        monkeypatch.setattr(registry, 'get_server_by_name', lambda name, conn=None: None)
+
+        app = Flask('server-param-test')
+        with app.test_request_context('/api/x', method='POST', json={'server': 12345}):
+            with pytest.raises(ValueError):
+                ctx.resolve_request_server_id()
+
+    def test_structured_server_value_is_rejected(self):
+        from flask import Flask
+        import app_server_context as ctx
+
+        app = Flask('server-param-test')
+        with app.test_request_context('/api/x', method='POST', json={'server': ['a', 'b']}):
+            with pytest.raises(ValueError):
+                ctx.resolve_request_server_id()

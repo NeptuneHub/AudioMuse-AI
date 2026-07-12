@@ -38,7 +38,7 @@ import uuid
 from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
-from database import get_db
+from database import get_db, missing_required_creds
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +218,21 @@ def context_for(server_id, conn=None):
     default_id = default["server_id"] if default else None
     if not server_id or server_id == default_id:
         return None
-    return get_server(server_id, db)
+    server = get_server(server_id, db)
+    if server is not None:
+        # Providers read a missing credential from the config globals, which are
+        # the DEFAULT server's projection - so an incomplete secondary would
+        # quietly talk to the wrong machine. The API refuses to store one, but
+        # say so loudly if a legacy row ever gets here.
+        missing = missing_required_creds(server['server_type'], server['creds'])
+        if missing:
+            logger.error(
+                "Server '%s' is missing required credentials (%s); its provider "
+                "calls would fall back to the default server. Fix it in the setup "
+                "wizard.",
+                server['name'], ', '.join(missing),
+            )
+    return server
 
 
 def bind(server, conn=None):
@@ -313,6 +327,11 @@ def set_default(server_id, conn=None):
             "UPDATE music_servers SET is_default = TRUE, updated_at = now() WHERE server_id = %s",
             (server_id,),
         )
+        if not cur.rowcount:
+            # The row vanished between the caller's check and this write (a
+            # concurrent delete). Committing now would clear the old default and
+            # promote nothing, leaving the install with NO default server.
+            raise ValueError(f"Server '{server_id}' no longer exists; the default was not changed.")
         db.commit()
         invalidate_server_cache()
     except Exception:

@@ -256,10 +256,18 @@ def get_waveform_endpoint():
         server_id = resolve_request_server_id()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    provider_id = ms_registry.translate_ids([item_id], server_id).get(str(item_id))
+    try:
+        provider_id = ms_registry.translate_ids([item_id], server_id).get(str(item_id))
+        server_ctx = ms_registry.context_for(server_id)
+    except Exception:
+        # A registry failure is transient, not a bad request: say so plainly
+        # instead of surfacing it as a generic 500 from the download path.
+        logger.exception("Waveform id translation failed")
+        return jsonify(
+            {"error": "Music-server registry unavailable; retry shortly"}
+        ), 503
     if not provider_id:
         return jsonify({"error": "Track is not available on the selected server"}), 404
-    server_ctx = ms_registry.context_for(server_id)
 
     # Download the track to a temporary location
     temp_file = None
