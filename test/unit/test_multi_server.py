@@ -19,6 +19,10 @@ Main Features:
 * Matcher tiers and safe canonical/provider id translation.
 * Server-scope resolution (``servers_for_scope`` / ``has_secondary_servers``).
 * BoundServer runs dispatcher calls inside the selected server's context.
+* Sweep alignment: keyset pagination, per-server failure isolation, pruning
+  and catalogue-cache bounds.
+* Registry mutators roll back and re-raise on write failures; canonicalization
+  restores session settings on caller-provided connections.
 """
 
 import gc
@@ -88,6 +92,26 @@ class TestServerContext:
             merged = context.active_creds({'url': '', 'token': 'caller-token'})
             assert merged == {'url': 'http://secondary', 'token': 'caller-token'}
             assert context.active_creds() == {'url': 'http://secondary', 'token': 'stok'}
+
+    def test_active_creds_merge_matrix(self):
+        from tasks.mediaserver import context
+
+        server = {
+            'server_id': 's1',
+            'server_type': 'jellyfin',
+            'creds': {'url': 'u', 'token': 't', 'user_id': 'id'},
+            'music_libraries': '',
+        }
+        with context.use_server(server):
+            assert context.active_creds({'token': 'T2'}) == {
+                'url': 'u', 'token': 'T2', 'user_id': 'id'
+            }
+            assert context.active_creds({'url': '', 'token': '', 'user_id': ''}) == {
+                'url': 'u', 'token': 't', 'user_id': 'id'
+            }
+            assert context.active_creds(None) == {'url': 'u', 'token': 't', 'user_id': 'id'}
+        assert context.active_creds({'token': 'T2'}) == {'token': 'T2'}
+        assert context.active_creds(None) is None
 
 
 class TestCredHelpers:
@@ -281,6 +305,41 @@ class TestServerScopes:
             assert cursor.execute.call_count == 2
         finally:
             registry.invalidate_server_cache()
+
+
+class TestRegistryMutatorRollback:
+    def test_add_server_rolls_back_and_reraises_on_insert_failure(self):
+        from tasks.mediaserver import registry
+
+        db = MagicMock()
+        cur = db.cursor.return_value
+        cur.fetchone.return_value = (True,)
+
+        def explode(sql, params=None):
+            if sql.startswith('INSERT INTO music_servers'):
+                raise RuntimeError('insert failed')
+
+        cur.execute.side_effect = explode
+        with pytest.raises(RuntimeError, match='insert failed'):
+            registry.add_server('Home', 'jellyfin', {'url': 'u'}, conn=db)
+        db.rollback.assert_called_once()
+        db.commit.assert_not_called()
+
+    def test_set_default_rolls_back_and_reraises_on_update_failure(self):
+        from tasks.mediaserver import registry
+
+        db = MagicMock()
+        cur = db.cursor.return_value
+
+        def explode(sql, params=None):
+            if 'SET is_default = TRUE' in sql:
+                raise RuntimeError('update failed')
+
+        cur.execute.side_effect = explode
+        with pytest.raises(RuntimeError, match='update failed'):
+            registry.set_default('sid', conn=db)
+        db.rollback.assert_called_once()
+        db.commit.assert_not_called()
 
 
 class TestMatcherTiers:
@@ -611,8 +670,157 @@ class TestEmbeddingCanonicalization:
 
         assert result == {'legacy-score-id': 'current-jellyfin-id'}
 
+    def test_passed_conn_session_settings_restored(self, monkeypatch):
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        class SessionCursor:
+            def __init__(self, conn):
+                self._conn = conn
+                self._last_sql = None
+
+            def execute(self, sql, params=None):
+                self._last_sql = sql
+                self._conn.executed.append((sql, params))
+
+            def fetchone(self):
+                if self._last_sql == "SHOW statement_timeout":
+                    return ('600s',)
+                return (None,)
+
+            def close(self):
+                pass
+
+        class SessionConn:
+            def __init__(self):
+                self._autocommit = True
+                self.autocommit_events = []
+                self.executed = []
+                self.commits = 0
+
+            @property
+            def autocommit(self):
+                return self._autocommit
+
+            @autocommit.setter
+            def autocommit(self, value):
+                self._autocommit = value
+                self.autocommit_events.append(value)
+
+            def cursor(self):
+                return SessionCursor(self)
+
+            def commit(self):
+                self.commits += 1
+
+            def rollback(self):
+                pass
+
+        monkeypatch.setattr(canonicalize, '_build_mapping', lambda cur: ({}, {}))
+        monkeypatch.setattr(
+            canonicalize.registry, 'get_default_server_id', lambda conn=None: 'sid'
+        )
+        conn = SessionConn()
+
+        result = canonicalize.canonicalize_fingerprinted_ids(conn=conn, rebuild=False)
+
+        assert result == {'relabelled': 0, 'duplicates': 0}
+        sqls = [sql for sql, _params in conn.executed]
+        assert sqls == [
+            "SHOW statement_timeout",
+            "SET statement_timeout = 0",
+            "SET statement_timeout = %s",
+        ]
+        assert conn.executed[2][1] == ('600s',)
+        assert conn.autocommit_events == [False, True]
+        assert conn.autocommit is True
+        assert conn.commits >= 1
+
 
 class TestSweepAlignment:
+    def test_iter_unmapped_local_rows_keyset_pagination(self):
+        from tasks import multiserver_sync as sync
+
+        pages = [
+            [
+                ('a1', 't1', 'au1', 'al1', 'aa1', '/p1'),
+                ('a2', 't2', 'au2', 'al2', 'aa2', '/p2'),
+            ],
+            [
+                ('a3', 't3', 'au3', 'al3', 'aa3', '/p3'),
+                ('a4', 't4', 'au4', 'al4', 'aa4', '/p4'),
+            ],
+            [
+                ('a5', 't5', 'au5', 'al5', 'aa5', '/p5'),
+            ],
+            [],
+        ]
+        executed = []
+        cursor = MagicMock()
+        cursor.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        cursor.fetchall.side_effect = list(pages)
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+
+        chunks = list(sync._iter_unmapped_local_rows(conn, 'srv', chunk_size=2))
+
+        assert [len(chunk) for chunk in chunks] == [2, 2, 1]
+        assert [row['item_id'] for chunk in chunks for row in chunk] == [
+            'a1', 'a2', 'a3', 'a4', 'a5'
+        ]
+        assert chunks[0][0] == {
+            'item_id': 'a1', 'title': 't1', 'author': 'au1',
+            'album': 'al1', 'album_artist': 'aa1', 'file_path': '/p1',
+        }
+        assert len(executed) == 4
+        assert all('ORDER BY s.item_id LIMIT %s' in sql for sql, _params in executed)
+        assert [params[0] for _sql, params in executed] == ['', 'a2', 'a4', 'a5']
+        assert all(params[1] == 'srv' and params[2] == 2 for _sql, params in executed)
+
+    def test_sweep_all_isolates_per_server_failures(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+        import config
+
+        servers = [
+            {'server_id': 's1', 'name': 'One', 'server_type': 'navidrome', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+            {'server_id': 's2', 'name': 'Two', 'server_type': 'plex', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+        ]
+        monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
+        monkeypatch.setattr(sync, '_canonicalize_catalog', lambda report, base, span: None)
+        reports = []
+        monkeypatch.setattr(
+            sync, '_make_reporter',
+            lambda task_id, label: (
+                lambda message, progress, task_state=None: reports.append(
+                    (message, progress, task_state)
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
+        )
+
+        def fake_sweep(server, db, report, base, span, cancel,
+                       full_refresh=False, catalog_cache=None):
+            if server['server_id'] == 's1':
+                raise RuntimeError('provider down')
+            return {'server_id': server['server_id'], 'matched': 3}
+
+        monkeypatch.setattr(sync, '_sweep_one', fake_sweep)
+        db = MagicMock()
+
+        results = sync.sweep_all_secondary_servers(task_id='tid', conn=db)
+
+        assert results == [
+            {'server_id': 's1', 'error': 'sweep failed'},
+            {'server_id': 's2', 'matched': 3},
+        ]
+        db.rollback.assert_called_once()
+        assert reports[-1][2] == config.TASK_STATUS_SUCCESS
+        assert reports[-1][1] == 100
+        db.close.assert_not_called()
+
     def test_aligned_server_is_noop_without_fetch(self, monkeypatch):
         from tasks import multiserver_sync as sync
 

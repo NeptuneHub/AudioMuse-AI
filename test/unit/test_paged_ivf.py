@@ -16,6 +16,8 @@ Main Features:
 * i8/f16 quantized cell distances match numpy cosine/euclidean within tolerance
 * Cell grouping and over-cap splitting stay within the configured cap
 * Global cache honors byte bounds, per-index invalidation and idle mmap drops
+* Availability scope fails closed on unknown servers and open on infra errors,
+  with a DB-free single-server fast path and generation-keyed mask eviction
 """
 
 import os
@@ -586,6 +588,90 @@ def test_idle_watcher_drops_only_the_idle_index(monkeypatch):
     finally:
         pv._LIVE_INDEXES.discard(hot)
         pv._LIVE_INDEXES.discard(idle)
+
+
+def test_active_availability_scope_fails_closed_on_invalid_and_open_on_infra_error(monkeypatch):
+    import tasks.paged_ivf as pv
+    import app_server_context as asc
+    from flask import Flask
+
+    def invalid():
+        raise ValueError('unknown server')
+
+    app = Flask('scope-test')
+    monkeypatch.setattr(asc, 'resolve_request_server_id', invalid)
+    with app.test_request_context('/'):
+        assert pv.active_availability_scope() == '__invalid_server__'
+
+    def infra():
+        raise RuntimeError('registry down')
+
+    monkeypatch.setattr(asc, 'resolve_request_server_id', infra)
+    with app.test_request_context('/'):
+        assert pv.active_availability_scope() is None
+
+
+def _make_availability_index(pv, index_name, generation, item_ids, conn_factory):
+    idx = object.__new__(pv.PagedIvfIndex)
+    idx._track_scoped = True
+    idx._index_name = index_name
+    idx._generation = generation
+    idx._item_ids = list(item_ids)
+    idx._n_items = len(item_ids)
+    idx._conn_factory = conn_factory
+    return idx
+
+
+def test_availability_mask_single_server_fast_path_skips_db(monkeypatch):
+    import tasks.paged_ivf as pv
+    from tasks.mediaserver import registry
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(pv, 'active_availability_scope', lambda: 's1')
+    monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 's1')
+    monkeypatch.setattr(registry, 'has_secondary_servers', lambda conn=None: False)
+    monkeypatch.setattr(pv, '_AVAILABILITY_CACHE', {})
+
+    def forbidden_conn():
+        raise AssertionError('fast path must not touch the DB')
+
+    idx = _make_availability_index(pv, 'fast_idx', 'genA', ['fp_a'], forbidden_conn)
+    assert idx._availability_mask() is None
+    assert pv._AVAILABILITY_CACHE == {}
+
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchall.return_value = [('fp_a',)]
+    cur.fetchone.return_value = (False,)
+    monkeypatch.setattr(registry, 'has_secondary_servers', lambda conn=None: True)
+    idx_secondary = _make_availability_index(pv, 'fast_idx', 'genA', ['fp_a'], lambda: conn)
+    mask = idx_secondary._availability_mask()
+    np.testing.assert_array_equal(mask, np.array([True], dtype=np.bool_))
+
+
+def test_availability_mask_new_generation_evicts_stale_entries(monkeypatch):
+    import tasks.paged_ivf as pv
+    from tasks.mediaserver import registry
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(pv, 'active_availability_scope', lambda: 'srv2')
+    monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 'default-sid')
+    monkeypatch.setattr(pv, '_AVAILABILITY_CACHE', {})
+
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchall.return_value = [('fp_a',)]
+    cur.fetchone.return_value = (False,)
+
+    idx_a = _make_availability_index(pv, 'gen_idx', 'genA', ['fp_a', 'fp_b'], lambda: conn)
+    mask_a = idx_a._availability_mask()
+    np.testing.assert_array_equal(mask_a, np.array([True, False], dtype=np.bool_))
+    assert ('gen_idx', 'srv2', 'genA') in pv._AVAILABILITY_CACHE
+
+    idx_b = _make_availability_index(pv, 'gen_idx', 'genB', ['fp_a', 'fp_b'], lambda: conn)
+    idx_b._availability_mask()
+    assert ('gen_idx', 'srv2', 'genB') in pv._AVAILABILITY_CACHE
+    assert ('gen_idx', 'srv2', 'genA') not in pv._AVAILABILITY_CACHE
 
 
 if __name__ == "__main__":
