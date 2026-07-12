@@ -748,7 +748,7 @@ class TestEmbeddingCanonicalization:
         )
         conn = SessionConn()
 
-        result = canonicalize.canonicalize_fingerprinted_ids(conn=conn, rebuild=False)
+        result = canonicalize.canonicalize_fingerprinted_ids(conn=conn)
 
         assert result == {'relabelled': 0, 'duplicates': 0}
         sqls = [sql for sql, _params in conn.executed]

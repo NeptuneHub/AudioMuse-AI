@@ -261,21 +261,18 @@ if not _is_worker:
         # no config<->registry sync is needed here anymore.
 
         # One-time legacy catalogue migration, Flask startup ONLY: relabel any
-        # provider-keyed (or retired-scheme) rows to the canonical embedding-hash
-        # id. Pure DB work from stored embeddings (seconds); an instant no-op on
-        # every later boot. The index rebuild is enqueued, not run inline, so a
-        # first boot after upgrade does not block on it.
+        # provider-keyed (or retired-scheme) rows to the canonical signature id.
+        # Pure DB work from stored embeddings; an instant no-op on every later
+        # boot. No index rebuild here - the next analysis rebuilds the indexes
+        # exactly as it always has; the migration only aligns the database.
         try:
             from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
-            _relabel = canonicalize_fingerprinted_ids(rebuild=False)
+            _relabel = canonicalize_fingerprinted_ids()
             if _relabel.get('relabelled'):
                 app.logger.info(
-                    "Startup migration relabelled %s catalogue ids; enqueuing index rebuild.",
+                    "Startup migration relabelled %s catalogue ids; the indexes "
+                    "will rebuild on the next analysis as usual.",
                     _relabel['relabelled'],
-                )
-                from app_helper import rq_queue_default as _rq_default
-                _rq_default.enqueue(
-                    'tasks.analysis.rebuild_all_indexes_task', job_timeout=-1
                 )
         except Exception as _migrate_exc:
             app.logger.warning(

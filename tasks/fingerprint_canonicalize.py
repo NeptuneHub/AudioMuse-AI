@@ -41,9 +41,7 @@ from tasks.mediaserver import registry
 from tasks.provider_migration_tasks import (
     find_fk,
     _drop_fk_constraints,
-    _populate_migration_map_table,
     _readd_fk_constraints,
-    _rewrite_item_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -222,15 +220,52 @@ def _default_provider_ids(cur, default_id, item_ids):
     return {str(item_id): str(provider_id) for item_id, provider_id in cur.fetchall()}
 
 
-def canonicalize_fingerprinted_ids(
-    conn=None, rebuild=True, log_fn=None, source_server_id=None
-):
-    """Relabel fingerprinted item_ids to the canonical fingerprint id.
+def _populate_relabel_map(cur, mapping):
+    from psycopg2.extras import execute_values
 
-    ``rebuild=False`` skips the index rebuild - used when the caller (analysis)
-    rebuilds the indexes itself right afterwards, so they build once. ``log_fn``
-    receives ``(message, progress)`` step updates for a caller's progress bar.
-    The session's statement_timeout is lifted and autocommit forced off for the
+    cur.execute(
+        "CREATE TEMP TABLE item_id_relabel_map ("
+        "old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL UNIQUE) ON COMMIT DROP"
+    )
+    execute_values(
+        cur,
+        "INSERT INTO item_id_relabel_map (old_id, new_id) VALUES %s",
+        list(mapping.items()),
+        page_size=5000,
+    )
+    cur.execute("ANALYZE item_id_relabel_map")
+
+
+def _relabel_item_ids(cur, lyrics_exists):
+    """Single-pass key rewrite: every table is written exactly once.
+
+    New fp_2 signature ids can never equal any legacy id (different shape) and
+    are unique among themselves, so the collision-safe two-phase prefix rewrite
+    the provider-migration uses is unnecessary here - skipping the second pass
+    halves the write volume on the embedding tables, which dominate the
+    migration time.
+    """
+    tables = ["score", "playlist", "embedding", "clap_embedding"]
+    if lyrics_exists:
+        tables.append("lyrics_embedding")
+    for table in tables:
+        cur.execute(
+            f"UPDATE {table} t SET item_id = m.new_id "
+            f"FROM item_id_relabel_map m WHERE t.item_id = m.old_id"
+        )
+        logger.info(
+            "Legacy catalogue migration: relabelled %d rows in %s",
+            cur.rowcount, table,
+        )
+
+
+def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None):
+    """Relabel legacy item_ids to the canonical signature id.
+
+    Pure database alignment: no downloads, no index rebuild (the next analysis
+    rebuilds the indexes exactly as it always has). ``log_fn`` receives
+    ``(message, progress)`` step updates for a caller's progress bar. The
+    session's statement_timeout is lifted and autocommit forced off for the
     rewrite (both restored on a caller-provided connection) so large catalogues
     are not cancelled mid-relabel.
     """
@@ -276,9 +311,10 @@ def canonicalize_fingerprinted_ids(
         )
         logger.info(
             "Legacy catalogue migration: rewriting %d catalogue keys and merging "
-            "%d duplicate rows (transactional, may take a moment)...",
+            "%d duplicate rows (single pass per table)...",
             len(mapping), duplicates,
         )
+        cur.execute("SET LOCAL synchronous_commit = off")
         all_changes = dict(mapping)
         all_changes.update(duplicate_mapping)
         default_provider_ids = _default_provider_ids(cur, source_id, all_changes)
@@ -291,26 +327,26 @@ def canonicalize_fingerprinted_ids(
 
         _drop_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
         if mapping:
-            _populate_migration_map_table(cur, mapping)
-            _rewrite_item_ids(cur, lyrics_exists)
+            _populate_relabel_map(cur, mapping)
+            _relabel_item_ids(cur, lyrics_exists)
         _readd_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
         _merge_duplicate_rows(cur, duplicate_mapping)
 
         _log("Preserving the server's real track ids in track_server_map...")
-        rows = [
-            (canonical, source_id, default_provider_ids.get(str(old_id), str(old_id)))
-            for old_id, canonical in all_changes.items()
-        ]
-        for i in range(0, len(rows), 1000):
-            chunk = rows[i:i + 1000]
-            placeholders = ",".join(["(%s, %s, %s, 'default', now())"] * len(chunk))
-            flat = [v for row in chunk for v in row]
-            cur.execute(
-                "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier, updated_at) "
-                "VALUES " + placeholders +  # nosec B608 - %s-placeholder string only; values are bound params
-                " ON CONFLICT (item_id, server_id) DO NOTHING",
-                flat,
-            )
+        from psycopg2.extras import execute_values
+
+        execute_values(
+            cur,
+            "INSERT INTO track_server_map "
+            "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
+            "ON CONFLICT (item_id, server_id) DO NOTHING",
+            [
+                (canonical, source_id, default_provider_ids.get(str(old_id), str(old_id)))
+                for old_id, canonical in all_changes.items()
+            ],
+            template="(%s, %s, %s, 'default', now())",
+            page_size=5000,
+        )
         db.commit()
         relabelled = len(mapping) + duplicates
         logger.info("=" * 64)
@@ -343,9 +379,5 @@ def canonicalize_fingerprinted_ids(
                 logger.debug("Could not restore autocommit", exc_info=True)
         if own_conn:
             db.close()
-
-    if rebuild and relabelled:
-        from tasks.analysis import rebuild_all_indexes_task
-        rebuild_all_indexes_task(log_fn=log_fn)
 
     return {'relabelled': relabelled, 'duplicates': duplicates}
