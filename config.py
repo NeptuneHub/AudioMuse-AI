@@ -424,6 +424,19 @@ LYRICS_WHISPER_MODEL_DIR = os.environ.get(
     os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "whisper-small-onnx"),
 )
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
+# Which ASR backend transcribes lyrics: "onnx" (whisper_onnx, default) or
+# "faster" (faster-whisper/CTranslate2, used on the AMD/ROCm image since
+# MIGraphX can't parse the ONNX Whisper decoder). See lyrics/_asr_backend.py.
+LYRICS_WHISPER_BACKEND = os.environ.get("LYRICS_WHISPER_BACKEND", "onnx").strip().lower()
+# faster-whisper backend settings (lyrics/whisper_faster.py). CTranslate2
+# mirrors the CUDA API on ROCm, so device="cuda" also targets an AMD GPU.
+LYRICS_WHISPER_FASTER_DEVICE = os.environ.get("LYRICS_WHISPER_FASTER_DEVICE", "cuda").strip() or "cuda"
+LYRICS_WHISPER_FASTER_COMPUTE_TYPE = os.environ.get(
+    "LYRICS_WHISPER_FASTER_COMPUTE_TYPE", "float16"
+).strip() or "float16"
+LYRICS_WHISPER_FASTER_MODEL_DIR = os.environ.get(
+    "LYRICS_WHISPER_FASTER_MODEL_DIR", "/app/model/faster-whisper-small"
+).strip()
 LYRICS_MAX_SONGS_TO_ANALYZE = 1000
 LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
     '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'

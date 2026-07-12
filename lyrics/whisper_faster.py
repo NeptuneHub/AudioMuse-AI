@@ -23,17 +23,14 @@ from typing import Dict, Optional
 
 import numpy as np
 
+from config import LYRICS_ASR_BEAM_SIZE as _BEAM_SIZE
+from config import LYRICS_WHISPER_FASTER_COMPUTE_TYPE as _COMPUTE_TYPE
+from config import LYRICS_WHISPER_FASTER_DEVICE as _DEVICE
+from config import LYRICS_WHISPER_FASTER_MODEL_DIR as _MODEL_DIR
+
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-
-# CTranslate2 mirrors the CUDA API on ROCm, so "cuda" targets the AMD GPU here.
-_DEVICE = os.environ.get("LYRICS_WHISPER_FASTER_DEVICE", "cuda").strip() or "cuda"
-_COMPUTE_TYPE = os.environ.get("LYRICS_WHISPER_FASTER_COMPUTE_TYPE", "float16").strip() or "float16"
-_MODEL_DIR = os.environ.get(
-    "LYRICS_WHISPER_FASTER_MODEL_DIR", "/app/model/faster-whisper-small"
-).strip()
-_BEAM_SIZE = int(os.environ.get("LYRICS_WHISPER_BEAM_SIZE", "5"))
 
 _model = None
 _model_dir: Optional[str] = None

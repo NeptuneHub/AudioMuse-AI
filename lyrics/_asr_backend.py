@@ -15,14 +15,13 @@ run the ONNX Whisper decoder. Both modules share the same public surface.
 
 from __future__ import annotations
 
-import os
+from config import LYRICS_WHISPER_BACKEND
 
 _FASTER = {"faster", "faster-whisper", "faster_whisper", "ct2", "ctranslate2"}
 
 
 def get_asr_backend():
-    choice = os.environ.get("LYRICS_WHISPER_BACKEND", "onnx").strip().lower()
-    if choice in _FASTER:
+    if LYRICS_WHISPER_BACKEND in _FASTER:
         from . import whisper_faster
 
         return whisper_faster

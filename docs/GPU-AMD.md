@@ -10,14 +10,14 @@ CPU / NVIDIA `Dockerfile`. Tested on a Radeon RX 9070 XT (gfx1201 / RDNA4).
 
 ## What is accelerated (and what is not)
 
-Not every model can run on MIGraphX — ONNX Runtime dropped its ROCm execution
+Not every model can run on MIGraphX -- ONNX Runtime dropped its ROCm execution
 provider, and MIGraphX (the ROCm 7.x replacement) can't parse every graph:
 
 - **musicnn** (mood/embedding CNN) runs on GPU via `MIGraphXExecutionProvider`.
   Main win on AMD.
 - **CLAP audio analysis** (DCLAP) runs on **CPU** here. Its `Resize` op with
   `keep_aspect_ratio_policy` isn't parseable by MIGraphX. Still GPU on CUDA.
-- **GPU clustering** (RAPIDS cuML) is **NVIDIA-only** — no ROCm port. Leave
+- **GPU clustering** (RAPIDS cuML) is **NVIDIA-only** -- no ROCm port. Leave
   `USE_GPU_CLUSTERING=false` on this image (CPU fallback is automatic).
 - **Lyrics transcription (Whisper) does run on GPU here**, but not via ONNX:
   the decoder's dynamic `If`/KV-cache subgraphs aren't parseable by MIGraphX
@@ -29,7 +29,7 @@ provider, and MIGraphX (the ROCm 7.x replacement) can't parse every graph:
 ## Requirements
 
 - AMD GPU supported by ROCm 7.x. RDNA4 (gfx1201, e.g. RX 9070 XT) is natively
-  supported — no `HSA_OVERRIDE_GFX_VERSION` needed. Older/unsupported cards may
+  supported -- no `HSA_OVERRIDE_GFX_VERSION` needed. Older/unsupported cards may
   need that override; see AMD's ROCm compatibility matrix.
 - ROCm-capable kernel driver (`amdgpu`) on the host.
 - ~8 GB VRAM recommended (same guidance as the NVIDIA image; on less you may hit
@@ -89,11 +89,11 @@ MIOpen kernel cache is persisted to a Docker volume so restarts skip recompiles.
 
 `Dockerfile-rocm` sets these so you do not have to:
 
-- `HSA_ENABLE_INTERRUPT=1` — interrupt-driven GPU completion instead of CPU
+- `HSA_ENABLE_INTERRUPT=1` -- interrupt-driven GPU completion instead of CPU
   busy-polling, keeping worker CPU free.
-- `MIOPEN_USER_DB_PATH` / `MIOPEN_CUSTOM_CACHE_DIR=/app/.cache/miopen` — kernel
+- `MIOPEN_USER_DB_PATH` / `MIOPEN_CUSTOM_CACHE_DIR=/app/.cache/miopen` -- kernel
   compile cache dir, mounted as a volume by compose to persist across restarts.
-- `LYRICS_WHISPER_BACKEND=faster` — routes lyrics ASR to faster-whisper/
+- `LYRICS_WHISPER_BACKEND=faster` -- routes lyrics ASR to faster-whisper/
   CTranslate2 (GPU). Override to `onnx` to force CPU. Also tunable:
   `LYRICS_WHISPER_FASTER_DEVICE` (default `cuda`), `LYRICS_WHISPER_FASTER_COMPUTE_TYPE`
   (default `float16`), `LYRICS_WHISPER_FASTER_MODEL_DIR`
