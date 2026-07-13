@@ -950,7 +950,6 @@ def _register_blueprints(flask_app):
     from app_external import external_bp
     from app_alchemy import alchemy_bp
     from app_map import map_bp
-    from app_waveform import waveform_bp
     from app_artist_similarity import artist_similarity_bp
     from app_clap_search import clap_search_bp
     from app_lyrics import lyrics_search_bp
@@ -972,7 +971,6 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(external_bp, url_prefix='/external')
     flask_app.register_blueprint(alchemy_bp)
     flask_app.register_blueprint(map_bp)
-    flask_app.register_blueprint(waveform_bp)
     flask_app.register_blueprint(artist_similarity_bp)
     flask_app.register_blueprint(clap_search_bp)
     flask_app.register_blueprint(lyrics_search_bp)

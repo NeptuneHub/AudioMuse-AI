@@ -156,8 +156,8 @@ param), accepts that server's ids in ``?ids=``, and reports that server's
 ``provider_type``; tracks the selected secondary server does not have are
 omitted. ``/external/get_score``, ``/external/get_embedding`` and
 ``/external/search`` accept and return the selected server's ids the same way.
-``/api/waveform`` and ``/api/sonic_fingerprint/generate`` also honor ``server``
-(listening history, downloads and results come from that server).
+``/api/sonic_fingerprint/generate`` also honors ``server`` (listening history,
+downloads and results come from that server).
 
 ## Registry API
 

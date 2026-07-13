@@ -103,7 +103,6 @@ INDEPENDENT_GROUPS = [
         "app_external",
         "app_alchemy",
         "app_map",
-        "app_waveform",
         "app_artist_similarity",
         "app_clap_search",
         "app_lyrics",

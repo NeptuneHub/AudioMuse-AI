@@ -9,7 +9,7 @@
 """Flow-driven Playwright screenshot driver for AudioMuse-AI docs.
 
 Development tool that captures screenshots of the feature pages
-(similarity, artist similarity, path, waveform, lyrics search, alchemy) by
+(similarity, artist similarity, path, lyrics search, alchemy) by
 replaying declarative interaction ``FLOWS`` (type/click/wait steps) against a
 running instance. It reuses the login and helper machinery from ``driver.py``.
 
@@ -36,7 +36,6 @@ URLS = {
     'similarity': '/similarity',
     'artist_similarity': '/artist_similarity',
     'path': '/path',
-    'waveform': '/waveform',
     'lyrics_search': '/lyrics_search',
     'alchemy': '/alchemy',
 }
@@ -104,23 +103,6 @@ FLOWS = {
                 },
                 {"action": "click", "selector": "#path-form button[type=\"submit\"]"},
                 {"action": "wait_selector", "selector": TABLE_WRAPPER_RESULT_ITEM},
-            ],
-        }
-    ],
-    "waveform": [
-        {
-            "label": "result",
-            "results_wait_selector": "#waveform-container:not(.hidden)",
-            "steps": [
-                {"action": "fill", "selector": "#search_query", "value": "Endless Skyline"},
-                {"action": "wait_ms", "selector": "body", "value": "300"},
-                {
-                    "action": "eval",
-                    "selector": "body",
-                    "value": "(()=>{const ac=document.getElementById('autocomplete-results');if(ac)ac.classList.add('hidden');const i=document.getElementById('selected_item_id');i.value='id-1234';const t=document.getElementById('title_display');if(t)t.textContent='Title: Endless Skyline - The Ember Echo';const f=document.getElementById('waveform-form');if(f.requestSubmit)f.requestSubmit();else f.dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));})()",
-                },
-                {"action": "wait_selector", "selector": "#waveform-container:not(.hidden)"},
-                {"action": "wait_ms", "selector": "body", "value": "1000"},
             ],
         }
     ],
@@ -203,7 +185,6 @@ def out_name(key, label, i):
         'similarity': '04_similarity_4',
         'artist_similarity': '05_artist_similarity_2',
         'path': '06_path_3',
-        'waveform': '12_waveform_2',
         'alchemy': '07_alchemy_4',
     }
     if key == 'lyrics_search':

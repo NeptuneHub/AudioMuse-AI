@@ -9,8 +9,8 @@
 """Endpoint tests against a real seeded Postgres database.
 
 Spins up an ephemeral Postgres (or a supplied DSN), seeds the score and
-embedding tables, and drives the score, embedding, and waveform lookup
-endpoints through their real DB queries.
+embedding tables, and drives the score and embedding lookup endpoints through
+their real DB queries.
 
 Main Features:
 * Seeded lookups return rows and missing ids return 404.
@@ -186,28 +186,3 @@ class TestEmbeddingEndpointRealDb:
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_embedding', query_string={'id': 'does-not-exist'})
         assert resp.status_code == 404
-
-
-@pytest.mark.integration
-class TestWaveformLookupRealDb:
-    def _client(self):
-        import app_waveform
-
-        app = Flask(__name__)
-        app.register_blueprint(app_waveform.waveform_bp)
-        app.config['TESTING'] = True
-        return app_waveform, app.test_client()
-
-    def test_missing_track_returns_404(self, endpoints_db, monkeypatch):
-        wf, client = self._client()
-        monkeypatch.setattr(wf, 'get_db', lambda: endpoints_db)
-        resp = client.get('/api/waveform', query_string={'item_id': 'does-not-exist'})
-        assert resp.status_code == 404
-
-    def test_injection_item_id_is_safe(self, endpoints_db, monkeypatch):
-        wf, client = self._client()
-        monkeypatch.setattr(wf, 'get_db', lambda: endpoints_db)
-        resp = client.get('/api/waveform', query_string={'item_id': _INJECTION_ID})
-        assert resp.status_code == 404
-        assert _table_exists(endpoints_db, 'score')
-        assert _score_count(endpoints_db) == 1

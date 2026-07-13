@@ -21,7 +21,6 @@ Every search page also has a screenshot showing a real, populated result:
 - `07_alchemy_4_result.png` - Song Alchemy → results
 - `08_clap_search_2_results.png` - Text Search (DCLAP) → results list
 - `09_lyrics_search_4_axis_result.png` / `_5_text_result.png` / `_6_song_result.png` - Lyrics Search results for all three tabs (By Axis / By Text / By Song)
-- `12_waveform_2_result.png` - Waveform → rendered waveform for a track
 
 ## All files
 | File | Page / state |
@@ -41,7 +40,6 @@ Every search page also has a screenshot showing a real, populated result:
 | 09_lyrics_search_1_axis.png / _2_text / _3_song | Lyrics Search - 3 tabs |
 | 10_map.png | Music Map (280-point fake sample) |
 | 11_sonic_fingerprint.png | Sonic Fingerprint (creds masked) |
-| 12_waveform_1_autocomplete.png | Waveform |
 | 13_cleaning.png | Cleaning |
 | 14_cron.png | Scheduled Tasks |
 | 15_backup.png | Backup & Restore |
