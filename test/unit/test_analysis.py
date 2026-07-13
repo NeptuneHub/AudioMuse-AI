@@ -445,29 +445,39 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
     return result, enqueued
 
 
-def test_phase_status_message_reports_songs_not_only_albums():
-    """An album counts as skipped only when EVERY track in it is done, so on a
-    mostly-analyzed library the album counter reads as if nothing was skipped
-    while the album jobs skip thousands of songs one by one."""
+def test_union_run_counts_albums_across_every_server(monkeypatch):
+    """The status line is 'Albums X/Y' where Y is the total across ALL servers, so
+    the number keeps climbing across phases instead of restarting per server."""
     import tasks.analysis as analysis
 
-    message = analysis._phase_status_message(
-        albums_launched=35,
-        albums_skipped=3,
-        albums_completed=14,
-        active_jobs=21,
-        total_albums=38,
-        songs_seen=10000,
-        songs_done=9800,
-        songs_to_analyze=200,
-        finalizing=True,
+    servers = [
+        {'server_id': 'a', 'name': 'A', 'is_default': True},
+        {'server_id': 'b', 'name': 'B', 'is_default': False},
+    ]
+    albums_by_server = {'a': [{'Id': 'a1'}, {'Id': 'a2'}], 'b': [{'Id': 'b1'}]}
+    monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr(analysis, 'save_task_status', lambda *a, **k: None)
+    monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
+    monkeypatch.setattr(
+        analysis,
+        '_albums_per_server',
+        lambda servers_, limit: [albums_by_server[s['server_id']] for s in servers_],
     )
 
-    assert '200 to analyze' in message
-    assert '9800 already analyzed' in message
-    assert 'of 10000 seen' in message
-    assert 'launched 35, skipped 3' in message
-    assert message.endswith('(Finalizing)')
+    calls = []
+
+    def fake_phase(*args, server_id=None, albums=None, albums_offset=0,
+                   albums_total=None, **kwargs):
+        calls.append((server_id, len(albums), albums_offset, albums_total))
+        return {'status': 'SUCCESS'}
+
+    monkeypatch.setattr(analysis, 'run_analysis_server_task', fake_phase)
+
+    analysis.run_analysis_task(0, 5)
+
+    assert calls == [('a', 2, 0, 3), ('b', 1, 2, 3)]
 
 
 def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatch):
@@ -488,9 +498,7 @@ def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatc
 
     assert result['status'] == 'SUCCESS'
     assert enqueued == []
-    assert '3 skipped of 3' in result['message']
-    assert '0 sent for analysis' in result['message']
-    assert '6 already analyzed of 6' in result['message']
+    assert result['message'] == 'Albums 3/3'
 
 
 def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
@@ -511,8 +519,7 @@ def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
 
     assert result['status'] == 'SUCCESS'
     assert [args[0] for args in enqueued] == ['al1']
-    assert '1 sent for analysis' in result['message']
-    assert '3 already analyzed of 4' in result['message']
+    assert result['message'] == 'Albums 2/2'
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():

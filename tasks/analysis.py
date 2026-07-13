@@ -1045,6 +1045,9 @@ def run_analysis_server_task(
     progress_base=0.0,
     progress_span=100.0,
     final_phase=True,
+    albums=None,
+    albums_offset=0,
+    albums_total=None,
 ):
     """Analyze one server while persisting everything by canonical catalogue id."""
     from tasks.mediaserver import context as server_context
@@ -1059,38 +1062,10 @@ def run_analysis_server_task(
             progress_base=progress_base,
             progress_span=progress_span,
             final_phase=final_phase,
+            albums=albums,
+            albums_offset=albums_offset,
+            albums_total=albums_total,
         )
-
-
-def _phase_status_message(
-    albums_launched,
-    albums_skipped,
-    albums_completed,
-    active_jobs,
-    total_albums,
-    songs_seen,
-    songs_done,
-    songs_to_analyze,
-    finalizing=False,
-):
-    """The one line the UI shows for a running analysis phase.
-
-    Reports SONGS, not just albums. An album counts as skipped only when EVERY
-    track in it is already complete, so on a mostly-analyzed library one missing
-    track makes the whole album 'launched' and an album-only counter reads as if
-    nothing was skipped - while the album jobs are in fact skipping thousands of
-    songs one by one. The work map already knows the per-song answer, so it is
-    reported.
-    """
-    checked = albums_launched + albums_skipped
-    message = (
-        f"Albums: {checked}/{total_albums} checked "
-        f"(launched {albums_launched}, skipped {albums_skipped}). "
-        f"Songs: {songs_to_analyze} to analyze, {songs_done} already analyzed "
-        f"of {songs_seen} seen. "
-        f"Album jobs: {albums_completed}/{albums_launched} done, {active_jobs} active."
-    )
-    return f"{message} (Finalizing)" if finalizing else message
 
 
 def _run_analysis_server_task_impl(
@@ -1102,6 +1077,9 @@ def _run_analysis_server_task_impl(
     progress_base=0.0,
     progress_span=100.0,
     final_phase=True,
+    albums=None,
+    albums_offset=0,
+    albums_total=None,
 ):
     from .clap_analyzer import is_clap_available
 
@@ -1166,7 +1144,7 @@ def _run_analysis_server_task_impl(
         try:
             log_and_update_main("Starting main analysis process...", 0)
             clean_temp(TEMP_DIR)
-            all_albums = get_recent_albums(num_recent_albums)
+            all_albums = albums if albums is not None else get_recent_albums(num_recent_albums)
             if not all_albums:
                 _verify_media_server_reachable()
                 log_and_update_main(
@@ -1175,6 +1153,7 @@ def _run_analysis_server_task_impl(
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}
 
             total_albums_to_check = len(all_albums)
+            reported_total = albums_total or total_albums_to_check
             clap_available = is_clap_available()
             work_map = _ah.load_server_work_map(
                 server_id or registry.get_default_server_id(),
@@ -1281,12 +1260,14 @@ def _run_analysis_server_task_impl(
                     logger.info(f"Enqueued index rebuild job {rebuild_job.id} on default queue")
                     last_rebuild_count = albums_completed
 
-            def report_progress(force=False, finalizing=False):
+            def report_progress(force=False):
                 """Write the phase's live status, throttled to one DB write per 5s.
 
-                While dispatching, progress tracks albums CHECKED. Once every album
-                is dispatched (``finalizing``) it tracks the album jobs COMPLETING,
-                otherwise the bar would sit still for the whole analysis phase.
+                One line: albums DONE (analyzed + skipped) out of the total across
+                every configured server, so the number keeps climbing across the
+                phases of a union run instead of restarting per server. The album
+                and song breakdowns stay in ``details`` for anything that wants
+                them, and in the container log.
                 """
                 nonlocal last_status_report, last_status_snapshot
                 snapshot = (
@@ -1303,27 +1284,15 @@ def _run_analysis_server_task_impl(
                     return
                 last_status_report = now
                 last_status_snapshot = snapshot
-                done = (
-                    albums_skipped + albums_completed
-                    if finalizing
-                    else albums_skipped + albums_launched
-                )
+                done = albums_skipped + albums_completed
                 progress = 5 + int(85 * (done / float(total_albums_to_check)))
                 log_and_update_main(
-                    _phase_status_message(
-                        albums_launched,
-                        albums_skipped,
-                        albums_completed,
-                        len(active_jobs),
-                        total_albums_to_check,
-                        songs_seen,
-                        songs_done,
-                        songs_to_analyze,
-                        finalizing,
-                    ),
+                    f"Albums {albums_offset + done}/{reported_total}",
                     progress,
                     albums_to_process=albums_launched,
                     albums_skipped=albums_skipped,
+                    albums_completed=albums_completed,
+                    albums_active=len(active_jobs),
                     songs_to_analyze=songs_to_analyze,
                     songs_already_analyzed=songs_done,
                     songs_seen=songs_seen,
@@ -1430,7 +1399,7 @@ def _run_analysis_server_task_impl(
 
             while active_jobs:
                 monitor_and_clear_jobs()
-                report_progress(force=True, finalizing=True)
+                report_progress(force=True)
                 time.sleep(5)
 
             if finalize_indexes:
@@ -1455,15 +1424,18 @@ def _run_analysis_server_task_impl(
             failed_count = max(0, total_failed_count - baseline_failed_count)
             if not failed_count:
                 failed_errors = []
-            final_message = (
-                f"Main analysis complete. Albums: {albums_launched} launched, "
-                f"{albums_skipped} skipped of {total_albums_to_check}, "
-                f"{failed_count} failed. "
-                f"Songs: {songs_to_analyze} sent for analysis, "
-                f"{songs_done} already analyzed of {songs_seen}. "
-                f"Feature albums: MusiCNN {albums_needing_musicnn}, "
-                f"DCLAP {albums_needing_clap}, Lyrics {albums_needing_lyrics}."
+            logger.info(
+                "Phase complete. Albums: %d launched, %d skipped of %d, %d failed. "
+                "Songs: %d sent for analysis, %d already analyzed of %d. "
+                "Feature albums: MusiCNN %d, DCLAP %d, Lyrics %d.",
+                albums_launched, albums_skipped, total_albums_to_check, failed_count,
+                songs_to_analyze, songs_done, songs_seen,
+                albums_needing_musicnn, albums_needing_clap, albums_needing_lyrics,
             )
+            final_done = albums_offset + albums_skipped + albums_completed
+            final_message = f"Albums {final_done}/{reported_total}"
+            if failed_count:
+                final_message += f" ({failed_count} failed)"
             phase_status = TASK_STATUS_FAILURE if failed_count else TASK_STATUS_SUCCESS
             final_kwargs = {"task_state": phase_status}
             if failed_count:
@@ -1502,6 +1474,34 @@ def _run_analysis_server_task_impl(
                 error=err,
             )
             raise
+
+
+def _albums_per_server(servers, num_recent_albums):
+    """Each server's album list, fetched ONCE, before any phase starts.
+
+    The status line counts albums across EVERY server, so the total has to be
+    known up front instead of restarting at each phase's own denominator. The
+    lists are then handed to the phases, so this costs no extra provider call:
+    it is the same album fetch the phase would have made itself. A server whose
+    listing FAILS here yields None, not an empty list, so its phase re-fetches and
+    runs its own unreachable/empty-library error path instead of quietly
+    reporting "no albums to analyze".
+    """
+    from tasks.mediaserver import context as server_context
+
+    albums = []
+    for server in servers:
+        server_id = server['server_id'] if server else None
+        try:
+            with server_context.use_server(_bind_server_context(server_id)):
+                albums.append(get_recent_albums(num_recent_albums) or [])
+        except Exception:
+            logger.exception(
+                "Could not list albums for '%s'; its phase will retry the fetch",
+                server['name'] if server else 'default server',
+            )
+            albums.append(None)
+    return albums
 
 
 def _enabled_analysis_servers(server_scope):
@@ -1546,9 +1546,16 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
         server_id = server['server_id'] if server else None
         return run_analysis_server_task(num_recent_albums, top_n_moods, server_id=server_id)
 
+    albums_by_server = _albums_per_server(servers, num_recent_albums)
+    grand_total = sum(len(a or []) for a in albums_by_server)
+    logger.info(
+        "Union analysis: %d albums to check across %d servers.", grand_total, len(servers)
+    )
+
     summaries = []
     failed = []
     span = 90.0 / len(servers)
+    albums_offset = 0
     for index, server in enumerate(servers):
         with app.app_context():
             info = get_task_info_from_db(parent_id)
@@ -1567,6 +1574,9 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 progress_base=index * span,
                 progress_span=span,
                 final_phase=False,
+                albums=albums_by_server[index],
+                albums_offset=albums_offset,
+                albums_total=grand_total,
             )
             summaries.append(phase_summary)
             if phase_summary.get('status') != TASK_STATUS_SUCCESS:
@@ -1574,6 +1584,7 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
         except Exception:
             failed.append(server['name'])
             logger.exception("Union analysis phase failed for %s", server['name'])
+        albums_offset += len(albums_by_server[index] or [])
 
     with app.app_context():
         save_task_status(
