@@ -157,21 +157,54 @@ def _release_freed_ram_to_os():
         pass
 
 
-def _run_all_index_builds(log_fn=None):
+def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
+    """Rebuild every similarity index, reporting each step through ``log_fn``.
+
+    The progress range is the caller's: an analysis run has these builds as its
+    tail (95-98%), while the standalone rebuild task owns the whole bar.
+    """
     from .ivf_manager import build_and_store_ivf_index
     from .clap_text_search import build_and_store_clap_index
     from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from .sem_grove_manager import build_and_store_sem_grove_index
     from .artist_gmm_manager import build_and_store_artist_index
 
-    def _step(label, fn, progress=None, banner=None, fatal=False):
-        if log_fn and progress is not None and banner is not None:
+    steps = (
+        ("IVF index rebuilt", "Building IVF audio index...",
+         lambda: build_and_store_ivf_index(get_db()), True),
+        ("CLAP text search index", "Building CLAP text search index...",
+         lambda: build_and_store_clap_index(get_db()), False),
+        ("Lyrics search index", "Building lyrics search index...",
+         lambda: build_and_store_lyrics_index(get_db()), False),
+        ("Lyrics axes index", "Building lyrics axes index...",
+         lambda: build_and_store_lyrics_axes_index(get_db()), False),
+        ("SemGrove merged index rebuilt", "Building SemGrove merged index...",
+         lambda: build_and_store_sem_grove_index(get_db()), False),
+        ("Artist similarity index rebuilt", "Building artist similarity index...",
+         lambda: build_and_store_artist_index(get_db()), False),
+        ("Song map projection rebuilt", "Building song map projection...",
+         lambda: build_and_store_map_projection('main_map'), False),
+        ("Artist component projection rebuilt", "Building artist component projection...",
+         lambda: build_and_store_artist_projection('artist_map'), False),
+    )
+    span = max(0, progress_end - progress_start)
+
+    if log_fn:
+        try:
+            log_fn("Rebuilding similarity indexes...", progress_start)
+        except Exception:
+            pass
+    for index, (label, banner, build, fatal) in enumerate(steps):
+        if log_fn:
             try:
-                log_fn(banner, progress)
+                log_fn(
+                    f"{banner} ({index + 1}/{len(steps)})",
+                    progress_start + (span * index) // len(steps),
+                )
             except Exception:
                 pass
         try:
-            fn()
+            build()
             logger.info(f"OK {label}")
         except Exception as e:
             logger.warning(f"Failed to build/store {label}: {e}")
@@ -179,58 +212,6 @@ def _run_all_index_builds(log_fn=None):
                 raise
         finally:
             gc.collect()
-
-    if log_fn:
-        log_fn("Performing final index rebuild...", 95)
-    _step(
-        "IVF index rebuilt",
-        lambda: build_and_store_ivf_index(get_db()),
-        progress=95,
-        banner="Building IVF audio index...",
-        fatal=True,
-    )
-    _step(
-        "CLAP text search index",
-        lambda: build_and_store_clap_index(get_db()),
-        progress=96,
-        banner="Building CLAP text search index...",
-    )
-    _step(
-        "Lyrics search index",
-        lambda: build_and_store_lyrics_index(get_db()),
-        progress=96,
-        banner="Building lyrics search index...",
-    )
-    _step(
-        "Lyrics axes index",
-        lambda: build_and_store_lyrics_axes_index(get_db()),
-        progress=96,
-        banner="Building lyrics axes index...",
-    )
-    _step(
-        "SemGrove merged index rebuilt",
-        lambda: build_and_store_sem_grove_index(get_db()),
-        progress=96,
-        banner="Building SemGrove merged index...",
-    )
-    _step(
-        "Artist similarity index rebuilt",
-        lambda: build_and_store_artist_index(get_db()),
-        progress=97,
-        banner="Building artist similarity index...",
-    )
-    _step(
-        "Song map projection rebuilt",
-        lambda: build_and_store_map_projection('main_map'),
-        progress=97,
-        banner="Building song map projection...",
-    )
-    _step(
-        "Artist component projection rebuilt",
-        lambda: build_and_store_artist_projection('artist_map'),
-        progress=97,
-        banner="Building artist component projection...",
-    )
     try:
         redis_conn.publish('index-updates', 'reload')
         logger.info('OK Published reload message to Flask container')
@@ -294,15 +275,63 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
 
 
 def rebuild_all_indexes_task():
-    logger.info("Starting index rebuild task (enqueued as subtask)...")
+    """Rebuild every similarity index, reporting progress like any other task.
+
+    This runs on its own after a legacy migration relabels the catalogue, and
+    until it finishes the loaded indexes still hold the OLD ids - every
+    similarity lookup fails with "track not found". That is a long, load-bearing
+    wait, so it reports into task_status exactly as analysis/clustering/cleaning
+    do, instead of being invisible and looking like it never ran.
+    """
+    logger.info("Starting index rebuild task...")
+    current_job = get_current_job(redis_conn)
+    current_task_id = current_job.id if current_job else str(uuid.uuid4())
+
     with app.app_context():
+        initial_details = {
+            "message": "Rebuilding similarity indexes...",
+            "log": [
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Index rebuild started."
+            ],
+        }
+        save_task_status(
+            current_task_id, "index_rebuild", TASK_STATUS_STARTED,
+            progress=0, details=initial_details,
+        )
+        task_logs = initial_details["log"]
+
+        def log_and_update(message, progress, **kwargs):
+            logger.info(f"[IndexRebuild-{current_task_id}] {message}")
+            task_state = kwargs.get('task_state', TASK_STATUS_PROGRESS)
+            details = {**kwargs, "status_message": message, "message": message}
+            task_logs.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+            details["log"] = task_logs
+            if current_job:
+                current_job.meta.update(
+                    {'progress': progress, 'status_message': message, 'details': details}
+                )
+                current_job.save_meta()
+            save_task_status(
+                current_task_id, "index_rebuild", task_state,
+                progress=progress, details=details,
+            )
+
         try:
-            _run_all_index_builds()
-            logger.info("OK Index rebuild task completed successfully")
-            return {"status": "SUCCESS", "message": "All indexes rebuilt"}
-        except Exception as e:
+            _run_all_index_builds(
+                log_fn=log_and_update, progress_start=0, progress_end=99
+            )
+        except Exception:
             logger.exception("X Index rebuild task failed")
-            return {"status": "FAILURE", "message": str(e)}
+            log_and_update(
+                "Index rebuild failed. Check the container logs for details.",
+                100, task_state=TASK_STATUS_FAILURE,
+            )
+            return {"status": "FAILURE", "message": "Index rebuild failed"}
+        log_and_update(
+            "All similarity indexes rebuilt.", 100, task_state=TASK_STATUS_SUCCESS
+        )
+        logger.info("OK Index rebuild task completed successfully")
+        return {"status": "SUCCESS", "message": "All indexes rebuilt"}
 
 
 def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
