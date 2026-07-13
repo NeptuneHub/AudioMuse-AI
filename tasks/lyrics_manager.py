@@ -335,12 +335,17 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 
     results: List[Dict] = []
     artist_counts: Dict[str, int] = {}
+    seen: set = set()
     for vid, dist in zip(neighbor_ids, distances):
         if len(results) >= limit:
             break
         item_id = id_map.get(int(vid))
-        if not item_id:
+        # Two slots can name the same track (a migration merges duplicate
+        # recordings into one row), and their vectors are near-identical, so the
+        # same song would otherwise come back twice.
+        if not item_id or item_id in seen:
             continue
+        seen.add(item_id)
         meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
         author = meta.get('author', '') or ''
         if artist_cap and author:
@@ -371,12 +376,17 @@ def _build_capped_results(
 ) -> List[Dict]:
     results: List[Dict] = []
     artist_counts: Dict[str, int] = {}
+    seen: set = set()
     for vid, dist in zip(neighbor_ids, distances):
         if len(results) >= limit:
             break
         item_id = id_map.get(int(vid))
-        if not item_id:
+        # Two slots can name the same track (a migration merges duplicate
+        # recordings into one row), and their vectors are near-identical, so the
+        # same song would otherwise come back twice.
+        if not item_id or item_id in seen:
             continue
+        seen.add(item_id)
         meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
         author = meta.get('author', '') or ''
         if artist_cap and author:

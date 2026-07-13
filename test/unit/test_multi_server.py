@@ -26,6 +26,7 @@ Main Features:
 """
 
 import gc
+import json
 import logging
 import weakref
 
@@ -673,6 +674,82 @@ def _legacy_cursor(legacy_rows, canonical_rows=()):
     # Two COUNTs: legacy first, then already-canonical.
     cursor.fetchone.side_effect = [(len(legacy_rows),), (len(canonical_rows),)]
     return cursor
+
+
+class TestIndexRepoint:
+    """A relabel renames tracks; it must not rebuild a single index."""
+
+    def _patched(self, monkeypatch, blob, stored, invalidated):
+        from tasks import index_build_helpers, paged_ivf
+
+        monkeypatch.setattr(
+            index_build_helpers, 'load_segmented_blob',
+            lambda conn, table, name: blob if name.startswith('music_library') else None,
+        )
+        monkeypatch.setattr(
+            index_build_helpers, 'store_segmented_blob',
+            lambda conn, table, name, data, max_part_size_mb=None: stored.__setitem__(name, data),
+        )
+        monkeypatch.setattr(
+            paged_ivf, 'invalidate_global_cell_cache', invalidated.append
+        )
+
+    def test_repoints_ids_and_leaves_every_vector_alone(self, monkeypatch):
+        import numpy as np
+        from tasks import fingerprint_canonicalize as canonicalize
+        from tasks.paged_ivf import pack_directory, unpack_directory
+
+        centroids = np.arange(8, dtype=np.float32).reshape(2, 4)
+        id2cell = np.array([0, 1, 0], dtype=np.uint32)
+        blob = pack_directory(
+            centroids, id2cell, ['jf_1', 'jf_2', 'jf_3'], 4, 'angular',
+            normalized=True, storage_dtype=1,
+        )
+        stored, invalidated = {}, []
+        self._patched(monkeypatch, blob, stored, invalidated)
+
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [('main_map', json.dumps(['jf_1', 'jf_2', 'jf_3']))]
+        canonicalize._repoint_indexes(
+            cursor, {'jf_1': 'fp_2aa', 'jf_3': 'fp_2aa'}  # jf_3 merged INTO jf_1's row
+        )
+
+        written = stored['music_library__ivf_dir']
+        new_centroids, new_id2cell, new_ids, dim, metric, normalized, dtype = (
+            unpack_directory(written)
+        )
+        assert new_ids == ['fp_2aa', 'jf_2', 'fp_2aa']
+        # Not one vector, cell assignment or centroid may move.
+        assert np.array_equal(new_centroids, centroids)
+        assert np.array_equal(new_id2cell, id2cell)
+        assert (dim, metric, normalized, dtype) == (4, 'angular', True, 1)
+        assert invalidated == ['music_library']
+
+        # The map projection's id list is rewritten in place too.
+        update = [c for c in cursor.execute.call_args_list if 'UPDATE' in c.args[0]]
+        assert json.loads(update[0].args[1][0]) == ['fp_2aa', 'jf_2', 'fp_2aa']
+
+    def test_no_renames_writes_nothing(self, monkeypatch):
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        stored, invalidated = {}, []
+        self._patched(monkeypatch, b'', stored, invalidated)
+        cursor = MagicMock()
+        canonicalize._repoint_indexes(cursor, {})
+        assert stored == {} and invalidated == []
+        cursor.execute.assert_not_called()
+
+    def test_a_broken_index_does_not_abort_the_migration(self, monkeypatch):
+        from tasks import fingerprint_canonicalize as canonicalize
+        from tasks import index_build_helpers
+
+        def explode(conn, table, name):
+            raise RuntimeError('corrupt directory blob')
+
+        monkeypatch.setattr(index_build_helpers, 'load_segmented_blob', explode)
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        canonicalize._repoint_indexes(cursor, {'jf_1': 'fp_2aa'})
 
 
 class TestEmbeddingCanonicalization:

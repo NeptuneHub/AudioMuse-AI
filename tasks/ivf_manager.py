@@ -899,11 +899,22 @@ def _compute_num_to_query(n, radius_similarity, eliminate_duplicates, mood_simil
 
 
 def _build_initial_neighbor_results(neighbor_vec_ids, distances, target_item_id):
+    """Neighbours as {item_id, distance}, each track at most ONCE.
+
+    Two slots of the index can name the same track - a legacy migration merges
+    duplicate recordings into one catalogue row and points both of their slots
+    at it - and their vectors are near-identical, so without this the same song
+    comes back twice, side by side. Neighbours arrive nearest-first, so the slot
+    kept is the closest one.
+    """
     initial_results = []
+    seen = set()
     for vec_id, dist in zip(neighbor_vec_ids, distances):
         item_id = id_map.get(vec_id)
-        if item_id and item_id != target_item_id:
-            initial_results.append({"item_id": item_id, "distance": float(dist)})
+        if not item_id or item_id == target_item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        initial_results.append({"item_id": item_id, "distance": float(dist)})
     return initial_results
 
 
@@ -1170,11 +1181,7 @@ def _find_nearest_neighbors_by_vector_impl(
         )
         return []
 
-    initial_results = [
-        {"item_id": id_map.get(vec_id), "distance": float(dist)}
-        for vec_id, dist in zip(neighbor_vec_ids, distances)
-        if id_map.get(vec_id) is not None
-    ]
+    initial_results = _build_initial_neighbor_results(neighbor_vec_ids, distances, None)
 
     if initial_results:
         _prime_request_f32(_fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results]))

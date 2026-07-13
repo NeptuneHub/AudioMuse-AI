@@ -263,15 +263,16 @@ if not _is_worker:
         # One-time legacy catalogue migration, Flask startup ONLY: relabel any
         # provider-keyed (or retired-scheme) rows to the canonical signature id.
         # Pure DB work from stored embeddings; an instant no-op on every later
-        # boot. When rows were relabelled the migration enqueues one index
-        # rebuild job so similarity features work on the new ids immediately.
+        # boot. A relabel renames tracks without moving a single vector, so the
+        # migration repoints the existing indexes at the new ids rather than
+        # rebuilding them, and similarity keeps working across it.
         try:
             from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
             _relabel = canonicalize_fingerprinted_ids()
             if _relabel.get('relabelled'):
                 app.logger.info(
-                    "Startup migration relabelled %s catalogue ids; an index "
-                    "rebuild was enqueued so similarity features keep working.",
+                    "Startup migration relabelled %s catalogue ids; the similarity "
+                    "indexes were repointed at them, no rebuild needed.",
                     _relabel['relabelled'],
                 )
         except Exception as _migrate_exc:

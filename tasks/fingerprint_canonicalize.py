@@ -35,11 +35,13 @@ Main Features:
 """
 
 import io
+import json
 import logging
 import time
 
 import numpy as np
 
+import config
 from database import connect_raw
 from tasks import simhash
 from tasks.mediaserver import registry
@@ -53,6 +55,17 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_ROWS = 10000
 _CONFIRM_PAIRS = 50000
+
+# Indexes keyed by track id, which a relabel therefore invalidates. The artist
+# index and the artist projection are keyed by artist NAME, which a relabel does
+# not touch, so they are deliberately absent.
+_TRACK_KEYED_INDEXES = (
+    config.INDEX_NAME,
+    'clap_index',
+    'lyrics_index',
+    'lyrics_axes_index',
+    'sem_grove_index',
+)
 _CURRENT_SCHEME_SQL = "(s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s)"
 _LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL
 _RELABEL_ADVISORY_LOCK = 726354822
@@ -418,25 +431,101 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids):
     )
 
 
-def _enqueue_index_rebuild():
-    """Queue one index rebuild after a successful relabel so similarity
-    features resolve the new ids without waiting for the next analysis."""
-    try:
-        from app_helper import rq_queue_default
+def _repoint_indexes(cur, renames):
+    """Point the existing indexes at the new ids. Nothing is re-clustered.
 
-        rq_queue_default.enqueue(
-            'tasks.analysis.rebuild_all_indexes_task',
-            job_timeout=-1,
-            description='Post-migration index rebuild',
-        )
+    A relabel does not move a single vector - it renames tracks - so every
+    index, cell and centroid stays exactly as valid as it was. The only thing
+    that goes stale is the id list each index carries, and rewriting that is a
+    second of work. Rebuilding them instead costs minutes, and for every one of
+    those minutes the catalogue holds new ids while the indexes still hold the
+    old ones, so every similarity lookup fails with "track not found".
+
+    A merged duplicate's entry is pointed at the row it merged INTO: the two are
+    the same recording (a cosine confirmed it), so the vector is right where it
+    was, and the id it now answers to is one that still exists.
+    """
+    from .paged_ivf import (
+        IVF_DIR_TABLE,
+        invalidate_global_cell_cache,
+        pack_directory,
+        unpack_directory,
+    )
+    from .index_build_helpers import load_segmented_blob, store_segmented_blob
+
+    if not renames:
+        return
+    started = time.monotonic()
+    conn = cur.connection
+    repointed = []
+    for name in _TRACK_KEYED_INDEXES:
+        try:
+            blob = load_segmented_blob(conn, IVF_DIR_TABLE, f"{name}__ivf_dir")
+            if not blob:
+                continue
+            centroids, id2cell, item_ids, dim, metric, normalized, storage = (
+                unpack_directory(blob)
+            )
+            updated = [renames.get(item_id, item_id) for item_id in item_ids]
+            if updated == item_ids:
+                continue
+            store_segmented_blob(
+                conn,
+                IVF_DIR_TABLE,
+                f"{name}__ivf_dir",
+                pack_directory(
+                    centroids, id2cell, updated, dim, metric,
+                    normalized=normalized, storage_dtype=storage,
+                ),
+                max_part_size_mb=config.IVF_MAX_PART_SIZE_MB,
+            )
+            invalidate_global_cell_cache(name)
+            repointed.append(f"{name} ({len(updated)})")
+        except Exception:
+            logger.exception(
+                "Could not repoint index '%s' at the new ids; it will be rebuilt "
+                "by the next analysis", name,
+            )
+
+    cur.execute("SELECT index_name, id_map_json FROM map_projection_data")
+    for index_name, id_map_json in cur.fetchall():
+        try:
+            item_ids = json.loads(id_map_json)
+            updated = [renames.get(item_id, item_id) for item_id in item_ids]
+            if updated == item_ids:
+                continue
+            cur.execute(
+                "UPDATE map_projection_data SET id_map_json = %s WHERE index_name = %s",
+                (json.dumps(updated), index_name),
+            )
+            repointed.append(f"{index_name} ({len(updated)})")
+        except Exception:
+            logger.exception(
+                "Could not repoint map projection '%s' at the new ids", index_name
+            )
+
+    logger.info(
+        "Legacy catalogue migration: repointed %s at the new catalogue ids in %.1fs "
+        "(no re-clustering; every vector, cell and centroid is unchanged).",
+        ", ".join(repointed) if repointed else "no index",
+        time.monotonic() - started,
+    )
+
+
+def _publish_index_reload():
+    """Tell any already-running Flask to reload the repointed indexes."""
+    try:
+        from app_helper import redis_conn
+
+        redis_conn.publish('index-updates', 'reload')
         logger.info(
-            "Enqueued the post-migration index rebuild; similarity features "
-            "will use the new catalogue ids as soon as it completes."
+            "Similarity indexes now answer to the new catalogue ids; asked Flask "
+            "to reload them."
         )
     except Exception:
         logger.warning(
-            "Could not enqueue the post-migration index rebuild; the next "
-            "analysis will rebuild the indexes instead.",
+            "Could not publish the index reload; a running Flask will pick the "
+            "repointed indexes up on its next restart.",
             exc_info=True,
         )
 
@@ -526,6 +615,10 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (source_id,),
         )
+        # In the SAME transaction as the relabel: the catalogue's ids and the
+        # indexes' ids are one fact, and they must never be observable apart.
+        _log("Pointing the similarity indexes at the new ids...")
+        _repoint_indexes(cur, all_changes)
         db.commit()
         relabelled = len(mapping) + duplicates
         logger.info("=" * 64)
@@ -536,7 +629,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             len(mapping), duplicates,
         )
         logger.info("=" * 64)
-        _enqueue_index_rebuild()
+        _publish_index_reload()
     except Exception:
         try:
             db.rollback()
