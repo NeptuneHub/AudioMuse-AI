@@ -60,14 +60,15 @@
     .dash-table-wrap {
         width: 100%;
         max-width: 100%;
+        /* Scroll the table WITHIN its wrapper at any width, so a wide table
+           (e.g. Music Server Status) never pushes the whole page off-screen -
+           it shrinks to fit, then scrolls horizontally. */
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
     }
-    /* Below this breakpoint tables stop shrinking and instead become
-       horizontally scrollable so content stays readable on phones. */
+    /* Below this breakpoint tables stop shrinking and instead scroll so
+       content stays readable on phones. */
     @media (max-width: 600px) {
-        .dash-table-wrap {
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-        }
         .dash-table {
             min-width: 560px;
             table-layout: auto;
@@ -117,6 +118,11 @@
     }
     .dash-table .col-narrow { width: 70px; }
     .dash-table .col-medium { width: 110px; }
+    /* The 7-column Music Server Status table: let Server and Coverage shrink a
+       little, but stop at this floor and scroll the wrapper horizontally rather
+       than squish every column (same shrink-then-scroll the other tables get,
+       just with a wider floor because it has more columns). */
+    #music-servers-status-table { min-width: 700px; }
 
     /* Workers table: force hostname and current-job cells to wrap onto new
        lines instead of bleeding into the next column. */
@@ -696,19 +702,16 @@
             } else {
                 const denom = serverSongs === null ? resolved : serverSongs;
                 const pct = denom ? Math.min(100, Math.round(100 * resolved / denom)) : 0;
-                const wrap = document.createElement('div');
-                wrap.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
                 const barOuter = document.createElement('div');
-                barOuter.style.cssText = 'flex:1; max-width:160px; height:10px; border-radius:5px; background:rgba(128,128,128,0.25); overflow:hidden;';
+                barOuter.style.cssText = 'height:8px; border-radius:4px; background:rgba(128,128,128,0.25); overflow:hidden; margin-bottom:4px;';
                 const barInner = document.createElement('div');
                 barInner.style.cssText = 'height:100%; width:' + pct + '%; background:var(--color-primary, #4a90d9);';
                 barOuter.appendChild(barInner);
-                const label = document.createElement('span');
+                const label = document.createElement('div');
                 label.textContent = resolved.toLocaleString()
                     + (serverSongs === null ? '' : ' of ' + serverSongs.toLocaleString() + ' (' + pct + '%)');
-                wrap.appendChild(barOuter);
-                wrap.appendChild(label);
-                covTd.appendChild(wrap);
+                covTd.appendChild(barOuter);
+                covTd.appendChild(label);
             }
             tr.appendChild(nameTd);
             tr.appendChild(typeTd);

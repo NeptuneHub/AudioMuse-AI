@@ -443,13 +443,22 @@ def _store_server_track_count(db, server_id, track_count):
         cur.close()
 
 
+def _strip_nul(value):
+    """Postgres text cannot hold a NUL (0x00) byte, but provider tags and file
+    paths occasionally carry one; execute_values/mogrify raises on it. Strip it
+    from strings so a single bad tag cannot fail the whole sweep write."""
+    if isinstance(value, str) and '\x00' in value:
+        return value.replace('\x00', '')
+    return value
+
+
 def _collect_artist_maps(tracks):
     maps = {}
     for t in tracks:
         name = t.get('artist') or t.get('album_artist')
         artist_id = t.get('artist_id')
         if name and artist_id:
-            maps[str(name)] = str(artist_id)
+            maps[_strip_nul(str(name))] = _strip_nul(str(artist_id))
     return maps
 
 
@@ -490,8 +499,9 @@ def _stage_track_metadata(db, tracks):
         if not provider_id:
             continue
         rows[str(provider_id)] = (
-            str(provider_id), t.get('album'), t.get('album_artist'),
-            t.get('year'), t.get('rating'), t.get('path'),
+            _strip_nul(str(provider_id)), _strip_nul(t.get('album')),
+            _strip_nul(t.get('album_artist')),
+            t.get('year'), t.get('rating'), _strip_nul(t.get('path')),
         )
     tracks = None
     cur = db.cursor()
@@ -527,6 +537,15 @@ def _refresh_mapped_metadata(db, server_id, is_default):
     single path and that path is the matcher's top-priority tier, so a secondary
     server must never stamp its own layout onto it.
     """
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT to_regclass('sweep_track_meta')")
+        if cur.fetchone()[0] is None:
+            # Staging did not run (e.g. an empty or failed metadata stage); there
+            # is nothing to refresh from, so skip without a spurious traceback.
+            return 0
+    finally:
+        cur.close()
     fields = _META_FIELDS + (('file_path',) if is_default else ())
     set_parts = pgsql.SQL(", ").join(
         pgsql.SQL("{0} = COALESCE(i.{0}, s.{0})").format(pgsql.Identifier(f))

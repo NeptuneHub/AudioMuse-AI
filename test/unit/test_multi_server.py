@@ -1163,17 +1163,41 @@ class TestSweepAlignment:
             cur.execute.side_effect = lambda sql, params=None: executed.append(
                 (str(sql), params)
             )
+            cur.fetchone.return_value = ('sweep_track_meta',)  # guard: temp table exists
             cur.rowcount = 3
             db = MagicMock()
             db.cursor.return_value = cur
             assert sync._refresh_mapped_metadata(db, 'srv', is_default) == 3
             db.commit.assert_called_once()
-            assert executed[0][1] == ('srv',)
+            update_sql = next(sql for sql, p in executed if p == ('srv',))
             assert any('DROP TABLE' in sql for sql, _p in executed)
-            return executed[0][0]
+            return update_sql
 
         assert 'file_path' not in run(False)
         assert 'file_path' in run(True)
+
+    def test_refresh_mapped_metadata_skips_when_stage_table_absent(self):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchone.return_value = (None,)  # to_regclass -> table not staged
+        db = MagicMock()
+        db.cursor.return_value = cur
+        assert sync._refresh_mapped_metadata(db, 'srv', True) == 0
+        db.commit.assert_not_called()
+
+    def test_strip_nul_removes_null_bytes(self):
+        from tasks import multiserver_sync as sync
+
+        assert sync._strip_nul('a\x00b') == 'ab'
+        assert sync._strip_nul('clean') == 'clean'
+        assert sync._strip_nul(None) is None
+        assert sync._strip_nul(2020) == 2020
+        # A tag with a NUL must not blow up artist-map collection.
+        maps = sync._collect_artist_maps(
+            [{'artist': 'AC\x00DC', 'artist_id': 'id\x001'}]
+        )
+        assert maps == {'ACDC': 'id1'}
 
     def test_full_refresh_binds_server_filters_and_prunes(self, monkeypatch):
         from tasks import multiserver_sync as sync
