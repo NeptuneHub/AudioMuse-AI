@@ -78,7 +78,8 @@ RUN set -eux; \
     cd /tmp; \
     wget -q "https://github.com/OpenNMT/CTranslate2/releases/download/v${CT2_VERSION}/rocm-python-wheels-Linux.zip"; \
     "$VIRTUAL_ENV/bin/python3" -c "import zipfile; zipfile.ZipFile('rocm-python-wheels-Linux.zip').extractall('ct2whl')"; \
-    whl="$(find ct2whl -name "ctranslate2-${CT2_VERSION}-cp312-cp312-*.whl" | head -1)"; \
+    py_ver="$("$VIRTUAL_ENV/bin/python3" -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"; \
+    whl="$(find ct2whl -name "ctranslate2-${CT2_VERSION}-${py_ver}-${py_ver}-*.whl" | head -1)"; \
     test -n "$whl"; \
     uv pip install --python "$VIRTUAL_ENV/bin/python3" --no-cache "$whl"; \
     uv pip install --python "$VIRTUAL_ENV/bin/python3" --no-cache --no-deps "faster-whisper==1.2.1"; \

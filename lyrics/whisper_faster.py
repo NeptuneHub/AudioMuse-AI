@@ -111,13 +111,21 @@ def transcribe(
 
     texts = []
     logprobs = []
-    for seg in segments:  # generator - consuming it runs the decode
-        t = (seg.text or "").strip()
-        if t:
-            texts.append(t)
-        lp = getattr(seg, "avg_logprob", None)
-        if lp is not None:
-            logprobs.append(float(lp))
+    try:
+        for seg in segments:  # generator - consuming it runs the decode
+            t = (seg.text or "").strip()
+            if t:
+                texts.append(t)
+            lp = getattr(seg, "avg_logprob", None)
+            if lp is not None:
+                logprobs.append(float(lp))
+    except Exception:
+        # Decode runs lazily inside the generator; a mid-stream failure (GPU OOM,
+        # CTranslate2 error) keeps whatever segments already decoded.
+        logger.exception(
+            "faster-whisper decode failed after %d segment(s) - returning partial text",
+            len(texts),
+        )
 
     full_text = " ".join(texts).strip()
     detected = getattr(info, "language", "") or ""
