@@ -77,7 +77,11 @@ analysis, no id calculation. Matching uses these tiers:
 3. Exact metadata (title, artist, album)
 4. Noise-word-normalised metadata
 
-Confident pairs are written to `track_server_map`. A track that does not match on
+Confident pairs are written to `track_server_map`. The sweep also aligns
+everything else the server needs: its artist links (`artist_server_map`) are
+upserted from the fetched catalogue, and the catalogue's album, album artist,
+year and rating are batch-refreshed for every track mapped to that server (the
+file path only from the default server). A track that does not match on
 an additional server is simply left unmapped - never guessed. You can re-run the
 sweep for a single server from the Setup page at any time. Manual sweeps (and
 the **Align music servers** action) re-fetch the server's full catalogue and

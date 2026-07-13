@@ -54,9 +54,11 @@ class TestNormalizeTrack:
         'path',
         'title',
         'artist',
+        'artist_id',
         'album_artist',
         'album',
         'year',
+        'rating',
         'track_number',
         'disc_number',
     }

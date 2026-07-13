@@ -418,55 +418,6 @@ def get_missing_ids_in_table(table_name, track_ids):
     return set(ids) - existing
 
 
-_REFRESH_FIELDS = ('album', 'album_artist', 'year', 'rating', 'file_path')
-_SHARED_REFRESH_FIELDS = ('album', 'album_artist', 'year', 'rating')
-
-
-def refresh_track_metadata(item, album_name):
-    """Refresh the shared catalogue row from the server currently being analyzed.
-
-    ``file_path`` is written ONLY by the default server. The catalogue row is
-    shared by every server that has the track, but it holds a single path - and
-    that path is the top-priority tier of the matcher that onboards the NEXT
-    server and drives provider migration. Letting whichever server ran last
-    stamp its own path layout onto the shared row would silently demote those
-    tracks to the weaker metadata tiers forever.
-    """
-    from tasks.mediaserver import context as ms_context
-
-    on_default_server = ms_context.active_server_id() is None
-    fields = _REFRESH_FIELDS if on_default_server else _SHARED_REFRESH_FIELDS
-    values = (
-        album_name,
-        item.get('OriginalAlbumArtist'),
-        item.get('Year'),
-        item.get('Rating'),
-    ) + ((item.get('FilePath'),) if on_default_server else ())
-    if not any(v is not None for v in values):
-        return False
-    set_parts = pgsql.SQL(", ").join(
-        pgsql.SQL("{} = COALESCE(%s, {})").format(pgsql.Identifier(f), pgsql.Identifier(f))
-        for f in fields
-    )
-    where_parts = pgsql.SQL(" OR ").join(
-        pgsql.SQL("(%s IS NOT NULL AND {} IS DISTINCT FROM %s)").format(pgsql.Identifier(f))
-        for f in fields
-    )
-    query = pgsql.SQL("UPDATE score SET {} WHERE item_id = %s AND ({})").format(
-        set_parts, where_parts
-    )
-    params = (*values, catalog_item_id(item), *(p for v in values for p in (v, v)))
-    try:
-        with get_db() as conn, conn.cursor() as cur:
-            cur.execute(query, params)
-            changed = cur.rowcount
-            conn.commit()
-        return bool(changed)
-    except Exception as e:
-        logger.warning(f"[refresh_track_metadata] Failed to update '{item.get('Name')}': {e}")
-        return False
-
-
 def upsert_artist_mappings_for_tracks(tracks, album_name=None):
     last_id_by_name = {}
     for t in tracks:

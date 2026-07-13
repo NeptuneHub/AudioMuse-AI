@@ -1010,6 +1010,97 @@ class TestSweepAlignment:
         assert summary['pruned'] == 0
         assert written == {'fp_1': 'nav1'}
 
+    def test_collect_artist_maps_requires_name_and_id(self):
+        from tasks import multiserver_sync as sync
+
+        tracks = [
+            {'artist': 'Art', 'artist_id': 'a1'},
+            {'artist': None, 'album_artist': 'Alb', 'artist_id': 'a2'},
+            {'artist': 'NoId', 'artist_id': None},
+            {'artist': 'Art', 'artist_id': 'a9'},
+        ]
+        assert sync._collect_artist_maps(tracks) == {'Art': 'a9', 'Alb': 'a2'}
+
+    def test_sweep_aligns_artists_and_metadata_from_fetched_catalogue(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        target = [
+            {'id': 'p1', 'title': 't', 'artist': 'Art', 'artist_id': 'a9',
+             'album': 'al', 'path': '/x.flac'},
+            {'id': 'p2', 'title': 't2', 'artist': 'Art', 'artist_id': 'a9',
+             'album': 'al', 'path': '/y.flac'},
+        ]
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        staged = []
+        monkeypatch.setattr(
+            sync, '_stage_track_metadata',
+            lambda db, tracks: staged.append([t['id'] for t in tracks]),
+        )
+        refreshed = {}
+        monkeypatch.setattr(
+            sync, '_refresh_mapped_metadata',
+            lambda db, sid, is_default: refreshed.update(
+                {'sid': sid, 'default': is_default}
+            ) or 7,
+        )
+        written = {}
+        monkeypatch.setattr(
+            sync.registry, 'upsert_artist_maps',
+            lambda sid, mapping, conn=None: written.update({sid: dict(mapping)})
+            or len(mapping),
+        )
+        summary = sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1',
+             'creds': {}, 'is_default': False},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+        )
+        assert staged == [['p1', 'p2']]
+        assert written == {'s1': {'Art': 'a9'}}
+        assert refreshed == {'sid': 's1', 'default': False}
+        assert summary['artists'] == 1
+        assert summary['refreshed'] == 7
+
+    def test_write_artist_maps_empty_is_noop(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        calls = []
+        monkeypatch.setattr(
+            sync.registry, 'upsert_artist_maps',
+            lambda sid, mapping, conn=None: calls.append((sid, mapping)) or len(mapping),
+        )
+        assert sync._write_artist_maps(MagicMock(), {'server_id': 's1'}, {}) == 0
+        assert calls == []
+        assert sync._write_artist_maps(
+            MagicMock(), {'server_id': 's1', 'is_default': False}, {'A': '1'}
+        ) == 1
+        assert calls == [('s1', {'A': '1'})]
+
+    def test_refresh_mapped_metadata_file_path_only_for_default(self):
+        from tasks import multiserver_sync as sync
+
+        def run(is_default):
+            executed = []
+            cur = MagicMock()
+            cur.execute.side_effect = lambda sql, params=None: executed.append(
+                (str(sql), params)
+            )
+            cur.rowcount = 3
+            db = MagicMock()
+            db.cursor.return_value = cur
+            assert sync._refresh_mapped_metadata(db, 'srv', is_default) == 3
+            db.commit.assert_called_once()
+            assert executed[0][1] == ('srv',)
+            assert any('DROP TABLE' in sql for sql, _p in executed)
+            return executed[0][0]
+
+        assert 'file_path' not in run(False)
+        assert 'file_path' in run(True)
+
     def test_full_refresh_binds_server_filters_and_prunes(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
@@ -1133,7 +1224,7 @@ class TestSweepAlignment:
             enqueued['func'] = func
             enqueued.update(kwargs)
 
-        monkeypatch.setattr(msrv.rq_queue_default, 'enqueue', fake_enqueue)
+        monkeypatch.setattr(msrv.rq_queue_high, 'enqueue', fake_enqueue)
         task_id = msrv._enqueue_sweep()
         assert cancelled == ['old-task']
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
@@ -1200,7 +1291,7 @@ class TestSweepAlignment:
             enqueued.update(kwargs)
 
         import app_helper
-        monkeypatch.setattr(app_helper.rq_queue_default, 'enqueue', fake_enqueue)
+        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', fake_enqueue)
         new_task_id = sync.recover_abandoned_sweeps()
         assert new_task_id is not None
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
@@ -1221,18 +1312,18 @@ class TestSweepAlignment:
         import app_helper
         called = []
         monkeypatch.setattr(
-            app_helper.rq_queue_default, 'enqueue',
+            app_helper.rq_queue_high, 'enqueue',
             lambda *a, **k: called.append(1),
         )
         assert sync.recover_abandoned_sweeps() is None
         assert called == []
 
-    def test_recover_abandoned_sweeps_skips_missing_inline_sweeps(self, monkeypatch):
+    def test_recover_abandoned_sweeps_skips_rows_without_rq_job(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
-        cur.fetchall.return_value = [('inline-sweep',)]
+        cur.fetchall.return_value = [('never-enqueued-sweep',)]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -1242,7 +1333,7 @@ class TestSweepAlignment:
         import app_helper
         called = []
         monkeypatch.setattr(
-            app_helper.rq_queue_default, 'enqueue',
+            app_helper.rq_queue_high, 'enqueue',
             lambda *a, **k: called.append(1),
         )
         assert sync.recover_abandoned_sweeps() is None
@@ -1263,7 +1354,7 @@ class TestSweepAlignment:
         import app_helper
         enqueued = []
         monkeypatch.setattr(
-            app_helper.rq_queue_default, 'enqueue',
+            app_helper.rq_queue_high, 'enqueue',
             lambda *a, **k: enqueued.append(1),
         )
         assert sync.recover_abandoned_sweeps() is not None

@@ -30,9 +30,11 @@ def _normalize_track(item):
             'path': None,
             'title': None,
             'artist': None,
+            'artist_id': None,
             'album_artist': None,
             'album': None,
             'year': None,
+            'rating': None,
             'track_number': None,
             'disc_number': None,
         }
@@ -56,9 +58,11 @@ def _normalize_track(item):
         'path': _try('Path', 'path', 'url'),
         'title': _try('Name', 'name', 'title'),
         'artist': _try('AlbumArtist', 'artist', 'author'),
+        'artist_id': _try('ArtistId', 'artistId', 'artist_id'),
         'album_artist': _try('OriginalAlbumArtist', 'albumArtist', 'AlbumArtist'),
         'album': _try('Album', 'album'),
         'year': year,
+        'rating': _try('Rating', 'rating', 'userRating'),
         'track_number': _try('IndexNumber', 'track_number', 'track'),
         'disc_number': _try('ParentIndexNumber', 'disc_number', 'disc'),
     }

@@ -6,39 +6,46 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Setup-time alignment of the analyzed catalogue with media servers.
+"""The sweep: alignment of the analyzed catalogue with media servers.
 
-The EASY match: a pure metadata pairing of a server's catalogue against tracks
-the shared database already holds under their canonical embedding-hash ids -
-normalized path, path tail, and metadata tiers, NEVER a download or an
-analysis. It exists for the initial setup moment (adding a server, the Align
-button): it gives an immediate mapping for content both sides already share.
-Day-to-day alignment does not need it - analysis itself resolves every track to
-the shared catalogue and records its server mapping at analyze time.
+The ONLY place that walks a server's whole catalogue to reconcile it with the
+analyzed database - analysis never sweeps, it only aligns the tracks it
+actually analyzes. A sweep is a pure metadata pass, NEVER a download or an
+analysis: track mappings via normalized path, path tail, and metadata tiers,
+plus the server's artist links and a set-based catalogue metadata refresh. It
+runs automatically the moment a server is added or its matching-relevant
+settings change, and from the Align button.
 
-Runs as an RQ job and reports progress into ``task_status`` (task type
-``server_sweep``) so the setup wizard can show a live bar; it is cancellable
-via the standard /api/cancel endpoint (cooperative checks). Unmatched tracks
-are simply left unmapped - the analyzed catalogue is never touched or reduced.
-Already-mapped tracks are skipped, so re-sweeps are incremental. Catalogue
-fetches run bound to the target server so its own library filter applies, and
-a full-refresh sweep (the manual sweep/align actions) prunes mappings whose
-provider track is no longer on that server - only map rows are removed, never
-analyzed tracks.
+Runs as an RQ job on the high-priority queue (a main task, like analysis and
+clustering coordinators, so album jobs on the default queue can never starve
+it) and reports progress into ``task_status`` (task type ``server_sweep``);
+cancellable via the standard /api/cancel endpoint (cooperative checks).
+Unmatched tracks are simply left unmapped - the analyzed catalogue is never
+touched or reduced. Already-mapped tracks are skipped, so re-sweeps are
+incremental. Catalogue fetches run bound to the target server so its own
+library filter applies, and a full-refresh sweep (the add-server and manual
+align actions) prunes mappings whose provider track is no longer on that
+server - only map rows are removed, never analyzed tracks.
 
 Main Features:
 * ``sweep_server`` / ``sweep_all_secondary_servers`` RQ entry points with live
   percentage progress, one-line status, and cooperative cancellation.
 * Zero-download alignment: matching from catalogue metadata only.
+* Artist links: each swept server's ``artist_server_map`` rows are upserted
+  from its fetched catalogue (legacy ``artist_mapping`` too for the default).
+* Catalogue metadata refresh: album, album artist, year and rating are
+  batch-updated for every track mapped to the swept server; ``file_path``
+  only from the default server (it is the matcher's top-priority tier).
 * Lean memory: the fetched target catalogue is condensed into a slim
-  CandidateIndex right after the fetch, and the local catalogue streams
-  through it in keyset-paginated chunks with per-chunk upserts, so the local
-  side is never fully materialized.
+  CandidateIndex right after the fetch (its metadata staged into a temp
+  table), and the local catalogue streams through it in keyset-paginated
+  chunks with per-chunk upserts, so the local side is never fully
+  materialized.
 * ``recover_abandoned_sweeps`` (run by the RQ janitor) revokes sweeps whose RQ
   job died mid-run - e.g. killed by the worker restart a default-server change
   publishes - and enqueues one replacement alignment of all servers, at most
-  once per 10 minutes; rows with no RQ job at all (union analysis runs sweeps
-  inline under synthetic task ids) are left alone.
+  once per 10 minutes; rows with no RQ job at all (enqueue failures) are left
+  to the batch-start cleanup.
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
   per-server counts stay truthful; pruning is skipped when the fetch looks
   partial so a transient provider error never mass-deletes valid mappings.
@@ -49,6 +56,7 @@ import logging
 import time
 import uuid
 
+from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
 from database import connect_raw
@@ -70,9 +78,8 @@ class SweepCancelled(Exception):
 def _sweep_job_state(task_id):
     """Classify a sweep's RQ job as 'alive', 'dead', or 'missing'.
 
-    'missing' means no RQ job exists under that id at all (an inline sweep run
-    with a synthetic task id, or a row whose enqueue failed); 'dead' means the
-    job exists but is no longer queued or running.
+    'missing' means no RQ job exists under that id at all (a row whose enqueue
+    failed); 'dead' means the job exists but is no longer queued or running.
     """
     from rq.job import Job
     from app_helper import redis_conn
@@ -98,10 +105,8 @@ def recover_abandoned_sweeps():
     the servers it covered are never aligned. Called periodically by the RQ
     janitor: every non-terminal sweep row whose RQ job exists but is dead is
     marked REVOKED and one fresh alignment covering all servers is
-    enqueued in their place. Rows with no RQ job at all are skipped: union
-    analysis runs sweeps inline under synthetic task ids that never had an RQ
-    job (revoking one would cancel a live sweep and race the running analysis),
-    and enqueue-failed PENDING rows are archived by the batch-start cleanup.
+    enqueued in their place. Rows with no RQ job at all are skipped:
+    enqueue-failed PENDING rows are archived by the batch-start cleanup.
     Recovery is throttled to once per 10 minutes after a replacement is
     enqueued, so a replacement that itself keeps dying (for example OOM during
     the index rebuild) is not revoked and re-enqueued in a tight loop. Returns
@@ -109,7 +114,7 @@ def recover_abandoned_sweeps():
     raw connection so it needs no Flask app context.
     """
     import config
-    from app_helper import rq_queue_default
+    from app_helper import rq_queue_high
 
     last = _recovery_state['last']
     if last is not None and time.monotonic() - last < 600:
@@ -160,7 +165,7 @@ def recover_abandoned_sweeps():
             )
         finally:
             cur.close()
-        rq_queue_default.enqueue(
+        rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
             kwargs={'task_id': new_task_id},
             job_id=new_task_id,
@@ -435,6 +440,124 @@ def _store_server_track_count(db, server_id, track_count):
         cur.close()
 
 
+def _collect_artist_maps(tracks):
+    maps = {}
+    for t in tracks:
+        name = t.get('artist') or t.get('album_artist')
+        artist_id = t.get('artist_id')
+        if name and artist_id:
+            maps[str(name)] = str(artist_id)
+    return maps
+
+
+def _write_artist_maps(db, server, artist_maps):
+    """Upsert the server's artist links from its fetched catalogue.
+
+    The same registry write path analysis uses at analyze time; for the default
+    server the legacy ``artist_mapping`` fallback table is refreshed too.
+    """
+    if not artist_maps:
+        return 0
+    try:
+        written = registry.upsert_artist_maps(server['server_id'], artist_maps, conn=db)
+    except Exception:
+        logger.exception("Artist map upsert failed for server %s", server['server_id'])
+        return 0
+    if server.get('is_default'):
+        try:
+            from flask_app import app
+            from app_helper_artist import upsert_artist_mappings
+
+            with app.app_context():
+                upsert_artist_mappings(artist_maps.items())
+        except Exception:
+            logger.exception("Legacy artist mapping refresh failed for the default server")
+    return written
+
+
+_META_FIELDS = ('album', 'album_artist', 'year', 'rating')
+
+
+def _stage_track_metadata(db, tracks):
+    """Stage the fetched catalogue's metadata in a temp table for the batch
+    refresh that runs after matching, so nothing is retained in Python."""
+    rows = {}
+    for t in tracks:
+        provider_id = t.get('id')
+        if not provider_id:
+            continue
+        rows[str(provider_id)] = (
+            str(provider_id), t.get('album'), t.get('album_artist'),
+            t.get('year'), t.get('rating'), t.get('path'),
+        )
+    tracks = None
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS sweep_track_meta "
+            "(provider_track_id TEXT PRIMARY KEY, album TEXT, album_artist TEXT, "
+            "year INTEGER, rating INTEGER, file_path TEXT)"
+        )
+        cur.execute("DELETE FROM sweep_track_meta")
+        if rows:
+            execute_values(
+                cur,
+                "INSERT INTO sweep_track_meta VALUES %s",
+                list(rows.values()),
+                page_size=5000,
+            )
+        db.commit()
+    except Exception:
+        logger.exception("Could not stage catalogue metadata for the sweep refresh")
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Metadata staging rollback failed", exc_info=True)
+    finally:
+        cur.close()
+
+
+def _refresh_mapped_metadata(db, server_id, is_default):
+    """Batch-refresh catalogue metadata for every track mapped to this server.
+
+    ``file_path`` is written ONLY by the default server: the shared row holds a
+    single path and that path is the matcher's top-priority tier, so a secondary
+    server must never stamp its own layout onto it.
+    """
+    fields = _META_FIELDS + (('file_path',) if is_default else ())
+    set_parts = pgsql.SQL(", ").join(
+        pgsql.SQL("{0} = COALESCE(i.{0}, s.{0})").format(pgsql.Identifier(f))
+        for f in fields
+    )
+    changed_parts = pgsql.SQL(" OR ").join(
+        pgsql.SQL("(i.{0} IS NOT NULL AND s.{0} IS DISTINCT FROM i.{0})").format(
+            pgsql.Identifier(f)
+        )
+        for f in fields
+    )
+    query = pgsql.SQL(
+        "UPDATE score s SET {} FROM sweep_track_meta i "
+        "JOIN track_server_map m ON m.provider_track_id = i.provider_track_id "
+        "AND m.server_id = %s WHERE s.item_id = m.item_id AND ({})"
+    ).format(set_parts, changed_parts)
+    cur = db.cursor()
+    try:
+        cur.execute(query, (server_id,))
+        refreshed = cur.rowcount
+        cur.execute("DROP TABLE IF EXISTS sweep_track_meta")
+        db.commit()
+        return refreshed
+    except Exception:
+        logger.exception("Catalogue metadata refresh failed for server %s", server_id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Metadata refresh rollback failed", exc_info=True)
+        return 0
+    finally:
+        cur.close()
+
+
 def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     stype = server['server_type']
     server_id = server['server_id']
@@ -460,6 +583,8 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
 
     target_total = len(target_tracks)
     present_ids = {str(t['id']) for t in target_tracks if t.get('id')}
+    artist_maps = _collect_artist_maps(target_tracks)
+    _stage_track_metadata(db, target_tracks)
     already_mapped = _already_mapped_ids(db, server_id)
     index = CandidateIndex(
         t for t in target_tracks
@@ -504,9 +629,13 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
                     f"{unmapped_count} checked, {written} matched...",
                     pct,
                 )
+    refreshed = _refresh_mapped_metadata(db, server_id, bool(server.get('is_default')))
+    artists_written = _write_artist_maps(db, server, artist_maps)
     logger.info(
-        "Multi-server sweep for '%s': mapped %d/%d unmapped tracks (target=%d, tiers=%s)",
+        "Multi-server sweep for '%s': mapped %d/%d unmapped tracks "
+        "(target=%d, tiers=%s), %d artist links, %d metadata rows refreshed",
         server['name'], written, unmapped_count, target_total, tier_counts,
+        artists_written, refreshed,
     )
     return {
         'server_id': server_id,
@@ -517,6 +646,8 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
         'unmapped': unmapped_count,
         'matched': written,
         'pruned': pruned,
+        'artists': artists_written,
+        'refreshed': refreshed,
         'tier_counts': tier_counts,
     }
 

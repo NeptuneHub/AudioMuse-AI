@@ -1131,6 +1131,8 @@ def _run_analysis_server_task_impl(
             albums_needing_clap = 0
             albums_needing_lyrics = 0
             last_monitor_db_check = float('-inf')
+            last_status_report = float('-inf')
+            last_status_snapshot = None
 
             def monitor_and_clear_jobs():
                 nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
@@ -1205,13 +1207,45 @@ def _run_analysis_server_task_impl(
                     logger.info(f"Enqueued index rebuild job {rebuild_job.id} on default queue")
                     last_rebuild_count = albums_completed
 
-            for idx, album in enumerate(all_albums):
+            def report_progress(force=False):
+                nonlocal last_status_report, last_status_snapshot
+                snapshot = (
+                    albums_launched,
+                    albums_completed,
+                    len(active_jobs),
+                    albums_skipped,
+                    albums_errored,
+                )
+                now = time.monotonic()
+                if not force and (
+                    snapshot == last_status_snapshot or now - last_status_report < 5
+                ):
+                    return
+                last_status_report = now
+                last_status_snapshot = snapshot
+                checked = albums_skipped + albums_errored + albums_launched
+                progress = 5 + int(85 * (checked / float(total_albums_to_check)))
+                log_and_update_main(
+                    f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}.",
+                    progress,
+                    albums_to_process=albums_launched,
+                    albums_skipped=albums_skipped,
+                    feature_albums={
+                        'musicnn': albums_needing_musicnn,
+                        'dclap': albums_needing_clap,
+                        'lyrics': albums_needing_lyrics,
+                    },
+                )
+
+            for album in all_albums:
                 if album['Id'] in checked_album_ids:
                     albums_skipped += 1
+                    report_progress()
                     continue
                 monitor_and_clear_jobs()
                 while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
                     monitor_and_clear_jobs()
+                    report_progress()
                     time.sleep(5)
 
                 tracks = get_tracks_from_album(album['Id'])
@@ -1222,9 +1256,8 @@ def _run_analysis_server_task_impl(
                     logger.info(
                         f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - no tracks returned by media server."
                     )
+                    report_progress()
                     continue
-
-                _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album.get('Name'))
 
                 try:
                     (
@@ -1248,6 +1281,7 @@ def _run_analysis_server_task_impl(
                     )
                     albums_errored += 1
                     checked_album_ids.add(album['Id'])
+                    report_progress()
                     continue
 
                 needs_musicnn_analysis = existing_count < len(tracks)
@@ -1255,8 +1289,6 @@ def _run_analysis_server_task_impl(
                 if existing_count >= len(tracks) and not (
                     needs_clap_analysis or needs_lyrics_analysis
                 ):
-                    for item in tracks:
-                        _ah.refresh_track_metadata(item, album.get('Name'))
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     status_parts = _ah.build_feature_status_parts(
@@ -1265,6 +1297,7 @@ def _run_analysis_server_task_impl(
                     logger.info(
                         f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed ({' + '.join(status_parts)})."
                     )
+                    report_progress()
                     continue
 
                 job = rq_queue_default.enqueue(
@@ -1290,19 +1323,7 @@ def _run_analysis_server_task_impl(
                     needs_lyrics_analysis,
                 )
 
-                progress = 5 + int(85 * (idx / float(total_albums_to_check)))
-                status_message = f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}."
-                log_and_update_main(
-                    status_message,
-                    progress,
-                    albums_to_process=albums_launched,
-                    albums_skipped=albums_skipped,
-                    feature_albums={
-                        'musicnn': albums_needing_musicnn,
-                        'dclap': albums_needing_clap,
-                        'lyrics': albums_needing_lyrics,
-                    },
-                )
+                report_progress(force=True)
 
             if total_albums_to_check > 0 and albums_errored == total_albums_to_check:
                 raise RuntimeError(

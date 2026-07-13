@@ -31,7 +31,7 @@ from flask import Blueprint, g, jsonify, request
 from rq.job import Job
 
 import config
-from app_helper import redis_conn, rq_queue_default, save_task_status, send_stop_job_command
+from app_helper import redis_conn, rq_queue_high, save_task_status, send_stop_job_command
 from database import get_db, missing_required_creds
 from app_server_context import (
     merge_creds,
@@ -166,7 +166,7 @@ def _enqueue_sweep(at_front=False):
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
             details={'message': 'Server alignment queued for all servers.'},
         )
-        rq_queue_default.enqueue(
+        rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
             kwargs={'task_id': task_id},
             job_id=task_id,
@@ -487,7 +487,7 @@ def sweep_server(server_id):
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
             details={'message': 'Server matching sweep queued.'},
         )
-        rq_queue_default.enqueue(
+        rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_server',
             args=(server_id,),
             kwargs={'task_id': task_id},
