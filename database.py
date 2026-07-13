@@ -1315,22 +1315,7 @@ def init_db():
                     PRIMARY KEY (item_id, server_id)
                 )
             """)
-            cur.execute(
-                "SELECT to_regclass('public.idx_track_server_map_provider_unique') IS NULL"
-            )
-            if cur.fetchone()[0]:
-                cur.execute(
-                    "DELETE FROM track_server_map older USING track_server_map newer "
-                    "WHERE older.server_id = newer.server_id "
-                    "AND older.provider_track_id = newer.provider_track_id "
-                    "AND (older.updated_at < newer.updated_at OR "
-                    "(older.updated_at = newer.updated_at AND older.item_id > newer.item_id))"
-                )
-            cur.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_track_server_map_provider_unique "
-                "ON track_server_map (server_id, provider_track_id)"
-            )
-            relax_track_server_map_pk(cur)
+            _ensure_track_server_map_key(cur)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS artist_server_map (
                     artist_name TEXT NOT NULL,
@@ -1376,6 +1361,53 @@ def connect_raw():
         keepalives_count=3,
         options='-c statement_timeout=600000',
     )
+
+
+def _ensure_track_server_map_key(cur):
+    """Ensure track_server_map carries the (server_id, provider_track_id) unique
+    index and the relaxed PRIMARY KEY the N:1 upserts arbitrate on. Dedupes any
+    rows that would violate the index before creating it. The caller owns the
+    transaction."""
+    cur.execute(
+        "SELECT to_regclass('public.idx_track_server_map_provider_unique') IS NULL"
+    )
+    if cur.fetchone()[0]:
+        cur.execute(
+            "DELETE FROM track_server_map older USING track_server_map newer "
+            "WHERE older.server_id = newer.server_id "
+            "AND older.provider_track_id = newer.provider_track_id "
+            "AND (older.updated_at < newer.updated_at OR "
+            "(older.updated_at = newer.updated_at AND older.item_id > newer.item_id))"
+        )
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_track_server_map_provider_unique "
+        "ON track_server_map (server_id, provider_track_id)"
+    )
+    relax_track_server_map_pk(cur)
+
+
+def ensure_track_server_map_schema(conn=None):
+    """Self-heal entry point for the write path: guarantees the (server_id,
+    provider_track_id) key exists so ``ON CONFLICT`` on it cannot fail with
+    "no unique or exclusion constraint matching". A worker writing before the
+    startup migration, or a database restored from a schema predating the
+    relaxation, recovers here instead of crashing the album. Commits its own
+    transaction; returns True on success."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        _ensure_track_server_map_key(cur)
+        db.commit()
+        return True
+    except Exception:
+        logger.exception("ensure_track_server_map_schema failed")
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("ensure_track_server_map_schema rollback failed", exc_info=True)
+        return False
+    finally:
+        cur.close()
 
 
 def relax_track_server_map_pk(cur):

@@ -86,7 +86,8 @@ def old_schema_db(pg_dsn):
             "CREATE TABLE music_servers (server_id TEXT PRIMARY KEY, name TEXT, "
             "server_type TEXT, creds JSONB NOT NULL DEFAULT '{}'::jsonb, "
             "music_libraries TEXT NOT NULL DEFAULT '', "
-            "is_default BOOLEAN NOT NULL DEFAULT FALSE)"
+            "is_default BOOLEAN NOT NULL DEFAULT FALSE, "
+            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
         )
         cur.execute(
             "CREATE TABLE track_server_map ("
@@ -220,6 +221,26 @@ class TestRelaxTrackServerMapPk:
         second = registry.translate_ids(['X'], 'srv', conn=old_schema_db)
         assert first == {'X': 'zzz'}
         assert second == first
+
+    def test_upsert_self_heals_when_key_is_missing(self, old_schema_db):
+        """A DB that never got the (server_id, provider_track_id) key (a worker
+        wrote before the startup migration, or a restore of an older schema)
+        must not crash the album: upsert_track_maps ensures the schema and
+        retries, and both provider ids for one song end up mapped."""
+        from tasks.mediaserver import registry
+
+        with old_schema_db.cursor() as cur:
+            cur.execute("DROP INDEX idx_track_server_map_provider_unique")
+        old_schema_db.commit()
+
+        registry.upsert_track_maps('srv', {'provNEW': ('X', 'fingerprint')}, conn=old_schema_db)
+
+        assert _pk_columns(old_schema_db) == ['provider_track_id', 'server_id']
+        with old_schema_db.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM track_server_map WHERE server_id = 'srv' AND item_id = 'X'"
+            )
+            assert cur.fetchone()[0] == 2
 
     def test_provider_migration_dedupe_prevents_unique_violation(self, old_schema_db):
         """The provider-migration UPDATE stamps every default-server row of an

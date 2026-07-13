@@ -35,6 +35,7 @@ import threading
 import time
 import uuid
 
+import psycopg2
 from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
@@ -695,31 +696,46 @@ def upsert_track_maps(server_id, mapping, conn=None):
             (server_id,),
         )
 
-    written = _staged_map_upsert(
-        db,
-        rows,
-        stage_ddl=(
-            "CREATE TEMP TABLE incoming_track_server_map "
-            "(item_id TEXT, server_id TEXT, provider_track_id TEXT, match_tier TEXT) "
-            "ON COMMIT DROP"
-        ),
-        stage_insert="INSERT INTO incoming_track_server_map VALUES %s",
-        conflict_delete=(
-            "DELETE FROM track_server_map current USING incoming_track_server_map incoming "
-            "WHERE current.server_id = incoming.server_id "
-            "AND current.provider_track_id = incoming.provider_track_id "
-            "AND current.item_id <> incoming.item_id"
-        ),
-        final_insert=(
-            "INSERT INTO track_server_map "
-            "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
-            "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
-            "item_id = EXCLUDED.item_id, "
-            "match_tier = EXCLUDED.match_tier, updated_at = now()"
-        ),
-        final_template="(%s, %s, %s, %s, now())",
-        pre_commit=_touch_server,
-    )
+    def _run():
+        return _staged_map_upsert(
+            db,
+            rows,
+            stage_ddl=(
+                "CREATE TEMP TABLE incoming_track_server_map "
+                "(item_id TEXT, server_id TEXT, provider_track_id TEXT, match_tier TEXT) "
+                "ON COMMIT DROP"
+            ),
+            stage_insert="INSERT INTO incoming_track_server_map VALUES %s",
+            conflict_delete=(
+                "DELETE FROM track_server_map current USING incoming_track_server_map incoming "
+                "WHERE current.server_id = incoming.server_id "
+                "AND current.provider_track_id = incoming.provider_track_id "
+                "AND current.item_id <> incoming.item_id"
+            ),
+            final_insert=(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
+                "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
+                "item_id = EXCLUDED.item_id, "
+                "match_tier = EXCLUDED.match_tier, updated_at = now()"
+            ),
+            final_template="(%s, %s, %s, %s, now())",
+            pre_commit=_touch_server,
+        )
+
+    try:
+        written = _run()
+    except psycopg2.errors.InvalidColumnReference:
+        # The (server_id, provider_track_id) key is missing - a worker wrote
+        # before the startup migration, or the DB was restored from an older
+        # schema. Self-heal it (idempotent) and retry once.
+        logger.warning(
+            "track_server_map is missing its (server_id, provider_track_id) key; "
+            "ensuring the schema and retrying the upsert."
+        )
+        from database import ensure_track_server_map_schema
+        ensure_track_server_map_schema(db)
+        written = _run()
     try:
         from tasks.paged_ivf import invalidate_availability_cache
         invalidate_availability_cache(server_id)
