@@ -13,8 +13,9 @@ stored MusiCNN embedding (tasks.simhash), so this is a pure database operation:
 no downloads, no binaries, no audio decoding. It runs ONCE per lifetime of a
 legacy row, at Flask container startup, and is an instant no-op afterwards;
 analysis mints canonical ids directly at analyze time so nothing here runs
-during analysis. Signatures are computed vectorized in chunks across a small
-thread pool so large legacy installs migrate as fast as the machine allows.
+during analysis. Signatures are hashed a chunk at a time and the candidate scan
+fans its independent bands across threads, so a large legacy install migrates
+as fast as the machine allows without ever holding the catalogue in memory.
 The rewrite uses the same proven transactional key-rewrite the
 provider-migration feature uses (score, playlist, and all embedding tables,
 with the embedding foreign keys dropped and re-added around it). A legacy row
@@ -26,11 +27,15 @@ output can be translated back; rows without an embedding keep their provider
 id and keep working via the identity translation fallback.
 
 Main Features:
-* One-time, idempotent startup relabel of legacy rows, resolved for the WHOLE
-  catalogue in one vectorized pass (~5s for 200k tracks, where the per-track
-  loop it replaces took ~10 minutes: that loop was quadratic and, being Python
-  bit twiddling under the GIL, could not be rescued by any thread pool).
+* One-time, idempotent startup relabel of legacy rows, resolved for the whole
+  catalogue in vectorized BATCHES: embeddings are hashed a chunk at a time and
+  dropped, candidate pairs stream in bounded slices, and peak memory is flat in
+  the size of the library (a 188k-track library migrates end to end in ~80s,
+  where the per-track loop this replaces took ~10 minutes and a whole-catalogue
+  pass ran the container out of memory).
 * Cosine-confirmed duplicate merge into existing canonical rows.
+* Repoints the similarity indexes at the new ids in the same transaction: a
+  relabel renames tracks without moving a vector, so nothing is re-clustered.
 * Records the source-server mapping in track_server_map, streamed in with COPY.
 """
 
@@ -170,11 +175,12 @@ def _build_mapping(cur):
 
     Identity is resolved in vectorized BATCHES, never catalogue-at-once: the
     embeddings are hashed ``_CHUNK_ROWS`` at a time and dropped (only their
-    25-byte signatures are kept), the banded blocking streams its candidate
-    pairs in bounded slices, and the exact cosine confirms them against
-    embeddings fetched back a batch of pairs at a time. Peak memory is therefore
-    flat in the size of the library, which is what the per-track loop this
-    replaces got right and a whole-catalogue pass got badly wrong.
+    25-byte signatures are kept), and the banded blocking streams its candidate
+    pairs in bounded slices however crowded a band gets. What stays resident is
+    25 bytes a track, plus - during the confirm - the embeddings of the tracks a
+    signature actually matched. Peak is therefore linear in the library and
+    small (~200 MB at 200k tracks), where holding the whole catalogue's pairs at
+    once ran the container out of memory.
 
     That per-track loop was also quadratic AND single-core - it spent its life
     in Python bit twiddling under the GIL, which no thread pool can help - and
@@ -533,10 +539,11 @@ def _publish_index_reload():
 def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None):
     """Relabel legacy item_ids to the canonical signature id.
 
-    Pure database alignment: no downloads. When rows were actually relabelled,
-    an index rebuild job is enqueued right after the commit so the similarity
-    features work on the new ids immediately instead of waiting for the next
-    analysis. ``log_fn`` receives ``(message, progress)`` step updates for a
+    Pure database alignment: no downloads. A relabel renames tracks without
+    moving a single vector, so the similarity indexes are REPOINTED at the new
+    ids in the same transaction rather than rebuilt - they keep working across
+    the migration instead of failing "track not found" for the minutes a rebuild
+    would take. ``log_fn`` receives ``(message, progress)`` step updates for a
     caller's progress bar. The session's statement_timeout is lifted and
     autocommit forced off for the rewrite (both restored on a caller-provided
     connection) so large catalogues are not cancelled mid-relabel.

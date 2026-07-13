@@ -277,11 +277,11 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
 def rebuild_all_indexes_task():
     """Rebuild every similarity index, reporting progress like any other task.
 
-    This runs on its own after a legacy migration relabels the catalogue, and
-    until it finishes the loaded indexes still hold the OLD ids - every
-    similarity lookup fails with "track not found". That is a long, load-bearing
-    wait, so it reports into task_status exactly as analysis/clustering/cleaning
-    do, instead of being invisible and looking like it never ran.
+    Minutes of work that the user otherwise has no way to see, so it reports into
+    task_status exactly as analysis/clustering/cleaning do rather than running
+    invisibly and looking like it never started. The startup migration does NOT
+    enqueue this: a relabel renames tracks without moving a vector, so it
+    repoints the indexes in place instead.
     """
     logger.info("Starting index rebuild task...")
     current_job = get_current_job(redis_conn)
