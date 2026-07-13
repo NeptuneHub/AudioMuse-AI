@@ -16,9 +16,8 @@ is similarity-preserving (a re-encode of the same recording flips only a few
 borderline bits, distinct songs differ by tens), so near signatures propose
 identity; the decision is then confirmed by the EXACT cosine distance between
 the raw embeddings using the same ``DUPLICATE_DISTANCE_THRESHOLD_COSINE`` the
-Similar Songs duplicate filter already trusts, with an optional duration check
-when both durations are known. Everything deciding identity is derived from the
-audio itself.
+Similar Songs duplicate filter already trusts. Everything deciding identity is
+derived from the audio itself.
 
 Main Features:
 * ``embedding_signature`` / ``signature_batch`` (vectorized) compute the
@@ -26,8 +25,10 @@ Main Features:
   and recover it from the ``fp_2`` id.
 * ``SignatureIndex`` banded Hamming-tolerant candidate lookup (pigeonhole
   guarantee within ``SIGNATURE_MATCH_MAX_HAMMING`` bits).
-* ``CatalogResolver.resolve``: signature proposes, raw-embedding cosine (and
-  optional duration) confirms, collisions mint the next free id.
+* ``CatalogResolver.resolve``: signature proposes, raw-embedding cosine
+  confirms, collisions mint the next free id.
+* ``near_duplicate_pairs`` / ``confirm_pairs`` / ``merge_pairs``: the streaming
+  whole-catalogue form the startup migration drives itself.
 * ``is_fingerprint_id`` recognizes any ``fp_``-prefixed catalogue id.
 """
 
@@ -44,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 SIGNATURE_BITS = 200
 SIGNATURE_MATCH_MAX_HAMMING = 10
-DURATION_TOLERANCE_SECONDS = 2.0
 
 _ID_PREFIX = "fp_"
 _ID_SCHEME = "2"
@@ -192,7 +192,7 @@ def signature_matrix(rows):
     return packed, valid
 
 
-def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durations=None):
+def confirm_pairs(left_vectors, right_vectors):
     """Which candidate pairs the EXACT raw-embedding cosine confirms.
 
     Row-wise, so a caller can feed it one batch of embeddings at a time instead
@@ -210,18 +210,11 @@ def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durati
         right_vectors / safe_right[:, None],
     )
     distance = np.clip(1.0 - similarity, 0.0, 2.0)
-    confirmed = (
+    return (
         (distance <= DUPLICATE_DISTANCE_THRESHOLD_COSINE)
         & (left_norms > 0)
         & (right_norms > 0)
     )
-    if left_durations is not None and right_durations is not None:
-        left_durations = np.asarray(left_durations, dtype=np.float64)
-        right_durations = np.asarray(right_durations, dtype=np.float64)
-        both_known = np.isfinite(left_durations) & np.isfinite(right_durations)
-        agree = np.abs(left_durations - right_durations) <= DURATION_TOLERANCE_SECONDS
-        confirmed &= ~both_known | agree
-    return confirmed
 
 
 def merge_pairs(count, packed, left, right):
@@ -245,48 +238,6 @@ def merge_pairs(count, packed, left, right):
     return parent
 
 
-def resolve_catalog(packed, valid, embeddings, durations=None):
-    """Identity-resolve a WHOLE catalogue at once: ``parent[i]`` is i's row.
-
-    The rule is unchanged - the signature proposes (within
-    SIGNATURE_MATCH_MAX_HAMMING, banded), the EXACT raw-embedding cosine
-    confirms (DUPLICATE_DISTANCE_THRESHOLD_COSINE), and known durations must
-    agree - and so is the outcome. Rows must be ordered oldest-first (already
-    canonical rows before the legacy ones being migrated), which is what makes
-    "earlier wins" mean "keep the id the catalogue already has".
-
-    This is the in-memory form, for a caller that already holds every embedding.
-    The migration drives ``near_duplicate_pairs`` / ``confirm_pairs`` /
-    ``merge_pairs`` itself so it can fetch the embeddings a batch at a time.
-    """
-    count = packed.shape[0]
-    left, right = near_duplicate_pairs(packed, valid)
-    if left.size == 0:
-        return np.arange(count, dtype=np.int64)
-
-    embeddings = np.asarray(embeddings, dtype=np.float32)
-    durations = None if durations is None else np.asarray(durations, dtype=np.float64)
-    kept_left = []
-    kept_right = []
-    for begin in range(0, left.size, _PAIR_CHUNK):
-        slice_left = left[begin:begin + _PAIR_CHUNK]
-        slice_right = right[begin:begin + _PAIR_CHUNK]
-        confirmed = confirm_pairs(
-            embeddings[slice_left],
-            embeddings[slice_right],
-            None if durations is None else durations[slice_left],
-            None if durations is None else durations[slice_right],
-        )
-        if confirmed.any():
-            kept_left.append(slice_left[confirmed])
-            kept_right.append(slice_right[confirmed])
-    if not kept_left:
-        return np.arange(count, dtype=np.int64)
-    return merge_pairs(
-        count, packed, np.concatenate(kept_left), np.concatenate(kept_right)
-    )
-
-
 def canonical_id_str(signature):
     """The catalogue item_id string for a signature, or None.
 
@@ -296,11 +247,6 @@ def canonical_id_str(signature):
     if signature is None:
         return None
     return _ID_HEAD + format(signature & _SIGNATURE_MASK, "0%dx" % _HEX_LEN)
-
-
-def embedding_canonical_id(embedding):
-    """The ``fp_2<hex>`` catalogue id for an embedding, or None."""
-    return canonical_id_str(embedding_signature(embedding))
 
 
 def mint_canonical_id(signature, taken):
@@ -334,10 +280,6 @@ def signature_from_canonical_id(item_id):
 
 def is_fingerprint_id(item_id):
     return isinstance(item_id, str) and item_id.startswith(_ID_PREFIX)
-
-
-def hamming_distance(signature_a, signature_b):
-    return bin((signature_a & _SIGNATURE_MASK) ^ (signature_b & _SIGNATURE_MASK)).count("1")
 
 
 def cosine_distance(embedding_a, embedding_b):
@@ -572,22 +514,16 @@ class SignatureIndex:
         order = np.argsort(distances[keep], kind="stable")
         return [self._ids[row] for row in candidates[order]]
 
-    def find(self, signature):
-        candidates = self.find_candidates(signature)
-        return candidates[0] if candidates else None
-
-
 class CatalogResolver:
     """Identity resolver: the signature proposes, the raw embedding confirms.
 
     A track resolves to an existing catalogue row only when its signature lands
     within Hamming tolerance of that row AND the exact cosine distance between
     the raw embeddings is within ``DUPLICATE_DISTANCE_THRESHOLD_COSINE`` (the
-    Similar Songs duplicate rule). When both durations are known they must also
-    agree within ``DURATION_TOLERANCE_SECONDS``. Anything else mints its own id;
-    an exact id-string collision of genuinely different content takes the next
-    free signature (identity across installs never relies on id equality, only
-    on track_server_map).
+    Similar Songs duplicate rule). Anything else mints its own id; an exact
+    id-string collision of genuinely different content takes the next free
+    signature (identity across installs never relies on id equality, only on
+    track_server_map).
 
     ``embedding_fetcher(item_id)`` supplies the raw embedding of a catalogue row
     that was not registered with one (for example rows predating this run).
@@ -597,17 +533,14 @@ class CatalogResolver:
         self._index = SignatureIndex()
         self._taken = set()
         self._embeddings = {}
-        self._durations = {}
         self._fetcher = embedding_fetcher
 
-    def register(self, item_id, embedding=None, duration=None, signature=None):
+    def register(self, item_id, embedding=None, signature=None):
         item_id = str(item_id)
         self._taken.add(item_id)
         if embedding is not None:
             row = _as_matrix([embedding])[0]
             self._embeddings[item_id] = row
-        if duration is not None:
-            self._durations[item_id] = float(duration)
         if signature is None:
             signature = signature_from_canonical_id(item_id)
         if signature is not None:
@@ -630,39 +563,32 @@ class CatalogResolver:
         self._embeddings[item_id] = row
         return row
 
-    def _confirms(self, embedding, duration, candidate_id):
+    def _confirms(self, embedding, candidate_id):
         candidate_embedding = self._embedding_for(candidate_id)
         if candidate_embedding is None:
             return False
-        if cosine_distance(embedding, candidate_embedding) > DUPLICATE_DISTANCE_THRESHOLD_COSINE:
-            return False
-        candidate_duration = self._durations.get(candidate_id)
-        if duration is not None and candidate_duration is not None:
-            if abs(float(duration) - candidate_duration) > DURATION_TOLERANCE_SECONDS:
-                return False
-        return True
+        return (
+            cosine_distance(embedding, candidate_embedding)
+            <= DUPLICATE_DISTANCE_THRESHOLD_COSINE
+        )
 
-    def resolve(self, embedding, duration=None, signature=None, store_embedding=True):
+    def resolve(self, embedding, signature=None):
         """('existing', id) when the audio is already catalogued, else ('new', id).
 
         A 'new' resolution registers the returned id (with this embedding), so
-        the next copy of the same audio in the same run resolves to it. Pass
-        ``store_embedding=False`` to register the id only and rely on the
-        ``embedding_fetcher`` for later confirmations - bulk migrations use
-        this to keep memory bounded.
+        the next copy of the same audio in the same run resolves to it.
         """
         if signature is None:
             signature = embedding_signature(embedding)
         if signature is None:
             return ('new', None)
         for candidate_id in self._index.find_candidates(signature):
-            if self._confirms(embedding, duration, candidate_id):
+            if self._confirms(embedding, candidate_id):
                 return ('existing', candidate_id)
         new_id = mint_canonical_id(signature, self._taken)
         self.register(
             new_id,
-            embedding=embedding if store_embedding else None,
-            duration=duration,
+            embedding=embedding,
             signature=signature_from_canonical_id(new_id),
         )
         return ('new', new_id)

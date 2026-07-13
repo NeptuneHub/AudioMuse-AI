@@ -42,7 +42,6 @@ import gc
 import platform
 
 import librosa
-import onnxruntime as ort  # noqa: F401  re-exported: tests patch `tasks.analysis.ort.InferenceSession`
 
 from rq import get_current_job, Retry
 from rq.job import Job
@@ -67,6 +66,7 @@ from .mediaserver import (
     get_recent_albums,
     get_tracks_from_album,
     download_track,
+    registry,
     test_connection as mediaserver_test_connection,
 )
 from .memory_utils import (
@@ -83,6 +83,7 @@ from app_helper import (
     get_db,
     save_task_status,
     get_task_info_from_db,
+    get_task_statuses,
     build_and_store_map_projection,
     build_and_store_artist_projection,
     TASK_STATUS_STARTED,
@@ -108,12 +109,10 @@ from error.error_dictionary import (
 from . import analysis_helper as _ah
 from .analysis_helper import (  # noqa: F401
     DEFINED_TENSOR_NAMES,
-    _find_onnx_name,
-    run_inference,
     sigmoid,
     extract_basic_features,
     prepare_spectrogram_patches,
-    get_provider_options,
+    resolve_providers,
     create_onnx_session,
     load_musicnn_sessions,
     cleanup_musicnn_sessions,
@@ -375,7 +374,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             prediction_sess = onnx_sessions['prediction']
             should_cleanup_sessions = False
         else:
-            provider_options = get_provider_options()
+            provider_options = resolve_providers()
             embedding_sess = create_onnx_session(
                 model_paths['embedding'], provider_options, label='embedding'
             )
@@ -473,8 +472,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
 
 def _bind_server_context(server_id):
     """Resolve a registry server context inside an app context (workers have none)."""
-    from tasks.mediaserver import registry
-
     if not server_id:
         return None
     with app.app_context():
@@ -491,7 +488,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
 
 def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     from .clap_analyzer import is_clap_available, get_or_cache_other_feature_text_embeddings
-    from .mediaserver import context as server_context, registry
+    from .mediaserver import context as server_context
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -534,6 +531,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 db_details["log"] = [f"Task completed successfully. Final status: {message}"]
             else:
                 current_task_logs.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+                if len(current_task_logs) > 50:
+                    del current_task_logs[:-50]
                 db_details["log"] = current_task_logs
             if current_job:
                 current_job.meta.update({'progress': progress, 'status_message': message})
@@ -560,6 +559,10 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     "message": f"No tracks in album {album_name}",
                     "tracks_analyzed": 0,
                 }
+
+            is_default_server = (
+                server_context.active_server_id() or registry.get_default_server_id()
+            ) == registry.get_default_server_id()
 
             _ah.attach_catalog_item_ids(tracks)
             track_ids_all = [_ah.catalog_item_id(t) for t in tracks]
@@ -629,29 +632,38 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
 
             pending_track_maps = {}
             failed_tracks = []
+            last_revocation_check = float('-inf')
+
+            def revoked():
+                """Has this album job (or its parent) been cancelled?
+
+                One round-trip for both ids, throttled: a track takes seconds of
+                MusiCNN, so re-reading the status per track bought nothing and
+                cost two queries each, including for tracks that were skipped.
+                """
+                nonlocal last_revocation_check
+                if not current_job:
+                    return False
+                now = time.monotonic()
+                if now - last_revocation_check < ANALYSIS_MONITOR_DB_INTERVAL:
+                    return False
+                last_revocation_check = now
+                statuses = get_task_statuses([current_task_id, parent_task_id])
+                if statuses.get(current_task_id) == TASK_STATUS_REVOKED:
+                    return True
+                parent_status = statuses.get(parent_task_id) if parent_task_id else None
+                return parent_status in (TASK_STATUS_REVOKED, TASK_STATUS_FAILURE)
 
             for idx, item in enumerate(tracks, 1):
-                if current_job:
-                    task_info = get_task_info_from_db(current_task_id)
-                    parent_info = get_task_info_from_db(parent_task_id) if parent_task_id else None
-                    if (task_info and task_info.get('status') == 'REVOKED') or (
-                        parent_info and parent_info.get('status') in ['REVOKED', 'FAILURE']
-                    ):
-                        log_and_update_album_task(
-                            f"Stopping album analysis for '{album_name}' due to parent/self revocation.",
-                            current_progress_val,
-                            task_state=TASK_STATUS_REVOKED,
-                        )
-                        return {"status": "REVOKED"}
+                if revoked():
+                    log_and_update_album_task(
+                        f"Stopping album analysis for '{album_name}' due to parent/self revocation.",
+                        current_progress_val,
+                        task_state=TASK_STATUS_REVOKED,
+                    )
+                    return {"status": "REVOKED"}
 
                 track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
-                progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
-                log_and_update_album_task(
-                    f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})",
-                    progress,
-                    current_track_name=track_name_full,
-                )
-
                 track_id_str = _ah.catalog_item_id(item)
                 needs_musicnn, needs_clap, needs_lyrics = _ah.decide_track_needs(
                     track_id_str,
@@ -673,6 +685,13 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})"
                     )
                     continue
+
+                progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
+                log_and_update_album_task(
+                    f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})",
+                    progress,
+                    current_track_name=track_name_full,
+                )
 
                 path = None
                 try:
@@ -745,9 +764,14 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             fingerprint_index = _ah.load_fingerprint_index()
                         kind, resolved_id = fingerprint_index.resolve(musicnn_embedding)
                         if resolved_id is None:
+                            if source_server_id:
+                                pending_track_maps.setdefault(source_server_id, {})[
+                                    track_id_str
+                                ] = (provider_id, 'analysis')
                             logger.warning(
                                 "Embedding signature unavailable for '%s'; keeping "
-                                "provider id %s for this row.",
+                                "provider id %s and mapping it, so it is not "
+                                "re-analyzed on every future run.",
                                 track_name_full,
                                 track_id_str,
                             )
@@ -836,7 +860,12 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
                         _ah.persist_musicnn_results(
-                            item, musicnn_analysis, top_moods, musicnn_embedding, other_features
+                            item,
+                            musicnn_analysis,
+                            top_moods,
+                            musicnn_embedding,
+                            other_features,
+                            is_default_server=is_default_server,
                         )
 
                     _ah.persist_clap_embedding(
@@ -1115,6 +1144,18 @@ def _run_analysis_server_task_impl(
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}
 
             total_albums_to_check = len(all_albums)
+            clap_available = is_clap_available()
+            work_map = _ah.load_server_work_map(
+                server_id or registry.get_default_server_id(),
+                server_id is None or server_id == registry.get_default_server_id(),
+                clap_available,
+                LYRICS_ENABLED,
+            )
+            done_bits = _ah.work_done_bits(clap_available, LYRICS_ENABLED)
+            logger.info(
+                "Work map for this server: %d provider tracks already known.",
+                len(work_map),
+            )
             # Every server phase of a union run files its album children under the
             # SAME parent task id, so the failure count is cumulative. Take a
             # baseline now (earlier phases are finished) and report only the
@@ -1124,7 +1165,6 @@ def _run_analysis_server_task_impl(
             active_jobs = {}
             launched_job_ids = set()
             albums_skipped, albums_launched, albums_completed = 0, 0, 0
-            albums_errored = 0
             last_rebuild_count = 0
             albums_no_tracks = 0
             albums_needing_musicnn = 0
@@ -1214,7 +1254,6 @@ def _run_analysis_server_task_impl(
                     albums_completed,
                     len(active_jobs),
                     albums_skipped,
-                    albums_errored,
                 )
                 now = time.monotonic()
                 if not force and (
@@ -1223,7 +1262,7 @@ def _run_analysis_server_task_impl(
                     return
                 last_status_report = now
                 last_status_snapshot = snapshot
-                checked = albums_skipped + albums_errored + albums_launched
+                checked = albums_skipped + albums_launched
                 progress = 5 + int(85 * (checked / float(total_albums_to_check)))
                 log_and_update_main(
                     f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}.",
@@ -1259,43 +1298,26 @@ def _run_analysis_server_task_impl(
                     report_progress()
                     continue
 
-                try:
-                    (
-                        existing_count,
-                        needs_clap_analysis,
-                        needs_lyrics_analysis,
-                    ) = (
-                        _ah.compute_album_needs(
-                            tracks,
-                            is_clap_available(),
-                            LYRICS_ENABLED,
-                            server_id=server_id,
-                        )
-                    )
-                except Exception:
-                    logger.exception(
-                        "Cannot determine feature needs for album '%s' (ID: %s); "
-                        "skipping this album.",
-                        album.get('Name'),
-                        album.get('Id'),
-                    )
-                    albums_errored += 1
-                    checked_album_ids.add(album['Id'])
-                    report_progress()
-                    continue
-
+                masks = [
+                    work_map.get(str(t.get('Id') or t.get('id')), 0) for t in tracks
+                ]
+                existing_count = sum(1 for m in masks if m & _ah.WORK_MUSICNN)
                 needs_musicnn_analysis = existing_count < len(tracks)
+                needs_clap_analysis = clap_available and any(
+                    not m & _ah.WORK_CLAP for m in masks
+                )
+                needs_lyrics_analysis = LYRICS_ENABLED and any(
+                    not m & _ah.WORK_LYRICS for m in masks
+                )
 
-                if existing_count >= len(tracks) and not (
-                    needs_clap_analysis or needs_lyrics_analysis
-                ):
+                if all(m & done_bits == done_bits for m in masks):
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     status_parts = _ah.build_feature_status_parts(
-                        is_clap_available(), LYRICS_ENABLED
+                        clap_available, LYRICS_ENABLED
                     )
                     logger.info(
-                        f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed ({' + '.join(status_parts)})."
+                        f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {len(tracks)} tracks already analyzed ({' + '.join(status_parts)})."
                     )
                     report_progress()
                     continue
@@ -1324,12 +1346,6 @@ def _run_analysis_server_task_impl(
                 )
 
                 report_progress(force=True)
-
-            if total_albums_to_check > 0 and albums_errored == total_albums_to_check:
-                raise RuntimeError(
-                    f"Feature-needs computation failed for all {albums_errored} album(s); "
-                    "aborting the analysis run."
-                )
 
             if (
                 albums_launched == 0
@@ -1382,7 +1398,7 @@ def _run_analysis_server_task_impl(
                 failed_errors = []
             final_message = (
                 f"Main analysis complete. Launched {albums_launched}, "
-                f"Skipped {albums_skipped}, Errored {albums_errored}, "
+                f"Skipped {albums_skipped}, "
                 f"Failed {failed_count}. "
                 f"Feature albums: MusiCNN {albums_needing_musicnn}, "
                 f"DCLAP {albums_needing_clap}, Lyrics {albums_needing_lyrics}."
@@ -1428,8 +1444,6 @@ def _run_analysis_server_task_impl(
 
 
 def _enabled_analysis_servers(server_scope):
-    from tasks.mediaserver import registry
-
     with app.app_context():
         try:
             return registry.servers_for_scope(server_scope)

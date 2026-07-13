@@ -30,6 +30,9 @@ server - only map rows are removed, never analyzed tracks.
 Main Features:
 * ``sweep_server`` / ``sweep_all_secondary_servers`` RQ entry points with live
   percentage progress, one-line status, and cooperative cancellation.
+* ``fetch_server_catalogue`` / ``prune_stale_mappings`` / ``unmapped_local_count``
+  are the public helpers this module owns; the cleaning task reuses them instead
+  of re-implementing the fetch and the prune, so the two can never drift apart.
 * Zero-download alignment: matching from catalogue metadata only.
 * Artist links: each swept server's ``artist_server_map`` rows are upserted
   from its fetched catalogue (legacy ``artist_mapping`` too for the default).
@@ -276,7 +279,7 @@ def _resolve_task_id(task_id):
     return str(uuid.uuid4())
 
 
-def _unmapped_local_count(conn, server_id):
+def unmapped_local_count(conn, server_id):
     """How many analyzed tracks still lack a mapping for ``server_id``.
 
     Already-mapped tracks are aligned and never reconsidered, so a sweep over an
@@ -360,7 +363,7 @@ def _write_matches(db, server_id, result):
     return registry.upsert_track_maps(server_id, mapping, conn=db)
 
 
-def _prune_stale_mappings(db, server_id, present_ids):
+def prune_stale_mappings(db, server_id, present_ids):
     """Remove map rows whose provider track is no longer on (or is filtered out
     of) the server. Only track_server_map shrinks; the catalogue never does.
     Skipped entirely when the fetch produced nothing or looks partial (fewer
@@ -558,11 +561,30 @@ def _refresh_mapped_metadata(db, server_id, is_default):
         cur.close()
 
 
+def fetch_server_catalogue(server):
+    """Every track one server exposes, bound to it so its library filter applies.
+
+    The ONE full-catalogue enumeration: the sweep matches against it and cleaning
+    prunes against it, so the two can never disagree about what a server holds.
+    ``server`` may be None (the legacy config default), which binds nothing.
+
+    Binds the registry row it was handed rather than re-resolving it through
+    ``registry.bind``: this runs on a worker with no Flask app context, and
+    ``context_for`` would go to ``get_db()`` for a row the caller already has.
+    """
+    import config
+
+    stype = server['server_type'] if server else config.MEDIASERVER_TYPE
+    creds = server['creds'] if server else None
+    with ms_context.use_server(server):
+        return provider_probe.fetch_all_tracks(stype, creds, apply_filter=True)
+
+
 def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     stype = server['server_type']
     server_id = server['server_id']
     total_local = _local_track_count(db)
-    unmapped_count = _unmapped_local_count(db, server_id)
+    unmapped_count = unmapped_local_count(db, server_id)
     if not unmapped_count and not full_refresh:
         report(
             f"{server['name']} is already aligned ({total_local} tracks mapped); nothing to do.",
@@ -575,10 +597,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
         }
 
     report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
-    with ms_context.use_server(server):
-        target_tracks = provider_probe.fetch_all_tracks(
-            stype, server['creds'], apply_filter=True
-        )
+    target_tracks = fetch_server_catalogue(server)
     cancel()
 
     target_total = len(target_tracks)
@@ -594,13 +613,13 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     _store_server_track_count(db, server_id, target_total)
     pruned = 0
     if full_refresh:
-        pruned = _prune_stale_mappings(db, server_id, present_ids)
+        pruned = prune_stale_mappings(db, server_id, present_ids)
         if pruned:
             logger.info(
                 "Multi-server sweep for '%s': pruned %d stale mappings no longer on the server",
                 server['name'], pruned,
             )
-            unmapped_count = _unmapped_local_count(db, server_id)
+            unmapped_count = unmapped_local_count(db, server_id)
     report(
         f"Aligning {server['name']}: {unmapped_count} tracks to match "
         f"({total_local - unmapped_count} already aligned)...",

@@ -9,10 +9,11 @@
 """Library cleanup task: unbind server mappings for tracks a server no longer has.
 
 Runs as an RQ job. Fetches the current track set of every configured media
-server with the SAME full-catalogue enumeration the alignment sweeps use
-(get_all_songs, library filter applied), so the prune baseline can never
-disagree with the enumeration that created the mappings, and removes ONLY that
-server's rows from track_server_map for tracks it no longer has. The
+server through the sweep's OWN enumeration and pruning
+(``multiserver_sync.fetch_server_catalogue`` / ``prune_stale_mappings``, library
+filter applied), so the prune baseline can never disagree with the enumeration
+that created the mappings, and removes ONLY that server's rows from
+track_server_map for tracks it no longer has. The
 centralized catalogue is NEVER touched: a song that disappeared from one
 server keeps its analysis, embeddings and mappings on every other server, and
 a song present on no server at all stays in the catalogue as unbound (it
@@ -24,6 +25,8 @@ library view can never unbind valid mappings.
 Main Features:
 * identify_and_clean_orphaned_albums_task: the RQ entry point that fetches each
   server's tracks and prunes that server's stale mappings only.
+* Reuses the sweep's public helpers rather than re-implementing the fetch and
+  the prune, so cleaning and the sweep can never drift apart.
 * Reports (never deletes) the catalogue tracks currently bound to no server.
 """
 
@@ -34,13 +37,11 @@ from collections import defaultdict
 
 from rq import get_current_job
 
-import config
 from config import CLEANING_SAFETY_LIMIT
 
 from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
 
-from . import provider_probe
 from .mediaserver import registry
 
 from psycopg2 import OperationalError
@@ -57,7 +58,7 @@ def identify_and_clean_orphaned_albums_task():
         TASK_STATUS_SUCCESS,
         TASK_STATUS_FAILURE,
     )
-    from .multiserver_sync import _prune_stale_mappings
+    from .multiserver_sync import fetch_server_catalogue, prune_stale_mappings
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -102,27 +103,6 @@ def identify_and_clean_orphaned_albums_task():
             log_and_update_main("Starting per-server library cleanup...", 5)
 
             servers = registry.servers_for_scope('all')
-            if not servers:
-                abort_message = (
-                    "Nothing to clean: no configured media servers found. "
-                    "The catalogue was not modified."
-                )
-                summary = {
-                    "status": "ABORTED",
-                    "message": abort_message,
-                    "failed_servers": [],
-                    "orphaned_albums": [],
-                    "deleted_count": 0,
-                    "unbound_mappings": 0,
-                }
-                log_and_update_main(
-                    abort_message,
-                    100,
-                    task_state=TASK_STATUS_FAILURE,
-                    final_summary_details=summary,
-                )
-                return summary
-
             present_canonical_ids = set()
             failed_servers = []
             unbound_total = 0
@@ -132,21 +112,16 @@ def identify_and_clean_orphaned_albums_task():
             for server_idx, server in enumerate(servers):
                 server_name = server['name'] if server else 'default server'
                 server_id = server['server_id'] if server else None
-                stype = server['server_type'] if server else config.MEDIASERVER_TYPE
-                creds = server['creds'] if server else None
                 window_start = 10 + int(70 * server_idx / len(servers))
                 log_and_update_main(
                     f"Fetching the track list from {server_name}...", window_start
                 )
-                with registry.bind(server):
-                    try:
-                        tracks = provider_probe.fetch_all_tracks(
-                            stype, creds, apply_filter=True
-                        )
-                    except Exception:
-                        logger.exception(f"Failed to fetch the library from {server_name}")
-                        failed_servers.append(server_name)
-                        continue
+                try:
+                    tracks = fetch_server_catalogue(server)
+                except Exception:
+                    logger.exception(f"Failed to fetch the library from {server_name}")
+                    failed_servers.append(server_name)
+                    continue
                 if not tracks:
                     logger.warning(
                         f"No tracks found on {server_name}; skipping its cleanup "
@@ -163,7 +138,7 @@ def identify_and_clean_orphaned_albums_task():
                 )
 
                 if server_id:
-                    unbound = _prune_stale_mappings(get_db(), server_id, sorted(provider_ids))
+                    unbound = prune_stale_mappings(get_db(), server_id, sorted(provider_ids))
                     unbound_by_server[server_name] = unbound
                     unbound_total += unbound
                     if unbound:

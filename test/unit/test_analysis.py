@@ -25,12 +25,11 @@ import numpy as np
 import pytest
 from unittest.mock import Mock, patch
 from tasks.analysis import (
-    run_inference,
-    _find_onnx_name,
     sigmoid,
     robust_load_audio_with_fallback,
     analyze_track,
 )
+from tasks.analysis_helper import run_inference, _find_onnx_name
 
 
 def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
@@ -114,17 +113,19 @@ _FAKE_EMBEDDING = np.sin(np.arange(1, 201, dtype=np.float32))
 
 
 def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map_upserts,
-                    analyzed_embedding=None):
+                    analyzed_embedding=None, existing_ids_fn=None, persist_calls=None,
+                    tracks=None, job=None):
     import importlib
     import tasks.analysis as analysis
     import tasks.analysis_helper as helper
     import tasks.clap_analyzer as clap
 
     registry = importlib.import_module('tasks.mediaserver.registry')
+    album_tracks = tracks if tracks is not None else [item]
 
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: job)
     monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
-    monkeypatch.setattr(analysis, 'get_tracks_from_album', lambda album_id: [item])
+    monkeypatch.setattr(analysis, 'get_tracks_from_album', lambda album_id: album_tracks)
     monkeypatch.setattr(
         analysis, 'download_track', lambda temp_dir, track: str(tmp_path / 'gone.flac')
     )
@@ -169,7 +170,7 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
     monkeypatch.setattr(
         helper,
         'get_existing_track_ids',
-        lambda ids: {i for i in ids if str(i).startswith('fp_')},
+        existing_ids_fn or (lambda ids: {i for i in ids if str(i).startswith('fp_')}),
     )
     monkeypatch.setattr(helper, 'get_missing_ids_in_table', lambda table, ids: set())
     monkeypatch.setattr(helper, 'load_fingerprint_index', lambda: known_index)
@@ -177,11 +178,13 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
         helper, 'upsert_artist_mappings_for_tracks', lambda tracks, album_name=None: None
     )
     monkeypatch.setattr(helper, 'run_song_analyzed_hook', lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        helper,
-        'persist_musicnn_results',
-        lambda track, *args, **kwargs: persisted_ids.append(helper.catalog_item_id(track)),
-    )
+
+    def fake_persist(track, *args, **kwargs):
+        persisted_ids.append(helper.catalog_item_id(track))
+        if persist_calls is not None:
+            persist_calls.append(kwargs)
+
+    monkeypatch.setattr(helper, 'persist_musicnn_results', fake_persist)
     monkeypatch.setattr(
         helper, 'persist_clap_embedding', lambda *args, **kwargs: False
     )
@@ -198,7 +201,7 @@ def test_new_track_persists_under_signature_id_and_maps_it(monkeypatch, tmp_path
         monkeypatch, tmp_path, item, simhash.CatalogResolver(), persisted_ids, map_upserts
     )
 
-    expected_id = simhash.embedding_canonical_id(_FAKE_EMBEDDING)
+    expected_id = simhash.canonical_id_str(simhash.embedding_signature(_FAKE_EMBEDDING))
     assert result['status'] == 'SUCCESS'
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == [expected_id]
@@ -209,7 +212,7 @@ def test_new_track_persists_under_signature_id_and_maps_it(monkeypatch, tmp_path
 def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path):
     from tasks import simhash
 
-    known_id = simhash.embedding_canonical_id(_FAKE_EMBEDDING)
+    known_id = simhash.canonical_id_str(simhash.embedding_signature(_FAKE_EMBEDDING))
     catalog = simhash.CatalogResolver()
     catalog.register(known_id, embedding=_FAKE_EMBEDDING)
 
@@ -238,7 +241,7 @@ def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
     assert simhash.embedding_signature(first) == simhash.embedding_signature(second)
     assert simhash.cosine_distance(first, second) > 0.01
 
-    taken_id = simhash.embedding_canonical_id(first)
+    taken_id = simhash.canonical_id_str(simhash.embedding_signature(first))
     catalog = simhash.CatalogResolver()
     catalog.register(taken_id, embedding=first)
 
@@ -254,6 +257,233 @@ def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
     assert persisted_ids[0] != taken_id
     assert persisted_ids[0].startswith('fp_2')
     assert map_upserts == [('srv-def', {persisted_ids[0]: ('prov1', 'fingerprint')})]
+
+
+def test_degenerate_embedding_is_still_mapped_so_it_is_not_re_analyzed_forever(
+    monkeypatch, tmp_path
+):
+    """A constant/non-finite embedding has no signature, so resolve() returns no
+    canonical id. The track must STILL get a track_server_map row: without one
+    nothing records it as done for this server and every later run re-downloads
+    and re-runs MusiCNN on it, forever."""
+    from tasks import simhash
+
+    item = {'Id': 'prov-degenerate', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch,
+        tmp_path,
+        item,
+        simhash.CatalogResolver(),
+        persisted_ids,
+        map_upserts,
+        analyzed_embedding=np.zeros(simhash.SIGNATURE_BITS, dtype=np.float32),
+        existing_ids_fn=lambda ids: {i for i in ids if i in persisted_ids},
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert persisted_ids == ['prov-degenerate']
+    assert map_upserts == [
+        ('srv-def', {'prov-degenerate': ('prov-degenerate', 'analysis')})
+    ]
+
+
+def test_default_server_writes_file_path_but_a_secondary_never_does(
+    monkeypatch, tmp_path
+):
+    """score.file_path is the matcher's top-priority tier and the row is SHARED,
+    so only the default server may stamp its own path layout onto it."""
+    from tasks import simhash
+    from tasks.mediaserver import context as ms_context
+
+    item = {
+        'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist',
+        'FilePath': '/music/song.flac',
+    }
+
+    default_calls = []
+    _run_album_impl(
+        monkeypatch, tmp_path, dict(item), simhash.CatalogResolver(), [], [],
+        persist_calls=default_calls,
+    )
+    assert default_calls[0]['is_default_server'] is True
+
+    secondary_calls = []
+    with ms_context.use_server({'server_id': 'srv-b', 'server_type': 'plex'}):
+        _run_album_impl(
+            monkeypatch, tmp_path, dict(item), simhash.CatalogResolver(), [], [],
+            persist_calls=secondary_calls,
+        )
+    assert secondary_calls[0]['is_default_server'] is False
+
+
+def test_persist_musicnn_results_drops_file_path_for_a_secondary_server(monkeypatch):
+    from tasks import analysis_helper as helper
+
+    saved = {}
+    monkeypatch.setattr(
+        helper,
+        'save_track_analysis_and_embedding',
+        lambda *args, **kwargs: saved.update(kwargs),
+    )
+    item = {
+        'Id': 'p1', 'Name': 'Song', 'AlbumArtist': 'Artist',
+        'FilePath': '/music/song.flac', '_catalog_item_id': 'fp_2abc',
+    }
+    analysis = {'tempo': 120.0, 'energy': 0.5, 'key': 'C', 'scale': 'major'}
+
+    helper.persist_musicnn_results(item, analysis, {}, b'', '', is_default_server=True)
+    assert saved['file_path'] == '/music/song.flac'
+
+    saved.clear()
+    helper.persist_musicnn_results(item, analysis, {}, b'', '', is_default_server=False)
+    assert saved['file_path'] is None
+
+
+def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tmp_path):
+    """The per-track loop used to run TWO get_task_info_from_db queries plus a
+    status write for every track, including skipped ones."""
+    from unittest.mock import MagicMock
+    from tasks import simhash
+    import tasks.analysis as analysis
+
+    tracks = [
+        {'Id': f'prov{i}', 'Name': f'Song {i}', 'AlbumArtist': 'Artist'}
+        for i in range(4)
+    ]
+    job = MagicMock()
+    job.id = 'job-1'
+    job.meta = {}
+
+    status_calls = []
+    monkeypatch.setattr(
+        analysis,
+        'get_task_statuses',
+        lambda ids: status_calls.append(list(ids)) or {},
+    )
+
+    def forbidden(task_id):
+        raise AssertionError('the per-track loop must not query task info per track')
+
+    monkeypatch.setattr(analysis, 'get_task_info_from_db', forbidden)
+
+    result = _run_album_impl(
+        monkeypatch, tmp_path, tracks[0], simhash.CatalogResolver(), [], [],
+        tracks=tracks, job=job,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert len(status_calls) == 1
+    assert status_calls[0] == ['job-1', 'parent1']
+
+
+def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
+    import importlib
+    import tasks.analysis as analysis
+    import tasks.analysis_helper as helper
+    import tasks.clap_analyzer as clap
+
+    registry = importlib.import_module('tasks.mediaserver.registry')
+
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
+    monkeypatch.setattr(analysis, 'clean_temp', lambda *args, **kwargs: None)
+    monkeypatch.setattr(analysis, 'get_recent_albums', lambda limit: albums)
+    monkeypatch.setattr(
+        analysis, 'get_tracks_from_album', lambda album_id: tracks_by_album[album_id]
+    )
+    monkeypatch.setattr(
+        analysis, 'get_failed_child_summary', lambda task_id: (0, [])
+    )
+    monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
+    monkeypatch.setattr(analysis, 'LYRICS_ENABLED', False)
+    monkeypatch.setattr(clap, 'is_clap_available', lambda: False)
+    monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 'srv-def')
+    monkeypatch.setattr(
+        helper, 'load_server_work_map', lambda *args, **kwargs: work_map
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('the album loop must not query the DB per album')
+
+    for name in ('get_existing_track_ids', 'get_missing_ids_in_table',
+                 'attach_catalog_item_ids'):
+        monkeypatch.setattr(helper, name, forbidden)
+
+    enqueued = []
+    jobs = {}
+
+    def _finished_job(job_id):
+        job = Mock()
+        job.id = job_id
+        job.is_finished = True
+        job.is_failed = False
+        job.is_canceled = False
+        return job
+
+    class FakeQueue:
+        @staticmethod
+        def enqueue(func, args=None, **kwargs):
+            job = _finished_job(f'job-{len(enqueued)}')
+            jobs[job.id] = job
+            enqueued.append(args)
+            return job
+
+    class FakeJob:
+        @staticmethod
+        def fetch(job_id, connection=None):
+            return jobs[job_id]
+
+    monkeypatch.setattr(analysis, 'rq_queue_default', FakeQueue)
+    monkeypatch.setattr(analysis, 'Job', FakeJob)
+    monkeypatch.setattr(analysis, 'get_child_tasks_from_db', lambda task_id: [])
+
+    result = analysis._run_analysis_server_task_impl(
+        0, 5, server_id='srv-def', task_id='parent-1'
+    )
+    return result, enqueued
+
+
+def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatch):
+    """The whole point of the work map: a run with nothing to do costs ONE query,
+    not a handful per album."""
+    import tasks.analysis_helper as helper
+
+    albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+    tracks_by_album = {
+        f'al{i}': [{'Id': f'p{i}-{t}', 'Name': 't'} for t in range(2)]
+        for i in range(3)
+    }
+    work_map = {
+        f'p{i}-{t}': helper.WORK_MUSICNN for i in range(3) for t in range(2)
+    }
+
+    result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map)
+
+    assert result['status'] == 'SUCCESS'
+    assert enqueued == []
+    assert 'Skipped 3' in result['message']
+
+
+def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
+    import tasks.analysis_helper as helper
+
+    albums = [{'Id': 'al0', 'Name': 'Album 0'}, {'Id': 'al1', 'Name': 'Album 1'}]
+    tracks_by_album = {
+        'al0': [{'Id': 'done-1', 'Name': 't'}, {'Id': 'done-2', 'Name': 't'}],
+        'al1': [{'Id': 'done-3', 'Name': 't'}, {'Id': 'missing', 'Name': 't'}],
+    }
+    work_map = {
+        'done-1': helper.WORK_MUSICNN,
+        'done-2': helper.WORK_MUSICNN,
+        'done-3': helper.WORK_MUSICNN,
+    }
+
+    result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map)
+
+    assert result['status'] == 'SUCCESS'
+    assert [args[0] for args in enqueued] == ['al1']
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():
@@ -634,7 +864,7 @@ class TestRobustLoadAudioWithFallback:
 
 
 class TestAnalyzeTrack:
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
@@ -745,7 +975,7 @@ class TestAnalyzeTrack:
         assert result is None
         assert embeddings is None
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
@@ -800,7 +1030,7 @@ class TestAnalyzeTrack:
         assert captured_input is not None
         assert captured_input.dtype == np.dtype('float32')
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
@@ -848,7 +1078,7 @@ class TestAnalyzeTrack:
         assert result['key'] in ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         assert result['scale'] in ['major', 'minor']
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
@@ -875,7 +1105,7 @@ class TestAnalyzeTrack:
         assert result is None
         assert embeddings is None
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
@@ -921,7 +1151,7 @@ class TestAnalyzeTrack:
         assert result['tempo'] == expected_tempo
         assert isinstance(result['tempo'], float)
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
@@ -971,13 +1201,13 @@ class TestAnalyzeTrack:
 
 
 class TestOOMFallback:
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis_helper.ort.get_available_providers')
     def test_embedding_oom_fallback_to_cpu(
         self,
         mock_providers,
@@ -1060,13 +1290,13 @@ class TestOOMFallback:
         assert 'CPU' in sessions_created
         assert cpu_session_call_count[0] > 0
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis_helper.ort.get_available_providers')
     def test_prediction_oom_fallback_to_cpu(
         self,
         mock_providers,
@@ -1149,13 +1379,13 @@ class TestOOMFallback:
         assert 'CPU' in sessions_created
         assert cpu_session_call_count[0] > 0
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis_helper.ort.get_available_providers')
     def test_non_oom_exception_is_reraised(
         self,
         mock_providers,
@@ -1210,13 +1440,13 @@ class TestOOMFallback:
         assert result is None
         assert embeddings is None
 
-    @patch('tasks.analysis.ort.InferenceSession')
+    @patch('tasks.analysis_helper.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.ort.get_available_providers')
+    @patch('tasks.analysis_helper.ort.get_available_providers')
     def test_successful_gpu_inference_no_fallback(
         self,
         mock_providers,

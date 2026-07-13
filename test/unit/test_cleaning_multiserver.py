@@ -113,13 +113,13 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
             raise result
         return result
 
-    monkeypatch.setattr(cleaning.provider_probe, 'fetch_all_tracks', fake_fetch)
+    monkeypatch.setattr(multiserver_sync.provider_probe, 'fetch_all_tracks', fake_fetch)
 
     def fake_prune(db, server_id, present_ids):
         pruned_calls.append((server_id, sorted(present_ids)))
         return (prune_results or {}).get(server_id, 0)
 
-    monkeypatch.setattr(multiserver_sync, '_prune_stale_mappings', fake_prune)
+    monkeypatch.setattr(multiserver_sync, 'prune_stale_mappings', fake_prune)
 
     result = cleaning.identify_and_clean_orphaned_albums_task()
     return result, statuses, pruned_calls

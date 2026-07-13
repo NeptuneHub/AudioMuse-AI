@@ -37,6 +37,7 @@ from database import (  # noqa: F401
     get_score_data_by_ids,
     load_map_projection,
     get_task_info_from_db,
+    get_task_statuses,
     get_tracks_by_ids,
     save_track_analysis_and_embedding,
     # Used internally by the build_and_store_* projection orchestration below.

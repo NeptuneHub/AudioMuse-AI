@@ -16,8 +16,11 @@ track still need" decisions plus the DB upserts that store each result.
 Main Features:
 * create_onnx_session / load_musicnn_sessions / run_inference_with_oom_fallback:
   build sessions, resolve execution providers, and retry inference on OOM.
-* compute_album_needs / decide_track_needs: per-track dedup deciding which of
-  musicnn, CLAP and lyrics embeddings are missing (the real analysis dedup).
+* load_server_work_map: ONE keyset-paginated scan per server returning what each
+  of its provider tracks already has (musicnn / CLAP / lyrics bit mask), so the
+  album loop decides skip-or-launch from memory instead of querying per album.
+* decide_track_needs: per-track dedup deciding which of musicnn, CLAP and lyrics
+  embeddings are missing (the real analysis dedup).
 * load_fingerprint_index: Hamming-tolerant catalogue index over the canonical
   embedding-hash ids, consulted after MusiCNN to dedup cross-server content.
 * persist_* helpers upsert mood tags, embeddings, CLAP and lyrics vectors.
@@ -41,7 +44,6 @@ from database import (
     save_clap_embedding,
     save_lyrics_embedding,
 )
-from app_helper_artist import upsert_artist_mappings
 from psycopg2 import sql as pgsql
 
 from error import error_manager
@@ -93,12 +95,11 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
-def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
+def resolve_providers(allow_coreml=False, cuda_options=None):
     available = ort.get_available_providers()
     chain = []
-    accel_ok = role != 'flask'
 
-    if accel_ok and 'CUDAExecutionProvider' in available:
+    if 'CUDAExecutionProvider' in available:
         chain.append(
             (
                 'CUDAExecutionProvider',
@@ -112,7 +113,7 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
             )
         )
 
-    if accel_ok and allow_coreml and 'CoreMLExecutionProvider' in available:
+    if allow_coreml and 'CoreMLExecutionProvider' in available:
         chain.append(
             (
                 'CoreMLExecutionProvider',
@@ -180,10 +181,6 @@ def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding
         logger.exception('Plugin song-analyzed hook dispatch failed')
 
 
-def get_provider_options(allow_coreml=False, role=None):
-    return resolve_providers(allow_coreml=allow_coreml, role=role)
-
-
 def _default_sess_options():
     opts = ort.SessionOptions()
     opts.enable_cpu_mem_arena = False
@@ -191,10 +188,8 @@ def _default_sess_options():
     return opts
 
 
-def create_onnx_session(
-    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False
-):
-    opts = provider_options or resolve_providers(allow_coreml=allow_coreml)
+def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
+    opts = provider_options or resolve_providers()
     if sess_options is None:
         sess_options = _default_sess_options()
     extra = {'sess_options': sess_options}
@@ -338,7 +333,7 @@ def catalog_item_id(item):
     return str(item.get('_catalog_item_id') or item.get('Id') or item.get('id'))
 
 
-def attach_catalog_item_ids(tracks, server_id=None, conn=None):
+def attach_catalog_item_ids(tracks, server_id=None):
     """Attach canonical ids resolved from this server's provider ids.
 
     Unknown provider tracks retain their provider id temporarily. After their
@@ -350,7 +345,7 @@ def attach_catalog_item_ids(tracks, server_id=None, conn=None):
 
     provider_ids = [str(t.get('Id') or t.get('id')) for t in tracks]
     active_server_id = server_id or context.active_server_id()
-    mapped = registry.reverse_translate_ids(provider_ids, active_server_id, conn=conn)
+    mapped = registry.reverse_translate_ids(provider_ids, active_server_id)
     for item, provider_id in zip(tracks, provider_ids):
         item['_catalog_item_id'] = str(mapped.get(provider_id, provider_id))
     return tracks
@@ -419,6 +414,12 @@ def get_missing_ids_in_table(table_name, track_ids):
 
 
 def upsert_artist_mappings_for_tracks(tracks, album_name=None):
+    """Record this server's artist links for the album being analyzed.
+
+    Only ``artist_server_map`` is written. The legacy ``artist_mapping`` table is
+    the sweep's to refresh, from the server's whole catalogue in one pass, so a
+    per-album analysis run is not a second writer of it.
+    """
     last_id_by_name = {}
     for t in tracks:
         name, aid = t.get('AlbumArtist'), t.get('ArtistId')
@@ -432,8 +433,6 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
     server_id = context.active_server_id() or registry.get_default_server_id()
     if valid and server_id:
         registry.upsert_artist_maps(server_id, valid)
-    if server_id == registry.get_default_server_id():
-        upsert_artist_mappings(valid.items())
     for name, aid in last_id_by_name.items():
         if not aid:
             scope = f" in album '{album_name}'" if album_name else ""
@@ -448,19 +447,102 @@ def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_
     )
 
 
-def compute_album_needs(tracks, clap_available, lyrics_enabled, server_id=None):
-    attach_catalog_item_ids(tracks, server_id=server_id)
-    ids = [catalog_item_id(t) for t in tracks]
-    existing = len(get_existing_track_ids(ids))
+WORK_MUSICNN = 1
+WORK_CLAP = 2
+WORK_LYRICS = 4
 
-    def needs_in(flag, table):
-        return flag and bool(get_missing_ids_in_table(table, ids))
 
+def work_done_bits(clap_available, lyrics_enabled):
+    """The mask a track must carry to need no work at all in this configuration."""
     return (
-        existing,
-        needs_in(clap_available, 'clap_embedding'),
-        needs_in(lyrics_enabled, 'lyrics_embedding'),
+        WORK_MUSICNN
+        | (WORK_CLAP if clap_available else 0)
+        | (WORK_LYRICS if lyrics_enabled else 0)
     )
+
+
+def _work_map_scan(cur, sql, params, work_map, chunk_size):
+    last = ''
+    while True:
+        cur.execute(sql, (*params, last, chunk_size))
+        rows = cur.fetchall()
+        if not rows:
+            return
+        for provider_id, has_musicnn, has_clap, has_lyrics in rows:
+            key = str(provider_id)
+            mask = WORK_MUSICNN if has_musicnn else 0
+            if has_clap:
+                mask |= WORK_CLAP
+            if has_lyrics:
+                mask |= WORK_LYRICS
+            work_map[key] = work_map.get(key, 0) | mask
+        last = str(rows[-1][0])
+
+
+def load_server_work_map(server_id, is_default, clap_available, lyrics_enabled,
+                         chunk_size=50000):
+    """What one server's tracks already have, keyed by PROVIDER track id.
+
+    ONE keyset-paginated scan per server instead of a handful of DB round-trips
+    per album: the album loop then decides skip-or-launch from memory alone, so
+    a settled library costs one query rather than one query set per album. The
+    value is a bit mask (musicnn / clap / lyrics) rather than a plain "done"
+    flag, because the loop reports how many albums need each feature.
+
+    The default server gets a second scan: an unknown provider id resolves to
+    ITSELF there (``registry.reverse_translate_ids``), so a legacy pre-canonical
+    ``score`` row counts as analyzed while owning no map row at all. A secondary
+    server has no such fallback and must not see them.
+    """
+    def feature_parts(key_column):
+        selects, joins = [], []
+        for enabled, table, alias in (
+            (clap_available, 'clap_embedding', 'c'),
+            (lyrics_enabled, 'lyrics_embedding', 'l'),
+        ):
+            if enabled:
+                selects.append(f"({alias}.item_id IS NOT NULL)")
+                joins.append(
+                    f"LEFT JOIN {table} {alias} ON {alias}.item_id = {key_column}"
+                )
+            else:
+                selects.append("TRUE")
+        return selects, " ".join(joins)
+
+    analyzed = (
+        "s.other_features IS NOT NULL AND s.energy IS NOT NULL "
+        "AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL"
+    )
+
+    mapped_selects, mapped_joins = feature_parts('m.item_id')
+    mapped_sql = (
+        "SELECT m.provider_track_id, "
+        f"(e.item_id IS NOT NULL AND {analyzed}), {', '.join(mapped_selects)} "
+        "FROM track_server_map m "
+        "JOIN score s ON s.item_id = m.item_id "
+        "LEFT JOIN embedding e ON e.item_id = m.item_id "
+        f"{mapped_joins} "
+        "WHERE m.server_id = %s AND m.provider_track_id > %s "
+        "ORDER BY m.provider_track_id LIMIT %s"
+    )
+
+    legacy_selects, legacy_joins = feature_parts('s.item_id')
+    legacy_sql = (
+        f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)} "
+        "FROM score s "
+        "JOIN embedding e ON e.item_id = s.item_id "
+        f"{legacy_joins} "
+        f"WHERE s.item_id NOT LIKE 'fp\\_%%' AND {analyzed} "
+        "AND s.item_id > %s ORDER BY s.item_id LIMIT %s"
+    )
+
+    work_map = {}
+    with get_db() as conn, conn.cursor() as cur:
+        if server_id:
+            _work_map_scan(cur, mapped_sql, (server_id,), work_map, chunk_size)
+        if is_default:
+            _work_map_scan(cur, legacy_sql, (), work_map, chunk_size)
+    return work_map
 
 
 def _fetch_embedding_blob(item_id):
@@ -560,7 +642,18 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
         return zero
 
 
-def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):
+def persist_musicnn_results(
+    item, analysis, top_moods, embedding, other_features_str, is_default_server=True
+):
+    """Store one track's MusiCNN results under its canonical catalogue id.
+
+    ``file_path`` is written ONLY from the default server. The catalogue row is
+    shared by every server holding the track but carries a single path, and that
+    path is the top-priority tier of the matcher that onboards the NEXT server.
+    Letting a secondary stamp its own layout onto the shared row would silently
+    demote the track to the weaker metadata tiers forever. The upsert COALESCEs
+    it, so passing None never erases a path the default server already wrote.
+    """
     save_track_analysis_and_embedding(
         catalog_item_id(item),
         item['Name'],
@@ -578,7 +671,7 @@ def persist_musicnn_results(item, analysis, top_moods, embedding, other_features
         or item.get('album_artist'),
         year=item.get('Year'),
         rating=item.get('Rating'),
-        file_path=item.get('FilePath'),
+        file_path=item.get('FilePath') if is_default_server else None,
     )
 
 

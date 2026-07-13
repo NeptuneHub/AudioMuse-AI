@@ -81,7 +81,7 @@ class TestAnalyzeTrackMemoryCleanup:
 
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.librosa')
-    @patch('tasks.analysis.ort')
+    @patch('tasks.analysis_helper.ort')
     def test_no_cleanup_with_album_sessions(self, mock_ort, mock_librosa, mock_load_audio):
         from tasks.analysis import analyze_track
 
@@ -135,7 +135,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.download_track')
     @patch('tasks.analysis.analyze_track')
     @patch('tasks.analysis_helper.get_db')
-    @patch('tasks.analysis.ort')
+    @patch('tasks.analysis_helper.ort')
     @patch('tasks.analysis.cleanup_onnx_session')
     @patch('tasks.memory_utils.cleanup_cuda_memory')
     @patch('app_helper.save_task_status')

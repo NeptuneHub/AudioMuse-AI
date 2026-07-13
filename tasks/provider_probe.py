@@ -6,10 +6,11 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Probe a media provider and normalise its track metadata for migration.
+"""Probe a media provider and normalise its track metadata.
 
-Thin, provider-agnostic wrapper over the mediaserver clients used by the
-migration flow to test connectivity, enumerate libraries, and pull tracks.
+Thin, provider-agnostic wrapper over the mediaserver clients, used by the
+provider-migration flow and by the multi-server sweep to test connectivity,
+enumerate libraries, and pull whole catalogues.
 
 Main Features:
 * Supports jellyfin, emby, navidrome, lyrion, and plex, rejecting any other
@@ -18,6 +19,8 @@ Main Features:
   camelCase, and lower-case variants) into one flat track dict, coercing the
   year to an int; track lists are normalised in place so the raw provider list
   never coexists with a full normalised copy.
+* The normalised dict carries exactly what the consumers read: the id, path and
+  metadata the sweep matches on, plus the artist id and rating it aligns.
 """
 
 from tasks import mediaserver
@@ -35,8 +38,6 @@ def _normalize_track(item):
             'album': None,
             'year': None,
             'rating': None,
-            'track_number': None,
-            'disc_number': None,
         }
 
     def _try(*keys):
@@ -63,8 +64,6 @@ def _normalize_track(item):
         'album': _try('Album', 'album'),
         'year': year,
         'rating': _try('Rating', 'rating', 'userRating'),
-        'track_number': _try('IndexNumber', 'track_number', 'track'),
-        'disc_number': _try('ParentIndexNumber', 'disc_number', 'disc'),
     }
 
 

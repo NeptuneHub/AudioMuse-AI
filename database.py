@@ -378,6 +378,27 @@ def get_task_info_from_db(task_id):
     return row_dict
 
 
+def get_task_statuses(task_ids):
+    """``{task_id: status}`` for several tasks in ONE round-trip.
+
+    The per-track revocation check needs the status of a task and its parent and
+    nothing else, so it reads only the status column and asks once instead of
+    running the full get_task_info_from_db row build per task per track.
+    """
+    ids = [str(t) for t in task_ids if t]
+    if not ids:
+        return {}
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT task_id, status FROM task_status WHERE task_id = ANY(%s)", (ids,)
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+    finally:
+        cur.close()
+
+
 def get_score_data_by_ids(item_ids_list):
     if not item_ids_list:
         return []
@@ -616,7 +637,7 @@ def save_track_analysis_and_embedding(
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
                 rating = EXCLUDED.rating,
-                file_path = EXCLUDED.file_path
+                file_path = COALESCE(EXCLUDED.file_path, score.file_path)
         """,
             (
                 item_id,

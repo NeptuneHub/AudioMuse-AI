@@ -527,39 +527,113 @@ class TestAnalysisCanonicalResolution:
             'fp_known', 'provider-new'
         ]
 
-    def test_album_needs_queries_canonical_ids(self, monkeypatch):
+
+class TestServerWorkMap:
+    """load_server_work_map: ONE scan per server replacing per-album queries."""
+
+    def _cursor(self, pages_by_sql):
+        executed = []
+        cur = MagicMock()
+        state = {'sql': None}
+
+        def execute(sql, params=None):
+            executed.append((sql, params))
+            state['sql'] = sql
+
+        def fetchall():
+            key = 'legacy' if 'FROM score s\n' in state['sql'] or (
+                'NOT LIKE' in state['sql']
+            ) else 'mapped'
+            pages = pages_by_sql.get(key, [])
+            return pages.pop(0) if pages else []
+
+        cur.execute.side_effect = execute
+        cur.fetchall.side_effect = fetchall
+        return cur, executed
+
+    def _patch_db(self, monkeypatch, cur):
         from tasks import analysis_helper as helper
 
-        tracks = [{'Id': 'provider-known'}, {'Id': 'provider-new'}]
-        monkeypatch.setattr(
-            helper,
-            'attach_catalog_item_ids',
-            lambda items, server_id=None: [
-                item.update(_catalog_item_id=canonical)
-                for item, canonical in zip(items, ('fp_known', 'provider-new'))
-            ] or items,
-        )
-        queried = {}
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        db_cm = MagicMock()
+        db_cm.__enter__.return_value = conn
+        db_cm.__exit__.return_value = False
+        monkeypatch.setattr(helper, 'get_db', lambda: db_cm)
 
-        def existing_ids(ids):
-            queried['ids'] = list(ids)
-            return {'fp_known'}
+    def test_mask_bits_reflect_what_each_track_already_has(self, monkeypatch):
+        from tasks import analysis_helper as helper
 
-        monkeypatch.setattr(
-            helper,
-            'get_existing_track_ids',
-            existing_ids,
-        )
-        monkeypatch.setattr(helper, 'get_missing_ids_in_table', lambda table, ids: set())
+        cur, _ = self._cursor({'mapped': [[
+            ('p-done', True, True, True),
+            ('p-no-embedding', False, True, True),
+            ('p-no-clap', True, False, True),
+            ('p-no-lyrics', True, True, False),
+        ]]})
+        self._patch_db(monkeypatch, cur)
 
-        existing, needs_clap, needs_lyrics = helper.compute_album_needs(
-            tracks, False, False, server_id='server-b'
-        )
+        work_map = helper.load_server_work_map('srv', False, True, True)
+        done = helper.work_done_bits(True, True)
 
-        assert queried['ids'] == ['fp_known', 'provider-new']
-        assert existing == 1
-        assert needs_clap is False
-        assert needs_lyrics is False
+        assert work_map['p-done'] & done == done
+        assert not work_map['p-no-embedding'] & helper.WORK_MUSICNN
+        assert not work_map['p-no-clap'] & helper.WORK_CLAP
+        assert not work_map['p-no-lyrics'] & helper.WORK_LYRICS
+        assert work_map['p-no-clap'] & done != done
+
+    def test_disabled_features_are_not_required(self, monkeypatch):
+        from tasks import analysis_helper as helper
+
+        cur, executed = self._cursor({'mapped': [[('p1', True, True, True)]]})
+        self._patch_db(monkeypatch, cur)
+
+        work_map = helper.load_server_work_map('srv', False, False, False)
+        done = helper.work_done_bits(False, False)
+
+        assert done == helper.WORK_MUSICNN
+        assert work_map['p1'] & done == done
+        sql = executed[0][0]
+        assert 'clap_embedding' not in sql
+        assert 'lyrics_embedding' not in sql
+
+    def test_default_server_also_sees_legacy_rows_but_a_secondary_does_not(
+        self, monkeypatch
+    ):
+        from tasks import analysis_helper as helper
+
+        cur, _ = self._cursor({
+            'mapped': [[('p1', True, True, True)]],
+            'legacy': [[('legacy-id', True, True, True)]],
+        })
+        self._patch_db(monkeypatch, cur)
+        default_map = helper.load_server_work_map('srv-def', True, True, True)
+
+        cur2, _ = self._cursor({
+            'mapped': [[('p1', True, True, True)]],
+            'legacy': [[('legacy-id', True, True, True)]],
+        })
+        self._patch_db(monkeypatch, cur2)
+        secondary_map = helper.load_server_work_map('srv-b', False, True, True)
+
+        assert 'legacy-id' in default_map
+        assert 'legacy-id' not in secondary_map
+        assert 'p1' in secondary_map
+
+    def test_keyset_pagination_advances_past_the_last_row(self, monkeypatch):
+        from tasks import analysis_helper as helper
+
+        cur, executed = self._cursor({'mapped': [
+            [('p1', True, True, True), ('p2', True, True, True)],
+            [('p3', True, True, True)],
+            [],
+        ]})
+        self._patch_db(monkeypatch, cur)
+
+        work_map = helper.load_server_work_map('srv', False, True, True, chunk_size=2)
+
+        assert sorted(work_map) == ['p1', 'p2', 'p3']
+        assert [params[-2] for _sql, params in executed] == ['', 'p2', 'p3']
+        assert all(params[-1] == 2 for _sql, params in executed)
 
 
 class TestSingleTranslationPoint:
@@ -762,7 +836,7 @@ class TestEmbeddingCanonicalization:
         cursor = _legacy_cursor([('legacy-provider-id', embedding)])
         mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
         assert mapping == {
-            'legacy-provider-id': simhash.embedding_canonical_id(embedding)
+            'legacy-provider-id': simhash.canonical_id_str(simhash.embedding_signature(embedding))
         }
         assert duplicate_mapping == {}
 
@@ -971,7 +1045,7 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 5)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 0)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 0)
         fetched = []
         monkeypatch.setattr(
             sync.provider_probe, 'fetch_all_tracks',
@@ -993,7 +1067,7 @@ class TestSweepAlignment:
         }]
         target = [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([rows]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
@@ -1031,7 +1105,7 @@ class TestSweepAlignment:
              'album': 'al', 'path': '/y.flac'},
         ]
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
@@ -1105,7 +1179,7 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 0)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 0)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         seen = {}
@@ -1122,7 +1196,7 @@ class TestSweepAlignment:
             seen['present_ids'] = present_ids
             return 2
 
-        monkeypatch.setattr(sync, '_prune_stale_mappings', fake_prune)
+        monkeypatch.setattr(sync, 'prune_stale_mappings', fake_prune)
         monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
         summary = sync._sweep_one(
             {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1',
@@ -1146,7 +1220,7 @@ class TestSweepAlignment:
             'album_artist': 'a', 'file_path': '/x.flac',
         }]
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
         holder = {}
@@ -1186,7 +1260,7 @@ class TestSweepAlignment:
         chunk2 = [dict(row, item_id='fp_2')]
         target = [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 2)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 2)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 2)
         monkeypatch.setattr(
             sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([chunk1, chunk2])
         )
@@ -1389,7 +1463,7 @@ class TestSweepAlignment:
 
         target = [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
-        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
@@ -1414,7 +1488,7 @@ class TestSweepAlignment:
         db.cursor.return_value = cursor
         target = {str(i) for i in range(10)}
         with caplog.at_level(logging.WARNING):
-            assert sync._prune_stale_mappings(db, 's1', target) == 0
+            assert sync.prune_stale_mappings(db, 's1', target) == 0
         assert 'pruning skipped' in caplog.text
         db.commit.assert_not_called()
 

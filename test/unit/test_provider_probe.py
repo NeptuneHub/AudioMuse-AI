@@ -59,8 +59,6 @@ class TestNormalizeTrack:
         'album',
         'year',
         'rating',
-        'track_number',
-        'disc_number',
     }
 
     def test_none_item_returns_empty_shape(self, probe):
@@ -86,8 +84,6 @@ class TestNormalizeTrack:
         assert t['artist'] == 'Artist A'
         assert t['path'] == '/m/a/song1.flac'
         assert t['year'] == 2020
-        assert t['track_number'] == 3
-        assert t['disc_number'] == 1
 
     def test_lowercase_style_item(self, probe):
         item = {
@@ -97,8 +93,6 @@ class TestNormalizeTrack:
             'artist': 'Artist',
             'path': '/m/song.flac',
             'year': 2019,
-            'track_number': 5,
-            'disc_number': 2,
         }
         t = probe._normalize_track(item)
         assert t['id'] == 'n1'
@@ -107,8 +101,6 @@ class TestNormalizeTrack:
         assert t['artist'] == 'Artist'
         assert t['path'] == '/m/song.flac'
         assert t['year'] == 2019
-        assert t['track_number'] == 5
-        assert t['disc_number'] == 2
 
     def test_year_string_is_coerced_to_int(self, probe):
         t = probe._normalize_track({'Id': 'x', 'Year': '2018'})

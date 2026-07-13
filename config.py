@@ -621,7 +621,6 @@ LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "3
 # --- IVF Index Constants ---
 INDEX_NAME = os.environ.get("IVF_INDEX_NAME", "music_library")  # The primary key for our index in the DB
 IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
-IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 
 # --- Disk-Paged IVF Index Constants ---
 # The large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)

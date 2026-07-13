@@ -43,6 +43,10 @@ def _same_signature_different_song():
     return first, second
 
 
+def _hamming(a, b):
+    return bin(a ^ b).count('1')
+
+
 class TestSignature:
     def test_deterministic_across_input_forms(self):
         emb = _embedding(1)
@@ -56,19 +60,19 @@ class TestSignature:
         offset = np.float32(25.0)
         a = simhash.embedding_signature(_embedding(20) + offset)
         b = simhash.embedding_signature(_embedding(21) + offset)
-        assert simhash.hamming_distance(a, b) > simhash.SIGNATURE_MATCH_MAX_HAMMING
+        assert _hamming(a, b) > simhash.SIGNATURE_MATCH_MAX_HAMMING
 
     def test_reencode_stays_within_tolerance(self):
         emb = _embedding(2)
         nudged = emb + np.float32(1e-4) * _embedding(3)
         a = simhash.embedding_signature(emb)
         b = simhash.embedding_signature(nudged)
-        assert simhash.hamming_distance(a, b) <= simhash.SIGNATURE_MATCH_MAX_HAMMING
+        assert _hamming(a, b) <= simhash.SIGNATURE_MATCH_MAX_HAMMING
 
     def test_distinct_songs_land_far_apart(self):
         a = simhash.embedding_signature(_embedding(4))
         b = simhash.embedding_signature(_embedding(5))
-        assert simhash.hamming_distance(a, b) > simhash.SIGNATURE_MATCH_MAX_HAMMING
+        assert _hamming(a, b) > simhash.SIGNATURE_MATCH_MAX_HAMMING
 
     def test_invalid_embeddings_have_no_signature(self):
         assert simhash.embedding_signature(None) is None
@@ -76,7 +80,6 @@ class TestSignature:
         assert simhash.embedding_signature(np.zeros(simhash.SIGNATURE_BITS)) is None
         assert simhash.embedding_signature(np.full(simhash.SIGNATURE_BITS, 3.0)) is None
         assert simhash.embedding_signature(_embedding(6, dim=64)) is None
-        assert simhash.embedding_canonical_id(None) is None
 
     def test_batch_matches_single(self):
         embeddings = [_embedding(7), None, _embedding(8)]
@@ -109,10 +112,10 @@ class TestSignatureIndex:
         base = simhash.embedding_signature(_embedding(10))
         index = simhash.SignatureIndex()
         index.add('one', base)
-        assert index.find(base) == 'one'
+        assert index.find_candidates(base)[0] == 'one'
         flipped = base ^ 0b1011
-        assert simhash.hamming_distance(base, flipped) == 3
-        assert index.find(flipped) == 'one'
+        assert _hamming(base, flipped) == 3
+        assert index.find_candidates(flipped)[0] == 'one'
 
     def test_rejects_beyond_tolerance(self):
         base = simhash.embedding_signature(_embedding(11))
@@ -122,10 +125,10 @@ class TestSignatureIndex:
         for bit in range(simhash.SIGNATURE_MATCH_MAX_HAMMING + 1):
             far ^= (1 << (bit * 7))
         assert (
-            simhash.hamming_distance(base, far)
+            _hamming(base, far)
             == simhash.SIGNATURE_MATCH_MAX_HAMMING + 1
         )
-        assert index.find(far) is None
+        assert index.find_candidates(far) == []
 
     def test_candidates_sorted_nearest_first(self):
         base = simhash.embedding_signature(_embedding(12))
@@ -159,14 +162,6 @@ class TestCatalogResolver:
         assert second_id != first_id
         kind3, again = resolver.resolve(second)
         assert (kind3, again) == ('existing', second_id)
-
-    def test_duration_mismatch_blocks_the_merge(self):
-        emb = _embedding(15)
-        resolver = simhash.CatalogResolver()
-        _kind, first = resolver.resolve(emb, duration=180.0)
-        kind, second = resolver.resolve(emb, duration=240.0)
-        assert kind == 'new'
-        assert second != first
 
     def test_lazy_fetcher_supplies_preexisting_embeddings(self):
         emb = _embedding(16)
@@ -228,22 +223,33 @@ class TestBatchResolveMatchesStreaming:
                 parents.append(index)
         return np.array(parents)
 
+    def _batch_parents(self, packed, valid, rows):
+        """The whole-catalogue resolution, composed exactly as the startup
+        migration composes it (near_duplicate_pairs -> confirm_pairs ->
+        merge_pairs). There is no in-memory shortcut for this in production."""
+        left, right = simhash.near_duplicate_pairs(packed, valid)
+        if left.size == 0:
+            return np.arange(packed.shape[0], dtype=np.int64)
+        confirmed = simhash.confirm_pairs(rows[left], rows[right])
+        return simhash.merge_pairs(
+            packed.shape[0], packed, left[confirmed], right[confirmed]
+        )
+
     @pytest.mark.parametrize('seed', [0, 1, 2, 3])
     def test_same_merges_as_the_streaming_resolver(self, seed):
         rows = self._catalogue(600, seed)
         packed, valid = simhash.signature_matrix(rows)
 
-        batch = simhash.resolve_catalog(packed, valid, rows)
+        batch = self._batch_parents(packed, valid, rows)
         streaming = self._streaming_parents(rows)
 
         assert np.array_equal(batch, streaming)
-        # And it really did merge the planted duplicates.
         assert int((batch != np.arange(len(rows))).sum()) > 0
 
     def test_a_merged_row_is_never_a_merge_target(self):
         rows = self._catalogue(400, seed=9)
         packed, valid = simhash.signature_matrix(rows)
-        parent = simhash.resolve_catalog(packed, valid, rows)
+        parent = self._batch_parents(packed, valid, rows)
         for child, target in enumerate(parent):
             if target != child:
                 assert parent[target] == target, "merge chains must not form"
@@ -253,13 +259,13 @@ class TestBatchResolveMatchesStreaming:
         rng = np.random.default_rng(3)
         rows = rng.standard_normal((300, simhash.SIGNATURE_BITS)).astype(np.float32)
         packed, valid = simhash.signature_matrix(rows)
-        parent = simhash.resolve_catalog(packed, valid, rows)
+        parent = self._batch_parents(packed, valid, rows)
         assert np.array_equal(parent, np.arange(len(rows)))
 
     def test_unusable_embeddings_stay_their_own_track(self):
         rows = self._catalogue(50, seed=5)
-        rows[7] = 0.0  # constant vector: no usable signature
+        rows[7] = 0.0
         packed, valid = simhash.signature_matrix(rows)
         assert valid[7] is np.False_
-        parent = simhash.resolve_catalog(packed, valid, rows)
+        parent = self._batch_parents(packed, valid, rows)
         assert parent[7] == 7

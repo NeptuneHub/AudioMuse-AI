@@ -32,14 +32,6 @@ def active_server():
     return _active_server.get()
 
 
-def set_active_server(server):
-    return _active_server.set(server)
-
-
-def reset_active_server(token):
-    _active_server.reset(token)
-
-
 class use_server:
     """Bind ``server`` (a normalized registry dict or None) as active for a scope."""
 
