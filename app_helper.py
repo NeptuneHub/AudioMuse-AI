@@ -254,7 +254,7 @@ def build_and_store_map_projection(index_name='main_map'):
     try:
         logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
         if _project_with_umap is not None:
-            projections = _project_with_umap([v for v in mat])
+            projections = _project_with_umap(mat)
     except Exception as e:
         logger.warning(f"UMAP projection failed during build: {e}")
         projections = None
@@ -262,7 +262,7 @@ def build_and_store_map_projection(index_name='main_map'):
     if projections is None:
         try:
             if _project_to_2d is not None:
-                projections = _project_to_2d([v for v in mat])
+                projections = _project_to_2d(mat)
         except Exception as e:
             logger.warning(f"PCA projection failed during build: {e}")
             projections = None
@@ -354,7 +354,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
         logger.info(f"Starting to build artist projection: {mat.shape[0]} component vectors found.")
         # Try UMAP first
         if _project_with_umap is not None:
-            projections = _project_with_umap([v for v in mat])
+            projections = _project_with_umap(mat)
     except Exception as e:
         logger.warning(f"UMAP projection failed for artist components: {e}")
         projections = None
@@ -363,7 +363,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     if projections is None:
         try:
             if _project_to_2d is not None:
-                projections = _project_to_2d([v for v in mat])
+                projections = _project_to_2d(mat)
         except Exception as e:
             logger.warning(f"PCA projection failed for artist components: {e}")
             projections = None

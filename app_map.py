@@ -192,7 +192,7 @@ def build_map_cache():
                 and globals().get('_project_with_umap') is not None
             ):
                 try:
-                    projections = globals()['_project_with_umap']([v for v in mat])
+                    projections = globals()['_project_with_umap'](mat)
                     used = 'umap'
                 except Exception as e:
                     logger.debug('UMAP helper failed during cache build: %s', e)
@@ -202,7 +202,7 @@ def build_map_cache():
                 and globals().get('_project_to_2d') is not None
             ):
                 try:
-                    projections = globals()['_project_to_2d']([v for v in mat])
+                    projections = globals()['_project_to_2d'](mat)
                     used = 'pca'
                 except Exception as e:
                     logger.debug('PCA helper failed during cache build: %s', e)

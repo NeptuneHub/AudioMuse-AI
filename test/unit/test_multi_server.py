@@ -623,11 +623,13 @@ class TestSingleTranslationPoint:
 def _legacy_cursor(legacy_rows, canonical_rows=()):
     """A cursor over a catalogue of legacy rows (+ already-canonical ones).
 
-    _build_mapping COUNTs each kind, then streams both through server-side
-    cursors into one embedding matrix.
+    _build_mapping COUNTs each kind, streams both through server-side cursors to
+    hash their signatures a batch at a time, then fetches embeddings BACK for
+    the candidate pairs it asks the cosine to confirm.
     """
     canonical_rows = list(canonical_rows)
     legacy_rows = list(legacy_rows)
+    blobs = {str(item_id): blob for item_id, blob in canonical_rows + legacy_rows}
 
     class ScanCursor:
         def __init__(self, rows):
@@ -643,11 +645,27 @@ def _legacy_cursor(legacy_rows, canonical_rows=()):
         def close(self):
             pass
 
+    class FetchCursor:
+        def __init__(self):
+            self._rows = []
+
+        def execute(self, sql, params=None):
+            wanted = list(params[0]) if params else []
+            self._rows = [(i, blobs[i]) for i in wanted if i in blobs]
+
+        def fetchall(self):
+            return self._rows
+
+        def close(self):
+            pass
+
     class FakeConn:
         def __init__(self):
             self._scans = [list(canonical_rows), list(legacy_rows)]
 
         def cursor(self, name=None):
+            if name is None:
+                return FetchCursor()
             return ScanCursor(self._scans.pop(0) if self._scans else [])
 
     cursor = MagicMock()

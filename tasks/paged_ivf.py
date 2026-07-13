@@ -44,6 +44,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import psycopg2
+from psycopg2.extras import execute_values
 
 import config
 
@@ -1361,6 +1362,22 @@ def _bounded_cell_groups(
     return groups
 
 
+_CELL_WRITE_BATCH = 64
+
+
+def _flush_cells(cur, pending: List[tuple]) -> None:
+    """Write a batch of packed cells in one statement, then clear the buffer."""
+    if not pending:
+        return
+    execute_values(
+        cur,
+        f"INSERT INTO {IVF_CELL_TABLE} (index_name, cell_id, cell_data) VALUES %s",
+        pending,
+        page_size=len(pending),
+    )
+    pending.clear()
+
+
 def build_and_store_paged_ivf(
     db_conn,
     index_name: str,
@@ -1407,7 +1424,16 @@ def build_and_store_paged_ivf(
         n_items,
         dim,
     )
-    km = MiniBatchKMeans(n_clusters=nlist, batch_size=10000, n_init=1, max_iter=25, random_state=0)
+    # init='random', not scikit-learn's default k-means++: seeding 8*sqrt(N) cells
+    # the k-means++ way is a sequential scan per cell (3394 of them at 180k tracks)
+    # and cost 29s at 200 dims, 126s at 768 - more than the whole rest of the build.
+    # The minibatch passes that follow do the actual fitting; measured against an
+    # exact brute-force top-10, both seedings give the same recall and the same
+    # cell balance, which is why FAISS trains its IVF cells this way too.
+    km = MiniBatchKMeans(
+        n_clusters=nlist, batch_size=10000, n_init=1, max_iter=25,
+        random_state=0, init="random",
+    )
     if sample_n < n_items:
         sample_keys = np.fromiter(
             (
@@ -1444,10 +1470,19 @@ def build_and_store_paged_ivf(
     id2cell = np.empty(n_items, dtype=np.uint32)
     centroid_list: List[np.ndarray] = [centroids[c] for c in range(nlist)]
     next_cell_id = nlist
+    # One INSERT per cell is one network round trip per cell, and an index has
+    # 8*sqrt(N) of them - 3394 at 180k tracks, measured at 6.8s against a LOCAL
+    # database and far worse against one across a network. They go out in batches
+    # instead; the batch is small enough that only a few MB of packed cells are
+    # ever buffered.
+    pending: List[tuple] = []
+    # Cell members come from one sort of the labels, not one scan of them per cell.
+    order = np.argsort(labels, kind="stable")
+    bounds = np.concatenate(([0], np.cumsum(np.bincount(labels, minlength=nlist))))
     with db_conn.cursor() as cur:
         cur.execute(f"DELETE FROM {IVF_CELL_TABLE} WHERE index_name = %s", (index_name,))
         for c in range(nlist):
-            members = np.where(labels == c)[0]
+            members = order[bounds[c]:bounds[c + 1]]
             if members.shape[0] == 0:
                 continue
             reused_c = False
@@ -1467,13 +1502,14 @@ def build_and_store_paged_ivf(
                 cell_vecs = train_mat[grp]
                 id2cell[grp] = assigned_cell
                 packed = pack_cell(cell_ids, cell_vecs, storage_dtype)
-                cur.execute(
-                    f"INSERT INTO {IVF_CELL_TABLE} "
-                    "(index_name, cell_id, cell_data) VALUES (%s, %s, %s)",
-                    (index_name, int(assigned_cell), psycopg2.Binary(packed)),
+                pending.append(
+                    (index_name, int(assigned_cell), psycopg2.Binary(packed))
                 )
+                if len(pending) >= _CELL_WRITE_BATCH:
+                    _flush_cells(cur, pending)
                 del cell_ids, cell_vecs, packed
             del member_vecs
+        _flush_cells(cur, pending)
 
     final_centroids = np.ascontiguousarray(np.vstack(centroid_list), dtype=np.float32)
     logger.info(

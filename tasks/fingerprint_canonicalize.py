@@ -51,38 +51,100 @@ from tasks.provider_migration_tasks import (
 
 logger = logging.getLogger(__name__)
 
-_CHUNK_ROWS = 20000
+_CHUNK_ROWS = 10000
+_CONFIRM_PAIRS = 50000
 _CURRENT_SCHEME_SQL = "(s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s)"
 _LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL
 _RELABEL_ADVISORY_LOCK = 726354822
 
 
-def _load_catalogue(cur, sql, params, count, ids, matrix, offset):
-    """Stream ``count`` (item_id, embedding) rows into ``matrix`` from ``offset``.
+def _hash_catalogue(cur, sql, params, ids, packed, valid, offset):
+    """Stream (item_id, embedding) rows, packing each BATCH's signatures.
 
-    A server-side cursor so the whole result never lands in the client at once;
-    each blob is written straight into its row of the preallocated float32
-    matrix, so the embeddings exist exactly once in memory.
+    The embeddings are the bulk of the catalogue - 800 bytes a track against 25
+    for its signature - so they are hashed a batch at a time and dropped, never
+    accumulated: only ``_CHUNK_ROWS`` of them are resident at any moment,
+    whatever the library's size. A server-side cursor keeps the result set on
+    the server side of that, too.
     """
     scan = cur.connection.cursor(name='migration_scan_%d' % offset)
     scan.itersize = _CHUNK_ROWS
+    row_index = offset
     try:
         scan.execute(sql, params)
-        row_index = offset
         while True:
             rows = scan.fetchmany(_CHUNK_ROWS)
             if not rows:
                 break
+            batch = np.zeros((len(rows), simhash.SIGNATURE_BITS), dtype=np.float32)
+            kept = 0
             for item_id, blob in rows:
                 vector = np.frombuffer(blob, dtype=np.float32)
                 if vector.size != simhash.SIGNATURE_BITS:
                     continue
-                matrix[row_index] = vector
+                batch[kept] = vector
                 ids.append(str(item_id))
-                row_index += 1
+                kept += 1
+            if not kept:
+                continue
+            batch_packed, batch_valid = simhash.signature_matrix(batch[:kept])
+            packed[row_index:row_index + kept] = batch_packed
+            valid[row_index:row_index + kept] = batch_valid
+            row_index += kept
         return row_index - offset
     finally:
         scan.close()
+
+
+def _confirm_candidates(cur, ids, left, right):
+    """Keep the candidate pairs the EXACT raw-embedding cosine confirms.
+
+    Only the tracks a signature already matched are read back, and each of them
+    exactly ONCE: a track that neighbours fifty others was previously re-read
+    fifty times - once per batch of pairs it appeared in - which is where a real
+    library's migration quietly spent minutes.
+    """
+    if left.size == 0:
+        return left, right
+    rows = np.unique(np.concatenate((left, right)))
+    logger.info(
+        "Legacy catalogue migration: confirming %d candidate pairs against the exact "
+        "embeddings of %d tracks (%d MB)...",
+        left.size, rows.size, (rows.size * simhash.SIGNATURE_BITS * 4) // (1024 * 1024),
+    )
+    vectors = np.zeros((rows.size, simhash.SIGNATURE_BITS), dtype=np.float32)
+    fetch = cur.connection.cursor()
+    try:
+        for begin in range(0, rows.size, _CHUNK_ROWS):
+            window = rows[begin:begin + _CHUNK_ROWS]
+            slot_of = {ids[int(row)]: begin + offset for offset, row in enumerate(window)}
+            fetch.execute(
+                "SELECT item_id, embedding FROM embedding WHERE item_id = ANY(%s)",
+                (list(slot_of),),
+            )
+            for item_id, blob in fetch.fetchall():
+                vector = np.frombuffer(blob, dtype=np.float32)
+                if vector.size == simhash.SIGNATURE_BITS:
+                    vectors[slot_of[str(item_id)]] = vector
+    finally:
+        fetch.close()
+
+    left_slots = np.searchsorted(rows, left)
+    right_slots = np.searchsorted(rows, right)
+    kept_left = []
+    kept_right = []
+    for begin in range(0, left.size, _CONFIRM_PAIRS):
+        window = slice(begin, begin + _CONFIRM_PAIRS)
+        confirmed = simhash.confirm_pairs(
+            vectors[left_slots[window]], vectors[right_slots[window]]
+        )
+        if confirmed.any():
+            kept_left.append(left[window][confirmed])
+            kept_right.append(right[window][confirmed])
+    if not kept_left:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty
+    return np.concatenate(kept_left), np.concatenate(kept_right)
 
 
 def _build_mapping(cur):
@@ -93,15 +155,19 @@ def _build_mapping(cur):
     runs FIRST, so a fully migrated catalogue returns instantly without loading
     anything.
 
-    Identity is resolved for the WHOLE catalogue in one vectorized pass
-    (``simhash.resolve_catalog``): the signatures are hashed as one matrix, the
-    banded blocking and the Hamming filter are a handful of big array
-    operations, and the exact cosine confirms every surviving pair at once. The
-    per-track loop this replaces was quadratic AND single-core - it spent its
-    life in Python bit twiddling under the GIL, which no thread pool can help -
-    and it dominated the migration (~9.5 minutes for 188k tracks, versus a few
-    seconds here). The answer is identical: a track still merges into the
-    nearest earlier row that the cosine confirms.
+    Identity is resolved in vectorized BATCHES, never catalogue-at-once: the
+    embeddings are hashed ``_CHUNK_ROWS`` at a time and dropped (only their
+    25-byte signatures are kept), the banded blocking streams its candidate
+    pairs in bounded slices, and the exact cosine confirms them against
+    embeddings fetched back a batch of pairs at a time. Peak memory is therefore
+    flat in the size of the library, which is what the per-track loop this
+    replaces got right and a whole-catalogue pass got badly wrong.
+
+    That per-track loop was also quadratic AND single-core - it spent its life
+    in Python bit twiddling under the GIL, which no thread pool can help - and
+    it dominated the migration (~9.5 minutes for 188k tracks, versus seconds
+    here). The answer is identical either way: a track merges into the nearest
+    earlier row that the cosine confirms.
     """
     head_len = simhash.CANONICAL_ID_LEN
     cur.execute(
@@ -128,42 +194,36 @@ def _build_mapping(cur):
     )
     logger.info(
         "One-time step (first start after upgrade only); no downloads, pure "
-        "database work. Holding %d MB of embeddings.",
-        ((total + canonical_total) * simhash.SIGNATURE_BITS * 4) // (1024 * 1024),
+        "database work. Streamed in batches of %d tracks.", _CHUNK_ROWS,
     )
     logger.info("=" * 64)
 
     ids = []
-    matrix = np.zeros(
-        (total + canonical_total, simhash.SIGNATURE_BITS), dtype=np.float32
-    )
+    rows_total = total + canonical_total
+    packed = np.zeros((rows_total, simhash.SIGNATURE_BYTES), dtype=np.uint8)
+    valid = np.zeros(rows_total, dtype=bool)
 
     started = time.monotonic()
     # Canonical rows first: "earlier wins", so an existing catalogue id is always
     # the one a legacy duplicate merges INTO, never the other way round.
-    canonical_loaded = _load_catalogue(
+    canonical_loaded = _hash_catalogue(
         cur,
         "SELECT s.item_id, e.embedding FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         "WHERE e.embedding IS NOT NULL AND " + _CURRENT_SCHEME_SQL,
-        (head_len,), canonical_total, ids, matrix, 0,
+        (head_len,), ids, packed, valid, 0,
     )
-    legacy_loaded = _load_catalogue(
+    legacy_loaded = _hash_catalogue(
         cur,
         "SELECT s.item_id, e.embedding FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         "WHERE e.embedding IS NOT NULL AND " + _LEGACY_ROW_SQL,
-        (head_len,), total, ids, matrix, canonical_loaded,
+        (head_len,), ids, packed, valid, canonical_loaded,
     )
     loaded = canonical_loaded + legacy_loaded
-    matrix = matrix[:loaded]
-    logger.info(
-        "Legacy catalogue migration: read %d embeddings in %.1fs; resolving identities...",
-        loaded, time.monotonic() - started,
-    )
+    packed = packed[:loaded]
+    valid = valid[:loaded]
 
-    resolved_at = time.monotonic()
-    packed, valid = simhash.signature_matrix(matrix)
     # A canonical row's id already encodes its signature - keep using it, exactly
     # as the streaming resolver did when it registered those rows by id alone.
     for row in range(canonical_loaded):
@@ -173,8 +233,23 @@ def _build_mapping(cur):
             continue
         packed[row] = simhash._pack_signature(signature)
         valid[row] = True
+    logger.info(
+        "Legacy catalogue migration: hashed %d embeddings in %.1fs; resolving identities...",
+        loaded, time.monotonic() - started,
+    )
 
-    parent = simhash.resolve_catalog(packed, valid, matrix)
+    resolved_at = time.monotonic()
+
+    def _band_progress(band, bands, candidates, survivors):
+        logger.info(
+            "Legacy catalogue migration: signature blocking, band %d/%d "
+            "(%d candidate pairs examined, %d within tolerance, %.0fs elapsed).",
+            band, bands, candidates, survivors, time.monotonic() - resolved_at,
+        )
+
+    left, right = simhash.near_duplicate_pairs(packed, valid, progress=_band_progress)
+    left, right = _confirm_candidates(cur, ids, left, right)
+    parent = simhash.merge_pairs(loaded, packed, left, right)
 
     mapping = {}
     duplicate_mapping = {}
