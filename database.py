@@ -59,6 +59,16 @@ MAP_PROJECTION_CACHE = None
 
 _embedded_server = None
 
+# Server-side options applied to every app connection.
+#  - statement_timeout: cap runaway queries (10 min).
+#  - max_parallel_workers_per_gather=0: force SERIAL query plans. A parallel plan
+#    allocates a dynamic shared-memory segment in /dev/shm, which is small by
+#    default on containers; a big scan (e.g. the analysis work-map over a large
+#    library) then dies with DiskFull ("could not resize shared memory segment").
+#    Serial plans need no DSM and spill to normal temp files, so the app runs on
+#    any cluster regardless of /dev/shm size.
+_CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gather=0'
+
 
 def get_db():
     if 'db' not in g:
@@ -69,7 +79,7 @@ def get_db():
                 keepalives_idle=600,
                 keepalives_interval=30,
                 keepalives_count=3,
-                options='-c statement_timeout=600000',
+                options=_CONNECT_OPTIONS,
             )
         except psycopg2.OperationalError:
             logger.exception("Failed to connect to database")
@@ -1359,7 +1369,7 @@ def connect_raw():
         keepalives_idle=600,
         keepalives_interval=30,
         keepalives_count=3,
-        options='-c statement_timeout=600000',
+        options=_CONNECT_OPTIONS,
     )
 
 

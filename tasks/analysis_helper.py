@@ -480,7 +480,7 @@ def _work_map_scan(cur, sql, params, work_map, chunk_size):
 
 
 def load_server_work_map(server_id, is_default, clap_available, lyrics_enabled,
-                         chunk_size=50000):
+                         chunk_size=20000):
     """What one server's tracks already have, keyed by PROVIDER track id.
 
     ONE keyset-paginated scan per server instead of a handful of DB round-trips
