@@ -1159,16 +1159,29 @@ def _run_analysis_server_task_impl(
             total_albums_to_check = len(all_albums)
             reported_total = albums_total or total_albums_to_check
             clap_available = is_clap_available()
-            work_map = _ah.load_server_work_map(
-                server_id or registry.get_default_server_id(),
-                server_id is None or server_id == registry.get_default_server_id(),
-                clap_available,
-                LYRICS_ENABLED,
-            )
+            wm_server_id = server_id or registry.get_default_server_id()
+            wm_is_default = server_id is None or server_id == registry.get_default_server_id()
+            try:
+                work_map = _ah.load_server_work_map(
+                    wm_server_id, wm_is_default, clap_available, LYRICS_ENABLED,
+                )
+                work_map_bulk_ok = True
+            except Exception:
+                # One big per-server scan must not zero out the whole phase (main
+                # checked per album and skipped only the failing one). Degrade to
+                # the per-album fallback below instead of re-raising.
+                logger.warning(
+                    "Bulk work-map scan failed for server %s; falling back to "
+                    "per-album checks so one scan error does not abort the phase.",
+                    wm_server_id, exc_info=True,
+                )
+                work_map = {}
+                work_map_bulk_ok = False
             done_bits = _ah.work_done_bits(clap_available, LYRICS_ENABLED)
             logger.info(
-                "Work map for this server: %d provider tracks already known.",
+                "Work map for this server: %d provider tracks already known%s.",
                 len(work_map),
+                "" if work_map_bulk_ok else " (bulk scan FAILED; per-album fallback)",
             )
             # Every server phase of a union run files its album children under the
             # SAME parent task id, so the failure count is cumulative. Take a
@@ -1329,9 +1342,26 @@ def _run_analysis_server_task_impl(
                     report_progress()
                     continue
 
-                masks = [
-                    work_map.get(str(t.get('Id') or t.get('id')), 0) for t in tracks
-                ]
+                if work_map_bulk_ok:
+                    masks = [
+                        work_map.get(str(t.get('Id') or t.get('id')), 0) for t in tracks
+                    ]
+                else:
+                    try:
+                        am = _ah.album_work_masks(
+                            [str(t.get('Id') or t.get('id')) for t in tracks],
+                            wm_server_id, wm_is_default, clap_available, LYRICS_ENABLED,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Per-album work check failed for album '%s'; skipping it this run.",
+                            album.get('Name'), exc_info=True,
+                        )
+                        albums_skipped += 1
+                        checked_album_ids.add(album['Id'])
+                        report_progress()
+                        continue
+                    masks = [am.get(str(t.get('Id') or t.get('id')), 0) for t in tracks]
                 album_done = sum(1 for m in masks if m & done_bits == done_bits)
                 songs_seen += len(tracks)
                 songs_done += album_done

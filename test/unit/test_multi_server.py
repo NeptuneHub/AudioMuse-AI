@@ -596,6 +596,38 @@ class TestServerWorkMap:
         assert 'clap_embedding' not in sql
         assert 'lyrics_embedding' not in sql
 
+    def test_album_work_masks_is_a_bounded_per_album_query(self, monkeypatch):
+        """The per-album fallback yields the same bits as the bulk scan but via a
+        bounded ANY() query (no keyset LIMIT), so a bulk-scan failure degrades to
+        per-album checks instead of aborting the phase."""
+        from tasks import analysis_helper as helper
+
+        cur, executed = self._cursor({'mapped': [[
+            ('p-done', True, True, True),
+            ('p-no-clap', True, False, True),
+        ]]})
+        self._patch_db(monkeypatch, cur)
+
+        masks = helper.album_work_masks(['p-done', 'p-no-clap'], 'srv', False, True, True)
+        done = helper.work_done_bits(True, True)
+
+        assert masks['p-done'] & done == done
+        assert masks['p-no-clap'] & done != done
+        sql = executed[0][0]
+        assert '= ANY(%s)' in sql
+        assert 'LIMIT' not in sql
+
+    def test_album_work_masks_default_server_includes_legacy(self, monkeypatch):
+        from tasks import analysis_helper as helper
+
+        cur, _ = self._cursor({
+            'mapped': [[('p1', True, True, True)]],
+            'legacy': [[('legacy-id', True, True, True)]],
+        })
+        self._patch_db(monkeypatch, cur)
+        masks = helper.album_work_masks(['p1', 'legacy-id'], 'srv-def', True, True, True)
+        assert 'p1' in masks and 'legacy-id' in masks
+
     def test_default_server_also_sees_legacy_rows_but_a_secondary_does_not(
         self, monkeypatch
     ):

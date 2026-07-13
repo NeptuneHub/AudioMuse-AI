@@ -461,6 +461,38 @@ def work_done_bits(clap_available, lyrics_enabled):
     )
 
 
+_WORK_ANALYZED = (
+    "s.other_features IS NOT NULL AND s.energy IS NOT NULL "
+    "AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL"
+)
+
+
+def _work_feature_parts(clap_available, lyrics_enabled, key_column):
+    """(selects, joins) for the clap/lyrics presence bits keyed on key_column.
+    A disabled feature contributes ``TRUE`` so it never forces re-analysis."""
+    selects, joins = [], []
+    for enabled, table, alias in (
+        (clap_available, 'clap_embedding', 'c'),
+        (lyrics_enabled, 'lyrics_embedding', 'l'),
+    ):
+        if enabled:
+            selects.append(f"({alias}.item_id IS NOT NULL)")
+            joins.append(f"LEFT JOIN {table} {alias} ON {alias}.item_id = {key_column}")
+        else:
+            selects.append("TRUE")
+    return selects, " ".join(joins)
+
+
+def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics):
+    key = str(provider_id)
+    mask = WORK_MUSICNN if has_musicnn else 0
+    if has_clap:
+        mask |= WORK_CLAP
+    if has_lyrics:
+        mask |= WORK_LYRICS
+    work_map[key] = work_map.get(key, 0) | mask
+
+
 def _work_map_scan(cur, sql, params, work_map, chunk_size):
     last = ''
     while True:
@@ -469,13 +501,7 @@ def _work_map_scan(cur, sql, params, work_map, chunk_size):
         if not rows:
             return
         for provider_id, has_musicnn, has_clap, has_lyrics in rows:
-            key = str(provider_id)
-            mask = WORK_MUSICNN if has_musicnn else 0
-            if has_clap:
-                mask |= WORK_CLAP
-            if has_lyrics:
-                mask |= WORK_LYRICS
-            work_map[key] = work_map.get(key, 0) | mask
+            _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics)
         last = str(rows[-1][0])
 
 
@@ -494,30 +520,10 @@ def load_server_work_map(server_id, is_default, clap_available, lyrics_enabled,
     ``score`` row counts as analyzed while owning no map row at all. A secondary
     server has no such fallback and must not see them.
     """
-    def feature_parts(key_column):
-        selects, joins = [], []
-        for enabled, table, alias in (
-            (clap_available, 'clap_embedding', 'c'),
-            (lyrics_enabled, 'lyrics_embedding', 'l'),
-        ):
-            if enabled:
-                selects.append(f"({alias}.item_id IS NOT NULL)")
-                joins.append(
-                    f"LEFT JOIN {table} {alias} ON {alias}.item_id = {key_column}"
-                )
-            else:
-                selects.append("TRUE")
-        return selects, " ".join(joins)
-
-    analyzed = (
-        "s.other_features IS NOT NULL AND s.energy IS NOT NULL "
-        "AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL"
-    )
-
-    mapped_selects, mapped_joins = feature_parts('m.item_id')
+    mapped_selects, mapped_joins = _work_feature_parts(clap_available, lyrics_enabled, 'm.item_id')
     mapped_sql = (
         "SELECT m.provider_track_id, "
-        f"(e.item_id IS NOT NULL AND {analyzed}), {', '.join(mapped_selects)} "
+        f"(e.item_id IS NOT NULL AND {_WORK_ANALYZED}), {', '.join(mapped_selects)} "
         "FROM track_server_map m "
         "JOIN score s ON s.item_id = m.item_id "
         "LEFT JOIN embedding e ON e.item_id = m.item_id "
@@ -526,13 +532,13 @@ def load_server_work_map(server_id, is_default, clap_available, lyrics_enabled,
         "ORDER BY m.provider_track_id LIMIT %s"
     )
 
-    legacy_selects, legacy_joins = feature_parts('s.item_id')
+    legacy_selects, legacy_joins = _work_feature_parts(clap_available, lyrics_enabled, 's.item_id')
     legacy_sql = (
         f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)} "
         "FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         f"{legacy_joins} "
-        f"WHERE s.item_id NOT LIKE 'fp\\_%%' AND {analyzed} "
+        f"WHERE s.item_id NOT LIKE 'fp\\_%%' AND {_WORK_ANALYZED} "
         "AND s.item_id > %s ORDER BY s.item_id LIMIT %s"
     )
 
@@ -542,6 +548,51 @@ def load_server_work_map(server_id, is_default, clap_available, lyrics_enabled,
             _work_map_scan(cur, mapped_sql, (server_id,), work_map, chunk_size)
         if is_default:
             _work_map_scan(cur, legacy_sql, (), work_map, chunk_size)
+    return work_map
+
+
+def album_work_masks(provider_ids, server_id, is_default, clap_available, lyrics_enabled):
+    """Per-album fallback for ``load_server_work_map``: the same
+    ``{provider_track_id -> bit mask}`` but for ONE album's ids via a small
+    bounded query. Used when the bulk per-server scan fails, so a transient DB
+    error degrades to a per-album check (as the pipeline did before the bulk
+    scan) instead of aborting the whole server phase."""
+    ids = [str(p) for p in provider_ids if p]
+    if not ids:
+        return {}
+    work_map = {}
+    with get_db() as conn, conn.cursor() as cur:
+        if server_id:
+            mapped_selects, mapped_joins = _work_feature_parts(
+                clap_available, lyrics_enabled, 'm.item_id'
+            )
+            cur.execute(
+                "SELECT m.provider_track_id, "
+                f"(e.item_id IS NOT NULL AND {_WORK_ANALYZED}), {', '.join(mapped_selects)} "
+                "FROM track_server_map m "
+                "JOIN score s ON s.item_id = m.item_id "
+                "LEFT JOIN embedding e ON e.item_id = m.item_id "
+                f"{mapped_joins} "
+                "WHERE m.server_id = %s AND m.provider_track_id = ANY(%s)",
+                (server_id, ids),
+            )
+            for provider_id, has_musicnn, has_clap, has_lyrics in cur.fetchall():
+                _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics)
+        if is_default:
+            legacy_selects, legacy_joins = _work_feature_parts(
+                clap_available, lyrics_enabled, 's.item_id'
+            )
+            cur.execute(
+                f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)} "
+                "FROM score s "
+                "JOIN embedding e ON e.item_id = s.item_id "
+                f"{legacy_joins} "
+                f"WHERE s.item_id NOT LIKE 'fp\\_%%' AND {_WORK_ANALYZED} "
+                "AND s.item_id = ANY(%s)",
+                (ids,),
+            )
+            for provider_id, has_musicnn, has_clap, has_lyrics in cur.fetchall():
+                _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics)
     return work_map
 
 
