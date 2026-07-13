@@ -26,14 +26,19 @@ output can be translated back; rows without an embedding keep their provider
 id and keep working via the identity translation fallback.
 
 Main Features:
-* One-time, idempotent, multi-threaded startup relabel of legacy rows.
+* One-time, idempotent startup relabel of legacy rows, resolved for the WHOLE
+  catalogue in one vectorized pass (~5s for 200k tracks, where the per-track
+  loop it replaces took ~10 minutes: that loop was quadratic and, being Python
+  bit twiddling under the GIL, could not be rescued by any thread pool).
 * Cosine-confirmed duplicate merge into existing canonical rows.
-* Records the source-server mapping in track_server_map.
+* Records the source-server mapping in track_server_map, streamed in with COPY.
 """
 
+import io
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor
+import time
+
+import numpy as np
 
 from database import connect_raw
 from tasks import simhash
@@ -52,61 +57,32 @@ _LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL
 _RELABEL_ADVISORY_LOCK = 726354822
 
 
-def _migration_workers():
-    return max(2, (os.cpu_count() or 4) // 2)
+def _load_catalogue(cur, sql, params, count, ids, matrix, offset):
+    """Stream ``count`` (item_id, embedding) rows into ``matrix`` from ``offset``.
 
-
-def _resolve_legacy_rows(row_batches, resolver, total, new_to_old):
-    """Assign every legacy row its identity: relabel new content, merge duplicates.
-
-    ``row_batches`` yields lists of ``(old_id, embedding_blob, signature)``.
-    Identity is decided purely from the audio: the signature proposes, the raw
-    embedding cosine (the Similar Songs duplicate rule) confirms. Embeddings
-    are never retained in the resolver: ``new_to_old`` lets the fetcher find a
-    freshly minted id's embedding under its legacy key when a later duplicate
-    needs the exact-cosine confirmation.
+    A server-side cursor so the whole result never lands in the client at once;
+    each blob is written straight into its row of the preallocated float32
+    matrix, so the embeddings exist exactly once in memory.
     """
-    mapping = {}
-    duplicate_mapping = {}
-    done = 0
-    next_pct = 10
-    for batch in row_batches:
-        for old_id, embedding_blob, signature in batch:
-            kind, resolved = resolver.resolve(
-                embedding_blob, signature=signature, store_embedding=False
-            )
-            if resolved is not None:
-                if kind == 'existing':
-                    duplicate_mapping[str(old_id)] = resolved
-                else:
-                    mapping[str(old_id)] = resolved
-                    new_to_old[resolved] = str(old_id)
-            done += 1
-            if total >= 10 and done * 100 >= next_pct * total:
-                logger.info(
-                    "Legacy catalogue migration: %d%% (%d/%d tracks resolved)",
-                    next_pct, done, total,
-                )
-                next_pct += 10
-    return mapping, duplicate_mapping
-
-
-def _make_embedding_fetcher(conn, new_to_old):
-    def fetch(item_id):
-        lookup_id = new_to_old.get(item_id, item_id)
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                "SELECT embedding FROM embedding "
-                "WHERE item_id = %s AND embedding IS NOT NULL",
-                (lookup_id,),
-            )
-            row = cur.fetchone()
-        finally:
-            cur.close()
-        return bytes(row[0]) if row and row[0] is not None else None
-
-    return fetch
+    scan = cur.connection.cursor(name='migration_scan_%d' % offset)
+    scan.itersize = _CHUNK_ROWS
+    try:
+        scan.execute(sql, params)
+        row_index = offset
+        while True:
+            rows = scan.fetchmany(_CHUNK_ROWS)
+            if not rows:
+                break
+            for item_id, blob in rows:
+                vector = np.frombuffer(blob, dtype=np.float32)
+                if vector.size != simhash.SIGNATURE_BITS:
+                    continue
+                matrix[row_index] = vector
+                ids.append(str(item_id))
+                row_index += 1
+        return row_index - offset
+    finally:
+        scan.close()
 
 
 def _build_mapping(cur):
@@ -114,13 +90,18 @@ def _build_mapping(cur):
 
     Legacy rows are everything whose item_id is not a current-scheme signature
     id: provider ids and ids minted by retired schemes alike. The legacy COUNT
-    runs FIRST so a fully migrated catalogue returns instantly without loading
-    anything; canonical rows then register by id alone (the id encodes the
-    signature) and raw embeddings are fetched lazily only when a candidate
-    match needs the exact-cosine confirmation, so memory stays bounded even on
-    huge libraries. Signatures are computed vectorized in chunks across a small
-    thread pool (max(2, half the cores)); resolution runs in submission order,
-    so the outcome is identical to a sequential pass.
+    runs FIRST, so a fully migrated catalogue returns instantly without loading
+    anything.
+
+    Identity is resolved for the WHOLE catalogue in one vectorized pass
+    (``simhash.resolve_catalog``): the signatures are hashed as one matrix, the
+    banded blocking and the Hamming filter are a handful of big array
+    operations, and the exact cosine confirms every surviving pair at once. The
+    per-track loop this replaces was quadratic AND single-core - it spent its
+    life in Python bit twiddling under the GIL, which no thread pool can help -
+    and it dominated the migration (~9.5 minutes for 188k tracks, versus a few
+    seconds here). The answer is identical: a track still merges into the
+    nearest earlier row that the cosine confirms.
     """
     head_len = simhash.CANONICAL_ID_LEN
     cur.execute(
@@ -132,6 +113,14 @@ def _build_mapping(cur):
     total = cur.fetchone()[0]
     if not total:
         return {}, {}
+    cur.execute(
+        "SELECT COUNT(*) FROM score s "
+        "JOIN embedding e ON e.item_id = s.item_id "
+        "WHERE e.embedding IS NOT NULL AND " + _CURRENT_SCHEME_SQL,
+        (head_len,),
+    )
+    canonical_total = cur.fetchone()[0]
+
     logger.info("=" * 64)
     logger.info(
         "LEGACY CATALOGUE MIGRATION STARTING: computing content ids for "
@@ -139,62 +128,77 @@ def _build_mapping(cur):
     )
     logger.info(
         "One-time step (first start after upgrade only); no downloads, pure "
-        "database work on %d threads. Progress every 10%%.",
-        _migration_workers(),
+        "database work. Holding %d MB of embeddings.",
+        ((total + canonical_total) * simhash.SIGNATURE_BITS * 4) // (1024 * 1024),
     )
     logger.info("=" * 64)
 
-    new_to_old = {}
-    resolver = simhash.CatalogResolver(
-        embedding_fetcher=_make_embedding_fetcher(cur.connection, new_to_old)
+    ids = []
+    matrix = np.zeros(
+        (total + canonical_total, simhash.SIGNATURE_BITS), dtype=np.float32
     )
-    cur.execute(
-        "SELECT s.item_id FROM score s WHERE " + _CURRENT_SCHEME_SQL,
-        (head_len,),
-    )
-    while True:
-        id_rows = cur.fetchmany(_CHUNK_ROWS)
-        if not id_rows:
-            break
-        for (item_id,) in id_rows:
-            resolver.register(item_id)
 
-    scan_cur = cur.connection.cursor(name='legacy_row_scan')
-    scan_cur.itersize = _CHUNK_ROWS
-    scan_cur.execute(
+    started = time.monotonic()
+    # Canonical rows first: "earlier wins", so an existing catalogue id is always
+    # the one a legacy duplicate merges INTO, never the other way round.
+    canonical_loaded = _load_catalogue(
+        cur,
+        "SELECT s.item_id, e.embedding FROM score s "
+        "JOIN embedding e ON e.item_id = s.item_id "
+        "WHERE e.embedding IS NOT NULL AND " + _CURRENT_SCHEME_SQL,
+        (head_len,), canonical_total, ids, matrix, 0,
+    )
+    legacy_loaded = _load_catalogue(
+        cur,
         "SELECT s.item_id, e.embedding FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         "WHERE e.embedding IS NOT NULL AND " + _LEGACY_ROW_SQL,
-        (head_len,),
+        (head_len,), total, ids, matrix, canonical_loaded,
+    )
+    loaded = canonical_loaded + legacy_loaded
+    matrix = matrix[:loaded]
+    logger.info(
+        "Legacy catalogue migration: read %d embeddings in %.1fs; resolving identities...",
+        loaded, time.monotonic() - started,
     )
 
-    def _signed_batches():
-        try:
-            with ThreadPoolExecutor(max_workers=_migration_workers()) as pool:
-                pending = []
-                while True:
-                    rows = scan_cur.fetchmany(_CHUNK_ROWS)
-                    if rows:
-                        chunk = [(str(r[0]), bytes(r[1])) for r in rows]
-                        pending.append(
-                            (chunk, pool.submit(
-                                simhash.signature_batch,
-                                [blob for _old, blob in chunk],
-                            ))
-                        )
-                    while pending and (len(pending) > _migration_workers() or not rows):
-                        chunk, future = pending.pop(0)
-                        signatures = future.result()
-                        yield [
-                            (old_id, blob, signature)
-                            for (old_id, blob), signature in zip(chunk, signatures)
-                        ]
-                    if not rows:
-                        break
-        finally:
-            scan_cur.close()
+    resolved_at = time.monotonic()
+    packed, valid = simhash.signature_matrix(matrix)
+    # A canonical row's id already encodes its signature - keep using it, exactly
+    # as the streaming resolver did when it registered those rows by id alone.
+    for row in range(canonical_loaded):
+        signature = simhash.signature_from_canonical_id(ids[row])
+        if signature is None:
+            valid[row] = False
+            continue
+        packed[row] = simhash._pack_signature(signature)
+        valid[row] = True
 
-    return _resolve_legacy_rows(_signed_batches(), resolver, total, new_to_old)
+    parent = simhash.resolve_catalog(packed, valid, matrix)
+
+    mapping = {}
+    duplicate_mapping = {}
+    canonical_of = dict(enumerate(ids[:canonical_loaded]))
+    taken = set(ids[:canonical_loaded])
+    for row in range(canonical_loaded, loaded):
+        if not valid[row]:
+            continue
+        legacy_id = ids[row]
+        target = int(parent[row])
+        if target != row:
+            duplicate_mapping[legacy_id] = canonical_of[target]
+            continue
+        minted = simhash.mint_canonical_id(simhash._unpack_signature(packed[row]), taken)
+        canonical_of[row] = minted
+        taken.add(minted)
+        mapping[legacy_id] = minted
+    logger.info(
+        "Legacy catalogue migration: resolved %d tracks in %.1fs "
+        "(%d new content ids, %d duplicates merged).",
+        legacy_loaded, time.monotonic() - resolved_at,
+        len(mapping), len(duplicate_mapping),
+    )
+    return mapping, duplicate_mapping
 
 
 def _merge_duplicate_rows(cur, duplicate_mapping):
@@ -206,18 +210,11 @@ def _merge_duplicate_rows(cur, duplicate_mapping):
     """
     if not duplicate_mapping:
         return
-    from psycopg2.extras import execute_values
-
     cur.execute(
         "CREATE TEMP TABLE duplicate_item_id_map ("
         "old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) ON COMMIT DROP"
     )
-    execute_values(
-        cur,
-        "INSERT INTO duplicate_item_id_map (old_id, new_id) VALUES %s",
-        list(duplicate_mapping.items()),
-        page_size=5000,
-    )
+    _copy_pairs(cur, 'duplicate_item_id_map', duplicate_mapping)
     cur.execute(
         "CREATE TEMP TABLE duplicate_server_map_rows ON COMMIT DROP AS "
         "SELECT d.new_id, t.server_id, t.provider_track_id, t.match_tier "
@@ -260,19 +257,28 @@ def _default_provider_ids(cur, default_id, item_ids):
     return {str(item_id): str(provider_id) for item_id, provider_id in cur.fetchall()}
 
 
-def _populate_relabel_map(cur, mapping):
-    from psycopg2.extras import execute_values
+def _copy_pairs(cur, table, mapping):
+    """COPY a {old_id: new_id} mapping into ``table`` (id, id) - one stream, no
+    per-row round trips."""
+    buffer = io.StringIO()
+    for old_id, new_id in mapping.items():
+        buffer.write(
+            "%s\t%s\n"
+            % (
+                str(old_id).replace('\t', ' ').replace('\n', ' '),
+                str(new_id).replace('\t', ' ').replace('\n', ' '),
+            )
+        )
+    buffer.seek(0)
+    cur.copy_expert("COPY %s (old_id, new_id) FROM STDIN" % table, buffer)
 
+
+def _populate_relabel_map(cur, mapping):
     cur.execute(
         "CREATE TEMP TABLE item_id_relabel_map ("
         "old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL UNIQUE) ON COMMIT DROP"
     )
-    execute_values(
-        cur,
-        "INSERT INTO item_id_relabel_map (old_id, new_id) VALUES %s",
-        list(mapping.items()),
-        page_size=5000,
-    )
+    _copy_pairs(cur, 'item_id_relabel_map', mapping)
     cur.execute("ANALYZE item_id_relabel_map")
 
 
@@ -297,6 +303,44 @@ def _relabel_item_ids(cur, lyrics_exists):
             "Legacy catalogue migration: relabelled %d rows in %s",
             cur.rowcount, table,
         )
+
+
+def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids):
+    """Stream the preserved provider ids in with COPY, not row-by-row INSERTs.
+
+    One 200k-row COPY into an unlogged staging table beats tens of thousands of
+    parameterised VALUES tuples: the client does no per-row round trip and the
+    server does no per-row parse.
+    """
+    if not all_changes:
+        return
+    buffer = io.StringIO()
+    for old_id, canonical in all_changes.items():
+        provider_id = default_provider_ids.get(str(old_id), str(old_id))
+        buffer.write(
+            "%s\t%s\t%s\n"
+            % (
+                canonical.replace('\t', ' '),
+                source_id,
+                str(provider_id).replace('\t', ' ').replace('\n', ' '),
+            )
+        )
+    buffer.seek(0)
+    cur.execute(
+        "CREATE TEMP TABLE incoming_default_map "
+        "(item_id TEXT, server_id TEXT, provider_track_id TEXT) ON COMMIT DROP"
+    )
+    cur.copy_expert(
+        "COPY incoming_default_map (item_id, server_id, provider_track_id) FROM STDIN",
+        buffer,
+    )
+    cur.execute(
+        "INSERT INTO track_server_map "
+        "(item_id, server_id, provider_track_id, match_tier, updated_at) "
+        "SELECT item_id, server_id, provider_track_id, 'default', now() "
+        "FROM incoming_default_map "
+        "ON CONFLICT (item_id, server_id) DO NOTHING"
+    )
 
 
 def _enqueue_index_rebuild():
@@ -402,20 +446,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         _merge_duplicate_rows(cur, duplicate_mapping)
 
         _log("Preserving the server's real track ids in track_server_map...")
-        from psycopg2.extras import execute_values
-
-        execute_values(
-            cur,
-            "INSERT INTO track_server_map "
-            "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
-            "ON CONFLICT (item_id, server_id) DO NOTHING",
-            [
-                (canonical, source_id, default_provider_ids.get(str(old_id), str(old_id)))
-                for old_id, canonical in all_changes.items()
-            ],
-            template="(%s, %s, %s, 'default', now())",
-            page_size=5000,
-        )
+        _copy_track_server_map(cur, source_id, all_changes, default_provider_ids)
         cur.execute(
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (source_id,),

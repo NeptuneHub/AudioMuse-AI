@@ -22,6 +22,7 @@ Main Features:
 """
 
 import numpy as np
+import pytest
 
 from tasks import simhash
 
@@ -187,3 +188,78 @@ class TestCatalogResolver:
         resolver = simhash.CatalogResolver()
         assert resolver.resolve(None) == ('new', None)
         assert resolver.resolve(np.zeros(simhash.SIGNATURE_BITS)) == ('new', None)
+
+
+class TestBatchResolveMatchesStreaming:
+    """The whole-catalogue resolver must decide identity exactly like the
+    streaming one - it rewrites every id in the catalogue, so "faster" is only
+    acceptable if it is also "the same answer"."""
+
+    @staticmethod
+    def _catalogue(n, seed, clusters=40, dup_frac=0.08):
+        rng = np.random.default_rng(seed)
+        centers = rng.standard_normal((clusters, simhash.SIGNATURE_BITS)).astype(np.float32)
+        idx = rng.integers(0, clusters, size=n)
+        rows = centers[idx] + rng.standard_normal(
+            (n, simhash.SIGNATURE_BITS)
+        ).astype(np.float32) * 0.35
+        # Genuine re-encodes of earlier tracks: these must merge.
+        ndup = int(n * dup_frac)
+        dst = rng.choice(np.arange(n // 2, n), size=ndup, replace=False)
+        src = rng.choice(np.arange(0, n // 2), size=ndup, replace=False)
+        rows[dst] = rows[src] + rng.standard_normal(
+            (ndup, simhash.SIGNATURE_BITS)
+        ) * 0.002
+        return rows.astype(np.float32)
+
+    @staticmethod
+    def _streaming_parents(rows):
+        blobs = [row.tobytes() for row in rows]
+        signatures = simhash.signature_batch(blobs)
+        resolver = simhash.CatalogResolver()
+        minted = {}
+        parents = []
+        for index, (blob, signature) in enumerate(zip(blobs, signatures)):
+            kind, item_id = resolver.resolve(blob, signature=signature)
+            if kind == 'existing':
+                parents.append(minted[item_id])
+            else:
+                minted[item_id] = index
+                parents.append(index)
+        return np.array(parents)
+
+    @pytest.mark.parametrize('seed', [0, 1, 2, 3])
+    def test_same_merges_as_the_streaming_resolver(self, seed):
+        rows = self._catalogue(600, seed)
+        packed, valid = simhash.signature_matrix(rows)
+
+        batch = simhash.resolve_catalog(packed, valid, rows)
+        streaming = self._streaming_parents(rows)
+
+        assert np.array_equal(batch, streaming)
+        # And it really did merge the planted duplicates.
+        assert int((batch != np.arange(len(rows))).sum()) > 0
+
+    def test_a_merged_row_is_never_a_merge_target(self):
+        rows = self._catalogue(400, seed=9)
+        packed, valid = simhash.signature_matrix(rows)
+        parent = simhash.resolve_catalog(packed, valid, rows)
+        for child, target in enumerate(parent):
+            if target != child:
+                assert parent[target] == target, "merge chains must not form"
+                assert target < child, "a track merges into an EARLIER row"
+
+    def test_distinct_audio_is_never_merged(self):
+        rng = np.random.default_rng(3)
+        rows = rng.standard_normal((300, simhash.SIGNATURE_BITS)).astype(np.float32)
+        packed, valid = simhash.signature_matrix(rows)
+        parent = simhash.resolve_catalog(packed, valid, rows)
+        assert np.array_equal(parent, np.arange(len(rows)))
+
+    def test_unusable_embeddings_stay_their_own_track(self):
+        rows = self._catalogue(50, seed=5)
+        rows[7] = 0.0  # constant vector: no usable signature
+        packed, valid = simhash.signature_matrix(rows)
+        assert valid[7] is np.False_
+        parent = simhash.resolve_catalog(packed, valid, rows)
+        assert parent[7] == 7

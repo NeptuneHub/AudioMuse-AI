@@ -620,45 +620,40 @@ class TestSingleTranslationPoint:
             asc.create_instant_playlist_for_server('P', ['fp_a'], 'sec')
 
 
-def _legacy_cursor(legacy_rows):
-    blobs = {old_id: blob for old_id, blob in legacy_rows}
+def _legacy_cursor(legacy_rows, canonical_rows=()):
+    """A cursor over a catalogue of legacy rows (+ already-canonical ones).
 
-    class FetchCursor:
-        def __init__(self):
-            self._row = None
-
-        def execute(self, sql, params=None):
-            blob = blobs.get(params[0]) if params else None
-            self._row = (blob,) if blob is not None else None
-
-        def fetchone(self):
-            return self._row
-
-        def close(self):
-            pass
+    _build_mapping COUNTs each kind, then streams both through server-side
+    cursors into one embedding matrix.
+    """
+    canonical_rows = list(canonical_rows)
+    legacy_rows = list(legacy_rows)
 
     class ScanCursor:
-        def __init__(self):
-            self._batches = [list(legacy_rows), []]
+        def __init__(self, rows):
+            self._batches = [rows, []]
             self.itersize = None
 
         def execute(self, sql, params=None):
             pass
 
         def fetchmany(self, size):
-            return self._batches.pop(0)
+            return self._batches.pop(0) if self._batches else []
 
         def close(self):
             pass
 
     class FakeConn:
+        def __init__(self):
+            self._scans = [list(canonical_rows), list(legacy_rows)]
+
         def cursor(self, name=None):
-            return ScanCursor() if name else FetchCursor()
+            return ScanCursor(self._scans.pop(0) if self._scans else [])
 
     cursor = MagicMock()
     cursor.connection = FakeConn()
-    cursor.fetchone.return_value = (len(legacy_rows),)
-    cursor.fetchmany.side_effect = [[]]
+    # Two COUNTs: legacy first, then already-canonical.
+    cursor.fetchone.side_effect = [(len(legacy_rows),), (len(canonical_rows),)]
     return cursor
 
 
