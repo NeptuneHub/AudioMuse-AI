@@ -445,6 +445,31 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
     return result, enqueued
 
 
+def test_phase_status_message_reports_songs_not_only_albums():
+    """An album counts as skipped only when EVERY track in it is done, so on a
+    mostly-analyzed library the album counter reads as if nothing was skipped
+    while the album jobs skip thousands of songs one by one."""
+    import tasks.analysis as analysis
+
+    message = analysis._phase_status_message(
+        albums_launched=35,
+        albums_skipped=3,
+        albums_completed=14,
+        active_jobs=21,
+        total_albums=38,
+        songs_seen=10000,
+        songs_done=9800,
+        songs_to_analyze=200,
+        finalizing=True,
+    )
+
+    assert '200 to analyze' in message
+    assert '9800 already analyzed' in message
+    assert 'of 10000 seen' in message
+    assert 'launched 35, skipped 3' in message
+    assert message.endswith('(Finalizing)')
+
+
 def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatch):
     """The whole point of the work map: a run with nothing to do costs ONE query,
     not a handful per album."""
@@ -463,7 +488,9 @@ def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatc
 
     assert result['status'] == 'SUCCESS'
     assert enqueued == []
-    assert 'Skipped 3' in result['message']
+    assert '3 skipped of 3' in result['message']
+    assert '0 sent for analysis' in result['message']
+    assert '6 already analyzed of 6' in result['message']
 
 
 def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
@@ -484,6 +511,8 @@ def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
 
     assert result['status'] == 'SUCCESS'
     assert [args[0] for args in enqueued] == ['al1']
+    assert '1 sent for analysis' in result['message']
+    assert '3 already analyzed of 4' in result['message']
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():

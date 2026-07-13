@@ -1062,6 +1062,37 @@ def run_analysis_server_task(
         )
 
 
+def _phase_status_message(
+    albums_launched,
+    albums_skipped,
+    albums_completed,
+    active_jobs,
+    total_albums,
+    songs_seen,
+    songs_done,
+    songs_to_analyze,
+    finalizing=False,
+):
+    """The one line the UI shows for a running analysis phase.
+
+    Reports SONGS, not just albums. An album counts as skipped only when EVERY
+    track in it is already complete, so on a mostly-analyzed library one missing
+    track makes the whole album 'launched' and an album-only counter reads as if
+    nothing was skipped - while the album jobs are in fact skipping thousands of
+    songs one by one. The work map already knows the per-song answer, so it is
+    reported.
+    """
+    checked = albums_launched + albums_skipped
+    message = (
+        f"Albums: {checked}/{total_albums} checked "
+        f"(launched {albums_launched}, skipped {albums_skipped}). "
+        f"Songs: {songs_to_analyze} to analyze, {songs_done} already analyzed "
+        f"of {songs_seen} seen. "
+        f"Album jobs: {albums_completed}/{albums_launched} done, {active_jobs} active."
+    )
+    return f"{message} (Finalizing)" if finalizing else message
+
+
 def _run_analysis_server_task_impl(
     num_recent_albums,
     top_n_moods,
@@ -1170,6 +1201,9 @@ def _run_analysis_server_task_impl(
             albums_needing_musicnn = 0
             albums_needing_clap = 0
             albums_needing_lyrics = 0
+            songs_seen = 0
+            songs_done = 0
+            songs_to_analyze = 0
             last_monitor_db_check = float('-inf')
             last_status_report = float('-inf')
             last_status_snapshot = None
@@ -1247,13 +1281,20 @@ def _run_analysis_server_task_impl(
                     logger.info(f"Enqueued index rebuild job {rebuild_job.id} on default queue")
                     last_rebuild_count = albums_completed
 
-            def report_progress(force=False):
+            def report_progress(force=False, finalizing=False):
+                """Write the phase's live status, throttled to one DB write per 5s.
+
+                While dispatching, progress tracks albums CHECKED. Once every album
+                is dispatched (``finalizing``) it tracks the album jobs COMPLETING,
+                otherwise the bar would sit still for the whole analysis phase.
+                """
                 nonlocal last_status_report, last_status_snapshot
                 snapshot = (
                     albums_launched,
                     albums_completed,
                     len(active_jobs),
                     albums_skipped,
+                    songs_seen,
                 )
                 now = time.monotonic()
                 if not force and (
@@ -1262,13 +1303,30 @@ def _run_analysis_server_task_impl(
                     return
                 last_status_report = now
                 last_status_snapshot = snapshot
-                checked = albums_skipped + albums_launched
-                progress = 5 + int(85 * (checked / float(total_albums_to_check)))
+                done = (
+                    albums_skipped + albums_completed
+                    if finalizing
+                    else albums_skipped + albums_launched
+                )
+                progress = 5 + int(85 * (done / float(total_albums_to_check)))
                 log_and_update_main(
-                    f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}.",
+                    _phase_status_message(
+                        albums_launched,
+                        albums_skipped,
+                        albums_completed,
+                        len(active_jobs),
+                        total_albums_to_check,
+                        songs_seen,
+                        songs_done,
+                        songs_to_analyze,
+                        finalizing,
+                    ),
                     progress,
                     albums_to_process=albums_launched,
                     albums_skipped=albums_skipped,
+                    songs_to_analyze=songs_to_analyze,
+                    songs_already_analyzed=songs_done,
+                    songs_seen=songs_seen,
                     feature_albums={
                         'musicnn': albums_needing_musicnn,
                         'dclap': albums_needing_clap,
@@ -1301,6 +1359,11 @@ def _run_analysis_server_task_impl(
                 masks = [
                     work_map.get(str(t.get('Id') or t.get('id')), 0) for t in tracks
                 ]
+                album_done = sum(1 for m in masks if m & done_bits == done_bits)
+                songs_seen += len(tracks)
+                songs_done += album_done
+                songs_to_analyze += len(tracks) - album_done
+
                 existing_count = sum(1 for m in masks if m & _ah.WORK_MUSICNN)
                 needs_musicnn_analysis = existing_count < len(tracks)
                 needs_clap_analysis = clap_available and any(
@@ -1310,7 +1373,7 @@ def _run_analysis_server_task_impl(
                     not m & _ah.WORK_LYRICS for m in masks
                 )
 
-                if all(m & done_bits == done_bits for m in masks):
+                if album_done == len(tracks):
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
                     status_parts = _ah.build_feature_status_parts(
@@ -1367,11 +1430,7 @@ def _run_analysis_server_task_impl(
 
             while active_jobs:
                 monitor_and_clear_jobs()
-                progress = 5 + int(
-                    85 * ((albums_skipped + albums_completed) / float(total_albums_to_check))
-                )
-                status_message = f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}. (Finalizing)"
-                log_and_update_main(status_message, progress)
+                report_progress(force=True, finalizing=True)
                 time.sleep(5)
 
             if finalize_indexes:
@@ -1397,9 +1456,11 @@ def _run_analysis_server_task_impl(
             if not failed_count:
                 failed_errors = []
             final_message = (
-                f"Main analysis complete. Launched {albums_launched}, "
-                f"Skipped {albums_skipped}, "
-                f"Failed {failed_count}. "
+                f"Main analysis complete. Albums: {albums_launched} launched, "
+                f"{albums_skipped} skipped of {total_albums_to_check}, "
+                f"{failed_count} failed. "
+                f"Songs: {songs_to_analyze} sent for analysis, "
+                f"{songs_done} already analyzed of {songs_seen}. "
                 f"Feature albums: MusiCNN {albums_needing_musicnn}, "
                 f"DCLAP {albums_needing_clap}, Lyrics {albums_needing_lyrics}."
             )
