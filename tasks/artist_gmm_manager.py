@@ -235,6 +235,22 @@ def _gmm_worker_count(pending: int) -> int:
     return max(1, min(8, (os.cpu_count() or 2) // 2, pending))
 
 
+def _shutdown_gmm_pool() -> None:
+    """Release loky's worker processes, their semaphores and their temp folders.
+
+    loky holds its workers open for reuse across Parallel calls, which is right
+    while the fits are running and wrong afterwards: nothing else in this process
+    fits GMMs, and an RQ job process that exits with them still alive leaks every
+    semaphore and memmap folder they hold.
+    """
+    try:
+        from joblib.externals.loky import get_reusable_executor
+
+        get_reusable_executor().shutdown(wait=True)
+    except Exception:
+        logger.warning("Could not shut the artist GMM worker pool down", exc_info=True)
+
+
 def _fit_artist_job(job: Tuple[str, np.ndarray, str]) -> Tuple[str, Optional[Dict]]:
     """One artist's GMM. Top level so a worker process can unpickle it."""
     artist_name, embeddings, tracks_hash = job
@@ -312,28 +328,44 @@ def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
     already run OpenMP deadlocks its children - which is exactly what a fork pool
     did here. loky starts its workers fresh, so there is no inherited OpenMP state
     to hang on, and it holds them open across the batches.
+
+    The pool is shut down before returning. loky keeps its workers alive for
+    REUSE by default, and this runs inside an RQ job process that exits when the
+    job does: the workers outlive it, and their semaphores and memmap folders are
+    still there to be complained about at shutdown. Memmapping is off too - an
+    artist's embeddings are tens of KB, not worth a /tmp file each.
     """
     workers = _gmm_worker_count(len(pending))
     logger.info(
         "Fitting %d artist GMMs across %d worker process(es)...", len(pending), workers
     )
     fitted = {}
-    runner = Parallel(n_jobs=workers, backend='loky') if workers > 1 else None
-    for batch in _artist_batches(pending, artist_tracks):
-        try:
-            jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
-        except Exception:
-            logger.exception("Failed to fetch embeddings for a batch of %d artists", len(batch))
-            continue
-        if not jobs:
-            continue
-        if runner is None:
-            results = [_fit_artist_job(job) for job in jobs]
-        else:
-            results = runner(delayed(_fit_artist_job)(job) for job in jobs)
-        for artist_name, params in results:
-            if params is not None:
-                fitted[artist_name] = params
+    runner = (
+        Parallel(n_jobs=workers, backend='loky', max_nbytes=None)
+        if workers > 1
+        else None
+    )
+    try:
+        for batch in _artist_batches(pending, artist_tracks):
+            try:
+                jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
+            except Exception:
+                logger.exception(
+                    "Failed to fetch embeddings for a batch of %d artists", len(batch)
+                )
+                continue
+            if not jobs:
+                continue
+            if runner is None:
+                results = [_fit_artist_job(job) for job in jobs]
+            else:
+                results = runner(delayed(_fit_artist_job)(job) for job in jobs)
+            for artist_name, params in results:
+                if params is not None:
+                    fitted[artist_name] = params
+    finally:
+        if runner is not None:
+            _shutdown_gmm_pool()
     return fitted
 
 
