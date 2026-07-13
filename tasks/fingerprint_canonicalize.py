@@ -323,7 +323,7 @@ def _merge_duplicate_rows(cur, duplicate_mapping):
         "(item_id, server_id, provider_track_id, match_tier, updated_at) "
         "SELECT r.new_id, r.server_id, r.provider_track_id, r.match_tier, now() "
         "FROM duplicate_server_map_rows r "
-        "ON CONFLICT (item_id, server_id) DO NOTHING"
+        "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
     )
     cur.execute(
         "INSERT INTO playlist (playlist_name, item_id, title, author) "
@@ -433,7 +433,7 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids):
         "(item_id, server_id, provider_track_id, match_tier, updated_at) "
         "SELECT item_id, server_id, provider_track_id, 'default', now() "
         "FROM incoming_default_map "
-        "ON CONFLICT (item_id, server_id) DO NOTHING"
+        "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
     )
 
 

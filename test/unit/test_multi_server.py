@@ -1445,15 +1445,22 @@ class TestSweepAlignment:
         # or a transient error latches the scan as done forever.
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
         cur = MagicMock()
+        # Columns: server_id, name, type, is_default, track_count, rows_total, unique_songs
         cur.fetchall.return_value = [
-            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032),
-            ('s2', 'PLEX', 'plex', False, 120, 46),
-            ('s3', 'Fresh', 'navidrome', False, None, 0),
+            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032, 188000),
+            ('s2', 'PLEX', 'plex', False, 120, 46, 46),
+            ('s3', 'Fresh', 'navidrome', False, None, 0, 0),
         ]
         rows = dash._collect_music_server_metrics(cur)
-        assert rows[0]['matched_songs'] == 188057
+        # Default server: legacy add-on (25) lifts unique_songs and resolved; the
+        # 32-file gap between rows_total and unique_songs is duplicate copies.
+        assert rows[0]['unique_songs'] == 188025
+        assert rows[0]['duplicate_copies'] == 32
+        assert rows[0]['resolved'] == 188057
         assert rows[0]['server_songs'] == 188057
-        assert rows[1]['matched_songs'] == 46
+        assert rows[1]['unique_songs'] == 46
+        assert rows[1]['duplicate_copies'] == 0
+        assert rows[1]['resolved'] == 46
         assert rows[1]['server_songs'] == 120
         assert rows[2]['server_songs'] is None
         assert all(r['catalogue_songs'] == 188057 for r in rows)
@@ -1805,11 +1812,11 @@ class TestDashboardLegacyCountLatch:
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: None)
         monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
-        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40)]
+        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40, 40)]
 
         rows = dash._collect_music_server_metrics(cur)
 
-        assert rows[0]['matched_songs'] == 40
+        assert rows[0]['resolved'] == 40
         assert dash._LEGACY_UNMAPPED_DONE == {}
 
     def test_real_zero_retires_the_scan(self, monkeypatch):
@@ -1820,7 +1827,7 @@ class TestDashboardLegacyCountLatch:
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 0)
         monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
-        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40)]
+        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40, 40)]
 
         dash._collect_music_server_metrics(cur)
 

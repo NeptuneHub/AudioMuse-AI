@@ -526,6 +526,16 @@ def _run_migration_transaction(
     _rewrite_item_ids(cur, lyrics_exists)
     _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding)
 
+    # An item may now own N duplicate default-server rows (duplicate files). The
+    # UPDATE below stamps all of them with the same new provider id, which would
+    # violate the (server_id, provider_track_id) PK. A repoint retires the OLD
+    # provider's ids anyway, so collapse to one row per item first.
+    cur.execute(
+        "DELETE FROM track_server_map t USING music_servers s "
+        "WHERE s.is_default AND t.server_id = s.server_id "
+        "AND t.ctid <> (SELECT min(t2.ctid) FROM track_server_map t2 "
+        "WHERE t2.item_id = t.item_id AND t2.server_id = t.server_id)"
+    )
     cur.execute(
         "UPDATE track_server_map t SET provider_track_id = m.new_id, updated_at = now() "
         "FROM item_id_migration_map m, music_servers s "

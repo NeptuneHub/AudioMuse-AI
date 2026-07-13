@@ -766,8 +766,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         if resolved_id is None:
                             if source_server_id:
                                 pending_track_maps.setdefault(source_server_id, {})[
-                                    track_id_str
-                                ] = (provider_id, 'analysis')
+                                    provider_id
+                                ] = (track_id_str, 'analysis')
                             logger.warning(
                                 "Embedding signature unavailable for '%s'; keeping "
                                 "provider id %s and mapping it, so it is not "
@@ -778,8 +778,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         elif kind == 'existing':
                             if source_server_id:
                                 pending_track_maps.setdefault(source_server_id, {})[
-                                    resolved_id
-                                ] = (provider_id, 'fingerprint')
+                                    provider_id
+                                ] = (resolved_id, 'fingerprint')
                             logger.info(
                                 "Embedding signature + cosine matched '%s' to existing "
                                 "catalogue id %s; marked it for this server and "
@@ -811,8 +811,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             track_id_str = resolved_id
                             if source_server_id:
                                 pending_track_maps.setdefault(source_server_id, {})[
-                                    resolved_id
-                                ] = (provider_id, 'fingerprint')
+                                    provider_id
+                                ] = (resolved_id, 'fingerprint')
                     else:
                         musicnn_analysis = musicnn_embedding = None
                         top_moods = existing_top_moods_by_id.get(track_id_str) or None
@@ -912,8 +912,12 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             map_flush_errors = []
             for map_server_id, pending in pending_track_maps.items():
                 try:
-                    ready_ids = _ah.get_existing_track_ids(list(pending))
-                    filtered = {cid: pending[cid] for cid in pending if cid in ready_ids}
+                    ready_ids = _ah.get_existing_track_ids(
+                        [cid for cid, _tier in pending.values()]
+                    )
+                    filtered = {
+                        pid: v for pid, v in pending.items() if v[0] in ready_ids
+                    }
                     if filtered:
                         registry.upsert_track_maps(map_server_id, filtered)
                 except Exception:

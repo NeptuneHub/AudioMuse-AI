@@ -438,9 +438,19 @@ def translate_ids(item_ids, server_id=None, conn=None):
         return {i: i for i in ids if not is_fingerprint_id(i)}
     cur = db.cursor()
     try:
+        # N provider tracks may map to one item_id on a server (duplicate files);
+        # pick ONE deterministically - strongest match tier, then the smallest
+        # provider id as a stable tiebreak - so a playlist target never changes
+        # between runs.
         cur.execute(
-            "SELECT item_id, provider_track_id FROM track_server_map "
-            "WHERE server_id = %s AND item_id = ANY(%s)",
+            "SELECT DISTINCT ON (item_id) item_id, provider_track_id "
+            "FROM track_server_map WHERE server_id = %s AND item_id = ANY(%s) "
+            "ORDER BY item_id, "
+            "  CASE match_tier "
+            "    WHEN 'fingerprint' THEN 0 WHEN 'path' THEN 1 WHEN 'tail' THEN 2 "
+            "    WHEN 'exact_meta' THEN 3 WHEN 'default' THEN 4 WHEN 'norm_meta' THEN 5 "
+            "    WHEN 'title_artist' THEN 6 WHEN 'analysis' THEN 7 ELSE 8 END, "
+            "  provider_track_id",
             (target, ids),
         )
         mapped = {r[0]: r[1] for r in cur.fetchall()}
@@ -651,17 +661,25 @@ def artist_track_counts(artist_names, server_id=None, conn=None):
 
 
 def upsert_track_maps(server_id, mapping, conn=None):
-    """Bulk-upsert ``{item_id: (provider_track_id, match_tier)}`` for a server."""
+    """Bulk-upsert ``{provider_track_id: (item_id, match_tier)}`` for a server.
+
+    N provider tracks may map to one canonical item_id on a server (duplicate
+    files sharing one fingerprint). Keyed by ``provider_track_id``, the table's
+    PRIMARY KEY column, so every provider row survives instead of colliding on
+    ``(item_id, server_id)``.
+    """
     if not mapping:
         return 0
     db = conn or get_db()
     rows_by_provider = {}
-    for item_id, value in mapping.items():
+    for provider_track_id, value in mapping.items():
         if isinstance(value, (tuple, list)):
-            provider_track_id, match_tier = value[0], (value[1] if len(value) > 1 else None)
+            item_id, match_tier = value[0], (value[1] if len(value) > 1 else None)
         else:
-            provider_track_id, match_tier = value, None
+            item_id, match_tier = value, None
         if provider_track_id is None or provider_track_id == '':
+            continue
+        if item_id is None or item_id == '':
             continue
         provider_track_id = str(provider_track_id)
         rows_by_provider[provider_track_id] = (
@@ -695,8 +713,8 @@ def upsert_track_maps(server_id, mapping, conn=None):
         final_insert=(
             "INSERT INTO track_server_map "
             "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
-            "ON CONFLICT (item_id, server_id) DO UPDATE SET "
-            "provider_track_id = EXCLUDED.provider_track_id, "
+            "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
+            "item_id = EXCLUDED.item_id, "
             "match_tier = EXCLUDED.match_tier, updated_at = now()"
         ),
         final_template="(%s, %s, %s, %s, now())",

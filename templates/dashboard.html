@@ -136,7 +136,7 @@
         white-space: nowrap;
     }
     .badge-success, .badge-ok { background: var(--status-success-bg); color: var(--status-success-text); }
-    .badge-failure, .badge-bad { background: var(--status-failure-bg); color: var(--status-failure-text); }
+    .badge-failure { background: var(--status-failure-bg); color: var(--status-failure-text); }
     .badge-pending { background: var(--status-pending-bg); color: var(--status-pending-text); }
     .badge-progress, .badge-started { background: #DBEAFE; color: #1E40AF; }
     .badge-revoked, .badge-unknown { background: #E5E7EB; color: #374151; }
@@ -149,12 +149,10 @@
         min-width: 0;
         overflow: hidden;
     }
-    .chart-wrap-tall { height: 520px; }
     /* Pie/doughnut charts: same size for visual consistency. */
     .chart-wrap-pie { height: 420px; }
     @media (max-width: 600px) {
         .chart-wrap { height: 200px; }
-        .chart-wrap-tall { height: 420px; }
         .chart-wrap-pie { height: 280px; }
     }
     .chart-wrap canvas { max-width: 100% !important; }
@@ -188,17 +186,6 @@
         section { margin-bottom: 0.75rem; }
     }
 
-    .progress-bar {
-        background: var(--border-color);
-        border-radius: 4px;
-        overflow: hidden;
-        height: 8px;
-        margin-top: 6px;
-    }
-    .progress-bar > div {
-        height: 100%;
-        background: var(--color-primary);
-    }
     .muted { color: var(--text-muted); font-size: 0.85rem; }
 </style>
 {% endblock %}
@@ -223,7 +210,7 @@
         <h2>Music Server Status
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each server holds its own library; the analyzed catalogue is the union of all of them. "In catalogue" counts how many of THAT server's songs are matched to the shared catalogue, measured against the server's own library size (captured by its last alignment sweep). Overlap between servers can be anything from 0% to 100%.</span>
+                <span class="tooltip-text">Each server holds its own library; the analyzed catalogue is the union of all of them. "Unique in catalogue" counts THAT server's distinct songs matched to the shared catalogue; "Duplicate files" are extra copies of a song that is already counted (same audio, several files). "Coverage" is the provider tracks resolved to the catalogue, measured against the server's own library size (captured by its last alignment sweep). Overlap between servers can be anything from 0% to 100%.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
@@ -234,9 +221,11 @@
                     <th class="col-medium">Type</th>
                     <th class="col-narrow">Default</th>
                     <th class="col-medium">Songs on server</th>
-                    <th>In catalogue</th>
+                    <th class="col-medium">Unique in catalogue</th>
+                    <th class="col-narrow">Duplicate files</th>
+                    <th>Coverage</th>
                 </tr></thead>
-                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -476,18 +465,19 @@
             return;
         }
 
+        const clampPct = (v) => Math.min(100, Math.max(0, v)).toFixed(1);
         const totalSongs = c.total_songs || 0;
         const musicnnIndexed = c.musicnn_indexed || 0;
         const clapIndexed = c.clap_indexed || 0;
-        const songIdxPct = totalSongs > 0 ? (100 * musicnnIndexed / totalSongs).toFixed(1) : '0.0';
-        const clapPct = totalSongs > 0 ? (100 * clapIndexed / totalSongs).toFixed(1) : '0.0';
+        const songIdxPct = totalSongs > 0 ? clampPct(100 * musicnnIndexed / totalSongs) : '0.0';
+        const clapPct = totalSongs > 0 ? clampPct(100 * clapIndexed / totalSongs) : '0.0';
         const totalArtists = c.distinct_artists || 0;
         const gmmIndexed = c.gmm_indexed || 0;
-        const gmmPct = totalArtists > 0 ? (100 * gmmIndexed / totalArtists).toFixed(1) : '0.0';
+        const gmmPct = totalArtists > 0 ? clampPct(100 * gmmIndexed / totalArtists) : '0.0';
 
         const cards = [
             { title: 'Total Songs', value: totalSongs.toLocaleString(),
-              sub: 'Musicnn Indexed: ' + musicnnIndexed.toLocaleString() + ' (' + songIdxPct + '%)<br>CLAP Indexed: ' + clapIndexed.toLocaleString() + ' (' + clapPct + '%)' },
+              sub: 'Analyzed (MusiCNN): ' + musicnnIndexed.toLocaleString() + ' (' + songIdxPct + '%)<br>CLAP analyzed: ' + clapIndexed.toLocaleString() + ' (' + clapPct + '%)' },
             { title: 'Total Artists', value: totalArtists.toLocaleString(),
               sub: 'GMM Indexed: ' + gmmIndexed.toLocaleString() + ' (' + gmmPct + '%)' },
             { title: 'Total Albums', value: (c.distinct_albums || 0).toLocaleString(),
@@ -504,6 +494,21 @@
         });
     }
 
+    function badgeCell(text, cls) {
+        const td = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + cls;
+        badge.textContent = text;
+        td.appendChild(badge);
+        return td;
+    }
+
+    function textCell(text) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        return td;
+    }
+
     function renderWorkers(workers) {
         const tbody = document.querySelector('#workers-table tbody');
         tbody.innerHTML = '';
@@ -512,22 +517,23 @@
             return;
         }
         workers.forEach(w => {
-            const stateBadge = w.state === 'busy'
-                ? '<span class="badge badge-progress">busy</span>'
-                : w.state === 'idle'
-                    ? '<span class="badge badge-ok">idle</span>'
-                    : `<span class="badge badge-unknown">${w.state || 'unknown'}</span>`;
-            const queues = (w.queues || []).join(', ') || '–';
-            const job = w.current_job_id ? '<code>' + w.current_job_id + '</code>' : '–';
-
+            const cls = w.state === 'busy' ? 'badge-progress'
+                : (w.state === 'idle' ? 'badge-ok' : 'badge-unknown');
+            const jobTd = document.createElement('td');
+            if (w.current_job_id) {
+                const code = document.createElement('code');
+                code.textContent = w.current_job_id;
+                jobTd.appendChild(code);
+            } else {
+                jobTd.textContent = '-';
+            }
             const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td>${w.hostname || '–'}</td>
-                <td>${stateBadge}</td>
-                <td>${queues}</td>
-                <td>${w.successful_jobs ?? 0}</td>
-                <td>${w.failed_jobs ?? 0}</td>
-                <td>${job}</td>`;
+            tr.appendChild(textCell(w.hostname || '-'));
+            tr.appendChild(badgeCell(w.state || 'unknown', cls));
+            tr.appendChild(textCell((w.queues || []).join(', ') || '-'));
+            tr.appendChild(textCell(w.successful_jobs ?? 0));
+            tr.appendChild(textCell(w.failed_jobs ?? 0));
+            tr.appendChild(jobTd);
             tbody.appendChild(tr);
         });
     }
@@ -541,42 +547,11 @@
         }
         tasks.forEach(t => {
             const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td>${t.task_type || '–'}</td>
-                <td><span class="badge ${statusBadgeClass(t.status)}">${t.status || '?'}</span></td>
-                <td>${fmtDuration(t.duration_seconds)}</td>
-                <td>${fmtTime(t.timestamp)}</td>
-                <td>${t.note || ''}</td>`;
-            tbody.appendChild(tr);
-        });
-    }
-
-    function renderStatusDist(dist) {
-        const labels = Object.keys(dist || {});
-        const data = labels.map(k => dist[k]);
-        const palette = labels.map(k => {
-            const u = (k || '').toUpperCase();
-            if (u === 'SUCCESS') return '#16A34A';
-            if (u === 'FAILURE') return '#DC2626';
-            if (u === 'PENDING') return '#F59E0B';
-            if (u === 'STARTED' || u === 'PROGRESS') return '#2563EB';
-            if (u === 'REVOKED') return '#6B7280';
-            return '#94A3B8';
-        });
-        if (labels.length === 0) return;
-        renderChartDoughnut('chart-status', labels, data, palette);
-    }
-
-    function renderDurations(rows) {
-        const tbody = document.querySelector('#duration-table tbody');
-        tbody.innerHTML = '';
-        if (!rows || rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="muted">Not enough completed tasks yet.</td></tr>';
-            return;
-        }
-        rows.forEach(r => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${r.task_type}</td><td>${r.runs}</td><td>${fmtDuration(r.avg_seconds)}</td>`;
+            tr.appendChild(textCell(t.task_type || '-'));
+            tr.appendChild(badgeCell(t.status || '?', statusBadgeClass(t.status)));
+            tr.appendChild(textCell(fmtDuration(t.duration_seconds)));
+            tr.appendChild(textCell(fmtTime(t.timestamp)));
+            tr.appendChild(textCell(t.note || ''));
             tbody.appendChild(tr);
         });
     }
@@ -671,15 +646,16 @@
         }
         rows.forEach(c => {
             const tr = document.createElement('tr');
-            const enabled = c.enabled
-                ? '<span class="badge badge-ok">enabled</span>'
-                : '<span class="badge badge-unknown">disabled</span>';
-            tr.innerHTML = `
-                <td>${c.name || '–'}</td>
-                <td>${c.task_type || '–'}</td>
-                <td><code>${c.cron_expr || '–'}</code></td>
-                <td>${enabled}</td>
-                <td>${c.last_run || '–'}</td>`;
+            const exprTd = document.createElement('td');
+            const code = document.createElement('code');
+            code.textContent = c.cron_expr || '-';
+            exprTd.appendChild(code);
+            tr.appendChild(textCell(c.name || '-'));
+            tr.appendChild(textCell(c.task_type || '-'));
+            tr.appendChild(exprTd);
+            tr.appendChild(badgeCell(c.enabled ? 'enabled' : 'disabled',
+                c.enabled ? 'badge-ok' : 'badge-unknown'));
+            tr.appendChild(textCell(c.last_run || '-'));
             tbody.appendChild(tr);
         });
     }
@@ -698,7 +674,9 @@
             const tr = document.createElement('tr');
             const serverSongs = (s.server_songs === null || s.server_songs === undefined)
                 ? null : (s.server_songs || 0);
-            const matched = s.matched_songs || 0;
+            const resolved = s.resolved || 0;
+            const uniqueSongs = s.unique_songs || 0;
+            const duplicateCopies = s.duplicate_copies || 0;
             const nameTd = document.createElement('td');
             nameTd.textContent = s.name;
             const typeTd = document.createElement('td');
@@ -707,13 +685,17 @@
             defTd.textContent = s.is_default ? 'yes' : '';
             const songsTd = document.createElement('td');
             songsTd.textContent = serverSongs === null ? 'not yet aligned' : serverSongs.toLocaleString();
-            const matchTd = document.createElement('td');
-            if (serverSongs === null && !matched) {
-                matchTd.textContent = 'run an alignment sweep';
-                matchTd.className = 'muted';
+            const uniqueTd = document.createElement('td');
+            uniqueTd.textContent = uniqueSongs.toLocaleString();
+            const dupTd = document.createElement('td');
+            dupTd.textContent = duplicateCopies ? duplicateCopies.toLocaleString() : '-';
+            const covTd = document.createElement('td');
+            if (serverSongs === null && !resolved) {
+                covTd.textContent = 'run an alignment sweep';
+                covTd.className = 'muted';
             } else {
-                const denom = serverSongs === null ? matched : serverSongs;
-                const pct = denom ? Math.min(100, Math.round(100 * matched / denom)) : 0;
+                const denom = serverSongs === null ? resolved : serverSongs;
+                const pct = denom ? Math.min(100, Math.round(100 * resolved / denom)) : 0;
                 const wrap = document.createElement('div');
                 wrap.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
                 const barOuter = document.createElement('div');
@@ -722,17 +704,19 @@
                 barInner.style.cssText = 'height:100%; width:' + pct + '%; background:var(--color-primary, #4a90d9);';
                 barOuter.appendChild(barInner);
                 const label = document.createElement('span');
-                label.textContent = matched.toLocaleString()
+                label.textContent = resolved.toLocaleString()
                     + (serverSongs === null ? '' : ' of ' + serverSongs.toLocaleString() + ' (' + pct + '%)');
                 wrap.appendChild(barOuter);
                 wrap.appendChild(label);
-                matchTd.appendChild(wrap);
+                covTd.appendChild(wrap);
             }
             tr.appendChild(nameTd);
             tr.appendChild(typeTd);
             tr.appendChild(defTd);
             tr.appendChild(songsTd);
-            tr.appendChild(matchTd);
+            tr.appendChild(uniqueTd);
+            tr.appendChild(dupTd);
+            tr.appendChild(covTd);
             tbody.appendChild(tr);
         });
     }

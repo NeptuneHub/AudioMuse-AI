@@ -206,7 +206,7 @@ def test_new_track_persists_under_signature_id_and_maps_it(monkeypatch, tmp_path
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == [expected_id]
     assert item['_catalog_item_id'] == expected_id
-    assert map_upserts == [('srv-def', {expected_id: ('prov1', 'fingerprint')})]
+    assert map_upserts == [('srv-def', {'prov1': (expected_id, 'fingerprint')})]
 
 
 def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path):
@@ -225,7 +225,7 @@ def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path
     assert result['status'] == 'SUCCESS'
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == []
-    assert map_upserts == [('srv-def', {known_id: ('prov1', 'fingerprint')})]
+    assert map_upserts == [('srv-def', {'prov1': (known_id, 'fingerprint')})]
 
 
 def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
@@ -256,7 +256,7 @@ def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
     assert len(persisted_ids) == 1
     assert persisted_ids[0] != taken_id
     assert persisted_ids[0].startswith('fp_2')
-    assert map_upserts == [('srv-def', {persisted_ids[0]: ('prov1', 'fingerprint')})]
+    assert map_upserts == [('srv-def', {'prov1': (persisted_ids[0], 'fingerprint')})]
 
 
 def test_degenerate_embedding_is_still_mapped_so_it_is_not_re_analyzed_forever(
@@ -283,9 +283,41 @@ def test_degenerate_embedding_is_still_mapped_so_it_is_not_re_analyzed_forever(
 
     assert result['status'] == 'SUCCESS'
     assert persisted_ids == ['prov-degenerate']
+    # Provider-keyed: the single key is the provider id, the value carries the
+    # canonical id (identical here only because a degenerate track keeps its own).
     assert map_upserts == [
         ('srv-def', {'prov-degenerate': ('prov-degenerate', 'analysis')})
     ]
+
+
+def test_two_duplicate_files_on_one_server_both_get_a_map_row(monkeypatch, tmp_path):
+    """Two files of the SAME audio on one server share one canonical id. Both
+    provider ids must be mapped: the map is keyed by provider id, so the second
+    copy cannot evict the first. Before the N:1 fix only one row survived and the
+    duplicate was re-downloaded and re-analyzed on every run (the flip-flop)."""
+    from tasks import simhash
+
+    expected_id = simhash.canonical_id_str(simhash.embedding_signature(_FAKE_EMBEDDING))
+    track_a = {'Id': 'provA', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+    track_b = {'Id': 'provB', 'Name': 'Song (copy)', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch, tmp_path, track_a, simhash.CatalogResolver(),
+        persisted_ids, map_upserts, tracks=[track_a, track_b],
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert result['tracks_analyzed'] == 2
+    # The audio is persisted once (first track mints the canonical row); the
+    # second is recognised as a duplicate and only mapped.
+    assert persisted_ids == [expected_id]
+    assert len(map_upserts) == 1
+    server_id, mapping = map_upserts[0]
+    assert server_id == 'srv-def'
+    assert mapping == {
+        'provA': (expected_id, 'fingerprint'),
+        'provB': (expected_id, 'fingerprint'),
+    }
 
 
 def test_default_server_writes_file_path_but_a_secondary_never_does(

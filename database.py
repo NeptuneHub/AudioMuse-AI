@@ -1316,10 +1316,6 @@ def init_db():
                 )
             """)
             cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_track_server_map_reverse "
-                "ON track_server_map (server_id, provider_track_id)"
-            )
-            cur.execute(
                 "SELECT to_regclass('public.idx_track_server_map_provider_unique') IS NULL"
             )
             if cur.fetchone()[0]:
@@ -1334,6 +1330,7 @@ def init_db():
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_track_server_map_provider_unique "
                 "ON track_server_map (server_id, provider_track_id)"
             )
+            relax_track_server_map_pk(cur)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS artist_server_map (
                     artist_name TEXT NOT NULL,
@@ -1379,6 +1376,48 @@ def connect_raw():
         keepalives_count=3,
         options='-c statement_timeout=600000',
     )
+
+
+def relax_track_server_map_pk(cur):
+    """Relax track_server_map PK (item_id, server_id) -> (server_id,
+    provider_track_id) so N provider files may map to one canonical song per
+    server. Detected by COLUMNS (not name) so it is a no-op once migrated; the
+    caller owns the transaction. The replacement item-leading index is created
+    FIRST so the score FK cascade and item_id probes keep an index. The
+    constraint is deliberately NOT named: naming it would rename the backing
+    index and make the earlier CREATE UNIQUE INDEX rebuild a duplicate."""
+    cur.execute(
+        "SELECT c.conname FROM pg_constraint c "
+        "WHERE c.conrelid = 'track_server_map'::regclass AND c.contype = 'p' "
+        "AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text) "
+        "     FROM unnest(c.conkey) k "
+        "     JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k) "
+        "    = ARRAY['item_id','server_id']"
+    )
+    old_pk = cur.fetchone()
+    if not old_pk:
+        return False
+    cur.execute("SAVEPOINT tsm_pk_swap")
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_track_server_map_item "
+            "ON track_server_map (item_id, server_id)"
+        )
+        cur.execute("ALTER TABLE track_server_map DROP CONSTRAINT " + old_pk[0])
+        cur.execute(
+            "ALTER TABLE track_server_map "
+            "ADD PRIMARY KEY USING INDEX idx_track_server_map_provider_unique"
+        )
+        cur.execute("DROP INDEX IF EXISTS idx_track_server_map_reverse")
+        cur.execute("RELEASE SAVEPOINT tsm_pk_swap")
+        logger.info(
+            "track_server_map PRIMARY KEY relaxed to (server_id, provider_track_id)"
+        )
+        return True
+    except Exception:
+        logger.warning("track_server_map PK swap skipped", exc_info=True)
+        cur.execute("ROLLBACK TO SAVEPOINT tsm_pk_swap")
+        return False
 
 
 def _create_plugins_table(cur):

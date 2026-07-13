@@ -187,11 +187,12 @@ song analyzed from two servers (different file, encoder, bitrate) lands within
 a few bits, so candidates are found with a Hamming-tolerant lookup - and the
 final same/different decision is the EXACT cosine distance between the raw
 embeddings, using the same `DUPLICATE_DISTANCE_THRESHOLD_COSINE` the Similar
-Songs duplicate filter has always trusted (plus a duration check when both
-durations are known). Everything deciding identity is derived from the audio
-itself. Two copies of one song become ONE row with N server mappings; two
-similar-sounding DIFFERENT songs never merge, even on a signature collision
-(the second simply gets the next free id).
+Songs duplicate filter has always trusted. Everything deciding identity is
+derived from the audio itself. Copies of one song become ONE `score` row, and
+every provider file that carries it - across servers OR duplicated on a single
+server - is recorded as its own `track_server_map` row; two similar-sounding
+DIFFERENT songs never merge, even on a signature collision (the second simply
+gets the next free id).
 
 Legacy installs migrate ONCE, at Flask container startup, directly on the
 Flask container (never through the job queue): item_ids are relabelled from

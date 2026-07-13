@@ -357,7 +357,7 @@ def _already_mapped_ids(db, server_id):
 
 def _write_matches(db, server_id, result):
     mapping = {
-        item_id: (new_id, result['match_tiers'].get(item_id))
+        new_id: (item_id, result['match_tiers'].get(item_id))
         for item_id, new_id in result['matches'].items()
     }
     return registry.upsert_track_maps(server_id, mapping, conn=db)
@@ -538,10 +538,17 @@ def _refresh_mapped_metadata(db, server_id, is_default):
         )
         for f in fields
     )
+    # N provider tracks may map to one item_id (duplicate files); collapse to one
+    # metadata source per item so the UPDATE is deterministic (matters only for
+    # file_path - all duplicates are the same audio).
     query = pgsql.SQL(
-        "UPDATE score s SET {} FROM sweep_track_meta i "
-        "JOIN track_server_map m ON m.provider_track_id = i.provider_track_id "
-        "AND m.server_id = %s WHERE s.item_id = m.item_id AND ({})"
+        "UPDATE score s SET {} FROM ("
+        "  SELECT DISTINCT ON (m.item_id) m.item_id AS item_id, i.* "
+        "  FROM track_server_map m "
+        "  JOIN sweep_track_meta i ON i.provider_track_id = m.provider_track_id "
+        "  WHERE m.server_id = %s "
+        "  ORDER BY m.item_id, m.provider_track_id"
+        ") i WHERE s.item_id = i.item_id AND ({})"
     ).format(set_parts, changed_parts)
     cur = db.cursor()
     try:
