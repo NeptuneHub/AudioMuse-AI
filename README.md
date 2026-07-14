@@ -241,4 +241,4 @@ DO **NOT** USE MIRROR TO RAISE ISSUE, PR OTHER ACTION DIFFERENT FROM GET THE COD
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=NeptuneHub/AudioMuse-AI&type=Timeline)](https://www.star-history.com/#NeptuneHub/AudioMuse-AI&Timeline)
+[![Star History Chart](https://api.star-history.com/chart?repos=NeptuneHub/AudioMuse-AI&type=timeline&legend=top-left&sealed_token=oboYMbCJkpe8KvUSebREbwjZryhBdJj-2_Jo8sL510B3MzPE7IqJ9f5Rdw2W4yrMc6fljMQOW8g7KfLln5azqiAP_7_V6rl2aeJwfjvKtETBcz2wgmwBvlNU9S2REZJhNDHUrZeUFZ7AwP9Izh_0DlJVEmPLUE34-To1JEk4rYnUKj2QSQvI-_h5pJXf)](https://www.star-history.com/?type=timeline&repos=NeptuneHub%2FAudioMuse-AI)
