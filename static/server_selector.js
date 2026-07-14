@@ -123,6 +123,51 @@
         });
     }
 
+    // Page scope chip, pinned to the top-right corner of the page's TITLE CARD.
+    //
+    // Only shown with TWO OR MORE servers: with one server "catalogue" and "per
+    // server" describe the same set of songs, so the distinction is noise.
+    // Positioned absolutely inside the card so it cannot reflow the page it
+    // annotates.
+    function renderScopeChip() {
+        var existing = document.getElementById('page-scope-chip');
+        if (existing) {
+            existing.remove();
+        }
+        if (state.servers.length < 2) {
+            return;
+        }
+        var root = document.querySelector('.container[data-page-scope]');
+        if (!root) {
+            return;
+        }
+        var scope = root.getAttribute('data-page-scope');
+        if (scope !== 'catalogue' && scope !== 'server') {
+            return;
+        }
+        var h1 = root.querySelector('h1');
+        if (!h1) {
+            return;
+        }
+        // The title card is the `section` panel the <h1> sits in; fall back to the
+        // heading's own wrapper when a page does not use one.
+        var card = h1.closest('section') || h1.parentElement;
+        if (!card) {
+            return;
+        }
+        var catalogue = scope === 'catalogue';
+        var chip = document.createElement('span');
+        chip.id = 'page-scope-chip';
+        chip.className = 'scope-chip scope-chip-corner '
+            + (catalogue ? 'scope-catalog' : 'scope-server');
+        chip.textContent = catalogue ? 'Catalogue' : 'Per server';
+        chip.title = catalogue
+            ? 'This page acts on the whole catalogue: every analyzed song across all your music servers, deduplicated. The server picker does not change it.'
+            : 'This page acts on the one music server selected in the sidebar. Switch servers there to change what it returns.';
+        card.classList.add('scope-chip-host');
+        card.appendChild(chip);
+    }
+
     function forgetStaleSelection(id) {
         // The selected server was deleted (in another tab, or by another admin):
         // every request would keep 400ing with it. Drop it and show the default.
@@ -149,6 +194,7 @@
                     localStorage.removeItem(STORAGE_KEY);
                 }
                 render();
+                renderScopeChip();
             })
             .catch(function () {
                 // Not authenticated or endpoint unavailable; leave UI untouched

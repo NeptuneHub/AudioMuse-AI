@@ -1450,10 +1450,12 @@ html.dark-mode body .similarity-badge.badge-neutral { background: #4B5563; }
 body.dark-mode .ptag-genre,
 html.dark-mode body .ptag-genre { color: hsl(var(--genre-hue, 220), 65%, 62%); }
 
-/* Scope chips. Every functionality page is tagged with the scope it acts on:
-   CATALOGUE (the deduplicated union of every music server) or PER SERVER (the
-   one server chosen in the sidebar picker). Injected next to the page <h1> by
-   layout.html; the dashboard also uses these on its individual sections. */
+/* Scope chips. Tags what a page (or a dashboard section) acts on: CATALOGUE (the
+   deduplicated union of every music server) or PER SERVER (the one server chosen
+   in the sidebar picker). Only rendered when 2+ servers are configured - with one
+   server the two mean the same thing. The page-level chip is pinned to the corner
+   of the viewport (.scope-chip-corner) so it annotates the page without taking part
+   in its layout; the dashboard uses the plain chip inline on its own sections. */
 .scope-chip {
     display: inline-block;
     padding: 2px 8px;
@@ -1472,3 +1474,18 @@ body.dark-mode .scope-catalog,
 html.dark-mode body .scope-catalog { background: #4C1D95; color: #DDD6FE; }
 body.dark-mode .scope-server,
 html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }
+
+/* Page-level chip: pinned to the top-right corner of the page's TITLE CARD (the
+   first `section`, the panel that holds the <h1>). position:absolute keeps it out
+   of the document flow, so adding it cannot reflow a single element of the card. */
+.scope-chip-host { position: relative; }
+.scope-chip-corner {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.9rem;
+    z-index: 2;
+    margin-left: 0;
+}
+@media (max-width: 600px) {
+    .scope-chip-corner { top: 0.5rem; right: 0.5rem; font-size: 0.55rem; }
+}

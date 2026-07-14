@@ -55,14 +55,22 @@
                              Batch work (analysis, clustering, cleaning, cron)
                              always covers every server, one at a time.
                 server     - acts on the ONE server chosen in the sidebar picker.
-              Pages absent from the map are admin/system (backup, setup, users,
-              plugins, provider migration) and get no chip. The dashboard is
-              absent on purpose: it mixes both scopes and chips its own sections.
+              Admin pages count too: backup dumps the WHOLE database (every server,
+              the whole catalogue), users are global accounts, and the wizard defines
+              all the servers - so those are catalogue, not per server. Provider
+              migration is the one admin page that really does act on a single server.
+              The dashboard is absent on purpose: it mixes both scopes and chips its
+              own sections.
             #}
             {% set page_scopes = {
                 'index': 'catalogue',
                 'cleaning': 'catalogue',
                 'cron': 'catalogue',
+                'backup': 'catalogue',
+                'users': 'catalogue',
+                'setup': 'catalogue',
+                'plugins': 'catalogue',
+                'provider_migration': 'server',
                 'similarity': 'server',
                 'path': 'server',
                 'alchemy': 'server',
@@ -81,26 +89,9 @@
         </div>
     </div>
 
-    <script>
-        // Tag the page title with its scope. Done here rather than in each of the
-        // 20 templates so there is one map and one chip, and so the two different
-        // header shapes (.page-header and #config-header) both get it.
-        (function () {
-            var host = document.querySelector('.container[data-page-scope]');
-            if (!host) return;
-            var scope = host.getAttribute('data-page-scope');
-            if (scope !== 'catalogue' && scope !== 'server') return;
-            var h1 = host.querySelector('h1');
-            if (!h1) return;
-            var chip = document.createElement('span');
-            chip.className = 'scope-chip ' + (scope === 'catalogue' ? 'scope-catalog' : 'scope-server');
-            chip.textContent = scope === 'catalogue' ? 'Catalogue' : 'Per server';
-            chip.title = scope === 'catalogue'
-                ? 'Acts on the whole catalogue: every analyzed song across all your music servers, deduplicated. Not affected by the server picker.'
-                : 'Acts on the one music server selected in the sidebar. Switch servers there to change what this page returns.';
-            h1.appendChild(chip);
-        })();
-    </script>
+    {# The chip itself is rendered by static/server_selector.js: it already knows how
+       many servers are configured, and the scope only means something once there are
+       at least two. #}
 
     {% block bodyAdditions %}
         {# body additions from template will be set here #}
