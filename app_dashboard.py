@@ -11,12 +11,20 @@
 Serves the `/` home page and its summary API, showing recent activity, content
 metrics, index counts, active workers, and scheduled tasks.
 
+Every number the dashboard publishes is classified on two axes:
+
+* SCOPE - CATALOG (the deduplicated union of every server, i.e. the ``score``
+  table) or SERVER (one music server, i.e. ``music_servers`` + the
+  ``track_server_map`` rows pointing at it). Nothing is both.
+* CADENCE - SNAPSHOT (needs a big query, so it is computed once at startup and
+  then hourly into the ``dashboard_stats`` singleton) or LIVE (cheap enough to
+  recompute on every poll). Nothing is in between.
+
 Main Features:
 * Routes: `/` dashboard page and `/api/dashboard/summary`.
-* Heavy library aggregates are NOT recomputed per request: they are refreshed
-  by ``refresh_dashboard_stats()`` at startup and hourly into the singleton
-  ``dashboard_stats`` row, which the summary reads alongside the cheap live bits
-  (workers, recent tasks, cron).
+* SNAPSHOT tier: every CATALOG aggregate plus the per-SERVER alignment counts,
+  refreshed by ``refresh_dashboard_stats()`` at startup and hourly.
+* LIVE tier: workers (Redis), recent tasks and cron (tiny tables) only.
 """
 
 import json
@@ -33,13 +41,6 @@ from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
 
-# Short-lived memo for the per-server alignment metrics: every open dashboard
-# tab polls /api/dashboard/summary every ~30s and the metrics cost seconds of
-# GROUP BY / NOT EXISTS work on large libraries, so one computation is shared
-# instead of recomputed per request. The TTL is above the 30s poll so two
-# consecutive polls of a single tab actually hit the memo.
-_MUSIC_SERVER_METRICS_MEMO = {'ts': 0.0, 'data': None}
-_MUSIC_SERVER_METRICS_TTL_SECONDS = 35.0
 # Per-server flag set once the default server's legacy NOT-EXISTS count hits 0:
 # it only ever shrinks after canonicalization, so the scan can be skipped then.
 _LEGACY_UNMAPPED_DONE = {}
@@ -69,20 +70,10 @@ def _safe_rollback(cur):
         pass
 
 
-def _safe_count(cur, sql, params=None):
-    try:
-        cur.execute(sql, params or ())
-        row = cur.fetchone()
-        return int(row[0]) if row and row[0] is not None else 0
-    except Exception as e:
-        logger.debug(f"dashboard count failed for [{sql}]: {e}")
-        _safe_rollback(cur)
-        return 0
-
-
 def _counted_or_none(cur, sql, params=None):
-    """Like ``_safe_count`` but returns None on failure instead of 0, so a
-    caller can tell "counted zero" apart from "the query did not run"."""
+    """Run a COUNT and return it, or None if the query failed. Never 0-on-error:
+    a transient failure that returned 0 would be published into the hourly
+    snapshot as a real "nothing analyzed" and stay on screen for an hour."""
     try:
         cur.execute(sql, params or ())
         row = cur.fetchone()
@@ -106,17 +97,18 @@ def _table_exists(cur, name):
         return False
 
 
-def _get_gmm_index_count():
-    try:
-        from tasks.artist_gmm_manager import artist_map, artist_index
-
-        if artist_map is not None:
-            return len(artist_map)
-        if artist_index is not None:
-            return getattr(artist_index, 'num_elements', 0)
-    except Exception:
-        pass
-    return 0
+def _count_gmm_eligible_artists(cur):
+    """Artists the GMM index is built from: those with at least one analyzed
+    track. Counted in the DB rather than read from the web process's in-memory
+    ``artist_map``, which is 0 whenever the index failed to load and is not the
+    same population as ``distinct_artists`` (which includes artists with no
+    embedding at all)."""
+    return _counted_or_none(
+        cur,
+        "SELECT COUNT(DISTINCT s.author) FROM score s "
+        "JOIN embedding e ON e.item_id = s.item_id "
+        "WHERE s.author IS NOT NULL AND s.author <> ''",
+    )
 
 
 def _collect_workers():
@@ -186,10 +178,10 @@ def _collect_task_metrics(cur):
 
 
 def _collect_music_server_metrics(cur):
-    """Per-configured-server alignment status for the Music Server Status
-    section. Servers hold DIFFERENT catalogues that may only partially overlap,
-    so each server is measured against its OWN library size (``track_count``,
-    captured by the last alignment sweep), never against the union catalogue.
+    """Per-configured-server alignment status: the SERVER half of the dashboard.
+    Servers hold DIFFERENT catalogues that may only partially overlap, so each
+    server is measured against its OWN library size (``track_count``, captured by
+    the last alignment sweep), never against the union catalogue.
 
     A server may hold several duplicate FILES of one song (many provider tracks,
     one canonical id), so the counts are split:
@@ -199,17 +191,20 @@ def _collect_music_server_metrics(cur):
       ``duplicate_copies`` - extra provider files that collapse onto a song
                              already counted (COUNT(*) - COUNT(DISTINCT item_id)).
       ``resolved``         - provider tracks with a map row (the coverage numerator).
+
     ``server_songs`` is None until a sweep has fetched the server's catalogue at
-    least once. ``catalogue_songs`` carries the union total for the section caption.
-    Not part of the hourly stats cache: ``dashboard_summary`` refreshes it via a
-    short memo so new servers and running sweeps show up quickly without redoing
-    the aggregate per request. Empty list when the registry tables do not exist
-    yet or only one server is configured (the section is hidden then)."""
+    least once. It is NEVER back-filled from ``resolved``: doing so would make
+    coverage exactly resolved/resolved = 100% for a server that has never been
+    measured, which is the one number a never-swept server cannot possibly know.
+    The UI renders None as "not yet aligned" with an empty bar.
+
+    Part of the SNAPSHOT tier (it costs a GROUP BY over track_server_map plus an
+    anti-join over score, so it must never sit on the request path). Empty list
+    when the registry table does not exist yet."""
     servers = []
     try:
         if not _table_exists(cur, 'music_servers'):
             return servers
-        catalogue_total = _safe_count(cur, "SELECT COUNT(*) FROM score")
         cur.execute(
             "SELECT ms.server_id, ms.name, ms.server_type, ms.is_default, "
             "ms.track_count, COALESCE(m.rows_total, 0), COALESCE(m.unique_songs, 0) "
@@ -247,10 +242,6 @@ def _collect_music_server_metrics(cur):
             unique_songs += legacy
             resolved = rows_total + legacy
             server_songs = r[4]
-            if server_songs is None and r[3] and resolved:
-                # The default server's library defined the catalogue before the
-                # first sweep stored its real size, so resolved = its library.
-                server_songs = resolved
             servers.append(
                 {
                     'name': r[1],
@@ -260,7 +251,6 @@ def _collect_music_server_metrics(cur):
                     'unique_songs': unique_songs,
                     'duplicate_copies': duplicate_copies,
                     'resolved': resolved,
-                    'catalogue_songs': catalogue_total,
                 }
             )
     except Exception as e:
@@ -270,9 +260,16 @@ def _collect_music_server_metrics(cur):
 
 
 def _collect_content_metrics(cur):
-    # Core library counts use _counted_or_none so a transient DB failure is a
-    # None (not a 0): refresh_dashboard_stats skips the whole upsert rather than
+    # Every count uses _counted_or_none so a transient DB failure is a None (not
+    # a 0): refresh_dashboard_stats then skips the whole upsert rather than
     # persisting zeros over the last good snapshot for an hour.
+    #
+    # There is deliberately no "musicnn analyzed %" here: a song only enters
+    # `score` at analysis time and save_track_analysis_and_embedding writes its
+    # `embedding` row in the same transaction, so that ratio is ~100% by
+    # construction. The catalogue IS the set of analyzed songs. The real
+    # "how much of my library is analyzed" question is per-SERVER (resolved vs
+    # music_servers.track_count) and lives in _collect_music_server_metrics.
     metrics = {
         'total_songs': _counted_or_none(cur, "SELECT COUNT(*) FROM score"),
         'distinct_artists': _counted_or_none(
@@ -290,20 +287,23 @@ def _collect_content_metrics(cur):
             "COALESCE(NULLIF(album_artist, ''), author) AS aa, album FROM score "
             "WHERE album IS NOT NULL AND album <> '') t",
         ),
-        # Analyzed-row counts from the DB, not in-process index globals: the
-        # searchable index lives in the worker, so the web process's copy is
-        # stale or zero, and it is what these two tables are built from anyway.
-        'musicnn_indexed': _safe_count(
-            cur, "SELECT COUNT(*) FROM embedding WHERE embedding IS NOT NULL"
-        ),
-        'clap_indexed': _safe_count(cur, "SELECT COUNT(*) FROM clap_embedding"),
-        'gmm_indexed': _get_gmm_index_count(),
+        # Genuine subsets of the catalogue: CLAP and the artist GMM are separate
+        # passes that run after analysis, so these percentages can really be < 100.
+        'clap_indexed': _counted_or_none(cur, "SELECT COUNT(*) FROM clap_embedding"),
+        'gmm_indexed': _count_gmm_eligible_artists(cur),
     }
+    # The per-SERVER block. It shares the SNAPSHOT tier because it is a big query
+    # (GROUP BY over track_server_map plus an anti-join over score), not because
+    # it is catalogue-wide - it is the only per-server data on the page.
+    metrics['music_servers'] = _collect_music_server_metrics(cur)
     # Cleared on any query failure below so the caller can refuse to publish a
     # partial snapshot. Popped before serialization.
     metrics['_complete'] = not any(
         metrics[k] is None
-        for k in ('total_songs', 'distinct_artists', 'distinct_albums')
+        for k in (
+            'total_songs', 'distinct_artists', 'distinct_albums',
+            'clap_indexed', 'gmm_indexed',
+        )
     )
 
     # Parse mood vectors into the two signals the dashboard renders:
@@ -456,10 +456,12 @@ def dashboard_summary():
       - Dashboard
     summary: Aggregated dashboard data - library stats, worker status, recent tasks, cron entries.
     description: |
-      Heavy library aggregates (the `content` block) are read from the
-      precomputed `dashboard_stats` singleton row and NOT recomputed on each
-      request. Everything else (workers, recent tasks, cron) is cheap and
-      stays live.
+      Two tiers, and only two. SNAPSHOT: the whole `content` block (every
+      CATALOG aggregate plus the per-SERVER alignment counts) is read from the
+      precomputed `dashboard_stats` singleton and is NEVER recomputed on a
+      request; `stats_updated_at` says when it was taken. LIVE: workers, recent
+      tasks and cron are cheap enough to recompute per request; `generated_at`
+      says when. A client must not present a LIVE timestamp over SNAPSHOT data.
     responses:
       200:
         description: Dashboard payload.
@@ -490,27 +492,13 @@ def dashboard_summary():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     try:
+        # LIVE tier only: three cheap reads. Everything heavy (every CATALOG
+        # aggregate and the per-SERVER alignment counts) comes precomputed out of
+        # the dashboard_stats singleton, so no scan of `score` can ever land on
+        # the request path.
         recent = _collect_task_metrics(cur)
         cron_rows = _collect_cron(cur)
         content, stats_updated_at = _load_dashboard_stats(cur)
-        # Server alignment counts change while sweeps run, so they bypass the
-        # hourly cache; a short memo still shares one computation across the
-        # 30s auto-refresh of every open tab instead of redoing the aggregates
-        # per request. The frontend hides the whole section for fewer than two
-        # servers, so single-server installs skip the aggregate entirely.
-        content = dict(content or {})
-        if _safe_count(cur, "SELECT COUNT(*) FROM music_servers") <= 1:
-            content['music_servers'] = []
-        else:
-            now = time.monotonic()
-            memo = _MUSIC_SERVER_METRICS_MEMO
-            if memo['data'] is not None and now - memo['ts'] < _MUSIC_SERVER_METRICS_TTL_SECONDS:
-                content['music_servers'] = memo['data']
-            else:
-                metrics = _collect_music_server_metrics(cur)
-                memo['ts'] = now
-                memo['data'] = metrics
-                content['music_servers'] = metrics
     finally:
         cur.close()
 

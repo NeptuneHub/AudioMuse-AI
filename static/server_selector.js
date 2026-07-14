@@ -29,8 +29,13 @@
         return state.servers.some(function (s) { return s.server_id === id; });
     }
 
+    // The dashboard is deliberately NOT server-scoped: it reports the catalogue
+    // (the union of every server) alongside an explicit per-server section, and
+    // each number says which of the two it is. Injecting ?server= there appended
+    // a parameter the endpoint ignores, so the picker silently did nothing.
     function shouldInject(pathname) {
-        if (pathname.indexOf('/api/servers') !== -1) {
+        if (pathname.indexOf('/api/servers') !== -1
+            || pathname.indexOf('/api/dashboard/') !== -1) {
             return false;
         }
         return pathname.indexOf('/api/') !== -1 || pathname.indexOf('/chat/') !== -1;

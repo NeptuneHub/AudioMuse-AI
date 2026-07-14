@@ -1558,10 +1558,10 @@ class TestSweepAlignment:
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: 188057)
         # The legacy count must distinguish "counted zero" from "query failed",
         # or a transient error latches the scan as done forever.
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
+        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
         # Columns: server_id, name, type, is_default, track_count, rows_total, unique_songs
         cur.fetchall.return_value = [
@@ -1575,13 +1575,32 @@ class TestSweepAlignment:
         assert rows[0]['unique_songs'] == 188025
         assert rows[0]['duplicate_copies'] == 32
         assert rows[0]['resolved'] == 188057
-        assert rows[0]['server_songs'] == 188057
         assert rows[1]['unique_songs'] == 46
         assert rows[1]['duplicate_copies'] == 0
         assert rows[1]['resolved'] == 46
         assert rows[1]['server_songs'] == 120
-        assert rows[2]['server_songs'] is None
-        assert all(r['catalogue_songs'] == 188057 for r in rows)
+
+    def test_never_swept_server_reports_unknown_library_size(self, monkeypatch):
+        """server_songs must stay None until a sweep has actually measured the
+        server. Back-filling it from `resolved` made coverage resolved/resolved,
+        i.e. a permanent 100% for a server nobody had ever counted."""
+        import app_dashboard as dash
+
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
+        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
+        cur = MagicMock()
+        cur.fetchall.return_value = [
+            # The default server, never swept, but with mapped rows: the old code
+            # set server_songs = resolved here and drew a full coverage bar.
+            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032, 188000),
+            # A non-default server, never swept, with mappings.
+            ('s2', 'PLEX', 'plex', False, None, 46, 46),
+        ]
+        rows = dash._collect_music_server_metrics(cur)
+        assert rows[0]['server_songs'] is None
+        assert rows[1]['server_songs'] is None
+        assert all('catalogue_songs' not in r for r in rows)
 
     def test_sweep_stores_server_track_count(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -1944,7 +1963,6 @@ class TestDashboardLegacyCountLatch:
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: 100)
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: None)
         monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
@@ -1959,7 +1977,6 @@ class TestDashboardLegacyCountLatch:
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_safe_count', lambda cur, sql, params=None: 100)
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 0)
         monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()

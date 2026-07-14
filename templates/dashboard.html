@@ -193,6 +193,43 @@
     }
 
     .muted { color: var(--text-muted); font-size: 0.85rem; }
+
+    /* Scope chips. Every library number on the page is either CATALOG (the
+       deduplicated union of all servers) or SERVER (one specific music server).
+       The System sections carry no chip: they are neither. */
+    .scope-chip {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.62rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        vertical-align: middle;
+    }
+    .scope-catalog { background: #EDE9FE; color: #5B21B6; }
+    .scope-server  { background: #DBEAFE; color: #1E40AF; }
+    body.dark-mode .scope-catalog { background: #4C1D95; color: #DDD6FE; }
+    body.dark-mode .scope-server  { background: #1E3A8A; color: #BFDBFE; }
+
+    .dash-stat-card h3 .scope-chip { margin-left: 6px; }
+
+    /* Coverage bars, shared by the per-server tile and the server table. */
+    .cov-bar {
+        height: 8px;
+        border-radius: 4px;
+        background: rgba(128, 128, 128, 0.25);
+        overflow: hidden;
+        margin-bottom: 4px;
+    }
+    /* width:0 by default: a fill div with no explicit width is width:auto, i.e.
+       a full bar. An unknown coverage must render EMPTY, not complete. */
+    .cov-bar > div { height: 100%; width: 0; background: var(--color-primary, #4a90d9); }
+    .cov-bar.cov-stale > div { background: #F59E0B; }
+    .cov-row { padding: 6px 0; }
+    .cov-row + .cov-row { border-top: 1px solid var(--border-color); }
+    .cov-name { font-weight: 600; font-size: 0.85rem; margin-bottom: 4px; }
 </style>
 {% endblock %}
 
@@ -211,12 +248,27 @@
         <div class="dash-grid" id="key-numbers"></div>
     </section>
 
+    <!-- Library coverage: the only per-SERVER number that is always on screen,
+         because "how much of my library is analyzed" has no catalogue-wide answer. -->
+    <section>
+        <h2>Library coverage
+            <span class="scope-chip scope-server">Per server</span>
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">How much of each music server's own library has made it into the analyzed catalogue. Measured against that server's library size as counted by its last alignment sweep, so it is the one number that tells you whether analysis still has work to do. It is per server on purpose: a track that has never been analyzed exists on no catalogue, so there is no catalogue-wide version of this figure.</span>
+            </span>
+        </h2>
+        <p class="muted dash-updated" id="coverage-updated">Loading…</p>
+        <div id="coverage-body" class="dash-stat-card"><span class="muted">Loading…</span></div>
+    </section>
+
     <!-- Music Server Status (only when more than one server is configured) -->
     <section id="music-server-status-section" style="display:none;">
         <h2>Music Server Status
+            <span class="scope-chip scope-server">Per server</span>
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each server holds its own library; the analyzed catalogue is the union of all of them. "Unique in catalogue" counts THAT server's distinct songs matched to the shared catalogue; "Duplicate files" are extra copies of a song that is already counted (same audio, several files). "Coverage" is the provider tracks resolved to the catalogue, measured against the server's own library size (captured by its last alignment sweep). Overlap between servers can be anything from 0% to 100%.</span>
+                <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. A song present on two servers is ONE song in the catalogue, so these per-server counts add up to more than the catalogue total - never sum them. "Unique in catalogue" counts THAT server's distinct songs matched to the catalogue; "Duplicate files" are extra copies of a song already counted (same audio, several files). "Coverage" is the provider tracks resolved to the catalogue, measured against the server's own library size from its last alignment sweep.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
@@ -262,7 +314,12 @@
 
     <!-- Recent activity (table only) -->
     <section>
-        <h2>Last 10 completed batch task</h2>
+        <h2>Recent tasks
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">The last 10 completed top-level tasks. This is the full history AudioMuse-AI keeps: only the newest 10 rows are retained.</span>
+            </span>
+        </h2>
         <p class="muted dash-updated" id="recent-updated">Loading…</p>
         <div class="dash-table-wrap" style="margin-top:1rem;">
             <table class="dash-table" id="recent-tasks-table">
@@ -280,7 +337,13 @@
 
     <!-- Content metrics -->
     <section>
-        <h2>Content / Library (shared catalogue)</h2>
+        <h2>Library
+            <span class="scope-chip scope-catalog">Catalogue</span>
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">The catalogue is every analyzed song across all your music servers, deduplicated: a song present on two servers is counted once.</span>
+            </span>
+        </h2>
         <p class="muted dash-updated" id="content-updated">Loading…</p>
 
         <div class="dash-subsection">
@@ -316,7 +379,12 @@
 
     <!-- Scheduled Tasks -->
     <section>
-        <h2>Scheduled Tasks</h2>
+        <h2>Scheduled Tasks
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">"Last triggered" is when the schedule last fired, not when the job last succeeded. A run that was skipped because another main task was already active still counts as triggered.</span>
+            </span>
+        </h2>
         <p class="muted dash-updated" id="cron-updated">Loading…</p>
         <div class="dash-table-wrap" style="margin-top:1rem;">
             <table class="dash-table" id="cron-table">
@@ -325,7 +393,7 @@
                     <th>Type</th>
                     <th>Cron</th>
                     <th class="col-narrow">Enabled</th>
-                    <th>Last Run</th>
+                    <th>Last Triggered</th>
                 </tr></thead>
                 <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
             </table>
@@ -341,6 +409,15 @@
 <script>
 (function() {
     const charts = {};
+
+    // Which caption each section gets. A section is in exactly one list: it is
+    // either read from the hourly snapshot or recomputed live on every poll.
+    const SNAPSHOT_CAPTIONS = [
+        'keynumbers-updated', 'content-updated',
+        'coverage-updated', 'music-servers-updated',
+    ];
+    const LIVE_CAPTIONS = ['workers-updated', 'recent-updated', 'cron-updated'];
+
     const isDark = () => document.body.classList.contains('dark-mode')
         || document.documentElement.classList.contains('dark-mode');
     const gridColor = () => isDark() ? 'rgba(200,200,200,0.1)' : 'rgba(0,0,0,0.1)';
@@ -368,6 +445,38 @@
     function fmtTime(iso) { return iso ? iso.replace('T', ' ').substring(0, 19) : '–'; }
     function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
 
+    // The one percentage formatter on this page. Every percent goes through it.
+    //
+    // 100% is reachable ONLY when num >= den. Anything short of complete floors
+    // down, so 99.97% reads "99.9%" and never rounds up into a finished-looking
+    // 100%. An unknown denominator is null (the caller says "unknown"), never a
+    // misleading "0.0%". An overshoot (num > den, i.e. a stale denominator) is
+    // reported as such rather than silently clamped to 100.
+    //   ratio(0, 0)         -> {state: 'unknown'}
+    //   ratio(5, 0)         -> {state: 'unknown'}
+    //   ratio(0, 10)        -> {state: 'ok',       pct: 0,    text: '0.0%'}
+    //   ratio(99999,100000) -> {state: 'ok',       pct: 99.9, text: '99.9%'}
+    //   ratio(100000,100000)-> {state: 'complete', pct: 100,  text: '100%'}
+    //   ratio(101, 100)     -> {state: 'stale',    pct: 100,  text: '>100%'}
+    function ratio(num, den) {
+        const n = Number(num) || 0;
+        const d = Number(den) || 0;
+        if (d <= 0) return { state: 'unknown', pct: 0, text: null };
+        if (n > d) return { state: 'stale', pct: 100, text: '>100%' };
+        if (n >= d) return { state: 'complete', pct: 100, text: '100%' };
+        // Floor to one decimal. Math.floor (not toFixed, which rounds half-up)
+        // is what keeps an incomplete job off 100.
+        const pct = Math.floor(1000 * n / d) / 10;
+        return { state: 'ok', pct: pct, text: pct.toFixed(1) + '%' };
+    }
+
+    // Percent of a whole for chart slices, where the parts always sum to the
+    // total: floor so a dominant slice cannot round up to a false 100.0%.
+    function slicePct(value, total) {
+        if (!total) return '0.0';
+        return (Math.floor(1000 * value / total) / 10).toFixed(1);
+    }
+
     // Custom plugin: draws the label name + percentage inside each slice
     // of a pie/doughnut chart, so we can hide the side legend entirely.
     const pieSliceLabelPlugin = {
@@ -387,7 +496,7 @@
                     if (pct < 3) return; // skip tiny slices to avoid overlap
                     const pos = arc.tooltipPosition();
                     const label = chart.data.labels[i] || '';
-                    const pctStr = pct.toFixed(1) + '%';
+                    const pctStr = slicePct(value, total) + '%';
                     ctx.save();
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
@@ -426,8 +535,8 @@
                             label(ctx) {
                                 const total = ctx.dataset.data.reduce((a, b) => a + (Number(b) || 0), 0);
                                 const v = Number(ctx.parsed) || 0;
-                                const pct = total ? (100 * v / total).toFixed(1) : '0.0';
-                                return ctx.label + ': ' + v.toLocaleString() + ' (' + pct + '%)';
+                                return ctx.label + ': ' + v.toLocaleString()
+                                    + ' (' + slicePct(v, total) + '%)';
                             }
                         }
                     }
@@ -454,6 +563,16 @@
         });
     }
 
+    // A "N (P%)" sub-line for a genuine subset of the catalogue. When the
+    // denominator is unknown it says so instead of printing a fake 0.0%.
+    function subsetLine(label, num, den) {
+        const r = ratio(num, den);
+        if (r.state === 'unknown') return label + ': unknown';
+        const n = (Number(num) || 0).toLocaleString();
+        if (r.state === 'complete') return label + ': ' + n + ' (all)';
+        return label + ': ' + n + ' (' + r.text + ')';
+    }
+
     function renderKeyNumbers(d) {
         const c = d.content || {};
         const hasStats = !!d.stats_updated_at;
@@ -464,38 +583,36 @@
             const div = document.createElement('div');
             div.className = 'dash-stat-card';
             div.style.gridColumn = '1 / -1';
-            div.innerHTML = `<h3>Library stats</h3>
-                             <div class="dash-stat" style="font-size:1rem;">Still collecting data…</div>
-                             <div class="dash-substat">First snapshot is computed within a minute of startup, then hourly.</div>`;
+            div.innerHTML = `<h3>Catalogue</h3>
+                             <div class="dash-stat" style="font-size:1rem;">First snapshot is still being computed</div>
+                             <div class="dash-substat">It lands about a minute after startup, then refreshes hourly.</div>`;
             host.appendChild(div);
             return;
         }
 
-        const clampPct = (v) => Math.min(100, Math.max(0, v)).toFixed(1);
         const totalSongs = c.total_songs || 0;
-        const musicnnIndexed = c.musicnn_indexed || 0;
-        const clapIndexed = c.clap_indexed || 0;
-        const songIdxPct = totalSongs > 0 ? clampPct(100 * musicnnIndexed / totalSongs) : '0.0';
-        const clapPct = totalSongs > 0 ? clampPct(100 * clapIndexed / totalSongs) : '0.0';
         const totalArtists = c.distinct_artists || 0;
-        const gmmIndexed = c.gmm_indexed || 0;
-        const gmmPct = totalArtists > 0 ? clampPct(100 * gmmIndexed / totalArtists) : '0.0';
 
+        // There is deliberately no "analyzed (MusiCNN) %" here. A song only
+        // enters the catalogue when it is analyzed, so that number is always
+        // 100% and says nothing. "How much of my library is analyzed" is a
+        // per-server question and is answered by the Library coverage tile.
         const cards = [
-            { title: 'Total Songs', value: totalSongs.toLocaleString(),
-              sub: 'Analyzed (MusiCNN): ' + musicnnIndexed.toLocaleString() + ' (' + songIdxPct + '%)<br>CLAP analyzed: ' + clapIndexed.toLocaleString() + ' (' + clapPct + '%)' },
-            { title: 'Total Artists', value: totalArtists.toLocaleString(),
-              sub: 'GMM Indexed: ' + gmmIndexed.toLocaleString() + ' (' + gmmPct + '%)' },
-            { title: 'Total Albums', value: (c.distinct_albums || 0).toLocaleString(),
-              sub: 'distinct albums in library' },
+            { title: 'Songs', value: totalSongs.toLocaleString(),
+              sub: 'in the analyzed catalogue<br>'
+                   + subsetLine('CLAP', c.clap_indexed, totalSongs) },
+            { title: 'Artists', value: totalArtists.toLocaleString(),
+              sub: subsetLine('With an artist model', c.gmm_indexed, totalArtists) },
+            { title: 'Albums', value: (c.distinct_albums || 0).toLocaleString(),
+              sub: '&nbsp;' },
         ];
 
-        cards.forEach(c => {
+        cards.forEach(card => {
             const div = document.createElement('div');
             div.className = 'dash-stat-card';
-            div.innerHTML = `<h3>${c.title}</h3>
-                             <div class="dash-stat">${c.value}</div>
-                             <div class="dash-substat">${c.sub || ''}</div>`;
+            div.innerHTML = `<h3>${card.title}<span class="scope-chip scope-catalog">Catalogue</span></h3>
+                             <div class="dash-stat">${card.value}</div>
+                             <div class="dash-substat">${card.sub || ''}</div>`;
             host.appendChild(div);
         });
     }
@@ -666,6 +783,74 @@
         });
     }
 
+    // The one coverage renderer, shared by the compact tile and the table.
+    //
+    // server_songs is null until an alignment sweep has actually measured the
+    // server. In that case coverage is UNKNOWN and we render an empty bar - the
+    // old code fell back to resolved/resolved, i.e. a permanently full bar for a
+    // server that had never been measured.
+    function coverageInto(host, serverSongs, resolved) {
+        if (serverSongs === null) {
+            const bar = document.createElement('div');
+            bar.className = 'cov-bar';
+            const empty = document.createElement('div');
+            // Explicit 0: an unset width is width:auto, which paints a FULL bar.
+            empty.style.width = '0%';
+            bar.appendChild(empty);
+            const msg = document.createElement('div');
+            msg.className = 'muted';
+            msg.textContent = 'Not yet aligned - run an alignment sweep';
+            host.appendChild(bar);
+            host.appendChild(msg);
+            return;
+        }
+        const r = ratio(resolved, serverSongs);
+        const bar = document.createElement('div');
+        bar.className = 'cov-bar' + (r.state === 'stale' ? ' cov-stale' : '');
+        const fill = document.createElement('div');
+        // The bar width is floored exactly like the label, so a 99.6% bar cannot
+        // render visually full while the text says 99.6%.
+        fill.style.width = r.pct + '%';
+        bar.appendChild(fill);
+        const label = document.createElement('div');
+        if (r.state === 'stale') {
+            // resolved > server_songs: the stored library size predates songs
+            // that were added to the server. Say so instead of clamping to 100%.
+            label.textContent = resolved.toLocaleString() + ' of '
+                + serverSongs.toLocaleString() + ' - count is stale, re-align';
+        } else {
+            label.textContent = resolved.toLocaleString() + ' of '
+                + serverSongs.toLocaleString() + ' (' + r.text + ')';
+        }
+        host.appendChild(bar);
+        host.appendChild(label);
+    }
+
+    // Compact per-SERVER coverage tile. Always shown, even for a single server:
+    // this is the only place that answers "how much of my library is analyzed",
+    // and that question has no catalogue-wide answer.
+    function renderCoverage(servers) {
+        const host = document.getElementById('coverage-body');
+        if (!host) return;
+        host.innerHTML = '';
+        if (!Array.isArray(servers) || servers.length === 0) {
+            host.innerHTML = '<div class="muted">No music server configured yet.</div>';
+            return;
+        }
+        servers.forEach(s => {
+            const serverSongs = (s.server_songs === null || s.server_songs === undefined)
+                ? null : (s.server_songs || 0);
+            const row = document.createElement('div');
+            row.className = 'cov-row';
+            const name = document.createElement('div');
+            name.className = 'cov-name';
+            name.textContent = s.name;
+            row.appendChild(name);
+            coverageInto(row, serverSongs, s.resolved || 0);
+            host.appendChild(row);
+        });
+    }
+
     function renderMusicServers(servers) {
         const section = document.getElementById('music-server-status-section');
         if (!section) return;
@@ -680,44 +865,19 @@
             const tr = document.createElement('tr');
             const serverSongs = (s.server_songs === null || s.server_songs === undefined)
                 ? null : (s.server_songs || 0);
-            const resolved = s.resolved || 0;
-            const uniqueSongs = s.unique_songs || 0;
             const duplicateCopies = s.duplicate_copies || 0;
-            const nameTd = document.createElement('td');
-            nameTd.textContent = s.name;
-            const typeTd = document.createElement('td');
-            typeTd.textContent = s.server_type;
-            const defTd = document.createElement('td');
-            defTd.textContent = s.is_default ? 'yes' : '';
             const songsTd = document.createElement('td');
-            songsTd.textContent = serverSongs === null ? 'not yet aligned' : serverSongs.toLocaleString();
-            const uniqueTd = document.createElement('td');
-            uniqueTd.textContent = uniqueSongs.toLocaleString();
+            songsTd.textContent = serverSongs === null
+                ? 'not yet aligned' : serverSongs.toLocaleString();
             const dupTd = document.createElement('td');
             dupTd.textContent = duplicateCopies ? duplicateCopies.toLocaleString() : '-';
             const covTd = document.createElement('td');
-            if (serverSongs === null && !resolved) {
-                covTd.textContent = 'run an alignment sweep';
-                covTd.className = 'muted';
-            } else {
-                const denom = serverSongs === null ? resolved : serverSongs;
-                const pct = denom ? Math.min(100, Math.round(100 * resolved / denom)) : 0;
-                const barOuter = document.createElement('div');
-                barOuter.style.cssText = 'height:8px; border-radius:4px; background:rgba(128,128,128,0.25); overflow:hidden; margin-bottom:4px;';
-                const barInner = document.createElement('div');
-                barInner.style.cssText = 'height:100%; width:' + pct + '%; background:var(--color-primary, #4a90d9);';
-                barOuter.appendChild(barInner);
-                const label = document.createElement('div');
-                label.textContent = resolved.toLocaleString()
-                    + (serverSongs === null ? '' : ' of ' + serverSongs.toLocaleString() + ' (' + pct + '%)');
-                covTd.appendChild(barOuter);
-                covTd.appendChild(label);
-            }
-            tr.appendChild(nameTd);
-            tr.appendChild(typeTd);
-            tr.appendChild(defTd);
+            coverageInto(covTd, serverSongs, s.resolved || 0);
+            tr.appendChild(textCell(s.name || '-'));
+            tr.appendChild(textCell(s.server_type || '-'));
+            tr.appendChild(textCell(s.is_default ? 'yes' : ''));
             tr.appendChild(songsTd);
-            tr.appendChild(uniqueTd);
+            tr.appendChild(textCell((s.unique_songs || 0).toLocaleString()));
             tr.appendChild(dupTd);
             tr.appendChild(covTd);
             tbody.appendChild(tr);
@@ -729,41 +889,38 @@
             const res = await fetch('/api/dashboard/summary', { credentials: 'same-origin' });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const d = await res.json();
+            // A snapshot written by an older version carries no music_servers
+            // key. Treat that as "not in this snapshot yet", not as "no servers".
+            const content = d.content || {};
+            const servers = Array.isArray(content.music_servers) ? content.music_servers : [];
             renderKeyNumbers(d);
             renderWorkers(d.workers);
             renderRecentTasks(d.recent_tasks);
-            renderTopGenre((d.content || {}).top_genre);
-            renderMoodsCoverage((d.content || {}).moods_coverage);
-            renderTempo((d.content || {}).tempo_profile);
-            renderMusicServers((d.content || {}).music_servers);
+            renderTopGenre(content.top_genre);
+            renderMoodsCoverage(content.moods_coverage);
+            renderTempo(content.tempo_profile);
+            renderCoverage(servers);
+            renderMusicServers(servers);
             renderCron(d.cron);
 
-            // Per-section "updated at" captions.
-            const liveStamp = d.generated_at || '';
-            const libStamp = d.stats_updated_at;
-            setText('keynumbers-updated',
-                libStamp
-                    ? 'Shared catalogue (union of all music servers) - stats as of: ' + libStamp + ' (refreshed hourly)'
-                    : 'Shared catalogue stats: still collecting\u2026');
-            setText('content-updated',
-                libStamp
-                    ? 'Shared catalogue (union of all music servers) - stats as of: ' + libStamp + ' (refreshed hourly)'
-                    : 'Shared catalogue stats: still collecting\u2026');
-            const liveSuffix = liveStamp
-                ? 'Last updated: ' + liveStamp + ' (auto-refresh every 30s)'
-                : '';
-            setText('music-servers-updated',
-                liveStamp
-                    ? 'Live - last updated: ' + liveStamp + ' (auto-refresh every 30s)'
-                    : 'Loading…');
-            setText('workers-updated', liveSuffix);
-            setText('recent-updated', liveSuffix);
-            setText('cron-updated', liveSuffix);
+            // Exactly two captions on this page, one per cadence.
+            //
+            // A SNAPSHOT section must stamp stats_updated_at and NEVER
+            // generated_at: stamping the request time made an hour-old number
+            // look freshly computed, because the caption ticked every 30s while
+            // the data underneath it sat still.
+            const snapshot = d.stats_updated_at
+                ? 'Snapshot taken ' + d.stats_updated_at + ' - recomputed hourly'
+                : 'First snapshot is still being computed - it lands about a minute after startup';
+            const live = d.generated_at
+                ? 'Live - updated ' + d.generated_at + ' - refreshes every 30s'
+                : 'Live';
+            SNAPSHOT_CAPTIONS.forEach(id => setText(id, snapshot));
+            LIVE_CAPTIONS.forEach(id => setText(id, live));
         } catch (e) {
             console.error('Dashboard load failed', e);
-            ['keynumbers-updated', 'content-updated',
-             'workers-updated', 'recent-updated', 'cron-updated']
-                .forEach(id => setText(id, 'Load failed'));
+            SNAPSHOT_CAPTIONS.concat(LIVE_CAPTIONS)
+                .forEach(id => setText(id, 'Could not load - check the container log.'));
         }
     }
 
