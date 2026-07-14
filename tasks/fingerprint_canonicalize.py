@@ -72,7 +72,16 @@ _TRACK_KEYED_INDEXES = (
     'sem_grove_index',
 )
 _CURRENT_SCHEME_SQL = "(s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s)"
-_LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL
+# Analysis deliberately keeps a track whose embedding yields no usable signature
+# (non-finite or constant) under its PROVIDER id, and records that with the
+# 'analysis' match tier. Such a row can never be relabelled, so counting it as
+# legacy work made this "one-time" migration re-hash the whole catalogue on EVERY
+# boot and relabel nothing.
+_UNSIGNABLE_SQL = (
+    "EXISTS (SELECT 1 FROM track_server_map t "
+    "WHERE t.item_id = s.item_id AND t.match_tier = 'analysis')"
+)
+_LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL + " AND NOT " + _UNSIGNABLE_SQL
 _RELABEL_ADVISORY_LOCK = 726354822
 
 
@@ -268,6 +277,14 @@ def _build_mapping(cur):
 
     left, right = simhash.near_duplicate_pairs(packed, valid, progress=_band_progress)
     left, right = _confirm_candidates(cur, ids, left, right)
+    # A canonical row may only ever be a merge TARGET, never a child. merge_pairs
+    # refuses a merge whose target has itself already merged, so a confirmed
+    # canonical-vs-canonical pair (which the emit loop below discards anyway, since
+    # it only walks the legacy range) would set parent[j]=i and thereby make j
+    # ineligible as a target - and a legacy row whose only confirmed match was j
+    # would then mint a THIRD id for the same audio.
+    keep = right >= canonical_loaded
+    left, right = left[keep], right[keep]
     parent = simhash.merge_pairs(loaded, packed, left, right)
 
     mapping = {}

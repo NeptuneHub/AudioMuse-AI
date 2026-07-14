@@ -251,8 +251,6 @@ def _install_fake_psycopg2(
     fake_redis.get.return_value = None
     mig._get_redis = MagicMock(return_value=fake_redis)
 
-    mig._drain_workers_or_timeout = MagicMock()
-
     return mock_conn, mock_cur, executed
 
 
@@ -269,16 +267,11 @@ class TestExecuteProviderMigration:
         joined = '\n'.join(executed).upper()
         assert 'PG_ADVISORY_XACT_LOCK' in joined
         assert 'CREATE TEMP TABLE ITEM_ID_MIGRATION_MAP' in joined
-        assert 'DELETE FROM SCORE' in joined
-        assert 'ALTER TABLE EMBEDDING DROP CONSTRAINT' in joined
-        assert 'ALTER TABLE CLAP_EMBEDDING DROP CONSTRAINT' in joined
-        assert 'UPDATE SCORE' in joined
-        assert 'UPDATE PLAYLIST' in joined
-        assert 'UPDATE EMBEDDING' in joined
-        assert 'UPDATE CLAP_EMBEDDING' in joined
-        assert joined.count('ADD CONSTRAINT') >= 2
-        assert 'DELETE FROM ARTIST_INDEX_DATA' in joined
-        assert 'DELETE FROM ARTIST_COMPONENT_PROJECTION' in joined
+        # The migration, in one statement: the song keeps its canonical id and only
+        # the provider id it is reachable by on the default server changes.
+        assert 'UPDATE TRACK_SERVER_MAP' in joined
+        # Artist ids are the one thing the matcher cannot repoint, so they are cleared.
+        assert 'DELETE FROM ARTIST_SERVER_MAP' in joined
         assert 'DELETE FROM ARTIST_MAPPING' in joined
         # The registry is the only home of media-server settings: the default
         # row is repointed and the legacy app_config copies are cleared, never
@@ -288,34 +281,52 @@ class TestExecuteProviderMigration:
         assert 'INSERT INTO APP_CONFIG' not in joined
         assert 'UPDATE MIGRATION_SESSION' in joined
 
-    def test_delete_orphans_runs_before_updates(self, mig):
-        session_row = _make_session_row(
-            state=_session_state({'old_1': 'new_1'}),
-        )
+    def test_the_centralized_catalogue_is_never_touched(self, mig):
+        """`score` holds one row per distinct recording, keyed by the fp_2 hash of its
+        own AUDIO. That id is a property of the song, not of any server, so a provider
+        swap can neither delete it nor rewrite it. A song's analysis is expensive and
+        irreplaceable; where the file happens to live is not.
+
+        This used to DELETE unmatched score rows (taking their embeddings with them via
+        ON DELETE CASCADE) and rewrite score.item_id into the target provider's track
+        id - the pre-canonicalization design, where item_id WAS the provider id.
+        """
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
         mig.execute_provider_migration(1)
 
         upper = [s.upper() for s in executed]
-        delete_idx = next(i for i, s in enumerate(upper) if s.startswith('DELETE FROM SCORE'))
-        update_score_idx = next(i for i, s in enumerate(upper) if s.startswith('UPDATE SCORE'))
-        assert delete_idx < update_score_idx, "orphan delete must precede score rewrite"
+        assert not any(s.startswith('DELETE FROM SCORE') for s in upper), (
+            "a migration must never delete a song from the catalogue"
+        )
+        # score is only ever UPDATEd for metadata, never for item_id.
+        for stmt in upper:
+            if stmt.startswith('UPDATE SCORE'):
+                assert 'SET ITEM_ID' not in stmt, "canonical ids must never be rewritten"
+        for table in ('EMBEDDING', 'CLAP_EMBEDDING', 'LYRICS_EMBEDDING', 'PLAYLIST'):
+            assert not any(s.startswith(f'UPDATE {table} ') for s in upper)
+        # No item_id moves, so the FKs never need dropping and the similarity indexes
+        # stay valid: a provider swap no longer forces a full re-index.
+        assert not any('DROP CONSTRAINT' in s for s in upper)
+        assert not any(s.startswith('DELETE FROM IVF_CELL') for s in upper)
+        assert not any(s.startswith('DELETE FROM IVF_DIR') for s in upper)
 
-    def test_fk_drop_before_update_then_readd_after(self, mig):
-        session_row = _make_session_row(state=_session_state({'a': 'b'}))
+    def test_unmatched_songs_are_unbound_from_the_server_not_deleted(self, mig):
+        """An unmatched song loses its mapping to THIS server and nothing else: its
+        score row, its embeddings and its mappings to any other server survive."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
         mig.execute_provider_migration(1)
 
-        upper = [s.upper() for s in executed]
-        drop_idx = next(
-            i for i, s in enumerate(upper) if 'ALTER TABLE EMBEDDING DROP CONSTRAINT' in s
-        )
-        upd_idx = next(i for i, s in enumerate(upper) if s.startswith('UPDATE EMBEDDING'))
-        readd_idx = next(
-            i for i, s in enumerate(upper) if 'ALTER TABLE EMBEDDING' in s and 'ADD CONSTRAINT' in s
-        )
-        assert drop_idx < upd_idx < readd_idx
+        unbind = [
+            s for s in executed
+            if s.upper().startswith('DELETE FROM TRACK_SERVER_MAP')
+            and 'ITEM_ID_MIGRATION_MAP' in s.upper()
+        ]
+        assert unbind, "unmatched songs must be unbound from the default server"
+        assert 'IS_DEFAULT' in unbind[0].upper(), "only the migrated server is unbound"
 
     def test_rejects_session_not_in_dry_run_ready(self, mig):
         session_row = _make_session_row(status='in_progress')
@@ -325,34 +336,44 @@ class TestExecuteProviderMigration:
             mig.execute_provider_migration(1)
         assert 'dry_run_ready' in str(exc.value).lower() or 'status' in str(exc.value).lower()
 
-    def test_pauses_workers_before_starting(self, mig):
+    def test_migration_reports_its_task_status_instead_of_faking_a_worker_pause(self, mig, monkeypatch):
+        """The old code claimed to "pause and drain the workers" and did nothing at
+        all: send_stop_signal does not exist in RQ 2.x, the drain loop broke out
+        after one second, and the migration:paused key had no reader anywhere. The
+        migration is now VISIBLE in task_status instead, so get_active_main_task can
+        keep an analysis or a sweep from running through its destructive transaction.
+        """
         session_row = _make_session_row(state=_session_state({'a': 'b'}))
         _install_fake_psycopg2(mig, session_row)
 
+        reported = []
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
+        monkeypatch.setattr(
+            mig, '_report_migration',
+            lambda task_id, status, progress, message, details=None: reported.append(
+                (task_id, status)
+            ),
+        )
+
         mig.execute_provider_migration(1)
 
-        fake_redis = mig._get_redis.return_value
-        assert fake_redis.set.called
-        paused_call_args = fake_redis.set.call_args
-        assert paused_call_args[0][0] == 'migration:paused'
-        assert fake_redis.delete.called
-        assert 'migration:paused' in [c[0][0] for c in fake_redis.delete.call_args_list]
+        assert [s for _t, s in reported] == ['STARTED', 'SUCCESS']
+        assert {t for t, _s in reported} == {'mig-1'}
 
-    def test_vec_id_map_rewrite_happens(self, mig):
+    def test_index_id_maps_are_left_alone_because_ids_never_move(self, mig):
+        """The similarity indexes are keyed by the canonical item_id. A migration no
+        longer rewrites item_ids, so the indexes stay valid across a provider swap and
+        need neither relabelling nor a rebuild - which is what this used to do."""
         ivf_rows = [('ivf_main', json.dumps({'0': 'old_1'}))]
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
-        _install_fake_psycopg2(mig, session_row, ivf_rows=ivf_rows)
+        _, _, executed = _install_fake_psycopg2(mig, session_row, ivf_rows=ivf_rows)
 
-        mig.execute_provider_migration(1)
+        result = mig.execute_provider_migration(1)
 
-        calls = mig._get_dedicated_conn.return_value.cursor.return_value.execute.call_args_list
-        sqls = [c[0][0] for c in calls]
-        upd_ivf = [
-            s
-            for s in sqls
-            if 'UPDATE voyager_index_data' in s or 'UPDATE VOYAGER_INDEX_DATA' in s.upper()
-        ]
-        assert len(upd_ivf) >= 1
+        upper = [s.upper() for s in executed]
+        assert not any(s.startswith('UPDATE VOYAGER_INDEX_DATA') for s in upper)
+        assert not any(s.startswith('UPDATE MAP_PROJECTION_DATA') for s in upper)
+        assert result['index_rebuild_needed'] is False
 
 
 class TestMigrationWritesTheRegistryOnly:

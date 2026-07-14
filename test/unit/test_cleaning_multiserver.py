@@ -115,7 +115,7 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     monkeypatch.setattr(multiserver_sync.provider_probe, 'fetch_all_tracks', fake_fetch)
 
-    def fake_prune(db, server_id, present_ids):
+    def fake_prune(db, server_id, present_ids, refused=None):
         pruned_calls.append((server_id, sorted(present_ids)))
         return (prune_results or {}).get(server_id, 0)
 

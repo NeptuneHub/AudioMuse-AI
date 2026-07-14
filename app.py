@@ -526,27 +526,27 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
     tasks_to_cancel = cur.fetchall()
     cur.close()
 
-    total_cancelled_jobs = 0
-    cancelled_main_task_ids = []
-    for task_row in tasks_to_cancel:
-        cancelled_jobs_for_this_main_task = cancel_job_and_children_recursive(
-            task_row['task_id'],
-            reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
-        )
-        if cancelled_jobs_for_this_main_task > 0:
-            total_cancelled_jobs += cancelled_jobs_for_this_main_task
-            cancelled_main_task_ids.append(task_row['task_id'])
-
-    if total_cancelled_jobs > 0:
+    # Decide 404 BEFORE any destructive call: the cancel empties both queues and
+    # revokes every row, so running it first and then reporting "nothing found"
+    # (because RQ happened to hold no live job) would be a lie about a wipe that
+    # already happened.
+    if not tasks_to_cancel:
         return jsonify(
-            {
-                "message": f"Cancellation initiated for {len(cancelled_main_task_ids)} main tasks of type '{task_type_prefix}' and their children. Total jobs affected: {total_cancelled_jobs}.",
-                "cancelled_main_tasks": cancelled_main_task_ids,
-            }
-        ), 200
+            {"message": f"No active tasks of type '{task_type_prefix}' found to cancel."}
+        ), 404
+
+    cancelled_main_task_ids = [r['task_id'] for r in tasks_to_cancel]
+    total_cancelled_jobs = cancel_job_and_children_recursive(
+        cancelled_main_task_ids[0],
+        reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
+    )
+
     return jsonify(
-        {"message": f"No active tasks of type '{task_type_prefix}' found to cancel."}
-    ), 404
+        {
+            "message": f"Cancellation initiated for {len(cancelled_main_task_ids)} main tasks of type '{task_type_prefix}' and their children. Total jobs affected: {total_cancelled_jobs}.",
+            "cancelled_main_tasks": cancelled_main_task_ids,
+        }
+    ), 200
 
 
 @app.route('/api/last_task', methods=['GET'])
@@ -1119,10 +1119,10 @@ if not _is_worker:
     listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
     listener_thread.start()
 
-    # Start a cron manager thread that checks enabled cron entries every 60 seconds
+    # Start a cron manager thread that evaluates enabled cron entries once a minute.
     def _cron_manager_loop():
         try:
-            from time import sleep
+            import time as _time
             from app_cron import run_due_cron_jobs
 
             while True:
@@ -1131,7 +1131,13 @@ if not _is_worker:
                         run_due_cron_jobs()
                 except Exception:
                     app.logger.exception('cron manager failed')
-                sleep(60)
+                # Sleep to the next minute boundary, not a flat 60s. A flat sleep
+                # AFTER variable-length work makes the tick period 60 + work_time,
+                # so the second-of-minute it lands on drifts forward and eventually
+                # skips a whole wall-clock minute - and a cron scheduled in a skipped
+                # minute simply never ran, silently. run_due_cron_jobs claims each
+                # row on its minute bucket, so an early tick cannot double-fire.
+                _time.sleep(max(1.0, 60.0 - (_time.time() % 60.0)))
         except Exception:
             app.logger.exception('cron manager main loop error')
 

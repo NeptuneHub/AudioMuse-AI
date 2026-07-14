@@ -91,3 +91,42 @@ def run_radio_playlists(server_scope="all"):
     }
     logger.info(f"Radio playlist run finished: {summary}")
     return summary
+
+
+def run_radio_playlists_task(server_scope="all"):
+    """RQ entrypoint for the alchemy_radio cron row.
+
+    Cron used to call run_radio_playlists inline on the Flask poll thread, so a
+    slow provider blocked every other scheduled job for the length of its timeout
+    and the run had no task_status row at all: invisible in the task list and
+    impossible to cancel. It runs on a worker now, like every other cron task.
+    """
+    from flask_app import app
+    from database import save_task_status
+    from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
+    from rq import get_current_job
+
+    job = get_current_job()
+    task_id = job.id if job else None
+    with app.app_context():
+        if task_id:
+            save_task_status(
+                task_id, 'alchemy_radio', TASK_STATUS_STARTED, progress=0,
+                details={"message": "Building radio playlists..."},
+            )
+        try:
+            summary = run_radio_playlists(server_scope=server_scope)
+        except Exception:
+            logger.exception("Radio playlist cron run failed")
+            if task_id:
+                save_task_status(
+                    task_id, 'alchemy_radio', TASK_STATUS_FAILURE, progress=100,
+                    details={"error": "Radio playlist run failed; check the container logs."},
+                )
+            raise
+        if task_id:
+            save_task_status(
+                task_id, 'alchemy_radio', TASK_STATUS_SUCCESS, progress=100,
+                details=summary,
+            )
+        return summary

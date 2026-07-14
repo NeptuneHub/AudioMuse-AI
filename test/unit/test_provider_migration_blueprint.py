@@ -364,7 +364,7 @@ class TestExecuteGate:
         return {
             'session_id': 1,
             'backup_confirmed': True,
-            'confirmation_text': f'I want to migrate to {target} and delete unmatched tracks',
+            'confirmation_text': f'I want to migrate to {target} and unbind unmatched tracks',
         }
 
     def test_rejects_missing_backup_confirmation(self, bp_mod, client, fake_db):

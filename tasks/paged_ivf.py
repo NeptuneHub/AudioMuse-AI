@@ -841,7 +841,17 @@ class PagedIvfIndex:
         self._tl = threading.local()
         self._last_mmap_access = time.monotonic()
         self._mmap_pages_dropped = False
+        self._has_canonical = None
         _LIVE_INDEXES.add(self)
+
+    def _has_canonical_ids(self):
+        cached = getattr(self, '_has_canonical', None)
+        if cached is None:
+            from tasks.simhash import is_fingerprint_id
+
+            cached = any(is_fingerprint_id(item_id) for item_id in self._item_ids)
+            self._has_canonical = cached
+        return cached
 
     def _availability_mask(self):
         if not self._track_scoped:
@@ -852,9 +862,17 @@ class PagedIvfIndex:
         try:
             from tasks.mediaserver import registry
 
-            if server_id == str(
-                registry.get_default_server_id() or ''
-            ) and not registry.has_secondary_servers():
+            # The fast path may only skip the mask on a catalogue that has NO
+            # canonical ids: there every id is legacy, the mask would be all-True
+            # and building it is waste. Once ids are canonical the mask is the ONLY
+            # thing hiding a song that no longer exists on any server, so skipping
+            # it merely because the install has one server left deleted tracks
+            # surfacing in Similar Songs forever.
+            if (
+                server_id == str(registry.get_default_server_id() or '')
+                and not registry.has_secondary_servers()
+                and not self._has_canonical_ids()
+            ):
                 return None
         except Exception:
             logger.debug("Single-server availability fast path failed.", exc_info=True)

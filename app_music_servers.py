@@ -32,7 +32,7 @@ from rq.job import Job
 
 import config
 from app_helper import redis_conn, rq_queue_high, save_task_status, send_stop_job_command
-from database import get_db, missing_required_creds
+from database import get_db, missing_required_creds, get_active_main_task
 from app_server_context import (
     merge_creds,
     server_public_dict,
@@ -158,7 +158,20 @@ def _enqueue_sweep(at_front=False):
     Adding several servers back to back cancels the previous alignment each time
     and starts a fresh one, so the newest sweep always covers every not-yet-aligned
     server and no stale sweep for an outdated server set keeps running.
+
+    Refuses while a cleaning run is live: both prune track_server_map against a
+    catalogue snapshot taken minutes earlier, so an overlap lets one delete the
+    mappings the other just wrote.
     """
+    active = get_active_main_task(task_type='cleaning')
+    if active:
+        logger.warning(
+            "Server alignment not enqueued: cleaning task %s is still %s. "
+            "Re-run the alignment once it finishes.",
+            active['task_id'], active['status'],
+        )
+        return None
+
     superseded = _cancel_active_sweeps()
     task_id = str(uuid.uuid4())
     try:

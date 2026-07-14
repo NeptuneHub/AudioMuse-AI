@@ -32,8 +32,12 @@ def active_server():
     return _active_server.get()
 
 
-class use_server:
-    """Bind ``server`` (a normalized registry dict or None) as active for a scope."""
+class use_server:  # noqa: N801 - reads as a verb at the call site: with use_server(x):
+    """Bind ``server`` (a normalized registry dict or None) as active for a scope.
+
+    Deliberately lower_snake_case: it is only ever used as a context manager, so
+    ``with use_server(server):`` reads as a statement, not as a class construction.
+    """
 
     def __init__(self, server):
         self._server = server
@@ -59,7 +63,7 @@ def active_type(default=None):
 
 def active_creds(user_creds=None):
     server = _active_server.get()
-    if server is None:
+    if server is None or "creds" not in server:
         return user_creds or None
     merged = dict(server.get("creds") or {})
     for key, value in (user_creds or {}).items():

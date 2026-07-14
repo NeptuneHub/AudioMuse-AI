@@ -205,12 +205,18 @@ def run_clustering_batch_task(
                 current_run_global_idx = start_run_idx + i
 
                 if current_job:
+                    # A MISSING row counts as revoked: the cancel wipes task_status,
+                    # so a batch that can no longer find its own row was cancelled.
                     task_info = get_task_info_from_db(current_task_id)
                     parent_task_info = get_task_info_from_db(parent_task_id)
-                    if (task_info and task_info.get('status') == TASK_STATUS_REVOKED) or (
-                        parent_task_info
-                        and parent_task_info.get('status')
-                        in [TASK_STATUS_REVOKED, TASK_STATUS_FAILURE]
+                    if (
+                        task_info is None
+                        or task_info.get('status') == TASK_STATUS_REVOKED
+                        or (
+                            parent_task_info
+                            and parent_task_info.get('status')
+                            in [TASK_STATUS_REVOKED, TASK_STATUS_FAILURE]
+                        )
                     ):
                         _log_and_update(
                             "Stopping batch due to revocation.", i, state=TASK_STATUS_REVOKED
@@ -539,8 +545,15 @@ def run_clustering_task(
                         {'server': server_name, 'status': status, 'reason': payload}
                     )
                     continue
+                # Two servers producing the same deterministic playlist name used to
+                # collapse into ONE row set here, because the key was the name alone.
+                # Suffix the STORED name per server when more than one is in scope
+                # (the name pushed to the media server itself stays bare, and each
+                # server already got its own playlist there).
+                multi = len(target_servers) > 1
                 for name, cluster in payload['playlists'].items():
-                    aggregated_playlists.setdefault(name, []).extend(cluster)
+                    key = f"{name} [{server_name}]" if multi else name
+                    aggregated_playlists.setdefault(key, []).extend(cluster)
                 if payload['best_score'] > best_score_overall:
                     best_score_overall = payload['best_score']
                     best_params_overall = payload['best_params']
@@ -579,7 +592,9 @@ def run_clustering_task(
                 "running_parameters": initial_params,
                 "best_score": best_score_overall,
                 "best_params": best_params_overall,
-                "num_playlists_created": len(aggregated_playlists),
+                "num_playlists_created": sum(
+                    s.get('playlists_created', 0) for s in successes
+                ),
                 "per_server": per_server_summary,
                 "log": truncated_log,
                 "log_storage_info": f"Log truncated to last {len(truncated_log)} entries. Original length: {len(final_log)}."
@@ -746,9 +761,11 @@ def _cluster_one_server(
     local_pct = 5
 
     while state["runs_completed"] < num_clustering_runs:
+        task_info = get_task_info_from_db(current_task_id)
         if current_job and (
             current_job.is_stopped
-            or get_task_info_from_db(current_task_id).get('status') == TASK_STATUS_REVOKED
+            or task_info is None
+            or task_info.get('status') == TASK_STATUS_REVOKED
         ):
             report("Task revoked, stopping.", local_pct, task_state=TASK_STATUS_REVOKED)
             return 'revoked', None

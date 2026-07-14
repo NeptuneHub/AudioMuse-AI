@@ -622,7 +622,9 @@ def _make_availability_index(pv, index_name, generation, item_ids, conn_factory)
     return idx
 
 
-def test_availability_mask_single_server_fast_path_skips_db(monkeypatch):
+def test_availability_mask_single_server_fast_path_skips_db_on_legacy_ids(monkeypatch):
+    """The fast path is only safe while every id is LEGACY: translation is the
+    identity there, so the mask would be all-True and building it is pure waste."""
     import tasks.paged_ivf as pv
     from tasks.mediaserver import registry
     from unittest.mock import MagicMock
@@ -635,7 +637,7 @@ def test_availability_mask_single_server_fast_path_skips_db(monkeypatch):
     def forbidden_conn():
         raise AssertionError('fast path must not touch the DB')
 
-    idx = _make_availability_index(pv, 'fast_idx', 'genA', ['fp_a'], forbidden_conn)
+    idx = _make_availability_index(pv, 'fast_idx', 'genA', ['legacy-1'], forbidden_conn)
     assert idx._availability_mask() is None
     assert pv._AVAILABILITY_CACHE == {}
 
@@ -647,6 +649,34 @@ def test_availability_mask_single_server_fast_path_skips_db(monkeypatch):
     idx_secondary = _make_availability_index(pv, 'fast_idx', 'genA', ['fp_a'], lambda: conn)
     mask = idx_secondary._availability_mask()
     np.testing.assert_array_equal(mask, np.array([True], dtype=np.bool_))
+
+
+def test_availability_mask_is_built_for_canonical_ids_even_on_a_single_server(monkeypatch):
+    """Cleaning only unbinds: the mask is the ONLY thing hiding a song that is no
+    longer on any server. Skipping it on a single-server install let deleted tracks
+    keep coming back from Similar Songs forever."""
+    import tasks.paged_ivf as pv
+    from tasks.mediaserver import registry
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(pv, 'active_availability_scope', lambda: 's1')
+    monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 's1')
+    monkeypatch.setattr(registry, 'has_secondary_servers', lambda conn=None: False)
+    monkeypatch.setattr(pv, '_AVAILABILITY_CACHE', {})
+
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    # Only fp_kept is still mapped; fp_orphan was unbound by a cleaning run.
+    cur.fetchall.return_value = [('fp_kept',)]
+    cur.fetchone.return_value = (True, '2026-01-01 00:00:00')
+
+    idx = _make_availability_index(
+        pv, 'orphan_idx', 'genB', ['fp_kept', 'fp_orphan', 'legacy-1'], lambda: conn
+    )
+    mask = idx._availability_mask()
+    # The legacy id survives (the default server always keeps non-fp_ rows), the
+    # unbound canonical id is hidden.
+    np.testing.assert_array_equal(mask, np.array([True, False, True], dtype=np.bool_))
 
 
 def test_availability_mask_new_generation_evicts_stale_entries(monkeypatch):

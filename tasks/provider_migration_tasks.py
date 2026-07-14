@@ -13,27 +13,34 @@ as RQ jobs polled by the UI; delegates track matching to provider_migration_matc
 and reuses the app's core routines under an app context.
 
 Main Features:
-* Under an advisory lock, pauses and drains workers, then rewrites item ids and
-  index id-maps inside a single transaction that drops and re-adds the score
-  foreign keys, applies new provider metadata, and updates app_config.
+* The centralized catalogue is NEVER touched: `score` rows, their canonical fp_2
+  ids and their embeddings survive every migration. A provider swap only rewrites
+  `track_server_map` for the default server - matched songs get the target's track
+  id, unmatched songs are unbound from that server - so no song's analysis is ever
+  lost and the similarity indexes stay valid (no rebuild).
+* Under an advisory lock, repoints the default server's mappings, refreshes song
+  metadata from the new provider, clears the old provider's artist ids, and points
+  the music_servers default row at the target.
 * Reads target metadata from the migration_target_meta side table and builds
-  the old->new id mapping via indexed per-album queries; reloads state and
-  index tables after commit.
+  the old->new id mapping via indexed per-album queries; reloads state after commit.
 """
 
 import json
 import logging
-import re
-import time
 
+from rq import get_current_job
+
+from config import (
+    TASK_STATUS_STARTED,
+    TASK_STATUS_SUCCESS,
+    TASK_STATUS_FAILURE,
+)
 from sanitization import sanitize_string_for_db as _sanitize_text
 
 logger = logging.getLogger(__name__)
 
 
 _ADVISORY_LOCK_KEY = 7421536190082003
-
-_DRAIN_TIMEOUT_SECONDS = 60
 
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 
@@ -85,6 +92,36 @@ def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
     return row[0] if row else None
 
 
+# The migration itself no longer rewrites score.item_id, so it has no need to drop
+# these. The one-time fingerprint canonicalization DOES relabel item_ids (that is its
+# whole purpose) and imports both from here.
+def _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
+    if fk_embedding:
+        cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT {fk_embedding}")
+    if fk_clap_embedding:
+        cur.execute(f"ALTER TABLE clap_embedding DROP CONSTRAINT {fk_clap_embedding}")
+    if lyrics_exists and fk_lyrics_embedding:
+        cur.execute(f"ALTER TABLE lyrics_embedding DROP CONSTRAINT {fk_lyrics_embedding}")
+
+
+def _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
+    if fk_embedding:
+        cur.execute(
+            f"ALTER TABLE embedding ADD CONSTRAINT {fk_embedding} "
+            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
+        )
+    if fk_clap_embedding:
+        cur.execute(
+            f"ALTER TABLE clap_embedding ADD CONSTRAINT {fk_clap_embedding} "
+            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
+        )
+    if lyrics_exists and fk_lyrics_embedding:
+        cur.execute(
+            f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
+            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
+        )
+
+
 def _get_dedicated_conn():
     import psycopg2
     import config  # noqa: F401  (lazy so tests don't need live env vars)
@@ -104,21 +141,53 @@ def _get_redis():
     return redis_conn
 
 
-def _drain_workers_or_timeout(seconds=_DRAIN_TIMEOUT_SECONDS):
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        time.sleep(1)
-        break
+MIGRATION_TASK_TYPE = 'provider_migration'
+
+
+def _migration_task_id():
+    job = get_current_job()
+    return job.id if job else None
+
+
+def _report_migration(task_id, status, progress, message, details=None):
+    """Write the migration's task_status row, so it is visible and mutually exclusive.
+
+    Silently a no-op outside an RQ job (the dry-run helpers call the same code from
+    a request thread in tests).
+    """
+    if not task_id:
+        return
+    try:
+        from flask_app import app
+        from database import save_task_status
+
+        payload = {'message': message, 'status_message': message}
+        if details:
+            payload.update(details)
+        with app.app_context():
+            save_task_status(
+                task_id, MIGRATION_TASK_TYPE, status, progress=progress, details=payload
+            )
+    except Exception:
+        logger.exception("Could not record provider-migration task status")
 
 
 def execute_provider_migration(session_id):
+    """Repoint the DEFAULT server's mappings at a new provider. The catalogue stays.
+
+    Writes task_status rows under the 'provider_migration' type so the run is visible
+    and get_active_main_task can keep an analysis or a sweep from writing
+    track_server_map underneath it. It used to claim it "paused and drained the
+    workers" instead, which did nothing at all: send_stop_signal does not exist in
+    RQ 2.x, the drain loop broke out after one second, and the migration:paused key
+    had no reader anywhere.
+    """
     logger.info("provider migration: starting session %s", session_id)
 
     redis = _get_redis()
-    redis.set('migration:paused', '1', ex=3600)
+    task_id = _migration_task_id()
+    _report_migration(task_id, TASK_STATUS_STARTED, 0, "Provider migration started...")
     try:
-        _pause_and_drain_workers(redis)
-
         conn = _get_dedicated_conn()
         try:
             conn.autocommit = False
@@ -141,23 +210,16 @@ def execute_provider_migration(session_id):
         mapping = _merge_mapping(state)
         new_meta = _load_new_meta_from_table(cur, session_id)
         selected_libraries = state.get('selected_libraries')
-        logger.info("provider migration: %d tracks will be rewritten", len(mapping))
-
-        fk_embedding = find_fk(cur, 'embedding', 'item_id')
-        fk_clap_embedding = find_fk(cur, 'clap_embedding', 'item_id')
-        cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
-        lyrics_exists = bool(cur.fetchone()[0])
-        fk_lyrics_embedding = find_fk(cur, 'lyrics_embedding', 'item_id') if lyrics_exists else None
+        logger.info(
+            "provider migration: %d songs will be repointed at the new provider; "
+            "the catalogue itself is not touched", len(mapping),
+        )
 
         try:
             index_rebuild_needed = _run_migration_transaction(
                 cur=cur,
                 mapping=mapping,
                 new_meta=new_meta,
-                fk_embedding=fk_embedding,
-                fk_clap_embedding=fk_clap_embedding,
-                fk_lyrics_embedding=fk_lyrics_embedding,
-                lyrics_exists=lyrics_exists,
                 target_type=target_type,
                 target_creds=target_creds,
                 session_id=session_id,
@@ -173,30 +235,24 @@ def execute_provider_migration(session_id):
 
         _post_commit_reload(redis)
 
-        return {
+        summary = {
             'ok': True,
             'matched': len(mapping),
             'index_rebuild_needed': bool(index_rebuild_needed),
         }
-    finally:
-        try:
-            redis.delete('migration:paused')
-        except Exception:
-            pass
-
-
-def _pause_and_drain_workers(redis):
-    try:
-        from rq import Worker  # pragma: no cover - optional import in tests
-
-        for w in Worker.all(connection=redis):
-            try:
-                w.send_stop_signal()
-            except Exception as e:
-                logger.debug("worker stop signal failed (ignored): %s", e)
-    except Exception as e:
-        logger.debug("rq worker enumeration failed (ignored): %s", e)
-    _drain_workers_or_timeout()
+        _report_migration(
+            task_id, TASK_STATUS_SUCCESS, 100,
+            f"Provider migration complete: {len(mapping)} tracks repointed.",
+            details=summary,
+        )
+        return summary
+    except Exception:
+        logger.exception("Provider migration failed for session %s", session_id)
+        _report_migration(
+            task_id, TASK_STATUS_FAILURE, 100,
+            "Provider migration failed; check the container logs.",
+        )
+        raise
 
 
 def _load_session(cur, session_id):
@@ -320,66 +376,6 @@ def _populate_migration_map_table(cur, mapping):
     cur.execute("ANALYZE item_id_migration_map")
 
 
-def _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
-    if fk_embedding:
-        cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT {fk_embedding}")
-    if fk_clap_embedding:
-        cur.execute(f"ALTER TABLE clap_embedding DROP CONSTRAINT {fk_clap_embedding}")
-    if lyrics_exists and fk_lyrics_embedding:
-        cur.execute(f"ALTER TABLE lyrics_embedding DROP CONSTRAINT {fk_lyrics_embedding}")
-
-
-def _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
-    if fk_embedding:
-        cur.execute(
-            f"ALTER TABLE embedding ADD CONSTRAINT {fk_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-    if fk_clap_embedding:
-        cur.execute(
-            f"ALTER TABLE clap_embedding ADD CONSTRAINT {fk_clap_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-    if lyrics_exists and fk_lyrics_embedding:
-        cur.execute(
-            f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-
-
-def _rewrite_item_ids(cur, lyrics_exists):
-    prefix = _MIG_TMP_PREFIX
-    for table, alias in (
-        ("score", "s"),
-        ("playlist", "p"),
-        ("embedding", "e"),
-        ("clap_embedding", "e"),
-    ):
-        cur.execute(
-            f"UPDATE {table} {alias} SET item_id = %s || m.new_id "
-            f"FROM item_id_migration_map m WHERE {alias}.item_id = m.old_id",
-            (prefix,),
-        )
-        cur.execute(
-            f"UPDATE {table} {alias} SET item_id = m.new_id "
-            f"FROM item_id_migration_map m "
-            f"WHERE {alias}.item_id = %s || m.new_id",
-            (prefix,),
-        )
-    if lyrics_exists:
-        cur.execute(
-            "UPDATE lyrics_embedding e SET item_id = %s || m.new_id "
-            "FROM item_id_migration_map m WHERE e.item_id = m.old_id",
-            (prefix,),
-        )
-        cur.execute(
-            "UPDATE lyrics_embedding e SET item_id = m.new_id "
-            "FROM item_id_migration_map m "
-            "WHERE e.item_id = %s || m.new_id",
-            (prefix,),
-        )
-
-
 def _apply_new_meta(cur, new_meta):
     if not new_meta:
         return
@@ -413,6 +409,10 @@ def _apply_new_meta(cur, new_meta):
             "VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
             flat,
         )
+    # Joined through the migration map on the CANONICAL id: score.item_id is the
+    # content hash and is never rewritten, so it cannot be matched against the
+    # target's provider id directly (it could, back when item_id WAS the provider id).
+    # This refreshes the song's metadata from the new provider; it does not move it.
     cur.execute(
         "UPDATE score s SET "
         "  file_path    = COALESCE(n.new_path,         s.file_path), "
@@ -421,132 +421,106 @@ def _apply_new_meta(cur, new_meta):
         "  album        = COALESCE(n.new_album,        s.album), "
         "  album_artist = COALESCE(n.new_album_artist, s.album_artist), "
         "  year         = COALESCE(n.new_year,         s.year) "
-        "FROM migration_new_meta n WHERE s.item_id = n.new_id"
+        "FROM migration_new_meta n, item_id_migration_map m "
+        "WHERE m.new_id = n.new_id AND s.item_id = m.old_id"
     )
-
-
-def _rewrite_index_id_maps(cur, mapping):
-    from tasks.index_build_helpers import rewrite_segmented_id_map
-
-    _seg_base = re.compile(r"^(.*)_\d+_\d+$")
-    index_rebuild_needed = []
-    for table in ('voyager_index_data', 'map_projection_data'):
-        cur.execute("SELECT to_regclass(%s)", (table,))
-        if cur.fetchone()[0] is None:
-            continue
-        cur.execute(f"SELECT DISTINCT index_name FROM {table}")
-        bases = set()
-        for (name,) in cur.fetchall() or []:
-            m = _seg_base.match(name)
-            bases.add(m.group(1) if m else name)
-        for base in sorted(bases):
-            try:
-                rewrite_segmented_id_map(
-                    cur, table, base, lambda j: rewrite_id_map_json(j, mapping)
-                )
-            except ValueError:
-                logger.warning(
-                    "provider migration: id_map for '%s' in %s could not be "
-                    "relabelled in place; dropping the stale index so it "
-                    "rebuilds on the next analysis",
-                    base,
-                    table,
-                    exc_info=True,
-                )
-                like_pattern = base.replace("_", r"\_") + r"\_%\_%"
-                cur.execute(
-                    f"DELETE FROM {table} WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                    (base, like_pattern),
-                )
-                index_rebuild_needed.append(f"{table}:{base}")
-    return index_rebuild_needed
-
-
-def _clear_index_tables(cur):
-    for table in (
-        'ivf_cell',
-        'ivf_dir',
-        'artist_index_data',
-        'artist_metadata_data',
-        'artist_component_projection',
-        'artist_mapping',
-    ):
-        cur.execute("SELECT to_regclass(%s)", (table,))
-        if cur.fetchone()[0] is not None:
-            cur.execute(f"DELETE FROM {table}")
 
 
 def _clear_default_server_artist_map(cur):
-    """Drop the default server's artist ids: they belong to the OLD provider.
+    """Drop the default server's ARTIST ids: they belong to the OLD provider.
 
-    The migration repoints the default server at a new provider, so every
-    ``provider_artist_id`` stored for it is now a dead id - the same reason the
-    legacy ``artist_mapping`` table is cleared above. Track ids are repointed
-    instead of dropped because the matcher produced a new id for each one;
-    artists have no such mapping, so they are cleared and the next analysis
-    rebuilds them. Secondary servers did not migrate: their rows stay.
+    Artist ids are the one thing the matcher cannot repoint - it produces a new id
+    per TRACK, and artists have no such mapping - so they are cleared and the next
+    analysis rebuilds them. Secondary servers did not migrate: their rows stay.
+
+    Only ids are cleared, never analysis. The track similarity indexes are NOT
+    touched: they are keyed by the canonical item_id, which a migration no longer
+    changes, so every one of them stays valid across the provider swap.
     """
     cur.execute("SELECT to_regclass('public.artist_server_map')")
-    if cur.fetchone()[0] is None:
-        return
-    cur.execute(
-        "DELETE FROM artist_server_map a USING music_servers s "
-        "WHERE s.is_default AND a.server_id = s.server_id"
-    )
-    if cur.rowcount:
-        logger.info(
-            "provider migration: cleared %d stale artist id(s) of the default server",
-            cur.rowcount,
+    if cur.fetchone()[0] is not None:
+        cur.execute(
+            "DELETE FROM artist_server_map a USING music_servers s "
+            "WHERE s.is_default AND a.server_id = s.server_id"
         )
+        if cur.rowcount:
+            logger.info(
+                "provider migration: cleared %d stale artist id(s) of the default server",
+                cur.rowcount,
+            )
+
+    # The legacy artist_mapping table has no server column: it only ever held the
+    # default server's artist ids, so all of it is stale after a repoint.
+    cur.execute("SELECT to_regclass('public.artist_mapping')")
+    if cur.fetchone()[0] is not None:
+        cur.execute("DELETE FROM artist_mapping")
 
 
 def _run_migration_transaction(
     cur,
     mapping,
     new_meta,
-    fk_embedding,
-    fk_clap_embedding,
-    fk_lyrics_embedding,
-    lyrics_exists,
     target_type,
     target_creds,
     session_id,
     selected_libraries=None,
 ):
+    """Repoint the DEFAULT server's mappings at a new provider. Nothing else.
+
+    `score` is the centralized catalogue: one row per distinct recording, keyed by
+    the fp_2 content hash of its own audio. That hash is a property of the AUDIO, not
+    of any server, so a migration cannot change it and must never delete it. A song's
+    analysis (its MusiCNN, CLAP and lyrics embeddings) is expensive and irreplaceable;
+    a provider swap is just a change of where the file happens to live.
+
+    So all a migration does is rewrite `track_server_map` for the default server:
+      - matched     -> its provider_track_id becomes the target's id
+      - unmatched   -> its mapping row is DROPPED (the song is unbound from this
+                       server, exactly as if you had deleted it from the library),
+                       while the score row, its embeddings and its mappings to any
+                       OTHER server survive untouched
+    An unbound song is hidden from that server's results by the availability filter,
+    and if the file ever comes back a sweep re-binds it with no re-analysis.
+
+    This used to DELETE unmatched score rows and REWRITE score.item_id into the target
+    provider's track id - the pre-canonicalization design, where item_id WAS the
+    provider id. In a union catalogue that destroyed the canonical ids outright, took
+    the embeddings with them via ON DELETE CASCADE, and forced a full index rebuild.
+    Nothing here touches score.item_id now, so the similarity indexes stay valid and
+    no rebuild is needed.
+    """
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
 
     _populate_migration_map_table(cur, mapping)
 
+    # Unbind what the target does not have. The catalogue row stays.
     cur.execute(
-        "DELETE FROM score s WHERE NOT EXISTS "
-        "(SELECT 1 FROM item_id_migration_map m WHERE m.old_id = s.item_id)"
+        "DELETE FROM track_server_map t USING music_servers s "
+        "WHERE s.is_default AND t.server_id = s.server_id "
+        "AND NOT EXISTS (SELECT 1 FROM item_id_migration_map m WHERE m.old_id = t.item_id)"
     )
 
-    _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding)
-    _rewrite_item_ids(cur, lyrics_exists)
-    _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding)
-
-    # An item may now own N duplicate default-server rows (duplicate files). The
-    # UPDATE below stamps all of them with the same new provider id, which would
-    # violate the (server_id, provider_track_id) PK. A repoint retires the OLD
-    # provider's ids anyway, so collapse to one row per item first.
+    # N duplicate files of one song each own a default-server row. The repoint below
+    # would stamp them all with the SAME target id and violate the
+    # (server_id, provider_track_id) key, so collapse to one row per song first: the
+    # target provider gives exactly one id per matched song.
     cur.execute(
         "DELETE FROM track_server_map t USING music_servers s "
         "WHERE s.is_default AND t.server_id = s.server_id "
         "AND t.ctid <> (SELECT min(t2.ctid) FROM track_server_map t2 "
         "WHERE t2.item_id = t.item_id AND t2.server_id = t.server_id)"
     )
+
+    # The migration, in one statement: the song keeps its canonical id, and only the
+    # provider id it is reachable by on the default server changes.
     cur.execute(
-        "UPDATE track_server_map t SET provider_track_id = m.new_id, updated_at = now() "
+        "UPDATE track_server_map t SET provider_track_id = m.new_id, "
+        "match_tier = 'default', updated_at = now() "
         "FROM item_id_migration_map m, music_servers s "
-        "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.new_id"
+        "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.old_id"
     )
 
     _apply_new_meta(cur, new_meta)
-
-    index_rebuild_needed = _rewrite_index_id_maps(cur, mapping)
-
-    _clear_index_tables(cur)
     _clear_default_server_artist_map(cur)
 
     _write_provider_to_default_server(
@@ -559,7 +533,8 @@ def _run_migration_transaction(
         (session_id,),
     )
 
-    return index_rebuild_needed
+    # item_ids never moved, so every similarity index still points at the right songs.
+    return False
 
 
 def _cleaned_libraries_value(selected_libraries):

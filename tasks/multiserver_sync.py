@@ -62,6 +62,7 @@ import uuid
 from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
+from config import SWEEP_PRUNE_MIN_FETCH_RATIO
 from database import connect_raw
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
@@ -70,7 +71,6 @@ from tasks.provider_migration_matcher import CandidateIndex
 logger = logging.getLogger(__name__)
 
 SWEEP_TASK_TYPE = 'server_sweep'
-_PRUNE_MIN_FETCH_RATIO = 0.5
 _RQ_ALIVE_STATUSES = ('queued', 'started', 'deferred', 'scheduled')
 
 
@@ -106,10 +106,12 @@ def recover_abandoned_sweeps():
     default server) can kill a queued or running sweep; RQ later parks the job
     as failed/abandoned while its task_status row stays stuck in PROGRESS and
     the servers it covered are never aligned. Called periodically by the RQ
-    janitor: every non-terminal sweep row whose RQ job exists but is dead is
-    marked REVOKED and one fresh alignment covering all servers is
-    enqueued in their place. Rows with no RQ job at all are skipped:
-    enqueue-failed PENDING rows are archived by the batch-start cleanup.
+    janitor: every non-terminal sweep row whose RQ job is dead - or has vanished
+    from Redis entirely - is marked REVOKED and one fresh alignment covering all
+    servers is enqueued in their place. 'missing' rows are recovered here rather
+    than skipped: the batch-start cleanup no longer touches sweeps (starting an
+    analysis used to silently revoke a running one), so nothing else would ever
+    retire them and the servers panel would show a phantom sweep stuck at N%.
     Recovery is throttled to once per 10 minutes after a replacement is
     enqueued, so a replacement that itself keeps dying (for example OOM during
     the index rebuild) is not revoked and re-enqueued in a tight loop. Returns
@@ -137,7 +139,10 @@ def recover_abandoned_sweeps():
             candidates = [r[0] for r in cur.fetchall()]
         finally:
             cur.close()
-        stale = [task_id for task_id in candidates if _sweep_job_state(task_id) == 'dead']
+        stale = [
+            task_id for task_id in candidates
+            if _sweep_job_state(task_id) in ('dead', 'missing')
+        ]
         if not stale:
             return None
 
@@ -187,6 +192,87 @@ def recover_abandoned_sweeps():
             logger.debug("Recovery connection close failed", exc_info=True)
 
 
+_ORPHAN_GRACE_SECONDS = 120
+
+
+def reap_orphaned_tasks():
+    """Fail non-terminal top-level tasks whose RQ job no longer exists.
+
+    A main row is written and committed BEFORE its job is enqueued, so a Redis
+    outage (or a worker cold-shutdown, or a job TTL expiring) can leave a PENDING
+    row with nothing behind it. ``get_active_main_task`` counts that row as a live
+    task, so every later Start Analysis / Clustering / Cleaning answers 409, forever
+    - and nothing retired those rows: the sweep recovery only handles sweeps, and
+    the batch-start cleanup cannot run because the 409 fires first.
+
+    Sweeps are excluded: recover_abandoned_sweeps re-enqueues those rather than
+    failing them. Rows younger than the grace period are left alone, so a job that
+    was enqueued microseconds after its row is never reaped out from under itself.
+    Returns the number of rows failed. Uses its own raw connection, so it needs no
+    Flask app context.
+    """
+    import config
+    from rq.job import Job
+    from rq.exceptions import NoSuchJobError
+    from app_helper import redis_conn
+
+    db = connect_raw()
+    db.autocommit = True
+    reaped = []
+    try:
+        cur = db.cursor()
+        try:
+            cur.execute(
+                "SELECT task_id FROM task_status "
+                "WHERE parent_task_id IS NULL AND task_type <> %s "
+                "AND status NOT IN (%s, %s, %s) "
+                "AND timestamp < NOW() - make_interval(secs => %s)",
+                (SWEEP_TASK_TYPE, config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
+                 config.TASK_STATUS_REVOKED, _ORPHAN_GRACE_SECONDS),
+            )
+            candidates = [r[0] for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+        for task_id in candidates:
+            try:
+                Job.fetch(task_id, connection=redis_conn)
+            except NoSuchJobError:
+                reaped.append(task_id)
+            except Exception:
+                logger.debug("Could not probe job %s; leaving it alone.", task_id)
+
+        if not reaped:
+            return 0
+
+        message = (
+            "The task disappeared from the queue (the worker or Redis restarted). "
+            "It was not run; start it again."
+        )
+        details = json.dumps({'message': message, 'status_message': message,
+                              'error': message})
+        cur = db.cursor()
+        try:
+            cur.execute(
+                "UPDATE task_status SET status = %s, progress = 100, details = %s, "
+                "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
+                "WHERE task_id = ANY(%s)",
+                (config.TASK_STATUS_FAILURE, details, time.time(), reaped),
+            )
+        finally:
+            cur.close()
+        logger.warning(
+            "Janitor failed %d orphaned task row(s) with no RQ job behind them: %s",
+            len(reaped), ', '.join(reaped),
+        )
+        return len(reaped)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Orphan-reap connection close failed", exc_info=True)
+
+
 def _make_reporter(task_id, label):
     try:
         from flask_app import app
@@ -223,10 +309,18 @@ def _make_reporter(task_id, label):
     return report
 
 
-def _make_cancel_check(task_id):
-    """Cooperative cancellation: raises SweepCancelled once /api/cancel marked
-    the task REVOKED. Uses its own autocommit connection so it always sees the
-    latest status, throttled to one DB read every 2 seconds."""
+def make_cancel_check(task_id):
+    """Cooperative cancellation: raises SweepCancelled once /api/cancel cancelled us.
+
+    A MISSING row counts as cancelled, not just an explicit REVOKED one: /api/cancel
+    WIPES task_status, so a sweep that can no longer find its own row has been
+    cancelled. Treating absence as 'carry on' let a cancelled sweep run to completion
+    against a queue that had already been emptied.
+
+    Uses its own autocommit connection so it always sees the latest status, throttled
+    to one DB read every 2 seconds. Public because cleaning reuses it: it walks every
+    server's whole catalogue and was the one long task with no way to stop it.
+    """
     import config
 
     try:
@@ -251,9 +345,10 @@ def _make_cancel_check(task_id):
             finally:
                 cur.close()
         except Exception:
+            # A failed QUERY is not an empty answer: leave the sweep running.
             logger.debug("Sweep cancel check failed (ignored)", exc_info=True)
             return
-        if row and row[0] == config.TASK_STATUS_REVOKED:
+        if row is None or row[0] == config.TASK_STATUS_REVOKED:
             raise SweepCancelled()
 
     def close():
@@ -264,6 +359,9 @@ def _make_cancel_check(task_id):
                 logger.debug("Sweep cancel-check connection close failed", exc_info=True)
 
     return check, close
+
+
+_make_cancel_check = make_cancel_check
 
 
 def _resolve_task_id(task_id):
@@ -363,12 +461,17 @@ def _write_matches(db, server_id, result):
     return registry.upsert_track_maps(server_id, mapping, conn=db)
 
 
-def prune_stale_mappings(db, server_id, present_ids):
+def prune_stale_mappings(db, server_id, present_ids, refused=None):
     """Remove map rows whose provider track is no longer on (or is filtered out
     of) the server. Only track_server_map shrinks; the catalogue never does.
-    Skipped entirely when the fetch produced nothing or looks partial (fewer
-    tracks than half the existing mappings), so a fetch problem can never wipe
-    a server's mappings."""
+
+    Skipped entirely when the fetch produced nothing or looks partial (fewer than
+    SWEEP_PRUNE_MIN_FETCH_RATIO of the existing mappings), so a fetch problem can
+    never wipe a server's mappings. ``refused`` is an optional list this appends
+    ``(fetched, mapped)`` to when it takes that escape hatch: a refusal returned 0,
+    which is indistinguishable from "nothing to prune", so a library that really
+    had shrunk by more than half kept its stale mappings and said nothing.
+    """
     present = [(pid,) for pid in present_ids]
     if not present:
         return 0
@@ -378,12 +481,14 @@ def prune_stale_mappings(db, server_id, present_ids):
             "SELECT COUNT(*) FROM track_server_map WHERE server_id = %s", (server_id,)
         )
         current = cur.fetchone()[0]
-        if current > 0 and len(present) < current * _PRUNE_MIN_FETCH_RATIO:
+        if current > 0 and len(present) < current * SWEEP_PRUNE_MIN_FETCH_RATIO:
             logger.warning(
                 "Multi-server sweep for server %s: fetch returned %d tracks but %d "
                 "mappings exist; fetch looks partial, pruning skipped",
                 server_id, len(present), current,
             )
+            if refused is not None:
+                refused.append((len(present), current))
             return 0
         cur.execute(
             "CREATE TEMP TABLE IF NOT EXISTS sweep_present_ids "
@@ -503,6 +608,9 @@ def _stage_track_metadata(db, tracks):
             _strip_nul(t.get('album_artist')),
             t.get('year'), t.get('rating'), _strip_nul(t.get('path')),
         )
+    # Load-bearing, not a redundant rebind: if the staging below raises, the logged
+    # traceback keeps THIS frame alive, and the frame's reference to the parameter
+    # would pin the entire fetched catalogue for as long as the exception is held.
     tracks = None
     cur = db.cursor()
     try:
@@ -631,15 +739,33 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     artist_maps = _collect_artist_maps(target_tracks)
     _stage_track_metadata(db, target_tracks)
     already_mapped = _already_mapped_ids(db, server_id)
-    index = CandidateIndex(
-        t for t in target_tracks
-        if t.get('id') and str(t.get('id')) not in already_mapped
-    )
+
+    # CONSUME the fetched catalogue while the candidate index is built, rather than
+    # holding both at full size: on a first sweep of a large server nothing is mapped
+    # yet, so the index is catalogue-sized and the peak was double what it needed to
+    # be. Popping from the tail keeps this O(n) and lets each track be collected as
+    # soon as the index has taken what it needs.
+    def _drain_candidates(tracks):
+        while tracks:
+            track = tracks.pop()
+            if track.get('id') and str(track.get('id')) not in already_mapped:
+                yield track
+
+    index = CandidateIndex(_drain_candidates(target_tracks))
     target_tracks = None
     _store_server_track_count(db, server_id, target_total)
     pruned = 0
+    prune_refused = []
     if full_refresh:
-        pruned = prune_stale_mappings(db, server_id, present_ids)
+        pruned = prune_stale_mappings(db, server_id, present_ids, refused=prune_refused)
+        if prune_refused:
+            fetched, mapped = prune_refused[0]
+            report(
+                f"{server['name']}: only {fetched} of the {mapped} tracks it has mapped "
+                "came back, so stale mappings were NOT pruned. Re-run the alignment if "
+                "the library really shrank that much.",
+                base + span * 0.5,
+            )
         if pruned:
             logger.info(
                 "Multi-server sweep for '%s': pruned %d stale mappings no longer on the server",
@@ -691,6 +817,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
         'unmapped': unmapped_count,
         'matched': written,
         'pruned': pruned,
+        'prune_refused': bool(prune_refused),
         'artists': artists_written,
         'refreshed': refreshed,
         'tier_counts': tier_counts,

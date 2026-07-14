@@ -140,13 +140,15 @@ MEDIASERVER_CONFIG_KEYS = frozenset(
     {'MEDIASERVER_TYPE', 'MUSIC_LIBRARIES'} | set(MEDIASERVER_CRED_KEY_BY_FIELD)
 )
 
-# The content fingerprint is the catalogue standard, not an option: the
-# canonical item_id IS the 64-bit SimHash of each track's MusiCNN embedding
-# (fp_<16hex>, similarity-preserving so near-identical audio matches within a
-# few bits), minted at analyze time with zero extra downloads or binaries.
-# Legacy rows are relabelled once at Flask startup from their stored
-# embeddings. Each media server's own track id (including the single/default
-# server) is kept in the track_server_map table and translated back on output.
+# The content fingerprint is the catalogue standard, not an option: the canonical
+# item_id IS the 200-bit sign signature of each track's MusiCNN embedding, encoded
+# as a scheme-versioned fp_2<50hex> id (54 chars, similarity-preserving so
+# near-identical audio matches within a few bits), minted at analyze time with zero
+# extra downloads or binaries. The leading scheme digit is what lets a future
+# widening self-migrate at startup. Legacy rows are relabelled once at Flask startup
+# from their stored embeddings. Each media server's own track id (including the
+# single/default server) is kept in the track_server_map table and translated back
+# on output.
 # There are deliberately no feature flags for this behaviour.
 
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
@@ -792,6 +794,7 @@ SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
 
 # --- Database Cleaning Safety ---
 CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report (nothing is ever deleted from the catalogue)
+SWEEP_PRUNE_MIN_FETCH_RATIO = float(os.environ.get("SWEEP_PRUNE_MIN_FETCH_RATIO", "0.5"))  # A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much
 
 # --- Stratified Sampling Constants (New) ---
 # Genres for which to enforce equal representation during stratified sampling

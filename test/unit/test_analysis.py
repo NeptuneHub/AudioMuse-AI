@@ -69,6 +69,72 @@ def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
     ]
 
 
+def _union_harness(monkeypatch, phase_results):
+    """Drive run_analysis_task over len(phase_results) servers, returning (result, saved)."""
+    import tasks.analysis as analysis
+
+    servers = [
+        {'server_id': f's{i}', 'name': name, 'is_default': i == 0}
+        for i, (name, _) in enumerate(phase_results)
+    ]
+    saved = []
+    monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
+    monkeypatch.setattr(
+        analysis, '_albums_per_server', lambda servers, n: [[] for _ in servers]
+    )
+    monkeypatch.setattr(
+        analysis,
+        'save_task_status',
+        lambda task_id, task_type, status, **kwargs: saved.append(
+            (status, kwargs.get('details') or {})
+        ),
+    )
+    by_id = {f's{i}': status for i, (_, status) in enumerate(phase_results)}
+    monkeypatch.setattr(
+        analysis,
+        'run_analysis_server_task',
+        lambda *a, server_id=None, **k: {'status': by_id[server_id]},
+    )
+    return analysis.run_analysis_task(0, 5), saved
+
+
+def test_union_analysis_succeeds_when_only_some_servers_fail(monkeypatch):
+    result, saved = _union_harness(
+        monkeypatch, [('Jellyfin', 'FAILURE'), ('Plex', 'SUCCESS')]
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert result['failed_servers'] == ['Jellyfin']
+    status, details = saved[-1]
+    assert status == 'SUCCESS'
+    assert 'error' not in details
+    assert 'Jellyfin' in details['message']
+
+
+def test_union_analysis_fails_only_when_every_server_fails(monkeypatch):
+    from error.error_dictionary import ERR_ANALYSIS_SERVER_FAILED
+
+    result, saved = _union_harness(
+        monkeypatch, [('Jellyfin', 'FAILURE'), ('Plex', 'FAILURE')]
+    )
+
+    assert result['status'] == 'FAILURE'
+    status, details = saved[-1]
+    assert status == 'FAILURE'
+    assert details['error']['error_code'] == ERR_ANALYSIS_SERVER_FAILED
+    assert details['error']['error_code'] != 9999
+
+
+def test_union_analysis_stops_when_a_phase_is_revoked(monkeypatch):
+    result, _ = _union_harness(monkeypatch, [('Jellyfin', 'REVOKED'), ('Plex', 'SUCCESS')])
+
+    assert result['status'] == 'REVOKED'
+    assert result['servers_completed'] == 1
+
+
 def test_run_analysis_task_skips_when_no_enabled_server_matches_scope(monkeypatch):
     import tasks.analysis as analysis
 
@@ -167,10 +233,18 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
         'attach_catalog_item_ids',
         lambda tracks, server_id=None, conn=None: tracks,
     )
+    # Mirrors the real thing: "which of these ids already have a score row". That is
+    # the catalogue this run started with, plus whatever it has persisted so far - so
+    # a JUST-MINTED id is absent, which is exactly what lets the mint path tell a
+    # genuinely new track from one another worker already wrote under the same id.
+    seeded_catalogue = set(getattr(known_index, '_taken', set()))
+
+    def _default_existing_ids(ids):
+        have = seeded_catalogue | set(persisted_ids)
+        return {i for i in ids if i in have}
+
     monkeypatch.setattr(
-        helper,
-        'get_existing_track_ids',
-        existing_ids_fn or (lambda ids: {i for i in ids if str(i).startswith('fp_')}),
+        helper, 'get_existing_track_ids', existing_ids_fn or _default_existing_ids
     )
     monkeypatch.setattr(helper, 'get_missing_ids_in_table', lambda table, ids: set())
     monkeypatch.setattr(helper, 'load_fingerprint_index', lambda: known_index)
@@ -311,10 +385,16 @@ def test_two_duplicate_files_on_one_server_both_get_a_map_row(monkeypatch, tmp_p
     # The audio is persisted once (first track mints the canonical row); the
     # second is recognised as a duplicate and only mapped.
     assert persisted_ids == [expected_id]
-    assert len(map_upserts) == 1
-    server_id, mapping = map_upserts[0]
-    assert server_id == 'srv-def'
-    assert mapping == {
+
+    # Mappings are flushed per TRACK, not batched to the end of the album: a Stop
+    # or a killed worker mid-album must not strand an already-committed track with
+    # no map row, or the next run re-downloads and re-analyzes it forever.
+    assert len(map_upserts) == 2
+    assert {sid for sid, _ in map_upserts} == {'srv-def'}
+    merged = {}
+    for _sid, mapping in map_upserts:
+        merged.update(mapping)
+    assert merged == {
         'provA': (expected_id, 'fingerprint'),
         'provB': (expected_id, 'fingerprint'),
     }
@@ -388,10 +468,12 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     job.meta = {}
 
     status_calls = []
+    # A row that EXISTS and is live. An empty answer would mean the cancel wiped
+    # task_status, which the run correctly reads as revoked.
     monkeypatch.setattr(
         analysis,
         'get_task_statuses',
-        lambda ids: status_calls.append(list(ids)) or {},
+        lambda ids: status_calls.append(list(ids)) or {i: 'STARTED' for i in ids if i},
     )
 
     def forbidden(task_id):
@@ -469,7 +551,13 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
 
     monkeypatch.setattr(analysis, 'rq_queue_default', FakeQueue)
     monkeypatch.setattr(analysis, 'Job', FakeJob)
-    monkeypatch.setattr(analysis, 'get_child_tasks_from_db', lambda task_id: [])
+    # The monitor reconciles with ONE count now, not by fetching every child row.
+    monkeypatch.setattr(analysis, 'count_terminal_children', lambda task_id: 0)
+    # The run's own row exists and is live. An empty answer would mean the cancel
+    # wiped task_status, which the dispatch loop correctly reads as revoked.
+    monkeypatch.setattr(
+        analysis, 'get_task_statuses', lambda ids: {i: 'STARTED' for i in ids if i}
+    )
 
     result = analysis._run_analysis_server_task_impl(
         0, 5, server_id='srv-def', task_id='parent-1'

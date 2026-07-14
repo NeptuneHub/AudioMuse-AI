@@ -50,6 +50,8 @@ from config import (
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
+SELF_MANAGED_TASK_TYPES = ('server_sweep',)
+
 USERS_PASSWORD_CHANGED_AT_DDL = (
     "ALTER TABLE IF EXISTS audiomuse_users "
     "ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP"
@@ -321,6 +323,7 @@ def save_task_status(
                                 THEN %s
                                 ELSE task_status.end_time
                            END
+            WHERE task_status.status IS DISTINCT FROM 'REVOKED'
         """,
             (
                 task_id,
@@ -1393,6 +1396,16 @@ def _ensure_track_server_map_key(cur):
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_track_server_map_provider_unique "
         "ON track_server_map (server_id, provider_track_id)"
     )
+    # The PK is (server_id, provider_track_id), which cannot serve a scan of one
+    # server ORDERED BY item_id. Two hot queries need exactly that: the dashboard's
+    # COUNT(DISTINCT item_id) GROUP BY server_id (a seq scan plus an external merge
+    # sort of every mapped row, recomputed roughly every minute) and the sweep's
+    # metadata refresh (DISTINCT ON (item_id) ... ORDER BY item_id, provider_track_id,
+    # run on every alignment). Both become index-only scans with no Sort node.
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_track_server_map_server_item "
+        "ON track_server_map (server_id, item_id)"
+    )
     relax_track_server_map_pk(cur)
 
 
@@ -1416,6 +1429,29 @@ def ensure_track_server_map_schema(conn=None):
         except Exception:
             logger.debug("ensure_track_server_map_schema rollback failed", exc_info=True)
         return False
+    finally:
+        cur.close()
+
+
+def track_server_map_pk_columns(conn=None):
+    """The columns of track_server_map's PRIMARY KEY, in key order.
+
+    The catalog is the only trustworthy answer: relax_track_server_map_pk returns
+    False both when the swap FAILED and when there was nothing to do, and
+    ensure_track_server_map_schema returns True even when the swap silently rolled
+    back, so a caller that needs to know the key really is relaxed must look here.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT a.attname::text FROM pg_constraint c "
+            "JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE "
+            "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum "
+            "WHERE c.conrelid = 'track_server_map'::regclass AND c.contype = 'p' "
+            "ORDER BY k.ord"
+        )
+        return [row[0] for row in cur.fetchall()]
     finally:
         cur.close()
 
@@ -1817,8 +1853,9 @@ def clean_up_previous_main_tasks():
 
     try:
         cur.execute(
-            "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL",
-            (non_terminal_statuses,),
+            "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status "
+            "WHERE status IN %s AND parent_task_id IS NULL AND task_type <> ALL(%s)",
+            (non_terminal_statuses, list(SELF_MANAGED_TASK_TYPES)),
         )
         tasks_to_archive = cur.fetchall()
 
@@ -1906,7 +1943,7 @@ def clean_up_previous_main_tasks():
         cur.close()
 
 
-def get_active_main_task(task_type=None, exclude_task_types=('server_sweep',)):
+def get_active_main_task(task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES):
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
@@ -1950,6 +1987,30 @@ def get_child_tasks_from_db(parent_task_id):
     tasks = cur.fetchall()
     cur.close()
     return [dict(row) for row in tasks]
+
+
+def count_terminal_children(parent_task_id):
+    """How many of ``parent_task_id``'s children have finished, in ONE round-trip.
+
+    A union analysis gives every phase the SAME parent, so the monitor's old
+    approach (fetch every child row, then filter in Python against this phase's
+    launched ids) pulled every earlier phase's rows too - tens of thousands of rows
+    every ten seconds, nearly all discarded. It only ever needed the count.
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT count(*) FROM task_status "
+            "WHERE parent_task_id = %s AND status IN %s",
+            (
+                parent_task_id,
+                (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED),
+            ),
+        )
+        return cur.fetchone()[0]
+    finally:
+        cur.close()
 
 
 def _child_error_from_row(row):

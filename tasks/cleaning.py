@@ -57,8 +57,14 @@ def identify_and_clean_orphaned_albums_task():
         TASK_STATUS_PROGRESS,
         TASK_STATUS_SUCCESS,
         TASK_STATUS_FAILURE,
+        TASK_STATUS_REVOKED,
     )
-    from .multiserver_sync import fetch_server_catalogue, prune_stale_mappings
+    from .multiserver_sync import (
+        fetch_server_catalogue,
+        prune_stale_mappings,
+        make_cancel_check,
+        SweepCancelled,
+    )
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -99,17 +105,20 @@ def identify_and_clean_orphaned_albums_task():
                 current_task_id, "cleaning", task_state, progress=progress, details=details
             )
 
+        cancel, close_cancel = make_cancel_check(current_task_id)
         try:
             log_and_update_main("Starting per-server library cleanup...", 5)
 
             servers = registry.servers_for_scope('all')
             present_canonical_ids = set()
             failed_servers = []
+            refused_servers = []
             unbound_total = 0
             unbound_by_server = {}
             total_tracks_on_servers = 0
 
             for server_idx, server in enumerate(servers):
+                cancel()
                 server_name = server['name'] if server else 'default server'
                 server_id = server['server_id'] if server else None
                 window_start = 10 + int(70 * server_idx / len(servers))
@@ -138,7 +147,12 @@ def identify_and_clean_orphaned_albums_task():
                 )
 
                 if server_id:
-                    unbound = prune_stale_mappings(get_db(), server_id, sorted(provider_ids))
+                    refused = []
+                    unbound = prune_stale_mappings(
+                        get_db(), server_id, sorted(provider_ids), refused=refused
+                    )
+                    if refused:
+                        refused_servers.append(server_name)
                     unbound_by_server[server_name] = unbound
                     unbound_total += unbound
                     if unbound:
@@ -149,6 +163,7 @@ def identify_and_clean_orphaned_albums_task():
                         )
                 provider_list = sorted(provider_ids)
                 for start in range(0, len(provider_list), 5000):
+                    cancel()
                     chunk = provider_list[start:start + 5000]
                     mapping = registry.reverse_translate_ids(chunk, server_id)
                     present_canonical_ids.update(str(v) for v in mapping.values())
@@ -198,6 +213,7 @@ def identify_and_clean_orphaned_albums_task():
                 "unbound_mappings": unbound_total,
                 "unbound_by_server": unbound_by_server,
                 "failed_servers": failed_servers,
+                "prune_refused_servers": refused_servers,
                 "deleted_count": 0,
             }
 
@@ -208,16 +224,33 @@ def identify_and_clean_orphaned_albums_task():
                     f"could not be fully read and were skipped; {unbound_total} stale "
                     "mappings unbound elsewhere. The catalogue was not modified."
                 )
+            elif refused_servers:
+                message = (
+                    f"Cleanup finished: {unbound_total} stale server mappings unbound, but "
+                    f"server(s) {', '.join(refused_servers)} returned fewer than half the "
+                    "tracks they still have mapped, so their stale mappings were NOT pruned. "
+                    "Re-run the cleanup if the library really did shrink that much."
+                )
             else:
                 message = (
                     f"Cleanup complete: {unbound_total} stale server mappings unbound; "
-                    f"{len(fully_unbound)} catalogue tracks are currently on no server "
-                    "(kept, and hidden by the per-server availability filter)."
+                    f"{len(fully_unbound)} catalogue tracks are now on no server and are "
+                    "hidden from results by the per-server availability filter."
                 )
             log_and_update_main(message, 100, task_state=state, final_summary_details=summary)
             return {"status": "SUCCESS" if not failed_servers else "FAILURE",
                     "message": message, **summary}
 
+        except SweepCancelled:
+            # Must precede the generic handler below, or a user pressing Stop is
+            # recorded as ERR_CLEANING_FAILED and re-raised into an RQ retry.
+            logger.info("Library cleanup revoked by the user; stopping.")
+            log_and_update_main(
+                "Library cleanup cancelled.",
+                current_progress,
+                task_state=TASK_STATUS_REVOKED,
+            )
+            return {"status": TASK_STATUS_REVOKED, "message": "Library cleanup cancelled."}
         except OperationalError as e:
             logger.exception(
                 "Database connection error during cleaning. This job will be retried."
@@ -242,3 +275,5 @@ def identify_and_clean_orphaned_albums_task():
                 error=err,
             )
             raise
+        finally:
+            close_cancel()

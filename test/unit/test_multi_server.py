@@ -1247,7 +1247,7 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', fake_fetch)
 
-        def fake_prune(db, sid, present_ids):
+        def fake_prune(db, sid, present_ids, refused=None):
             seen['pruned_for'] = sid
             seen['present_ids'] = present_ids
             return 2
@@ -1337,6 +1337,9 @@ class TestSweepAlignment:
     def test_enqueue_sweep_supersedes_active_sweeps_with_all_server_alignment(self, monkeypatch):
         import app_music_servers as msrv
 
+        # No cleaning run in flight: the sweep and cleaning both prune
+        # track_server_map, so an alignment refuses while cleaning is live.
+        monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: None)
         cancelled = []
         monkeypatch.setattr(
             msrv, '_cancel_active_sweeps', lambda: cancelled.append('old-task') or ['old-task']
@@ -1360,6 +1363,27 @@ class TestSweepAlignment:
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
         assert enqueued['job_id'] == task_id
         assert saved['task_type'] == 'server_sweep'
+
+    def test_enqueue_sweep_refuses_while_a_cleaning_run_is_live(self, monkeypatch):
+        """Both prune track_server_map against a catalogue snapshot taken minutes
+        earlier, so an overlap lets one delete the mappings the other just wrote."""
+        import app_music_servers as msrv
+
+        active = {'task_id': 'clean-1', 'task_type': 'cleaning', 'status': 'PROGRESS'}
+        monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: active)
+        enqueued = []
+        monkeypatch.setattr(
+            msrv.rq_queue_high, 'enqueue', lambda *a, **k: enqueued.append(a)
+        )
+        cancelled = []
+        monkeypatch.setattr(
+            msrv, '_cancel_active_sweeps', lambda: cancelled.append(1) or []
+        )
+
+        assert msrv._enqueue_sweep() is None
+        assert enqueued == []
+        # It must not supersede the sweeps it is not going to replace, either.
+        assert cancelled == []
 
     def test_cancel_active_sweeps_revokes_each_non_terminal_sweep(self, monkeypatch):
         import app_music_servers as msrv
@@ -1448,7 +1472,12 @@ class TestSweepAlignment:
         assert sync.recover_abandoned_sweeps() is None
         assert called == []
 
-    def test_recover_abandoned_sweeps_skips_rows_without_rq_job(self, monkeypatch):
+    def test_recover_abandoned_sweeps_recovers_rows_whose_rq_job_vanished(self, monkeypatch):
+        """A sweep row whose job is gone from Redis entirely used to be SKIPPED, on
+        the theory that the batch-start cleanup would archive it. That cleanup no
+        longer touches sweeps (starting an analysis used to silently revoke a running
+        one), so nothing retired these rows and the servers panel showed a phantom
+        alignment stuck at N% forever."""
         from tasks import multiserver_sync as sync
 
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
@@ -1466,9 +1495,42 @@ class TestSweepAlignment:
             app_helper.rq_queue_high, 'enqueue',
             lambda *a, **k: called.append(1),
         )
-        assert sync.recover_abandoned_sweeps() is None
-        assert called == []
-        assert not [e for e in executed if e[0].startswith('UPDATE task_status')]
+        assert sync.recover_abandoned_sweeps() is not None
+        assert called == [1]
+        assert [e for e in executed if e[0].startswith('UPDATE task_status')]
+
+    def test_reap_orphaned_tasks_fails_rows_with_no_rq_job_behind_them(self, monkeypatch):
+        """A main row is committed BEFORE its job is enqueued. If Redis is down at
+        that moment, the PENDING row survives with nothing behind it, and
+        get_active_main_task counts it as live - so every later Start returns 409,
+        forever. Nothing used to retire it."""
+        from rq.exceptions import NoSuchJobError
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchall.return_value = [('ghost-analysis',)]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+
+        import rq.job
+
+        def _no_job(task_id, connection=None):
+            raise NoSuchJobError(task_id)
+
+        monkeypatch.setattr(rq.job.Job, 'fetch', staticmethod(_no_job))
+
+        assert sync.reap_orphaned_tasks() == 1
+        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
+        assert len(updates) == 1
+        assert 'FAILURE' in updates[0][1]
+        assert ['ghost-analysis'] in updates[0][1]
+
+        # Sweeps are excluded: recover_abandoned_sweeps re-enqueues those instead.
+        select = executed[0]
+        assert sync.SWEEP_TASK_TYPE in select[1]
 
     def test_recover_abandoned_sweeps_backs_off_after_enqueue(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -1554,6 +1616,24 @@ class TestSweepAlignment:
             assert sync.prune_stale_mappings(db, 's1', target) == 0
         assert 'pruning skipped' in caplog.text
         db.commit.assert_not_called()
+
+    def test_a_refused_prune_is_reported_not_silently_zero(self):
+        """A refusal returned 0, exactly like 'nothing to prune'. A library that
+        really did shrink by more than half kept its stale mappings and said so
+        nowhere the user could see."""
+        from tasks import multiserver_sync as sync
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (100,)
+        db = MagicMock()
+        db.cursor.return_value = cursor
+
+        refused = []
+        assert sync.prune_stale_mappings(
+            db, 's1', {str(i) for i in range(10)}, refused=refused
+        ) == 0
+        # The counts are carried out so the UI can say WHICH server refused and why.
+        assert refused == [(10, 100)]
 
 
 class TestFirstRunSetupWizardServerApi:

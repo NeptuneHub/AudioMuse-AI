@@ -197,12 +197,13 @@ gets the next free id).
 Legacy installs migrate ONCE, at Flask container startup, directly on the
 Flask container (never through the job queue): item_ids are relabelled from
 the already-stored embeddings - a pure database operation, computed vectorized
-in chunks across max(2, half the CPU cores) threads, with a single write pass
-per table. The migration only aligns the database: no index rebuild happens at
-startup - the next analysis rebuilds the indexes exactly as it always has.
-Every later boot is an instant no-op. The media server's real id is preserved
-in `track_server_map` and translated back whenever a playlist is sent to a
-server.
+in chunks across a small bounded thread pool, with a single write pass per table.
+The similarity indexes are REPOINTED at the new ids inside the same transaction as
+the relabel: no vectors move, nothing is re-clustered, and similarity keeps working
+across the migration, so no rebuild is required. Only an index that cannot be
+repointed is left for the next analysis to rebuild, as before. Every later boot is
+an instant no-op. The media server's real id is preserved in `track_server_map` and
+translated back whenever a playlist is sent to a server.
 
 Tracks unavailable on the selected server are filtered from results and are
 never sent to that provider as canonical ids.

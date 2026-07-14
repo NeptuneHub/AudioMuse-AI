@@ -361,7 +361,9 @@
                 <p style="margin:0;">
                     <strong>Not designed for:</strong> merging two different libraries, or migrating
                     between providers that expose <em>different</em> sets of files. Tracks that don&rsquo;t
-                    exist on the new provider will be deleted as orphans.
+                    exist on the new provider are unbound from this server (they stop showing up in
+                    its results). Their analysis is kept: nothing is deleted from the catalogue, and
+                    if the files ever come back they are re-matched without re-analysis.
                 </p>
             </div>
         </div>
@@ -527,10 +529,11 @@
         <div id="mig-step-4" class="mig-card locked">
             <h2><span class="mig-step-num">4</span> Manual album matching <span style="font-weight:normal; font-size:0.9em; opacity:0.7;">(optional)</span></h2>
             <p>
-                This step is optional. Any albums you don&rsquo;t match here will be treated as
-                orphans and their tracks deleted when you execute. If that&rsquo;s fine for you,
-                skip straight to step 5. Otherwise, find the correct album on the new provider
-                (tracks auto-fill by title) for any you want to keep.
+                This step is optional. Any albums you don&rsquo;t match here are unbound from this
+                server when you execute: they stop appearing in its results, but their analysis is
+                kept in the catalogue and nothing is deleted. If that&rsquo;s fine for you, skip
+                straight to step 5. Otherwise, find the correct album on the new provider
+                (tracks auto-fill by title) for any you want to keep reachable.
             </p>
             <div id="mig-album-list" class="mig-album-list"></div>
 
@@ -543,7 +546,8 @@
                 <div id="mig-matched-content" style="display:none; margin-top:0.5rem;">
                     <p style="margin:0 0 0.5rem; font-size:0.9em;">
                         Click any album to re-target it if the automatic match is wrong. Tracks that
-                        don&rsquo;t exist in the new target will become orphans and be deleted on execute.
+                        don&rsquo;t exist in the new target are unbound from this server on execute;
+                        their analysis stays in the catalogue.
                     </p>
                     <div id="mig-matched-list" class="mig-album-list"></div>
                     <div class="mig-row" style="justify-content:center; margin-top:0.5rem;">
@@ -583,7 +587,8 @@
                 <div class="mig-checkbox-row">
                     <input type="checkbox" id="mig-final-backup-ok">
                     <label for="mig-final-backup-ok">
-                        I have created a backup and I understand that orphan tracks will be deleted.
+                        I have created a backup and I understand that unmatched tracks will be unbound
+                        from this server (their analysis is kept in the catalogue).
                     </label>
                 </div>
                 <div class="mig-row">
@@ -1356,12 +1361,12 @@
             if (wasRematch) {
                 showSuccess($('mig-match-candidates'),
                     'Re-targeted ' + res.matched + ' tracks. ' +
-                    res.unmatched + ' will be orphaned and deleted.');
+                    res.unmatched + ' will be unbound from this server (analysis kept).');
             } else {
                 markAlbumResolved(currentAlbumKey);
                 showSuccess($('mig-match-candidates'),
                     'Matched ' + res.matched + ' tracks. ' +
-                    res.unmatched + ' tracks in this album will be deleted.');
+                    res.unmatched + ' tracks in this album will be unbound (analysis kept).');
             }
             await loadMatchedAlbums();
         } catch (e) {
@@ -1422,8 +1427,8 @@
             finalCounts = result;
             const collisions = result.collisions || 0;
             let html = '<div class="mig-tier-grid">';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.matched + '</span>tracks to be rewritten</div>';
-            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.orphans + '</span>tracks to be deleted (no match on new provider)</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.matched + '</span>tracks to be repointed at the new provider</div>';
+            html += '<div class="mig-tier-cell"><span class="mig-tier-num">' + result.orphans + '</span>tracks to be unbound, analysis kept (no match on new provider)</div>';
             if (collisions > 0) {
                 html += '<div class="mig-tier-cell" style="background:#fff4e5; border:1px solid #e09f3e; color:#3a2a10;">';
                 html += '<span class="mig-tier-num" style="color:#a04000;">' + collisions + '</span>';
@@ -1455,7 +1460,7 @@
                     }
                     html += '<table style="width:100%; margin-top:0.5rem; border-collapse:collapse; font-size:0.85em; background:#fff4e5; color:#3a2a10;">';
                     html += '<thead><tr style="background:#fbe8c9; color:#3a2a10; border-bottom:1px solid #e09f3e;">';
-                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Will be deleted</th>';
+                    html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Will be unbound</th>';
                     html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Keeps the target</th>';
                     html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Target on new provider</th>';
                     html += '</tr></thead><tbody>';
@@ -1483,7 +1488,7 @@
             $('mig-dl-report').href = "{{ url_for('migration_bp.dry_run_report', session_id=0) }}".replace('/0', '/' + sessionId);
             $('mig-dl-report').style.display = '';
             $('mig-expected-phrase').textContent =
-                'I want to migrate to ' + targetType + ' and delete unmatched tracks';
+                'I want to migrate to ' + targetType + ' and unbind unmatched tracks';
             $('mig-execute-gate').style.display = '';
             updateExecuteBtnState();
         } catch (e) {

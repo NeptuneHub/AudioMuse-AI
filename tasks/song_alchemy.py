@@ -162,8 +162,12 @@ def _get_playlist_components(playlist_id: str) -> Tuple[List[np.ndarray], List[f
     if not track_ids:
         logger.warning(f"Playlist '{playlist_id}' returned no tracks")
         return [], []
+    # Duplicate provider files in the playlist resolve to one canonical id; keeping
+    # both would weight that song's IVF cell twice in the anchor.
     track_ids = list(
-        canonical_input_ids(track_ids, ms_context.active_server_id()).values()
+        dict.fromkeys(
+            canonical_input_ids(track_ids, ms_context.active_server_id()).values()
+        )
     )
 
     total = len(track_ids)

@@ -250,7 +250,18 @@ def bind(server, conn=None):
     from . import context as ms_context
 
     server_id = server['server_id'] if server else None
-    return ms_context.use_server(context_for(server_id, conn) if server_id else None)
+    if not server_id:
+        return ms_context.use_server(None)
+    ctx = context_for(server_id, conn)
+    if ctx is None:
+        # The DEFAULT server: context_for returns None so provider calls fall back
+        # to the config globals. Bind the id alone anyway, or active_server_id() is
+        # None and every availability-scoped reader (the IVF mask, song alchemy,
+        # sonic fingerprint, radio) silently searches the WHOLE union catalogue and
+        # then drops the foreign hits at playlist time. With only server_id set,
+        # type/creds/libraries still resolve from config exactly as before.
+        ctx = {'server_id': server_id}
+    return ms_context.use_server(ctx)
 
 
 def _clear_default(db):
@@ -725,16 +736,29 @@ def upsert_track_maps(server_id, mapping, conn=None):
 
     try:
         written = _run()
-    except psycopg2.errors.InvalidColumnReference:
-        # The (server_id, provider_track_id) key is missing - a worker wrote
-        # before the startup migration, or the DB was restored from an older
-        # schema. Self-heal it (idempotent) and retry once.
+    except (psycopg2.errors.InvalidColumnReference, psycopg2.errors.UniqueViolation) as exc:
+        # Two distinct broken schemas reach here, and only one of them raises 42P10.
+        #  - The (server_id, provider_track_id) key is missing entirely: the ON
+        #    CONFLICT arbiter is unknown, so Postgres raises InvalidColumnReference.
+        #  - The PK swap failed halfway, leaving the NEW unique index AND the OLD
+        #    (item_id, server_id) primary key both enforced. The arbiter then
+        #    resolves fine, so 42P10 never fires - but an N:1 insert (the whole
+        #    point of the relaxed key) dies with a UniqueViolation on the surviving
+        #    old PK, which nothing used to catch.
         logger.warning(
-            "track_server_map is missing its (server_id, provider_track_id) key; "
-            "ensuring the schema and retrying the upsert."
+            "track_server_map does not have the (server_id, provider_track_id) "
+            "primary key; ensuring the schema and retrying the upsert."
         )
-        from database import ensure_track_server_map_schema
+        from database import ensure_track_server_map_schema, track_server_map_pk_columns
         ensure_track_server_map_schema(db)
+        columns = track_server_map_pk_columns(db)
+        if columns != ['server_id', 'provider_track_id']:
+            # ensure_ returns True even when the swap silently rolled back, so trust
+            # the catalog, not the boolean. Retrying here would hit the same 23505.
+            raise RuntimeError(
+                "track_server_map primary key is still %s; the relaxation migration "
+                "did not complete. Check the container logs from startup." % (columns,)
+            ) from exc
         written = _run()
     try:
         from tasks.paged_ivf import invalidate_availability_cache

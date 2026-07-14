@@ -56,7 +56,12 @@ def resolve_request_server_id(data=None):
     # scope treats as "no selection" - failing OPEN to the union catalogue.
     if not isinstance(requested, str):
         if isinstance(requested, (dict, list, tuple, set, bool)):
-            raise ValueError("The 'server' parameter must be a server name or id")
+            # ValueError, not TypeError, is deliberate: every caller catches ValueError
+            # to answer 400, and the unknown-server raise below is the same class.
+            # A TypeError would escape that handler and 500 instead.
+            raise ValueError(  # noqa: TRY004 - ValueError is the 400 contract
+                "The 'server' parameter must be a server name or id"
+            )
         requested = str(requested)
     server = registry.get_server(requested) or registry.get_server_by_name(requested)
     if server is None:
@@ -200,15 +205,18 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
     ``id_key`` is a dict key or a callable that extracts the canonical item_id.
     Raises ValueError for an unknown ``server`` parameter so the
     endpoint can answer 400; a registry failure fails open (rows unchanged).
-    Single-server installs with no explicit selection skip translation entirely.
+
+    A single-server install skips translation only while its ids are still LEGACY,
+    where translation is the identity and the filter cannot drop anything. Once the
+    catalogue is canonicalized, translate_ids is what drops a canonical id with no
+    mapping, so skipping it merely because one server is configured left songs that
+    had been removed from the library showing up in results forever.
     """
     if not rows:
         return rows
     server_id = resolve_request_server_id()
     from tasks.mediaserver import registry
-
-    if server_id is None and not registry.has_secondary_servers():
-        return rows
+    from tasks.simhash import is_fingerprint_id
 
     def _get(row):
         if callable(id_key):
@@ -218,6 +226,13 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
         return None
 
     ids = [i for i in (_get(r) for r in rows) if i]
+    if (
+        server_id is None
+        and not any(is_fingerprint_id(i) for i in ids)
+        and not registry.has_secondary_servers()
+    ):
+        return rows
+
     try:
         mapping = registry.translate_ids(ids, server_id)
     except Exception:

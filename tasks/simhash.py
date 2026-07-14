@@ -563,7 +563,14 @@ class CatalogResolver:
         self._embeddings[item_id] = row
         return row
 
-    def _confirms(self, embedding, candidate_id):
+    def confirms(self, embedding, candidate_id):
+        """Is ``candidate_id`` the same recording as ``embedding``?
+
+        The signature only ever PROPOSES; this exact cosine takes the decision.
+        Public because the analysis mint path needs it to tell a concurrently
+        minted duplicate (adopt it) from a genuine signature collision between two
+        different recordings (step to the next free id).
+        """
         candidate_embedding = self._embedding_for(candidate_id)
         if candidate_embedding is None:
             return False
@@ -571,6 +578,8 @@ class CatalogResolver:
             cosine_distance(embedding, candidate_embedding)
             <= DUPLICATE_DISTANCE_THRESHOLD_COSINE
         )
+
+    _confirms = confirms
 
     def resolve(self, embedding, signature=None):
         """('existing', id) when the audio is already catalogued, else ('new', id).

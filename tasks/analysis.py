@@ -92,12 +92,15 @@ from app_helper import (
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
-from database import get_child_tasks_from_db, get_failed_child_summary
+from database import count_terminal_children, get_failed_child_summary
 
 from error import error_manager
 from error.error_dictionary import (
     ERR_ANALYSIS_FAILED,
     ERR_ALBUM_ANALYSIS_FAILED,
+    ERR_ANALYSIS_NO_TRACKS_ANALYZED,
+    ERR_ANALYSIS_SERVER_FAILED,
+    ERR_TRACK_NOT_ANALYZABLE,
     ERR_DB_CONNECTION,
     ERR_MEDIASERVER_LIBRARY,
     ERR_MEDIASERVER_AUTH,
@@ -127,6 +130,16 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 logger = logging.getLogger(__name__)
 
 
+class TrackNotAnalyzable(Exception):
+    """A track the models cannot extract anything from, through no fault of the run.
+
+    Silent hidden tracks, corrupt files, instrumentals with no lyrics: the download
+    worked and the code worked, the audio simply carries nothing to analyze. These
+    tracks are SKIPPED and counted, never failed, so one unreadable song cannot
+    poison its album, its server phase, or the whole run.
+    """
+
+
 def clean_temp(temp_dir):
     os.makedirs(temp_dir, exist_ok=True)
     for name in os.listdir(temp_dir):
@@ -154,6 +167,26 @@ def _release_freed_ram_to_os():
         libc.malloc_trim(0)
     except (OSError, AttributeError):
         pass
+
+
+def _rq_job_still_pending(job_id):
+    """True while RQ still intends to run ``job_id``, even though its row is terminal.
+
+    An album task writes its FAILURE row and THEN raises so RQ can retry it, and RQ
+    re-queues a job that has retries left rather than failing it. The DB reconcile
+    used to read that FAILURE as 'done' and drop the job, so the phase could finish
+    and build the final indexes while a retry was still sitting in the queue.
+    A job RQ no longer knows about (NoSuchJobError) is genuinely done: that is the
+    case the DB reconcile exists to catch.
+    """
+    try:
+        job = Job.fetch(job_id, connection=redis_conn)
+    except NoSuchJobError:
+        return False
+    except Exception:
+        logger.debug("Could not fetch job %s while reconciling; assuming done.", job_id)
+        return False
+    return job.is_queued or job.is_scheduled or job.is_started
 
 
 def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
@@ -508,6 +541,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             details=initial_details,
         )
         tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
+        tracks_not_analyzable_count = 0
         current_task_logs = initial_details["log"]
 
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
@@ -632,7 +666,42 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
 
             pending_track_maps = {}
             failed_tracks = []
+            map_flush_errors = []
             last_revocation_check = float('-inf')
+
+            def flush_track_maps():
+                """Persist the track->server mappings buffered so far, then drop them.
+
+                Buffering these to the END of the album stranded every track already
+                committed when the album did not reach it: a Stop mid-album, a killed
+                worker, or the OperationalError re-raise. Those tracks had score and
+                embedding rows but no mapping, so the next run saw them as unanalyzed
+                and downloaded and re-analyzed them, forever.
+                """
+                drained = []
+                for map_server_id, pending in pending_track_maps.items():
+                    if not pending:
+                        continue
+                    try:
+                        ready_ids = _ah.get_existing_track_ids(
+                            [cid for cid, _tier in pending.values()]
+                        )
+                        filtered = {
+                            pid: v for pid, v in pending.items() if v[0] in ready_ids
+                        }
+                        if filtered:
+                            registry.upsert_track_maps(map_server_id, filtered)
+                        drained.append(map_server_id)
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist %d pending track map(s) for server %s in "
+                            "album '%s'; will retry on the next flush",
+                            len(pending), map_server_id, album_name,
+                        )
+                        if str(map_server_id) not in map_flush_errors:
+                            map_flush_errors.append(str(map_server_id))
+                for map_server_id in drained:
+                    pending_track_maps[map_server_id] = {}
 
             def revoked():
                 """Has this album job (or its parent) been cancelled?
@@ -640,6 +709,9 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 One round-trip for both ids, throttled: a track takes seconds of
                 MusiCNN, so re-reading the status per track bought nothing and
                 cost two queries each, including for tracks that were skipped.
+
+                A MISSING row counts as revoked: the cancel wipes task_status, so a
+                child that can no longer find its own row has been cancelled.
                 """
                 nonlocal last_revocation_check
                 if not current_job:
@@ -649,13 +721,14 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     return False
                 last_revocation_check = now
                 statuses = get_task_statuses([current_task_id, parent_task_id])
-                if statuses.get(current_task_id) == TASK_STATUS_REVOKED:
+                if statuses.get(current_task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED:
                     return True
                 parent_status = statuses.get(parent_task_id) if parent_task_id else None
                 return parent_status in (TASK_STATUS_REVOKED, TASK_STATUS_FAILURE)
 
             for idx, item in enumerate(tracks, 1):
                 if revoked():
+                    flush_track_maps()
                     log_and_update_album_task(
                         f"Stopping album analysis for '{album_name}' due to parent/self revocation.",
                         current_progress_val,
@@ -741,8 +814,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                                 path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions
                             )
                         if analysis is None:
-                            raise RuntimeError(
-                                f"MusiCNN analysis returned no result for {track_name_full}"
+                            raise TrackNotAnalyzable(
+                                f"no decodable audio for {track_name_full}"
                             )
 
                         top_moods = dict(
@@ -763,6 +836,12 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         if fingerprint_index is None:
                             fingerprint_index = _ah.load_fingerprint_index()
                         kind, resolved_id = fingerprint_index.resolve(musicnn_embedding)
+                        if kind == 'new' and resolved_id is not None:
+                            # The resolver's collision set is process-local, so settle
+                            # the minted id against the DB before anything is written.
+                            kind, resolved_id = _ah.claim_new_canonical_id(
+                                fingerprint_index, resolved_id, musicnn_embedding
+                            )
                         if resolved_id is None:
                             if source_server_id:
                                 pending_track_maps.setdefault(source_server_id, {})[
@@ -837,8 +916,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     if clap_embedding_for_track is not None:
                         track_processed = True
                     elif needs_clap:
-                        raise RuntimeError(
-                            f"DCLAP analysis returned no embedding for {track_name_full}"
+                        raise TrackNotAnalyzable(
+                            f"DCLAP produced no embedding for {track_name_full}"
                         )
                     elif not needs_clap and is_clap_available():
                         logger.info("  - CLAP embedding already exists, skipping")
@@ -886,9 +965,14 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     )
                     if lyrics_saved:
                         track_processed = True
+                    elif needs_lyrics and not track_processed:
+                        raise TrackNotAnalyzable(
+                            f"neither audio nor lyrics could be analyzed for {track_name_full}"
+                        )
                     elif needs_lyrics:
-                        raise RuntimeError(
-                            f"Lyrics analysis returned no embedding for {track_name_full}"
+                        logger.info(
+                            f"  - No lyrics for '{track_name_full}' (instrumental or ungradable "
+                            "transcript); keeping its audio analysis"
                         )
 
                     if track_processed:
@@ -900,6 +984,11 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         tracks_analyzed_count += 1
                 except OperationalError:
                     raise
+                except TrackNotAnalyzable as e:
+                    error_manager.record(
+                        ERR_TRACK_NOT_ANALYZABLE, str(e), logger=logger, level=logging.WARNING
+                    )
+                    tracks_not_analyzable_count += 1
                 except Exception as e:
                     logger.exception(
                         f"Track analysis failed for '{track_name_full}'; continuing with the next track."
@@ -908,26 +997,12 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 finally:
                     if path and os.path.exists(path):
                         os.remove(path)
+                    # Per track, not per album: the score row for this track has just
+                    # committed, so its mapping must land before anything can kill the
+                    # job and leave the track looking unanalyzed forever.
+                    flush_track_maps()
 
-            map_flush_errors = []
-            for map_server_id, pending in pending_track_maps.items():
-                try:
-                    ready_ids = _ah.get_existing_track_ids(
-                        [cid for cid, _tier in pending.values()]
-                    )
-                    filtered = {
-                        pid: v for pid, v in pending.items() if v[0] in ready_ids
-                    }
-                    if filtered:
-                        registry.upsert_track_maps(map_server_id, filtered)
-                except Exception:
-                    logger.exception(
-                        "Failed to persist %d pending track map(s) for server %s in album '%s'",
-                        len(pending),
-                        map_server_id,
-                        album_name,
-                    )
-                    map_flush_errors.append(str(map_server_id))
+            flush_track_maps()
 
             cleanup_musicnn_sessions(onnx_sessions, context="album end")
             onnx_sessions = None
@@ -952,10 +1027,17 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             summary = {
                 "tracks_analyzed": tracks_analyzed_count,
                 "tracks_skipped": tracks_skipped_count,
+                "tracks_not_analyzable": tracks_not_analyzable_count,
                 "total_tracks_in_album": total_tracks_in_album,
             }
+            completion_message = f"Album '{album_name}' analysis complete."
+            if tracks_not_analyzable_count:
+                completion_message += (
+                    f" {tracks_not_analyzable_count}/{total_tracks_in_album} track(s) carried no "
+                    "analyzable audio and were skipped."
+                )
             log_and_update_album_task(
-                f"Album '{album_name}' analysis complete.",
+                completion_message,
                 100,
                 task_state=TASK_STATUS_SUCCESS,
                 final_summary_details=summary,
@@ -1203,6 +1285,39 @@ def _run_analysis_server_task_impl(
             last_monitor_db_check = float('-inf')
             last_status_report = float('-inf')
             last_status_snapshot = None
+            last_revocation_poll = float('-inf')
+            # Children of EVERY union phase share this parent, so the phases that ran
+            # before this one have already left terminal rows under it. Subtract them,
+            # or this phase would start out believing their albums were its own.
+            try:
+                completed_baseline = count_terminal_children(current_task_id)
+            except Exception:
+                logger.exception("Could not read the completed-children baseline")
+                completed_baseline = 0
+
+            def revoked_now():
+                """True once the user has cancelled this run.
+
+                A MISSING row counts as revoked. The cancel wipes task_status, so
+                absence IS the cancellation signal; reading it as 'carry on' is what
+                let a cancelled analysis keep enqueuing albums onto the queue the
+                cancel had just emptied. A failed QUERY is different from an empty
+                answer and leaves the run alive.
+
+                Never writes a status row - the caller returns without one, so the run
+                cannot resurrect itself by re-inserting the row the cancel deleted.
+                """
+                nonlocal last_revocation_poll
+                now = time.monotonic()
+                if now - last_revocation_poll < ANALYSIS_MONITOR_DB_INTERVAL:
+                    return False
+                last_revocation_poll = now
+                try:
+                    statuses = get_task_statuses([current_task_id])
+                except Exception:
+                    logger.exception("Revocation poll failed; assuming the run is live")
+                    return False
+                return statuses.get(current_task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED
 
             def monitor_and_clear_jobs():
                 nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
@@ -1233,26 +1348,28 @@ def _run_analysis_server_task_impl(
                     last_monitor_db_check = now
                     try:
                         terminal = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
-                        child_tasks = get_child_tasks_from_db(current_task_id)
-                        db_done = sum(
-                            1
-                            for t in child_tasks
-                            if t.get('status') in terminal and t.get('task_id') in launched_job_ids
-                        )
+                        # ONE count, not every child row. A union run gives each phase
+                        # the same parent, so fetching the rows pulled every earlier
+                        # phase's children back too - tens of thousands of rows per
+                        # poll, nearly all discarded. The baseline is what previous
+                        # phases had already finished when this one started.
+                        db_done = count_terminal_children(current_task_id) - completed_baseline
+                        # Pruning only ever needs the statuses of jobs still in flight,
+                        # which is bounded by MAX_QUEUED_ANALYSIS_JOBS.
+                        in_flight = list(active_jobs.keys())
+                        if in_flight:
+                            statuses = get_task_statuses(in_flight)
+                            for job_id in in_flight:
+                                if (
+                                    statuses.get(job_id) in terminal
+                                    and not _rq_job_still_pending(job_id)
+                                ):
+                                    active_jobs.pop(job_id, None)
                         if db_done != albums_completed:
                             logger.info(
                                 f"Reconciling albums_completed: RQ={albums_completed} DB={db_done} (of {len(launched_job_ids)} launched)"
                             )
-                            albums_completed = db_done
-                            terminal_ids = {
-                                t['task_id']
-                                for t in child_tasks
-                                if t.get('status') in terminal
-                                and t.get('task_id') in launched_job_ids
-                            }
-                            for j in list(active_jobs.keys()):
-                                if j in terminal_ids:
-                                    active_jobs.pop(j, None)
+                            albums_completed = max(0, db_done)
                     except Exception:
                         logger.exception("Failed to reconcile child tasks from DB")
 
@@ -1321,12 +1438,18 @@ def _run_analysis_server_task_impl(
                 )
 
             for album in all_albums:
+                if revoked_now():
+                    logger.info("Analysis revoked; stopping album dispatch.")
+                    return {'status': TASK_STATUS_REVOKED}
                 if album['Id'] in checked_album_ids:
                     albums_skipped += 1
                     report_progress()
                     continue
                 monitor_and_clear_jobs()
                 while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
+                    if revoked_now():
+                        logger.info("Analysis revoked; stopping album dispatch.")
+                        return {'status': TASK_STATUS_REVOKED}
                     monitor_and_clear_jobs()
                     report_progress()
                     time.sleep(5)
@@ -1432,6 +1555,9 @@ def _run_analysis_server_task_impl(
                 )
 
             while active_jobs:
+                if revoked_now():
+                    logger.info("Analysis revoked; abandoning the drain loop.")
+                    return {'status': TASK_STATUS_REVOKED}
                 monitor_and_clear_jobs()
                 report_progress(force=True)
                 time.sleep(5)
@@ -1469,12 +1595,19 @@ def _run_analysis_server_task_impl(
             final_done = albums_offset + albums_skipped + albums_completed
             final_message = f"Albums {final_done}/{reported_total}"
             if failed_count:
-                final_message += f" ({failed_count} failed)"
-            phase_status = TASK_STATUS_FAILURE if failed_count else TASK_STATUS_SUCCESS
+                final_message += f" ({failed_count} could not be analyzed)"
+            nothing_analyzed = albums_launched > 0 and failed_count >= albums_launched
+            phase_status = TASK_STATUS_FAILURE if nothing_analyzed else TASK_STATUS_SUCCESS
             final_kwargs = {"task_state": phase_status}
             if failed_count:
                 final_kwargs["failed_albums"] = failed_count
                 final_kwargs["failed_album_errors"] = failed_errors
+            if nothing_analyzed:
+                final_kwargs["error"] = error_manager.record(
+                    ERR_ANALYSIS_NO_TRACKS_ANALYZED,
+                    f"All {albums_launched} album(s) queued for analysis failed.",
+                    logger=logger,
+                )
             log_and_update_main(final_message, 100, **final_kwargs)
             clean_temp(TEMP_DIR)
             return {
@@ -1613,7 +1746,10 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 albums_total=grand_total,
             )
             summaries.append(phase_summary)
-            if phase_summary.get('status') != TASK_STATUS_SUCCESS:
+            phase_status = phase_summary.get('status')
+            if phase_status == TASK_STATUS_REVOKED:
+                return {'status': 'REVOKED', 'servers_completed': len(summaries)}
+            if phase_status != TASK_STATUS_SUCCESS:
                 failed.append(server['name'])
         except Exception:
             failed.append(server['name'])
@@ -1630,8 +1766,11 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
         )
         try:
             _run_all_index_builds()
-        except Exception:
-            logger.exception("Final union index build failed")
+        except Exception as e:
+            code = (
+                ERR_INDEX_EMPTY if type(e).__name__ == "EmptyIndexError" else ERR_INDEX_BUILD
+            )
+            err = error_manager.record(code, str(e), exc=e, logger=logger)
             save_task_status(
                 parent_id,
                 "main_analysis",
@@ -1639,26 +1778,45 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 progress=100,
                 details={
                     "message": (
-                        "Union analysis failed during the final index rebuild. "
-                        "Check container logs."
+                        "The analysis finished, but the final similarity index rebuild "
+                        "failed. Check the container logs."
                     ),
                     "failed_servers": failed,
+                    "error": err,
                 },
             )
             raise
-        message = (
-            f"Union analysis complete across {len(servers)} servers; "
-            f"{len(failed)} source phase(s) failed."
-        )
+
+        analyzed_servers = len(servers) - len(failed)
+        run_failed = analyzed_servers == 0
+        details = {"failed_servers": failed}
+        if not failed:
+            message = f"Analysis complete across all {len(servers)} music servers."
+        elif run_failed:
+            message = (
+                f"Analysis could not be completed: all {len(servers)} music servers failed "
+                f"({', '.join(failed)})."
+            )
+            details["error"] = error_manager.record(
+                ERR_ANALYSIS_SERVER_FAILED,
+                f"Every music server failed: {', '.join(failed)}.",
+                logger=logger,
+            )
+        else:
+            message = (
+                f"Analysis complete for {analyzed_servers} of {len(servers)} music servers. "
+                f"Could not analyze: {', '.join(failed)}."
+            )
+        details["message"] = message
         save_task_status(
             parent_id,
             "main_analysis",
-            TASK_STATUS_SUCCESS if not failed else TASK_STATUS_FAILURE,
+            TASK_STATUS_FAILURE if run_failed else TASK_STATUS_SUCCESS,
             progress=100,
-            details={"message": message, "failed_servers": failed},
+            details=details,
         )
     return {
-        'status': 'SUCCESS' if not failed else 'FAILURE',
+        'status': 'FAILURE' if run_failed else 'SUCCESS',
         'message': message,
         'servers': summaries,
         'failed_servers': failed,

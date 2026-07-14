@@ -642,6 +642,61 @@ def load_fingerprint_index():
     return resolver
 
 
+def claim_new_canonical_id(resolver, minted_id, embedding):
+    """Settle a freshly minted id against the DB before anything is persisted.
+
+    ``mint_canonical_id`` avoids collisions using a set that is local to THIS
+    worker process, so two workers analyzing two different recordings whose
+    signatures happen to collide will both mint the same id - and the score upsert
+    (DO UPDATE, deliberately, so a re-analysis refreshes metadata) would then
+    overwrite one song's row and embedding with the other's.
+
+    One indexed PK lookup per genuinely-new track closes that:
+    * no row under the id -> it really is new, keep it;
+    * a row whose embedding the cosine CONFIRMS -> same recording, adopt it as
+      existing (another worker got there first);
+    * a row the cosine REFUTES -> a real signature collision between two different
+      recordings, so step to the next free id instead of clobbering it.
+
+    Returns ``(kind, item_id)`` with kind 'new' or 'existing'.
+    """
+    from tasks.simhash import mint_canonical_id, signature_from_canonical_id
+
+    if not minted_id:
+        return ('new', minted_id)
+
+    taken = set()
+    candidate = minted_id
+    while True:
+        if not get_existing_track_ids([candidate]):
+            if candidate != minted_id:
+                resolver.register(
+                    candidate,
+                    embedding=embedding,
+                    signature=signature_from_canonical_id(candidate),
+                )
+            return ('new', candidate)
+
+        if resolver.confirms(embedding, candidate):
+            logger.info(
+                "Canonical id %s was minted concurrently by another worker for the "
+                "same recording; adopting it instead of persisting a duplicate.",
+                candidate,
+            )
+            return ('existing', candidate)
+
+        logger.warning(
+            "Canonical id %s already belongs to a DIFFERENT recording (signature "
+            "collision); minting the next free id rather than overwriting it.",
+            candidate,
+        )
+        taken.add(candidate)
+        signature = signature_from_canonical_id(minted_id)
+        if signature is None:
+            return ('new', minted_id)
+        candidate = mint_canonical_id(signature, taken)
+
+
 def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
     parts = ["MusiCNN"]
     if clap_available:

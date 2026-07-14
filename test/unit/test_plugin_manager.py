@@ -1085,8 +1085,11 @@ class TestPluginTaskRunsPerServer:
         results = _run_per_server(
             lambda: seen.append(context.active_server_id()) or 'ran', 'all', (), {}
         )
-        # The default server's context is None (config fallback), the secondary binds.
-        assert seen == [None, 's2']
+        # Every bound server reports its own id, the DEFAULT included. Binding the
+        # default to a None context (its provider calls still fall back to config)
+        # left active_server_id() empty, which every availability-scoped reader
+        # takes to mean "search the whole union catalogue".
+        assert seen == ['d1', 's2']
         assert results == ['ran', 'ran']
 
     def test_single_server_scope_returns_one_result(self, monkeypatch):

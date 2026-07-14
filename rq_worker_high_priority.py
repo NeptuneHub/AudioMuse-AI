@@ -14,7 +14,8 @@ promptly alongside the heavier default-queue worker.
 
 Main Features:
 * Caps math-library threads (cpu_count // 3) and pins passive OpenMP waiting.
-* Uses ``SimpleWorker`` on Windows and restarts after ``RQ_MAX_JOBS_HIGH`` jobs.
+* Takes its worker class from ``rq_heartbeat_worker`` (a heartbeating SimpleWorker on
+  Windows, the forking Worker elsewhere) and restarts after ``RQ_MAX_JOBS_HIGH`` jobs.
 """
 
 import os
@@ -39,9 +40,7 @@ os.environ.setdefault('GOMP_SPINCOUNT', '0')
 os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"High-priority worker CPU thread cap = {_max_threads} (cpu_count // 3, min 1)")
 
-from rq import SimpleWorker, Worker
-
-WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
+from rq_heartbeat_worker import WorkerClass
 
 try:
     from app_helper import redis_conn
