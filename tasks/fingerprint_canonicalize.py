@@ -51,17 +51,11 @@ import io
 import json
 import logging
 import time
-import uuid
 
 import numpy as np
 
 import config
-from config import (
-    TASK_STATUS_PROGRESS,
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
-)
-from database import connect_raw, save_task_status
+from database import connect_raw
 from tasks import simhash
 from tasks.mediaserver import registry
 from tasks.provider_migration_tasks import (
@@ -689,32 +683,8 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
     autocommit forced off for the rewrite (both restored on a caller-provided
     connection) so large catalogues are not cancelled mid-relabel.
     """
-    task_id = str(uuid.uuid4())
-
-    def _report(message, progress, state=TASK_STATUS_PROGRESS):
-        """Publish the step into task_status, on its OWN connection.
-
-        A whole-catalogue rewrite takes minutes on a large library, and it runs at
-        boot, before the app serves: without this it is indistinguishable from a
-        hung container. Written outside this function's transaction (save_task_status
-        uses its own), so the progress is visible WHILE the rewrite is still open.
-        Never fatal: a status write must not be able to fail a migration.
-        """
-        try:
-            save_task_status(
-                task_id,
-                'catalogue_migration',
-                state,
-                progress=progress,
-                details={'message': message, 'status_message': message},
-            )
-        except Exception:
-            logger.debug("Could not record canonicalization progress", exc_info=True)
-
-    def _log(message, progress=None, state=TASK_STATUS_PROGRESS):
-        logger.info("[CatalogueMigration-%s] %s", task_id, message)
-        if progress is not None:
-            _report(message, progress, state)
+    def _log(message):
+        logger.info("[CatalogueMigration] %s", message)
         if log_fn is not None:
             try:
                 log_fn(message, None)
@@ -749,7 +719,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
                 "provider ids; relabelling now would lose them"
             )
             return {'skipped': 'no_default'}
-        _log("Computing canonical ids from stored embeddings...", 5)
+        _log("Computing canonical ids from stored embeddings...")
         mapping, duplicate_mapping = _build_mapping(cur)
         duplicates = len(duplicate_mapping)
         if not mapping and not duplicate_mapping:
@@ -757,8 +727,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             return {'relabelled': 0, 'duplicates': duplicates}
         _log(
             f"Rewriting {len(mapping)} catalogue keys and merging "
-            f"{duplicates} duplicate rows...",
-            40,
+            f"{duplicates} duplicate rows..."
         )
         cur.execute("SET LOCAL synchronous_commit = off")
         all_changes = dict(mapping)
@@ -788,7 +757,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         _readd_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
         _merge_duplicate_rows(cur, duplicate_mapping)
 
-        _log("Preserving the server's real track ids in track_server_map...", 70)
+        _log("Preserving the server's real track ids in track_server_map...")
         _copy_track_server_map(
             cur, source_id, all_changes, default_provider_ids, legacy_paths
         )
@@ -798,13 +767,13 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         )
         # In the SAME transaction as the relabel: the catalogue's ids and the
         # indexes' ids are one fact, and they must never be observable apart.
-        _log("Pointing the similarity indexes at the new ids...", 85)
+        _log("Pointing the similarity indexes at the new ids...")
         _repoint_indexes(cur, all_changes)
 
         # The last thing before the point of no return. Everything above is still
         # rollback-able; one COMMIT from here it is permanent and every later run
         # trusts it.
-        _log("Verifying the rewritten catalogue...", 95)
+        _log("Verifying the rewritten catalogue...")
         _verify_migration(cur, score_before, duplicates, index_lengths_before)
 
         db.commit()
@@ -817,12 +786,6 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             len(mapping), duplicates,
         )
         logger.info("=" * 64)
-        _log(
-            f"Catalogue migration complete: {len(mapping)} tracks relabelled, "
-            f"{duplicates} duplicates merged.",
-            100,
-            TASK_STATUS_SUCCESS,
-        )
         _publish_index_reload()
     except CanonicalizationVerificationError as e:
         try:
@@ -835,12 +798,6 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             "The catalogue is EXACTLY as it was; nothing was committed.", e,
         )
         logger.critical("=" * 64)
-        _log(
-            "Catalogue migration rolled back: the rewrite failed its own checks. "
-            "The catalogue is unchanged. Check the container logs.",
-            100,
-            TASK_STATUS_FAILURE,
-        )
         raise
     except Exception:
         try:
@@ -848,12 +805,6 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         except Exception:
             pass
         logger.exception("Fingerprint canonicalization failed; catalogue left unchanged")
-        _log(
-            "Catalogue migration failed; the catalogue is unchanged. "
-            "Check the container logs.",
-            100,
-            TASK_STATUS_FAILURE,
-        )
         raise
     finally:
         if not own_conn and prev_timeout is not None:
