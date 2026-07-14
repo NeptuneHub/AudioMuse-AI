@@ -408,7 +408,9 @@ def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
         cur = conn.cursor()
         try:
             cur.execute(
-                "SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.file_path "
+                "SELECT s.item_id, s.title, s.author, s.album, s.album_artist, "
+                "s.file_path, ARRAY(SELECT DISTINCT p.file_path FROM track_server_map p "
+                "WHERE p.item_id = s.item_id AND p.file_path IS NOT NULL) "
                 "FROM score s WHERE s.item_id > %s AND NOT EXISTS ("
                 "SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id AND m.server_id = %s) "
                 "ORDER BY s.item_id LIMIT %s",
@@ -428,6 +430,7 @@ def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
                 'album': r[3],
                 'album_artist': r[4],
                 'file_path': r[5],
+                'file_paths': [p for p in (list(r[6] or []) + [r[5]]) if p],
             }
             for r in rows
         ]
@@ -453,9 +456,15 @@ def _already_mapped_ids(db, server_id):
         cur.close()
 
 
-def _write_matches(db, server_id, result):
+def _write_matches(db, server_id, result, path_by_id=None):
+    """Record each match, carrying THIS server's own path for the matched file."""
+    paths = path_by_id or {}
     mapping = {
-        new_id: (item_id, result['match_tiers'].get(item_id))
+        new_id: (
+            item_id,
+            result['match_tiers'].get(item_id),
+            paths.get(str(new_id)),
+        )
         for item_id, new_id in result['matches'].items()
     }
     return registry.upsert_track_maps(server_id, mapping, conn=db)
@@ -638,12 +647,13 @@ def _stage_track_metadata(db, tracks):
         cur.close()
 
 
-def _refresh_mapped_metadata(db, server_id, is_default):
+def _refresh_mapped_metadata(db, server_id):
     """Batch-refresh catalogue metadata for every track mapped to this server.
 
-    ``file_path`` is written ONLY by the default server: the shared row holds a
-    single path and that path is the matcher's top-priority tier, so a secondary
-    server must never stamp its own layout onto it.
+    ``file_path`` is NEVER written to the shared score row: a path belongs to a
+    file on a server, so it is refreshed onto THIS server's own map row. Every
+    server records the path it sees, which is what lets the matcher offer a new
+    server every known path rather than only the default server's.
     """
     cur = db.cursor()
     try:
@@ -654,7 +664,7 @@ def _refresh_mapped_metadata(db, server_id, is_default):
             return 0
     finally:
         cur.close()
-    fields = _META_FIELDS + (('file_path',) if is_default else ())
+    fields = _META_FIELDS
     set_parts = pgsql.SQL(", ").join(
         pgsql.SQL("{0} = COALESCE(i.{0}, s.{0})").format(pgsql.Identifier(f))
         for f in fields
@@ -666,8 +676,7 @@ def _refresh_mapped_metadata(db, server_id, is_default):
         for f in fields
     )
     # N provider tracks may map to one item_id (duplicate files); collapse to one
-    # metadata source per item so the UPDATE is deterministic (matters only for
-    # file_path - all duplicates are the same audio).
+    # metadata source per item so the UPDATE is deterministic.
     query = pgsql.SQL(
         "UPDATE score s SET {} FROM ("
         "  SELECT DISTINCT ON (m.item_id) m.item_id AS item_id, i.* "
@@ -681,6 +690,13 @@ def _refresh_mapped_metadata(db, server_id, is_default):
     try:
         cur.execute(query, (server_id,))
         refreshed = cur.rowcount
+        cur.execute(
+            "UPDATE track_server_map m SET file_path = i.file_path "
+            "FROM sweep_track_meta i "
+            "WHERE m.provider_track_id = i.provider_track_id AND m.server_id = %s "
+            "AND i.file_path IS NOT NULL AND m.file_path IS DISTINCT FROM i.file_path",
+            (server_id,),
+        )
         cur.execute("DROP TABLE IF EXISTS sweep_track_meta")
         db.commit()
         return refreshed
@@ -788,7 +804,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
         for chunk in _iter_unmapped_local_rows(db, server_id):
             cancel()
             result = index.match_chunk(chunk, claimed)
-            written += _write_matches(db, server_id, result)
+            written += _write_matches(db, server_id, result, index.path_by_id)
             processed += len(chunk)
             for tier, count in result['tier_counts'].items():
                 if count:
@@ -800,7 +816,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
                     f"{unmapped_count} checked, {written} matched...",
                     pct,
                 )
-    refreshed = _refresh_mapped_metadata(db, server_id, bool(server.get('is_default')))
+    refreshed = _refresh_mapped_metadata(db, server_id)
     artists_written = _write_artist_maps(db, server, artist_maps)
     logger.info(
         "Multi-server sweep for '%s': mapped %d/%d unmapped tracks "

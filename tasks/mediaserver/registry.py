@@ -673,12 +673,16 @@ def artist_track_counts(artist_names, server_id=None, conn=None):
 
 
 def upsert_track_maps(server_id, mapping, conn=None):
-    """Bulk-upsert ``{provider_track_id: (item_id, match_tier)}`` for a server.
+    """Bulk-upsert ``{provider_track_id: (item_id, match_tier, file_path)}``.
 
     N provider tracks may map to one canonical item_id on a server (duplicate
     files sharing one fingerprint). Keyed by ``provider_track_id``, the table's
     PRIMARY KEY column, so every provider row survives instead of colliding on
     ``(item_id, server_id)``.
+
+    ``file_path`` is THIS server's path for the file and is optional: a caller
+    that does not know it passes a 2-tuple and the stored path is left alone
+    (COALESCE), so a path-less writer can never erase a path a sweep recorded.
     """
     if not mapping:
         return 0
@@ -686,16 +690,19 @@ def upsert_track_maps(server_id, mapping, conn=None):
     rows_by_provider = {}
     for provider_track_id, value in mapping.items():
         if isinstance(value, (tuple, list)):
-            item_id, match_tier = value[0], (value[1] if len(value) > 1 else None)
+            item_id = value[0]
+            match_tier = value[1] if len(value) > 1 else None
+            file_path = value[2] if len(value) > 2 else None
         else:
-            item_id, match_tier = value, None
+            item_id, match_tier, file_path = value, None, None
         if provider_track_id is None or provider_track_id == '':
             continue
         if item_id is None or item_id == '':
             continue
         provider_track_id = str(provider_track_id)
         rows_by_provider[provider_track_id] = (
-            str(item_id), server_id, provider_track_id, match_tier
+            str(item_id), server_id, provider_track_id, match_tier,
+            str(file_path) if file_path else None,
         )
     rows = list(rows_by_provider.values())
     if not rows:
@@ -713,8 +720,8 @@ def upsert_track_maps(server_id, mapping, conn=None):
             rows,
             stage_ddl=(
                 "CREATE TEMP TABLE incoming_track_server_map "
-                "(item_id TEXT, server_id TEXT, provider_track_id TEXT, match_tier TEXT) "
-                "ON COMMIT DROP"
+                "(item_id TEXT, server_id TEXT, provider_track_id TEXT, match_tier TEXT, "
+                "file_path TEXT) ON COMMIT DROP"
             ),
             stage_insert="INSERT INTO incoming_track_server_map VALUES %s",
             conflict_delete=(
@@ -725,12 +732,15 @@ def upsert_track_maps(server_id, mapping, conn=None):
             ),
             final_insert=(
                 "INSERT INTO track_server_map "
-                "(item_id, server_id, provider_track_id, match_tier, updated_at) VALUES %s "
+                "(item_id, server_id, provider_track_id, match_tier, file_path, updated_at) "
+                "VALUES %s "
                 "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
                 "item_id = EXCLUDED.item_id, "
-                "match_tier = EXCLUDED.match_tier, updated_at = now()"
+                "match_tier = EXCLUDED.match_tier, "
+                "file_path = COALESCE(EXCLUDED.file_path, track_server_map.file_path), "
+                "updated_at = now()"
             ),
-            final_template="(%s, %s, %s, %s, now())",
+            final_template="(%s, %s, %s, %s, %s, now())",
             pre_commit=_touch_server,
         )
 

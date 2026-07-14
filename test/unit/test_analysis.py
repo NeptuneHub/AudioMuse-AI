@@ -280,7 +280,7 @@ def test_new_track_persists_under_signature_id_and_maps_it(monkeypatch, tmp_path
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == [expected_id]
     assert item['_catalog_item_id'] == expected_id
-    assert map_upserts == [('srv-def', {'prov1': (expected_id, 'fingerprint')})]
+    assert map_upserts == [('srv-def', {'prov1': (expected_id, 'fingerprint', None)})]
 
 
 def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path):
@@ -299,7 +299,7 @@ def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path
     assert result['status'] == 'SUCCESS'
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == []
-    assert map_upserts == [('srv-def', {'prov1': (known_id, 'fingerprint')})]
+    assert map_upserts == [('srv-def', {'prov1': (known_id, 'fingerprint', None)})]
 
 
 def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
@@ -330,7 +330,7 @@ def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
     assert len(persisted_ids) == 1
     assert persisted_ids[0] != taken_id
     assert persisted_ids[0].startswith('fp_2')
-    assert map_upserts == [('srv-def', {'prov1': (persisted_ids[0], 'fingerprint')})]
+    assert map_upserts == [('srv-def', {'prov1': (persisted_ids[0], 'fingerprint', None)})]
 
 
 def test_degenerate_embedding_is_still_mapped_so_it_is_not_re_analyzed_forever(
@@ -360,7 +360,7 @@ def test_degenerate_embedding_is_still_mapped_so_it_is_not_re_analyzed_forever(
     # Provider-keyed: the single key is the provider id, the value carries the
     # canonical id (identical here only because a degenerate track keeps its own).
     assert map_upserts == [
-        ('srv-def', {'prov-degenerate': ('prov-degenerate', 'analysis')})
+        ('srv-def', {'prov-degenerate': ('prov-degenerate', 'analysis', None)})
     ]
 
 
@@ -395,16 +395,19 @@ def test_two_duplicate_files_on_one_server_both_get_a_map_row(monkeypatch, tmp_p
     for _sid, mapping in map_upserts:
         merged.update(mapping)
     assert merged == {
-        'provA': (expected_id, 'fingerprint'),
-        'provB': (expected_id, 'fingerprint'),
+        'provA': (expected_id, 'fingerprint', None),
+        'provB': (expected_id, 'fingerprint', None),
     }
 
 
-def test_default_server_writes_file_path_but_a_secondary_never_does(
-    monkeypatch, tmp_path
-):
-    """score.file_path is the matcher's top-priority tier and the row is SHARED,
-    so only the default server may stamp its own path layout onto it."""
+def test_every_server_records_its_own_path_on_its_own_map_row(monkeypatch, tmp_path):
+    """A path is a property of a FILE ON A SERVER, not of the shared song row.
+
+    A SECONDARY server must record the path IT sees, exactly as the default does.
+    The old rule (only the default may write a path) left the sweep matcher's two
+    strongest tiers with no evidence at all for any track the default happens not
+    to have, so onboarding an 11th server could only match those by metadata.
+    """
     from tasks import simhash
     from tasks.mediaserver import context as ms_context
 
@@ -413,23 +416,25 @@ def test_default_server_writes_file_path_but_a_secondary_never_does(
         'FilePath': '/music/song.flac',
     }
 
-    default_calls = []
+    default_maps = []
     _run_album_impl(
-        monkeypatch, tmp_path, dict(item), simhash.CatalogResolver(), [], [],
-        persist_calls=default_calls,
+        monkeypatch, tmp_path, dict(item), simhash.CatalogResolver(), [], default_maps,
     )
-    assert default_calls[0]['is_default_server'] is True
+    assert default_maps[0][1]['prov1'][2] == '/music/song.flac'
 
-    secondary_calls = []
+    secondary_item = dict(item, FilePath='/plex-media/song.flac')
+    secondary_maps = []
     with ms_context.use_server({'server_id': 'srv-b', 'server_type': 'plex'}):
         _run_album_impl(
-            monkeypatch, tmp_path, dict(item), simhash.CatalogResolver(), [], [],
-            persist_calls=secondary_calls,
+            monkeypatch, tmp_path, secondary_item, simhash.CatalogResolver(),
+            [], secondary_maps,
         )
-    assert secondary_calls[0]['is_default_server'] is False
+    assert secondary_maps[0][0] == 'srv-b'
+    assert secondary_maps[0][1]['prov1'][2] == '/plex-media/song.flac'
 
 
-def test_persist_musicnn_results_drops_file_path_for_a_secondary_server(monkeypatch):
+def test_persist_musicnn_results_never_writes_a_path_to_the_shared_row(monkeypatch):
+    """The shared score row carries no path at all any more; it rides the map row."""
     from tasks import analysis_helper as helper
 
     saved = {}
@@ -444,12 +449,8 @@ def test_persist_musicnn_results_drops_file_path_for_a_secondary_server(monkeypa
     }
     analysis = {'tempo': 120.0, 'energy': 0.5, 'key': 'C', 'scale': 'major'}
 
-    helper.persist_musicnn_results(item, analysis, {}, b'', '', is_default_server=True)
-    assert saved['file_path'] == '/music/song.flac'
-
-    saved.clear()
-    helper.persist_musicnn_results(item, analysis, {}, b'', '', is_default_server=False)
-    assert saved['file_path'] is None
+    helper.persist_musicnn_results(item, analysis, {}, b'', '')
+    assert 'file_path' not in saved
 
 
 def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tmp_path):

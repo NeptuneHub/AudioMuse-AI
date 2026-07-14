@@ -614,7 +614,6 @@ def save_track_analysis_and_embedding(
     album_artist=None,
     year=None,
     rating=None,
-    file_path=None,
 ):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
@@ -626,7 +625,6 @@ def save_track_analysis_and_embedding(
 
     year = _parse_year_from_date(year)
     rating = _clamp_rating(rating)
-    file_path = sanitize_db_field(file_path, max_length=1000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
 
@@ -635,8 +633,8 @@ def save_track_analysis_and_embedding(
     try:
         cur.execute(
             """
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -649,8 +647,7 @@ def save_track_analysis_and_embedding(
                 album = EXCLUDED.album,
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
-                rating = EXCLUDED.rating,
-                file_path = COALESCE(EXCLUDED.file_path, score.file_path)
+                rating = EXCLUDED.rating
         """,
             (
                 item_id,
@@ -666,7 +663,6 @@ def save_track_analysis_and_embedding(
                 album_artist,
                 year,
                 rating,
-                file_path,
             ),
         )
 
@@ -1324,11 +1320,16 @@ def init_db():
                     server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE,
                     provider_track_id TEXT NOT NULL,
                     match_tier TEXT,
+                    file_path TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (item_id, server_id)
                 )
             """)
+            cur.execute(
+                "ALTER TABLE track_server_map ADD COLUMN IF NOT EXISTS file_path TEXT"
+            )
             _ensure_track_server_map_key(cur)
+            _migrate_file_path_to_track_server_map(cur)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS artist_server_map (
                     artist_name TEXT NOT NULL,
@@ -1374,6 +1375,47 @@ def connect_raw():
         keepalives_count=3,
         options=_CONNECT_OPTIONS,
     )
+
+
+def _migrate_file_path_to_track_server_map(cur):
+    """Move the audio path from the SHARED score row onto each server's map row.
+
+    A path is a property of a FILE ON A SERVER, not of the song. Holding one path
+    per catalogue row meant only the default server could ever write it, so the
+    matcher's two strongest tiers (path, tail) had no evidence at all for a track
+    the default happens not to have - and adding an 11th server could only match
+    such tracks by metadata. Each server now records the path IT sees.
+
+    Idempotent and loss-free by construction, so it needs no marker row: the copy
+    only fills map rows that have no path yet, and score.file_path is cleared ONLY
+    for rows whose path is already safe in at least one map row. A catalogue row
+    that is on no server keeps its path until a map row exists to carry it.
+    """
+    cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM score WHERE file_path IS NOT NULL LIMIT 1)"
+    )
+    if not cur.fetchone()[0]:
+        return
+
+    cur.execute(
+        "UPDATE track_server_map m SET file_path = s.file_path "
+        "FROM score s, music_servers ms "
+        "WHERE m.item_id = s.item_id AND m.server_id = ms.server_id "
+        "AND ms.is_default AND s.file_path IS NOT NULL AND m.file_path IS NULL"
+    )
+    moved = cur.rowcount
+
+    cur.execute(
+        "UPDATE score s SET file_path = NULL WHERE s.file_path IS NOT NULL "
+        "AND EXISTS (SELECT 1 FROM track_server_map m "
+        "WHERE m.item_id = s.item_id AND m.file_path IS NOT NULL)"
+    )
+    cleared = cur.rowcount
+    if moved or cleared:
+        logger.info(
+            "Moved %d file path(s) onto the default server's map rows and cleared "
+            "%d shared score.file_path value(s).", moved, cleared,
+        )
 
 
 def _ensure_track_server_map_key(cur):

@@ -415,7 +415,6 @@ def _apply_new_meta(cur, new_meta):
     # This refreshes the song's metadata from the new provider; it does not move it.
     cur.execute(
         "UPDATE score s SET "
-        "  file_path    = COALESCE(n.new_path,         s.file_path), "
         "  title        = COALESCE(n.new_title,        s.title), "
         "  author       = COALESCE(n.new_artist,       s.author), "
         "  album        = COALESCE(n.new_album,        s.album), "
@@ -423,6 +422,13 @@ def _apply_new_meta(cur, new_meta):
         "  year         = COALESCE(n.new_year,         s.year) "
         "FROM migration_new_meta n, item_id_migration_map m "
         "WHERE m.new_id = n.new_id AND s.item_id = m.old_id"
+    )
+    cur.execute(
+        "UPDATE track_server_map t SET file_path = n.new_path, updated_at = now() "
+        "FROM migration_new_meta n, item_id_migration_map m, music_servers s "
+        "WHERE m.new_id = n.new_id AND t.item_id = m.old_id "
+        "AND s.is_default AND t.server_id = s.server_id "
+        "AND n.new_path IS NOT NULL"
     )
 
 
@@ -511,13 +517,29 @@ def _run_migration_transaction(
         "WHERE t2.item_id = t.item_id AND t2.server_id = t.server_id)"
     )
 
-    # The migration, in one statement: the song keeps its canonical id, and only the
-    # provider id it is reachable by on the default server changes.
+    # The song keeps its canonical id; only the provider id it is reachable by on the
+    # default server changes. In TWO passes, via a prefix no provider id can collide
+    # with: (server_id, provider_track_id) is a plain unique index, which Postgres
+    # enforces row by row inside a single UPDATE. A re-point onto the SAME provider
+    # (a library rebuild) permutes the ids rather than replacing them, so a one-pass
+    # UPDATE trips the index the moment it assigns an id another row still holds.
+    # Every unmatched and duplicate row is already gone above, so the only rows left
+    # on this server are the matched ones: the prefixed values are distinct, and no
+    # unprefixed row survives to collide with them.
     cur.execute(
-        "UPDATE track_server_map t SET provider_track_id = m.new_id, "
+        "UPDATE track_server_map t SET provider_track_id = %s || m.new_id, "
         "match_tier = 'default', updated_at = now() "
         "FROM item_id_migration_map m, music_servers s "
-        "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.old_id"
+        "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.old_id",
+        (_MIG_TMP_PREFIX,),
+    )
+    cur.execute(
+        "UPDATE track_server_map t "
+        "SET provider_track_id = substr(t.provider_track_id, %s) "
+        "FROM music_servers s "
+        "WHERE s.is_default AND t.server_id = s.server_id "
+        "AND t.provider_track_id LIKE %s",
+        (len(_MIG_TMP_PREFIX) + 1, _MIG_TMP_PREFIX + '%'),
     )
 
     _apply_new_meta(cur, new_meta)

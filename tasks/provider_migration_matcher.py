@@ -202,11 +202,28 @@ def _new_title_artist_key(new):
     return (t, a)
 
 
+def old_paths(old):
+    """Every path known for this catalogue row, across ALL servers that hold it.
+
+    The path is a property of a FILE ON A SERVER, so one song can legitimately
+    have a different path on each server. Matching a new server against only ONE
+    of them (historically the default server's) left the path and tail tiers with
+    no evidence at all for any track the default did not happen to have.
+    """
+    paths = old.get('file_paths')
+    if paths:
+        return [p for p in paths if p]
+    single = old.get('file_path')
+    return [single] if single else []
+
+
 def _pick_meta_candidate(old, candidates):
     if len(candidates) == 1:
         return candidates[0]
-    old_dt = extract_disc_track(old.get('file_path'))
-    if old_dt is not None:
+    for path in old_paths(old):
+        old_dt = extract_disc_track(path)
+        if old_dt is None:
+            continue
         for c in candidates:
             if extract_disc_track(c.get('path')) == old_dt:
                 return c
@@ -233,6 +250,7 @@ class CandidateIndex:
         self.by_exact_meta = {}
         self.by_norm_meta = {}
         self.by_title_artist = {}
+        self.path_by_id = {}
         self.size = 0
         for n in new_tracks:
             self.add(n)
@@ -247,6 +265,8 @@ class CandidateIndex:
             'album': n.get('album'),
         }
         self.size += 1
+        if slim['path']:
+            self.path_by_id[str(slim['id'])] = slim['path']
         np = normalize_path(slim['path'])
         if np and np not in self.by_norm_path:
             self.by_norm_path[np] = slim['id']
@@ -265,12 +285,14 @@ class CandidateIndex:
                 self.by_title_artist.setdefault(tak, []).append(slim)
 
     def _propose(self, old):
-        np = normalize_path(old.get('file_path'))
-        if np and np in self.by_norm_path:
-            return ('path', self.by_norm_path[np])
-        tk = path_tail_key(np) if np else None
-        if tk and tk in self.by_tail:
-            return ('tail', self.by_tail[tk])
+        norm_paths = [p for p in (normalize_path(p) for p in old_paths(old)) if p]
+        for np in norm_paths:
+            if np in self.by_norm_path:
+                return ('path', self.by_norm_path[np])
+        for np in norm_paths:
+            tk = path_tail_key(np)
+            if tk and tk in self.by_tail:
+                return ('tail', self.by_tail[tk])
         ek = _old_exact_meta_key(old)
         if ek and ek in self.by_exact_meta:
             return ('exact_meta', _pick_meta_candidate(old, self.by_exact_meta[ek])['id'])

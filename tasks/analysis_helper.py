@@ -748,17 +748,13 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
         return zero
 
 
-def persist_musicnn_results(
-    item, analysis, top_moods, embedding, other_features_str, is_default_server=True
-):
+def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):
     """Store one track's MusiCNN results under its canonical catalogue id.
 
-    ``file_path`` is written ONLY from the default server. The catalogue row is
-    shared by every server holding the track but carries a single path, and that
-    path is the top-priority tier of the matcher that onboards the NEXT server.
-    Letting a secondary stamp its own layout onto the shared row would silently
-    demote the track to the weaker metadata tiers forever. The upsert COALESCEs
-    it, so passing None never erases a path the default server already wrote.
+    The path is NOT written here. It belongs to a file on a server, not to the
+    shared song row, so it rides the track_server_map row this track's analysis
+    also writes: every server records the path IT sees. The shared score row no
+    longer carries a path at all.
     """
     save_track_analysis_and_embedding(
         catalog_item_id(item),
@@ -777,7 +773,6 @@ def persist_musicnn_results(
         or item.get('album_artist'),
         year=item.get('Year'),
         rating=item.get('Rating'),
-        file_path=item.get('FilePath') if is_default_server else None,
     )
 
 

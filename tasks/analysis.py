@@ -594,10 +594,6 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     "tracks_analyzed": 0,
                 }
 
-            is_default_server = (
-                server_context.active_server_id() or registry.get_default_server_id()
-            ) == registry.get_default_server_id()
-
             _ah.attach_catalog_item_ids(tracks)
             track_ids_all = [_ah.catalog_item_id(t) for t in tracks]
             existing_track_ids_set = _ah.get_existing_track_ids(track_ids_all)
@@ -684,7 +680,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         continue
                     try:
                         ready_ids = _ah.get_existing_track_ids(
-                            [cid for cid, _tier in pending.values()]
+                            [v[0] for v in pending.values()]
                         )
                         filtered = {
                             pid: v for pid, v in pending.items() if v[0] in ready_ids
@@ -846,7 +842,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             if source_server_id:
                                 pending_track_maps.setdefault(source_server_id, {})[
                                     provider_id
-                                ] = (track_id_str, 'analysis')
+                                ] = (track_id_str, 'analysis', item.get('FilePath'))
                             logger.warning(
                                 "Embedding signature unavailable for '%s'; keeping "
                                 "provider id %s and mapping it, so it is not "
@@ -858,7 +854,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             if source_server_id:
                                 pending_track_maps.setdefault(source_server_id, {})[
                                     provider_id
-                                ] = (resolved_id, 'fingerprint')
+                                ] = (resolved_id, 'fingerprint', item.get('FilePath'))
                             logger.info(
                                 "Embedding signature + cosine matched '%s' to existing "
                                 "catalogue id %s; marked it for this server and "
@@ -891,7 +887,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             if source_server_id:
                                 pending_track_maps.setdefault(source_server_id, {})[
                                     provider_id
-                                ] = (resolved_id, 'fingerprint')
+                                ] = (resolved_id, 'fingerprint', item.get('FilePath'))
                     else:
                         musicnn_analysis = musicnn_embedding = None
                         top_moods = existing_top_moods_by_id.get(track_id_str) or None
@@ -944,7 +940,6 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             top_moods,
                             musicnn_embedding,
                             other_features,
-                            is_default_server=is_default_server,
                         )
 
                     _ah.persist_clap_embedding(

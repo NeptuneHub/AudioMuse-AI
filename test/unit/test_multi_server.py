@@ -365,6 +365,45 @@ class TestMatcherTiers:
         assert result['matches'] == {'A': 'n1'}
         assert result['match_tiers']['A'] == 'exact_meta'
 
+    def test_an_11th_server_matches_on_a_path_the_default_server_never_had(self):
+        """The whole point of the per-server path column.
+
+        The track lives on servers 5 and 7, NEVER on the default, so the shared row
+        holds no path for it. Onboarding an 11th server that has the very same file
+        must still match on PATH. Under the old one-path-per-catalogue model there
+        was no path to match against and this fell through to the metadata tiers,
+        which here would have matched the WRONG track.
+        """
+        from tasks.provider_migration_matcher import match_tracks
+
+        old = [{
+            'item_id': 'A', 'title': 't', 'author': 'a', 'album': 'al',
+            'file_path': None,
+            'file_paths': ['/srv5/music/song.flac', '/srv7/media/song.flac'],
+        }]
+        new = [
+            {'id': 'right', 'title': 'zzz', 'artist': 'q', 'album': 'w',
+             'path': '/srv7/media/song.flac'},
+            {'id': 'wrong', 'title': 't', 'artist': 'a', 'album': 'al',
+             'path': '/elsewhere/other.flac'},
+        ]
+        result = match_tracks(old, new)
+        assert result['matches']['A'] == 'right'
+        assert result['match_tiers']['A'] == 'path'
+
+    def test_tail_tier_uses_every_server_path_when_mount_prefixes_differ(self):
+        from tasks.provider_migration_matcher import match_tracks
+
+        old = [{
+            'item_id': 'A', 'title': 't', 'author': 'a', 'album': 'al',
+            'file_paths': ['/srv5/Artist/Album/01 - Song.flac'],
+        }]
+        new = [{'id': 'n1', 'title': 'zzz', 'artist': 'q', 'album': 'w',
+                'path': '/mnt/plex/Artist/Album/01 - Song.flac'}]
+        result = match_tracks(old, new)
+        assert result['matches'] == {'A': 'n1'}
+        assert result['match_tiers']['A'] == 'tail'
+
 
 class TestBoundServer:
     def test_for_server_runs_call_in_context(self, monkeypatch):
@@ -996,15 +1035,15 @@ class TestSweepAlignment:
 
         pages = [
             [
-                ('a1', 't1', 'au1', 'al1', 'aa1', '/p1'),
-                ('a2', 't2', 'au2', 'al2', 'aa2', '/p2'),
+                ('a1', 't1', 'au1', 'al1', 'aa1', None, ['/srv-b/p1']),
+                ('a2', 't2', 'au2', 'al2', 'aa2', None, []),
             ],
             [
-                ('a3', 't3', 'au3', 'al3', 'aa3', '/p3'),
-                ('a4', 't4', 'au4', 'al4', 'aa4', '/p4'),
+                ('a3', 't3', 'au3', 'al3', 'aa3', None, []),
+                ('a4', 't4', 'au4', 'al4', 'aa4', None, []),
             ],
             [
-                ('a5', 't5', 'au5', 'al5', 'aa5', '/p5'),
+                ('a5', 't5', 'au5', 'al5', 'aa5', None, []),
             ],
             [],
         ]
@@ -1021,9 +1060,12 @@ class TestSweepAlignment:
         assert [row['item_id'] for chunk in chunks for row in chunk] == [
             'a1', 'a2', 'a3', 'a4', 'a5'
         ]
+        # Every server's path for the row, so the matcher can offer a NEW server
+        # every layout the catalogue knows, not just the default server's.
         assert chunks[0][0] == {
             'item_id': 'a1', 'title': 't1', 'author': 'au1',
-            'album': 'al1', 'album_artist': 'aa1', 'file_path': '/p1',
+            'album': 'al1', 'album_artist': 'aa1', 'file_path': None,
+            'file_paths': ['/srv-b/p1'],
         }
         assert len(executed) == 4
         assert all('ORDER BY s.item_id LIMIT %s' in sql for sql, _params in executed)
@@ -1106,7 +1148,8 @@ class TestSweepAlignment:
         written = {}
         monkeypatch.setattr(
             sync, '_write_matches',
-            lambda db, sid, result: written.update(result['matches']) or len(result['matches']),
+            lambda db, sid, result, paths=None: written.update(result['matches'])
+            or len(result['matches']),
         )
         summary = sync._sweep_one(
             {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
@@ -1141,7 +1184,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
-        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result, paths=None: 0)
         staged = []
         monkeypatch.setattr(
             sync, '_stage_track_metadata',
@@ -1150,9 +1193,7 @@ class TestSweepAlignment:
         refreshed = {}
         monkeypatch.setattr(
             sync, '_refresh_mapped_metadata',
-            lambda db, sid, is_default: refreshed.update(
-                {'sid': sid, 'default': is_default}
-            ) or 7,
+            lambda db, sid: refreshed.update({'sid': sid}) or 7,
         )
         written = {}
         monkeypatch.setattr(
@@ -1167,7 +1208,7 @@ class TestSweepAlignment:
         )
         assert staged == [['p1', 'p2']]
         assert written == {'s1': {'Art': 'a9'}}
-        assert refreshed == {'sid': 's1', 'default': False}
+        assert refreshed == {'sid': 's1'}
         assert summary['artists'] == 1
         assert summary['refreshed'] == 7
 
@@ -1186,27 +1227,32 @@ class TestSweepAlignment:
         ) == 1
         assert calls == [('s1', {'A': '1'})]
 
-    def test_refresh_mapped_metadata_file_path_only_for_default(self):
+    def test_refresh_writes_the_path_to_the_map_row_never_to_the_shared_score_row(self):
+        """A path belongs to a file on a server, so EVERY server refreshes its own
+        map row and NO server may stamp a path onto the shared catalogue row."""
         from tasks import multiserver_sync as sync
 
-        def run(is_default):
-            executed = []
-            cur = MagicMock()
-            cur.execute.side_effect = lambda sql, params=None: executed.append(
-                (str(sql), params)
-            )
-            cur.fetchone.return_value = ('sweep_track_meta',)  # guard: temp table exists
-            cur.rowcount = 3
-            db = MagicMock()
-            db.cursor.return_value = cur
-            assert sync._refresh_mapped_metadata(db, 'srv', is_default) == 3
-            db.commit.assert_called_once()
-            update_sql = next(sql for sql, p in executed if p == ('srv',))
-            assert any('DROP TABLE' in sql for sql, _p in executed)
-            return update_sql
+        executed = []
+        cur = MagicMock()
+        cur.execute.side_effect = lambda sql, params=None: executed.append(
+            (str(sql), params)
+        )
+        cur.fetchone.return_value = ('sweep_track_meta',)  # guard: temp table exists
+        cur.rowcount = 3
+        db = MagicMock()
+        db.cursor.return_value = cur
 
-        assert 'file_path' not in run(False)
-        assert 'file_path' in run(True)
+        assert sync._refresh_mapped_metadata(db, 'srv') == 3
+        db.commit.assert_called_once()
+        assert any('DROP TABLE' in sql for sql, _p in executed)
+
+        score_update = next(sql for sql, _p in executed if 'UPDATE score' in sql)
+        assert 'file_path' not in score_update
+
+        map_update = next(
+            sql for sql, _p in executed if 'UPDATE track_server_map' in sql
+        )
+        assert 'file_path' in map_update
 
     def test_refresh_mapped_metadata_skips_when_stage_table_absent(self):
         from tasks import multiserver_sync as sync
@@ -1215,7 +1261,7 @@ class TestSweepAlignment:
         cur.fetchone.return_value = (None,)  # to_regclass -> table not staged
         db = MagicMock()
         db.cursor.return_value = cur
-        assert sync._refresh_mapped_metadata(db, 'srv', True) == 0
+        assert sync._refresh_mapped_metadata(db, 'srv') == 0
         db.commit.assert_not_called()
 
     def test_strip_nul_removes_null_bytes(self):
@@ -1253,7 +1299,7 @@ class TestSweepAlignment:
             return 2
 
         monkeypatch.setattr(sync, 'prune_stale_mappings', fake_prune)
-        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result, paths=None: 0)
         summary = sync._sweep_one(
             {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1',
              'creds': {}, 'music_libraries': 'Rock', 'is_default': False, 'enabled': True},
@@ -1278,7 +1324,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
         monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
-        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result, paths=None: 0)
         holder = {}
 
         def fake_fetch(*a, **k):
@@ -1325,7 +1371,8 @@ class TestSweepAlignment:
         written = {}
         monkeypatch.setattr(
             sync, '_write_matches',
-            lambda db, sid, result: written.update(result['matches']) or len(result['matches']),
+            lambda db, sid, result, paths=None: written.update(result['matches'])
+            or len(result['matches']),
         )
         summary = sync._sweep_one(
             {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
@@ -1610,7 +1657,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
-        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result, paths=None: 0)
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
         stored = {}
         monkeypatch.setattr(

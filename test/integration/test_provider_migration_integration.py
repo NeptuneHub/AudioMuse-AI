@@ -193,7 +193,27 @@ _SCHEMA_DDL = [
     "REFERENCES migration_session(id) ON DELETE CASCADE, new_id TEXT NOT NULL, "
     "path TEXT, title TEXT, artist TEXT, album TEXT, album_artist TEXT, "
     "year INTEGER, PRIMARY KEY (session_id, new_id))",
+    "CREATE TABLE music_servers (server_id TEXT PRIMARY KEY, name TEXT, "
+    "server_type TEXT, creds JSONB DEFAULT '{}', music_libraries TEXT DEFAULT '', "
+    "is_default BOOLEAN NOT NULL DEFAULT FALSE, track_count INTEGER, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE UNIQUE INDEX idx_music_servers_single_default "
+    "ON music_servers (is_default) WHERE is_default",
+    "CREATE TABLE track_server_map ("
+    "item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE, "
+    "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
+    "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (item_id, server_id))",
+    "CREATE UNIQUE INDEX idx_track_server_map_provider_unique "
+    "ON track_server_map (server_id, provider_track_id)",
+    "CREATE TABLE artist_server_map (artist_name TEXT NOT NULL, "
+    "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
+    "provider_artist_id TEXT NOT NULL, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "PRIMARY KEY (artist_name, server_id), UNIQUE (server_id, provider_artist_id))",
 ]
+
+_DEFAULT_SERVER_ID = 'srv-default'
 
 
 @pytest.fixture(scope='session')
@@ -281,24 +301,40 @@ def _reassemble_id_map(parts):
     return ''.join((frag or '') for _, frag in ordered)
 
 
-def _seed_library(conn, source_rendered, segmented=False):
+def _seed_library(conn, source_rendered, segmented=False, source_type='jellyfin'):
+    """Seed a canonicalized, single-server install.
+
+    The path lives on the SERVER's map row, never on the shared score row: score
+    is the union catalogue and a path belongs to a file on a server. Seeding it
+    the old way (score.file_path) would test a schema that no longer exists.
+    """
     src_ids = [r['id'] for r in source_rendered]
     ivf_map = json.dumps({str(i): sid for i, sid in enumerate(src_ids)})
     projection_map = json.dumps(src_ids)
     with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO music_servers (server_id, name, server_type, is_default) "
+            "VALUES (%s, %s, %s, TRUE)",
+            (_DEFAULT_SERVER_ID, 'Default', source_type),
+        )
         for index, r in enumerate(source_rendered):
             cur.execute(
-                "INSERT INTO score (item_id, title, author, album, album_artist, "
-                "file_path, year) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                "INSERT INTO score (item_id, title, author, album, album_artist, year) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (
                     r['id'],
                     r['title'],
                     r['artist'],
                     r['album'],
                     r['album_artist'],
-                    r['path'],
                     1900 + index,
                 ),
+            )
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (r['id'], _DEFAULT_SERVER_ID, r['id'], 'default', r['path']),
             )
             for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
                 cur.execute(f"INSERT INTO {table} (item_id) VALUES (%s)", (r['id'],))
@@ -449,6 +485,7 @@ def test_real_provider_migration(source, target, migration_db):
     expected_map = {
         source_rendered[i]['id']: target_rendered[i]['id'] for i in range(len(SHARED_TRACKS))
     }
+    expected_map_inv = {new: old for old, new in expected_map.items()}
     assert matches == expected_map, (
         f"{source}->{target}: matcher mapping wrong\n  expected {expected_map}\n  got {matches}"
     )
@@ -482,61 +519,109 @@ def test_real_provider_migration(source, target, migration_db):
     assert result['ok'] is True
     assert result['matched'] == len(SHARED_TRACKS)
 
-    new_ids = set(expected_map.values())
+    new_provider_ids = set(expected_map.values())
+    catalogue_ids = {r['id'] for r in source_rendered}
+    matched_item_ids = set(expected_map.keys())
     verify = migration_db['connect']()
     with verify.cursor() as cur:
+        # THE CATALOGUE IS NEVER TOUCHED. item_id is the fp_2 hash of the audio, so a
+        # provider swap cannot change it and must never delete it: the analysis behind
+        # it is expensive and irreplaceable. Only the MAPPING moves.
         cur.execute("SELECT item_id, file_path, title, album_artist, year FROM score")
         score = {row[0]: row for row in cur.fetchall()}
-        assert set(score.keys()) == new_ids, (
-            f"{source}->{target}: score item_ids not rewritten\n  want {new_ids}\n  got {set(score.keys())}"
+        assert set(score.keys()) == catalogue_ids, (
+            f"{source}->{target}: score item_ids must NOT move\n"
+            f"  want {catalogue_ids}\n  got {set(score.keys())}"
         )
-        assert orphan_id not in score, "orphan score row must be deleted"
+        assert orphan_id in score, "the orphan's catalogue row and analysis must survive"
+        assert all(row[1] is None for row in score.values()), (
+            "no path may ever be written to the shared score row"
+        )
         for i, r in enumerate(target_rendered):
-            row = score[r['id']]
-            assert row[1] == r['path'], f"file_path not refreshed for {r['id']}"
+            row = score[expected_map_inv[r['id']]]
             assert row[2] == r['title']
             assert row[3] == r['album_artist']
             assert row[4] == 2000 + i, "year not refreshed from new_meta"
 
+        # The mapping is what migrated: matched songs are now reachable by the TARGET
+        # provider's id, and the unmatched one is unbound from the server entirely.
+        cur.execute(
+            "SELECT item_id, provider_track_id, file_path FROM track_server_map "
+            "WHERE server_id = %s",
+            (_DEFAULT_SERVER_ID,),
+        )
+        rows = cur.fetchall()
+        assert {r[0] for r in rows} == matched_item_ids, (
+            "only matched songs stay bound to the migrated server"
+        )
+        assert {r[1] for r in rows} == new_provider_ids, (
+            f"{source}->{target}: provider ids not repointed at the target"
+        )
+        by_item = {r[0]: r for r in rows}
+        for old_id, new_id in expected_map.items():
+            assert by_item[old_id][1] == new_id
+            assert by_item[old_id][2] == new_meta[new_id]['path'], (
+                "the target's path must land on the server's own map row"
+            )
+
+        # Embeddings hang off score, so if the catalogue survived, so did they.
         for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
             cur.execute(f"SELECT item_id FROM {table}")
             ids = {row[0] for row in cur.fetchall()}
-            assert ids == new_ids, (
-                f"{source}->{target}: {table} did not follow the rewrite "
-                f"(orphan cascade-delete + id remap)\n  want {new_ids}\n  got {ids}"
+            assert ids == catalogue_ids, (
+                f"{source}->{target}: {table} must survive a provider swap intact"
             )
 
+        # No item_id moved, so every similarity index still points at the right songs
+        # and needs no rebuild. This is the whole reason the canonical id exists.
+        assert result['index_rebuild_needed'] is False
         cur.execute("SELECT id_map_json FROM voyager_index_data WHERE index_name = 'ivf_main'")
         ivf_map = json.loads(cur.fetchone()[0])
-        assert set(ivf_map.values()) == new_ids
-        assert orphan_id not in ivf_map.values()
+        assert set(ivf_map.values()) == catalogue_ids, "the IVF id map must be untouched"
 
         cur.execute("SELECT id_map_json FROM map_projection_data WHERE index_name = 'map_main'")
         proj_map = json.loads(cur.fetchone()[0])
-        assert len(proj_map) == len(SHARED_TRACKS) + 1, "list length must be preserved"
-        assert proj_map[-1] is None, "orphan slot in the projection list must become None"
-        assert set(v for v in proj_map if v is not None) == new_ids
+        assert proj_map == [r['id'] for r in source_rendered], (
+            "the projection id map must be untouched"
+        )
 
+        # Artist IDs belong to the old provider and cannot be repointed (the matcher
+        # produces an id per TRACK), so they are dropped and the next analysis rebuilds
+        # them. Artist ANALYSIS is keyed by artist NAME, which a provider swap does not
+        # change, so the artist indexes survive untouched like the track ones.
+        for table in ('artist_mapping', 'artist_server_map'):
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            assert cur.fetchone()[0] == 0, f"{table} holds dead provider ids; must be cleared"
         for table in (
             'artist_index_data',
             'artist_metadata_data',
             'artist_component_projection',
-            'artist_mapping',
         ):
             cur.execute(f"SELECT COUNT(*) FROM {table}")
-            assert cur.fetchone()[0] == 0, f"{table} should be cleared on migration"
+            assert cur.fetchone()[0] == 1, (
+                f"{table} is keyed by artist NAME and must survive a provider swap"
+            )
 
         cur.execute("SELECT key, value FROM app_config")
         config_rows = dict(cur.fetchall())
-        assert config_rows.get('MEDIASERVER_TYPE') == target
-        for key in _EXPECTED_CONFIG_KEYS[target]:
-            assert key in config_rows, f"{target}: app_config missing {key}"
-        assert 'MUSIC_LIBRARIES' not in config_rows, "null selection should clear MUSIC_LIBRARIES"
+        assert 'MEDIASERVER_TYPE' not in config_rows, (
+            "media keys live in the registry only; app_config must be purged"
+        )
+
+        cur.execute(
+            "SELECT server_type, music_libraries FROM music_servers WHERE is_default"
+        )
+        server_row = cur.fetchone()
+        assert server_row[0] == target, "the default registry row must point at the target"
+        assert not server_row[1], "null selection should clear music_libraries"
 
         cur.execute("SELECT status FROM migration_session WHERE id = %s", (session_id,))
         assert cur.fetchone()[0] == 'completed'
     verify.close()
-    print(f"  ok: {len(new_ids)} tracks rewritten, orphan deleted, app_config -> {target}")
+    print(
+        f"  ok: {len(matched_item_ids)} mappings repointed, orphan unbound but kept, "
+        f"catalogue + indexes intact, default server -> {target}"
+    )
 
 
 @pytest.mark.integration
@@ -626,27 +711,33 @@ def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
     assert result['ok'] is True
     assert result['matched'] == len(SHARED_TRACKS)
 
-    new_ids = set(expected_map.values())
-    old_ids = set(expected_map.keys()) | {orphan_id}
+    catalogue_ids = {r['id'] for r in source_rendered}
     verify = migration_db['connect']()
     with verify.cursor() as cur:
+        assert result['index_rebuild_needed'] is False
+
         cur.execute("SELECT index_name, id_map_json FROM voyager_index_data")
         vparts = [(n, j) for n, j in cur.fetchall() if re.match(r'^ivf_main_\d+_\d+$', n)]
         assert len(vparts) >= 2, "ivf index must actually be segmented in this test"
         ivf_map = json.loads(_reassemble_id_map(vparts))
-        assert set(ivf_map.values()) == new_ids
-        assert not (set(ivf_map.values()) & old_ids), "no stale old-provider ids may remain"
-        assert orphan_id not in ivf_map.values()
+        assert set(ivf_map.values()) == catalogue_ids, (
+            "a segmented IVF id map must survive a provider swap byte-for-byte"
+        )
+        assert orphan_id in ivf_map.values(), (
+            "the unbound song keeps its analysis and its index slot"
+        )
 
         cur.execute("SELECT index_name, id_map_json FROM map_projection_data")
         pparts = [(n, j) for n, j in cur.fetchall() if re.match(r'^map_main_\d+_\d+$', n)]
         assert len(pparts) >= 2, "map projection must actually be segmented in this test"
         proj_map = json.loads(_reassemble_id_map(pparts))
-        assert len(proj_map) == len(SHARED_TRACKS) + 1, "list length must be preserved"
-        assert proj_map[-1] is None, "orphan slot must become None"
-        assert set(v for v in proj_map if v is not None) == new_ids
+        assert proj_map == [r['id'] for r in source_rendered], (
+            "a segmented projection id map must survive a provider swap untouched"
+        )
     verify.close()
-    print(f"  ok (segmented): {len(vparts)} ivf parts reassembled + rewritten -> {target}")
+    print(
+        f"  ok (segmented): {len(vparts)} ivf parts reassembled, id maps untouched -> {target}"
+    )
 
 
 def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
@@ -711,10 +802,6 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
         for r in target_rendered
     ]
     matches = matcher.match_tracks(old_rows, new_tracks)['matches']
-    expected_map = {
-        source_rendered[i]['id']: target_rendered[i]['id'] for i in range(len(SHARED_TRACKS))
-    }
-    new_ids = set(expected_map.values())
     new_meta = {
         r['id']: {
             'path': r['path'],
@@ -731,6 +818,11 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
     _seed_library(conn, source_rendered, segmented=True)
     session_id = _insert_session(conn, source, target, matches, new_meta)
 
+    # IVF_MAX_PART_SIZE_MB=0 used to make the id-map REWRITE overflow, forcing the
+    # index to be dropped and a full rebuild flagged. There is no rewrite any more, so
+    # there is nothing to overflow: the part-size limit is irrelevant to a migration.
+    # This guards against ever reintroducing an item_id rewrite here, which would take
+    # the embeddings with it and cost a full rebuild on every provider swap.
     saved_max_part = config.IVF_MAX_PART_SIZE_MB
     config.IVF_MAX_PART_SIZE_MB = 0
     try:
@@ -740,22 +832,26 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
 
     assert result['ok'] is True
     assert result['matched'] == len(SHARED_TRACKS)
-    assert result['index_rebuild_needed'] is True
+    assert result['index_rebuild_needed'] is False, (
+        "a provider swap moves no item_id, so it can never need an index rebuild"
+    )
 
+    catalogue_ids = {r['id'] for r in source_rendered}
     verify = migration_db['connect']()
     with verify.cursor() as cur:
         cur.execute("SELECT count(*) FROM voyager_index_data")
-        assert cur.fetchone()[0] == 0, "stale ivf index must be dropped, not left corrupt"
+        assert cur.fetchone()[0] > 0, "the ivf index must NOT be dropped by a migration"
         cur.execute("SELECT count(*) FROM map_projection_data")
-        assert cur.fetchone()[0] == 0, "stale map projection must be dropped, not left corrupt"
+        assert cur.fetchone()[0] > 0, "the map projection must NOT be dropped by a migration"
 
         cur.execute("SELECT item_id FROM score")
         score_ids = {row[0] for row in cur.fetchall()}
-        assert score_ids == new_ids, "every other table must still migrate and commit"
+        assert score_ids == catalogue_ids, "the catalogue is never touched by a migration"
 
         cur.execute("SELECT status FROM migration_session WHERE id = %s", (session_id,))
         assert cur.fetchone()[0] == 'completed'
     verify.close()
     print(
-        f"  ok (soft-fail): stale index dropped + flagged, {len(score_ids)} tracks migrated -> {target}"
+        f"  ok: part-size limit is moot, indexes kept, {len(score_ids)} catalogue rows "
+        f"intact -> {target}"
     )

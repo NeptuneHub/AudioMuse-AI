@@ -94,7 +94,7 @@ def old_schema_db(pg_dsn):
             "item_id TEXT NOT NULL REFERENCES score (item_id) "
             "ON UPDATE CASCADE ON DELETE CASCADE, "
             "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
-            "provider_track_id TEXT NOT NULL, match_tier TEXT, "
+            "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
             "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
             "PRIMARY KEY (item_id, server_id))"
         )

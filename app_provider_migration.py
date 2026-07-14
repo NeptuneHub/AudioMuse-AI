@@ -112,12 +112,25 @@ _SOURCE_PATH_SAMPLE_SIZE = 100
 
 
 def _sample_score_file_paths(limit=_SOURCE_PATH_SAMPLE_SIZE):
-    """Return up to ``limit`` ``file_path`` values from the score table."""
+    """Return up to ``limit`` source-server paths for the path-format probe.
+
+    A path belongs to a file ON A SERVER, so it lives on that server's map row,
+    not on the shared song row. A migration retires the DEFAULT provider, so it
+    is the default server's own paths whose format decides whether the wizard can
+    proceed.
+    """
+    from tasks.mediaserver import registry
+
     db = get_db()
+    default = registry.get_default_server(db)
+    default_id = default['server_id'] if default else None
+    if default_id is None:
+        return []
     with db.cursor() as cur:
         cur.execute(
-            "SELECT file_path FROM score WHERE file_path IS NOT NULL LIMIT %s",
-            (limit,),
+            "SELECT file_path FROM track_server_map "
+            "WHERE server_id = %s AND file_path IS NOT NULL LIMIT %s",
+            (default_id, limit),
         )
         rows = cur.fetchall() or []
     return [r[0] for r in rows]
@@ -1800,10 +1813,12 @@ def _load_score_rows_as_dicts():
         return [_row_to_score_dict(r) for r in rows]
     with db.cursor() as cur:
         cur.execute(
-            pgsql.SQL("SELECT {} FROM score s WHERE " + registry.availability_sql('s')).format(
-                _SCORE_COLS_QUALIFIED
-            ),
-            (default_id, True),
+            "SELECT s.item_id, (SELECT p.file_path FROM track_server_map p "
+            "WHERE p.item_id = s.item_id AND p.server_id = %s "
+            "AND p.file_path IS NOT NULL LIMIT 1), "
+            "s.title, s.author, s.album, s.album_artist "
+            "FROM score s WHERE " + registry.availability_sql('s'),
+            (default_id, default_id, True),
         )
         rows = cur.fetchall() or []
     return [_row_to_score_dict(r) for r in rows]
