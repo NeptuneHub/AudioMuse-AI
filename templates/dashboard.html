@@ -247,9 +247,10 @@
         <div class="dash-grid" id="key-numbers"></div>
     </section>
 
-    <!-- Library coverage: the only per-SERVER number that is always on screen,
-         because "how much of my library is analyzed" has no catalogue-wide answer. -->
-    <section>
+    <!-- Library coverage. Per-SERVER, so it is hidden entirely on a single-server
+         install (same rule as Music Server Status): with one server there is
+         nothing to compare and the section is just noise. -->
+    <section id="library-coverage-section" style="display:none;">
         <h2>Library coverage
             <span class="scope-chip scope-server">Per server</span>
             <span class="info-tooltip" tabindex="0">
@@ -827,17 +828,19 @@
         host.appendChild(label);
     }
 
-    // Compact per-SERVER coverage tile. Always shown, even for a single server:
-    // this is the only place that answers "how much of my library is analyzed",
-    // and that question has no catalogue-wide answer.
+    // Compact per-SERVER coverage tile. Hidden below two servers, exactly like
+    // the Music Server Status table: both are per-server sections and neither
+    // earns its space on a single-server install.
     function renderCoverage(servers) {
+        const section = document.getElementById('library-coverage-section');
         const host = document.getElementById('coverage-body');
-        if (!host) return;
-        host.innerHTML = '';
-        if (!Array.isArray(servers) || servers.length === 0) {
-            host.innerHTML = '<div class="muted">No music server configured yet.</div>';
+        if (!section || !host) return;
+        if (!Array.isArray(servers) || servers.length < 2) {
+            section.style.display = 'none';
             return;
         }
+        section.style.display = '';
+        host.innerHTML = '';
         servers.forEach(s => {
             const serverSongs = (s.server_songs === null || s.server_songs === undefined)
                 ? null : (s.server_songs || 0);
