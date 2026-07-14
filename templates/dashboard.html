@@ -118,11 +118,10 @@
     }
     .dash-table .col-narrow { width: 70px; }
     .dash-table .col-medium { width: 110px; }
-    /* The 7-column Music Server Status table: let Server and Coverage shrink a
-       little, but stop at this floor and scroll the wrapper horizontally rather
-       than squish every column (same shrink-then-scroll the other tables get,
-       just with a wider floor because it has more columns). */
-    #music-servers-status-table { min-width: 700px; }
+    /* Music Server Status: shrink a little, then scroll the wrapper horizontally
+       rather than squish every column (the same shrink-then-scroll the other
+       tables get). */
+    #music-servers-status-table { min-width: 560px; }
 
     /* Workers table: force hostname and current-job cells to wrap onto new
        lines instead of bleeding into the next column. */
@@ -268,7 +267,7 @@
             <span class="scope-chip scope-server">Per server</span>
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. A song present on two servers is ONE song in the catalogue, so these per-server counts add up to more than the catalogue total - never sum them. "Unique in catalogue" counts THAT server's distinct songs matched to the catalogue; "Duplicate files" are extra copies of a song already counted (same audio, several files). "Coverage" is the provider tracks resolved to the catalogue, measured against the server's own library size from its last alignment sweep.</span>
+                <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. A song present on two servers is ONE song in the catalogue, so these per-server counts add up to more than the catalogue total - never sum them. "Songs on server" is that server's own library size as of its last alignment sweep. "Unique in catalogue" counts THAT server's distinct songs matched to the catalogue; "Duplicate files" are extra copies of a song already counted (same audio, several files). How much of each server is analyzed is shown in Library coverage above.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
@@ -281,9 +280,8 @@
                     <th class="col-medium">Songs on server</th>
                     <th class="col-medium">Unique in catalogue</th>
                     <th class="col-narrow">Duplicate files</th>
-                    <th>Coverage</th>
                 </tr></thead>
-                <tbody><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -291,6 +289,7 @@
     <!-- Workers -->
     <section>
         <h2>Queue Workers
+            <span class="scope-chip scope-catalog">Catalogue</span>
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">Each worker container spins up two RQ workers: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
@@ -315,6 +314,7 @@
     <!-- Recent activity (table only) -->
     <section>
         <h2>Recent tasks
+            <span class="scope-chip scope-catalog">Catalogue</span>
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">The last 10 completed top-level tasks. This is the full history AudioMuse-AI keeps: only the newest 10 rows are retained.</span>
@@ -380,6 +380,7 @@
     <!-- Scheduled Tasks -->
     <section>
         <h2>Scheduled Tasks
+            <span class="scope-chip scope-catalog">Catalogue</span>
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">"Last triggered" is when the schedule last fired, not when the job last succeeded. A run that was skipped because another main task was already active still counts as triggered.</span>
@@ -871,15 +872,13 @@
                 ? 'not yet aligned' : serverSongs.toLocaleString();
             const dupTd = document.createElement('td');
             dupTd.textContent = duplicateCopies ? duplicateCopies.toLocaleString() : '-';
-            const covTd = document.createElement('td');
-            coverageInto(covTd, serverSongs, s.resolved || 0);
+            // No coverage column here: it is the Library coverage tile's job.
             tr.appendChild(textCell(s.name || '-'));
             tr.appendChild(textCell(s.server_type || '-'));
             tr.appendChild(textCell(s.is_default ? 'yes' : ''));
             tr.appendChild(songsTd);
             tr.appendChild(textCell((s.unique_songs || 0).toLocaleString()));
             tr.appendChild(dupTd);
-            tr.appendChild(covTd);
             tbody.appendChild(tr);
         });
     }
