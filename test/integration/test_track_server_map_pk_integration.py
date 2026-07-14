@@ -202,6 +202,95 @@ class TestRelaxTrackServerMapPk:
         assert rows_total == 2
         assert unique_songs == 1
 
+    def test_one_song_many_servers_many_files_each_keeps_its_own_path(self, old_schema_db):
+        """The shape of the catalogue after migration, end to end.
+
+        ONE AudioMuse id in `score`. Every FILE that carries that audio - on any
+        server, including two duplicate copies on the SAME server - is its own
+        track_server_map row, with its own provider id and its OWN path. The shared
+        score row carries no path at all.
+        """
+        import database
+        from tasks.mediaserver import registry
+
+        with old_schema_db.cursor() as cur:
+            database.relax_track_server_map_pk(cur)
+            cur.execute("DELETE FROM track_server_map")
+            cur.execute(
+                "INSERT INTO music_servers (server_id, name, server_type, is_default) "
+                "VALUES ('plex', 'Plex', 'plex', FALSE)"
+            )
+        old_schema_db.commit()
+
+        # Jellyfin holds TWO copies of the same audio; Plex holds one, elsewhere.
+        registry.upsert_track_maps(
+            'srv',
+            {
+                'jf-1': ('X', 'fingerprint', '/music/Duran Duran/Rio/03 Rio.flac'),
+                'jf-2': ('X', 'fingerprint', '/music/Compilations/80s Hits/07 Rio.flac'),
+            },
+            conn=old_schema_db,
+        )
+        registry.upsert_track_maps(
+            'plex',
+            {'plex-9': ('X', 'fingerprint', '/data/media/Duran Duran/Rio/03 Rio.flac')},
+            conn=old_schema_db,
+        )
+        old_schema_db.commit()
+
+        with old_schema_db.cursor() as cur:
+            cur.execute("SELECT count(*) FROM score")
+            assert cur.fetchone()[0] == 1, "one audio = one AudioMuse id, always"
+
+            cur.execute(
+                "SELECT server_id, provider_track_id, file_path FROM track_server_map "
+                "WHERE item_id = 'X' ORDER BY server_id, provider_track_id"
+            )
+            rows = cur.fetchall()
+
+        assert rows == [
+            ('plex', 'plex-9', '/data/media/Duran Duran/Rio/03 Rio.flac'),
+            ('srv', 'jf-1', '/music/Duran Duran/Rio/03 Rio.flac'),
+            ('srv', 'jf-2', '/music/Compilations/80s Hits/07 Rio.flac'),
+        ]
+
+        # Three files, three paths, one song. This is the evidence the sweep matcher
+        # now offers a NEW server: every path the catalogue knows, not the default's.
+        with old_schema_db.cursor() as cur:
+            cur.execute(
+                "SELECT ARRAY(SELECT DISTINCT p.file_path FROM track_server_map p "
+                "WHERE p.item_id = s.item_id AND p.file_path IS NOT NULL) "
+                "FROM score s WHERE s.item_id = 'X'"
+            )
+            known_paths = cur.fetchone()[0]
+        assert sorted(known_paths) == [
+            '/data/media/Duran Duran/Rio/03 Rio.flac',
+            '/music/Compilations/80s Hits/07 Rio.flac',
+            '/music/Duran Duran/Rio/03 Rio.flac',
+        ]
+
+    def test_a_path_less_writer_never_erases_a_path_a_sweep_recorded(self, old_schema_db):
+        """Analysis may not know the path; a sweep does. The COALESCE keeps it."""
+        import database
+        from tasks.mediaserver import registry
+
+        with old_schema_db.cursor() as cur:
+            database.relax_track_server_map_pk(cur)
+            cur.execute("DELETE FROM track_server_map")
+        old_schema_db.commit()
+
+        registry.upsert_track_maps(
+            'srv', {'p1': ('X', 'path', '/music/song.flac')}, conn=old_schema_db
+        )
+        registry.upsert_track_maps(
+            'srv', {'p1': ('X', 'fingerprint')}, conn=old_schema_db
+        )
+        old_schema_db.commit()
+
+        with old_schema_db.cursor() as cur:
+            cur.execute("SELECT match_tier, file_path FROM track_server_map")
+            assert cur.fetchone() == ('fingerprint', '/music/song.flac')
+
     def test_translate_ids_picks_strongest_tier_deterministically(self, old_schema_db):
         import database
         from tasks.mediaserver import registry

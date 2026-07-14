@@ -13,10 +13,12 @@ stored MusiCNN embedding (tasks.simhash), so this is a pure database operation:
 no downloads, no binaries, no audio decoding. It runs ONCE per lifetime of a
 legacy row, at Flask container startup, and is an instant no-op afterwards;
 analysis mints canonical ids directly at analyze time so nothing here runs
-during analysis. Signatures are hashed a chunk at a time and the candidate scan
-fans its independent bands across threads, so a large legacy install migrates
-as fast as the machine allows without ever holding the catalogue in memory.
-The rewrite uses the same proven transactional key-rewrite the
+during analysis. It is NOT once per lifetime of an INSTALL: identity is derived
+from the MusiCNN embedding, so swapping the model re-mints every id and runs the
+whole rewrite again. Signatures are hashed a chunk at a time and the candidate
+scan fans its independent bands across threads, so a large legacy install
+migrates as fast as the machine allows without ever holding the whole catalogue
+in memory. The rewrite uses the same proven transactional key-rewrite the
 provider-migration feature uses (score, playlist, and all embedding tables,
 with the embedding foreign keys dropped and re-added around it). A legacy row
 merges into an existing catalogue row ONLY when its signature is within
@@ -29,25 +31,37 @@ id and keep working via the identity translation fallback.
 Main Features:
 * One-time, idempotent startup relabel of legacy rows, resolved for the whole
   catalogue in vectorized BATCHES: embeddings are hashed a chunk at a time and
-  dropped, candidate pairs stream in bounded slices, and peak memory is flat in
-  the size of the library (a 188k-track library migrates end to end in ~80s,
-  where the per-track loop this replaces took ~10 minutes and a whole-catalogue
-  pass ran the container out of memory).
+  dropped, and candidate pairs stream in bounded slices (a 188k-track library
+  migrates end to end in ~80s, where the per-track loop this replaces took ~10
+  minutes and a whole-catalogue pass ran the container out of memory). Peak
+  memory is LINEAR in the library, not constant: 25 B per track for the
+  signatures, plus one ``(matched_tracks, 200)`` float32 array that
+  ``_confirm_candidates`` allocates up front.
 * Cosine-confirmed duplicate merge into existing canonical rows.
 * Repoints the similarity indexes at the new ids in the same transaction: a
   relabel renames tracks without moving a vector, so nothing is re-clustered.
-* Records the source-server mapping in track_server_map, streamed in with COPY.
+* Records the source-server mapping in track_server_map, streamed in with COPY,
+  and moves the legacy ``score.file_path`` onto those map rows - a path belongs
+  to a FILE ON A SERVER, and once the shared column is emptied the map row is
+  its only copy, so the duplicate merge carries it through the
+  snapshot-delete-reinsert too.
 """
 
 import io
 import json
 import logging
 import time
+import uuid
 
 import numpy as np
 
 import config
-from database import connect_raw
+from config import (
+    TASK_STATUS_PROGRESS,
+    TASK_STATUS_SUCCESS,
+    TASK_STATUS_FAILURE,
+)
+from database import connect_raw, save_task_status
 from tasks import simhash
 from tasks.mediaserver import registry
 from tasks.provider_migration_tasks import (
@@ -126,48 +140,59 @@ def _hash_catalogue(cur, sql, params, ids, packed, valid, offset):
 def _confirm_candidates(cur, ids, left, right):
     """Keep the candidate pairs the EXACT raw-embedding cosine confirms.
 
-    Only the tracks a signature already matched are read back, and each of them
-    exactly ONCE: a track that neighbours fifty others was previously re-read
-    fifty times - once per batch of pairs it appeared in - which is where a real
-    library's migration quietly spent minutes.
+    Bounded memory, whatever the library's size. The embeddings are read back one
+    SLICE of pairs at a time, so the resident float32 block is capped by the slice
+    (at most ``2 * _CONFIRM_PAIRS`` tracks, ~80 MB) instead of by the number of
+    tracks a signature happened to match, which is what a whole-catalogue array
+    made linear in the library and is how this once ran a container out of memory.
+
+    The pairs are lexsorted first, so the tracks a slice touches are contiguous and
+    a track that neighbours many others is re-read a handful of times rather than
+    once per pair it appears in.
     """
     if left.size == 0:
         return left, right
-    rows = np.unique(np.concatenate((left, right)))
+    order = np.lexsort((right, left))
+    left = left[order]
+    right = right[order]
     logger.info(
-        "Legacy catalogue migration: confirming %d candidate pairs against the exact "
-        "embeddings of %d tracks (%d MB)...",
-        left.size, rows.size, (rows.size * simhash.SIGNATURE_BITS * 4) // (1024 * 1024),
+        "Legacy catalogue migration: confirming %d candidate pairs in slices of %d "
+        "(resident block capped at ~%d MB)...",
+        left.size,
+        _CONFIRM_PAIRS,
+        (2 * _CONFIRM_PAIRS * simhash.SIGNATURE_BITS * 4) // (1024 * 1024),
     )
-    vectors = np.zeros((rows.size, simhash.SIGNATURE_BITS), dtype=np.float32)
-    fetch = cur.connection.cursor()
-    try:
-        for begin in range(0, rows.size, _CHUNK_ROWS):
-            window = rows[begin:begin + _CHUNK_ROWS]
-            slot_of = {ids[int(row)]: begin + offset for offset, row in enumerate(window)}
-            fetch.execute(
-                "SELECT item_id, embedding FROM embedding WHERE item_id = ANY(%s)",
-                (list(slot_of),),
-            )
-            for item_id, blob in fetch.fetchall():
-                vector = np.frombuffer(blob, dtype=np.float32)
-                if vector.size == simhash.SIGNATURE_BITS:
-                    vectors[slot_of[str(item_id)]] = vector
-    finally:
-        fetch.close()
-
-    left_slots = np.searchsorted(rows, left)
-    right_slots = np.searchsorted(rows, right)
     kept_left = []
     kept_right = []
-    for begin in range(0, left.size, _CONFIRM_PAIRS):
-        window = slice(begin, begin + _CONFIRM_PAIRS)
-        confirmed = simhash.confirm_pairs(
-            vectors[left_slots[window]], vectors[right_slots[window]]
-        )
-        if confirmed.any():
-            kept_left.append(left[window][confirmed])
-            kept_right.append(right[window][confirmed])
+    fetch = cur.connection.cursor()
+    try:
+        for begin in range(0, left.size, _CONFIRM_PAIRS):
+            window = slice(begin, begin + _CONFIRM_PAIRS)
+            left_slice = left[window]
+            right_slice = right[window]
+            rows = np.unique(np.concatenate((left_slice, right_slice)))
+            vectors = np.zeros((rows.size, simhash.SIGNATURE_BITS), dtype=np.float32)
+            slot_of = {ids[int(row)]: slot for slot, row in enumerate(rows)}
+            for chunk in range(0, rows.size, _CHUNK_ROWS):
+                wanted = [ids[int(row)] for row in rows[chunk:chunk + _CHUNK_ROWS]]
+                fetch.execute(
+                    "SELECT item_id, embedding FROM embedding WHERE item_id = ANY(%s)",
+                    (wanted,),
+                )
+                for item_id, blob in fetch.fetchall():
+                    vector = np.frombuffer(blob, dtype=np.float32)
+                    if vector.size == simhash.SIGNATURE_BITS:
+                        vectors[slot_of[str(item_id)]] = vector
+            confirmed = simhash.confirm_pairs(
+                vectors[np.searchsorted(rows, left_slice)],
+                vectors[np.searchsorted(rows, right_slice)],
+            )
+            if confirmed.any():
+                kept_left.append(left_slice[confirmed])
+                kept_right.append(right_slice[confirmed])
+            vectors = None
+    finally:
+        fetch.close()
     if not kept_left:
         empty = np.empty(0, dtype=np.int64)
         return empty, empty
@@ -328,7 +353,7 @@ def _merge_duplicate_rows(cur, duplicate_mapping):
     _copy_pairs(cur, 'duplicate_item_id_map', duplicate_mapping)
     cur.execute(
         "CREATE TEMP TABLE duplicate_server_map_rows ON COMMIT DROP AS "
-        "SELECT d.new_id, t.server_id, t.provider_track_id, t.match_tier "
+        "SELECT d.new_id, t.server_id, t.provider_track_id, t.match_tier, t.file_path "
         "FROM track_server_map t JOIN duplicate_item_id_map d ON d.old_id = t.item_id"
     )
     cur.execute(
@@ -337,8 +362,8 @@ def _merge_duplicate_rows(cur, duplicate_mapping):
     )
     cur.execute(
         "INSERT INTO track_server_map "
-        "(item_id, server_id, provider_track_id, match_tier, updated_at) "
-        "SELECT r.new_id, r.server_id, r.provider_track_id, r.match_tier, now() "
+        "(item_id, server_id, provider_track_id, match_tier, file_path, updated_at) "
+        "SELECT r.new_id, r.server_id, r.provider_track_id, r.match_tier, r.file_path, now() "
         "FROM duplicate_server_map_rows r "
         "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
     )
@@ -416,7 +441,21 @@ def _relabel_item_ids(cur, lyrics_exists):
         )
 
 
-def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids):
+def _legacy_paths_by_item_id(cur):
+    """Each legacy row's own path, captured BEFORE the rewrite can destroy it.
+
+    In the legacy schema the path sits on the shared score row, so a merged
+    duplicate's path dies with the score row the merge deletes - and the winner's
+    path is NOT a substitute: the two files are the same audio at DIFFERENT paths,
+    which is exactly the per-file information the new column exists to keep. So the
+    paths are snapshotted against the OLD ids first, and each map row is then born
+    carrying the path of the file it actually describes.
+    """
+    cur.execute("SELECT item_id, file_path FROM score WHERE file_path IS NOT NULL")
+    return {str(item_id): path for item_id, path in cur.fetchall()}
+
+
+def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids, legacy_paths):
     """Stream the preserved provider ids in with COPY, not row-by-row INSERTs.
 
     One 200k-row COPY into an unlogged staging table beats tens of thousands of
@@ -428,29 +467,34 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids):
     buffer = io.StringIO()
     for old_id, canonical in all_changes.items():
         provider_id = default_provider_ids.get(str(old_id), str(old_id))
+        path = legacy_paths.get(str(old_id))
         buffer.write(
-            "%s\t%s\t%s\n"
+            "%s\t%s\t%s\t%s\n"
             % (
                 canonical.replace('\t', ' '),
                 source_id,
                 str(provider_id).replace('\t', ' ').replace('\n', ' '),
+                r'\N' if not path else str(path).replace('\t', ' ').replace('\n', ' '),
             )
         )
     buffer.seek(0)
     cur.execute(
         "CREATE TEMP TABLE incoming_default_map "
-        "(item_id TEXT, server_id TEXT, provider_track_id TEXT) ON COMMIT DROP"
+        "(item_id TEXT, server_id TEXT, provider_track_id TEXT, file_path TEXT) "
+        "ON COMMIT DROP"
     )
     cur.copy_expert(
-        "COPY incoming_default_map (item_id, server_id, provider_track_id) FROM STDIN",
+        "COPY incoming_default_map (item_id, server_id, provider_track_id, file_path) "
+        "FROM STDIN",
         buffer,
     )
     cur.execute(
         "INSERT INTO track_server_map "
-        "(item_id, server_id, provider_track_id, match_tier, updated_at) "
-        "SELECT item_id, server_id, provider_track_id, 'default', now() "
+        "(item_id, server_id, provider_track_id, match_tier, file_path, updated_at) "
+        "SELECT item_id, server_id, provider_track_id, 'default', file_path, now() "
         "FROM incoming_default_map "
-        "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
+        "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
+        "file_path = COALESCE(EXCLUDED.file_path, track_server_map.file_path)"
     )
 
 
@@ -535,6 +579,86 @@ def _repoint_indexes(cur, renames):
     )
 
 
+class CanonicalizationVerificationError(RuntimeError):
+    """The rewrite produced a catalogue that violates its own invariants."""
+
+
+def _index_id_map_lengths(cur):
+    """{index_name: number of ids it carries}, for every track-keyed id list."""
+    from .paged_ivf import IVF_DIR_TABLE, unpack_directory
+    from .index_build_helpers import load_segmented_blob
+
+    lengths = {}
+    conn = cur.connection
+    for name in _TRACK_KEYED_INDEXES:
+        try:
+            blob = load_segmented_blob(conn, IVF_DIR_TABLE, f"{name}__ivf_dir")
+            if not blob:
+                continue
+            lengths[f"ivf:{name}"] = len(unpack_directory(blob)[2])
+        except Exception:
+            logger.exception("Could not read the id list of index '%s'", name)
+    cur.execute("SELECT index_name, id_map_json FROM map_projection_data")
+    for index_name, id_map_json in cur.fetchall():
+        try:
+            lengths[f"projection:{index_name}"] = len(json.loads(id_map_json))
+        except Exception:
+            logger.exception("Could not read the id map of projection '%s'", index_name)
+    return lengths
+
+
+def _verify_migration(cur, score_before, duplicates, index_lengths_before):
+    """Assert the rewrite's invariants, or raise so the caller rolls it back.
+
+    A whole-catalogue key rewrite that commits WRONG is the worst thing this file
+    can do: it is silent, it is permanent, and every later run trusts it. The
+    transaction already makes a crash safe; this makes a bad SUCCESS unsafe too,
+    by turning it into a failed boot instead of a corrupted catalogue.
+    """
+    problems = []
+
+    cur.execute(
+        "SELECT count(*) FROM score s WHERE " + _LEGACY_ROW_SQL, (simhash.CANONICAL_ID_LEN,)
+    )
+    legacy_left = cur.fetchone()[0]
+    if legacy_left:
+        problems.append(f"{legacy_left} legacy id(s) survived the relabel")
+
+    cur.execute("SELECT count(*) FROM score")
+    score_after = cur.fetchone()[0]
+    expected = score_before - duplicates
+    if score_after != expected:
+        problems.append(
+            f"score holds {score_after} rows, expected {expected} "
+            f"({score_before} before minus {duplicates} merged)"
+        )
+
+    for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
+        cur.execute("SELECT to_regclass(%s)", (f'public.{table}',))
+        if cur.fetchone()[0] is None:
+            continue
+        cur.execute(
+            f"SELECT count(*) FROM {table} e "
+            "WHERE NOT EXISTS (SELECT 1 FROM score s WHERE s.item_id = e.item_id)"
+        )
+        orphans = cur.fetchone()[0]
+        if orphans:
+            problems.append(f"{orphans} {table} row(s) lost their score parent")
+
+    lengths_after = _index_id_map_lengths(cur)
+    for name, before in index_lengths_before.items():
+        after = lengths_after.get(name)
+        if after is None:
+            problems.append(f"index '{name}' disappeared during the rewrite")
+        elif after != before:
+            problems.append(
+                f"index '{name}' carried {before} ids before and {after} after"
+            )
+
+    if problems:
+        raise CanonicalizationVerificationError("; ".join(problems))
+
+
 def _publish_index_reload():
     """Tell any already-running Flask to reload the repointed indexes."""
     try:
@@ -565,7 +689,32 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
     autocommit forced off for the rewrite (both restored on a caller-provided
     connection) so large catalogues are not cancelled mid-relabel.
     """
-    def _log(message):
+    task_id = str(uuid.uuid4())
+
+    def _report(message, progress, state=TASK_STATUS_PROGRESS):
+        """Publish the step into task_status, on its OWN connection.
+
+        A whole-catalogue rewrite takes minutes on a large library, and it runs at
+        boot, before the app serves: without this it is indistinguishable from a
+        hung container. Written outside this function's transaction (save_task_status
+        uses its own), so the progress is visible WHILE the rewrite is still open.
+        Never fatal: a status write must not be able to fail a migration.
+        """
+        try:
+            save_task_status(
+                task_id,
+                'catalogue_migration',
+                state,
+                progress=progress,
+                details={'message': message, 'status_message': message},
+            )
+        except Exception:
+            logger.debug("Could not record canonicalization progress", exc_info=True)
+
+    def _log(message, progress=None, state=TASK_STATUS_PROGRESS):
+        logger.info("[CatalogueMigration-%s] %s", task_id, message)
+        if progress is not None:
+            _report(message, progress, state)
         if log_fn is not None:
             try:
                 log_fn(message, None)
@@ -600,7 +749,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
                 "provider ids; relabelling now would lose them"
             )
             return {'skipped': 'no_default'}
-        _log("Computing canonical ids from stored embeddings...")
+        _log("Computing canonical ids from stored embeddings...", 5)
         mapping, duplicate_mapping = _build_mapping(cur)
         duplicates = len(duplicate_mapping)
         if not mapping and not duplicate_mapping:
@@ -608,23 +757,29 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             return {'relabelled': 0, 'duplicates': duplicates}
         _log(
             f"Rewriting {len(mapping)} catalogue keys and merging "
-            f"{duplicates} duplicate rows..."
-        )
-        logger.info(
-            "Legacy catalogue migration: rewriting %d catalogue keys and merging "
-            "%d duplicate rows (single pass per table)...",
-            len(mapping), duplicates,
+            f"{duplicates} duplicate rows...",
+            40,
         )
         cur.execute("SET LOCAL synchronous_commit = off")
         all_changes = dict(mapping)
         all_changes.update(duplicate_mapping)
         default_provider_ids = _default_provider_ids(cur, source_id, all_changes)
 
-        fk_embedding = find_fk(cur, 'embedding', 'item_id')
-        fk_clap = find_fk(cur, 'clap_embedding', 'item_id')
+        cur.execute("SELECT count(*) FROM score")
+        score_before = cur.fetchone()[0]
+        index_lengths_before = _index_id_map_lengths(cur)
+        legacy_paths = _legacy_paths_by_item_id(cur)
+
+        fk_embedding = find_fk(cur, 'embedding', 'item_id') or 'embedding_item_id_fkey'
+        fk_clap = (
+            find_fk(cur, 'clap_embedding', 'item_id') or 'clap_embedding_item_id_fkey'
+        )
         cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
         lyrics_exists = bool(cur.fetchone()[0])
-        fk_lyrics = find_fk(cur, 'lyrics_embedding', 'item_id') if lyrics_exists else None
+        fk_lyrics = (
+            (find_fk(cur, 'lyrics_embedding', 'item_id') or 'lyrics_embedding_item_id_fkey')
+            if lyrics_exists else None
+        )
 
         _drop_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
         if mapping:
@@ -633,16 +788,25 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         _readd_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
         _merge_duplicate_rows(cur, duplicate_mapping)
 
-        _log("Preserving the server's real track ids in track_server_map...")
-        _copy_track_server_map(cur, source_id, all_changes, default_provider_ids)
+        _log("Preserving the server's real track ids in track_server_map...", 70)
+        _copy_track_server_map(
+            cur, source_id, all_changes, default_provider_ids, legacy_paths
+        )
         cur.execute(
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (source_id,),
         )
         # In the SAME transaction as the relabel: the catalogue's ids and the
         # indexes' ids are one fact, and they must never be observable apart.
-        _log("Pointing the similarity indexes at the new ids...")
+        _log("Pointing the similarity indexes at the new ids...", 85)
         _repoint_indexes(cur, all_changes)
+
+        # The last thing before the point of no return. Everything above is still
+        # rollback-able; one COMMIT from here it is permanent and every later run
+        # trusts it.
+        _log("Verifying the rewritten catalogue...", 95)
+        _verify_migration(cur, score_before, duplicates, index_lengths_before)
+
         db.commit()
         relabelled = len(mapping) + duplicates
         logger.info("=" * 64)
@@ -653,13 +817,43 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             len(mapping), duplicates,
         )
         logger.info("=" * 64)
+        _log(
+            f"Catalogue migration complete: {len(mapping)} tracks relabelled, "
+            f"{duplicates} duplicates merged.",
+            100,
+            TASK_STATUS_SUCCESS,
+        )
         _publish_index_reload()
+    except CanonicalizationVerificationError as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.critical("=" * 64)
+        logger.critical(
+            "CATALOGUE MIGRATION ROLLED BACK - the rewrite did not hold up: %s. "
+            "The catalogue is EXACTLY as it was; nothing was committed.", e,
+        )
+        logger.critical("=" * 64)
+        _log(
+            "Catalogue migration rolled back: the rewrite failed its own checks. "
+            "The catalogue is unchanged. Check the container logs.",
+            100,
+            TASK_STATUS_FAILURE,
+        )
+        raise
     except Exception:
         try:
             db.rollback()
         except Exception:
             pass
         logger.exception("Fingerprint canonicalization failed; catalogue left unchanged")
+        _log(
+            "Catalogue migration failed; the catalogue is unchanged. "
+            "Check the container logs.",
+            100,
+            TASK_STATUS_FAILURE,
+        )
         raise
     finally:
         if not own_conn and prev_timeout is not None:

@@ -1449,3 +1449,26 @@ html.dark-mode body .similarity-badge.badge-neutral { background: #4B5563; }
 .ptag-genre      { color: hsl(var(--genre-hue, 220), 65%, 45%); }
 body.dark-mode .ptag-genre,
 html.dark-mode body .ptag-genre { color: hsl(var(--genre-hue, 220), 65%, 62%); }
+
+/* Scope chips. Every functionality page is tagged with the scope it acts on:
+   CATALOGUE (the deduplicated union of every music server) or PER SERVER (the
+   one server chosen in the sidebar picker). Injected next to the page <h1> by
+   layout.html; the dashboard also uses these on its individual sections. */
+.scope-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    vertical-align: middle;
+    margin-left: 0.5rem;
+}
+.scope-catalog { background: #EDE9FE; color: #5B21B6; }
+.scope-server  { background: #DBEAFE; color: #1E40AF; }
+body.dark-mode .scope-catalog,
+html.dark-mode body .scope-catalog { background: #4C1D95; color: #DDD6FE; }
+body.dark-mode .scope-server,
+html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }

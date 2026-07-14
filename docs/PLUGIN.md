@@ -235,13 +235,13 @@ def register(ctx):
     ctx.add_cron_task("daily", daily_job)
 ```
 
-Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field, an Enable checkbox and a music-server selector. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
 
 ### Scheduled tasks and multiple music servers
 
 Music servers hold different catalogues, so a scheduled plugin task runs **once
-per music server** in the schedule's scope ("All music servers" by default,
-"Default server only" if the admin picks it), each run bound to that server. Your
+per music server**, on **every** configured server, one at a time - like every
+other batch task in AudioMuse-AI. There is no scope selector to choose from. Your
 function does not change: every media-server call inside it - playlist creation,
 listening history, downloads - already targets the server of the current run.
 Ask who that is, or target another server explicitly, through the API:

@@ -417,6 +417,9 @@ def _parse_keyval(s):
 
 
 def _collect_cron(cur):
+    """Scheduled rows. Every schedule is CATALOGUE scope: batch work always runs
+    against every configured music server, one server at a time, so there is no
+    per-row target to report."""
     rows = []
     try:
         cur.execute("""

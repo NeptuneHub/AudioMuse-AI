@@ -48,13 +48,59 @@
 
         <div class="main-content" id="main-content">
             <button class="menu-toggle" type="button" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">&#9776;</button>
-            <div class="container">
+            {#
+              Scope of every functionality page, keyed by the `active` value the
+              route already passes. Two scopes and only two:
+                catalogue  - acts on the deduplicated union of all music servers.
+                             Batch work (analysis, clustering, cleaning, cron)
+                             always covers every server, one at a time.
+                server     - acts on the ONE server chosen in the sidebar picker.
+              Pages absent from the map are admin/system (backup, setup, users,
+              plugins, provider migration) and get no chip. The dashboard is
+              absent on purpose: it mixes both scopes and chips its own sections.
+            #}
+            {% set page_scopes = {
+                'index': 'catalogue',
+                'cleaning': 'catalogue',
+                'cron': 'catalogue',
+                'similarity': 'server',
+                'path': 'server',
+                'alchemy': 'server',
+                'chat': 'server',
+                'map': 'server',
+                'lyrics_search': 'server',
+                'clap_search': 'server',
+                'artist_similarity': 'server',
+                'sonic_fingerprint': 'server'
+            } %}
+            <div class="container" data-page-scope="{{ page_scopes.get(active, '') }}">
                 {% block content %}
                     {# content from template will be set here #}
                 {% endblock %}
             </div>
         </div>
     </div>
+
+    <script>
+        // Tag the page title with its scope. Done here rather than in each of the
+        // 20 templates so there is one map and one chip, and so the two different
+        // header shapes (.page-header and #config-header) both get it.
+        (function () {
+            var host = document.querySelector('.container[data-page-scope]');
+            if (!host) return;
+            var scope = host.getAttribute('data-page-scope');
+            if (scope !== 'catalogue' && scope !== 'server') return;
+            var h1 = host.querySelector('h1');
+            if (!h1) return;
+            var chip = document.createElement('span');
+            chip.className = 'scope-chip ' + (scope === 'catalogue' ? 'scope-catalog' : 'scope-server');
+            chip.textContent = scope === 'catalogue' ? 'Catalogue' : 'Per server';
+            chip.title = scope === 'catalogue'
+                ? 'Acts on the whole catalogue: every analyzed song across all your music servers, deduplicated. Not affected by the server picker.'
+                : 'Acts on the one music server selected in the sidebar. Switch servers there to change what this page returns.';
+            h1.appendChild(chip);
+        })();
+    </script>
 
     {% block bodyAdditions %}
         {# body additions from template will be set here #}

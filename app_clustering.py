@@ -323,17 +323,12 @@ def start_clustering_endpoint():
     data = request.json
     job_id = str(uuid.uuid4())
 
-    # UI runs cluster the SELECTED server only (per-server catalogues); the
-    # scheduled/cron path passes its own scope to run every selected server
-    # in sequence.
-    from app_server_context import resolve_request_server_id
-    try:
-        selected_server_id = resolve_request_server_id(data)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
+    # Clustering is a BATCH task, so like analysis and cleaning it always runs
+    # against every configured server, one server at a time. It used to cluster
+    # only the server picked in the sidebar, which silently left the other
+    # servers without playlists and made it inconsistent with the other batches.
     clustering_kwargs = {  # Pass all arguments as a dictionary
-        "output_server_scope": selected_server_id or 'default',
+        "output_server_scope": 'all',
         "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
         "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
         "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),

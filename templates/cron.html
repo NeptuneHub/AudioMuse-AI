@@ -23,10 +23,6 @@
             </label>
             <input id="analysis-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 0-5)">
             <div style="margin-top:.5rem;"><input id="analysis-enabled" type="checkbox"> Enable</div>
-            <select id="analysis-server-scope" style="margin-top:.5rem;">
-                <option value="all">All music servers</option>
-                <option value="default">Default server only</option>
-            </select>
 
             <hr style="margin:1rem 0;">
 
@@ -39,10 +35,6 @@
             </label>
             <input id="clustering-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 6)">
             <div style="margin-top:.5rem;"><input id="clustering-enabled" type="checkbox"> Enable</div>
-            <select id="clustering-server-scope" style="margin-top:.5rem;">
-                <option value="all">Create on all music servers</option>
-                <option value="default">Create on default server only</option>
-            </select>
 
             <hr style="margin:1rem 0;">
 
@@ -55,10 +47,6 @@
             </label>
             <input id="sonic-fingerprint-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 1 * * 6)">
             <div style="margin-top:.5rem;"><input id="sonic-fingerprint-enabled" type="checkbox"> Enable</div>
-            <select id="sonic-fingerprint-server-scope" style="margin-top:.5rem;">
-                <option value="all">All music servers</option>
-                <option value="default">Default server only</option>
-            </select>
 
             <hr style="margin:1rem 0;">
 
@@ -71,10 +59,6 @@
             </label>
             <input id="alchemy-radio-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 3 * * 6)">
             <div style="margin-top:.5rem;"><input id="alchemy-radio-enabled" type="checkbox"> Enable</div>
-            <select id="alchemy-radio-server-scope" style="margin-top:.5rem;">
-                <option value="all">All music servers</option>
-                <option value="default">Default server only</option>
-            </select>
 
             <div id="plugin-cron-section" style="display:none;">
                 <hr style="margin:1rem 0;">
@@ -128,13 +112,13 @@
                 const c = rows.find(r=>r.task_type==='clustering');
                 const s = rows.find(r=>r.task_type==='sonic_fingerprint');
                 const radio = rows.find(r=>r.task_type==='alchemy_radio');
-                if(a){ document.getElementById('analysis-cron').value = a.cron_expr; document.getElementById('analysis-enabled').checked = a.enabled; document.getElementById('analysis-server-scope').value = (a.options || {}).server_scope || 'all' }
+                if(a){ document.getElementById('analysis-cron').value = a.cron_expr; document.getElementById('analysis-enabled').checked = a.enabled }
                 else { document.getElementById('analysis-cron').value = '0 2 * * 0-5'; document.getElementById('analysis-enabled').checked = false }
-                if(c){ document.getElementById('clustering-cron').value = c.cron_expr; document.getElementById('clustering-enabled').checked = c.enabled; document.getElementById('clustering-server-scope').value = (c.options || {}).server_scope || 'all' }
+                if(c){ document.getElementById('clustering-cron').value = c.cron_expr; document.getElementById('clustering-enabled').checked = c.enabled }
                 else { document.getElementById('clustering-cron').value = '0 2 * * 6'; document.getElementById('clustering-enabled').checked = false }
-                if(s){ document.getElementById('sonic-fingerprint-cron').value = s.cron_expr; document.getElementById('sonic-fingerprint-enabled').checked = s.enabled; document.getElementById('sonic-fingerprint-server-scope').value = (s.options || {}).server_scope || 'all' }
+                if(s){ document.getElementById('sonic-fingerprint-cron').value = s.cron_expr; document.getElementById('sonic-fingerprint-enabled').checked = s.enabled }
                 else { document.getElementById('sonic-fingerprint-cron').value = '0 1 * * 6'; document.getElementById('sonic-fingerprint-enabled').checked = false }
-                if(radio){ document.getElementById('alchemy-radio-cron').value = radio.cron_expr; document.getElementById('alchemy-radio-enabled').checked = radio.enabled; document.getElementById('alchemy-radio-server-scope').value = (radio.options || {}).server_scope || 'all' }
+                if(radio){ document.getElementById('alchemy-radio-cron').value = radio.cron_expr; document.getElementById('alchemy-radio-enabled').checked = radio.enabled }
                 else { document.getElementById('alchemy-radio-cron').value = '0 3 * * 6'; document.getElementById('alchemy-radio-enabled').checked = false }
                 await loadPluginTasks(rows);
                 saveBtn.disabled = false;
@@ -176,18 +160,8 @@
                     enable.checked = !!(row && row.enabled);
                     enableWrap.appendChild(enable);
                     enableWrap.appendChild(document.createTextNode(' Enable'));
-                    // Like every other scheduled task, a plugin task runs once per
-                    // selected server, inside that server's context.
-                    const scope = document.createElement('select');
-                    [['all','All music servers'],['default','Default server only']].forEach(([v,l])=>{
-                        const o = document.createElement('option');
-                        o.value = v; o.textContent = l;
-                        scope.appendChild(o);
-                    });
-                    scope.value = (row && row.options && row.options.server_scope) || 'all';
-                    window.pluginCronFields.set(t.task_type, {input: input, enable: enable, scope: scope});
+                    window.pluginCronFields.set(t.task_type, {input: input, enable: enable});
                     controls.appendChild(enableWrap);
-                    controls.appendChild(scope);
                     div.appendChild(label);
                     div.appendChild(input);
                     div.appendChild(controls);
@@ -216,10 +190,6 @@
             const sen = document.getElementById('sonic-fingerprint-enabled').checked;
             const rexpr = document.getElementById('alchemy-radio-cron').value;
             const ren = document.getElementById('alchemy-radio-enabled').checked;
-            const ascope = document.getElementById('analysis-server-scope').value;
-            const cscope = document.getElementById('clustering-server-scope').value;
-            const sscope = document.getElementById('sonic-fingerprint-server-scope').value;
-            const rscope = document.getElementById('alchemy-radio-server-scope').value;
 
             try{
                 for (const t of (window.pluginCronTasks || [])) {
@@ -235,14 +205,14 @@
                 // Await every save before reloading so a stale cache can't trigger
                 // a duplicate INSERT on the next save (issue #719).
                 const saves = [
-                    saveCron(an ? {id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen, options:{server_scope:ascope}}
-                                : {name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen, options:{server_scope:ascope}}),
-                    saveCron(cn ? {id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen, options:{server_scope:cscope}}
-                                : {name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen, options:{server_scope:cscope}}),
-                    saveCron(sn ? {id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen, options:{server_scope:sscope}}
-                                : {name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen, options:{server_scope:sscope}}),
-                    saveCron(rn ? {id:rn.id, name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren, options:{server_scope:rscope}}
-                                : {name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren, options:{server_scope:rscope}}),
+                    saveCron(an ? {id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen}
+                                : {name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen}),
+                    saveCron(cn ? {id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen}
+                                : {name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen}),
+                    saveCron(sn ? {id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen}
+                                : {name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen}),
+                    saveCron(rn ? {id:rn.id, name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren}
+                                : {name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren}),
                 ];
                 for (const t of (window.pluginCronTasks || [])) {
                     const fields = (window.pluginCronFields || new Map()).get(t.task_type);
@@ -250,10 +220,9 @@
                     const expr = fields.input.value.trim();
                     const existing = rows.find(r=>r.task_type===t.task_type);
                     if(!expr && !existing) continue;
-                    const popts = {server_scope: fields.scope ? fields.scope.value : 'all'};
                     saves.push(saveCron(existing
-                        ? {id:existing.id, name:t.task_type, task_type:t.task_type, cron_expr:expr, enabled:fields.enable.checked, options:popts}
-                        : {name:t.task_type, task_type:t.task_type, cron_expr:expr, enabled:fields.enable.checked, options:popts}));
+                        ? {id:existing.id, name:t.task_type, task_type:t.task_type, cron_expr:expr, enabled:fields.enable.checked}
+                        : {name:t.task_type, task_type:t.task_type, cron_expr:expr, enabled:fields.enable.checked}));
                 }
                 const results = await Promise.all(saves);
                 if(results.some(r=>!r.ok)){ throw new Error('One or more schedules failed to save'); }

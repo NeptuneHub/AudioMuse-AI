@@ -234,15 +234,36 @@ of being retained in RAM, and SemGrove merges through a temporary disk-backed
 matrix. There is no training-sample cap: quality scales with the library, and
 hardware sizing for very large libraries is the operator's call.
 
-## Scheduled tasks
+## Batch tasks always cover every server
 
-Analysis, Clustering, Sonic Fingerprint, Radio **and plugin tasks** all have an
-**All music servers** / **Default server only** selector. Analysis deduplicates
-work across sources. Every other scheduled task runs once per selected server,
-inside that server's context and against that server's own available tracks -
-results are never computed once and pushed to other servers. From the UI, these
-features target the server selected in the server dropdown, and the Sonic
-Fingerprint page asks for the credentials of the server you selected.
+**Analysis, Clustering, Cleaning and every scheduled task always run against ALL
+your music servers.** There is no scope selector: it does not matter whether you
+start them from the page or from a schedule.
+
+They run **one server at a time**, in sequence. A server is finished before the
+next one starts: for Clustering that means the whole pipeline (its own
+availability-scoped input set, its own search, its own AI naming, its playlists
+created on that server) completes before the next server begins. Results are never
+computed once and pushed to other servers - each server's playlists are built from
+the tracks that server actually has. Analysis deduplicates work across sources, so
+a song already analyzed on one server is not analyzed again on the next; it is just
+mapped. One server failing is isolated and reported, and the run moves on.
+
+This used to be a per-schedule **All music servers** / **Default server only**
+choice, and Clustering from the UI quietly targeted only the server picked in the
+dropdown. Both are gone: a narrowed scope silently left the other servers without
+playlists, and a "Default server only" Analysis left every other server's exclusive
+songs permanently unanalyzed and invisible to every other feature.
+
+## Interactive features follow the server picker
+
+Similar Song, Instant Playlist, Song Path, Song Alchemy, Artist Similarity, Sonic
+Fingerprint and the search pages **do** target the one server selected in the
+sidebar dropdown, and their results are filtered to tracks available on it. The
+Sonic Fingerprint page asks for the credentials of the server you selected.
+
+Every page shows which of the two it is: a **CATALOGUE** or **PER SERVER** tag next
+to its title.
 
 ## Limitations to know
 

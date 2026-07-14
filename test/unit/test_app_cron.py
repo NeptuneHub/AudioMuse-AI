@@ -176,8 +176,10 @@ def test_failed_analysis_enqueue_is_recorded_as_failure_not_left_pending(mock_ge
 
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
-def test_plugin_branch_forwards_the_schedules_server_scope(mock_get_db, _matches):
-    """A plugin schedule runs per server, like every other scheduled task."""
+def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
+    """Batch work always covers EVERY server, so a plugin schedule is enqueued
+    with scope 'all' even if an old row still carries a narrower one: a stale
+    'default' option must not quietly keep skipping the other servers."""
     from app_cron import run_due_cron_jobs
 
     row = _make_cron_row(task_type='plugin.demo.sync')
@@ -204,7 +206,7 @@ def test_plugin_branch_forwards_the_schedules_server_scope(mock_get_db, _matches
     assert queue.enqueue.called
     kwargs = queue.enqueue.call_args.kwargs
     assert kwargs['args'] == ('audiomuse_plugins.demo.tasks.sync',)
-    assert kwargs['kwargs'] == {'server_scope': 'default'}
+    assert kwargs['kwargs'] == {'server_scope': 'all'}
 
 
 @patch('app_cron.cron_matches_now', return_value=True)

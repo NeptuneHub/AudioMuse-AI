@@ -193,25 +193,8 @@
 
     .muted { color: var(--text-muted); font-size: 0.85rem; }
 
-    /* Scope chips. Every library number on the page is either CATALOG (the
-       deduplicated union of all servers) or SERVER (one specific music server).
-       The System sections carry no chip: they are neither. */
-    .scope-chip {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 12px;
-        font-size: 0.62rem;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        white-space: nowrap;
-        vertical-align: middle;
-    }
-    .scope-catalog { background: #EDE9FE; color: #5B21B6; }
-    .scope-server  { background: #DBEAFE; color: #1E40AF; }
-    body.dark-mode .scope-catalog { background: #4C1D95; color: #DDD6FE; }
-    body.dark-mode .scope-server  { background: #1E3A8A; color: #BFDBFE; }
-
+    /* .scope-chip / .scope-catalog / .scope-server live in style.css, shared with
+       the chip layout.html adds to every page title. */
     .dash-stat-card h3 .scope-chip { margin-left: 6px; }
 
     /* Coverage bars, shared by the per-server tile and the server table. */
@@ -384,7 +367,7 @@
             <span class="scope-chip scope-catalog">Catalogue</span>
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">"Last triggered" is when the schedule last fired, not when the job last succeeded. A run that was skipped because another main task was already active still counts as triggered.</span>
+                <span class="tooltip-text">Every schedule is catalogue-wide: a batch task always runs against all configured music servers, one server at a time. "Last triggered" is when the schedule last fired, not when the job last succeeded: a run skipped because another main task was already active still counts as triggered.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="cron-updated">Loading…</p>

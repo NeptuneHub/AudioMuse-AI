@@ -96,28 +96,38 @@ def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
 # these. The one-time fingerprint canonicalization DOES relabel item_ids (that is its
 # whole purpose) and imports both from here.
 def _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
+    """Drop the embedding cascades. IF EXISTS, so a caller may pass the name it
+    INTENDS the constraint to have rather than only a name it found."""
     if fk_embedding:
-        cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT {fk_embedding}")
+        cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT IF EXISTS {fk_embedding}")
     if fk_clap_embedding:
-        cur.execute(f"ALTER TABLE clap_embedding DROP CONSTRAINT {fk_clap_embedding}")
+        cur.execute(f"ALTER TABLE clap_embedding DROP CONSTRAINT IF EXISTS {fk_clap_embedding}")
     if lyrics_exists and fk_lyrics_embedding:
-        cur.execute(f"ALTER TABLE lyrics_embedding DROP CONSTRAINT {fk_lyrics_embedding}")
+        cur.execute(
+            f"ALTER TABLE lyrics_embedding DROP CONSTRAINT IF EXISTS {fk_lyrics_embedding}"
+        )
 
 
 def _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
-    if fk_embedding:
+    """Re-add the embedding cascades UNCONDITIONALLY.
+
+    This used to re-add only what ``find_fk`` had found. A schema whose constraint
+    was missing (or merely named unexpectedly) therefore came out of the rewrite
+    with NO cascade at all, and nothing said so: deleting a score row would then
+    silently orphan its embeddings forever. Creating the constraint is the correct
+    end state whether or not one was there to begin with, so the caller passes the
+    name it wants and this always produces it.
+    """
+    for table, name in (
+        ('embedding', fk_embedding),
+        ('clap_embedding', fk_clap_embedding),
+        ('lyrics_embedding', fk_lyrics_embedding if lyrics_exists else None),
+    ):
+        if not name:
+            continue
+        cur.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name}")
         cur.execute(
-            f"ALTER TABLE embedding ADD CONSTRAINT {fk_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-    if fk_clap_embedding:
-        cur.execute(
-            f"ALTER TABLE clap_embedding ADD CONSTRAINT {fk_clap_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-    if lyrics_exists and fk_lyrics_embedding:
-        cur.execute(
-            f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
+            f"ALTER TABLE {table} ADD CONSTRAINT {name} "
             f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
         )
 

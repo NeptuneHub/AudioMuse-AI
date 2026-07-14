@@ -461,8 +461,11 @@ def run_due_cron_jobs():
                 if not _claim_cron_minute(db, r['id'], minute_start):
                     continue
                 task_type = r['task_type']
-                options = dict(r.get('options') or {})
-                server_scope = options.get('server_scope', 'all')
+                # Batch work always covers every configured server, one server at
+                # a time. There is no per-schedule scope: a "default server only"
+                # schedule left every other server's exclusive songs unanalyzed
+                # and without playlists, silently.
+                server_scope = 'all'
                 job_id = str(uuid.uuid4())
                 if task_type in ('analysis', 'clustering'):
                     # The manual endpoints 409 while any main task is live; cron used
