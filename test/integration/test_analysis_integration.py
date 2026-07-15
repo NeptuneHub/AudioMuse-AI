@@ -147,6 +147,8 @@ def test_real_analysis_runs_and_returns_expected_shape():
     analysis = importlib.import_module('tasks.analysis')
     importlib.reload(analysis)
 
+    from config import MOOD_LABELS
+
     model_paths = {
         'embedding': str(models_dir / 'musicnn_embedding.onnx'),
         'prediction': str(models_dir / 'musicnn_prediction.onnx'),
@@ -386,7 +388,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
         print(f'\n=== Analyzing: {track_name} ===')
 
         result, embedding = analysis.analyze_track(
-            str(track_path), analysis.MOOD_LABELS, model_paths
+            str(track_path), MOOD_LABELS, model_paths
         )
 
         try:

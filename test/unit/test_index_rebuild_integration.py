@@ -129,7 +129,7 @@ class TestLoadArtistIndexForQuerying:
 
 analysis_mod = None
 try:
-    import tasks.analysis as analysis_mod  # noqa: E402  (heavy: librosa/onnx)
+    import tasks.analysis.index as analysis_mod  # noqa: E402  (heavy: librosa/onnx)
     import tasks.ivf_manager  # noqa: F401  (builder modules patched in _patched)
     import tasks.clap_text_search  # noqa: F401
     import tasks.lyrics_manager  # noqa: F401

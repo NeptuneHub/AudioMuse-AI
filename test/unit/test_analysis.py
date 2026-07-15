@@ -639,7 +639,7 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     status write for every track, including skipped ones."""
     from unittest.mock import MagicMock
     from tasks import simhash
-    import tasks.analysis.main as analysis
+    import tasks.analysis.album as analysis
 
     tracks = [
         {'Id': f'prov{i}', 'Name': f'Song {i}', 'AlbumArtist': 'Artist'}
@@ -657,11 +657,15 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
         'get_task_statuses',
         lambda ids: status_calls.append(list(ids)) or {i: 'STARTED' for i in ids if i},
     )
+    # Widen the throttle window so the single-check invariant is decided by the
+    # per-album logic, not by wall-clock: on a slow runner the first track's model
+    # load can outlast the real 10s interval and fire a legitimate second check.
+    monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 10_000_000)
 
     def forbidden(task_id):
         raise AssertionError('the per-track loop must not query task info per track')
 
-    monkeypatch.setattr(analysis, 'get_task_info_from_db', forbidden)
+    monkeypatch.setattr(analysis, 'get_task_info_from_db', forbidden, raising=False)
 
     result = _run_album_impl(
         monkeypatch, tmp_path, tracks[0], simhash.CatalogResolver(), [], [],
@@ -675,9 +679,8 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
 
 def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
     import importlib
-    import tasks.analysis.album as analysis
+    import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
-    import tasks.analysis.song as song
     import tasks.clap_analyzer as clap
 
     registry = importlib.import_module('tasks.mediaserver.registry')
