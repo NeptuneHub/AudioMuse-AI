@@ -89,7 +89,10 @@
                                 <span class="tooltip-text">Recommended: quick test runs tune the clustering parameters for each server before the real run (cluster count, sampling percentile, DBSCAN density). When enabled it overrides the manual cluster-count/eps/percentile values below. Disable to use them exactly as configured.</span>
                             </span>
                         </label>
-                        <input type="checkbox" id="config-auto_parameter_discovery" style="width: auto; margin-left: 5px;">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="config-auto_parameter_discovery">
+                            <span class="toggle-slider"></span>
+                        </label>
                     </div>
                     <div class="advanced-param hidden">
                         <label for="config-top_n_playlists" class="label-with-tooltip">

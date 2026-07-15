@@ -106,11 +106,11 @@ class TestViablePlaylistSelection:
         assert viable_rank > shredded_rank
 
 
-class TestSubsetSizeCap:
-    def test_the_stratified_subset_is_hard_capped_to_bound_compute(self, monkeypatch):
+class TestSubsetExactSize:
+    def test_an_oversized_stratified_sample_is_trimmed_to_the_exact_size(self, monkeypatch):
         from tasks import clustering_helper
 
-        monkeypatch.setattr(clustering_helper, 'CLUSTERING_MAX_SUBSET_SONGS', 50)
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
         genre_map = {
             'rock': [
                 {'item_id': str(i), 'mood_vector': 'rock:0.9'} for i in range(300)
@@ -118,6 +118,34 @@ class TestSubsetSizeCap:
         }
         subset = clustering_helper._get_stratified_song_subset(genre_map, 200)
         assert len(subset) == 50
+
+    def test_a_sparse_stratified_sample_is_topped_up_with_random_songs(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
+        genre_map = {
+            'rock': [
+                {'item_id': f'r{i}', 'mood_vector': 'rock:0.9'} for i in range(20)
+            ],
+            '__other__': [
+                {'item_id': f'o{i}', 'mood_vector': ''} for i in range(100)
+            ],
+        }
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 10)
+        assert len(subset) == 50
+        assert len({t['item_id'] for t in subset}) == 50
+
+    def test_a_library_smaller_than_the_subset_size_returns_every_song(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
+        genre_map = {
+            'rock': [
+                {'item_id': str(i), 'mood_vector': 'rock:0.9'} for i in range(30)
+            ]
+        }
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 10)
+        assert len(subset) == 30
 
 
 class TestDbscanOversizeSplit:

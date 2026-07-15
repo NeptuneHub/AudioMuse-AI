@@ -250,26 +250,23 @@ class TestGetStratifiedSongSubset:
         assert isinstance(subset, list)
         assert len(subset) >= 0
 
-    def test_excludes_previous_ids(self):
+    def test_rotation_keeps_the_subset_at_the_exact_configured_size(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 4)
         genre_map = {
-            'Rock': [
-                {'item_id': 'r1', 'mood_vector': 'Rock:0.8'},
-                {'item_id': 'r2', 'mood_vector': 'Rock:0.7'},
-                {'item_id': 'r3', 'mood_vector': 'Rock:0.9'},
-            ],
-            'Pop': [
-                {'item_id': 'p1', 'mood_vector': 'Pop:0.8'},
-                {'item_id': 'p2', 'mood_vector': 'Pop:0.7'},
+            'rock': [
+                {'item_id': f'r{i}', 'mood_vector': 'rock:0.9'} for i in range(10)
             ],
         }
-        target_per_genre = 2
-        prev_ids = ['r1', 'p1']
+        prev_ids = ['r0', 'r1', 'r2', 'r3']
 
-        subset = _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=prev_ids)
+        subset = _get_stratified_song_subset(
+            genre_map, 2, prev_ids=prev_ids, percent_change=0.5
+        )
 
-        subset_ids = {track['item_id'] for track in subset}
-        assert 'r1' not in subset_ids
-        assert 'p1' not in subset_ids
+        assert len(subset) == 4
+        assert len({track['item_id'] for track in subset}) == 4
 
 
 class TestGetTrackPrimaryGenre:

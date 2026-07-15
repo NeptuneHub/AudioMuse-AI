@@ -1490,6 +1490,71 @@ html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }
     .scope-chip-corner { top: 0.5rem; right: 0.5rem; font-size: 0.55rem; }
 }
 
+/* iPhone-style ON/OFF toggle used by the Automatic Parameter Discovery flag. */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 74px;
+    height: 30px;
+    vertical-align: middle;
+}
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.toggle-slider {
+    position: absolute;
+    inset: 0;
+    cursor: pointer;
+    background-color: #9CA3AF;
+    border-radius: 30px;
+    transition: background-color 0.2s;
+}
+.toggle-slider::before {
+    content: "";
+    position: absolute;
+    height: 24px;
+    width: 24px;
+    left: 3px;
+    top: 3px;
+    background-color: #fff;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition: transform 0.2s;
+}
+.toggle-slider::after {
+    content: "OFF";
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #fff;
+    user-select: none;
+}
+.toggle-switch input:checked + .toggle-slider {
+    background-color: var(--color-primary);
+}
+.toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(44px);
+}
+.toggle-switch input:checked + .toggle-slider::after {
+    content: "ON";
+    right: auto;
+    left: 12px;
+}
+.toggle-switch input:focus-visible + .toggle-slider {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+body.dark-mode .toggle-slider,
+html.dark-mode body .toggle-slider {
+    background-color: #4B5563;
+}
+
 /* Generated Playlists: one header per server group (only with 2+ servers); the
    chip rides the group because scope varies per group, not per section. */
 .playlist-server-header {

@@ -59,7 +59,7 @@ from config import (
     MAX_SONGS_PER_ARTIST,
     MIN_PLAYLIST_SIZE_FOR_TOP_N,
     CLUSTERING_MAX_PLAYLIST_SONGS,
-    CLUSTERING_MAX_SUBSET_SONGS,
+    CLUSTERING_SUBSET_SONGS,
     GMM_COVARIANCE_TYPE,
     SPECTRAL_N_NEIGHBORS,
     TOP_K_MOODS_FOR_PURITY_CALCULATION,
@@ -1039,8 +1039,15 @@ def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, perc
                 new_subset.extend(added_tracks)
                 for t in added_tracks:
                     new_ids.add(t['item_id'])
+    if len(new_subset) > CLUSTERING_SUBSET_SONGS:
+        random.shuffle(new_subset)
+        return new_subset[:CLUSTERING_SUBSET_SONGS]
+    needed = CLUSTERING_SUBSET_SONGS - len(new_subset)
+    if needed > 0:
+        extras = [t for t in id_to_track_map.values() if t['item_id'] not in new_ids]
+        new_subset.extend(random.sample(extras, min(needed, len(extras))))
     random.shuffle(new_subset)
-    return new_subset[:CLUSTERING_MAX_SUBSET_SONGS]
+    return new_subset
 
 
 def _get_track_primary_genre(track_data):
