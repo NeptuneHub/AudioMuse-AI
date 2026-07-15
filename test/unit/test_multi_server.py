@@ -23,6 +23,8 @@ Main Features:
   and catalogue-cache bounds.
 * Registry mutators roll back and re-raise on write failures; canonicalization
   restores session settings on caller-provided connections.
+* Stored clustering playlists group per server for the UI (default first,
+  deleted/NULL server rows kept, registry failure fails open).
 """
 
 import gc
@@ -2082,3 +2084,100 @@ class TestServerParamCoercion:
         with app.test_request_context('/api/x', method='POST', json={'server': ['a', 'b']}):
             with pytest.raises(ValueError):
                 ctx.resolve_request_server_id()
+
+
+class TestPlaylistGrouping:
+    @staticmethod
+    def _row(name, item_id, server_id):
+        return {
+            'playlist_name': name, 'item_id': item_id,
+            'title': f'Title {item_id}', 'author': 'Artist', 'server_id': server_id,
+        }
+
+    @staticmethod
+    def _servers(monkeypatch, servers):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: servers)
+
+    def test_playlist_rows_group_per_server_with_default_first(self, monkeypatch):
+        import app_server_context as ctx
+
+        self._servers(monkeypatch, [
+            {'server_id': 's1', 'name': 'One', 'is_default': True},
+            {'server_id': 's2', 'name': 'Two', 'is_default': False},
+        ])
+        result = ctx.group_playlist_rows_by_server([
+            self._row('Rock', 'i2', 's2'),
+            self._row('Rock', 'i1', 's1'),
+            self._row('Jazz', 'i3', 's2'),
+        ])
+        assert result['multi_server'] is True
+        assert [g['server_name'] for g in result['servers']] == ['One', 'Two']
+        assert result['servers'][0]['is_default'] is True
+        assert list(result['servers'][0]['playlists']) == ['Rock']
+        assert sorted(result['servers'][1]['playlists']) == ['Jazz', 'Rock']
+        assert result['servers'][1]['playlists']['Jazz'] == [
+            {'item_id': 'i3', 'title': 'Title i3', 'author': 'Artist'}
+        ]
+
+    def test_single_server_install_reports_multi_server_false(self, monkeypatch):
+        import app_server_context as ctx
+
+        self._servers(monkeypatch, [
+            {'server_id': 's1', 'name': 'One', 'is_default': True},
+        ])
+        result = ctx.group_playlist_rows_by_server([self._row('Rock', 'i1', 's1')])
+        assert result['multi_server'] is False
+        assert [g['server_id'] for g in result['servers']] == ['s1']
+
+    def test_servers_without_playlists_get_no_empty_group(self, monkeypatch):
+        import app_server_context as ctx
+
+        self._servers(monkeypatch, [
+            {'server_id': 's1', 'name': 'One', 'is_default': True},
+            {'server_id': 's2', 'name': 'Two', 'is_default': False},
+        ])
+        result = ctx.group_playlist_rows_by_server([self._row('Rock', 'i1', 's1')])
+        assert [g['server_id'] for g in result['servers']] == ['s1']
+
+    def test_rows_for_a_deleted_server_survive_under_their_stored_id(self, monkeypatch):
+        import app_server_context as ctx
+
+        self._servers(monkeypatch, [
+            {'server_id': 's1', 'name': 'One', 'is_default': True},
+            {'server_id': 's2', 'name': 'Two', 'is_default': False},
+        ])
+        result = ctx.group_playlist_rows_by_server([
+            self._row('Rock', 'i1', 's1'),
+            self._row('Old', 'i9', 'gone'),
+        ])
+        assert [g['server_id'] for g in result['servers']] == ['s1', 'gone']
+        assert result['servers'][1]['server_name'] == 'gone'
+        assert result['servers'][1]['is_default'] is False
+
+    def test_null_server_rows_group_under_the_default_server_label(self, monkeypatch):
+        import app_server_context as ctx
+
+        self._servers(monkeypatch, [])
+        result = ctx.group_playlist_rows_by_server([self._row('Rock', 'i1', None)])
+        assert result['multi_server'] is False
+        assert result['servers'][0]['server_name'] == 'default server'
+        assert result['servers'][0]['server_id'] is None
+
+    def test_registry_failure_still_returns_every_row_grouped(self, monkeypatch):
+        import app_server_context as ctx
+        from tasks.mediaserver import registry
+
+        def boom(conn=None):
+            raise RuntimeError('registry down')
+
+        monkeypatch.setattr(registry, 'list_servers', boom)
+        result = ctx.group_playlist_rows_by_server([
+            self._row('Rock', 'i1', 's1'),
+            self._row('Jazz', 'i2', 's2'),
+        ])
+        grouped = {g['server_id']: g['playlists'] for g in result['servers']}
+        assert set(grouped) == {'s1', 's2'}
+        assert list(grouped['s1']) == ['Rock']
+        assert list(grouped['s2']) == ['Jazz']

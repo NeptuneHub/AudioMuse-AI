@@ -781,47 +781,55 @@ def get_config_endpoint():
 @app.route('/api/playlists', methods=['GET'])
 def get_playlists_endpoint():
     """
-    All generated playlists.
+    All generated playlists, grouped per server.
     ---
     tags:
       - Playlists
-    summary: Return every saved playlist with its tracks, grouped by playlist name.
+    summary: Return the last clustering run's playlists of every server, grouped per server.
     responses:
       200:
-        description: Playlist map (playlist_name -> list of tracks).
+        description: Per-server playlist groups (default server first).
         content:
           application/json:
             schema:
               type: object
-              additionalProperties:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    item_id:
-                      type: string
-                    title:
-                      type: string
-                    author:
-                      type: string
+              properties:
+                multi_server:
+                  type: boolean
+                servers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      server_id:
+                        type: string
+                        nullable: true
+                      server_name:
+                        type: string
+                      is_default:
+                        type: boolean
+                      playlists:
+                        type: object
+                        additionalProperties:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              item_id:
+                                type: string
+                              title:
+                                type: string
+                              author:
+                                type: string
     """
-    from collections import defaultdict  # Local import if not used elsewhere globally
-
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
+    cur.execute(
+        "SELECT playlist_name, item_id, title, author, server_id FROM playlist ORDER BY playlist_name"
+    )
     rows = [dict(row) for row in cur.fetchall()]
     cur.close()
-    try:
-        rows = app_server_context.filter_rows_for_request_server(rows, id_key='item_id')
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    playlists_data = defaultdict(list)
-    for row in rows:
-        playlists_data[row['playlist_name']].append(
-            {"item_id": row['item_id'], "title": row['title'], "author": row['author']}
-        )
-    return jsonify(dict(playlists_data)), 200
+    return jsonify(app_server_context.group_playlist_rows_by_server(rows)), 200
 
 
 # --- Redis index reload listener (restored pre-e308673 logic, with map reload added) ---

@@ -310,15 +310,28 @@ def transform(obj):
             transform(x)
 
 
-def fake_playlists(data):
-    if not isinstance(data, dict):
-        return data
+def _fake_playlist_map(playlists):
     out = {}
-    for i, (k, songs) in enumerate(data.items()):
+    for i, (k, songs) in enumerate(playlists.items()):
         if isinstance(songs, list):
             transform(songs)
             out[AIPL[i % len(AIPL)]] = songs[:14]
     return out
+
+
+def fake_playlists(data):
+    if not isinstance(data, dict):
+        return data
+    if isinstance(data.get('servers'), list):
+        for i, group in enumerate(data['servers']):
+            if not isinstance(group, dict):
+                continue
+            group['server_name'] = f"Server {chr(ord('A') + (i % 26))}"
+            group['server_id'] = f"srv-{i}"
+            if isinstance(group.get('playlists'), dict):
+                group['playlists'] = _fake_playlist_map(group['playlists'])
+        return data
+    return _fake_playlist_map(data)
 
 
 def fake_dashboard(data):

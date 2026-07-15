@@ -14,6 +14,8 @@ queue and status calls to check enqueueing and active-task gating.
 Main Features:
 * Starts clustering when no task is active.
 * Blocks when a clustering task or another batch is already active.
+* Always enqueues with output_server_scope 'all' (batch tasks cover every
+  server; a client-supplied scope is ignored).
 """
 
 import pytest
@@ -57,6 +59,24 @@ class TestStartClusteringEndpoint:
         assert data['status'] == "queued"
         mock_cleanup.assert_called_once()
         mock_save_status.assert_called_once()
+
+    @patch('app_clustering.get_active_main_task', return_value=None)
+    @patch('app_clustering.rq_queue_high')
+    @patch('app_clustering.clean_up_previous_main_tasks')
+    @patch('app_clustering.save_task_status')
+    def test_start_enqueues_output_server_scope_all_even_when_a_scope_is_posted(
+        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
+    ):
+        mock_job = Mock()
+        mock_job.id = "cluster-job-123"
+        mock_job.get_status.return_value = "queued"
+        mock_queue.enqueue.return_value = mock_job
+
+        response = client.post('/api/clustering/start', json={'output_server_scope': 's2'})
+
+        assert response.status_code == 202
+        enqueue_kwargs = mock_queue.enqueue.call_args.kwargs['kwargs']
+        assert enqueue_kwargs['output_server_scope'] == 'all'
 
     @patch(
         'app_clustering.get_active_main_task',

@@ -1489,3 +1489,12 @@ html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }
 @media (max-width: 600px) {
     .scope-chip-corner { top: 0.5rem; right: 0.5rem; font-size: 0.55rem; }
 }
+
+/* Generated Playlists: one header per server group (only with 2+ servers); the
+   chip rides the group because scope varies per group, not per section. */
+.playlist-server-header {
+    display: flex;
+    align-items: center;
+    margin: 1.1rem 0 0.4rem;
+}
+.playlist-server-header h3 { margin: 0; }

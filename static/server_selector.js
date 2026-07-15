@@ -33,9 +33,12 @@
     // (the union of every server) alongside an explicit per-server section, and
     // each number says which of the two it is. Injecting ?server= there appended
     // a parameter the endpoint ignores, so the picker silently did nothing.
+    // /api/playlists is the same shape: it always returns EVERY server's last
+    // clustering run grouped per server, so the picker must not scope it.
     function shouldInject(pathname) {
         if (pathname.indexOf('/api/servers') !== -1
-            || pathname.indexOf('/api/dashboard/') !== -1) {
+            || pathname.indexOf('/api/dashboard/') !== -1
+            || pathname.indexOf('/api/playlists') !== -1) {
             return false;
         }
         return pathname.indexOf('/api/') !== -1 || pathname.indexOf('/chat/') !== -1;

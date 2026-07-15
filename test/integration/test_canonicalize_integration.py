@@ -45,7 +45,9 @@ _SCHEMA = [
     "mood_vector TEXT, energy REAL, other_features TEXT, year INTEGER, "
     "rating INTEGER, file_path TEXT)",
     "CREATE TABLE playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, "
-    "item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))",
+    "item_id TEXT, title TEXT, author TEXT, server_id TEXT)",
+    "CREATE UNIQUE INDEX idx_playlist_name_item_server "
+    "ON playlist (playlist_name, item_id, server_id)",
     "CREATE TABLE clap_embedding (item_id TEXT PRIMARY KEY REFERENCES score (item_id) "
     "ON DELETE CASCADE, embedding BYTEA)",
     "CREATE TABLE lyrics_embedding (item_id TEXT PRIMARY KEY REFERENCES score (item_id) "

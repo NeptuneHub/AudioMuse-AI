@@ -337,7 +337,7 @@ def _run_analysis_server_task_impl(
                                     statuses.get(job_id) in terminal
                                     and not _rq_job_still_pending(job_id)
                                 ):
-                                    active_jobs.pop(job_id, None)
+                                    active_jobs.discard(job_id)
                         if db_done != albums_completed:
                             logger.info(
                                 f"Reconciling albums_completed: RQ={albums_completed} DB={db_done} (of {albums_launched} launched)"

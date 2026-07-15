@@ -362,10 +362,15 @@ def _merge_duplicate_rows(cur, duplicate_mapping):
         "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
     )
     cur.execute(
-        "INSERT INTO playlist (playlist_name, item_id, title, author) "
-        "SELECT p.playlist_name, d.new_id, p.title, p.author "
+        "INSERT INTO playlist (playlist_name, item_id, title, author, server_id) "
+        "SELECT DISTINCT ON (p.playlist_name, d.new_id, p.server_id) "
+        "p.playlist_name, d.new_id, p.title, p.author, p.server_id "
         "FROM playlist p JOIN duplicate_item_id_map d ON d.old_id = p.item_id "
-        "ON CONFLICT (playlist_name, item_id) DO NOTHING"
+        "WHERE NOT EXISTS (SELECT 1 FROM playlist q "
+        "WHERE q.playlist_name = p.playlist_name AND q.item_id = d.new_id "
+        "AND q.server_id IS NOT DISTINCT FROM p.server_id) "
+        "ORDER BY p.playlist_name, d.new_id, p.server_id, p.item_id "
+        "ON CONFLICT (playlist_name, item_id, server_id) DO NOTHING"
     )
     cur.execute(
         "DELETE FROM playlist p USING duplicate_item_id_map d WHERE p.item_id = d.old_id"

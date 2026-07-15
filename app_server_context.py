@@ -19,6 +19,8 @@ Main Features:
   (provider ids in, canonical ids out) before they reach the shared indexes.
 * ``create_instant_playlist_for_server`` translates canonical track ids to the
   target server's ids and creates the playlist there (identity for the default).
+* ``group_playlist_rows_by_server`` shapes stored clustering playlists into the
+  grouped-per-server structure the Generated Playlists UI renders.
 * Credential masking and a template-friendly server list for the UI.
 """
 
@@ -239,6 +241,41 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
         logger.exception("Server availability filtering failed; returning rows unfiltered")
         return rows
     return [r for r in rows if _get(r) in mapping]
+
+
+def group_playlist_rows_by_server(rows):
+    from tasks.mediaserver import registry
+
+    try:
+        servers = registry.list_servers()
+    except Exception:
+        logger.exception("Failed to list media servers for playlist grouping")
+        servers = []
+    by_server = {}
+    for row in rows:
+        by_server.setdefault(row.get('server_id'), {}).setdefault(
+            row['playlist_name'], []
+        ).append(
+            {'item_id': row['item_id'], 'title': row['title'], 'author': row['author']}
+        )
+    groups = []
+    for server in servers:
+        playlists = by_server.pop(server['server_id'], None)
+        if playlists:
+            groups.append({
+                'server_id': server['server_id'],
+                'server_name': server['name'],
+                'is_default': bool(server['is_default']),
+                'playlists': playlists,
+            })
+    for server_id, playlists in by_server.items():
+        groups.append({
+            'server_id': server_id,
+            'server_name': server_id if server_id else 'default server',
+            'is_default': False,
+            'playlists': playlists,
+        })
+    return {'multi_server': len(servers) > 1, 'servers': groups}
 
 
 def mask_creds(creds):

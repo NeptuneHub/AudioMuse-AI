@@ -28,7 +28,7 @@ import numpy as np
 import psycopg2
 from flask import g
 from psycopg2 import sql
-from psycopg2.extras import DictCursor, Json
+from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
 
@@ -876,6 +876,35 @@ def _drop_unconfigured_servers(cur):
         )
 
 
+def _migrate_playlist_server_column(cur):
+    cur.execute("ALTER TABLE playlist ADD COLUMN IF NOT EXISTS server_id TEXT")
+    cur.execute("SELECT EXISTS (SELECT 1 FROM playlist WHERE server_id IS NULL LIMIT 1)")
+    if cur.fetchone()[0]:
+        cur.execute(
+            "DELETE FROM playlist older USING playlist newer "
+            "WHERE older.server_id IS NULL AND newer.server_id IS NULL "
+            "AND older.playlist_name = newer.playlist_name "
+            "AND older.item_id = newer.item_id AND older.id > newer.id"
+        )
+        cur.execute(
+            "DELETE FROM playlist p USING playlist q, music_servers ms "
+            "WHERE p.server_id IS NULL AND ms.is_default "
+            "AND q.playlist_name = p.playlist_name AND q.item_id = p.item_id "
+            "AND q.server_id = ms.server_id"
+        )
+        cur.execute(
+            "UPDATE playlist SET server_id = ms.server_id FROM music_servers ms "
+            "WHERE playlist.server_id IS NULL AND ms.is_default"
+        )
+    cur.execute(
+        "ALTER TABLE playlist DROP CONSTRAINT IF EXISTS playlist_playlist_name_item_id_key"
+    )
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_name_item_server "
+        "ON playlist (playlist_name, item_id, server_id)"
+    )
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -1349,6 +1378,7 @@ def init_db():
             """)
             _seed_registry_from_legacy_config(cur)
             _drop_unconfigured_servers(cur)
+            _migrate_playlist_server_column(cur)
             removed_media_keys = purge_media_keys_from_app_config(cur)
             if removed_media_keys:
                 logger.info(
@@ -2383,20 +2413,70 @@ def save_artist_projection(index_name, component_map, projections):
         cur.close()
 
 
-def update_playlist_table(playlists):
+def update_playlist_table(playlists, server_id):
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("DELETE FROM playlist")
+        if server_id is None:
+            cur.execute("DELETE FROM playlist WHERE server_id IS NULL")
+        else:
+            cur.execute("DELETE FROM playlist WHERE server_id = %s", (server_id,))
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM music_servers WHERE server_id = %s)",
+                (server_id,),
+            )
+            if not cur.fetchone()[0]:
+                logger.warning(
+                    "Server '%s' vanished from the registry mid-run; skipping its "
+                    "playlist rows", server_id,
+                )
+                conn.commit()
+                return
+        rows = {}
         for name, cluster in playlists.items():
             for item_id, title, author in cluster:
-                cur.execute(
-                    "INSERT INTO playlist (playlist_name, item_id, title, author) VALUES (%s, %s, %s, %s) ON CONFLICT (playlist_name, item_id) DO NOTHING",
-                    (name, item_id, title, author),
-                )
+                rows.setdefault((name, item_id), (name, item_id, title, author, server_id))
+        if rows:
+            execute_values(
+                cur,
+                "INSERT INTO playlist (playlist_name, item_id, title, author, server_id) VALUES %s "
+                "ON CONFLICT (playlist_name, item_id, server_id) DO NOTHING",
+                list(rows.values()),
+                page_size=5000,
+            )
         conn.commit()
     except Exception:
         conn.rollback()
         logger.exception("Error updating playlist table")
+        raise
+    finally:
+        cur.close()
+
+
+def prune_playlist_rows_for_missing_servers(server_ids):
+    server_ids = list(server_ids)
+    ids = [s for s in server_ids if s]
+    keep_null = len(ids) != len(server_ids)
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        if ids and keep_null:
+            cur.execute(
+                "DELETE FROM playlist WHERE server_id IS NOT NULL AND server_id != ALL(%s)",
+                (ids,),
+            )
+        elif ids:
+            cur.execute(
+                "DELETE FROM playlist WHERE server_id IS NULL OR server_id != ALL(%s)",
+                (ids,),
+            )
+        elif keep_null:
+            cur.execute("DELETE FROM playlist WHERE server_id IS NOT NULL")
+        else:
+            return
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Error pruning playlist table")
     finally:
         cur.close()

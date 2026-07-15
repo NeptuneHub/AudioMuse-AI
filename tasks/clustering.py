@@ -20,6 +20,10 @@ Main Features:
 * run_clustering_task: sequential per-server loop over the requested scope
   (a specific server, 'default', or 'all'); _cluster_one_server runs one
   server's full pipeline with per-server batch job ids.
+* Per-server persistence: each server's playlists replace ITS OWN rows in the
+  playlist table (bare names + server_id) as soon as it succeeds, and every run
+  starts by pruning rows of servers no longer configured - the table is always
+  the last run per server, never a growing history.
 * _monitor_and_process_batches / _launch_batch_job: fan out parameter sets into
   batch jobs, track elites, and adapt sampling each generation.
 * Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
@@ -76,7 +80,11 @@ from app_helper import (
     get_db,
     rq_queue_default,
 )
-from database import update_playlist_table, get_child_tasks_from_db
+from database import (
+    update_playlist_table,
+    prune_playlist_rows_for_missing_servers,
+    get_child_tasks_from_db,
+)
 
 from sanitization import sanitize_for_json
 
@@ -463,9 +471,13 @@ def run_clustering_task(
             if not target_servers:
                 raise ValueError(f"No music servers match scope '{output_server_scope}'.")
 
+            if output_server_scope == 'all' and all(target_servers):
+                prune_playlist_rows_for_missing_servers(
+                    [s['server_id'] for s in target_servers]
+                )
+
             multi_server = len(target_servers) > 1
             server_span = 92.0 / len(target_servers)
-            aggregated_playlists = {}
             per_server_summary = []
             best_score_overall = -1.0
             best_params_overall = None
@@ -493,50 +505,60 @@ def run_clustering_task(
                     "job_prefix": f"{current_task_id}_s{server_idx}",
                 })
 
-                status, payload = _cluster_one_server(
-                    target_server,
-                    _main_task_accumulated_details,
-                    report,
-                    current_job,
-                    current_task_id,
-                    clustering_method,
-                    num_clusters_min,
-                    num_clusters_max,
-                    dbscan_eps_min,
-                    dbscan_eps_max,
-                    dbscan_min_samples_min,
-                    dbscan_min_samples_max,
-                    pca_components_min,
-                    pca_components_max,
-                    num_clustering_runs,
-                    max_songs_per_cluster_val,
-                    gmm_n_components_min,
-                    gmm_n_components_max,
-                    spectral_n_clusters_min,
-                    spectral_n_clusters_max,
-                    min_songs_per_genre_for_stratification_param,
-                    stratified_sampling_target_percentile_param,
-                    score_weight_diversity_param,
-                    score_weight_silhouette_param,
-                    score_weight_davies_bouldin_param,
-                    score_weight_calinski_harabasz_param,
-                    score_weight_purity_param,
-                    score_weight_other_feature_diversity_param,
-                    score_weight_other_feature_purity_param,
-                    ai_model_provider_param,
-                    ollama_server_url_param,
-                    ollama_model_name_param,
-                    openai_server_url_param,
-                    openai_model_name_param,
-                    openai_api_key_param,
-                    gemini_api_key_param,
-                    gemini_model_name_param,
-                    mistral_api_key_param,
-                    mistral_model_name_param,
-                    top_n_moods_for_clustering_param,
-                    top_n_playlists_param,
-                    enable_clustering_embeddings_param,
-                )
+                try:
+                    status, payload = _cluster_one_server(
+                        target_server,
+                        _main_task_accumulated_details,
+                        report,
+                        current_job,
+                        current_task_id,
+                        clustering_method,
+                        num_clusters_min,
+                        num_clusters_max,
+                        dbscan_eps_min,
+                        dbscan_eps_max,
+                        dbscan_min_samples_min,
+                        dbscan_min_samples_max,
+                        pca_components_min,
+                        pca_components_max,
+                        num_clustering_runs,
+                        max_songs_per_cluster_val,
+                        gmm_n_components_min,
+                        gmm_n_components_max,
+                        spectral_n_clusters_min,
+                        spectral_n_clusters_max,
+                        min_songs_per_genre_for_stratification_param,
+                        stratified_sampling_target_percentile_param,
+                        score_weight_diversity_param,
+                        score_weight_silhouette_param,
+                        score_weight_davies_bouldin_param,
+                        score_weight_calinski_harabasz_param,
+                        score_weight_purity_param,
+                        score_weight_other_feature_diversity_param,
+                        score_weight_other_feature_purity_param,
+                        ai_model_provider_param,
+                        ollama_server_url_param,
+                        ollama_model_name_param,
+                        openai_server_url_param,
+                        openai_model_name_param,
+                        openai_api_key_param,
+                        gemini_api_key_param,
+                        gemini_model_name_param,
+                        mistral_api_key_param,
+                        mistral_model_name_param,
+                        top_n_moods_for_clustering_param,
+                        top_n_playlists_param,
+                        enable_clustering_embeddings_param,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Clustering failed on server '%s'; continuing with the "
+                        "remaining servers", server_name,
+                    )
+                    per_server_summary.append(
+                        {'server': server_name, 'status': 'failed', 'reason': str(exc)}
+                    )
+                    continue
 
                 if status == 'revoked':
                     return {"status": "REVOKED", "message": "Main clustering task revoked."}
@@ -545,15 +567,22 @@ def run_clustering_task(
                         {'server': server_name, 'status': status, 'reason': payload}
                     )
                     continue
-                # Two servers producing the same deterministic playlist name used to
-                # collapse into ONE row set here, because the key was the name alone.
-                # Suffix the STORED name per server when more than one is in scope
-                # (the name pushed to the media server itself stays bare, and each
-                # server already got its own playlist there).
-                multi = len(target_servers) > 1
-                for name, cluster in payload['playlists'].items():
-                    key = f"{name} [{server_name}]" if multi else name
-                    aggregated_playlists.setdefault(key, []).extend(cluster)
+                try:
+                    update_playlist_table(
+                        payload['playlists'],
+                        target_server['server_id'] if target_server else None,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Persisting playlists failed for server '%s'; the previous "
+                        "run's rows were kept", server_name,
+                    )
+                    per_server_summary.append({
+                        'server': server_name,
+                        'status': 'failed',
+                        'reason': 'playlist persistence failed; previous run kept in database',
+                    })
+                    continue
                 if payload['best_score'] > best_score_overall:
                     best_score_overall = payload['best_score']
                     best_params_overall = payload['best_params']
@@ -561,7 +590,9 @@ def run_clustering_task(
                     'server': server_name,
                     'status': 'success',
                     'best_score': payload['best_score'],
+                    'best_params': payload['best_params'],
                     'playlists_created': len(payload['playlists']),
+                    'playlist_names': sorted(payload['playlists'].keys()),
                 })
 
             successes = [s for s in per_server_summary if s['status'] == 'success']
@@ -572,8 +603,6 @@ def run_clustering_task(
                         f"{s['server']}: {s.get('reason')}" for s in per_server_summary
                     )
                 )
-
-            update_playlist_table(aggregated_playlists)
 
             final_message = (
                 f"Clustering task completed successfully on {len(successes)}/"
@@ -687,14 +716,6 @@ def _cluster_one_server(
     top_n_playlists_param,
     enable_clustering_embeddings_param,
 ):
-    """One complete clustering pipeline for ONE server's catalogue.
-
-    Every server clusters only the tracks it actually has (availability-scoped
-    input), runs its own evolutionary search, and receives its own playlists;
-    results are never computed once and pushed to other servers. Returns
-    ``(status, payload)`` where status is 'success', 'skipped', 'failed', or
-    'revoked'.
-    """
     server_name = target_server['name'] if target_server else 'default server'
     report("Fetching lightweight track data for stratification...", 1)
     db = get_db()
@@ -720,6 +741,7 @@ def _cluster_one_server(
         return 'skipped', reason
 
     genre_map = _prepare_genre_map(lightweight_rows)
+    genre_map_json = json.dumps(genre_map)
     target_songs_per_genre = _calculate_target_songs_per_genre(
         genre_map,
         stratified_sampling_target_percentile_param,
@@ -809,7 +831,7 @@ def _cluster_one_server(
                 current_task_id,
                 next_batch_to_launch,
                 num_clustering_runs,
-                genre_map,
+                genre_map_json,
                 target_songs_per_genre,
                 clustering_method,
                 num_clusters_min,
@@ -1150,7 +1172,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
 
 
 def _launch_batch_job(
-    state_dict, parent_task_id, batch_idx, total_runs, genre_map, target_per_genre, *args
+    state_dict, parent_task_id, batch_idx, total_runs, genre_map_json, target_per_genre, *args
 ):
     (
         clustering_method,
@@ -1192,7 +1214,7 @@ def _launch_batch_job(
         "batch_id_str": f"Batch_{batch_idx}",
         "start_run_idx": start_run,
         "num_iterations_in_batch": num_iterations,
-        "genre_to_lightweight_track_data_map_json": json.dumps(genre_map),
+        "genre_to_lightweight_track_data_map_json": genre_map_json,
         "target_songs_per_genre": target_per_genre,
         "sampling_percentage_change_per_run": SAMPLING_PERCENTAGE_CHANGE_PER_RUN,
         "clustering_method": clustering_method,

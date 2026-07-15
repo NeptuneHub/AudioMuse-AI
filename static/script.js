@@ -485,29 +485,42 @@ async function fetchPlaylists() {
 
 function renderPlaylists(playlistsData) {
     playlistsContainer.innerHTML = '';
-    if (!playlistsData || Object.keys(playlistsData).length === 0) {
+    const groups = (playlistsData && playlistsData.servers) || [];
+    const hasPlaylists = groups.some(group => Object.keys(group.playlists || {}).length > 0);
+    if (!hasPlaylists) {
         playlistsContainer.innerHTML = '<p>No playlists found.</p>';
         return;
     }
-    for (const [playlistName, songs] of Object.entries(playlistsData)) {
-        const playlistDiv = document.createElement('div');
-        playlistDiv.className = 'playlist-item';
-        playlistDiv.innerHTML = `
-            <div class="playlist-header">
-                <strong class="playlist-name">${escapeHtml(playlistName)}</strong>
-                <span class="playlist-song-count">(${songs.length} songs)</span>
-                <button class="show-songs-btn">SHOW</button>
-            </div>
-            <ul class="song-list" style="display: none;">
-                ${songs.map(song => `<li>${escapeHtml(song.title)} by ${escapeHtml(song.author)}</li>`).join('')}
-            </ul>`;
-        playlistDiv.querySelector('.show-songs-btn').addEventListener('click', e => {
-            const btn = e.target;
-            const list = btn.closest('.playlist-item').querySelector('.song-list');
-            list.style.display = list.style.display === 'none' ? 'block' : 'none';
-            btn.textContent = list.style.display === 'none' ? 'SHOW' : 'HIDE';
-        });
-        playlistsContainer.appendChild(playlistDiv);
+    const showServerHeaders = playlistsData.multi_server || groups.length > 1;
+    for (const group of groups) {
+        if (showServerHeaders) {
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'playlist-server-header';
+            headerDiv.innerHTML = `
+                <h3>${escapeHtml(group.server_name || '')}${group.is_default ? ' (default)' : ''}</h3>
+                <span class="scope-chip scope-server">Per server</span>`;
+            playlistsContainer.appendChild(headerDiv);
+        }
+        for (const [playlistName, songs] of Object.entries(group.playlists || {})) {
+            const playlistDiv = document.createElement('div');
+            playlistDiv.className = 'playlist-item';
+            playlistDiv.innerHTML = `
+                <div class="playlist-header">
+                    <strong class="playlist-name">${escapeHtml(playlistName)}</strong>
+                    <span class="playlist-song-count">(${songs.length} songs)</span>
+                    <button class="show-songs-btn">SHOW</button>
+                </div>
+                <ul class="song-list" style="display: none;">
+                    ${songs.map(song => `<li>${escapeHtml(song.title)} by ${escapeHtml(song.author)}</li>`).join('')}
+                </ul>`;
+            playlistDiv.querySelector('.show-songs-btn').addEventListener('click', e => {
+                const btn = e.target;
+                const list = btn.closest('.playlist-item').querySelector('.song-list');
+                list.style.display = list.style.display === 'none' ? 'block' : 'none';
+                btn.textContent = list.style.display === 'none' ? 'SHOW' : 'HIDE';
+            });
+            playlistsContainer.appendChild(playlistDiv);
+        }
     }
 }
 

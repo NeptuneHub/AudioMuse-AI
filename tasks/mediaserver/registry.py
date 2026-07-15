@@ -354,7 +354,6 @@ def set_default(server_id, conn=None):
 
 
 def delete_server(server_id, conn=None):
-    """Delete a secondary server. Refuses to delete the default server."""
     db = conn or get_db()
     server = get_server(server_id, db)
     if server is None:
@@ -363,6 +362,7 @@ def delete_server(server_id, conn=None):
         raise ValueError("Cannot delete the default server; set another server as default first.")
     cur = db.cursor()
     try:
+        cur.execute("DELETE FROM playlist WHERE server_id = %s", (server_id,))
         cur.execute("DELETE FROM music_servers WHERE server_id = %s", (server_id,))
         db.commit()
         invalidate_server_cache()
