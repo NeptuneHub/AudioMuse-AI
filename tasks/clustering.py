@@ -25,7 +25,9 @@ Main Features:
   starts by pruning rows of servers no longer configured - the table is always
   the last run per server, never a growing history.
 * _monitor_and_process_batches / _launch_batch_job: fan out parameter sets into
-  batch jobs, track elites, and adapt sampling each generation.
+  batch jobs, track elites, and adapt sampling each generation. After
+  CLUSTERING_EARLY_STOP_BATCHES consecutive batches without a better result no
+  new batches are enqueued; in-flight ones drain and the best result stands.
 * Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
   so playlists span the library rather than one dominant genre.
 * _calibrate_cluster_params: per-server auto-tuning for EVERY algorithm via up
@@ -86,6 +88,7 @@ from config import (
     CLUSTERING_CLEANING,
     CLUSTERING_MAX_PLAYLIST_SONGS,
     CLUSTERING_CALIBRATION_MAX_TRIES,
+    CLUSTERING_EARLY_STOP_BATCHES,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
@@ -495,6 +498,7 @@ def run_clustering_task(
             "batch_start_times": {},
             "failed_batches": set(),
             "timed_out_batches": set(),
+            "stale_batches": 0,
         }
 
         def _log_and_update(
@@ -573,6 +577,7 @@ def run_clustering_task(
                     "batch_start_times": {},
                     "failed_batches": set(),
                     "timed_out_batches": set(),
+                    "stale_batches": 0,
                     "job_prefix": f"{current_task_id}_s{server_idx}",
                 })
 
@@ -1123,10 +1128,24 @@ def _cluster_one_server(
                     f"Forced completion of {remaining_runs} remaining runs due to batch failures"
                 )
 
+        stale_batches = state.get("stale_batches", 0)
+        if (
+            stale_batches >= CLUSTERING_EARLY_STOP_BATCHES
+            and not state["active_jobs"]
+            and state["runs_completed"] < num_clustering_runs
+        ):
+            report(
+                f"Early stop: {stale_batches} consecutive batches without a better "
+                f"result. Finishing at {state['runs_completed']}/{num_clustering_runs} runs.",
+                local_pct,
+            )
+            state["runs_completed"] = num_clustering_runs
+
         while (
             len(state["active_jobs"]) < MAX_CONCURRENT_BATCH_JOBS
             and next_batch_to_launch < num_total_batches
             and failed_batch_count < CLUSTERING_MAX_FAILED_BATCHES
+            and stale_batches < CLUSTERING_EARLY_STOP_BATCHES
         ):
             _launch_batch_job(
                 state,
@@ -1405,6 +1424,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                 "final_subset_track_ids", state_dict["last_subset_ids"]
             )
             best_from_batch = result.get("best_result_from_batch")
+            improved = False
             if best_from_batch and best_from_batch.get("parameters"):
                 current_best_score = best_from_batch.get("fitness_score", -1.0)
                 state_dict["elite_solutions"].append(
@@ -1422,8 +1442,15 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                 if current_rank > best_rank:
                     state_dict["best_score"] = current_best_score
                     state_dict["best_result"] = best_from_batch
+                    improved = True
+            if not initial_check:
+                state_dict["stale_batches"] = (
+                    0 if improved else state_dict.get("stale_batches", 0) + 1
+                )
         else:
             state_dict.setdefault("failed_batches", set()).add(job_id)
+            if not initial_check:
+                state_dict["stale_batches"] = state_dict.get("stale_batches", 0) + 1
 
             task_info_for_runs = next((t for t in all_child_tasks if t['task_id'] == job_id), None)
 

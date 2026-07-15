@@ -106,6 +106,85 @@ class TestViablePlaylistSelection:
         assert viable_rank > shredded_rank
 
 
+class TestEarlyStopCounting:
+    @staticmethod
+    def _batch_result(score):
+        import config
+
+        return {
+            'status': config.TASK_STATUS_SUCCESS,
+            'iterations_completed_in_batch': 20,
+            'best_result_from_batch': {
+                'fitness_score': score,
+                'parameters': {'method': 'kmeans'},
+                'named_playlists': {f'P{i}': list(range(25)) for i in range(8)},
+            },
+        }
+
+    def _run_monitor(self, monkeypatch, batch_results, initial_check=False):
+        from tasks import clustering
+        import config
+
+        children = []
+        results = {}
+        for i, result in enumerate(batch_results):
+            status = config.TASK_STATUS_SUCCESS if result else config.TASK_STATUS_FAILURE
+            children.append({
+                'task_id': f'p_batch_{i}', 'status': status,
+                'sub_type_identifier': f'Batch_{i}', 'details': None,
+            })
+            results[f'p_batch_{i}'] = result
+        monkeypatch.setattr(clustering, 'get_child_tasks_from_db', lambda pid: children)
+        monkeypatch.setattr(
+            clustering, 'get_job_result_safely',
+            lambda job_id, pid, task_type: results[job_id],
+        )
+        state = {
+            'runs_completed': 0, 'total_runs': 100, 'best_score': -1.0,
+            'best_result': None, 'active_jobs': {}, 'elite_solutions': [],
+            'last_subset_ids': [], 'processed_job_ids': set(),
+            'batch_start_times': {}, 'failed_batches': set(),
+            'timed_out_batches': set(), 'job_prefix': 'p',
+            'stale_batches': 0, 'top_n_playlists': 8,
+        }
+        clustering._monitor_and_process_batches(state, 'p', initial_check=initial_check)
+        return state
+
+    def test_three_batches_without_a_better_result_mark_the_search_stale(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), self._batch_result(9),
+             self._batch_result(8), self._batch_result(7)],
+        )
+        assert state['stale_batches'] == 3
+        assert state['best_score'] == 10
+
+    def test_a_better_batch_resets_the_stale_counter(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), self._batch_result(9),
+             self._batch_result(12), self._batch_result(11)],
+        )
+        assert state['stale_batches'] == 1
+        assert state['best_score'] == 12
+
+    def test_failed_batches_count_toward_the_early_stop(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), None, None],
+        )
+        assert state['stale_batches'] == 2
+
+    def test_recovery_scans_do_not_count_stale_batches(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), self._batch_result(9),
+             self._batch_result(8), self._batch_result(7)],
+            initial_check=True,
+        )
+        assert state['stale_batches'] == 0
+
+
 class TestSubsetExactSize:
     def test_an_oversized_stratified_sample_is_trimmed_to_the_exact_size(self, monkeypatch):
         from tasks import clustering_helper
