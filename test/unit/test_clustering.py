@@ -73,6 +73,77 @@ class TestParameterMutation:
         assert result == 90
 
 
+class TestViablePlaylistSelection:
+    def test_viable_playlists_counts_only_min_size_playlists_capped_at_top_n(self):
+        from tasks.clustering import _viable_playlists
+        import config
+
+        result = {
+            'named_playlists': {
+                **{f'big{i}': list(range(25)) for i in range(config.TOP_N_PLAYLISTS + 3)},
+                'tiny': list(range(5)),
+            }
+        }
+        assert _viable_playlists(result) == config.TOP_N_PLAYLISTS
+        assert _viable_playlists({'named_playlists': {'tiny': list(range(5))}}) == 0
+        assert _viable_playlists(None) == 0
+        assert _viable_playlists(result, top_n=3) == 3
+        assert _viable_playlists({'fitness_score': -1.0}) == 0
+
+    def test_a_viable_result_outranks_a_higher_scoring_shredded_result(self):
+        from tasks.clustering import _viable_playlists
+
+        shredded = {
+            'named_playlists': {'A': list(range(30)), 'B': list(range(5))},
+            'fitness_score': 99.0,
+        }
+        viable = {
+            'named_playlists': {f'P{i}': list(range(25)) for i in range(8)},
+            'fitness_score': 10.0,
+        }
+        shredded_rank = (_viable_playlists(shredded), shredded['fitness_score'])
+        viable_rank = (_viable_playlists(viable), viable['fitness_score'])
+        assert viable_rank > shredded_rank
+
+
+class TestSubsetSizeCap:
+    def test_the_stratified_subset_is_hard_capped_to_bound_compute(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_MAX_SUBSET_SONGS', 50)
+        genre_map = {
+            'rock': [
+                {'item_id': str(i), 'mood_vector': 'rock:0.9'} for i in range(300)
+            ]
+        }
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 200)
+        assert len(subset) == 50
+
+
+class TestDbscanOversizeSplit:
+    def test_an_oversized_dbscan_cluster_is_split_into_playlist_sized_chunks(self):
+        from tasks.clustering_helper import _split_oversized_clusters
+        import config
+
+        rng = np.random.default_rng(3)
+        data = rng.standard_normal((600, 4))
+        labels = np.zeros(600, dtype=int)
+        split = _split_oversized_clusters(labels, data)
+        sizes = [int((split == c).sum()) for c in set(split.tolist()) if c != -1]
+        assert len(sizes) >= 2
+        assert max(sizes) <= config.CLUSTERING_MAX_PLAYLIST_SONGS
+        assert sum(sizes) == 600
+
+    def test_small_clusters_and_noise_are_left_untouched(self):
+        from tasks.clustering_helper import _split_oversized_clusters
+
+        rng = np.random.default_rng(3)
+        data = rng.standard_normal((60, 4))
+        labels = np.array([0] * 30 + [1] * 20 + [-1] * 10)
+        split = _split_oversized_clusters(labels, data)
+        assert (split == labels).all()
+
+
 class TestDataPreparationAndScaling:
     def test_prepare_and_scale_data_with_features(self):
         from tasks.clustering_helper import _prepare_and_scale_data

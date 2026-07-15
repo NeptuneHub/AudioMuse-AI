@@ -40,11 +40,14 @@ def _server(server_id, name, default=False):
     }
 
 
-def _payload(names, score=0.5, params=None):
+def _payload(names, score=0.5, params=None, calibrated=None):
     return {
         'playlists': {name: [(f'fp_{name}', f'Title {name}', 'Artist')] for name in names},
         'best_score': score,
         'best_params': params or {'method': 'kmeans'},
+        'calibrated_params': calibrated or {
+            'num_clusters_min': 8, 'num_clusters_max': 8, 'stratification_percentile': 65,
+        },
     }
 
 
@@ -303,6 +306,9 @@ class TestRetentionAndSummary:
         final_details = statuses[-1][2]
         per_server = final_details['per_server']
         assert per_server[0]['best_params'] == {'method': 'kmeans', 'k': 3}
+        assert per_server[0]['calibrated_params'] == {
+            'num_clusters_min': 8, 'num_clusters_max': 8, 'stratification_percentile': 65,
+        }
         assert per_server[0]['playlist_names'] == ['Jazz_automatic', 'Rock_automatic']
         assert per_server[1]['best_params'] == {'method': 'kmeans', 'k': 7}
         assert per_server[1]['playlist_names'] == ['Pop_automatic']

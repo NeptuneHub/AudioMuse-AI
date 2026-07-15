@@ -28,6 +28,25 @@ Main Features:
   batch jobs, track elites, and adapt sampling each generation.
 * Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
   so playlists span the library rather than one dominant genre.
+* _calibrate_cluster_params: per-server auto-tuning for EVERY algorithm via up
+  to CLUSTERING_CALIBRATION_MAX_TRIES quick single-iteration probes. KMeans,
+  GMM and Spectral tune their own cluster/component range plus the sampling
+  percentile: small libraries pin the range to top_n_playlists clusters
+  directly (never above subset_size / (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N), never
+  below subset_size / CLUSTERING_MAX_PLAYLIST_SONGS) and each probe runs at
+  the TOP of the range (worst case for emptiness). DBSCAN has no cluster
+  count: its eps range is DERIVED from the data instead (k-distance heuristic
+  via _derive_dbscan_eps - the configured 0.1-0.5 default is unusable in the
+  ~200-dim embedding space where every point would be noise), oversized
+  components are re-split by KMeans in clustering_helper, and probes widen
+  eps when playlists come out tiny and tighten it when oversized, alongside
+  the percentile. A probe only passes with at
+  least top_n_playlists playlists of MIN_PLAYLIST_SIZE_FOR_TOP_N+ songs;
+  otherwise clusters shrink toward the goal and the percentile rises to
+  sample more of the library. Oversized probes (over
+  CLUSTERING_MAX_PLAYLIST_SONGS) grow clusters/lower percentile; big beats
+  empty. On probe failure the library-size cap still applies. Calibration is
+  skipped on crash-recovery resumes (existing batch children).
 * _name_and_prepare_playlists: score, name (optionally via AI) and persist results;
   app imports are deferred inside functions to avoid circular imports.
 """
@@ -48,6 +67,8 @@ from psycopg2.extras import DictCursor
 
 from config import (
     MAX_SONGS_PER_CLUSTER,
+    TOP_N_PLAYLISTS,
+    CLUSTERING_AUTO_CALIBRATION,
     MOOD_LABELS,
     STRATIFIED_GENRES,
     MUTATION_KMEANS_COORD_FRACTION,
@@ -63,6 +84,8 @@ from config import (
     CLUSTERING_BATCH_TIMEOUT_MINUTES,
     CLUSTERING_MAX_FAILED_BATCHES,
     CLUSTERING_CLEANING,
+    CLUSTERING_MAX_PLAYLIST_SONGS,
+    CLUSTERING_CALIBRATION_MAX_TRIES,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
@@ -90,10 +113,14 @@ from sanitization import sanitize_for_json
 
 from .mediaserver import create_playlist, delete_automatic_playlists
 from .mediaserver import registry
+from sklearn.neighbors import NearestNeighbors
+
 from .clustering_helper import (
     _get_stratified_song_subset,
     get_job_result_safely,
     _perform_single_clustering_iteration,
+    _prepare_iteration_data,
+    _prepare_and_scale_data,
     _shuffle_playlist_songs,
     _assign_playlist_chunks,
     _try_ai_name_playlist,
@@ -105,6 +132,34 @@ from .clustering_postprocessing import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _derive_dbscan_eps(item_ids, min_samples, active_moods, enable_embeddings):
+    valid_tracks, x_feat, x_embed = _prepare_iteration_data(
+        item_ids, active_moods, enable_embeddings, '[Calibration]', 0
+    )
+    if valid_tracks is None:
+        return None
+    data, _scaler = _prepare_and_scale_data(x_feat, x_embed, enable_embeddings)
+    if data is None or data.shape[0] <= min_samples:
+        return None
+    if len(data) > 1000:
+        picks = np.random.default_rng(0).choice(len(data), 1000, replace=False)
+        data = data[picks]
+    neighbors = NearestNeighbors(n_neighbors=min(min_samples + 1, len(data))).fit(data)
+    distances, _indices = neighbors.kneighbors(data)
+    kdist = distances[:, -1]
+    eps_low = max(0.05, float(np.percentile(kdist, 50)))
+    eps_high = max(eps_low * 1.2, float(np.percentile(kdist, 90)))
+    return eps_low, eps_high
+
+
+def _viable_playlists(result, top_n=TOP_N_PLAYLISTS):
+    playlists = (result or {}).get('named_playlists') or {}
+    keepers = sum(
+        1 for songs in playlists.values() if len(songs) >= MIN_PLAYLIST_SIZE_FOR_TOP_N
+    )
+    return min(keepers, max(1, top_n))
 
 
 def batch_task_failure_handler(job, connection, type, value, tb):
@@ -164,6 +219,7 @@ def run_clustering_batch_task(
     mutation_config_json,
     initial_subset_track_ids_json,
     enable_clustering_embeddings_param,
+    top_n_playlists_param=TOP_N_PLAYLISTS,
 ):
     from flask_app import app
 
@@ -207,6 +263,7 @@ def run_clustering_batch_task(
 
             best_result_in_batch = None
             best_score_in_batch = -1.0
+            best_rank_in_batch = (-1, -1.0)
             iterations_completed = 0
 
             for i in range(num_iterations_in_batch):
@@ -267,10 +324,16 @@ def run_clustering_batch_task(
                 )
                 iterations_completed += 1
 
+                iteration_rank = (
+                    _viable_playlists(iteration_result, top_n_playlists_param),
+                    (iteration_result or {}).get("fitness_score", -1.0),
+                )
                 if (
                     iteration_result
-                    and iteration_result.get("fitness_score", -1.0) > best_score_in_batch
+                    and iteration_result.get("parameters")
+                    and iteration_rank > best_rank_in_batch
                 ):
+                    best_rank_in_batch = iteration_rank
                     best_score_in_batch = iteration_result["fitness_score"]
                     best_result_in_batch = iteration_result
 
@@ -352,8 +415,12 @@ def run_clustering_task(
     top_n_playlists_param,
     enable_clustering_embeddings_param,
     output_server_scope="all",
+    auto_calibration_param=None,
 ):
     from flask_app import app
+
+    if auto_calibration_param is None:
+        auto_calibration_param = CLUSTERING_AUTO_CALIBRATION
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -465,7 +532,11 @@ def run_clustering_task(
             )
 
         try:
-            _log_and_update("Initializing clustering process...", 0, task_state=TASK_STATUS_STARTED)
+            _log_and_update(
+                f"Initializing clustering process ({clustering_method})...",
+                0,
+                task_state=TASK_STATUS_STARTED,
+            )
 
             target_servers = registry.servers_for_scope(output_server_scope)
             if not target_servers:
@@ -549,6 +620,7 @@ def run_clustering_task(
                         top_n_moods_for_clustering_param,
                         top_n_playlists_param,
                         enable_clustering_embeddings_param,
+                        auto_calibration_param,
                     )
                 except Exception as exc:
                     logger.exception(
@@ -591,6 +663,7 @@ def run_clustering_task(
                     'status': 'success',
                     'best_score': payload['best_score'],
                     'best_params': payload['best_params'],
+                    'calibrated_params': payload.get('calibrated_params'),
                     'playlists_created': len(payload['playlists']),
                     'playlist_names': sorted(payload['playlists'].keys()),
                 })
@@ -672,6 +745,157 @@ def _make_server_reporter(log_and_update, server_label, base_progress, span):
     return report
 
 
+def _calibrate_cluster_params(
+    clustering_method,
+    genre_map,
+    cluster_range_min,
+    cluster_range_max,
+    percentile,
+    min_songs_per_genre,
+    dbscan_eps_min,
+    dbscan_eps_max,
+    dbscan_min_samples_min,
+    dbscan_min_samples_max,
+    pca_components_min,
+    pca_components_max,
+    max_songs_per_cluster_val,
+    top_n_playlists,
+    top_n_moods,
+    enable_embeddings,
+    report,
+):
+    count_based = clustering_method in ('kmeans', 'gmm', 'spectral')
+    cur_min, cur_max, cur_pct = cluster_range_min, cluster_range_max, percentile
+    eps_cap = None
+    try:
+        best_rank = None
+        best = (cluster_range_min, cluster_range_max, percentile)
+        for attempt in range(1, CLUSTERING_CALIBRATION_MAX_TRIES + 1):
+            target = _calculate_target_songs_per_genre(
+                genre_map, cur_pct, min_songs_per_genre
+            )
+            subset = _get_stratified_song_subset(genre_map, target)
+            if count_based:
+                k_floor = max(2, len(subset) // CLUSTERING_MAX_PLAYLIST_SONGS)
+                cap = max(k_floor, len(subset) // (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N))
+                if cap < cur_max:
+                    cur_max = max(k_floor, min(cap, max(2, top_n_playlists)))
+                cur_min = max(2, min(cur_min, cur_max))
+                needed = max(2, min(top_n_playlists, cur_max))
+            else:
+                needed = max(2, top_n_playlists)
+                if attempt == 1:
+                    derived = _derive_dbscan_eps(
+                        [t['item_id'] for t in subset],
+                        max(2, (dbscan_min_samples_min + dbscan_min_samples_max) // 2),
+                        MOOD_LABELS[:top_n_moods] if top_n_moods > 0 else MOOD_LABELS,
+                        enable_embeddings,
+                    )
+                    if derived:
+                        cur_min, cur_max = derived
+                        report(
+                            f"DBSCAN eps derived from data: {cur_min:.2f}-{cur_max:.2f} "
+                            f"(configured {cluster_range_min}-{cluster_range_max})",
+                            2,
+                        )
+                    eps_cap = cur_max * 1.5
+            report(
+                f"Calibration {attempt}/{CLUSTERING_CALIBRATION_MAX_TRIES}: "
+                + (f"clusters {cur_min}-{cur_max}, " if count_based
+                   else f"eps {cur_min:.2f}-{cur_max:.2f}, ")
+                + f"subset {len(subset)}, need {needed} playlists of "
+                f"{MIN_PLAYLIST_SIZE_FOR_TOP_N}+ songs, percentile {cur_pct}",
+                3,
+            )
+            result = _perform_single_clustering_iteration(
+                run_idx=attempt,
+                item_ids_for_subset=[t['item_id'] for t in subset],
+                clustering_method=clustering_method,
+                num_clusters_min_max=(cur_max, cur_max)
+                if clustering_method == 'kmeans' else (2, 2),
+                dbscan_params_ranges={
+                    'eps_min': cur_min if clustering_method == 'dbscan' else dbscan_eps_min,
+                    'eps_max': cur_max if clustering_method == 'dbscan' else dbscan_eps_max,
+                    'samples_min': dbscan_min_samples_min,
+                    'samples_max': dbscan_min_samples_max,
+                },
+                gmm_params_ranges={'n_components_min': cur_max, 'n_components_max': cur_max}
+                if clustering_method == 'gmm'
+                else {'n_components_min': 2, 'n_components_max': 2},
+                spectral_params_ranges={'n_clusters_min': cur_max, 'n_clusters_max': cur_max}
+                if clustering_method == 'spectral'
+                else {'n_clusters_min': 2, 'n_clusters_max': 2},
+                pca_params_ranges={
+                    'components_min': pca_components_min,
+                    'components_max': pca_components_max,
+                },
+                active_mood_labels=MOOD_LABELS[:top_n_moods] if top_n_moods > 0 else MOOD_LABELS,
+                max_songs_per_cluster=max_songs_per_cluster_val,
+                log_prefix='[Calibration]',
+                elite_solutions_params_list=[],
+                exploitation_probability=0.0,
+                mutation_config={
+                    'int_abs_delta': 0, 'float_abs_delta': 0.0, 'coord_mutation_fraction': 0.0,
+                },
+                score_weights={
+                    'mood_diversity': 0.0, 'silhouette': 0.0, 'davies_bouldin': 0.0,
+                    'calinski_harabasz': 0.0, 'mood_purity': 0.0,
+                    'other_feature_diversity': 0.0, 'other_feature_purity': 0.0,
+                },
+                enable_clustering_embeddings=enable_embeddings,
+            )
+            sizes = [len(songs) for songs in (result or {}).get('named_playlists', {}).values()]
+            keepers = sum(1 for s in sizes if s >= MIN_PLAYLIST_SIZE_FOR_TOP_N)
+            oversized = sum(1 for s in sizes if s > CLUSTERING_MAX_PLAYLIST_SONGS)
+            rank = (
+                1 if keepers else 0,
+                1 if keepers >= needed else 0,
+                -oversized,
+                keepers,
+            )
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best = (cur_min, cur_max, cur_pct)
+            if keepers >= needed and not oversized:
+                break
+            if count_based:
+                if keepers < needed:
+                    cur_max = max(needed, cur_max // 2)
+                    cur_min = max(2, min(cur_min, cur_max))
+                    cur_pct = max(cur_pct, min(90, cur_pct + 15))
+                else:
+                    cur_min = cur_min + max(1, cur_min // 2)
+                    cur_max = cur_max + max(1, cur_max // 2)
+                    cur_pct = min(cur_pct, max(20, cur_pct - 15))
+            elif oversized:
+                cur_min = max(0.05, cur_min * 0.7)
+                cur_max = max(cur_min * 1.2, cur_max * 0.7)
+                cur_pct = min(cur_pct, max(20, cur_pct - 15))
+            else:
+                cur_min, cur_max = cur_min * 1.5, cur_max * 1.5
+                if eps_cap:
+                    cur_max = min(cur_max, eps_cap)
+                    cur_min = min(cur_min, cur_max)
+                cur_pct = max(cur_pct, min(90, cur_pct + 15))
+        report(
+            "Calibration chose "
+            + (f"clusters {best[0]}-{best[1]}, " if count_based
+               else f"eps {best[0]:.2f}-{best[1]:.2f}, ")
+            + f"percentile {best[2]}",
+            4,
+        )
+        return best
+    except Exception:
+        logger.exception("Cluster calibration failed; falling back to library-size caps")
+        if not count_based:
+            return cur_min, cur_max, cur_pct
+        total_tracks = sum(len(tracks) for tracks in genre_map.values())
+        cap = max(2, total_tracks // (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N))
+        safe_max = min(cluster_range_max, cap)
+        safe_min = max(2, min(cluster_range_min, safe_max))
+        return safe_min, safe_max, percentile
+
+
 def _cluster_one_server(
     target_server,
     state,
@@ -715,6 +939,7 @@ def _cluster_one_server(
     top_n_moods_for_clustering_param,
     top_n_playlists_param,
     enable_clustering_embeddings_param,
+    auto_calibration_param,
 ):
     server_name = target_server['name'] if target_server else 'default server'
     report("Fetching lightweight track data for stratification...", 1)
@@ -735,13 +960,95 @@ def _cluster_one_server(
     lightweight_rows = cur.fetchall()
     cur.close()
 
-    if len(lightweight_rows) < (num_clusters_min or 2):
+    if len(lightweight_rows) < MIN_PLAYLIST_SIZE_FOR_TOP_N:
         reason = f"only {len(lightweight_rows)} clusterable tracks available"
         report(f"Skipping this server: {reason}.", 100)
         return 'skipped', reason
 
     genre_map = _prepare_genre_map(lightweight_rows)
     genre_map_json = json.dumps(genre_map)
+
+    job_prefix = state.get("job_prefix") or current_task_id
+    child_tasks_from_db = [
+        t for t in get_child_tasks_from_db(current_task_id)
+        if str(t.get('task_id', '')).startswith(job_prefix + "_batch_")
+    ]
+
+    state["top_n_playlists"] = top_n_playlists_param
+    calibrated_summary = None
+    if not auto_calibration_param:
+        report("Automatic parameter discovery disabled; using configured defaults.", 2)
+    elif child_tasks_from_db and clustering_method == 'dbscan':
+        try:
+            resume_target = _calculate_target_songs_per_genre(
+                genre_map,
+                stratified_sampling_target_percentile_param,
+                min_songs_per_genre_for_stratification_param,
+            )
+            resume_subset = _get_stratified_song_subset(genre_map, resume_target)
+            derived = _derive_dbscan_eps(
+                [t['item_id'] for t in resume_subset],
+                max(2, (dbscan_min_samples_min + dbscan_min_samples_max) // 2),
+                MOOD_LABELS[:top_n_moods_for_clustering_param]
+                if top_n_moods_for_clustering_param > 0 else MOOD_LABELS,
+                enable_clustering_embeddings_param,
+            )
+            if derived:
+                dbscan_eps_min, dbscan_eps_max = derived
+                report(
+                    f"Resume: DBSCAN eps derived from data: "
+                    f"{dbscan_eps_min:.2f}-{dbscan_eps_max:.2f}",
+                    2,
+                )
+        except Exception:
+            logger.exception("Resume eps derivation failed; keeping configured eps")
+    if auto_calibration_param and not child_tasks_from_db:
+        if clustering_method == 'gmm':
+            range_min, range_max = gmm_n_components_min, gmm_n_components_max
+        elif clustering_method == 'spectral':
+            range_min, range_max = spectral_n_clusters_min, spectral_n_clusters_max
+        elif clustering_method == 'dbscan':
+            range_min, range_max = dbscan_eps_min, dbscan_eps_max
+        else:
+            range_min, range_max = num_clusters_min, num_clusters_max
+        range_min, range_max, stratified_sampling_target_percentile_param = (
+            _calibrate_cluster_params(
+                clustering_method,
+                genre_map,
+                range_min,
+                range_max,
+                stratified_sampling_target_percentile_param,
+                min_songs_per_genre_for_stratification_param,
+                dbscan_eps_min,
+                dbscan_eps_max,
+                dbscan_min_samples_min,
+                dbscan_min_samples_max,
+                pca_components_min,
+                pca_components_max,
+                max_songs_per_cluster_val,
+                top_n_playlists_param,
+                top_n_moods_for_clustering_param,
+                enable_clustering_embeddings_param,
+                report,
+            )
+        )
+        if clustering_method == 'gmm':
+            gmm_n_components_min, gmm_n_components_max = range_min, range_max
+        elif clustering_method == 'spectral':
+            spectral_n_clusters_min, spectral_n_clusters_max = range_min, range_max
+        elif clustering_method == 'kmeans':
+            num_clusters_min, num_clusters_max = range_min, range_max
+        elif clustering_method == 'dbscan':
+            dbscan_eps_min, dbscan_eps_max = range_min, range_max
+        calibrated_summary = {
+            'stratification_percentile': stratified_sampling_target_percentile_param,
+        }
+        if clustering_method == 'dbscan':
+            calibrated_summary['dbscan_eps_min'] = range_min
+            calibrated_summary['dbscan_eps_max'] = range_max
+        else:
+            calibrated_summary['num_clusters_min'] = range_min
+            calibrated_summary['num_clusters_max'] = range_max
     target_songs_per_genre = _calculate_target_songs_per_genre(
         genre_map,
         stratified_sampling_target_percentile_param,
@@ -756,11 +1063,6 @@ def _cluster_one_server(
     )
     next_batch_to_launch = 0
 
-    job_prefix = state.get("job_prefix") or current_task_id
-    child_tasks_from_db = [
-        t for t in get_child_tasks_from_db(current_task_id)
-        if str(t.get('task_id', '')).startswith(job_prefix + "_batch_")
-    ]
     if child_tasks_from_db:
         logger.info(
             f"Found {len(child_tasks_from_db)} existing child tasks for '{server_name}'. Attempting state recovery."
@@ -963,6 +1265,7 @@ def _cluster_one_server(
         'playlists': final_playlists_with_details,
         'best_score': state['best_score'],
         'best_params': (state['best_result'] or {}).get('parameters'),
+        'calibrated_params': calibrated_summary,
     }
 
 
@@ -1102,12 +1405,21 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                 "final_subset_track_ids", state_dict["last_subset_ids"]
             )
             best_from_batch = result.get("best_result_from_batch")
-            if best_from_batch:
+            if best_from_batch and best_from_batch.get("parameters"):
                 current_best_score = best_from_batch.get("fitness_score", -1.0)
                 state_dict["elite_solutions"].append(
                     {"score": current_best_score, "params": best_from_batch.get("parameters")}
                 )
-                if current_best_score > state_dict["best_score"]:
+                top_n = state_dict.get("top_n_playlists") or TOP_N_PLAYLISTS
+                current_rank = (
+                    _viable_playlists(best_from_batch, top_n),
+                    current_best_score,
+                )
+                best_rank = (
+                    _viable_playlists(state_dict["best_result"], top_n),
+                    state_dict["best_score"],
+                )
+                if current_rank > best_rank:
                     state_dict["best_score"] = current_best_score
                     state_dict["best_result"] = best_from_batch
         else:
@@ -1264,6 +1576,7 @@ def _launch_batch_job(
         ),
         "initial_subset_track_ids_json": json.dumps(state_dict["last_subset_ids"]),
         "enable_clustering_embeddings_param": enable_embeddings,
+        "top_n_playlists_param": state_dict.get("top_n_playlists") or TOP_N_PLAYLISTS,
     }
 
     new_job = rq_queue_default.enqueue(

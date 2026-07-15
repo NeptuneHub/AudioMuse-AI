@@ -37,6 +37,7 @@ from config import (
     MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
     STRATIFIED_SAMPLING_TARGET_PERCENTILE,
     CLUSTER_ALGORITHM,
+    CLUSTERING_AUTO_CALIBRATION,
     NUM_CLUSTERS_MIN,
     NUM_CLUSTERS_MAX,
     DBSCAN_EPS_MIN,
@@ -329,6 +330,9 @@ def start_clustering_endpoint():
     # servers without playlists and made it inconsistent with the other batches.
     clustering_kwargs = {  # Pass all arguments as a dictionary
         "output_server_scope": 'all',
+        "auto_calibration_param": bool(
+            data.get('auto_parameter_discovery', CLUSTERING_AUTO_CALIBRATION)
+        ),
         "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
         "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
         "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),

@@ -89,6 +89,10 @@ These are the default parameters used when launching analysis or clustering task
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `1000`          |
 | `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
 | `USE_GPU_CLUSTERING`                        | When true enable the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
+| `CLUSTERING_AUTO_CALIBRATION`               | Automatic parameter discovery: per server, quick probe runs tune cluster count/eps and sampling percentile before the real run. False = always use the configured defaults as-is. | `true`          |
+| `CLUSTERING_MAX_PLAYLIST_SONGS`             | Auto-calibration soft target: try to keep generated playlists at or under this many songs (big still beats empty).        | `200`           |
+| `CLUSTERING_CALIBRATION_MAX_TRIES`          | Auto-calibration probe runs per server before the real clustering starts.                                                 | `3`             |
+| `CLUSTERING_MAX_SUBSET_SONGS`               | Hard cap on the stratified sample per clustering iteration; bounds compute and memory on huge libraries.                  | `10000`         |
 | **Similarity General**                      |                                                                                                                           |                 |
 | `IVF_METRIC`                                | Distance metric used by the similarity index: `angular` (cosine), `euclidean`, or `dot` (inner product). Changing it requires an index rebuild.                                                                                            | `angular`       |
 | **Disk-Paged IVF Similarity Index**         |                                                                                                                            |                 |
@@ -145,7 +149,7 @@ These are the default parameters used when launching analysis or clustering task
 | **GMM Ranges**                              |                                                                                            |                                        |
 | `GMM_N_COMPONENTS_MIN`                      | Min components for GMM.                                                                   | `40`                                   |
 | `GMM_N_COMPONENTS_MAX`                      | Max components for GMM.                                                                   | `100`                                  |
-| `GMM_COVARIANCE_TYPE`                       | Covariance type for GMM (task uses `full`).                                               | `full`                                 |
+| `GMM_COVARIANCE_TYPE`                       | Covariance type for GMM: `diag` (default, fast on embeddings), `full`, `tied`, `spherical`. | `diag`                                 |
 | **Spectral Ranges**                         |                                                                                            |                                        |
 | `SPECTRAL_N_CLUSTERS_MIN`                   | Min components for Spectral clustering.                                                   | `40`                                   |
 | `SPECTRAL_N_CLUSTERS_MAX`                   | Max components for Spectral clustering.                                                   | `100`                                  |

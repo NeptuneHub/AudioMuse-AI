@@ -734,6 +734,7 @@ def get_config_endpoint():
             "max_songs_per_cluster": config.MAX_SONGS_PER_CLUSTER,
             "max_songs_per_artist": config.MAX_SONGS_PER_ARTIST,
             "cluster_algorithm": config.CLUSTER_ALGORITHM,
+            "clustering_auto_calibration": config.CLUSTERING_AUTO_CALIBRATION,
             "num_clusters_min": config.NUM_CLUSTERS_MIN,
             "num_clusters_max": config.NUM_CLUSTERS_MAX,
             "dbscan_eps_min": config.DBSCAN_EPS_MIN,

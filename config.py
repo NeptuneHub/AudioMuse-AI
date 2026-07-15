@@ -223,7 +223,7 @@ MINIBATCH_KMEANS_PROCESSING_BATCH_SIZE = int(os.getenv("MINIBATCH_KMEANS_PROCESS
 # Default ranges for GMM parameters
 GMM_N_COMPONENTS_MIN = int(os.getenv("GMM_N_COMPONENTS_MIN", "40"))
 GMM_N_COMPONENTS_MAX = int(os.getenv("GMM_N_COMPONENTS_MAX", "100"))
-GMM_COVARIANCE_TYPE = os.environ.get("GMM_COVARIANCE_TYPE", "full") # 'full', 'tied', 'diag', 'spherical'
+GMM_COVARIANCE_TYPE = os.environ.get("GMM_COVARIANCE_TYPE", "diag") # 'full', 'tied', 'diag', 'spherical'; diag is orders of magnitude faster on high-dim embeddings and statistically sounder at this scale
 
 # --- SpectralClustering Only Constants (Ranges for Evolutionary Approach) ---
 SPECTRAL_N_CLUSTERS_MIN = int(os.getenv("SPECTRAL_N_CLUSTERS_MIN", "40"))
@@ -237,6 +237,12 @@ PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max component
 
 # --- Clustering Runs for Diversity (New Constant) ---
 CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "1000")) # Default to 100 runs for evolutionary search
+
+# --- Per-server auto-calibration of clustering parameters and sampling percentile ---
+CLUSTERING_AUTO_CALIBRATION = os.environ.get("CLUSTERING_AUTO_CALIBRATION", "True").lower() == "true" # Automatic parameter discovery per server; False = always use the configured defaults as-is
+CLUSTERING_MAX_PLAYLIST_SONGS = int(os.environ.get("CLUSTERING_MAX_PLAYLIST_SONGS", "200")) # Calibration tries to keep playlists at or under this many songs (soft goal; big beats empty)
+CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MAX_TRIES", "3")) # Quick single-iteration probes per server before the real run
+CLUSTERING_MAX_SUBSET_SONGS = int(os.environ.get("CLUSTERING_MAX_SUBSET_SONGS", "10000")) # Hard cap on the stratified sample per clustering iteration; bounds compute/memory on huge libraries
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in RQ queue (reduced from 100 to prevent resource exhaustion)
 
 # --- Batching Constants for Clustering Runs ---

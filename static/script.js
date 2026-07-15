@@ -15,12 +15,11 @@ const advancedParams = document.querySelectorAll('.advanced-param');
 const kmeansParamsBasic = document.getElementById('kmeans-params-basic');
 const basicAlgorithmDisplay = document.getElementById('basic-algorithm-display');
 
-
 // Config Form
 const clusterAlgorithmSelect = document.getElementById('config-cluster_algorithm');
 const dbscanParamsDiv = document.getElementById('dbscan-params');
 const gmmParamsDiv = document.getElementById('gmm-params');
-const spectralParamsDiv = document.getElementById('spectral-params'); // New reference for Spectral
+const spectralParamsDiv = document.getElementById('spectral-params');
 const aiModelProviderSelect = document.getElementById('config-ai_model_provider');
 const ollamaConfigGroup = document.getElementById('ollama-config-group');
 const openaiConfigGroup = document.getElementById('openai-config-group');
@@ -71,17 +70,6 @@ function formatRunningTime(totalSeconds) {
     return `${pad(hours)} : ${pad(minutes)} : ${pad(seconds)}`;
 }
 
-/**
- * Switches between basic and advanced configuration views.
- * @param {('basic'|'advanced')} viewToShow The view to display.
- */
-const ALGORITHM_LABELS = {
-    kmeans: 'K-Means',
-    dbscan: 'DBSCAN',
-    gmm: 'GMM',
-    spectral: 'Spectral'
-};
-
 function updateBasicAlgorithmLabel() {
     if (!basicAlgorithmDisplay || !clusterAlgorithmSelect) return;
     const pElement = basicAlgorithmDisplay.querySelector('p');
@@ -95,117 +83,33 @@ function switchView(viewToShow) {
         basicViewBtn.classList.add('active');
         advancedViewBtn.classList.remove('active');
         advancedParams.forEach(el => el.classList.add('hidden'));
-        if (kmeansParamsBasic) kmeansParamsBasic.classList.remove('hidden'); // Show K-Means params in basic
-        if (basicAlgorithmDisplay) {
-            basicAlgorithmDisplay.classList.remove('hidden');
-            const pElement = basicAlgorithmDisplay.querySelector('p');
-            if (pElement) {
-                pElement.style.color = '';
-            }
-        }
-        if (clusterAlgorithmSelect) clusterAlgorithmSelect.classList.add('hidden'); // Hide algorithm dropdown in basic
+        if (basicAlgorithmDisplay) basicAlgorithmDisplay.classList.remove('hidden');
         updateBasicAlgorithmLabel();
-
-    } else { // advanced view
+    } else {
         basicViewBtn.classList.remove('active');
         advancedViewBtn.classList.add('active');
         advancedParams.forEach(el => el.classList.remove('hidden'));
-        kmeansParamsBasic.classList.add('hidden'); // Hide the basic K-Means inputs
         if (basicAlgorithmDisplay) basicAlgorithmDisplay.classList.add('hidden');
-        if (clusterAlgorithmSelect) clusterAlgorithmSelect.classList.remove('hidden'); // Show algorithm dropdown in advanced
     }
-     // This function handles showing/hiding algorithm-specific params
     toggleClusteringParams();
-}
-
-async function fetchConfig() {
-    try {
-        const response = await fetch(getConfigEndpointUrl);
-        const config = await response.json();
-        renderConfig(config);
-        // Call switchView here to ensure the view is set correctly *before* showing the content
-        switchView('basic'); 
-        toggleAiConfig();
-    } catch (error) {
-        console.error('Error fetching config:', error);
-        showMessageBox('Error', 'Failed to load configuration. Please check the backend server.');
-    }
-}
-
-function renderConfig(config) {
-    // MODIFIED: Removed rendering for Jellyfin config as the inputs are gone.
-
-    // Analysis
-    document.getElementById('config-num_recent_albums').value = config.num_recent_albums || 0;
-    document.getElementById('config-top_n_moods').value = config.top_n_moods || 0;
-
-    // Clustering
-    document.getElementById('config-top_n_playlists').value = config.top_n_playlists || 0;
-    var rawAlgo = String(config.cluster_algorithm || '').trim().toLowerCase();
-    clusterAlgorithmSelect.value = (rawAlgo === 'dbscan' || rawAlgo === 'gmm' || rawAlgo === 'spectral') ? rawAlgo : 'kmeans';
-    document.getElementById('config-max_distance').value = config.max_distance || 0;
-    document.getElementById('config-max_songs_per_cluster').value = config.max_songs_per_cluster || 0;
-    document.getElementById('config-pca_components_min').value = config.pca_components_min || 0;
-    document.getElementById('config-pca_components_max').value = config.pca_components_max || 0;
-    document.getElementById('config-clustering_runs').value = config.clustering_runs || 0;
-    document.getElementById('config-min_songs_per_genre_for_stratification').value = config.min_songs_per_genre_for_stratification || 0;
-    document.getElementById('config-stratified_sampling_target_percentile').value = config.stratified_sampling_target_percentile || 0;
-    document.getElementById('config-score_weight_diversity').value = config.score_weight_diversity || 0;
-    document.getElementById('config-score_weight_purity').value = config.score_weight_purity || 0;
-    document.getElementById('config-score_weight_silhouette').value = config.score_weight_silhouette || 0;
-    document.getElementById('config-score_weight_davies_bouldin').value = config.score_weight_davies_bouldin || 0;
-    document.getElementById('config-score_weight_calinski_harabasz').value = config.score_weight_calinski_harabasz || 0;
-    // CORRECTED: Fixed variable names to match the Python config.
-    document.getElementById('config-score_weight_other_feature_diversity').value = config.score_weight_other_feature_diversity || 0;
-    document.getElementById('config-score_weight_other_feature_purity').value = config.score_weight_other_feature_purity || 0;
-    document.getElementById('config-enable_clustering_embeddings').checked = config.enable_clustering_embeddings;
-
-    // Algorithm Specific
-    document.getElementById('config-dbscan_eps_min').value = config.dbscan_eps_min || 0;
-    document.getElementById('config-dbscan_eps_max').value = config.dbscan_eps_max || 0;
-    document.getElementById('config-dbscan_min_samples_min').value = config.dbscan_min_samples_min || 0;
-    document.getElementById('config-dbscan_min_samples_max').value = config.dbscan_min_samples_max || 0;
-    document.getElementById('config-num_clusters_min').value = config.num_clusters_min || 0;
-    document.getElementById('config-num_clusters_max').value = config.num_clusters_max || 0;
-    document.getElementById('config-gmm_n_components_min').value = config.gmm_n_components_min || 0;
-    document.getElementById('config-gmm_n_components_max').value = config.gmm_n_components_max || 0;
-    document.getElementById('config-spectral_n_clusters_min').value = config.spectral_n_clusters_min || 0;
-    document.getElementById('config-spectral_n_clusters_max').value = config.spectral_n_clusters_max || 0;
-
-
-    // AI Naming
-    aiModelProviderSelect.value = config.ai_model_provider || 'NONE';
-    document.getElementById('config-ollama_server_url').value = config.ollama_server_url || 'http://127.0.0.1:11434/api/generate';
-    document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
-    document.getElementById('config-openai_server_url').value = config.openai_server_url || 'https://openrouter.ai/api/v1/chat/completions';
-    document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
-    document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
-    document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
 }
 
 function toggleClusteringParams() {
     const selectedAlgorithm = clusterAlgorithmSelect.value;
     updateBasicAlgorithmLabel();
+    kmeansParamsBasic.classList.add('hidden');
     dbscanParamsDiv.classList.add('hidden');
     gmmParamsDiv.classList.add('hidden');
-    spectralParamsDiv.classList.add('hidden'); // Hide spectral params by default
-    // K-Means params (kmeansParamsBasic) are handled based on view below
-
-    // Only show algorithm-specific params in advanced view
+    spectralParamsDiv.classList.add('hidden');
     if (advancedViewBtn.classList.contains('active')) {
-        // First, ensure K-Means params are hidden if K-Means is NOT selected
-        if (selectedAlgorithm !== 'kmeans' && kmeansParamsBasic) {
-            kmeansParamsBasic.classList.add('hidden');
-        }
-
         if (selectedAlgorithm === 'dbscan') {
             dbscanParamsDiv.classList.remove('hidden');
         } else if (selectedAlgorithm === 'gmm') {
             gmmParamsDiv.classList.remove('hidden');
         } else if (selectedAlgorithm === 'spectral') {
             spectralParamsDiv.classList.remove('hidden');
-        } else if (selectedAlgorithm === 'kmeans' && kmeansParamsBasic) { 
-            kmeansParamsBasic.classList.remove('hidden'); // Show K-Means params if K-Means is selected
+        } else {
+            kmeansParamsBasic.classList.remove('hidden');
         }
     }
 }
@@ -226,6 +130,71 @@ function toggleAiConfig() {
     } else if (provider === 'MISTRAL') {
         mistralConfigGroup.classList.remove('hidden');
     }
+}
+
+async function fetchConfig() {
+    try {
+        const response = await fetch(getConfigEndpointUrl);
+        const config = await response.json();
+        renderConfig(config);
+        switchView('basic');
+        toggleAiConfig();
+    } catch (error) {
+        console.error('Error fetching config:', error);
+        showMessageBox('Error', 'Failed to load configuration. Please check the backend server.');
+    }
+}
+
+const ALGORITHM_LABELS = {
+    kmeans: 'K-Means',
+    dbscan: 'DBSCAN',
+    gmm: 'GMM',
+    spectral: 'Spectral'
+};
+
+function renderConfig(config) {
+    document.getElementById('config-num_recent_albums').value = config.num_recent_albums || 0;
+    document.getElementById('config-top_n_moods').value = config.top_n_moods || 0;
+
+    document.getElementById('config-top_n_playlists').value = config.top_n_playlists || 0;
+    var rawAlgo = String(config.cluster_algorithm || '').trim().toLowerCase();
+    clusterAlgorithmSelect.value = (rawAlgo === 'dbscan' || rawAlgo === 'gmm' || rawAlgo === 'spectral') ? rawAlgo : 'kmeans';
+    document.getElementById('config-max_distance').value = config.max_distance || 0;
+    document.getElementById('config-max_songs_per_cluster').value = config.max_songs_per_cluster || 0;
+    document.getElementById('config-pca_components_min').value = config.pca_components_min || 0;
+    document.getElementById('config-pca_components_max').value = config.pca_components_max || 0;
+    document.getElementById('config-clustering_runs').value = config.clustering_runs || 0;
+    document.getElementById('config-auto_parameter_discovery').checked =
+        config.clustering_auto_calibration !== false;
+    document.getElementById('config-min_songs_per_genre_for_stratification').value = config.min_songs_per_genre_for_stratification || 0;
+    document.getElementById('config-stratified_sampling_target_percentile').value = config.stratified_sampling_target_percentile || 0;
+    document.getElementById('config-score_weight_diversity').value = config.score_weight_diversity || 0;
+    document.getElementById('config-score_weight_purity').value = config.score_weight_purity || 0;
+    document.getElementById('config-score_weight_silhouette').value = config.score_weight_silhouette || 0;
+    document.getElementById('config-score_weight_davies_bouldin').value = config.score_weight_davies_bouldin || 0;
+    document.getElementById('config-score_weight_calinski_harabasz').value = config.score_weight_calinski_harabasz || 0;
+    document.getElementById('config-score_weight_other_feature_diversity').value = config.score_weight_other_feature_diversity || 0;
+    document.getElementById('config-score_weight_other_feature_purity').value = config.score_weight_other_feature_purity || 0;
+    document.getElementById('config-enable_clustering_embeddings').checked = config.enable_clustering_embeddings;
+
+    document.getElementById('config-dbscan_eps_min').value = config.dbscan_eps_min || 0;
+    document.getElementById('config-dbscan_eps_max').value = config.dbscan_eps_max || 0;
+    document.getElementById('config-dbscan_min_samples_min').value = config.dbscan_min_samples_min || 0;
+    document.getElementById('config-dbscan_min_samples_max').value = config.dbscan_min_samples_max || 0;
+    document.getElementById('config-num_clusters_min').value = config.num_clusters_min || 0;
+    document.getElementById('config-num_clusters_max').value = config.num_clusters_max || 0;
+    document.getElementById('config-gmm_n_components_min').value = config.gmm_n_components_min || 0;
+    document.getElementById('config-gmm_n_components_max').value = config.gmm_n_components_max || 0;
+    document.getElementById('config-spectral_n_clusters_min').value = config.spectral_n_clusters_min || 0;
+    document.getElementById('config-spectral_n_clusters_max').value = config.spectral_n_clusters_max || 0;
+
+    aiModelProviderSelect.value = config.ai_model_provider || 'NONE';
+    document.getElementById('config-ollama_server_url').value = config.ollama_server_url || 'http://127.0.0.1:11434/api/generate';
+    document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
+    document.getElementById('config-openai_server_url').value = config.openai_server_url || 'https://openrouter.ai/api/v1/chat/completions';
+    document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
+    document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
+    document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
 }
 
 function updateCancelButtonState(isDisabled) {
@@ -386,9 +355,10 @@ async function startTask(taskType) {
     } else if (taskType === 'clustering') {
         playlistsSection.style.display = 'none';
         playlistsContainer.innerHTML = '';
-        
+
         Object.assign(payload, {
             clustering_method: clusterAlgorithmSelect.value,
+            auto_parameter_discovery: document.getElementById('config-auto_parameter_discovery').checked,
             top_n_playlists: parseInt(document.getElementById('config-top_n_playlists').value),
             max_distance: parseFloat(document.getElementById('config-max_distance').value),
             max_songs_per_cluster: parseInt(document.getElementById('config-max_songs_per_cluster').value),
@@ -402,7 +372,6 @@ async function startTask(taskType) {
             score_weight_silhouette: parseFloat(document.getElementById('config-score_weight_silhouette').value),
             score_weight_davies_bouldin: parseFloat(document.getElementById('config-score_weight_davies_bouldin').value),
             score_weight_calinski_harabasz: parseFloat(document.getElementById('config-score_weight_calinski_harabasz').value),
-            // CORRECTED: Fixed variable names to match the Python config.
             score_weight_other_feature_diversity: parseFloat(document.getElementById('config-score_weight_other_feature_diversity').value),
             score_weight_other_feature_purity: parseFloat(document.getElementById('config-score_weight_other_feature_purity').value),
             dbscan_eps_min: parseFloat(document.getElementById('config-dbscan_eps_min').value),

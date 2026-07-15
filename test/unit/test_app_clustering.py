@@ -78,6 +78,28 @@ class TestStartClusteringEndpoint:
         enqueue_kwargs = mock_queue.enqueue.call_args.kwargs['kwargs']
         assert enqueue_kwargs['output_server_scope'] == 'all'
 
+    @patch('app_clustering.get_active_main_task', return_value=None)
+    @patch('app_clustering.rq_queue_high')
+    @patch('app_clustering.clean_up_previous_main_tasks')
+    @patch('app_clustering.save_task_status')
+    def test_auto_parameter_discovery_defaults_on_and_can_be_disabled(
+        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
+    ):
+        mock_job = Mock()
+        mock_job.id = "cluster-job-123"
+        mock_job.get_status.return_value = "queued"
+        mock_queue.enqueue.return_value = mock_job
+
+        response = client.post('/api/clustering/start', json={})
+        assert response.status_code == 202
+        assert mock_queue.enqueue.call_args.kwargs['kwargs']['auto_calibration_param'] is True
+
+        response = client.post(
+            '/api/clustering/start', json={'auto_parameter_discovery': False}
+        )
+        assert response.status_code == 202
+        assert mock_queue.enqueue.call_args.kwargs['kwargs']['auto_calibration_param'] is False
+
     @patch(
         'app_clustering.get_active_main_task',
         return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'},

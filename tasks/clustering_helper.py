@@ -16,6 +16,10 @@ random and evolutionary parameter mutations that the elitist search explores.
 Main Features:
 * _perform_single_clustering_iteration / _apply_clustering_model: run one
   clustering attempt end to end and return a scored result.
+* _split_oversized_clusters: DBSCAN components larger than
+  CLUSTERING_MAX_PLAYLIST_SONGS are re-split with KMeans into playlist-sized
+  chunks - music embeddings form one connected density mass, so raw DBSCAN
+  either merges everything into a single giant cluster or marks it all noise.
 * _generate_random_parameters / _mutate_parameters / _generate_evolutionary_parameters:
   sample and mutate KMeans/DBSCAN/GMM/spectral/PCA params within configured ranges.
 * Playlist shaping helpers (chunking, shuffling, optional AI naming) for each run.
@@ -53,6 +57,9 @@ from config import (
     MOOD_LABELS,
     MAX_DISTANCE,
     MAX_SONGS_PER_ARTIST,
+    MIN_PLAYLIST_SIZE_FOR_TOP_N,
+    CLUSTERING_MAX_PLAYLIST_SONGS,
+    CLUSTERING_MAX_SUBSET_SONGS,
     GMM_COVARIANCE_TYPE,
     SPECTRAL_N_NEIGHBORS,
     TOP_K_MOODS_FOR_PURITY_CALCULATION,
@@ -470,6 +477,23 @@ def _mutate_parameters(
     }
 
 
+def _split_oversized_clusters(labels, data):
+    labels = np.asarray(labels).copy()
+    target = max(2 * MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_MAX_PLAYLIST_SONGS // 2)
+    next_label = int(labels.max()) + 1
+    for cid in [c for c in set(labels.tolist()) if c != -1]:
+        idx = np.where(labels == cid)[0]
+        if len(idx) <= CLUSTERING_MAX_PLAYLIST_SONGS:
+            continue
+        n_sub = min(len(idx), max(2, -(-len(idx) // target)))
+        sub_labels = KMeans(
+            n_clusters=n_sub, init='k-means++', n_init=3
+        ).fit_predict(data[idx])
+        labels[idx] = next_label + sub_labels
+        next_label += n_sub
+    return labels
+
+
 def _apply_clustering_model(data, method_config, log_prefix, run_idx):
     method = method_config['method']
     params = method_config['params']
@@ -506,7 +530,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                     n_components=params['n_components'],
                     covariance_type=GMM_COVARIANCE_TYPE,
                     init_params='k-means++',
-                    n_init=10,
+                    n_init=3,
                     random_state=None,
                     reg_covar=1e-4,
                 )
@@ -524,6 +548,9 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                 raise ValueError(f"Unsupported clustering method: {method}")
 
             labels = model.fit_predict(data)
+
+        if method == 'dbscan' and labels is not None:
+            labels = _split_oversized_clusters(labels, data)
 
         centers = {}
         if hasattr(model, 'cluster_centers_') and model.cluster_centers_ is not None:
@@ -859,7 +886,10 @@ def _format_and_score_iteration_result(
     )
     logger.info(log_message)
 
-    logger.info(f"Run {run_idx}: Created {len(named_playlists)} clusters.")
+    logger.info(
+        f"Run {run_idx} ({params['clustering_method_config']['method']}): "
+        f"Created {len(named_playlists)} clusters."
+    )
     for name, songs in named_playlists.items():
         song_titles = [f"'{s[1]}'" for s in songs[:5]]
         log_msg = f"  - Cluster '{name}': {', '.join(song_titles)}"
@@ -1010,7 +1040,7 @@ def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, perc
                 for t in added_tracks:
                     new_ids.add(t['item_id'])
     random.shuffle(new_subset)
-    return new_subset
+    return new_subset[:CLUSTERING_MAX_SUBSET_SONGS]
 
 
 def _get_track_primary_genre(track_data):
