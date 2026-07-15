@@ -11,6 +11,7 @@
                                         it stays inside the scrollable area */
     box-sizing: border-box;
     height: 100vh;
+    height: 100dvh;
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: contain;
