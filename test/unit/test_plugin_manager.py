@@ -1012,14 +1012,14 @@ class TestRunSongAnalyzedHookHelper:
             self.received = payload
 
     def test_noop_when_no_listeners(self, monkeypatch):
-        import tasks.analysis_helper as ah
+        import tasks.analysis.helper as ah
         pm = self._PM([])
         monkeypatch.setattr('plugin.manager.plugin_manager', pm)
         ah.run_song_analyzed_hook({'Id': '1'}, '/tmp/a.mp3', None, None, None, None, 'alb', 'Album', 'run-7')
         assert pm.received is None
 
     def test_builds_and_forwards_payload(self, monkeypatch):
-        import tasks.analysis_helper as ah
+        import tasks.analysis.helper as ah
         pm = self._PM([lambda payload: None])
         monkeypatch.setattr('plugin.manager.plugin_manager', pm)
         ah.run_song_analyzed_hook(
@@ -1034,6 +1034,40 @@ class TestRunSongAnalyzedHookHelper:
         assert pm.received['metadata']['album_id'] == 'alb-id'
         assert pm.received['analysis'] == {'tempo': 120}
         assert pm.received['top_moods'] == {'happy': 0.9}
+
+    def test_payload_names_the_server_the_song_was_analyzed_from(self, monkeypatch):
+        import tasks.analysis.helper as ah
+        from tasks.mediaserver import context as ms_context
+
+        pm = self._PM([lambda payload: None])
+        monkeypatch.setattr('plugin.manager.plugin_manager', pm)
+
+        with ms_context.use_server(
+            {'server_id': 'srv-plex', 'name': 'Plex Living Room', 'server_type': 'plex'}
+        ):
+            ah.run_song_analyzed_hook(
+                {'Id': 'plex-42', 'Name': 'Song'}, '/tmp/a.mp3',
+                None, None, None, None, 'alb', 'Album', 'run-7',
+            )
+
+        assert pm.received['server_id'] == 'srv-plex'
+        assert pm.received['server_name'] == 'Plex Living Room'
+        assert pm.received['item_id'] == 'plex-42', (
+            "item_id is the id ON that server, so server_id/name is what scopes it"
+        )
+
+    def test_server_identity_failure_never_breaks_the_hook(self, monkeypatch):
+        import tasks.analysis.helper as ah
+
+        pm = self._PM([lambda payload: None])
+        monkeypatch.setattr('plugin.manager.plugin_manager', pm)
+        import tasks.analysis.song as analysis_song
+        monkeypatch.setattr(analysis_song, 'analysis_server_identity', lambda: (None, None))
+        ah.run_song_analyzed_hook(
+            {'Id': '1'}, '/tmp/a.mp3', None, None, None, None, 'alb', 'Album', 'run-7'
+        )
+        assert pm.received['server_id'] is None
+        assert pm.received['server_name'] is None
 
 
 class TestPluginTaskRunsPerServer:

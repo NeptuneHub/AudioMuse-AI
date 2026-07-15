@@ -897,6 +897,13 @@ def init_db():
                 "CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)"
             )
             cur.execute(
+                "ALTER TABLE score ADD COLUMN IF NOT EXISTS "
+                "created_at TIMESTAMP NOT NULL DEFAULT now()"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_created_at ON score (created_at)"
+            )
+            cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')"
             )
             if not cur.fetchone()[0]:

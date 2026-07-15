@@ -32,6 +32,7 @@ Main Features:
 * ``is_fingerprint_id`` recognizes any ``fp_``-prefixed catalogue id.
 """
 
+import hashlib
 import logging
 import os
 import threading
@@ -52,6 +53,9 @@ _ID_HEAD = _ID_PREFIX + _ID_SCHEME
 _HEX_LEN = ((SIGNATURE_BITS + 7) // 8) * 2
 CANONICAL_ID_LEN = len(_ID_HEAD) + _HEX_LEN
 _SIGNATURE_MASK = (1 << SIGNATURE_BITS) - 1
+
+_ID_SCHEME_UNSIGNABLE = "0"
+_UNSIGNABLE_HEAD = _ID_PREFIX + _ID_SCHEME_UNSIGNABLE
 
 _BAND_COUNT = SIGNATURE_MATCH_MAX_HAMMING + 1
 SIGNATURE_BYTES = (SIGNATURE_BITS + 7) // 8
@@ -247,6 +251,31 @@ def canonical_id_str(signature):
     if signature is None:
         return None
     return _ID_HEAD + format(signature & _SIGNATURE_MASK, "0%dx" % _HEX_LEN)
+
+
+def unsignable_canonical_id(server_id, provider_track_id):
+    """A stable catalogue id for audio whose embedding yields NO signature.
+
+    A constant or non-finite embedding has no signature, so such a track cannot be
+    given a content id. It used to keep its raw PROVIDER id as its catalogue id,
+    and that is a leak: a non-``fp_`` id is what the availability rule calls a
+    pre-migration row and silently grants to the DEFAULT server
+    (``left(item_id,3) <> 'fp_'``), so a SECONDARY server's provider id ended up
+    counted as present on the default - in clustering, search, sync and the
+    dashboard alike. Worse, two servers can share a provider-id namespace, so the
+    ids could collide outright.
+
+    So it is ``fp_``-prefixed (never mistaken for a legacy row), scheme-tagged 0
+    (never mistaken for a signature id: a signature id is scheme 2), and scoped by
+    server (two servers' provider ids can never collide). It is deterministic, so
+    the same file resolves to the same id on every run and is skipped.
+    """
+    if not server_id:
+        return str(provider_track_id)
+    digest = hashlib.sha256(
+        f"{server_id}\x00{provider_track_id}".encode('utf-8')
+    ).hexdigest()
+    return _UNSIGNABLE_HEAD + digest[:_HEX_LEN]
 
 
 def mint_canonical_id(signature, taken):
@@ -534,6 +563,9 @@ class CatalogResolver:
         self._taken = set()
         self._embeddings = {}
         self._fetcher = embedding_fetcher
+
+    def drop_cached_embeddings(self):
+        self._embeddings.clear()
 
     def register(self, item_id, embedding=None, signature=None):
         item_id = str(item_id)

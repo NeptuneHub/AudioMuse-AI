@@ -119,9 +119,10 @@
     .dash-table .col-narrow { width: 70px; }
     .dash-table .col-medium { width: 110px; }
     /* Music Server Status: shrink a little, then scroll the wrapper horizontally
-       rather than squish every column (the same shrink-then-scroll the other
-       tables get). */
-    #music-servers-status-table { min-width: 560px; }
+       rather than squish every column. The min-width keeps ~170px for the
+       Server name (the one flexible column) after the fixed columns take
+       theirs, so it stays readable on phones. */
+    #music-servers-status-table { min-width: 640px; }
 
     /* Workers table: force hostname and current-job cells to wrap onto new
        lines instead of bleeding into the next column. */
@@ -211,7 +212,6 @@
     /* width:0 by default: a fill div with no explicit width is width:auto, i.e.
        a full bar. An unknown coverage must render EMPTY, not complete. */
     .cov-bar > div { height: 100%; width: 0; background: var(--color-primary, #4a90d9); }
-    .cov-bar.cov-stale > div { background: #F59E0B; }
     .cov-row { padding: 6px 0; }
     .cov-row + .cov-row { border-top: 1px solid var(--border-color); }
     .cov-name { font-weight: 600; font-size: 0.85rem; margin-bottom: 4px; }
@@ -434,27 +434,14 @@
     function fmtTime(iso) { return iso ? iso.replace('T', ' ').substring(0, 19) : '–'; }
     function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
 
-    // The one percentage formatter on this page. Every percent goes through it.
-    //
-    // 100% is reachable ONLY when num >= den. Anything short of complete floors
-    // down, so 99.97% reads "99.9%" and never rounds up into a finished-looking
-    // 100%. An unknown denominator is null (the caller says "unknown"), never a
-    // misleading "0.0%". An overshoot (num > den, i.e. a stale denominator) is
-    // reported as such rather than silently clamped to 100.
-    //   ratio(0, 0)         -> {state: 'unknown'}
-    //   ratio(5, 0)         -> {state: 'unknown'}
-    //   ratio(0, 10)        -> {state: 'ok',       pct: 0,    text: '0.0%'}
-    //   ratio(99999,100000) -> {state: 'ok',       pct: 99.9, text: '99.9%'}
-    //   ratio(100000,100000)-> {state: 'complete', pct: 100,  text: '100%'}
-    //   ratio(101, 100)     -> {state: 'stale',    pct: 100,  text: '>100%'}
+    // The one percentage formatter on this page. Floors so an incomplete job
+    // never rounds up to 100%; num >= den (overshoot included) is complete;
+    // an unknown denominator reports 'unknown', never a misleading "0.0%".
     function ratio(num, den) {
         const n = Number(num) || 0;
         const d = Number(den) || 0;
         if (d <= 0) return { state: 'unknown', pct: 0, text: null };
-        if (n > d) return { state: 'stale', pct: 100, text: '>100%' };
         if (n >= d) return { state: 'complete', pct: 100, text: '100%' };
-        // Floor to one decimal. Math.floor (not toFixed, which rounds half-up)
-        // is what keeps an incomplete job off 100.
         const pct = Math.floor(1000 * n / d) / 10;
         return { state: 'ok', pct: pct, text: pct.toFixed(1) + '%' };
     }
@@ -795,22 +782,15 @@
         }
         const r = ratio(resolved, serverSongs);
         const bar = document.createElement('div');
-        bar.className = 'cov-bar' + (r.state === 'stale' ? ' cov-stale' : '');
+        bar.className = 'cov-bar';
         const fill = document.createElement('div');
         // The bar width is floored exactly like the label, so a 99.6% bar cannot
         // render visually full while the text says 99.6%.
         fill.style.width = r.pct + '%';
         bar.appendChild(fill);
         const label = document.createElement('div');
-        if (r.state === 'stale') {
-            // resolved > server_songs: the stored library size predates songs
-            // that were added to the server. Say so instead of clamping to 100%.
-            label.textContent = resolved.toLocaleString() + ' of '
-                + serverSongs.toLocaleString() + ' - count is stale, re-align';
-        } else {
-            label.textContent = resolved.toLocaleString() + ' of '
-                + serverSongs.toLocaleString() + ' (' + r.text + ')';
-        }
+        label.textContent = resolved.toLocaleString() + ' of '
+            + serverSongs.toLocaleString() + ' (' + r.text + ')';
         host.appendChild(bar);
         host.appendChild(label);
     }

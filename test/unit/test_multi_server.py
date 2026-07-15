@@ -550,7 +550,7 @@ class TestSonicFingerprintProviderRecency:
 
 class TestAnalysisCanonicalResolution:
     def test_attaches_known_canonical_ids_and_keeps_unknown_temporary(self, monkeypatch):
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(
@@ -591,7 +591,7 @@ class TestServerWorkMap:
         return cur, executed
 
     def _patch_db(self, monkeypatch, cur):
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
 
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
@@ -601,7 +601,7 @@ class TestServerWorkMap:
         monkeypatch.setattr(helper, 'get_db', lambda: db_cm)
 
     def test_mask_bits_reflect_what_each_track_already_has(self, monkeypatch):
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
 
         cur, _ = self._cursor({'mapped': [[
             ('p-done', True, True, True),
@@ -611,7 +611,8 @@ class TestServerWorkMap:
         ]]})
         self._patch_db(monkeypatch, cur)
 
-        work_map = helper.load_server_work_map('srv', False, True, True)
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: False)
+        work_map = helper.load_server_work_map('srv', True, True)
         done = helper.work_done_bits(True, True)
 
         assert work_map['p-done'] & done == done
@@ -621,12 +622,13 @@ class TestServerWorkMap:
         assert work_map['p-no-clap'] & done != done
 
     def test_disabled_features_are_not_required(self, monkeypatch):
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
 
         cur, executed = self._cursor({'mapped': [[('p1', True, True, True)]]})
         self._patch_db(monkeypatch, cur)
 
-        work_map = helper.load_server_work_map('srv', False, False, False)
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: False)
+        work_map = helper.load_server_work_map('srv', False, False)
         done = helper.work_done_bits(False, False)
 
         assert done == helper.WORK_MUSICNN
@@ -639,7 +641,7 @@ class TestServerWorkMap:
         """The per-album fallback yields the same bits as the bulk scan but via a
         bounded ANY() query (no keyset LIMIT), so a bulk-scan failure degrades to
         per-album checks instead of aborting the phase."""
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
 
         cur, executed = self._cursor({'mapped': [[
             ('p-done', True, True, True),
@@ -647,7 +649,8 @@ class TestServerWorkMap:
         ]]})
         self._patch_db(monkeypatch, cur)
 
-        masks = helper.album_work_masks(['p-done', 'p-no-clap'], 'srv', False, True, True)
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: False)
+        masks = helper.album_work_masks(['p-done', 'p-no-clap'], 'srv', True, True)
         done = helper.work_done_bits(True, True)
 
         assert masks['p-done'] & done == done
@@ -657,41 +660,43 @@ class TestServerWorkMap:
         assert 'LIMIT' not in sql
 
     def test_album_work_masks_default_server_includes_legacy(self, monkeypatch):
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
 
         cur, _ = self._cursor({
             'mapped': [[('p1', True, True, True)]],
             'legacy': [[('legacy-id', True, True, True)]],
         })
         self._patch_db(monkeypatch, cur)
-        masks = helper.album_work_masks(['p1', 'legacy-id'], 'srv-def', True, True, True)
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: True)
+        masks = helper.album_work_masks(['p1', 'legacy-id'], 'srv-def', True, True)
         assert 'p1' in masks and 'legacy-id' in masks
 
     def test_default_server_also_sees_legacy_rows_but_a_secondary_does_not(
         self, monkeypatch
     ):
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
 
         cur, _ = self._cursor({
             'mapped': [[('p1', True, True, True)]],
             'legacy': [[('legacy-id', True, True, True)]],
         })
         self._patch_db(monkeypatch, cur)
-        default_map = helper.load_server_work_map('srv-def', True, True, True)
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: sid == 'srv-def')
+        default_map = helper.load_server_work_map('srv-def', True, True)
 
         cur2, _ = self._cursor({
             'mapped': [[('p1', True, True, True)]],
             'legacy': [[('legacy-id', True, True, True)]],
         })
         self._patch_db(monkeypatch, cur2)
-        secondary_map = helper.load_server_work_map('srv-b', False, True, True)
+        secondary_map = helper.load_server_work_map('srv-b', True, True)
 
         assert 'legacy-id' in default_map
         assert 'legacy-id' not in secondary_map
         assert 'p1' in secondary_map
 
     def test_keyset_pagination_advances_past_the_last_row(self, monkeypatch):
-        from tasks import analysis_helper as helper
+        import tasks.analysis.helper as helper
 
         cur, executed = self._cursor({'mapped': [
             [('p1', True, True, True), ('p2', True, True, True)],
@@ -700,7 +705,8 @@ class TestServerWorkMap:
         ]})
         self._patch_db(monkeypatch, cur)
 
-        work_map = helper.load_server_work_map('srv', False, True, True, chunk_size=2)
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: False)
+        work_map = helper.load_server_work_map('srv', True, True, chunk_size=2)
 
         assert sorted(work_map) == ['p1', 'p2', 'p3']
         assert [params[-2] for _sql, params in executed] == ['', 'p2', 'p3']
