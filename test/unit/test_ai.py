@@ -145,7 +145,7 @@ from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
 from tasks.ai.providers.openai import generate_text as get_openai_compatible_playlist_name
 from tasks.ai.providers.gemini import generate_text as get_gemini_playlist_name
 from tasks.ai.providers.mistral import generate_text as get_mistral_playlist_name
-from tasks.ai.prompts import creative_prompt_template
+from tasks.ai.prompts import playlist_concept_prompt_template
 
 
 @pytest.fixture(autouse=True)
@@ -925,152 +925,307 @@ class TestGetMistralPlaylistName:
 
 class TestGetAIPlaylistName:
     @staticmethod
-    def _ai_config(provider, **extra):
+    def _ai_config(provider="OLLAMA", **extra):
         cfg = {"provider": provider}
+        if provider == "OLLAMA" and not extra:
+            extra = {
+                "ollama_url": "http://localhost:11434/api/generate",
+                "ollama_model": "model",
+            }
         cfg.update(extra)
         return cfg
 
     @patch('tasks.ai.api.generate_text')
-    def test_routes_to_ollama(self, mock_generate):
-        mock_generate.return_value = "Test Playlist"
+    def test_returns_a_valid_grounded_title(self, mock_generate):
+        mock_generate.return_value = "Bittersweet"
 
         result = get_ai_playlist_name(
-            creative_prompt_template,
-            [{"title": "Song 1", "author": "Artist 1"}],
-            {"energy": 0.8},
-            self._ai_config(
-                "OLLAMA",
-                ollama_url="http://localhost:11434/api/generate",
-                ollama_model="deepseek-r1:1.5b",
-            ),
+            "Indie",
+            "contrast",
+            "melancholic lyrics contrasted with upbeat music",
+            self._ai_config(),
         )
 
-        assert result == "Test Playlist"
-        mock_generate.assert_called_once()
+        assert result == "Bittersweet Indie"
+        _prompt, config = mock_generate.call_args.args
+        assert config["provider"] == "OLLAMA"
+        assert mock_generate.call_args.kwargs == {"temperature": 0.18, "max_tokens": 20}
 
     @patch('tasks.ai.api.generate_text')
-    def test_routes_to_gemini(self, mock_generate):
-        mock_generate.return_value = "Gemini Playlist"
+    def test_contrast_rejects_rhetorical_terms_until_it_gets_an_emotion(
+        self, mock_generate
+    ):
+        mock_generate.side_effect = ["Juxtaposition", "Irony", "Bittersweet"]
 
         result = get_ai_playlist_name(
-            creative_prompt_template,
-            [{"title": "Song 1", "author": "Artist 1"}],
-            {},
-            self._ai_config("GEMINI", gemini_key="valid-key", gemini_model="gemini-2.5-pro"),
+            "Rock",
+            "contrast",
+            "melancholic lyrics contrasted with upbeat music",
+            self._ai_config(),
         )
 
-        assert result == "Gemini Playlist"
-        mock_generate.assert_called_once()
+        assert result == "Bittersweet Rock"
+        assert mock_generate.call_count == 3
 
     @patch('tasks.ai.api.generate_text')
-    def test_routes_to_mistral(self, mock_generate):
-        mock_generate.return_value = "Mistral Playlist"
-
-        result = get_ai_playlist_name(
-            creative_prompt_template,
-            [{"title": "Symphony", "author": "Beethoven"}],
-            {},
-            self._ai_config(
-                "MISTRAL", mistral_key="valid-key", mistral_model="ministral-3b-latest"
-            ),
-        )
-
-        assert result == "Mistral Playlist"
-        mock_generate.assert_called_once()
-
-    @patch('tasks.ai.api.generate_text')
-    def test_routes_to_openai(self, mock_generate):
-        mock_generate.return_value = "OpenAI Playlist"
-
-        result = get_ai_playlist_name(
-            creative_prompt_template,
-            [{"title": "Track", "author": "Artist"}],
-            {},
-            self._ai_config(
-                "OPENAI",
-                openai_url="https://api.openai.com/v1/chat/completions",
-                openai_model="gpt-4",
-                openai_key="test-key",
-            ),
-        )
-
-        assert result == "OpenAI Playlist"
-        mock_generate.assert_called_once()
-
-    @patch('tasks.ai.api.generate_text')
-    def test_handles_none_provider(self, mock_generate):
+    def test_skipped_or_failed_provider_returns_none_for_fallback(self, mock_generate):
         mock_generate.return_value = "AI Naming Skipped"
 
-        result = get_ai_playlist_name(
-            creative_prompt_template,
-            [],
-            {},
-            self._ai_config("NONE"),
-        )
-
-        assert result == "AI Naming Skipped"
-
-    @patch('tasks.ai.api.clean_playlist_name')
-    @patch('tasks.ai.api.generate_text')
-    def test_applies_length_constraints(self, mock_generate, mock_clean):
-        mock_generate.return_value = "Test"
-        mock_clean.return_value = "Test"
-
-        result = get_ai_playlist_name(
-            creative_prompt_template,
-            [{"title": "Test", "author": "Artist"}],
-            {},
-            self._ai_config(
-                "OLLAMA", ollama_url="http://localhost:11434/api/generate", ollama_model="model"
-            ),
-        )
-
-        assert "Error" in result
-        assert "outside" in result
-
-    @patch('tasks.ai.api.clean_playlist_name')
-    @patch('tasks.ai.api.generate_text')
-    def test_cleans_playlist_name(self, mock_generate, mock_clean):
-        mock_generate.return_value = "Rock & Roll - Best Hits!"
-        mock_clean.return_value = "Rock & Roll - Best Hits!"
-
-        result = get_ai_playlist_name(
-            creative_prompt_template,
-            [{"title": "Test", "author": "Artist"}],
-            {},
-            self._ai_config(
-                "OLLAMA", ollama_url="http://localhost:11434/api/generate", ollama_model="model"
-            ),
-        )
-
-        mock_clean.assert_called_once()
-        assert result == "Rock & Roll - Best Hits!"
+        assert get_ai_playlist_name(
+            "Indie", "mood", "melancholic lyrics", self._ai_config("NONE")
+        ) is None
 
     @patch('tasks.ai.api.generate_text')
-    def test_formats_song_list_in_prompt(self, mock_generate):
-        mock_generate.return_value = "Test Playlist Name"
-        song_list = [
-            {"title": "Song One", "author": "Artist A"},
-            {"title": "Song Two", "author": "Artist B"},
+    def test_strips_an_accidentally_repeated_genre_before_composition(self, mock_generate):
+        mock_generate.return_value = "Indie Heartbreak"
+
+        result = get_ai_playlist_name(
+            "Indie", "theme", "romantic melancholic lyrics", self._ai_config()
+        )
+
+        assert result == "Indie Heartbreak"
+        assert mock_generate.call_count == 1
+
+    @patch('tasks.ai.api.generate_text')
+    def test_rejects_generic_container_words(self, mock_generate):
+        mock_generate.return_value = "Bittersweet Indie Mix"
+
+        result = get_ai_playlist_name(
+            "Indie", "theme", "melancholic solitary lyrics", self._ai_config()
+        )
+
+        assert result is None
+
+    @patch('tasks.ai.api.generate_text')
+    def test_retries_redundant_human_filler_and_combined_moods(
+        self, mock_generate
+    ):
+        mock_generate.side_effect = ["Human Struggle", "Sad & Calm", "Sad"]
+
+        result = get_ai_playlist_name(
+            "Acoustic", "mood", "melancholic lyrics", self._ai_config()
+        )
+
+        assert result == "Sad Acoustic"
+        assert mock_generate.call_count == 3
+
+    @patch('tasks.ai.api.generate_text')
+    def test_function_is_composed_after_the_genre(self, mock_generate):
+        mock_generate.return_value = "Dance"
+
+        result = get_ai_playlist_name(
+            "Electronic", "function", "energetic danceable music", self._ai_config()
+        )
+
+        assert result == "Electronic Dance"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_mood_is_composed_before_the_genre(self, mock_generate):
+        mock_generate.return_value = "Happy"
+
+        assert get_ai_playlist_name(
+            "Jazz", "mood", "upbeat joyful music", self._ai_config()
+        ) == "Happy Jazz"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_theme_is_composed_after_the_genre(self, mock_generate):
+        mock_generate.return_value = "Heartache"
+
+        assert get_ai_playlist_name(
+            "R&B", "theme", "romantic lyrics about sadness", self._ai_config()
+        ) == "R&B Heartache"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_relationship_is_composed_after_genre(self, mock_generate):
+        mock_generate.return_value = "Heartbreak"
+
+        assert get_ai_playlist_name(
+            "Soul",
+            "relationship",
+            "melancholic lyrics; romantic lyrics",
+            self._ai_config(),
+        ) == "Soul Heartbreak"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_rejects_multiple_alternatives(self, mock_generate):
+        mock_generate.return_value = "Melancholy Folk\nCalm Folk"
+
+        result = get_ai_playlist_name(
+            "Folk", "mood", "melancholic peaceful lyrics", self._ai_config()
+        )
+
+        assert result is None
+
+    @patch('tasks.ai.api.generate_text')
+    def test_function_retries_gerunds_until_it_gets_a_category_noun(self, mock_generate):
+        mock_generate.side_effect = [
+            "Dancing",
+            "Clubbing",
+            "Dance",
         ]
 
-        get_ai_playlist_name(
-            creative_prompt_template,
-            song_list,
-            {},
-            self._ai_config(
-                "OLLAMA", ollama_url="http://localhost:11434/api/generate", ollama_model="model"
-            ),
+        result = get_ai_playlist_name(
+            "Electronic", "function", "energetic danceable music", self._ai_config()
         )
 
-        prompt = mock_generate.call_args[0][0]
-        assert "Song One" in prompt
-        assert "Artist A" in prompt
-        assert "Song Two" in prompt
-        assert "Artist B" in prompt
+        assert result == "Electronic Dance"
+        assert mock_generate.call_count == 3
+        retry_prompt = mock_generate.call_args.args[0]
+        assert "Previous concept" in retry_prompt
 
-    def test_prompt_includes_length_requirement(self):
-        assert (
-            "The title MUST be within the range of 5 to 40 characters long."
-            in creative_prompt_template
+    @patch('tasks.ai.api.generate_text')
+    def test_function_rejects_a_redundant_descriptive_phrase(self, mock_generate):
+        mock_generate.side_effect = ["Workout Energy", "Workout"]
+
+        result = get_ai_playlist_name(
+            "Electronic", "function", "energetic danceable music", self._ai_config()
         )
+
+        assert result == "Electronic Workout"
+        assert mock_generate.call_count == 2
+
+    @patch('tasks.ai.api.generate_text')
+    def test_function_rejects_a_bare_verb(self, mock_generate):
+        mock_generate.side_effect = ["Relax", "Relaxation"]
+
+        result = get_ai_playlist_name(
+            "Jazz", "function", "calm relaxed instrumental listening", self._ai_config()
+        )
+
+        assert result == "Jazz Relaxation"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_function_rejects_a_copied_sound_descriptor(self, mock_generate):
+        mock_generate.side_effect = ["Energy", "Workout"]
+
+        result = get_ai_playlist_name(
+            "Electronic", "function", "energetic danceable music", self._ai_config()
+        )
+
+        assert result == "Electronic Workout"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_function_rejects_a_vague_movement_label(self, mock_generate):
+        mock_generate.side_effect = ["Movement", "Celebration"]
+
+        result = get_ai_playlist_name(
+            "Hip-Hop", "function", "upbeat dance-focused music", self._ai_config()
+        )
+
+        assert result == "Hip-Hop Celebration"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_function_rejects_words_that_read_badly_after_the_genre(
+        self, mock_generate
+    ):
+        mock_generate.side_effect = ["Work", "Friends", "Rest", "Relaxation"]
+
+        result = get_ai_playlist_name(
+            "House", "function", "energetic danceable music", self._ai_config()
+        )
+
+        assert result is None
+        assert mock_generate.call_count == 3
+
+    @patch('tasks.ai.api.generate_text')
+    def test_instrumental_title_must_end_with_instrumentals(self, mock_generate):
+        mock_generate.side_effect = [
+            "Background",
+            "Relaxation",
+        ]
+
+        result = get_ai_playlist_name(
+            "Ambient",
+            "function",
+            "calm relaxed instrumental listening",
+            self._ai_config(),
+            instrumental=True,
+        )
+
+        assert result == "Ambient Relaxation Instrumentals"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_instrumental_concept_cannot_duplicate_the_generated_suffix(
+        self, mock_generate
+    ):
+        mock_generate.side_effect = ["Happy Instrumentals", "Happy"]
+
+        result = get_ai_playlist_name(
+            "Jazz",
+            "mood",
+            "upbeat joyful instrumental music",
+            self._ai_config(),
+            instrumental=True,
+        )
+
+        assert result == "Happy Jazz Instrumentals"
+        assert mock_generate.call_count == 2
+
+    @patch('tasks.ai.api.generate_text')
+    def test_theme_word_ending_in_ing_is_not_rejected_as_a_gerund(self, mock_generate):
+        mock_generate.return_value = "Longing"
+
+        assert get_ai_playlist_name(
+            "Acoustic", "theme", "solitary lyrics about longing", self._ai_config()
+        ) == "Acoustic Longing"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_taken_name_is_rejected_case_insensitively(self, mock_generate):
+        mock_generate.side_effect = ["Dance", "Party"]
+
+        result = get_ai_playlist_name(
+            "Electronic",
+            "function",
+            "joyful dance-focused music",
+            self._ai_config(),
+            avoid_names=["Electronic Dance"],
+        )
+
+        assert result == "Electronic Party"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_reuses_neither_a_concept_nor_only_its_genre_variant(
+        self, mock_generate
+    ):
+        mock_generate.side_effect = ["Dance Party", "Party"]
+
+        result = get_ai_playlist_name(
+            "Hip-Hop",
+            "function",
+            "upbeat dance-focused music",
+            self._ai_config(),
+            avoid_names=["Electronic Dance"],
+        )
+
+        assert result == "Hip-Hop Party"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_mood_and_theme_reject_descriptive_phrases(self, mock_generate):
+        mock_generate.side_effect = ["Sad Reflections", "Sad"]
+
+        result = get_ai_playlist_name(
+            "Acoustic", "mood", "melancholic somber music", self._ai_config()
+        )
+
+        assert result == "Sad Acoustic"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_mood_rejects_an_invented_subgenre(self, mock_generate):
+        mock_generate.side_effect = ["Swing Jazz", "Happy Jazz"]
+
+        result = get_ai_playlist_name(
+            "Jazz", "mood", "upbeat joyful instrumental music", self._ai_config()
+        )
+
+        assert result == "Happy Jazz"
+
+    def test_prompt_is_compact_and_contains_no_song_list_placeholder(self):
+        assert len(playlist_concept_prompt_template) < 500
+        assert "{genre}" in playlist_concept_prompt_template
+        assert "{evidence}" in playlist_concept_prompt_template
+        assert "{dimension_rule}" in playlist_concept_prompt_template
+        assert "{avoid_rule}" in playlist_concept_prompt_template
+        assert "Allowed titles" not in playlist_concept_prompt_template
+        assert "song_list_sample" not in playlist_concept_prompt_template
+        assert "Examples:" not in playlist_concept_prompt_template
+        assert "Use one ordinary word" in playlist_concept_prompt_template

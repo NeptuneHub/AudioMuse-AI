@@ -727,6 +727,23 @@ def get_clap_embedding(item_id):
         cur.close()
 
 
+def get_lyrics_axis_vectors(item_ids):
+    """Return raw lyric-axis vectors for the requested tracks."""
+    if not item_ids:
+        return {}
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT item_id, axis_vector FROM lyrics_embedding "
+            "WHERE axis_vector IS NOT NULL AND item_id = ANY(%s)",
+            (list(item_ids),),
+        )
+        return {row[0]: bytes(row[1]) for row in cur.fetchall()}
+    finally:
+        cur.close()
+
+
 def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
     if lyrics_embedding_vector is None or (
         isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0

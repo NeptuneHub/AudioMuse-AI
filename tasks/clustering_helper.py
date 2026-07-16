@@ -72,13 +72,19 @@ from config import (
     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
     USE_GPU_CLUSTERING,
     TASK_STATUS_SUCCESS,
+    LYRICS_ENABLED,
 )
 from .commons import score_vector
 
 from tasks.ai.api import get_ai_playlist_name
-from tasks.ai.prompts import creative_prompt_template
+from tasks.ai.playlist_namer import build_naming_context
 
-from database import get_tracks_by_ids, get_score_data_by_ids, get_task_info_from_db
+from database import (
+    get_tracks_by_ids,
+    get_score_data_by_ids,
+    get_task_info_from_db,
+    get_lyrics_axis_vectors,
+)
 from taskqueue import redis_conn
 
 
@@ -127,6 +133,7 @@ def _try_ai_name_playlist(
     gemini_model,
     mistral_key,
     mistral_model,
+    avoid_names=None,
 ):
     ai_config = {
         'provider': ai_provider,
@@ -140,16 +147,54 @@ def _try_ai_name_playlist(
         'mistral_key': mistral_key,
         'mistral_model': mistral_model,
     }
-    ai_name = get_ai_playlist_name(
-        creative_prompt_template,
-        [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
+    item_ids = [item_id for item_id, _title, _author in songs]
+    score_rows = get_score_data_by_ids(item_ids)
+    axis_blobs = {}
+    columns = []
+    if LYRICS_ENABLED:
+        try:
+            from lyrics.lyrics_transcriber import axis_columns
+
+            columns = list(axis_columns())
+            axis_blobs = get_lyrics_axis_vectors(item_ids)
+        except Exception:
+            logger.exception("Could not load lyric axes for playlist naming")
+
+    context = build_naming_context(
+        score_rows,
         centroids.get(original_name, {}),
-        ai_config,
+        axis_blobs.values(),
+        len(item_ids),
+        columns,
     )
-    if ai_name and "Error" not in ai_name:
+    logger.info(
+        "Playlist naming context for '%s': genre=%s dimension=%s evidence=%s "
+        "ideas=%s reliable_axes=%s",
+        original_name,
+        context['genre'],
+        context['naming_dimension'],
+        context['naming_evidence'],
+        context['ideas'],
+        context['axis_labels'],
+    )
+    ai_name = None
+    if context['naming_evidence'] != 'general-purpose listening':
+        ai_name = get_ai_playlist_name(
+            context['genre'],
+            context['naming_dimension'],
+            context['naming_evidence'],
+            ai_config,
+            instrumental=context['instrumental'],
+            avoid_names=avoid_names,
+        )
+    if ai_name:
         return ai_name.strip().replace("\n", " ")
-    logger.warning("AI naming failed for '%s': %s. Using original name.", original_name, ai_name)
-    return original_name
+    logger.warning(
+        "AI naming failed for '%s'. Using grounded fallback '%s'.",
+        original_name,
+        context['fallback_name'],
+    )
+    return context['fallback_name']
 
 
 def _perform_single_clustering_iteration(

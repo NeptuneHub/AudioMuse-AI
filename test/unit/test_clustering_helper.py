@@ -290,3 +290,107 @@ class TestGetTrackPrimaryGenre:
         genre = _get_track_primary_genre(track_data)
 
         assert genre == '__other__'
+
+
+class TestAIPlaylistNaming:
+    @staticmethod
+    def _call(monkeypatch, ai_result, naming_evidence=None):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
+
+        def fail_if_lyrics_are_queried(_ids):
+            raise AssertionError('lyrics DB must not be queried when disabled')
+
+        monkeypatch.setattr(
+            clustering_helper,
+            'get_lyrics_axis_vectors',
+            fail_if_lyrics_are_queried,
+        )
+        monkeypatch.setattr(
+            clustering_helper,
+            'get_score_data_by_ids',
+            lambda _ids: [{'mood_vector': 'indie:0.8', 'other_features': 'party:0.8'}],
+        )
+        monkeypatch.setattr(
+            clustering_helper,
+            'build_naming_context',
+            lambda *args: {
+                'genre': 'Indie',
+                'ideas': ['bittersweet', 'solitude'],
+                'naming_brief': 'melancholic lyrics over upbeat music',
+                'naming_dimension': 'contrast',
+                'naming_evidence': naming_evidence or (
+                    'melancholic lyrics contrasted with upbeat energetic music'
+                ),
+                'instrumental': False,
+                'axis_labels': {'AXIS_3_EMOTIONAL_VALENCE': 'MELANCHOLIC'},
+                'fallback_name': (
+                    'Indie'
+                    if naming_evidence == 'general-purpose listening'
+                    else 'Bittersweet Indie'
+                ),
+            },
+        )
+        received = {}
+
+        def fake_ai(
+            genre,
+            naming_dimension,
+            naming_evidence,
+            config,
+            instrumental=False,
+            avoid_names=None,
+        ):
+            received.update(
+                genre=genre,
+                naming_dimension=naming_dimension,
+                naming_evidence=naming_evidence,
+                instrumental=instrumental,
+                provider=config['provider'],
+                avoid_names=avoid_names,
+            )
+            return ai_result
+
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', fake_ai)
+        result = clustering_helper._try_ai_name_playlist(
+            'Old_Cluster_Name',
+            [('i1', 'Song', 'Artist')],
+            {'Old_Cluster_Name': {'party': 0.8}},
+            'OLLAMA',
+            'http://localhost:11434/api/generate',
+            'qwen3.5:9b',
+            '', '', '', '', '', '', '',
+            ['Existing Indie Name'],
+        )
+        return result, received
+
+    def test_grounded_context_is_sent_to_the_ai(self, monkeypatch):
+        result, received = self._call(monkeypatch, 'Bittersweet Indie Solitude')
+
+        assert result == 'Bittersweet Indie Solitude'
+        assert received == {
+            'genre': 'Indie',
+            'naming_dimension': 'contrast',
+            'naming_evidence': (
+                'melancholic lyrics contrasted with upbeat energetic music'
+            ),
+            'instrumental': False,
+            'provider': 'OLLAMA',
+            'avoid_names': ['Existing Indie Name'],
+        }
+
+    def test_invalid_ai_output_uses_the_grounded_fallback(self, monkeypatch):
+        result, _received = self._call(monkeypatch, None)
+
+        assert result == 'Bittersweet Indie'
+
+    def test_general_context_skips_ai_instead_of_inventing_a_mood(self, monkeypatch):
+        result, received = self._call(
+            monkeypatch,
+            'Invented Indie Mood',
+            naming_evidence='general-purpose listening',
+        )
+
+        assert result == 'Indie'
+        assert received == {}

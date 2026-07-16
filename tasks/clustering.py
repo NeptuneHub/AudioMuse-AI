@@ -1646,27 +1646,25 @@ def _name_and_prepare_playlists(
         if not songs:
             continue
 
-        if ai_provider in ("OLLAMA", "OPENAI", "GEMINI", "MISTRAL"):
-            try:
-                final_name = _try_ai_name_playlist(
-                    original_name,
-                    songs,
-                    best_result.get("playlist_centroids", {}),
-                    ai_provider,
-                    ollama_url,
-                    ollama_model,
-                    openai_url,
-                    openai_model,
-                    openai_key,
-                    gemini_key,
-                    gemini_model,
-                    mistral_key,
-                    mistral_model,
-                )
-            except Exception as e:
-                logger.warning(f"AI naming failed for '{original_name}': {e}. Using original name.")
-                final_name = original_name
-        else:
+        try:
+            final_name = _try_ai_name_playlist(
+                original_name,
+                songs,
+                best_result.get("playlist_centroids", {}),
+                ai_provider,
+                ollama_url,
+                ollama_model,
+                openai_url,
+                openai_model,
+                openai_key,
+                gemini_key,
+                gemini_model,
+                mistral_key,
+                mistral_model,
+                list(final_playlists),
+            )
+        except Exception as e:
+            logger.warning(f"AI naming failed for '{original_name}': {e}. Using original name.")
             final_name = original_name
 
         temp_name = final_name
