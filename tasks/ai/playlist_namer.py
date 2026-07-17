@@ -17,14 +17,19 @@ the data.
 Main Features:
 * confident_axis_labels keeps only lyric axis winners backed by decisive
   per-track and per-cluster vote margins
-* build_naming_context averages mood/other scores, detects instrumentals, and
-  picks one editorial naming dimension with grounded evidence
-* Deterministic fallbacks compose a genre-based title when the AI declines
+* build_naming_context uses the cluster's most frequent primary genre, averages
+  mood/other scores, detects instrumentals, and can vary the editorial focus
+  among relationship, contrast, theme, function, and mood evidence actually
+  supported by that cluster
+* Deterministic fallbacks compose a genre-based title when the AI declines,
+  offering ranked idea and synonym alternatives so callers can skip names
+  already used by another playlist or a previous run
 """
 
 from collections import Counter, defaultdict
 from itertools import islice
 from math import ceil
+import secrets
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -144,6 +149,21 @@ _FALLBACK_ADJECTIVES = {
     'longing': 'Longing', 'instrumental': 'Instrumental',
 }
 
+_FALLBACK_ALTERNATES = {
+    'bittersweet': ['Wistful', 'Nostalgic'],
+    'melancholy': ['Somber', 'Wistful'],
+    'joyful': ['Cheerful', 'Sunny'],
+    'calm': ['Mellow', 'Serene'],
+    'intense': ['Fierce', 'Furious'],
+    'energetic': ['Upbeat', 'Lively'],
+    'physical energy': ['Upbeat', 'Lively'],
+    'uneasy': ['Brooding'],
+    'detached': ['Mellow'],
+    'romance': ['Tender'],
+    'memories': ['Wistful'],
+    'longing': ['Yearning'],
+}
+
 
 def _parse_pairs(text: Optional[str]) -> Dict[str, float]:
     parsed = {}
@@ -181,7 +201,11 @@ def _with_centroid_fallback(
     }
 
 
-def pick_genre(mood_scores: Dict[str, float]) -> str:
+def pick_genre(
+    mood_scores: Dict[str, float], primary_genre: Optional[str] = None
+) -> str:
+    if primary_genre and primary_genre != '__other__':
+        return GENRE_DISPLAY.get(primary_genre, primary_genre.title())
     candidates = {key: mood_scores[key] for key in STRATIFIED_GENRES if key in mood_scores}
     if not candidates:
         return 'Pop'
@@ -374,8 +398,8 @@ def _naming_brief(
     return '; '.join(islice(parts, 3)) or 'general-purpose listening'
 
 
-def _relationship_or_contrast_target(
-    valence: Optional[str], social: Optional[str], bright_sound: bool
+def _relationship_target(
+    valence: Optional[str], social: Optional[str]
 ) -> Optional[Tuple[str, str]]:
     if social == 'ROMANTIC':
         evidence = []
@@ -383,6 +407,12 @@ def _relationship_or_contrast_target(
             evidence.append(VALENCE_BRIEFS[valence])
         evidence.append('romantic lyrics')
         return 'relationship', '; '.join(evidence)
+    return None
+
+
+def _contrast_target(
+    valence: Optional[str], bright_sound: bool
+) -> Optional[Tuple[str, str]]:
     if valence == 'MELANCHOLIC' and bright_sound:
         return 'contrast', 'melancholic lyrics contrasted with upbeat energetic music'
     return None
@@ -457,17 +487,28 @@ def _naming_target(
     axis_labels: Dict[str, str],
     sound_key: Optional[str],
     instrumental: bool,
+    diversify: bool = False,
 ) -> Tuple[str, str]:
     valence = axis_labels.get('AXIS_3_EMOTIONAL_VALENCE')
     social = axis_labels.get('AXIS_2_SOCIAL_DYNAMIC')
     theme = axis_labels.get('AXIS_5_THEMATIC_WEIGHT')
     narrative = axis_labels.get('AXIS_4_NARRATIVE_TEMPORALITY')
     bright_sound = sound_key in {'danceable', 'happy', 'party'}
-    return (
-        _relationship_or_contrast_target(valence, social, bright_sound)
-        or _theme_target(theme, valence, social, sound_key)
-        or _sound_or_default_target(valence, social, narrative, sound_key, instrumental)
-    )
+    candidates = [
+        _relationship_target(valence, social),
+        _contrast_target(valence, bright_sound),
+        _theme_target(theme, valence, social, sound_key),
+        _sound_or_default_target(valence, social, narrative, sound_key, instrumental),
+    ]
+    candidates = _dedup(candidate for candidate in candidates if candidate)
+    if diversify and len(candidates) > 1:
+        grounded = [
+            candidate
+            for candidate in candidates
+            if candidate[1] != 'general-purpose listening'
+        ]
+        return secrets.choice(grounded or candidates)
+    return candidates[0]
 
 
 def _fallback_name(genre: str, ideas: Sequence[str], instrumental: bool) -> str:
@@ -478,12 +519,31 @@ def _fallback_name(genre: str, ideas: Sequence[str], instrumental: bool) -> str:
     return f'{adjective} {genre}{suffix}'
 
 
+def fallback_candidates(
+    genre: str, ideas: Sequence[str], instrumental: bool
+) -> List[str]:
+    ideas = list(ideas)
+    suffix = ' Instrumentals' if instrumental else ''
+    names = [
+        _fallback_name(genre, ideas[start:], instrumental)
+        for start in range(len(ideas))
+    ]
+    for idea in ideas:
+        for adjective in _FALLBACK_ALTERNATES.get(idea, []):
+            names.append(f'{adjective} {genre}{suffix}')
+    if not names:
+        names.append(_fallback_name(genre, ideas, instrumental))
+    return _dedup(names)
+
+
 def build_naming_context(
     score_rows: Sequence[Dict],
     centroid_scores: Optional[Dict],
     axis_blobs: Iterable[bytes],
     total_tracks: int,
     axis_columns: Sequence[Tuple[str, str]],
+    primary_genre: Optional[str] = None,
+    diversify: bool = False,
 ) -> Dict:
     axis_blobs = list(axis_blobs)
     mood_scores = _with_centroid_fallback(
@@ -492,7 +552,7 @@ def build_naming_context(
     other_scores = _with_centroid_fallback(
         _average_column(score_rows, 'other_features'), centroid_scores
     )
-    genre = pick_genre(mood_scores)
+    genre = pick_genre(mood_scores, primary_genre)
     sound_key = _pick_sound(other_scores)
     has_lyrics_coverage = _usable_axis_vector_count(
         axis_blobs, axis_columns
@@ -507,7 +567,7 @@ def build_naming_context(
     axis_labels = confident_axis_labels(axis_blobs, total_tracks, axis_columns)
     ideas = _title_ideas(axis_labels, sound_key, instrumental)
     naming_dimension, naming_evidence = _naming_target(
-        axis_labels, sound_key, instrumental
+        axis_labels, sound_key, instrumental, diversify=diversify
     )
     return {
         'genre': genre,
@@ -518,4 +578,5 @@ def build_naming_context(
         'instrumental': instrumental,
         'axis_labels': axis_labels,
         'fallback_name': _fallback_name(genre, ideas, instrumental),
+        'fallback_candidates': fallback_candidates(genre, ideas, instrumental),
     }

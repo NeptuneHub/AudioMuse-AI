@@ -16,6 +16,7 @@ Main Features:
 * Argon2id/argon2i hashes are recognized and bcrypt/plain are not
 * cast_value coerces bool/int/float/list/dict and falls back on invalid JSON
 * cast and format round-trip preserves the original value; DATABASE_URL env honored
+* Startup pruning deletes retired keys without touching valid config rows
 * Importing tasks.setup_manager before config keeps the DB-override init working
 """
 
@@ -24,6 +25,7 @@ import os
 import subprocess
 import sys
 import types
+from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -479,6 +481,26 @@ class TestGetEnvConfigValues:
         assert "DATABASE_URL" not in values
         assert "JELLYFIN_URL" in values
 
+    def test_excludes_media_server_registry_keys(self):
+        cfg = _cfg(
+            JELLYFIN_URL="http://localhost",
+            MAX_DISTANCE=0.5,
+            MEDIASERVER_CONFIG_KEYS={"JELLYFIN_URL"},
+        )
+        values = self.mgr._get_env_config_values(cfg)
+        assert "JELLYFIN_URL" not in values
+        assert "MAX_DISTANCE" in values
+        assert "MEDIASERVER_CONFIG_KEYS" not in values
+
+    def test_excludes_persistence_metadata(self):
+        cfg = _cfg(
+            MAX_DISTANCE=0.5,
+            SETUP_BOOTSTRAP_EXCLUDED_KEYS=set(),
+        )
+        values = self.mgr._get_env_config_values(cfg)
+        assert "SETUP_BOOTSTRAP_EXCLUDED_KEYS" not in values
+        assert "MAX_DISTANCE" in values
+
     def test_values_are_sorted_by_key(self):
         cfg = _cfg(ZEBRA="z", APPLE="a", MANGO="m")
         keys = list(self.mgr._get_env_config_values(cfg).keys())
@@ -532,6 +554,93 @@ class TestDeleteConfigValuesNoop:
     def test_noop_for_empty_keys(self, mock_get_conn):
         _mgr().delete_config_values([])
         mock_get_conn.assert_not_called()
+
+
+class TestPruneObsoleteConfigValues:
+    def setup_method(self):
+        self.mgr = _mgr()
+        self.connection = MagicMock()
+        self.connection.__enter__.return_value = self.connection
+        self.cursor = MagicMock()
+        self.connection.cursor.return_value.__enter__.return_value = self.cursor
+
+    def _install_connection(self):
+        self.mgr.ensure_table = MagicMock()
+        self.mgr.get_connection = MagicMock(return_value=self.connection)
+
+    def test_deletes_only_keys_absent_from_persistable_config(self):
+        self._install_connection()
+        self.cursor.fetchall.return_value = [("RETIRED_PARAMETER",), ("OLD_NAME",)]
+        cfg = _cfg(
+            ACTIVE_PARAMETER=42,
+            OTHER_ACTIVE=True,
+            DATABASE_URL="postgres://internal",
+            SETUP_BOOTSTRAP_EXCLUDED_KEYS={"DATABASE_URL"},
+        )
+
+        removed = self.mgr.prune_obsolete_config_values(cfg)
+
+        assert removed == ["OLD_NAME", "RETIRED_PARAMETER"]
+        sql, params = self.cursor.execute.call_args.args
+        assert "DELETE FROM app_config" in sql
+        assert "WHERE NOT (key = ANY(%s))" in sql
+        assert "RETURNING key" in sql
+        assert params == (["ACTIVE_PARAMETER", "OTHER_ACTIVE"],)
+        self.connection.commit.assert_called_once_with()
+
+    def test_preserves_declared_runtime_keys_without_treating_them_as_parameters(self):
+        self._install_connection()
+        self.cursor.fetchall.return_value = [("RETIRED_PARAMETER",)]
+        cfg = _cfg(
+            ACTIVE_PARAMETER=42,
+            APP_CONFIG_RUNTIME_KEYS={"PLUGIN_REPOS", "PLUGIN_CATALOG_CACHE"},
+            SETUP_BOOTSTRAP_EXCLUDED_KEYS={"APP_CONFIG_RUNTIME_KEYS"},
+        )
+
+        removed = self.mgr.prune_obsolete_config_values(cfg)
+
+        assert removed == ["RETIRED_PARAMETER"]
+        _sql, params = self.cursor.execute.call_args.args
+        assert params == (
+            ["ACTIVE_PARAMETER", "PLUGIN_CATALOG_CACHE", "PLUGIN_REPOS"],
+        )
+        assert "APP_CONFIG_RUNTIME_KEYS" not in params[0]
+
+    def test_valid_rows_are_not_updated_when_nothing_is_obsolete(self):
+        self._install_connection()
+        self.cursor.fetchall.return_value = []
+
+        removed = self.mgr.prune_obsolete_config_values(_cfg(ACTIVE_PARAMETER=42))
+
+        assert removed == []
+        sql = self.cursor.execute.call_args.args[0]
+        assert "UPDATE" not in sql.upper()
+        assert "INSERT" not in sql.upper()
+        self.connection.commit.assert_called_once_with()
+
+    def test_refuses_to_delete_everything_when_config_has_no_valid_keys(self):
+        self.mgr.ensure_table = MagicMock()
+        self.mgr.get_connection = MagicMock()
+
+        with pytest.raises(RuntimeError, match="exposes no persistable parameters"):
+            self.mgr.prune_obsolete_config_values(_cfg(lowercase="ignored"))
+
+        self.mgr.ensure_table.assert_not_called()
+        self.mgr.get_connection.assert_not_called()
+
+
+def test_flask_startup_prunes_config_after_schema_init_and_before_bootstrap():
+    app_source = (Path(__file__).parents[2] / "app.py").read_text(encoding="utf-8")
+
+    init_position = app_source.index("        init_db()")
+    prune_position = app_source.index(
+        "        setup_manager.prune_obsolete_config_values(config)"
+    )
+    bootstrap_position = app_source.index(
+        "        setup_manager.bootstrap_env_config_if_empty(config)"
+    )
+
+    assert init_position < prune_position < bootstrap_position
 
 
 class TestPlaceholderFieldsRejectAllServers:

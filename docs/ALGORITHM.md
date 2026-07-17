@@ -1312,7 +1312,7 @@ Analysis & Clustering Defaults (used when enqueueing cron jobs)
 
 * `TOP_N_MOODS` - Number of moods passed to analysis jobs when scheduled.
 * `CLUSTER_ALGORITHM`, `NUM_CLUSTERS_MIN`, `NUM_CLUSTERS_MAX`, `DBSCAN_EPS_MIN`, `DBSCAN_EPS_MAX`, `DBSCAN_MIN_SAMPLES_MIN`, `DBSCAN_MIN_SAMPLES_MAX`, `GMM_N_COMPONENTS_MIN`, `GMM_N_COMPONENTS_MAX`, `SPECTRAL_N_CLUSTERS_MIN`, `SPECTRAL_N_CLUSTERS_MAX`, `PCA_COMPONENTS_MIN`, `PCA_COMPONENTS_MAX` - Default ranges used to compose clustering kwargs.
-* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_PLAYLISTS`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` - High-level clustering behavior used when cron enqueues clustering.
+* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_CLUSTERING_PLAYLIST`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` - High-level clustering behavior used when cron enqueues clustering.
 * `SCORE_WEIGHT_*` and other scoring weights - Defaults applied to scheduled clustering runs.
 * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` - AI naming defaults applied when scheduled clustering requests automatic playlist naming.
 

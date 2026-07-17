@@ -47,7 +47,7 @@ from config import (
     PCA_COMPONENTS_MAX,
     CLUSTERING_RUNS,
     MAX_SONGS_PER_CLUSTER,
-    TOP_N_PLAYLISTS,
+    TOP_N_CLUSTERING_PLAYLIST,
     MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
     STRATIFIED_SAMPLING_TARGET_PERCENTILE,
     SCORE_WEIGHT_DIVERSITY,
@@ -526,7 +526,8 @@ def run_due_cron_jobs():
                         "pca_components_max": int(PCA_COMPONENTS_MAX),
                         "num_clustering_runs": int(CLUSTERING_RUNS),
                         "max_songs_per_cluster_val": int(MAX_SONGS_PER_CLUSTER),
-                        "top_n_playlists_param": int(TOP_N_PLAYLISTS),
+                        # Legacy RQ kwarg keeps rolling web/worker deploys compatible.
+                        "top_n_playlists_param": int(TOP_N_CLUSTERING_PLAYLIST),
                         "min_songs_per_genre_for_stratification_param": int(
                             MIN_SONGS_PER_GENRE_FOR_STRATIFICATION
                         ),

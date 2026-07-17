@@ -151,6 +151,14 @@ MEDIASERVER_CONFIG_KEYS = frozenset(
 # on output.
 # There are deliberately no feature flags for this behaviour.
 
+# app_config also hosts this small set of live application state keys. They are
+# not config overrides and must not appear in the setup UI, but startup pruning
+# must retain them while their consumers still exist.
+APP_CONFIG_RUNTIME_KEYS = {
+    'PLUGIN_REPOS',
+    'PLUGIN_CATALOG_CACHE',
+}
+
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'DATABASE_URL',
     'POSTGRES_USER',
@@ -164,6 +172,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'MEDIASERVER_CONFIG_KEYS',
     'APP_VERSION',
+    'APP_CONFIG_RUNTIME_KEYS',
     # Admin identity lives in audiomuse_users only. Never mirror it into
     # app_config - stale rows there cause deleted admins to resurrect.
     'AUDIOMUSE_USER',
@@ -187,8 +196,14 @@ SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").
 # Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
 RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
-TOP_N_PLAYLISTS = int(os.environ.get("TOP_N_PLAYLISTS", "8")) # *** NEW: Default for Top N diverse playlists ***
+TOP_N_CLUSTERING_PLAYLIST = int(
+    os.environ.get(
+        "TOP_N_CLUSTERING_PLAYLIST",
+        os.environ.get("MIN_CLUSTERING_TOP", os.environ.get("TOP_N_PLAYLISTS", "10")),
+    )
+)  # Exact final cap. MIN_CLUSTERING_TOP/TOP_N_PLAYLISTS are legacy env fallbacks.
 MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", "20")) # Min songs for a playlist to be considered in the first pass of Top-N selection.
+PLAYLIST_NAME_HISTORY_ROUNDS = int(os.environ.get("PLAYLIST_NAME_HISTORY_ROUNDS", "3")) # AI naming avoids playlist names from this many previous clustering rounds (per server).
 
 # --- Algorithm Choose Constants (Read from Environment Variables) ---
 CLUSTER_ALGORITHM = os.environ.get("CLUSTER_ALGORITHM", "kmeans") # accepted dbscan, kmeans, gmm, or spectral

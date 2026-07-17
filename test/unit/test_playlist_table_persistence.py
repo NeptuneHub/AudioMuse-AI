@@ -6,7 +6,7 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Playlist table persistence: per-server scoped replace and retention pruning.
+"""Playlist persistence: per-server replacement, name history, and pruning.
 
 Exercises database.update_playlist_table and
 database.prune_playlist_rows_for_missing_servers against a mocked connection,
@@ -16,6 +16,9 @@ Main Features:
 * The scoped write deletes only the target server's rows (NULL scope for the
   legacy no-registry fallback) and bulk-inserts rows carrying the server_id
 * Repeated (name, item) pairs collapse to one row before insert
+* playlist_name_history holds the created names of the last
+  PLAYLIST_NAME_HISTORY_ROUNDS clustering rounds per server (rounds share one
+  transaction timestamp); a round with no playlists leaves history intact
 * A failed write rolls back and re-raises so callers never report success on
   unpersisted rows; a server deleted mid-run gets no ghost rows re-inserted
 * Pruning removes rows for servers out of scope, keeping NULL rows only when
@@ -57,10 +60,13 @@ class TestUpdatePlaylistTable:
         database.update_playlist_table(
             {'Rock': [('i1', 'T1', 'A1'), ('i2', 'T2', 'A2')]}, 's1'
         )
-        assert len(inserted) == 1
+        assert len(inserted) == 2
         sql, rows = inserted[0]
         assert 'ON CONFLICT (playlist_name, item_id, server_id) DO NOTHING' in sql
         assert rows == [('Rock', 'i1', 'T1', 'A1', 's1'), ('Rock', 'i2', 'T2', 'A2', 's1')]
+        history_sql, history_rows = inserted[1]
+        assert 'INSERT INTO playlist_name_history' in history_sql
+        assert history_rows == [('s1', 'Rock')]
 
     def test_update_playlist_table_with_none_server_deletes_only_null_rows(self, monkeypatch):
         _conn, cur, inserted = _capture(monkeypatch)
@@ -85,6 +91,55 @@ class TestUpdatePlaylistTable:
         )
         assert inserted == []
         assert conn.commit.called
+
+
+class TestPlaylistNameHistory:
+    def test_recent_names_merge_history_and_current_without_duplicates(self, monkeypatch):
+        _conn, cur, _inserted = _capture(monkeypatch)
+        cur.fetchall.side_effect = [
+            [('Pop Heartbreak_automatic',), ('Rock Party_automatic',)],
+            [('Pop Heartbreak_automatic',), ('Jazz Focus_automatic',)],
+        ]
+
+        names = database.get_recent_playlist_names('s1', limit=10)
+
+        assert names == [
+            'Pop Heartbreak_automatic',
+            'Rock Party_automatic',
+            'Jazz Focus_automatic',
+        ]
+        assert cur.execute.call_args_list[0].args[1] == ('s1', 10)
+        assert cur.execute.call_args_list[1].args[1] == ('s1',)
+
+    def test_zero_history_limit_does_not_query(self, monkeypatch):
+        _conn, cur, _inserted = _capture(monkeypatch)
+
+        assert database.get_recent_playlist_names('s1', limit=0) == []
+        cur.execute.assert_not_called()
+
+    def test_history_prunes_to_the_last_three_rounds_by_round_timestamp(self, monkeypatch):
+        import config
+
+        _conn, cur, inserted = _capture(monkeypatch)
+        database.update_playlist_table({'Rock': [('i1', 'T1', 'A1')]}, 's1')
+        assert inserted[1][1] == [('s1', 'Rock')]
+        prune_calls = [
+            call
+            for call in cur.execute.call_args_list
+            if 'playlist_name_history' in call.args[0]
+        ]
+        assert len(prune_calls) == 1
+        prune_sql, prune_params = prune_calls[0].args
+        assert 'created_at NOT IN' in prune_sql
+        assert 'ORDER BY created_at DESC LIMIT %s' in prune_sql
+        assert prune_params == ('s1', 's1', config.PLAYLIST_NAME_HISTORY_ROUNDS)
+        assert config.PLAYLIST_NAME_HISTORY_ROUNDS == 3
+
+    def test_a_round_with_no_playlists_preserves_the_previous_history(self, monkeypatch):
+        _conn, cur, _inserted = _capture(monkeypatch)
+        database.update_playlist_table({}, 's1')
+        executed = [call.args[0] for call in cur.execute.call_args_list]
+        assert not any('playlist_name_history' in sql for sql in executed)
 
     def test_update_playlist_table_rolls_back_and_reraises_when_the_write_fails(self, monkeypatch):
         conn, _cur, _inserted = _capture(monkeypatch)

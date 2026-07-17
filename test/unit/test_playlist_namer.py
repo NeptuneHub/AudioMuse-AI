@@ -131,6 +131,106 @@ def test_bright_sound_plus_melancholic_lyrics_becomes_bittersweet():
     )
 
 
+def test_primary_genre_overrides_the_centroid_genre_for_naming():
+    rows = [
+        {
+            'mood_vector': 'pop:0.9,rnb:0.7',
+            'other_features': '',
+        }
+        for _ in range(10)
+    ]
+
+    context = build_naming_context(
+        rows,
+        {'pop': 0.9, 'rnb': 0.7},
+        [],
+        10,
+        COLUMNS,
+        primary_genre='rnb',
+    )
+
+    assert context['genre'] == 'R&B'
+    assert context['fallback_name'] == 'R&B'
+
+
+def test_diversified_context_can_choose_the_grounded_party_focus(monkeypatch):
+    from tasks.ai import playlist_namer
+
+    monkeypatch.setattr(playlist_namer.secrets, 'choice', lambda choices: choices[-1])
+    rows = [
+        {
+            'mood_vector': 'pop:0.9',
+            'other_features': 'party:0.9,happy:0.8',
+        }
+        for _ in range(10)
+    ]
+    blobs = [
+        _axis_blob(
+            social=(0.1, 0.8),
+            valence=(0.1, 0.8),
+            weight=(0.1, 0.8),
+        )
+        for _ in range(10)
+    ]
+
+    context = build_naming_context(
+        rows,
+        {},
+        blobs,
+        10,
+        COLUMNS,
+        primary_genre='pop',
+        diversify=True,
+    )
+
+    assert context['naming_dimension'] == 'function'
+    assert context['naming_evidence'] == 'energetic party music'
+
+
+def test_diversify_never_downgrades_to_general_purpose_when_grounded_evidence_exists(
+    monkeypatch,
+):
+    from tasks.ai import playlist_namer
+
+    captured = []
+
+    def choose_last(choices):
+        captured.append(list(choices))
+        return choices[-1]
+
+    monkeypatch.setattr(playlist_namer.secrets, 'choice', choose_last)
+
+    dimension, evidence = playlist_namer._naming_target(
+        {'AXIS_5_THEMATIC_WEIGHT': 'SENSORIAL'}, None, False, diversify=True
+    )
+
+    assert (dimension, evidence) == ('function', 'dance-focused themes')
+    assert ('mood', 'general-purpose listening') not in captured[0]
+
+
+def test_fallback_candidates_rotate_ideas_then_synonyms():
+    from tasks.ai.playlist_namer import fallback_candidates
+
+    assert fallback_candidates('Pop', ['bittersweet'], False) == [
+        'Bittersweet Pop', 'Wistful Pop', 'Nostalgic Pop'
+    ]
+    assert fallback_candidates('Rock', ['calm', 'solitude'], False) == [
+        'Chill Rock', 'Solo Rock', 'Mellow Rock', 'Serene Rock'
+    ]
+    assert fallback_candidates('Ambient', [], True) == ['Ambient Instrumentals']
+
+
+def test_naming_context_exposes_the_fallback_candidates():
+    rows = [
+        {'mood_vector': 'pop:0.9', 'other_features': ''}
+        for _ in range(10)
+    ]
+
+    context = build_naming_context(rows, {}, [], 10, COLUMNS, primary_genre='pop')
+
+    assert context['fallback_candidates'][0] == context['fallback_name']
+
+
 def test_instrumental_playlist_gets_a_safe_fallback_without_lyrics_axes():
     rows = [
         {

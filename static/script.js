@@ -156,7 +156,7 @@ function renderConfig(config) {
     document.getElementById('config-num_recent_albums').value = config.num_recent_albums || 0;
     document.getElementById('config-top_n_moods').value = config.top_n_moods || 0;
 
-    document.getElementById('config-top_n_playlists').value = config.top_n_playlists || 0;
+    document.getElementById('config-top_n_clustering_playlist').value = config.top_n_clustering_playlist || 10;
     var rawAlgo = String(config.cluster_algorithm || '').trim().toLowerCase();
     clusterAlgorithmSelect.value = (rawAlgo === 'dbscan' || rawAlgo === 'gmm' || rawAlgo === 'spectral') ? rawAlgo : 'kmeans';
     document.getElementById('config-max_distance').value = config.max_distance || 0;
@@ -359,7 +359,7 @@ async function startTask(taskType) {
         Object.assign(payload, {
             clustering_method: clusterAlgorithmSelect.value,
             auto_parameter_discovery: document.getElementById('config-auto_parameter_discovery').checked,
-            top_n_playlists: parseInt(document.getElementById('config-top_n_playlists').value),
+            top_n_clustering_playlist: parseInt(document.getElementById('config-top_n_clustering_playlist').value),
             max_distance: parseFloat(document.getElementById('config-max_distance').value),
             max_songs_per_cluster: parseInt(document.getElementById('config-max_songs_per_cluster').value),
             pca_components_min: parseInt(document.getElementById('config-pca_components_min').value),

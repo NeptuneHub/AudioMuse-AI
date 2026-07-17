@@ -287,11 +287,11 @@ sees a balanced cross-section.
   genre from swamping a small one.
 - **Sampling** - [`_get_stratified_song_subset`](../tasks/clustering_helper.py)
   draws up to the target from each genre.
-- **Perturbation between iterations** - iteration 0 of a batch reuses the
-  previous subset; every later iteration *churns* it by
-  `SAMPLING_PERCENTAGE_CHANGE_PER_RUN` (0.2) - keep 80%, redraw 20%. This is the
-  stochasticity that lets the search see different slices of the library over
-  time.
+- **Perturbation between iterations** - every iteration, including the first
+  iteration of each batch, *churns* the incoming subset by
+  `SAMPLING_PERCENTAGE_CHANGE_PER_RUN` (0.2) - keep about 80%, redraw about 20%.
+  A genre already sampled at its full library capacity cannot redraw unavailable
+  alternatives. A new scheduled clustering starts from a fresh random sample.
 
 ## What the evolutionary search means (explore vs exploit)
 
@@ -446,18 +446,23 @@ in order:
 2. **Minimum-size filter**
    ([`apply_minimum_size_filter_to_clustering_result`](../tasks/clustering_postprocessing.py))
    - drop any playlist with fewer than `MIN_PLAYLIST_SIZE_FOR_TOP_N` (20) songs.
-3. **Top-N diverse selection**
+3. **Top-N 6+4 centroid-diverse selection**
    ([`select_top_n_diverse_playlists`](../tasks/clustering_postprocessing.py)) -
-   only if more playlists survive than `top_n_playlists`. Greedy max-min
-   selection in centroid space: start from the largest playlist, then repeatedly
-   add the candidate maximizing a combined score of *distance to the
-   already-selected set* (diversity) × *log size* (usefulness). This keeps a
-   spread-out, non-redundant set rather than many near-identical playlists.
+   returns at most `TOP_N_CLUSTERING_PLAYLIST` playlists (default 10). It finds
+   the three most represented primary genres in the full library and keeps the
+   exact farthest centroid pair available for each (six playlists). It then adds
+   four playlists whose genres differ from those top three and from one another,
+   greedily maximizing each candidate's minimum centroid distance from the
+   already-selected set. If clustering provides too few required alternatives,
+   remaining slots are filled by global max-min centroid distance; fewer than 10
+   are returned only when fewer than 10 viable candidates exist.
 
 After post-processing, [`_name_and_prepare_playlists`](../tasks/clustering.py)
 AI-names the survivors (Ollama / OpenAI / Gemini / Mistral, falling back to the
-generated name on error), a final Fisher-Yates shuffle randomizes order, and
-playlists larger than `MAX_SONGS_PER_CLUSTER` are split into numbered chunks.
+generated name on error). Recent names are retained per server and supplied as
+negative history, preventing a recurring concept such as `Heartbreak` from being
+accepted again. A final Fisher-Yates shuffle randomizes order, and playlists
+larger than `MAX_SONGS_PER_CLUSTER` are split into numbered chunks.
 Existing `_automatic` playlists are deleted and the new ones created on the media
 server and recorded in the `playlist` table.
 

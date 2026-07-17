@@ -100,6 +100,35 @@ class TestStartClusteringEndpoint:
         assert response.status_code == 202
         assert mock_queue.enqueue.call_args.kwargs['kwargs']['auto_calibration_param'] is False
 
+    @patch('app_clustering.get_active_main_task', return_value=None)
+    @patch('app_clustering.rq_queue_high')
+    @patch('app_clustering.clean_up_previous_main_tasks')
+    @patch('app_clustering.save_task_status')
+    def test_top_n_clustering_playlist_is_enqueued_and_accepts_legacy_payloads(
+        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
+    ):
+        mock_job = Mock()
+        mock_job.id = "cluster-job-123"
+        mock_job.get_status.return_value = "queued"
+        mock_queue.enqueue.return_value = mock_job
+
+        response = client.post(
+            '/api/clustering/start', json={'top_n_clustering_playlist': 10}
+        )
+        assert response.status_code == 202
+        kwargs = mock_queue.enqueue.call_args.kwargs['kwargs']
+        assert kwargs['top_n_playlists_param'] == 10
+        assert 'min_clustering_top_param' not in kwargs
+
+        response = client.post('/api/clustering/start', json={'min_clustering_top': 12})
+        assert response.status_code == 202
+        assert mock_queue.enqueue.call_args.kwargs['kwargs']['top_n_playlists_param'] == 12
+
+        response = client.post('/api/clustering/start', json={'top_n_playlists': 9})
+        assert response.status_code == 202
+        kwargs = mock_queue.enqueue.call_args.kwargs['kwargs']
+        assert kwargs['top_n_playlists_param'] == 9
+
     @patch(
         'app_clustering.get_active_main_task',
         return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'},

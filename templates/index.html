@@ -95,14 +95,14 @@
                         </label>
                     </div>
                     <div class="advanced-param hidden">
-                        <label for="config-top_n_playlists" class="label-with-tooltip">
-                            TOP Playlist Number:
+                        <label for="config-top_n_clustering_playlist" class="label-with-tooltip">
+                            Top Clustering Playlists:
                             <span class="info-tooltip" tabindex="0">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">How many playlists to create from your library. More playlists means smaller, more focused collections. Try 8-12 for a medium library (1000-5000 songs).</span>
+                                <span class="tooltip-text">Maximum final playlist count. The default 10 uses two distant variants for each of the three most represented genres, then four distant playlists with different non-top genres.</span>
                             </span>
                         </label>
-                        <input type="number" id="config-top_n_playlists">
+                        <input type="number" id="config-top_n_clustering_playlist" min="1">
                     </div>
                     <div class="advanced-param hidden">
                         <label for="config-max_distance" class="label-with-tooltip">

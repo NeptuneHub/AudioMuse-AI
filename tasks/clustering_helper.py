@@ -76,7 +76,7 @@ from config import (
 )
 from .commons import score_vector
 
-from tasks.ai.api import get_ai_playlist_name
+from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
 from tasks.ai.playlist_namer import build_naming_context
 
 from database import (
@@ -134,6 +134,7 @@ def _try_ai_name_playlist(
     mistral_key,
     mistral_model,
     avoid_names=None,
+    primary_genre=None,
 ):
     ai_config = {
         'provider': ai_provider,
@@ -166,6 +167,8 @@ def _try_ai_name_playlist(
         axis_blobs.values(),
         len(item_ids),
         columns,
+        primary_genre=primary_genre,
+        diversify=True,
     )
     logger.info(
         "Playlist naming context for '%s': genre=%s dimension=%s evidence=%s "
@@ -189,12 +192,21 @@ def _try_ai_name_playlist(
         )
     if ai_name:
         return ai_name.strip().replace("\n", " ")
+    taken = {clean_playlist_name(name).casefold() for name in (avoid_names or [])}
+    fallback = next(
+        (
+            candidate
+            for candidate in context['fallback_candidates']
+            if clean_playlist_name(candidate).casefold() not in taken
+        ),
+        context['fallback_name'],
+    )
     logger.warning(
         "AI naming failed for '%s'. Using grounded fallback '%s'.",
         original_name,
-        context['fallback_name'],
+        fallback,
     )
-    return context['fallback_name']
+    return fallback
 
 
 def _perform_single_clustering_iteration(

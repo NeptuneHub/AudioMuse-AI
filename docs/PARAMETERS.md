@@ -87,7 +87,7 @@ These are the default parameters used when launching analysis or clustering task
 | `MAX_SONGS_PER_ARTIST`                      | Max songs from one artist per cluster.                                                                                    | `3`             |
 | `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `1000`          |
-| `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
+| `TOP_N_CLUSTERING_PLAYLIST`                 | Exact final playlist cap. With the default 10, select two centroid-distant playlists for each of the three most represented genres, then four centroid-distant playlists with distinct non-top genres. | `10`            |
 | `USE_GPU_CLUSTERING`                        | When true enable the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
 | `CLUSTERING_AUTO_CALIBRATION`               | Automatic parameter discovery: per server, quick probe runs tune cluster count/eps and sampling percentile before the real run. False = always use the configured defaults as-is. | `true`          |
 | `CLUSTERING_MAX_PLAYLIST_SONGS`             | Auto-calibration soft target: try to keep generated playlists at or under this many songs (big still beats empty).        | `200`           |
@@ -162,7 +162,7 @@ These are the default parameters used when launching analysis or clustering task
 | `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OpenAI` or `NONE`.                           | `NONE`                                 |
 | `AI_REQUEST_TIMEOUT_SECONDS`                | Timeout (in seconds) for AI API requests. Increase for slower hardware or larger models.  | `300`                                  |
 | `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
-| `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample between runs (0.0 to 1.0).       | `0.2`                                  |
+| `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample on every run, including the first run of a batch (0.0 to 1.0; limited when a genre has no unsampled alternatives). | `0.2`                                  |
 | `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`    | Minimum number of songs to target per stratified genre during sampling.                   | `100`                                  |
 | `STRATIFIED_SAMPLING_TARGET_PERCENTILE`     | Percentile of genre song counts to use for target songs per stratified genre.             | `50`                                   |
 | `OLLAMA_SERVER_URL`                         | URL for your Ollama instance (if `AI_MODEL_PROVIDER` is OLLAMA).                          | `http://<your-ip>:11434/api/generate` |

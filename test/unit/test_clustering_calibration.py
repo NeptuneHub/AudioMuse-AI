@@ -15,13 +15,13 @@ CLUSTERING_MAX_PLAYLIST_SONGS) ones across kmeans, gmm, spectral and dbscan.
 
 Main Features:
 * KMeans, GMM and Spectral tune their own cluster/component range the same
-  way: small libraries pin directly to top_n_playlists clusters (never below
+  way: small libraries pin directly to TOP_N_CLUSTERING_PLAYLIST clusters (never below
   the oversize floor subset/CLUSTERING_MAX_PLAYLIST_SONGS) and the probe runs
   at the TOP of the range
 * DBSCAN has no cluster count: eps is derived from the data (k-distance
   heuristic), then probes widen it when playlists are tiny and tighten it
   when oversized
-* A probe passes only with at least top_n_playlists keeper playlists;
+* A probe passes only with at least TOP_N_CLUSTERING_PLAYLIST keeper playlists;
   otherwise clusters shrink toward the goal
 * Every probe reuses the same fixed stratified sample and percentile
 * Oversized playlists grow the cluster range
@@ -99,12 +99,19 @@ class TestKmeansCalibration:
         assert chosen == (40, 100, 50)
         assert [p['num_clusters_min_max'] for p in probes] == [(100, 100)]
 
-    def test_a_small_library_asks_directly_for_top_n_playlists(self, monkeypatch):
+    def test_a_small_library_asks_directly_for_minimum_playlists(self, monkeypatch):
         chosen, probes, _pcts = _run_calibration(
             monkeypatch, [_result([40] * 8)], subset_size=800
         )
         assert chosen == (8, 8, 50)
         assert [p['num_clusters_min_max'] for p in probes] == [(8, 8)]
+
+    def test_a_keep_all_zero_target_uses_the_library_size_cap_not_two(self, monkeypatch):
+        chosen, probes, _pcts = _run_calibration(
+            monkeypatch, [_result([40] * 20)], subset_size=800, top_n=0
+        )
+        assert chosen == (20, 20, 50)
+        assert [p['num_clusters_min_max'] for p in probes] == [(20, 20)]
 
     def test_the_pinned_range_never_drops_below_the_oversize_floor(self, monkeypatch):
         chosen, probes, _pcts = _run_calibration(

@@ -241,6 +241,11 @@ _is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
 if not _is_worker:
     with app.app_context():
         init_db()
+        # Keep app_config aligned with the parameters that config.py still
+        # accepts. Valid rows are never rewritten; only retired keys are
+        # removed. Run this before the optional empty-table bootstrap so a
+        # database containing only obsolete keys can be initialized cleanly.
+        setup_manager.prune_obsolete_config_values(config)
         setup_manager.bootstrap_env_config_if_empty(config)
         # Bootstrap / reconcile the first admin account:
         #   - If audiomuse_users already has an admin, purge any legacy
@@ -760,7 +765,7 @@ def get_config_endpoint():
             "top_n_moods": config.TOP_N_MOODS,
             "mood_labels": config.MOOD_LABELS,
             "clustering_runs": config.CLUSTERING_RUNS,
-            "top_n_playlists": config.TOP_N_PLAYLISTS,
+            "top_n_clustering_playlist": config.TOP_N_CLUSTERING_PLAYLIST,
             "enable_clustering_embeddings": config.ENABLE_CLUSTERING_EMBEDDINGS,
             "score_weight_diversity": config.SCORE_WEIGHT_DIVERSITY,
             "score_weight_silhouette": config.SCORE_WEIGHT_SILHOUETTE,

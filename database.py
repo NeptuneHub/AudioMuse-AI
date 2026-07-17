@@ -1084,6 +1084,18 @@ def init_db():
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"
             )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS playlist_name_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    server_id TEXT,
+                    playlist_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_playlist_name_history_server_created "
+                "ON playlist_name_history (server_id, created_at DESC, id DESC)"
+            )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
@@ -2430,6 +2442,35 @@ def save_artist_projection(index_name, component_map, projections):
         cur.close()
 
 
+def get_recent_playlist_names(server_id, limit=60):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        cur.execute(
+            "SELECT playlist_name FROM playlist_name_history "
+            "WHERE server_id IS NOT DISTINCT FROM %s "
+            "ORDER BY created_at DESC, id DESC LIMIT %s",
+            (server_id, limit),
+        )
+        names = [row[0] for row in cur.fetchall()]
+        cur.execute(
+            "SELECT DISTINCT playlist_name FROM playlist "
+            "WHERE server_id IS NOT DISTINCT FROM %s",
+            (server_id,),
+        )
+        names.extend(row[0] for row in cur.fetchall())
+        return list(dict.fromkeys(name for name in names if name))[:limit]
+    except Exception:
+        conn.rollback()
+        logger.exception("Could not load recent playlist-name history")
+        return []
+    finally:
+        cur.close()
+
+
 def update_playlist_table(playlists, server_id):
     conn = get_db()
     cur = conn.cursor()
@@ -2460,6 +2501,21 @@ def update_playlist_table(playlists, server_id):
                 "ON CONFLICT (playlist_name, item_id, server_id) DO NOTHING",
                 list(rows.values()),
                 page_size=5000,
+            )
+        history_names = list(dict.fromkeys(playlists))
+        if history_names:
+            execute_values(
+                cur,
+                "INSERT INTO playlist_name_history (server_id, playlist_name) VALUES %s",
+                [(server_id, name) for name in history_names],
+            )
+            cur.execute(
+                "DELETE FROM playlist_name_history WHERE "
+                "server_id IS NOT DISTINCT FROM %s AND created_at NOT IN ("
+                "SELECT DISTINCT created_at FROM playlist_name_history "
+                "WHERE server_id IS NOT DISTINCT FROM %s "
+                "ORDER BY created_at DESC LIMIT %s)",
+                (server_id, server_id, config.PLAYLIST_NAME_HISTORY_ROUNDS),
             )
         conn.commit()
     except Exception:

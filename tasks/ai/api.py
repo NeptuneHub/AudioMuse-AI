@@ -32,6 +32,7 @@ from tasks.ai.providers import (
     mistral as ai_api_mistral,
     openai as ai_api_openai,
 )
+from tasks.ai.playlist_namer import GENRE_DISPLAY
 from tasks.ai.prompts import build_mcp_system_prompt, playlist_concept_prompt_template
 
 logger = logging.getLogger(__name__)
@@ -72,13 +73,16 @@ _CONCEPT_CONTAINER_WORDS = {
 _CONCEPT_FILLER_WORDS = {'human'}
 
 _CONTRAST_NON_FEELINGS = {
-    'antithesis', 'contrast', 'dichotomy', 'duality', 'irony', 'juxtaposition',
-    'oxymoron', 'paradox', 'synthesis',
+    'antithesis', 'contrast', 'dichotomy', 'dissonance', 'duality', 'irony',
+    'juxtaposition', 'oxymoron', 'paradox', 'synthesis', 'contradiction',
+    'euphoria', 'jubilance',
 }
 
 _FUNCTION_NON_NOUNS = {'relax'}
 
-_FUNCTION_BAD_TITLE_WORDS = {'friends', 'movement', 'rest', 'work'}
+_FUNCTION_BAD_TITLE_WORDS = {
+    'exercise', 'friends', 'movement', 'people', 'rest', 'work'
+}
 
 _FUNCTION_SOUND_DESCRIPTORS = {
     'aggressive', 'calm', 'danceable', 'energetic', 'energy', 'forceful',
@@ -86,6 +90,11 @@ _FUNCTION_SOUND_DESCRIPTORS = {
 }
 
 _MOOD_BAD_TITLE_WORDS = {'joy', 'swing'}
+
+_KNOWN_GENRE_TITLES = (
+    {name.casefold() for name in GENRE_DISPLAY}
+    | {name.casefold() for name in GENRE_DISPLAY.values()}
+)
 
 
 def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
@@ -301,6 +310,8 @@ def clean_playlist_name(name: str) -> str:
         return ""
     name = ftfy.fix_text(name)
     name = unicodedata.normalize("NFKC", name)
+    name = re.sub(r"_automatic$", "", name, flags=re.IGNORECASE)
+    name = name.replace("_", " ")
     cleaned_name = re.sub(r"[^a-zA-Z0-9\s\-\&\'!\.\,\?\(\)\[\]]", "", name)
     cleaned_name = re.sub(r"\s\(\d+\)$", "", cleaned_name)
     cleaned_name = re.sub(r"\s+", " ", cleaned_name).strip()
@@ -341,6 +352,14 @@ def _concept_problem_basic(raw_concept, concept, words, concept_tokens, naming_d
     return None
 
 
+def _stem_token(token):
+    if token.endswith('ies') and len(token) > 4:
+        return token[:-3] + 'y'
+    if token.endswith('s') and not token.endswith('ss') and len(token) > 3:
+        return token[:-1]
+    return token
+
+
 def _concept_problem_composed(concept, concept_tokens, title, naming_dimension, taken):
     if naming_dimension == 'function' and (
         concept_tokens & _FUNCTION_NON_NOUNS
@@ -351,8 +370,12 @@ def _concept_problem_composed(concept, concept_tokens, title, naming_dimension, 
         return 'the purpose word does not form a natural playlist title'
     if naming_dimension == 'function' and concept_tokens & _FUNCTION_SOUND_DESCRIPTORS:
         return 'a sound descriptor is not a listening purpose'
+    if title.removesuffix(' Instrumentals').casefold() in _KNOWN_GENRE_TITLES:
+        return 'the composed title is just a genre name'
+    concept_stems = {_stem_token(token) for token in concept_tokens}
     if any(
-        concept_tokens & set(re.findall(r"[a-z0-9]+", used_title))
+        concept_stems
+        & {_stem_token(token) for token in re.findall(r"[a-z0-9]+", used_title)}
         for used_title in taken
     ):
         return 'the naming concept is already used by another playlist'
@@ -406,7 +429,7 @@ def get_ai_playlist_name(
         raw_concept = generate_text(
             current_prompt,
             ai_config,
-            temperature=0.18,
+            temperature=0.7,
             max_tokens=20,
         )
 

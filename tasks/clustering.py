@@ -33,7 +33,7 @@ Main Features:
 * _calibrate_cluster_params: per-server auto-tuning for EVERY algorithm via up
   to CLUSTERING_CALIBRATION_MAX_TRIES quick single-iteration probes. KMeans,
   GMM and Spectral tune their own cluster/component range against one fixed
-  stratified sample: small libraries pin the range to top_n_playlists clusters
+  stratified sample: small libraries pin the range to TOP_N_CLUSTERING_PLAYLIST clusters
   directly (never above subset_size / (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N), never
   below subset_size / CLUSTERING_MAX_PLAYLIST_SONGS) and each probe runs at
   the TOP of the range (worst case for emptiness). DBSCAN has no cluster
@@ -42,7 +42,7 @@ Main Features:
   ~200-dim embedding space where every point would be noise), oversized
   components are re-split by KMeans in clustering_helper, and probes widen
   eps when playlists come out tiny and tighten it when oversized. A probe only passes with at
-  least top_n_playlists playlists of MIN_PLAYLIST_SIZE_FOR_TOP_N+ songs;
+  least TOP_N_CLUSTERING_PLAYLIST playlists of MIN_PLAYLIST_SIZE_FOR_TOP_N+ songs;
   otherwise clusters shrink toward the goal. Oversized probes (over
   CLUSTERING_MAX_PLAYLIST_SONGS) grow clusters; big beats empty. On probe
   failure the library-size cap still applies. Calibration is
@@ -67,7 +67,7 @@ from psycopg2.extras import DictCursor
 
 from config import (
     MAX_SONGS_PER_CLUSTER,
-    TOP_N_PLAYLISTS,
+    TOP_N_CLUSTERING_PLAYLIST,
     CLUSTERING_AUTO_CALIBRATION,
     MOOD_LABELS,
     STRATIFIED_GENRES,
@@ -108,6 +108,7 @@ from database import (
     update_playlist_table,
     prune_playlist_rows_for_missing_servers,
     get_child_tasks_from_db,
+    get_recent_playlist_names,
 )
 
 from sanitization import sanitize_for_json
@@ -129,7 +130,7 @@ from .clustering_helper import (
 from .clustering_postprocessing import (
     apply_duplicate_filtering_to_clustering_result,
     apply_minimum_size_filter_to_clustering_result,
-    select_top_n_diverse_playlists,
+    select_diverse_playlists_with_genre_coverage,
 )
 
 logger = logging.getLogger(__name__)
@@ -155,12 +156,12 @@ def _derive_dbscan_eps(item_ids, min_samples, active_moods, enable_embeddings):
     return eps_low, eps_high
 
 
-def _viable_playlists(result, top_n=TOP_N_PLAYLISTS):
+def _viable_playlists(result, target=TOP_N_CLUSTERING_PLAYLIST):
     playlists = (result or {}).get('named_playlists') or {}
     keepers = sum(
         1 for songs in playlists.values() if len(songs) >= MIN_PLAYLIST_SIZE_FOR_TOP_N
     )
-    return min(keepers, max(1, top_n))
+    return min(keepers, max(1, target))
 
 
 def batch_task_failure_handler(job, connection, type, value, tb):
@@ -220,12 +221,22 @@ def run_clustering_batch_task(
     mutation_config_json,
     initial_subset_track_ids_json,
     enable_clustering_embeddings_param,
-    top_n_playlists_param=TOP_N_PLAYLISTS,
+    top_n_playlists_param=None,
+    min_clustering_top_param=None,
+    top_n_clustering_playlist_param=None,
 ):
     from flask_app import app
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
+    if top_n_clustering_playlist_param is None:
+        top_n_clustering_playlist_param = (
+            min_clustering_top_param
+            if min_clustering_top_param is not None
+            else top_n_playlists_param
+        )
+    if top_n_clustering_playlist_param is None:
+        top_n_clustering_playlist_param = TOP_N_CLUSTERING_PLAYLIST
     logger.info(f"Starting clustering batch task {current_task_id} (Batch: {batch_id_str})")
 
     with app.app_context():
@@ -289,7 +300,8 @@ def run_clustering_batch_task(
                         )
                         return {"status": "REVOKED", "message": "Batch task revoked."}
 
-                percentage_change = 0.0 if i == 0 else sampling_percentage_change_per_run
+                previous_subset_ids = set(current_sampled_track_ids)
+                percentage_change = sampling_percentage_change_per_run
                 current_subset_lightweight_data = _get_stratified_song_subset(
                     genre_to_lightweight_track_data_map,
                     target_songs_per_genre,
@@ -298,6 +310,15 @@ def run_clustering_batch_task(
                 )
                 item_ids_for_iteration = [t['item_id'] for t in current_subset_lightweight_data]
                 current_sampled_track_ids = list(item_ids_for_iteration)
+                retained_count = len(previous_subset_ids & set(current_sampled_track_ids))
+                logger.info(
+                    "[Batch-%s] Sampling run %d: %d/%d tracks retained; %d changed.",
+                    current_task_id,
+                    current_run_global_idx,
+                    retained_count,
+                    len(current_sampled_track_ids),
+                    len(current_sampled_track_ids) - retained_count,
+                )
 
                 if not item_ids_for_iteration:
                     logger.warning(
@@ -326,7 +347,7 @@ def run_clustering_batch_task(
                 iterations_completed += 1
 
                 iteration_rank = (
-                    _viable_playlists(iteration_result, top_n_playlists_param),
+                    _viable_playlists(iteration_result, top_n_clustering_playlist_param),
                     (iteration_result or {}).get("fitness_score", -1.0),
                 )
                 if (
@@ -413,15 +434,25 @@ def run_clustering_task(
     mistral_api_key_param,
     mistral_model_name_param,
     top_n_moods_for_clustering_param,
-    top_n_playlists_param,
-    enable_clustering_embeddings_param,
+    top_n_playlists_param=None,
+    enable_clustering_embeddings_param=True,
     output_server_scope="all",
     auto_calibration_param=None,
+    min_clustering_top_param=None,
+    top_n_clustering_playlist_param=None,
 ):
     from flask_app import app
 
     if auto_calibration_param is None:
         auto_calibration_param = CLUSTERING_AUTO_CALIBRATION
+    if top_n_clustering_playlist_param is None:
+        top_n_clustering_playlist_param = (
+            min_clustering_top_param
+            if min_clustering_top_param is not None
+            else top_n_playlists_param
+        )
+    if top_n_clustering_playlist_param is None:
+        top_n_clustering_playlist_param = TOP_N_CLUSTERING_PLAYLIST
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -445,7 +476,7 @@ def run_clustering_task(
         "pca_components_min": pca_components_min,
         "pca_components_max": pca_components_max,
         "use_embeddings": enable_clustering_embeddings_param,
-        "top_n_playlists": top_n_playlists_param,
+        "top_n_clustering_playlist": top_n_clustering_playlist_param,
         "stratification_percentile": stratified_sampling_target_percentile_param,
         "score_weights": {
             "mood_diversity": score_weight_diversity_param,
@@ -621,7 +652,7 @@ def run_clustering_task(
                         mistral_api_key_param,
                         mistral_model_name_param,
                         top_n_moods_for_clustering_param,
-                        top_n_playlists_param,
+                        top_n_clustering_playlist_param,
                         enable_clustering_embeddings_param,
                         auto_calibration_param,
                     )
@@ -762,7 +793,7 @@ def _calibrate_cluster_params(
     pca_components_min,
     pca_components_max,
     max_songs_per_cluster_val,
-    top_n_playlists,
+    top_n_clustering_playlist,
     top_n_moods,
     enable_embeddings,
     report,
@@ -781,12 +812,19 @@ def _calibrate_cluster_params(
             if count_based:
                 k_floor = max(2, len(subset) // CLUSTERING_MAX_PLAYLIST_SONGS)
                 cap = max(k_floor, len(subset) // (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N))
+                target_playlists = (
+                    top_n_clustering_playlist if top_n_clustering_playlist > 0 else cap
+                )
                 if cap < cur_max:
-                    cur_max = max(k_floor, min(cap, max(2, top_n_playlists)))
+                    cur_max = max(k_floor, min(cap, max(2, target_playlists)))
                 cur_min = max(2, min(cur_min, cur_max))
-                needed = max(2, min(top_n_playlists, cur_max))
+                needed = max(2, min(target_playlists, cur_max))
             else:
-                needed = max(2, top_n_playlists)
+                needed = (
+                    max(2, top_n_clustering_playlist)
+                    if top_n_clustering_playlist > 0
+                    else 2
+                )
                 if attempt == 1:
                     derived = _derive_dbscan_eps(
                         [t['item_id'] for t in subset],
@@ -936,7 +974,7 @@ def _cluster_one_server(
     mistral_api_key_param,
     mistral_model_name_param,
     top_n_moods_for_clustering_param,
-    top_n_playlists_param,
+    top_n_clustering_playlist_param,
     enable_clustering_embeddings_param,
     auto_calibration_param,
 ):
@@ -973,7 +1011,7 @@ def _cluster_one_server(
         if str(t.get('task_id', '')).startswith(job_prefix + "_batch_")
     ]
 
-    state["top_n_playlists"] = top_n_playlists_param
+    state["top_n_clustering_playlist"] = top_n_clustering_playlist_param
     calibrated_summary = None
     if not auto_calibration_param:
         report("Automatic parameter discovery disabled; using configured defaults.", 2)
@@ -1025,7 +1063,7 @@ def _cluster_one_server(
                 pca_components_min,
                 pca_components_max,
                 max_songs_per_cluster_val,
-                top_n_playlists_param,
+                top_n_clustering_playlist_param,
                 top_n_moods_for_clustering_param,
                 enable_clustering_embeddings_param,
                 report,
@@ -1225,12 +1263,27 @@ def _cluster_one_server(
         87,
     )
 
-    if (
-        top_n_playlists_param > 0
-        and len(best_result.get("named_playlists", {})) > top_n_playlists_param
-    ):
-        report(f"Filtering for Top {top_n_playlists_param} most diverse playlists...", 88)
-        best_result = select_top_n_diverse_playlists(best_result, top_n_playlists_param)
+    if top_n_clustering_playlist_param > 0:
+        report(
+            "Selecting up to "
+            f"{top_n_clustering_playlist_param} playlists with the 6+4 diversity strategy...",
+            88,
+        )
+        best_result = select_diverse_playlists_with_genre_coverage(
+            best_result,
+            top_n_clustering_playlist_param,
+            required_primary_genres={
+                genre
+                for genre, tracks in genre_map.items()
+                if genre != '__other__'
+                and len(tracks) >= min_songs_per_genre_for_stratification_param
+            },
+            primary_genre_counts={
+                genre: len(tracks)
+                for genre, tracks in genre_map.items()
+                if genre != '__other__'
+            },
+        )
         state["best_result"] = best_result
 
     final_playlist_count = len(best_result.get("named_playlists", {}))
@@ -1244,6 +1297,10 @@ def _cluster_one_server(
         90,
     )
 
+    previous_playlist_names = get_recent_playlist_names(
+        target_server['server_id'] if target_server else None,
+        limit=60,
+    )
     final_playlists_with_details = _name_and_prepare_playlists(
         best_result,
         ai_model_provider_param,
@@ -1256,6 +1313,7 @@ def _cluster_one_server(
         gemini_model_name_param,
         mistral_api_key_param,
         mistral_model_name_param,
+        previous_playlist_names=previous_playlist_names,
     )
 
     report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
@@ -1424,13 +1482,15 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                 state_dict["elite_solutions"].append(
                     {"score": current_best_score, "params": best_from_batch.get("parameters")}
                 )
-                top_n = state_dict.get("top_n_playlists") or TOP_N_PLAYLISTS
+                target = state_dict.get("top_n_clustering_playlist")
+                if target is None:
+                    target = TOP_N_CLUSTERING_PLAYLIST
                 current_rank = (
-                    _viable_playlists(best_from_batch, top_n),
+                    _viable_playlists(best_from_batch, target),
                     current_best_score,
                 )
                 best_rank = (
-                    _viable_playlists(state_dict["best_result"], top_n),
+                    _viable_playlists(state_dict["best_result"], target),
                     state_dict["best_score"],
                 )
                 if current_rank > best_rank:
@@ -1543,6 +1603,10 @@ def _launch_batch_job(
         else 0.0
     )
 
+    batch_top_n = state_dict.get("top_n_clustering_playlist")
+    if batch_top_n is None:
+        batch_top_n = TOP_N_CLUSTERING_PLAYLIST
+
     job_args = {
         "batch_id_str": f"Batch_{batch_idx}",
         "start_run_idx": start_run,
@@ -1597,7 +1661,7 @@ def _launch_batch_job(
         ),
         "initial_subset_track_ids_json": json.dumps(state_dict["last_subset_ids"]),
         "enable_clustering_embeddings_param": enable_embeddings,
-        "top_n_playlists_param": state_dict.get("top_n_playlists") or TOP_N_PLAYLISTS,
+        "top_n_playlists_param": batch_top_n,
     }
 
     new_job = rq_queue_default.enqueue(
@@ -1629,8 +1693,11 @@ def _name_and_prepare_playlists(
     gemini_model,
     mistral_key,
     mistral_model,
+    previous_playlist_names=None,
 ):
     final_playlists = {}
+    used_playlist_names = list(previous_playlist_names or [])
+    assigned_names = set()
     named_playlists = best_result.get("named_playlists", {})
     max_songs = best_result.get("parameters", {}).get(
         "max_songs_per_cluster", MAX_SONGS_PER_CLUSTER
@@ -1655,7 +1722,10 @@ def _name_and_prepare_playlists(
                 gemini_model,
                 mistral_key,
                 mistral_model,
-                list(final_playlists),
+                used_playlist_names,
+                primary_genre=best_result.get("playlist_primary_genres", {}).get(
+                    original_name
+                ),
             )
         except Exception as e:
             logger.warning(f"AI naming failed for '{original_name}': {e}. Using original name.")
@@ -1663,10 +1733,12 @@ def _name_and_prepare_playlists(
 
         temp_name = final_name
         suffix = 1
-        while temp_name in final_playlists:
+        while temp_name in assigned_names:
             suffix += 1
             temp_name = f"{final_name} ({suffix})"
         final_name = temp_name
+        assigned_names.add(final_name)
+        used_playlist_names.append(final_name)
 
         base_name = f"{final_name}_automatic"
         shuffled = _shuffle_playlist_songs(songs, base_name)

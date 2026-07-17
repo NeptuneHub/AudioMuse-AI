@@ -15,6 +15,8 @@ Main Features:
 * Reads and writes typed config overrides (casting stored strings back to the
   default's type) and can bootstrap the table from valid environment config
   when it is empty.
+* Removes database overrides that no longer correspond to persistable
+  parameters in config.py, without rewriting values that are still valid.
 * Hashes secrets with Argon2, skips re-hashing values already hashed, treats
   placeholder values as unset, and reports whether server/auth setup is complete.
 """
@@ -210,7 +212,21 @@ class SetupManager:
 
     def _get_env_config_values(self, config_module):
         values = {}
-        excluded_keys = getattr(config_module, 'SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        excluded_keys = set(
+            getattr(config_module, 'SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        )
+        excluded_keys.update(
+            getattr(config_module, 'MEDIASERVER_CONFIG_KEYS', set())
+        )
+        # These describe which values may be persisted; they are not runtime
+        # parameters themselves.
+        excluded_keys.update(
+            {
+                'APP_CONFIG_RUNTIME_KEYS',
+                'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
+                'MEDIASERVER_CONFIG_KEYS',
+            }
+        )
         for name, default_value in sorted(vars(config_module).items()):
             if not name.isupper() or name.startswith('_'):
                 continue
@@ -267,6 +283,46 @@ class SetupManager:
         values = self._get_env_config_values(config_module)
         self.save_config_values(values)
         return True
+
+    def prune_obsolete_config_values(self, config_module):
+        """Delete overrides for parameters that config.py no longer accepts.
+
+        Existing valid rows are deliberately left untouched so their values and
+        ``updated_at`` timestamps do not change during application startup.
+        """
+        config_values = self._get_env_config_values(config_module)
+        if not config_values:
+            raise RuntimeError(
+                "Refusing to prune app_config because config.py exposes no "
+                "persistable parameters"
+            )
+        valid_keys = sorted(
+            set(config_values)
+            | set(getattr(config_module, 'APP_CONFIG_RUNTIME_KEYS', set()))
+        )
+
+        self.ensure_table()
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DELETE FROM {DEFAULT_CONFIG_TABLE} "
+                        "WHERE NOT (key = ANY(%s)) RETURNING key",
+                        (valid_keys,),
+                    )
+                    removed_keys = sorted(row[0] for row in cur.fetchall())
+                conn.commit()
+        except Exception:
+            self.logger.warning("Unable to prune obsolete setup config values", exc_info=True)
+            raise
+
+        if removed_keys:
+            self.logger.info(
+                "Removed %d obsolete app_config parameter(s): %s",
+                len(removed_keys),
+                ", ".join(removed_keys),
+            )
+        return removed_keys
 
     def _is_argon2_password_hash(self, value):
         return isinstance(value, str) and value.startswith('$argon2')

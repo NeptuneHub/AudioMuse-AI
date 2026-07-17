@@ -949,7 +949,7 @@ class TestGetAIPlaylistName:
         assert result == "Bittersweet Indie"
         _prompt, config = mock_generate.call_args.args
         assert config["provider"] == "OLLAMA"
-        assert mock_generate.call_args.kwargs == {"temperature": 0.18, "max_tokens": 20}
+        assert mock_generate.call_args.kwargs == {"temperature": 0.7, "max_tokens": 20}
 
     @patch('tasks.ai.api.generate_text')
     def test_contrast_rejects_rhetorical_terms_until_it_gets_an_emotion(
@@ -966,6 +966,63 @@ class TestGetAIPlaylistName:
 
         assert result == "Bittersweet Rock"
         assert mock_generate.call_count == 3
+
+    @patch('tasks.ai.api.generate_text')
+    def test_contrast_rejects_one_sided_or_rhetorical_results(self, mock_generate):
+        mock_generate.side_effect = ["Jubilance", "Contradiction", "Nostalgia"]
+
+        result = get_ai_playlist_name(
+            "Pop",
+            "contrast",
+            "melancholic lyrics contrasted with upbeat music",
+            self._ai_config(),
+        )
+
+        assert result == "Nostalgia Pop"
+        assert mock_generate.call_count == 3
+
+    @patch('tasks.ai.api.generate_text')
+    def test_contrast_rejects_dissonance_as_a_rhetorical_term(self, mock_generate):
+        mock_generate.side_effect = ["Dissonance", "Bittersweet"]
+
+        result = get_ai_playlist_name(
+            "Rock",
+            "contrast",
+            "melancholic lyrics contrasted with upbeat music",
+            self._ai_config(),
+        )
+
+        assert result == "Bittersweet Rock"
+        assert mock_generate.call_count == 2
+
+    @patch('tasks.ai.api.generate_text')
+    def test_a_title_that_spells_a_genre_name_is_rejected(self, mock_generate):
+        mock_generate.side_effect = ["Heavy", "Angry"]
+
+        result = get_ai_playlist_name(
+            "Metal",
+            "mood",
+            "angry, restless lyrics; intense, forceful music",
+            self._ai_config(),
+        )
+
+        assert result == "Angry Metal"
+        assert mock_generate.call_count == 2
+
+    @patch('tasks.ai.api.generate_text')
+    def test_a_plural_variant_of_a_taken_concept_is_rejected(self, mock_generate):
+        mock_generate.side_effect = ["Memories", "Nostalgia"]
+
+        result = get_ai_playlist_name(
+            "Indie",
+            "theme",
+            "lyrics looking back on memories",
+            self._ai_config(),
+            avoid_names=["Jazz Memory"],
+        )
+
+        assert result == "Indie Nostalgia"
+        assert mock_generate.call_count == 2
 
     @patch('tasks.ai.api.generate_text')
     def test_skipped_or_failed_provider_returns_none_for_fallback(self, mock_generate):
@@ -1128,6 +1185,19 @@ class TestGetAIPlaylistName:
         assert mock_generate.call_count == 3
 
     @patch('tasks.ai.api.generate_text')
+    def test_function_rejects_people_and_exercise_as_playlist_purposes(
+        self, mock_generate
+    ):
+        mock_generate.side_effect = ["People", "Exercise", "Party"]
+
+        result = get_ai_playlist_name(
+            "Pop", "function", "upbeat dance-focused music", self._ai_config()
+        )
+
+        assert result == "Pop Party"
+        assert mock_generate.call_count == 3
+
+    @patch('tasks.ai.api.generate_text')
     def test_instrumental_title_must_end_with_instrumentals(self, mock_generate):
         mock_generate.side_effect = [
             "Background",
@@ -1182,6 +1252,20 @@ class TestGetAIPlaylistName:
         )
 
         assert result == "Electronic Party"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_taken_automatic_playlist_concept_is_rejected(self, mock_generate):
+        mock_generate.side_effect = ["Heartbreak", "Healing"]
+
+        result = get_ai_playlist_name(
+            "Pop",
+            "relationship",
+            "romantic lyrics with a melancholic emotional tone",
+            self._ai_config(),
+            avoid_names=["Pop Heartbreak_automatic"],
+        )
+
+        assert result == "Pop Healing"
 
     @patch('tasks.ai.api.generate_text')
     def test_reuses_neither_a_concept_nor_only_its_genre_variant(

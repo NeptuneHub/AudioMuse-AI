@@ -268,6 +268,57 @@ class TestGetStratifiedSongSubset:
         assert len(subset) == 4
         assert len({track['item_id'] for track in subset}) == 4
 
+    def test_fresh_runs_draw_different_random_tracks_with_equal_genre_counts(
+        self, monkeypatch
+    ):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 30)
+        genre_map = {
+            genre: [
+                {'item_id': f'{genre}-{i}', 'mood_vector': f'{genre}:0.9'}
+                for i in range(100)
+            ]
+            for genre in ('rock', 'pop', 'jazz')
+        }
+
+        random.seed(101)
+        first = _get_stratified_song_subset(genre_map, target_per_genre=10)
+        random.seed(202)
+        second = _get_stratified_song_subset(genre_map, target_per_genre=10)
+
+        first_ids = {track['item_id'] for track in first}
+        second_ids = {track['item_id'] for track in second}
+        assert first_ids != second_ids
+        for genre in ('rock', 'pop', 'jazz'):
+            assert sum(track['item_id'].startswith(f'{genre}-') for track in first) == 10
+            assert sum(track['item_id'].startswith(f'{genre}-') for track in second) == 10
+
+    def test_rotation_changes_configured_fraction_in_every_genre(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 30)
+        genre_map = {
+            genre: [
+                {'item_id': f'{genre}-{i}', 'mood_vector': f'{genre}:0.9'}
+                for i in range(100)
+            ]
+            for genre in ('rock', 'pop', 'jazz')
+        }
+        previous = _get_stratified_song_subset(genre_map, target_per_genre=10)
+        previous_ids = {track['item_id'] for track in previous}
+
+        rotated = _get_stratified_song_subset(
+            genre_map,
+            target_per_genre=10,
+            prev_ids=previous_ids,
+            percent_change=0.2,
+        )
+        rotated_ids = {track['item_id'] for track in rotated}
+
+        assert len(rotated_ids) == 30
+        assert len(previous_ids & rotated_ids) == 24
+
 
 class TestGetTrackPrimaryGenre:
     def test_returns_genre_from_mood_vector(self):
@@ -294,7 +345,7 @@ class TestGetTrackPrimaryGenre:
 
 class TestAIPlaylistNaming:
     @staticmethod
-    def _call(monkeypatch, ai_result, naming_evidence=None):
+    def _call(monkeypatch, ai_result, naming_evidence=None, avoid=None):
         from tasks import clustering_helper
 
         monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
@@ -315,7 +366,7 @@ class TestAIPlaylistNaming:
         monkeypatch.setattr(
             clustering_helper,
             'build_naming_context',
-            lambda *args: {
+            lambda *args, **kwargs: {
                 'genre': 'Indie',
                 'ideas': ['bittersweet', 'solitude'],
                 'naming_brief': 'melancholic lyrics over upbeat music',
@@ -329,6 +380,11 @@ class TestAIPlaylistNaming:
                     'Indie'
                     if naming_evidence == 'general-purpose listening'
                     else 'Bittersweet Indie'
+                ),
+                'fallback_candidates': (
+                    ['Indie']
+                    if naming_evidence == 'general-purpose listening'
+                    else ['Bittersweet Indie', 'Wistful Indie', 'Nostalgic Indie']
                 ),
             },
         )
@@ -361,7 +417,7 @@ class TestAIPlaylistNaming:
             'http://localhost:11434/api/generate',
             'qwen3.5:9b',
             '', '', '', '', '', '', '',
-            ['Existing Indie Name'],
+            avoid if avoid is not None else ['Existing Indie Name'],
         )
         return result, received
 
@@ -382,6 +438,22 @@ class TestAIPlaylistNaming:
 
     def test_invalid_ai_output_uses_the_grounded_fallback(self, monkeypatch):
         result, _received = self._call(monkeypatch, None)
+
+        assert result == 'Bittersweet Indie'
+
+    def test_a_taken_fallback_rotates_to_the_next_grounded_candidate(self, monkeypatch):
+        result, _received = self._call(
+            monkeypatch, None, avoid=['Bittersweet Indie_automatic']
+        )
+
+        assert result == 'Wistful Indie'
+
+    def test_all_fallback_candidates_taken_keeps_the_first_for_suffixing(self, monkeypatch):
+        result, _received = self._call(
+            monkeypatch,
+            None,
+            avoid=['Bittersweet Indie', 'Wistful Indie', 'Nostalgic Indie_automatic'],
+        )
 
         assert result == 'Bittersweet Indie'
 
