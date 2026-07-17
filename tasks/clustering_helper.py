@@ -184,13 +184,18 @@ def _try_ai_name_playlist(
     )
     ai_name = None
     if context['naming_evidence'] != 'general-purpose listening':
+        ai_avoid_names = [
+            name
+            for name in (avoid_names or [])
+            if '_' not in name.partition('_automatic')[0]
+        ]
         ai_name = get_ai_playlist_name(
             context['genre'],
             context['naming_dimension'],
             context['naming_evidence'],
             ai_config,
             instrumental=context['instrumental'],
-            avoid_names=avoid_names,
+            avoid_names=ai_avoid_names,
         )
     if ai_name:
         return ai_name.strip().replace("\n", " ")
@@ -1078,7 +1083,6 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
 
 
 def _fill_balanced_quotas(quotas, capacities, remaining):
-    """Distribute ``remaining`` slots to the least represented open genres."""
     remaining = max(0, int(remaining))
     while remaining > 0:
         open_genres = [
@@ -1103,7 +1107,6 @@ def _fill_balanced_quotas(quotas, capacities, remaining):
 
 
 def _calculate_stratified_quotas(genre_tracks, sample_size, target_per_genre):
-    """Calculate every per-genre count before selecting a single track."""
     capacities = {
         genre: len(tracks)
         for genre, tracks in genre_tracks.items()

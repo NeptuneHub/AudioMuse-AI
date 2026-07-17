@@ -345,7 +345,7 @@ class TestGetTrackPrimaryGenre:
 
 class TestAIPlaylistNaming:
     @staticmethod
-    def _call(monkeypatch, ai_result, naming_evidence=None):
+    def _call(monkeypatch, ai_result, naming_evidence=None, avoid=None):
         from tasks import clustering_helper
 
         monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
@@ -407,7 +407,7 @@ class TestAIPlaylistNaming:
             'http://localhost:11434/api/generate',
             'qwen3.5:9b',
             '', '', '', '', '', '', '',
-            ['Existing Indie Name'],
+            avoid if avoid is not None else ['Existing Indie Name'],
         )
         return result, received
 
@@ -425,6 +425,19 @@ class TestAIPlaylistNaming:
             'provider': 'OLLAMA',
             'avoid_names': ['Existing Indie Name'],
         }
+
+    def test_tag_style_names_are_filtered_from_the_ai_avoid_list(self, monkeypatch):
+        _result, received = self._call(
+            monkeypatch,
+            'Calm Indie',
+            avoid=[
+                'Rock_Pop_Medium_Happy_Party_1_automatic',
+                'Bubbly Pop_automatic',
+                'Indie_Rock_Medium_Sad_Happy',
+            ],
+        )
+
+        assert received['avoid_names'] == ['Bubbly Pop_automatic']
 
     def test_failed_ai_naming_keeps_the_tag_based_cluster_name(self, monkeypatch):
         result, _received = self._call(monkeypatch, None)

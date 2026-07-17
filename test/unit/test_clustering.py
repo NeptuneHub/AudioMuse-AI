@@ -1085,6 +1085,34 @@ class TestSelectTopNDiversePlaylists:
         assert received_avoid_names == ['Pop Heartbreak_automatic']
         assert 'Happy Pop_automatic' in result
 
+    def test_newest_first_history_is_reversed_so_the_prompt_window_stays_fresh(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        received_avoid_names = []
+
+        def fake_name(*args, **kwargs):
+            received_avoid_names.extend(args[13])
+            return 'Happy Pop'
+
+        monkeypatch.setattr(clustering, '_try_ai_name_playlist', fake_name)
+        clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster': [('song-1', 'Song', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+            previous_playlist_names=['Newest Pop_automatic', 'Oldest Rock_automatic'],
+        )
+
+        assert received_avoid_names == [
+            'Oldest Rock_automatic', 'Newest Pop_automatic'
+        ]
+
     def test_two_clusters_with_the_same_final_name_get_numbered_not_overwritten(
         self, monkeypatch
     ):

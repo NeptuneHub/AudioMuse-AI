@@ -31,6 +31,10 @@ from psycopg2.extras import RealDictCursor
 from urllib.parse import quote
 
 DEFAULT_CONFIG_TABLE = "app_config"
+LEGACY_CONFIG_KEY_RENAMES = {
+    'MIN_CLUSTERING_TOP': 'TOP_N_CLUSTERING_PLAYLIST',
+    'TOP_N_PLAYLISTS': 'TOP_N_CLUSTERING_PLAYLIST',
+}
 BASIC_SERVER_FIELDS = {
     'MEDIASERVER_TYPE',
     'JELLYFIN_URL',
@@ -218,8 +222,6 @@ class SetupManager:
         excluded_keys.update(
             getattr(config_module, 'MEDIASERVER_CONFIG_KEYS', set())
         )
-        # These describe which values may be persisted; they are not runtime
-        # parameters themselves.
         excluded_keys.update(
             {
                 'APP_CONFIG_RUNTIME_KEYS',
@@ -285,11 +287,6 @@ class SetupManager:
         return True
 
     def prune_obsolete_config_values(self, config_module):
-        """Delete overrides for parameters that config.py no longer accepts.
-
-        Existing valid rows are deliberately left untouched so their values and
-        ``updated_at`` timestamps do not change during application startup.
-        """
         config_values = self._get_env_config_values(config_module)
         if not config_values:
             raise RuntimeError(
@@ -299,12 +296,21 @@ class SetupManager:
         valid_keys = sorted(
             set(config_values)
             | set(getattr(config_module, 'APP_CONFIG_RUNTIME_KEYS', set()))
+            | {'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD'}
         )
 
         self.ensure_table()
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
+                    for legacy_key, new_key in LEGACY_CONFIG_KEY_RENAMES.items():
+                        cur.execute(
+                            f"UPDATE {DEFAULT_CONFIG_TABLE} SET key = %s "
+                            "WHERE key = %s AND NOT EXISTS ("
+                            f"SELECT 1 FROM {DEFAULT_CONFIG_TABLE} renamed "
+                            "WHERE renamed.key = %s)",
+                            (new_key, legacy_key, new_key),
+                        )
                     cur.execute(
                         f"DELETE FROM {DEFAULT_CONFIG_TABLE} "
                         "WHERE NOT (key = ANY(%s)) RETURNING key",

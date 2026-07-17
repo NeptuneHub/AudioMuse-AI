@@ -585,7 +585,14 @@ class TestPruneObsoleteConfigValues:
         assert "DELETE FROM app_config" in sql
         assert "WHERE NOT (key = ANY(%s))" in sql
         assert "RETURNING key" in sql
-        assert params == (["ACTIVE_PARAMETER", "OTHER_ACTIVE"],)
+        assert params == (
+            [
+                "ACTIVE_PARAMETER",
+                "AUDIOMUSE_PASSWORD",
+                "AUDIOMUSE_USER",
+                "OTHER_ACTIVE",
+            ],
+        )
         self.connection.commit.assert_called_once_with()
 
     def test_preserves_declared_runtime_keys_without_treating_them_as_parameters(self):
@@ -602,7 +609,13 @@ class TestPruneObsoleteConfigValues:
         assert removed == ["RETIRED_PARAMETER"]
         _sql, params = self.cursor.execute.call_args.args
         assert params == (
-            ["ACTIVE_PARAMETER", "PLUGIN_CATALOG_CACHE", "PLUGIN_REPOS"],
+            [
+                "ACTIVE_PARAMETER",
+                "AUDIOMUSE_PASSWORD",
+                "AUDIOMUSE_USER",
+                "PLUGIN_CATALOG_CACHE",
+                "PLUGIN_REPOS",
+            ],
         )
         assert "APP_CONFIG_RUNTIME_KEYS" not in params[0]
 
@@ -617,6 +630,38 @@ class TestPruneObsoleteConfigValues:
         assert "UPDATE" not in sql.upper()
         assert "INSERT" not in sql.upper()
         self.connection.commit.assert_called_once_with()
+
+    def test_legacy_admin_bridge_rows_survive_the_prune(self):
+        self._install_connection()
+        self.cursor.fetchall.return_value = []
+
+        self.mgr.prune_obsolete_config_values(_cfg(ACTIVE_PARAMETER=42))
+
+        _sql, params = self.cursor.execute.call_args.args
+        assert "AUDIOMUSE_USER" in params[0]
+        assert "AUDIOMUSE_PASSWORD" in params[0]
+
+    def test_legacy_top_n_rows_are_renamed_before_the_prune(self):
+        self._install_connection()
+        self.cursor.fetchall.return_value = []
+
+        self.mgr.prune_obsolete_config_values(_cfg(ACTIVE_PARAMETER=42))
+
+        executed = [call.args for call in self.cursor.execute.call_args_list]
+        renames = [args for args in executed if "UPDATE app_config SET key" in args[0]]
+        assert [args[1] for args in renames] == [
+            (
+                "TOP_N_CLUSTERING_PLAYLIST",
+                "MIN_CLUSTERING_TOP",
+                "TOP_N_CLUSTERING_PLAYLIST",
+            ),
+            (
+                "TOP_N_CLUSTERING_PLAYLIST",
+                "TOP_N_PLAYLISTS",
+                "TOP_N_CLUSTERING_PLAYLIST",
+            ),
+        ]
+        assert "DELETE FROM app_config" in executed[-1][0]
 
     def test_refuses_to_delete_everything_when_config_has_no_valid_keys(self):
         self.mgr.ensure_table = MagicMock()

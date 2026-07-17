@@ -917,6 +917,10 @@ def _apply_db_overrides():
         else:
             _setup_manager.ensure_table()
             _overrides = _setup_manager.get_raw_overrides()
+        # Apply legacy Top-N override rows (renamed on disk at next web boot).
+        for _legacy_key in ('MIN_CLUSTERING_TOP', 'TOP_N_PLAYLISTS'):
+            if 'TOP_N_CLUSTERING_PLAYLIST' not in _overrides and _legacy_key in _overrides:
+                _overrides['TOP_N_CLUSTERING_PLAYLIST'] = _overrides[_legacy_key]
         _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
         for _key, _value in _overrides.items():
             # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)

@@ -1272,12 +1272,6 @@ def _cluster_one_server(
         best_result = select_diverse_playlists_with_genre_coverage(
             best_result,
             top_n_clustering_playlist_param,
-            required_primary_genres={
-                genre
-                for genre, tracks in genre_map.items()
-                if genre != '__other__'
-                and len(tracks) >= min_songs_per_genre_for_stratification_param
-            },
             primary_genre_counts={
                 genre: len(tracks)
                 for genre, tracks in genre_map.items()
@@ -1696,7 +1690,7 @@ def _name_and_prepare_playlists(
     previous_playlist_names=None,
 ):
     final_playlists = {}
-    used_playlist_names = list(previous_playlist_names or [])
+    used_playlist_names = list(reversed(previous_playlist_names or []))
     assigned_names = set()
     named_playlists = best_result.get("named_playlists", {})
     max_songs = best_result.get("parameters", {}).get(

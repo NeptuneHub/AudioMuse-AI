@@ -156,7 +156,7 @@ function renderConfig(config) {
     document.getElementById('config-num_recent_albums').value = config.num_recent_albums || 0;
     document.getElementById('config-top_n_moods').value = config.top_n_moods || 0;
 
-    document.getElementById('config-top_n_clustering_playlist').value = config.top_n_clustering_playlist || 10;
+    document.getElementById('config-top_n_clustering_playlist').value = config.top_n_clustering_playlist ?? 10;
     var rawAlgo = String(config.cluster_algorithm || '').trim().toLowerCase();
     clusterAlgorithmSelect.value = (rawAlgo === 'dbscan' || rawAlgo === 'gmm' || rawAlgo === 'spectral') ? rawAlgo : 'kmeans';
     document.getElementById('config-max_distance').value = config.max_distance || 0;

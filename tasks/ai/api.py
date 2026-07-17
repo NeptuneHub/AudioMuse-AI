@@ -310,7 +310,7 @@ def clean_playlist_name(name: str) -> str:
         return ""
     name = ftfy.fix_text(name)
     name = unicodedata.normalize("NFKC", name)
-    name = re.sub(r"_automatic$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"_automatic(\s*\(\d+\))?$", "", name, flags=re.IGNORECASE)
     name = name.replace("_", " ")
     cleaned_name = re.sub(r"[^a-zA-Z0-9\s\-\&\'!\.\,\?\(\)\[\]]", "", name)
     cleaned_name = re.sub(r"\s\(\d+\)$", "", cleaned_name)

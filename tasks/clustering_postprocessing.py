@@ -600,7 +600,6 @@ def _rank_top_primary_genres(
 def select_diverse_playlists_with_genre_coverage(
     best_result,
     limit,
-    required_primary_genres=None,
     primary_genre_counts=None,
 ):
     playlist_to_vector = best_result.get("playlist_to_centroid_vector_map", {})

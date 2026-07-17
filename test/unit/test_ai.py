@@ -176,6 +176,14 @@ class TestCleanPlaylistName:
         result = clean_playlist_name(name)
         assert result == "My Playlist"
 
+    def test_strips_the_automatic_suffix_even_on_chunked_names(self):
+        assert clean_playlist_name("Pop Love_automatic") == "Pop Love"
+        assert clean_playlist_name("Pop Love_automatic (2)") == "Pop Love"
+        assert (
+            clean_playlist_name("Rock_Pop_Medium_Happy_automatic (1)")
+            == "Rock Pop Medium Happy"
+        )
+
     def test_handles_non_string_input(self):
         assert clean_playlist_name(None) == ""
         assert clean_playlist_name(123) == ""
