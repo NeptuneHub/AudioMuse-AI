@@ -105,8 +105,9 @@ def search_artists_endpoint():
     try:
         try:
             server_id, include_legacy = app_server_context.selected_server_scope()
-        except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
+        except ValueError:
+            logger.warning("Invalid server selection.", exc_info=True)
+            return jsonify({'error': 'Invalid server selection.'}), 400
         results = search_artists_by_name(
             query,
             limit=limit,

@@ -131,8 +131,9 @@ def clap_search_api():
     # disabled server answers 400 with a clear message.
     try:
         app_server_context.resolve_request_server_id()
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
 
     try:
         data = request.get_json()

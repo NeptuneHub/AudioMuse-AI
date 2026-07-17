@@ -255,8 +255,9 @@ def search_tracks_endpoint():
     try:
         try:
             selected_server_id, include_legacy = app_server_context.selected_server_scope()
-        except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
+        except ValueError:
+            logger.warning("Invalid server selection.", exc_info=True)
+            return jsonify({'error': 'Invalid server selection.'}), 400
         raw_results = search_tracks_unified(
             search_query,
             limit=limit,
@@ -424,8 +425,9 @@ def get_similar_tracks_endpoint():
     # disabled server answers 400 instead of surfacing later as a 500.
     try:
         app_server_context.resolve_request_server_id()
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
 
     # --- Mood centroid mode: use centroid vector instead of a song ---
     if mood_param and centroid_index_param is not None:
@@ -713,8 +715,9 @@ def create_media_server_playlist():
     )
     try:
         server_id = resolve_request_server_id(data)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({"error": "Invalid server selection."}), 400
 
     try:
         try:

@@ -226,8 +226,9 @@ def search_tracks_endpoint():
         try:
             server_id = resolve_request_server_id()
             selected_server_id, include_legacy = selected_server_scope()
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+        except ValueError:
+            logger.warning("Invalid server selection.", exc_info=True)
+            return jsonify({"error": "Invalid server selection."}), 400
         results = search_tracks_unified(
             search_query,
             server_id=selected_server_id,

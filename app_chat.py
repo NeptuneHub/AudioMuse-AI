@@ -281,8 +281,9 @@ def chat_playlist_api():
         return err
     try:
         app_server_context.resolve_request_server_id(data)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
     log_messages = []
     resp_obj, status = _drain_pipeline(_run_chat_pipeline(data, log_messages))
     return jsonify({"response": resp_obj}), status
@@ -309,8 +310,9 @@ def chat_playlist_stream_api():
         return err
     try:
         app_server_context.resolve_request_server_id(data)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
 
     @stream_with_context
     def generate():

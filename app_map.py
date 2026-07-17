@@ -375,8 +375,9 @@ def map_api():
     # with no explicit selection keep the zero-cost pre-serialized path below.
     try:
         server_id = app_server_context.resolve_request_server_id()
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
     from tasks.mediaserver import registry
 
     if server_id is not None or registry.has_secondary_servers():

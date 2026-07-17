@@ -245,6 +245,10 @@ def find_path_endpoint():
     end_song_id = request.args.get('end_song_id')
     try:
         app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+    try:
         resolved_endpoints = app_server_context.resolve_input_item_ids(
             [i for i in (start_song_id, end_song_id) if i]
         )

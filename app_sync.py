@@ -137,8 +137,9 @@ def sync_endpoint():
 
     try:
         server_id = resolve_request_server_id()
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({"error": "Invalid server selection."}), 400
     try:
         server = registry.get_server(server_id) if server_id else registry.get_default_server()
     except Exception:

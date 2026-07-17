@@ -101,6 +101,10 @@ def search_artists():
 
     try:
         server_id, include_legacy = app_server_context.selected_server_scope()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+    try:
         results = search_artists_by_name(
             query,
             limit=limit,
@@ -110,8 +114,6 @@ def search_artists():
         )
         results = app_server_context.scope_artist_results(results)
         return jsonify(results)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
     except Exception:
         logger.exception("Artist search failed")
         return jsonify([]), 200  # Return empty list on error
@@ -156,8 +158,9 @@ def search_playlists():
     try:
         with app_server_context.use_request_server() as server_id:
             playlists = _cached_all_playlists(server_id)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
     except Exception:
         logger.exception("Playlist search failed")
         return jsonify([]), 200
@@ -230,8 +233,9 @@ def alchemy_api():
     payload = request.get_json() or {}
     try:
         app_server_context.resolve_request_server_id(payload)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
     items = payload.get('items', [])
     try:
         n = int(payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS))

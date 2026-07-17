@@ -99,8 +99,9 @@ def get_media_server_defaults():
 
     try:
         server_id = resolve_request_server_id()
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({"error": "Invalid server selection."}), 400
 
     try:
         server = (
@@ -208,8 +209,9 @@ def generate_sonic_fingerprint_endpoint():
 
         try:
             server_id = resolve_request_server_id(data)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+        except ValueError:
+            logger.warning("Invalid server selection.", exc_info=True)
+            return jsonify({"error": "Invalid server selection."}), 400
         # Branch the per-user credential collection on the TARGET server's type
         # so per-user listening history works on secondary servers too; the
         # target server's stored creds are the fallback for its own requests.
