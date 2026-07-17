@@ -18,7 +18,9 @@ Main Features:
 * Repeated (name, item) pairs collapse to one row before insert
 * playlist_name_history holds the created names of the last
   PLAYLIST_NAME_HISTORY_ROUNDS clustering rounds per server (rounds share one
-  transaction timestamp); a round with no playlists leaves history intact
+  transaction timestamp); a round with no playlists leaves history intact; the
+  history write is savepoint-guarded best-effort so a missing table never
+  fails the playlist persist
 * A failed write rolls back and re-raises so callers never report success on
   unpersisted rows; a server deleted mid-run gets no ghost rows re-inserted
 * Pruning removes rows for servers out of scope, keeping NULL rows only when
@@ -134,6 +136,20 @@ class TestPlaylistNameHistory:
         assert 'ORDER BY created_at DESC LIMIT %s' in prune_sql
         assert prune_params == ('s1', 's1', config.PLAYLIST_NAME_HISTORY_ROUNDS)
         assert config.PLAYLIST_NAME_HISTORY_ROUNDS == 3
+
+    def test_a_history_write_failure_does_not_fail_the_playlist_persist(self, monkeypatch):
+        conn, cur, _inserted = _capture(monkeypatch)
+
+        def flaky(cursor, sql, rows, page_size=100):
+            if 'playlist_name_history' in sql:
+                raise RuntimeError('relation "playlist_name_history" does not exist')
+
+        monkeypatch.setattr(database, 'execute_values', flaky)
+        database.update_playlist_table({'Rock': [('i1', 'T1', 'A1')]}, 's1')
+        executed = [call.args[0] for call in cur.execute.call_args_list]
+        assert 'ROLLBACK TO SAVEPOINT history_names_write' in executed
+        assert conn.commit.called
+        assert not conn.rollback.called
 
     def test_a_round_with_no_playlists_preserves_the_previous_history(self, monkeypatch):
         _conn, cur, _inserted = _capture(monkeypatch)

@@ -2504,19 +2504,27 @@ def update_playlist_table(playlists, server_id):
             )
         history_names = list(dict.fromkeys(playlists))
         if history_names:
-            execute_values(
-                cur,
-                "INSERT INTO playlist_name_history (server_id, playlist_name) VALUES %s",
-                [(server_id, name) for name in history_names],
-            )
-            cur.execute(
-                "DELETE FROM playlist_name_history WHERE "
-                "server_id IS NOT DISTINCT FROM %s AND created_at NOT IN ("
-                "SELECT DISTINCT created_at FROM playlist_name_history "
-                "WHERE server_id IS NOT DISTINCT FROM %s "
-                "ORDER BY created_at DESC LIMIT %s)",
-                (server_id, server_id, config.PLAYLIST_NAME_HISTORY_ROUNDS),
-            )
+            cur.execute("SAVEPOINT history_names_write")
+            try:
+                execute_values(
+                    cur,
+                    "INSERT INTO playlist_name_history (server_id, playlist_name) VALUES %s",
+                    [(server_id, name) for name in history_names],
+                )
+                cur.execute(
+                    "DELETE FROM playlist_name_history WHERE "
+                    "server_id IS NOT DISTINCT FROM %s AND created_at NOT IN ("
+                    "SELECT DISTINCT created_at FROM playlist_name_history "
+                    "WHERE server_id IS NOT DISTINCT FROM %s "
+                    "ORDER BY created_at DESC LIMIT %s)",
+                    (server_id, server_id, config.PLAYLIST_NAME_HISTORY_ROUNDS),
+                )
+                cur.execute("RELEASE SAVEPOINT history_names_write")
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT history_names_write")
+                logger.exception(
+                    "Could not record playlist-name history; keeping the playlist rows"
+                )
         conn.commit()
     except Exception:
         conn.rollback()
