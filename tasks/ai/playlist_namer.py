@@ -21,9 +21,8 @@ Main Features:
   mood/other scores, detects instrumentals, and can vary the editorial focus
   among relationship, contrast, theme, function, and mood evidence actually
   supported by that cluster
-* Deterministic fallbacks compose a genre-based title when the AI declines,
-  offering ranked idea and synonym alternatives so callers can skip names
-  already used by another playlist or a previous run
+* When the AI declines or is disabled, callers keep the tag-based cluster
+  name produced by the clustering itself
 """
 
 from collections import Counter, defaultdict
@@ -134,36 +133,6 @@ AXIS_IDEAS = {
         'POLITICAL': 'political', 'SENSORIAL': 'physical energy',
     },
 }
-
-_FALLBACK_ADJECTIVES = {
-    'bittersweet': 'Bittersweet', 'joyful': 'Feel Good', 'melancholy': 'Sad',
-    'intense': 'Intense', 'uneasy': 'Moody', 'calm': 'Chill',
-    'detached': 'Low-Key', 'solitude': 'Solo', 'romance': 'Romantic',
-    'family': 'Family', 'togetherness': 'Collective', 'defiance': 'Defiant',
-    'spirituality': 'Spiritual', 'lighthearted': 'Lighthearted',
-    'serious': 'Serious', 'political': 'Political',
-    'physical energy': 'High Energy', 'energetic': 'High Energy',
-    'urban': 'Urban', 'wild': 'Wild', 'indoor': 'Indoor', 'travel': 'Travel',
-    'cosmic': 'Cosmic', 'dreamlike': 'Dreamlike', 'memories': 'Nostalgic',
-    'present': 'Current', 'reflection': 'Reflective', 'stories': 'Storytelling',
-    'longing': 'Longing', 'instrumental': 'Instrumental',
-}
-
-_FALLBACK_ALTERNATES = {
-    'bittersweet': ['Wistful', 'Nostalgic'],
-    'melancholy': ['Somber', 'Wistful'],
-    'joyful': ['Cheerful', 'Sunny'],
-    'calm': ['Mellow', 'Serene'],
-    'intense': ['Fierce', 'Furious'],
-    'energetic': ['Upbeat', 'Lively'],
-    'physical energy': ['Upbeat', 'Lively'],
-    'uneasy': ['Brooding'],
-    'detached': ['Mellow'],
-    'romance': ['Tender'],
-    'memories': ['Wistful'],
-    'longing': ['Yearning'],
-}
-
 
 def _parse_pairs(text: Optional[str]) -> Dict[str, float]:
     parsed = {}
@@ -511,31 +480,6 @@ def _naming_target(
     return candidates[0]
 
 
-def _fallback_name(genre: str, ideas: Sequence[str], instrumental: bool) -> str:
-    if not ideas:
-        return f"{genre}{' Instrumentals' if instrumental else ''}"
-    adjective = _FALLBACK_ADJECTIVES.get(ideas[0], ideas[0].title())
-    suffix = ' Instrumentals' if instrumental else ''
-    return f'{adjective} {genre}{suffix}'
-
-
-def fallback_candidates(
-    genre: str, ideas: Sequence[str], instrumental: bool
-) -> List[str]:
-    ideas = list(ideas)
-    suffix = ' Instrumentals' if instrumental else ''
-    names = [
-        _fallback_name(genre, ideas[start:], instrumental)
-        for start in range(len(ideas))
-    ]
-    for idea in ideas:
-        for adjective in _FALLBACK_ALTERNATES.get(idea, []):
-            names.append(f'{adjective} {genre}{suffix}')
-    if not names:
-        names.append(_fallback_name(genre, ideas, instrumental))
-    return _dedup(names)
-
-
 def build_naming_context(
     score_rows: Sequence[Dict],
     centroid_scores: Optional[Dict],
@@ -577,6 +521,4 @@ def build_naming_context(
         'naming_evidence': naming_evidence,
         'instrumental': instrumental,
         'axis_labels': axis_labels,
-        'fallback_name': _fallback_name(genre, ideas, instrumental),
-        'fallback_candidates': fallback_candidates(genre, ideas, instrumental),
     }

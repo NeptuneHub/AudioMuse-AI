@@ -13,7 +13,7 @@ Main Features:
   low coverage or tied votes disable the axes
 * build_naming_context maps grounded evidence to one editorial naming dimension
   (bittersweet, contrast, theme, mood, or listener function)
-* Instrumental detection and fallbacks stay grounded when lyric axes are absent
+* Instrumental detection stays grounded when lyric axes are absent
 """
 
 import numpy as np
@@ -104,7 +104,6 @@ def test_lyric_setting_is_diagnostic_but_never_used_as_a_listening_context():
     assert context['naming_brief'] == 'general-purpose listening'
     assert context['naming_dimension'] == 'mood'
     assert context['naming_evidence'] == 'general-purpose listening'
-    assert context['fallback_name'] == 'Indie'
 
 
 def test_bright_sound_plus_melancholic_lyrics_becomes_bittersweet():
@@ -124,7 +123,6 @@ def test_bright_sound_plus_melancholic_lyrics_becomes_bittersweet():
         'melancholic lyrics over upbeat, energetic music; '
         'introspective, solitary lyrics; serious themes about human struggle'
     )
-    assert context['fallback_name'] == 'Bittersweet Indie'
     assert context['naming_dimension'] == 'contrast'
     assert context['naming_evidence'] == (
         'melancholic lyrics contrasted with upbeat energetic music'
@@ -150,7 +148,6 @@ def test_primary_genre_overrides_the_centroid_genre_for_naming():
     )
 
     assert context['genre'] == 'R&B'
-    assert context['fallback_name'] == 'R&B'
 
 
 def test_diversified_context_can_choose_the_grounded_party_focus(monkeypatch):
@@ -208,30 +205,7 @@ def test_diversify_never_downgrades_to_general_purpose_when_grounded_evidence_ex
     assert ('mood', 'general-purpose listening') not in captured[0]
 
 
-def test_fallback_candidates_rotate_ideas_then_synonyms():
-    from tasks.ai.playlist_namer import fallback_candidates
-
-    assert fallback_candidates('Pop', ['bittersweet'], False) == [
-        'Bittersweet Pop', 'Wistful Pop', 'Nostalgic Pop'
-    ]
-    assert fallback_candidates('Rock', ['calm', 'solitude'], False) == [
-        'Chill Rock', 'Solo Rock', 'Mellow Rock', 'Serene Rock'
-    ]
-    assert fallback_candidates('Ambient', [], True) == ['Ambient Instrumentals']
-
-
-def test_naming_context_exposes_the_fallback_candidates():
-    rows = [
-        {'mood_vector': 'pop:0.9', 'other_features': ''}
-        for _ in range(10)
-    ]
-
-    context = build_naming_context(rows, {}, [], 10, COLUMNS, primary_genre='pop')
-
-    assert context['fallback_candidates'][0] == context['fallback_name']
-
-
-def test_instrumental_playlist_gets_a_safe_fallback_without_lyrics_axes():
+def test_instrumental_playlist_gets_a_grounded_context_without_lyrics_axes():
     rows = [
         {
             'mood_vector': 'ambient:0.7,electronic:0.5,instrumental:0.8',
@@ -246,7 +220,6 @@ def test_instrumental_playlist_gets_a_safe_fallback_without_lyrics_axes():
     assert context['ideas'] == ['calm', 'instrumental']
     assert context['naming_brief'] == 'calm, relaxed instrumental music'
     assert context['instrumental'] is True
-    assert context['fallback_name'] == 'Chill Ambient Instrumentals'
     assert context['naming_dimension'] == 'function'
     assert context['naming_evidence'] == 'calm relaxed instrumental listening'
 
@@ -377,7 +350,6 @@ def test_chronicle_axis_does_not_invent_a_lyrical_topic():
     assert context['axis_labels'] == {'AXIS_4_NARRATIVE_TEMPORALITY': 'CHRONICLE'}
     assert context['naming_dimension'] == 'mood'
     assert context['naming_evidence'] == 'general-purpose listening'
-    assert context['fallback_name'] == 'Country'
 
 
 def test_storytelling_axis_does_not_invent_the_story_subject():
@@ -399,7 +371,6 @@ def test_storytelling_axis_does_not_invent_the_story_subject():
         'AXIS_4_NARRATIVE_TEMPORALITY': 'STORYTELLING'
     }
     assert context['naming_evidence'] == 'general-purpose listening'
-    assert context['fallback_name'] == 'Folk'
 
 
 def test_axis_sentinels_do_not_fake_lyrics_coverage_for_ambient_tracks():
@@ -414,7 +385,7 @@ def test_axis_sentinels_do_not_fake_lyrics_coverage_for_ambient_tracks():
     context = build_naming_context(rows, {}, [sentinel] * 10, 10, COLUMNS)
 
     assert context['axis_labels'] == {}
-    assert context['fallback_name'] == 'Chill Ambient Instrumentals'
+    assert context['instrumental'] is True
 
 
 def test_a_rare_instrumental_tag_does_not_make_the_whole_cluster_instrumental():
@@ -428,7 +399,7 @@ def test_a_rare_instrumental_tag_does_not_make_the_whole_cluster_instrumental():
     context = build_naming_context(rows, {}, [_axis_blob()] * 10, 10, COLUMNS)
 
     assert 'instrumental' not in context['ideas']
-    assert not context['fallback_name'].endswith('Instrumentals')
+    assert context['instrumental'] is False
 
 
 def test_ambient_score_does_not_override_full_lyrics_coverage():
