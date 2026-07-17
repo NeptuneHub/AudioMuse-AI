@@ -982,6 +982,20 @@ class TestGetAIPlaylistName:
         assert mock_generate.call_count == 3
 
     @patch('tasks.ai.api.generate_text')
+    def test_trailing_punctuation_is_stripped_from_the_concept(self, mock_generate):
+        mock_generate.return_value = "Bittersweet."
+
+        result = get_ai_playlist_name(
+            "Rock",
+            "contrast",
+            "melancholic lyrics contrasted with upbeat music",
+            self._ai_config(),
+        )
+
+        assert result == "Bittersweet Rock"
+        assert mock_generate.call_count == 1
+
+    @patch('tasks.ai.api.generate_text')
     def test_contrast_rejects_dissonance_as_a_rhetorical_term(self, mock_generate):
         mock_generate.side_effect = ["Dissonance", "Bittersweet"]
 

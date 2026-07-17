@@ -440,7 +440,7 @@ def get_ai_playlist_name(
 
         concept = clean_playlist_name(raw_concept)
         concept = genre_pattern.sub('', concept)
-        concept = re.sub(r"\s+", " ", concept).strip(' -')
+        concept = re.sub(r"\s+", " ", concept).strip(" -.,!?()[]")
         words = concept.split()
         concept_tokens = set(re.findall(r"[a-z0-9]+", concept.casefold()))
         title = _compose_title(concept.title(), genre_word, naming_dimension, instrumental)
