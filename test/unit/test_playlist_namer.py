@@ -1,4 +1,20 @@
-"""Tests for confidence-aware automatic-playlist naming context."""
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Tests for confidence-aware automatic-playlist naming context.
+
+Main Features:
+* Only decisive per-track and per-cluster axis votes reach the naming context;
+  low coverage or tied votes disable the axes
+* build_naming_context maps grounded evidence to one editorial naming dimension
+  (bittersweet, contrast, theme, mood, or listener function)
+* Instrumental detection and fallbacks stay grounded when lyric axes are absent
+"""
 
 import numpy as np
 

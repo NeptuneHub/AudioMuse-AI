@@ -1114,7 +1114,7 @@ def _calculate_stratified_quotas(genre_tracks, sample_size, target_per_genre):
         for genre, capacity in capacities.items()
     }
     if sum(base_limits.values()) >= wanted_known:
-        quotas = {genre: 0 for genre in capacities}
+        quotas = dict.fromkeys(capacities, 0)
         return _fill_balanced_quotas(quotas, base_limits, wanted_known)
 
     quotas = dict(base_limits)
@@ -1125,15 +1125,7 @@ def _calculate_stratified_quotas(genre_tracks, sample_size, target_per_genre):
     )
 
 
-def _get_stratified_song_subset(
-    genre_map,
-    target_per_genre,
-    prev_ids=None,
-    percent_change=0.0,
-):
-    # Deduplicate first and regroup from the track's actual primary genre.  The
-    # quota calculation below therefore operates on the exact population that
-    # can be sampled, not on potentially duplicated map entries.
+def _regroup_tracks_by_primary_genre(genre_map):
     tracks_by_id = {}
     for tracks in genre_map.values():
         for track in tracks:
@@ -1141,13 +1133,69 @@ def _get_stratified_song_subset(
             if track_id is not None and track_id not in tracks_by_id:
                 tracks_by_id[track_id] = track
 
-    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), len(tracks_by_id))
-    if desired_size == 0:
-        return []
-
     genre_tracks = defaultdict(list)
     for track in tracks_by_id.values():
         genre_tracks[_get_track_primary_genre(track)].append(track)
+    return tracks_by_id, genre_tracks
+
+
+def _select_tracks_for_genre(
+    candidates, quota, previous_ids, change_fraction, selected_ids, rotate
+):
+    previous_candidates = [
+        track for track in candidates if track['item_id'] in previous_ids
+    ]
+    keep_count = 0
+    if rotate:
+        keep_count = min(
+            len(previous_candidates),
+            quota,
+            int(quota * (1.0 - change_fraction)),
+        )
+    kept = (
+        random.sample(previous_candidates, keep_count)
+        if keep_count < len(previous_candidates)
+        else previous_candidates
+    )
+    chosen = list(kept)
+    selected_ids.update(track['item_id'] for track in kept)
+
+    needed = quota - len(kept)
+    if needed <= 0:
+        return chosen
+
+    fresh = [
+        track for track in candidates
+        if track['item_id'] not in selected_ids
+        and (change_fraction <= 0.0 or track['item_id'] not in previous_ids)
+    ]
+    added = random.sample(fresh, min(needed, len(fresh)))
+    chosen.extend(added)
+    selected_ids.update(track['item_id'] for track in added)
+
+    still_needed = quota - len(kept) - len(added)
+    if still_needed > 0:
+        remaining = [
+            track for track in candidates
+            if track['item_id'] not in selected_ids
+        ]
+        reused = random.sample(remaining, still_needed)
+        chosen.extend(reused)
+        selected_ids.update(track['item_id'] for track in reused)
+    return chosen
+
+
+def _get_stratified_song_subset(
+    genre_map,
+    target_per_genre,
+    prev_ids=None,
+    percent_change=0.0,
+):
+    tracks_by_id, genre_tracks = _regroup_tracks_by_primary_genre(genre_map)
+
+    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), len(tracks_by_id))
+    if desired_size == 0:
+        return []
 
     quotas = _calculate_stratified_quotas(
         genre_tracks,
@@ -1155,8 +1203,6 @@ def _get_stratified_song_subset(
         target_per_genre,
     )
 
-    # Unknown/non-stratified tracks are used only if all recognised genres
-    # together cannot fill the configured exact sample size.
     known_quota_total = sum(quotas.values())
     if known_quota_total < desired_size:
         other_capacity = len(genre_tracks.get('__other__', []))
@@ -1167,58 +1213,22 @@ def _get_stratified_song_subset(
 
     previous_ids = set(prev_ids or [])
     change_fraction = min(1.0, max(0.0, float(percent_change)))
+    rotate = prev_ids is not None
     selected, selected_ids = [], set()
 
     for genre, quota in quotas.items():
         if quota <= 0:
             continue
-        candidates = genre_tracks.get(genre, [])
-        previous_candidates = [
-            track for track in candidates if track['item_id'] in previous_ids
-        ]
-        keep_count = 0
-        if prev_ids is not None:
-            keep_count = min(
-                len(previous_candidates),
+        selected.extend(
+            _select_tracks_for_genre(
+                genre_tracks.get(genre, []),
                 quota,
-                int(quota * (1.0 - change_fraction)),
+                previous_ids,
+                change_fraction,
+                selected_ids,
+                rotate,
             )
-        kept = (
-            random.sample(previous_candidates, keep_count)
-            if keep_count < len(previous_candidates)
-            else previous_candidates
         )
-        selected.extend(kept)
-        selected_ids.update(track['item_id'] for track in kept)
-
-        needed = quota - len(kept)
-        if needed <= 0:
-            continue
-
-        fresh = [
-            track for track in candidates
-            if track['item_id'] not in selected_ids
-            and (
-                change_fraction == 0.0
-                or track['item_id'] not in previous_ids
-            )
-        ]
-        added = random.sample(fresh, min(needed, len(fresh)))
-        selected.extend(added)
-        selected_ids.update(track['item_id'] for track in added)
-
-        # A small genre may not have enough never-before-seen tracks to rotate
-        # the requested percentage. Reuse dropped previous tracks only to keep
-        # its precomputed quota exact.
-        still_needed = quota - len(kept) - len(added)
-        if still_needed > 0:
-            remaining = [
-                track for track in candidates
-                if track['item_id'] not in selected_ids
-            ]
-            reused = random.sample(remaining, still_needed)
-            selected.extend(reused)
-            selected_ids.update(track['item_id'] for track in reused)
 
     random.shuffle(selected)
     return selected

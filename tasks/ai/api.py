@@ -307,6 +307,62 @@ def clean_playlist_name(name: str) -> str:
     return cleaned_name
 
 
+def _compose_title(
+    display_concept: str, genre_word: str, naming_dimension: str, instrumental: bool
+) -> str:
+    if naming_dimension in {'mood', 'contrast'}:
+        title = f'{display_concept} {genre_word}'
+    else:
+        title = f'{genre_word} {display_concept}'
+    if instrumental:
+        title += ' Instrumentals'
+    return title
+
+
+def _concept_problem_basic(raw_concept, concept, words, concept_tokens, naming_dimension):
+    if '\n' in raw_concept or '\r' in raw_concept:
+        return 'it contained more than one line'
+    if not concept:
+        return 'the concept is empty'
+    if len(concept) > 24:
+        return 'the concept is too long'
+    if concept_tokens & _CONCEPT_CONTAINER_WORDS:
+        return 'container or marketing words are not a concept'
+    if concept_tokens & _CONCEPT_FILLER_WORDS:
+        return 'the concept contains a redundant filler word'
+    if naming_dimension == 'contrast' and concept_tokens & _CONTRAST_NON_FEELINGS:
+        return 'a rhetorical term is not an emotion'
+    if '&' in concept:
+        return 'the concept combined multiple labels'
+    if naming_dimension == 'mood' and concept_tokens & _MOOD_BAD_TITLE_WORDS:
+        return 'the word is not a mood adjective grounded by the evidence'
+    if len(words) != 1:
+        return f'{naming_dimension} concepts must be one word'
+    return None
+
+
+def _concept_problem_composed(concept, concept_tokens, title, naming_dimension, taken):
+    if naming_dimension == 'function' and (
+        concept_tokens & _FUNCTION_NON_NOUNS
+        or any(token.endswith('ing') for token in concept_tokens)
+    ):
+        return 'a verb or gerund is not a purpose noun'
+    if naming_dimension == 'function' and concept_tokens & _FUNCTION_BAD_TITLE_WORDS:
+        return 'the purpose word does not form a natural playlist title'
+    if naming_dimension == 'function' and concept_tokens & _FUNCTION_SOUND_DESCRIPTORS:
+        return 'a sound descriptor is not a listening purpose'
+    if any(
+        concept_tokens & set(re.findall(r"[a-z0-9]+", used_title))
+        for used_title in taken
+    ):
+        return 'the naming concept is already used by another playlist'
+    if not (5 <= len(title) <= 40) or not (2 <= len(title.split()) <= 5):
+        return 'the composed title is outside the 5-40 character or 2-5 word limit'
+    if title.casefold() in taken:
+        return 'the composed title is already used'
+    return None
+
+
 def get_ai_playlist_name(
     genre_word: str,
     naming_dimension: str,
@@ -320,8 +376,9 @@ def get_ai_playlist_name(
         logger.error("Unsupported playlist naming dimension: %s", naming_dimension)
         return None
 
-    taken = {clean_playlist_name(name).casefold() for name in (avoid_names or [])}
-    recent_names = [clean_playlist_name(name) for name in (avoid_names or [])[-8:]]
+    avoid_list = avoid_names or []
+    taken = {clean_playlist_name(name).casefold() for name in avoid_list}
+    recent_names = [clean_playlist_name(name) for name in avoid_list[-8:]]
     avoid_rule = ""
     if recent_names:
         avoid_rule = (
@@ -359,68 +416,17 @@ def get_ai_playlist_name(
             return None
 
         concept = clean_playlist_name(raw_concept)
-        # Small models often return the already-composed two-part title despite
-        # the concept-only instruction. Removing an exact genre occurrence is
-        # safe: the code below owns final composition and still validates that
-        # only one grounded concept remains.
         concept = genre_pattern.sub('', concept)
         concept = re.sub(r"\s+", " ", concept).strip(' -')
         words = concept.split()
         concept_tokens = set(re.findall(r"[a-z0-9]+", concept.casefold()))
-        display_concept = concept.title()
-        if naming_dimension in {'mood', 'contrast'}:
-            title = f'{display_concept} {genre_word}'
-        else:
-            title = f'{genre_word} {display_concept}'
-        if instrumental:
-            title += ' Instrumentals'
+        title = _compose_title(concept.title(), genre_word, naming_dimension, instrumental)
 
-        problem = None
-        if '\n' in raw_concept or '\r' in raw_concept:
-            problem = 'it contained more than one line'
-        elif not concept:
-            problem = 'the concept is empty'
-        elif len(concept) > 24:
-            problem = 'the concept is too long'
-        elif concept_tokens & _CONCEPT_CONTAINER_WORDS:
-            problem = 'container or marketing words are not a concept'
-        elif concept_tokens & _CONCEPT_FILLER_WORDS:
-            problem = 'the concept contains a redundant filler word'
-        elif (
-            naming_dimension == 'contrast'
-            and concept_tokens & _CONTRAST_NON_FEELINGS
-        ):
-            problem = 'a rhetorical term is not an emotion'
-        elif '&' in concept:
-            problem = 'the concept combined multiple labels'
-        elif naming_dimension == 'mood' and concept_tokens & _MOOD_BAD_TITLE_WORDS:
-            problem = 'the word is not a mood adjective grounded by the evidence'
-        elif len(words) != 1:
-            problem = f'{naming_dimension} concepts must be one word'
-        elif naming_dimension == 'function' and (
-            concept_tokens & _FUNCTION_NON_NOUNS
-            or any(token.endswith('ing') for token in concept_tokens)
-        ):
-            problem = 'a verb or gerund is not a purpose noun'
-        elif (
-            naming_dimension == 'function'
-            and concept_tokens & _FUNCTION_BAD_TITLE_WORDS
-        ):
-            problem = 'the purpose word does not form a natural playlist title'
-        elif (
-            naming_dimension == 'function'
-            and concept_tokens & _FUNCTION_SOUND_DESCRIPTORS
-        ):
-            problem = 'a sound descriptor is not a listening purpose'
-        elif any(
-            concept_tokens & set(re.findall(r"[a-z0-9]+", used_title))
-            for used_title in taken
-        ):
-            problem = 'the naming concept is already used by another playlist'
-        elif not (5 <= len(title) <= 40) or not (2 <= len(title.split()) <= 5):
-            problem = 'the composed title is outside the 5-40 character or 2-5 word limit'
-        elif title.casefold() in taken:
-            problem = 'the composed title is already used'
+        problem = _concept_problem_basic(
+            raw_concept, concept, words, concept_tokens, naming_dimension
+        ) or _concept_problem_composed(
+            concept, concept_tokens, title, naming_dimension, taken
+        )
         if problem is None:
             logger.info(
                 "AI playlist concept '%s' composed as '%s' (%s)",

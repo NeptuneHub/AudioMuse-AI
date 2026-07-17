@@ -1,6 +1,10 @@
 # AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
 # Copyright (C) 2025 NeptuneHub
 # SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
 """Build compact, grounded inputs for automatic-playlist AI naming.
 
@@ -9,9 +13,17 @@ playlist-level vote is decisive.  Broad axis labels are converted to safe title
 concepts instead of concrete scenes; this keeps small language models useful
 without asking them to infer hospitals, characters, or stories that are not in
 the data.
+
+Main Features:
+* confident_axis_labels keeps only lyric axis winners backed by decisive
+  per-track and per-cluster vote margins
+* build_naming_context averages mood/other scores, detects instrumentals, and
+  picks one editorial naming dimension with grounded evidence
+* Deterministic fallbacks compose a genre-based title when the AI declines
 """
 
 from collections import Counter, defaultdict
+from itertools import islice
 from math import ceil
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -19,6 +31,8 @@ import numpy as np
 
 from config import OTHER_FEATURE_LABELS, STRATIFIED_GENRES
 
+
+_INSTRUMENTAL_MUSIC = 'instrumental music'
 
 MIN_LYRICS_COVERAGE = 0.50
 MIN_TRACK_AXIS_MARGIN = 0.03
@@ -180,68 +194,111 @@ def _pick_sound(other_scores: Dict[str, float]) -> Optional[str]:
     return max(candidates, key=candidates.get) if candidates else None
 
 
+def _usable_axis_vectors(
+    axis_blobs: Iterable[bytes], columns: Sequence[Tuple[str, str]]
+) -> List[np.ndarray]:
+    expected_bytes = len(columns) * np.dtype(np.float32).itemsize
+    vectors = []
+    for blob in axis_blobs:
+        if not blob or len(blob) != expected_bytes:
+            continue
+        vector = np.frombuffer(blob, dtype=np.float32)
+        if float(vector.max() - vector.min()) > 1e-6:
+            vectors.append(vector)
+    return vectors
+
+
+def _axis_winner(
+    axis_name: str,
+    columns: Sequence[Tuple[str, str]],
+    vectors: Sequence[np.ndarray],
+) -> Optional[str]:
+    indices = [index for index, (axis, _label) in enumerate(columns) if axis == axis_name]
+    labels = [columns[index][1] for index in indices]
+    votes = []
+    for vector in vectors:
+        scores = vector[indices]
+        order = np.argsort(scores)
+        if len(order) < 2 or scores[order[-1]] - scores[order[-2]] < MIN_TRACK_AXIS_MARGIN:
+            continue
+        votes.append(labels[int(order[-1])])
+
+    required_votes = max(
+        MIN_CONFIDENT_AXIS_VOTES,
+        ceil(len(vectors) * MIN_AXIS_VOTE_COVERAGE),
+    )
+    if len(votes) < required_votes:
+        return None
+    counts = Counter(votes)
+    ranked = counts.most_common(2)
+    top_label, top_count = ranked[0]
+    second_count = ranked[1][1] if len(ranked) > 1 else 0
+    if top_count / len(votes) < MIN_AXIS_WIN_SHARE:
+        return None
+    if (top_count - second_count) / len(votes) < MIN_AXIS_LEAD:
+        return None
+    return top_label
+
+
 def confident_axis_labels(
     axis_blobs: Iterable[bytes],
     total_tracks: int,
     columns: Sequence[Tuple[str, str]],
 ) -> Dict[str, str]:
-    """Return only axis winners supported by decisive per-track and cluster votes."""
     if not total_tracks or not columns:
         return {}
-    expected_bytes = len(columns) * np.dtype(np.float32).itemsize
-    vectors = [
-        vector
-        for blob in axis_blobs
-        if blob and len(blob) == expected_bytes
-        for vector in (np.frombuffer(blob, dtype=np.float32),)
-        if float(vector.max() - vector.min()) > 1e-6
-    ]
+    vectors = _usable_axis_vectors(axis_blobs, columns)
     if len(vectors) < ceil(total_tracks * MIN_LYRICS_COVERAGE):
         return {}
 
     winners = {}
-    axis_names = dict.fromkeys(axis for axis, _label in columns)
-    for axis_name in axis_names:
-        indices = [index for index, (axis, _label) in enumerate(columns) if axis == axis_name]
-        labels = [columns[index][1] for index in indices]
-        votes = []
-        for vector in vectors:
-            scores = vector[indices]
-            order = np.argsort(scores)
-            if len(order) < 2 or scores[order[-1]] - scores[order[-2]] < MIN_TRACK_AXIS_MARGIN:
-                continue
-            votes.append(labels[int(order[-1])])
-
-        required_votes = max(
-            MIN_CONFIDENT_AXIS_VOTES,
-            ceil(len(vectors) * MIN_AXIS_VOTE_COVERAGE),
-        )
-        if len(votes) < required_votes:
-            continue
-        counts = Counter(votes)
-        ranked = counts.most_common(2)
-        top_label, top_count = ranked[0]
-        second_count = ranked[1][1] if len(ranked) > 1 else 0
-        if top_count / len(votes) < MIN_AXIS_WIN_SHARE:
-            continue
-        if (top_count - second_count) / len(votes) < MIN_AXIS_LEAD:
-            continue
-        winners[axis_name] = top_label
+    for axis_name in dict.fromkeys(axis for axis, _label in columns):
+        label = _axis_winner(axis_name, columns, vectors)
+        if label is not None:
+            winners[axis_name] = label
     return winners
 
 
 def _usable_axis_vector_count(
     axis_blobs: Iterable[bytes], columns: Sequence[Tuple[str, str]]
 ) -> int:
-    expected_bytes = len(columns) * np.dtype(np.float32).itemsize
-    count = 0
-    for blob in axis_blobs:
-        if not blob or len(blob) != expected_bytes:
-            continue
-        vector = np.frombuffer(blob, dtype=np.float32)
-        if float(vector.max() - vector.min()) > 1e-6:
-            count += 1
-    return count
+    return len(_usable_axis_vectors(axis_blobs, columns))
+
+
+def _primary_ideas(valence: Optional[str], sound_key: Optional[str]) -> List[str]:
+    bright_sound = sound_key in {'danceable', 'happy', 'party'}
+    if valence == 'MELANCHOLIC' and bright_sound:
+        return ['bittersweet']
+    ideas = []
+    if valence:
+        ideas.append(AXIS_IDEAS['AXIS_3_EMOTIONAL_VALENCE'][valence])
+    if sound_key:
+        ideas.append(SOUND_IDEAS[sound_key])
+    return ideas
+
+
+def _fallback_narrative_idea(axis_labels: Dict[str, str]) -> Optional[str]:
+    if any(
+        axis_labels.get(axis)
+        for axis in (
+            'AXIS_3_EMOTIONAL_VALENCE',
+            'AXIS_2_SOCIAL_DYNAMIC',
+            'AXIS_5_THEMATIC_WEIGHT',
+        )
+    ):
+        return None
+    narrative = axis_labels.get('AXIS_4_NARRATIVE_TEMPORALITY')
+    if narrative in {'RETROSPECTIVE', 'EXISTENTIAL'}:
+        return AXIS_IDEAS['AXIS_4_NARRATIVE_TEMPORALITY'][narrative]
+    return None
+
+
+def _dedup(items: Iterable[str]) -> List[str]:
+    unique = []
+    for item in items:
+        if item not in unique:
+            unique.append(item)
+    return unique
 
 
 def _title_ideas(
@@ -250,14 +307,7 @@ def _title_ideas(
     instrumental: bool,
 ) -> List[str]:
     valence = axis_labels.get('AXIS_3_EMOTIONAL_VALENCE')
-    bright_sound = sound_key in {'danceable', 'happy', 'party'}
-    bittersweet = valence == 'MELANCHOLIC' and bright_sound
-
-    ideas = ['bittersweet'] if bittersweet else []
-    if not ideas and valence:
-        ideas.append(AXIS_IDEAS['AXIS_3_EMOTIONAL_VALENCE'][valence])
-    if sound_key and not bittersweet:
-        ideas.append(SOUND_IDEAS[sound_key])
+    ideas = _primary_ideas(valence, sound_key)
 
     for axis_name in ('AXIS_2_SOCIAL_DYNAMIC', 'AXIS_5_THEMATIC_WEIGHT'):
         label = axis_labels.get(axis_name)
@@ -265,27 +315,36 @@ def _title_ideas(
             ideas.append(AXIS_IDEAS[axis_name][label])
         if len(ideas) >= 3:
             break
-    if len(ideas) < 2 and not any(
-        axis_labels.get(axis)
-        for axis in (
-            'AXIS_3_EMOTIONAL_VALENCE',
-            'AXIS_2_SOCIAL_DYNAMIC',
-            'AXIS_5_THEMATIC_WEIGHT',
-        )
-    ):
-        narrative = axis_labels.get('AXIS_4_NARRATIVE_TEMPORALITY')
-        if narrative in {'RETROSPECTIVE', 'EXISTENTIAL'}:
-            ideas.append(
-                AXIS_IDEAS['AXIS_4_NARRATIVE_TEMPORALITY'][narrative]
-            )
+
+    if len(ideas) < 2:
+        narrative_idea = _fallback_narrative_idea(axis_labels)
+        if narrative_idea:
+            ideas.append(narrative_idea)
     if instrumental:
         ideas.append('instrumental')
 
-    unique = []
-    for idea in ideas:
-        if idea not in unique:
-            unique.append(idea)
-    return unique[:3]
+    return _dedup(ideas)[:3]
+
+
+def _mood_brief_parts(valence: Optional[str], sound_key: Optional[str]) -> List[str]:
+    bright_sound = sound_key in {'danceable', 'happy', 'party'}
+    if valence == 'MELANCHOLIC' and bright_sound:
+        return ['melancholic lyrics over upbeat, energetic music']
+    parts = []
+    if valence:
+        parts.append(VALENCE_BRIEFS[valence])
+    if sound_key:
+        parts.append(SOUND_BRIEFS[sound_key])
+    return parts
+
+
+def _apply_instrumental_brief(parts: List[str]) -> None:
+    if not parts:
+        parts.append(_INSTRUMENTAL_MUSIC)
+        return
+    parts[0] = parts[0].replace(' music', ' instrumental music')
+    if 'instrumental' not in parts[0]:
+        parts.insert(0, _INSTRUMENTAL_MUSIC)
 
 
 def _naming_brief(
@@ -293,19 +352,10 @@ def _naming_brief(
     sound_key: Optional[str],
     instrumental: bool,
 ) -> str:
-    """Combine reliable evidence into prose without suggesting title vocabulary."""
-    parts = []
     valence = axis_labels.get('AXIS_3_EMOTIONAL_VALENCE')
-    bright_sound = sound_key in {'danceable', 'happy', 'party'}
-    if valence == 'MELANCHOLIC' and bright_sound:
-        parts.append('melancholic lyrics over upbeat, energetic music')
-    else:
-        if valence:
-            parts.append(VALENCE_BRIEFS[valence])
-        if sound_key:
-            parts.append(SOUND_BRIEFS[sound_key])
-
     social = axis_labels.get('AXIS_2_SOCIAL_DYNAMIC')
+    parts = _mood_brief_parts(valence, sound_key)
+
     if social:
         parts.append(SOCIAL_BRIEFS[social])
 
@@ -319,38 +369,45 @@ def _naming_brief(
             parts.append(NARRATIVE_BRIEFS[narrative])
 
     if instrumental:
-        if parts:
-            parts[0] = parts[0].replace(' music', ' instrumental music')
-            if 'instrumental' not in parts[0]:
-                parts.insert(0, 'instrumental music')
-        else:
-            parts.append('instrumental music')
+        _apply_instrumental_brief(parts)
 
-    return '; '.join(parts[:3]) or 'general-purpose listening'
+    return '; '.join(islice(parts, 3)) or 'general-purpose listening'
 
 
-def _naming_target(
-    axis_labels: Dict[str, str],
-    sound_key: Optional[str],
-    instrumental: bool,
-) -> Tuple[str, str]:
-    """Choose one editorial dimension before asking the model for any wording."""
-    valence = axis_labels.get('AXIS_3_EMOTIONAL_VALENCE')
-    social = axis_labels.get('AXIS_2_SOCIAL_DYNAMIC')
-    theme = axis_labels.get('AXIS_5_THEMATIC_WEIGHT')
-    narrative = axis_labels.get('AXIS_4_NARRATIVE_TEMPORALITY')
-    bright_sound = sound_key in {'danceable', 'happy', 'party'}
-
+def _relationship_or_contrast_target(
+    valence: Optional[str], social: Optional[str], bright_sound: bool
+) -> Optional[Tuple[str, str]]:
     if social == 'ROMANTIC':
         evidence = []
         if valence:
             evidence.append(VALENCE_BRIEFS[valence])
         evidence.append('romantic lyrics')
         return 'relationship', '; '.join(evidence)
-
     if valence == 'MELANCHOLIC' and bright_sound:
         return 'contrast', 'melancholic lyrics contrasted with upbeat energetic music'
+    return None
 
+
+def _mortal_target(
+    valence: Optional[str], social: Optional[str], sound_key: Optional[str]
+) -> Tuple[str, str]:
+    if valence:
+        evidence = [VALENCE_BRIEFS[valence]]
+        if sound_key:
+            evidence.append(SOUND_BRIEFS[sound_key])
+        return 'mood', '; '.join(evidence)
+    evidence = ['lyrics about life-or-death struggles and perseverance']
+    if social:
+        evidence.append(SOCIAL_BRIEFS[social])
+    return 'theme', '; '.join(evidence)
+
+
+def _theme_target(
+    theme: Optional[str],
+    valence: Optional[str],
+    social: Optional[str],
+    sound_key: Optional[str],
+) -> Optional[Tuple[str, str]]:
     if theme == 'POLITICAL':
         evidence = [THEME_BRIEFS[theme]]
         if social:
@@ -358,47 +415,59 @@ def _naming_target(
         if valence:
             evidence.append(VALENCE_BRIEFS[valence])
         return 'theme', '; '.join(evidence)
-
     if theme == 'MORTAL':
-        if valence:
-            evidence = [VALENCE_BRIEFS[valence]]
-            if sound_key:
-                evidence.append(SOUND_BRIEFS[sound_key])
-            return 'mood', '; '.join(evidence)
-        evidence = ['lyrics about life-or-death struggles and perseverance']
-        if social:
-            evidence.append(SOCIAL_BRIEFS[social])
-        return 'theme', '; '.join(evidence)
-
+        return _mortal_target(valence, social, sound_key)
     if theme == 'SENSORIAL':
         evidence = ['dance-focused themes']
         if sound_key:
             evidence.append(SOUND_BRIEFS[sound_key])
         return 'function', '; '.join(evidence)
+    return None
 
+
+def _sound_or_default_target(
+    valence: Optional[str],
+    social: Optional[str],
+    narrative: Optional[str],
+    sound_key: Optional[str],
+    instrumental: bool,
+) -> Tuple[str, str]:
     if instrumental and sound_key == 'relaxed':
         return 'function', 'calm relaxed instrumental listening'
-
     if sound_key in {'danceable', 'party'}:
         return 'function', SOUND_BRIEFS[sound_key]
-
     if social:
         evidence = [SOCIAL_BRIEFS[social]]
         if valence:
             evidence.append(VALENCE_BRIEFS[valence])
         return 'theme', '; '.join(evidence)
-
     if narrative in {'RETROSPECTIVE', 'EXISTENTIAL'}:
         return 'theme', NARRATIVE_BRIEFS[narrative]
-
     evidence = []
     if valence:
         evidence.append(VALENCE_BRIEFS[valence])
     if sound_key:
         evidence.append(SOUND_BRIEFS[sound_key])
     if instrumental:
-        evidence.append('instrumental music')
+        evidence.append(_INSTRUMENTAL_MUSIC)
     return 'mood', '; '.join(evidence) or 'general-purpose listening'
+
+
+def _naming_target(
+    axis_labels: Dict[str, str],
+    sound_key: Optional[str],
+    instrumental: bool,
+) -> Tuple[str, str]:
+    valence = axis_labels.get('AXIS_3_EMOTIONAL_VALENCE')
+    social = axis_labels.get('AXIS_2_SOCIAL_DYNAMIC')
+    theme = axis_labels.get('AXIS_5_THEMATIC_WEIGHT')
+    narrative = axis_labels.get('AXIS_4_NARRATIVE_TEMPORALITY')
+    bright_sound = sound_key in {'danceable', 'happy', 'party'}
+    return (
+        _relationship_or_contrast_target(valence, social, bright_sound)
+        or _theme_target(theme, valence, social, sound_key)
+        or _sound_or_default_target(valence, social, narrative, sound_key, instrumental)
+    )
 
 
 def _fallback_name(genre: str, ideas: Sequence[str], instrumental: bool) -> str:

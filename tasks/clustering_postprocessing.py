@@ -276,6 +276,60 @@ def apply_title_artist_deduplication(song_results: list, db_conn, log_prefix="")
     return filtered_songs
 
 
+def _dedupe_single_playlist(playlist_name, songs_list, db_conn, log_prefix):
+    songs_sorted_by_title = sorted(
+        songs_list, key=lambda song: song[1].lower() if song[1] else ""
+    )
+    logger.info(
+        f"{log_prefix}SORTED {len(songs_sorted_by_title)} songs BY TITLE in playlist '{playlist_name}'"
+    )
+    logger.info(
+        f"{log_prefix}SORTED ORDER - First 5 titles: {[song[1] for song in songs_sorted_by_title[:5]]}"
+    )
+
+    song_results = [
+        {"item_id": item_id} for item_id, title, author in songs_sorted_by_title
+    ]
+
+    logger.debug(
+        f"{log_prefix}Filtering playlist '{playlist_name}' with {len(song_results)} songs"
+    )
+    logger.debug(
+        f"{log_prefix}Applying combined duplicate filtering for playlist '{playlist_name}' on SORTED songs"
+    )
+
+    temp_filtered = apply_title_artist_deduplication(
+        song_results, db_conn, log_prefix + "[TitleArtist] "
+    )
+    filtered_song_results = apply_distance_filtering_direct(
+        temp_filtered, db_conn, log_prefix + "[Distance] "
+    )
+
+    filtered_item_ids = {s["item_id"] for s in filtered_song_results}
+    filtered_songs = [
+        song for song in songs_sorted_by_title if song[0] in filtered_item_ids
+    ]
+
+    logger.debug(
+        f"{log_prefix}Filtering complete, now have {len(filtered_songs)} songs in ALPHABETICAL order"
+    )
+    return filtered_songs
+
+
+def _restrict_result_metadata(new_result, best_result, kept_names):
+    for key in (
+        "playlist_centroids",
+        "playlist_to_centroid_vector_map",
+        "playlist_primary_genres",
+    ):
+        if key in best_result:
+            new_result[key] = {
+                name: value
+                for name, value in best_result[key].items()
+                if name in kept_names
+            }
+
+
 def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
     try:
         from app_helper import get_db
@@ -311,45 +365,9 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
                 continue
 
             try:
-                songs_sorted_by_title = sorted(
-                    songs_list, key=lambda song: song[1].lower() if song[1] else ""
+                filtered_songs = _dedupe_single_playlist(
+                    playlist_name, songs_list, db_conn, log_prefix
                 )
-                logger.info(
-                    f"{log_prefix}SORTED {len(songs_sorted_by_title)} songs BY TITLE in playlist '{playlist_name}'"
-                )
-                logger.info(
-                    f"{log_prefix}SORTED ORDER - First 5 titles: {[song[1] for song in songs_sorted_by_title[:5]]}"
-                )
-
-                song_results = [
-                    {"item_id": item_id} for item_id, title, author in songs_sorted_by_title
-                ]
-
-                logger.debug(
-                    f"{log_prefix}Filtering playlist '{playlist_name}' with {len(song_results)} songs"
-                )
-
-                logger.debug(
-                    f"{log_prefix}Applying combined duplicate filtering for playlist '{playlist_name}' on SORTED songs"
-                )
-
-                temp_filtered = apply_title_artist_deduplication(
-                    song_results, db_conn, log_prefix + "[TitleArtist] "
-                )
-
-                filtered_song_results = apply_distance_filtering_direct(
-                    temp_filtered, db_conn, log_prefix + "[Distance] "
-                )
-
-                filtered_item_ids = {s["item_id"] for s in filtered_song_results}
-                filtered_songs = [
-                    song for song in songs_sorted_by_title if song[0] in filtered_item_ids
-                ]
-
-                logger.debug(
-                    f"{log_prefix}Filtering complete, now have {len(filtered_songs)} songs in ALPHABETICAL order"
-                )
-
                 filtered_playlists[playlist_name] = filtered_songs
                 total_songs_after += len(filtered_songs)
 
@@ -371,27 +389,7 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
 
         new_result = best_result.copy()
         new_result["named_playlists"] = filtered_playlists
-
-        if "playlist_centroids" in best_result:
-            new_result["playlist_centroids"] = {
-                name: centroids
-                for name, centroids in best_result["playlist_centroids"].items()
-                if name in filtered_playlists
-            }
-
-        if "playlist_to_centroid_vector_map" in best_result:
-            new_result["playlist_to_centroid_vector_map"] = {
-                name: vector_map
-                for name, vector_map in best_result["playlist_to_centroid_vector_map"].items()
-                if name in filtered_playlists
-            }
-
-        if "playlist_primary_genres" in best_result:
-            new_result["playlist_primary_genres"] = {
-                name: genre
-                for name, genre in best_result["playlist_primary_genres"].items()
-                if name in filtered_playlists
-            }
+        _restrict_result_metadata(new_result, best_result, filtered_playlists)
 
         logger.info(
             f"{log_prefix}Duplicate filtering complete: {total_songs_before} -> {total_songs_after} songs total across {len(filtered_playlists)} playlists"
@@ -480,6 +478,91 @@ def apply_minimum_size_filter_to_clustering_result(best_result, min_size=20, log
         return best_result
 
 
+def _next_diverse_index(
+    is_available,
+    available_names,
+    available_vectors,
+    playlist_primary_genres,
+    original_playlists,
+    selected_indices,
+    selected_genres,
+):
+    original_indices_available = np.where(is_available)[0]
+    unseen_genre_indices = np.array(
+        [
+            i for i in original_indices_available
+            if playlist_primary_genres.get(available_names[i])
+            not in selected_genres | {None, '__other__'}
+        ],
+        dtype=int,
+    )
+    candidate_indices = (
+        unseen_genre_indices
+        if unseen_genre_indices.size
+        else original_indices_available
+    )
+
+    selected_vectors = available_vectors[selected_indices]
+    remaining_vectors = available_vectors[candidate_indices]
+
+    dist_matrix = cdist(remaining_vectors, selected_vectors, 'euclidean')
+    min_distances = np.min(dist_matrix, axis=1)
+
+    sizes_available = np.array(
+        [
+            len(original_playlists.get(available_names[i], []))
+            for i in candidate_indices
+        ]
+    )
+    size_scores = np.log1p(sizes_available)
+
+    max_dist = np.max(min_distances)
+    normalized_dist_scores = (
+        min_distances / max_dist if max_dist > 0 else np.zeros_like(min_distances)
+    )
+
+    max_size_score = np.max(size_scores)
+    normalized_size_scores = (
+        size_scores / max_size_score if max_size_score > 0 else np.zeros_like(size_scores)
+    )
+
+    combined_scores = normalized_dist_scores * normalized_size_scores
+    best_candidate_local_idx = np.argmax(combined_scores)
+    return candidate_indices[best_candidate_local_idx]
+
+
+def _assemble_top_n_result(
+    best_result,
+    selected_names,
+    playlist_to_vector,
+    original_playlists,
+    original_centroids,
+    playlist_primary_genres,
+):
+    filtered_playlists = {
+        name: original_playlists[name] for name in selected_names if name in original_playlists
+    }
+    filtered_centroids = {
+        name: original_centroids[name] for name in selected_names if name in original_centroids
+    }
+    filtered_vector_map = {
+        name: playlist_to_vector[name] for name in selected_names if name in playlist_to_vector
+    }
+    filtered_primary_genres = {
+        name: playlist_primary_genres[name]
+        for name in selected_names
+        if name in playlist_primary_genres
+    }
+
+    new_result = best_result.copy()
+    new_result["named_playlists"] = filtered_playlists
+    new_result["playlist_centroids"] = filtered_centroids
+    new_result["playlist_to_centroid_vector_map"] = filtered_vector_map
+    if playlist_primary_genres:
+        new_result["playlist_primary_genres"] = filtered_primary_genres
+    return new_result
+
+
 def select_top_n_diverse_playlists(best_result, n):
     playlist_to_vector = best_result.get("playlist_to_centroid_vector_map", {})
     original_playlists = best_result.get("named_playlists", {})
@@ -524,50 +607,15 @@ def select_top_n_diverse_playlists(best_result, n):
         if not np.any(is_available):
             break
 
-        original_indices_available = np.where(is_available)[0]
-        unseen_genre_indices = np.array(
-            [
-                i for i in original_indices_available
-                if playlist_primary_genres.get(available_names[i])
-                not in selected_genres | {None, '__other__'}
-            ],
-            dtype=int,
+        best_original_idx = _next_diverse_index(
+            is_available,
+            available_names,
+            available_vectors,
+            playlist_primary_genres,
+            original_playlists,
+            selected_indices,
+            selected_genres,
         )
-        candidate_indices = (
-            unseen_genre_indices
-            if unseen_genre_indices.size
-            else original_indices_available
-        )
-
-        selected_vectors = available_vectors[selected_indices]
-        remaining_vectors = available_vectors[candidate_indices]
-
-        dist_matrix = cdist(remaining_vectors, selected_vectors, 'euclidean')
-        min_distances = np.min(dist_matrix, axis=1)
-
-        sizes_available = np.array(
-            [
-                len(original_playlists.get(available_names[i], []))
-                for i in candidate_indices
-            ]
-        )
-        size_scores = np.log1p(sizes_available)
-
-        max_dist = np.max(min_distances)
-        normalized_dist_scores = (
-            min_distances / max_dist if max_dist > 0 else np.zeros_like(min_distances)
-        )
-
-        max_size_score = np.max(size_scores)
-        normalized_size_scores = (
-            size_scores / max_size_score if max_size_score > 0 else np.zeros_like(size_scores)
-        )
-
-        combined_scores = normalized_dist_scores * normalized_size_scores
-
-        best_candidate_local_idx = np.argmax(combined_scores)
-
-        best_original_idx = candidate_indices[best_candidate_local_idx]
 
         selected_indices.append(best_original_idx)
         is_available[best_original_idx] = False
@@ -576,28 +624,14 @@ def select_top_n_diverse_playlists(best_result, n):
             selected_genres.add(selected_genre)
 
     selected_names = [available_names[i] for i in selected_indices]
-
-    filtered_playlists = {
-        name: original_playlists[name] for name in selected_names if name in original_playlists
-    }
-    filtered_centroids = {
-        name: original_centroids[name] for name in selected_names if name in original_centroids
-    }
-    filtered_vector_map = {
-        name: playlist_to_vector[name] for name in selected_names if name in playlist_to_vector
-    }
-    filtered_primary_genres = {
-        name: playlist_primary_genres[name]
-        for name in selected_names
-        if name in playlist_primary_genres
-    }
-
-    new_result = best_result.copy()
-    new_result["named_playlists"] = filtered_playlists
-    new_result["playlist_centroids"] = filtered_centroids
-    new_result["playlist_to_centroid_vector_map"] = filtered_vector_map
-    if playlist_primary_genres:
-        new_result["playlist_primary_genres"] = filtered_primary_genres
+    new_result = _assemble_top_n_result(
+        best_result,
+        selected_names,
+        playlist_to_vector,
+        original_playlists,
+        original_centroids,
+        playlist_primary_genres,
+    )
 
     logger.info(f"Selected {len(selected_names)} diverse playlists: {selected_names}")
 
