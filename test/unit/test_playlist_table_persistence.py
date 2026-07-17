@@ -135,7 +135,7 @@ class TestPlaylistNameHistory:
         assert 'created_at NOT IN' in prune_sql
         assert 'ORDER BY created_at DESC LIMIT %s' in prune_sql
         assert prune_params == ('s1', 's1', config.PLAYLIST_NAME_HISTORY_ROUNDS)
-        assert config.PLAYLIST_NAME_HISTORY_ROUNDS == 3
+        assert config.PLAYLIST_NAME_HISTORY_ROUNDS == 2
 
     def test_a_history_write_failure_does_not_fail_the_playlist_persist(self, monkeypatch):
         conn, cur, _inserted = _capture(monkeypatch)

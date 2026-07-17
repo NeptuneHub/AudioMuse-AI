@@ -31,10 +31,6 @@ from psycopg2.extras import RealDictCursor
 from urllib.parse import quote
 
 DEFAULT_CONFIG_TABLE = "app_config"
-LEGACY_CONFIG_KEY_RENAMES = {
-    'MIN_CLUSTERING_TOP': 'TOP_N_CLUSTERING_PLAYLIST',
-    'TOP_N_PLAYLISTS': 'TOP_N_CLUSTERING_PLAYLIST',
-}
 BASIC_SERVER_FIELDS = {
     'MEDIASERVER_TYPE',
     'JELLYFIN_URL',
@@ -303,14 +299,6 @@ class SetupManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    for legacy_key, new_key in LEGACY_CONFIG_KEY_RENAMES.items():
-                        cur.execute(
-                            f"UPDATE {DEFAULT_CONFIG_TABLE} SET key = %s "
-                            "WHERE key = %s AND NOT EXISTS ("
-                            f"SELECT 1 FROM {DEFAULT_CONFIG_TABLE} renamed "
-                            "WHERE renamed.key = %s)",
-                            (new_key, legacy_key, new_key),
-                        )
                     cur.execute(
                         f"DELETE FROM {DEFAULT_CONFIG_TABLE} "
                         "WHERE NOT (key = ANY(%s)) RETURNING key",
