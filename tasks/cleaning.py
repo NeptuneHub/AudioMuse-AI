@@ -27,6 +27,9 @@ Main Features:
   server's tracks and prunes that server's stale mappings only.
 * Reuses the sweep's public helpers rather than re-implementing the fetch and
   the prune, so cleaning and the sweep can never drift apart.
+* Refreshes each server's stored library size (``music_servers.track_count``)
+  from the fetch it already performs, keeping the dashboard's coverage
+  denominator current on every cleaning run.
 * Reports (never deletes) the catalogue tracks currently bound to no server.
 """
 
@@ -64,6 +67,7 @@ def identify_and_clean_orphaned_albums_task():
         prune_stale_mappings,
         make_cancel_check,
         SweepCancelled,
+        _store_server_track_count,
     )
 
     current_job = get_current_job(redis_conn)
@@ -147,6 +151,7 @@ def identify_and_clean_orphaned_albums_task():
                 )
 
                 if server_id:
+                    _store_server_track_count(get_db(), server_id, len(provider_ids))
                     refused = []
                     unbound = prune_stale_mappings(
                         get_db(), server_id, sorted(provider_ids), refused=refused

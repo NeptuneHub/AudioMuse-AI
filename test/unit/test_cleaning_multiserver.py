@@ -42,7 +42,7 @@ def _server(server_id, name, default=False):
 
 def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   reverse_by_server, db_track_ids, author_by_id=None,
-                  prune_results=None):
+                  prune_results=None, stored_counts=None):
     from tasks import cleaning
     from tasks import multiserver_sync
 
@@ -121,8 +121,47 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     monkeypatch.setattr(multiserver_sync, 'prune_stale_mappings', fake_prune)
 
+    counts = stored_counts if stored_counts is not None else []
+    monkeypatch.setattr(
+        multiserver_sync, '_store_server_track_count',
+        lambda db, server_id, count: counts.append((server_id, count)),
+    )
+
     result = cleaning.identify_and_clean_orphaned_albums_task()
     return result, statuses, pruned_calls
+
+
+class TestCleaningRefreshesTrackCounts:
+    def test_each_fetched_server_gets_its_track_count_stored(self, monkeypatch):
+        stored = []
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
+            tracks_by_server={
+                's1': [{'id': 'a1'}, {'id': 'a2'}],
+                's2': [{'id': 'n1'}],
+            },
+            reverse_by_server={'s1': {'a1': 'fp_1', 'a2': 'fp_2'}, 's2': {'n1': 'fp_1'}},
+            db_track_ids={'fp_1', 'fp_2'},
+            stored_counts=stored,
+        )
+        assert result['status'] == 'SUCCESS'
+        assert stored == [('s1', 2), ('s2', 1)]
+
+    def test_failed_fetch_stores_no_count_for_that_server(self, monkeypatch):
+        stored = []
+        _result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
+            tracks_by_server={
+                's1': RuntimeError('fetch failed'),
+                's2': [{'id': 'n1'}],
+            },
+            reverse_by_server={'s2': {'n1': 'fp_1'}},
+            db_track_ids={'fp_1'},
+            stored_counts=stored,
+        )
+        assert stored == [('s2', 1)]
 
 
 class TestCleaningSkipsUnreadableServers:

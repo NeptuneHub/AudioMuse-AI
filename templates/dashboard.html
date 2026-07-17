@@ -242,7 +242,7 @@
         <h2>Library coverage
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">How much of each music server's own library has made it into the analyzed catalogue. Measured against that server's library size as counted by its last alignment sweep, so it is the one number that tells you whether analysis still has work to do. It is per server on purpose: a track that has never been analyzed exists on no catalogue, so there is no catalogue-wide version of this figure.</span>
+                <span class="tooltip-text">How much of each music server's own library has made it into the analyzed catalogue. Measured against that server's library size, counted by the hourly dashboard refresh, so it is the one number that tells you whether analysis still has work to do. It is per server on purpose: a track that has never been analyzed exists on no catalogue, so there is no catalogue-wide version of this figure.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="coverage-updated">Loading…</p>
@@ -761,10 +761,11 @@
 
     // The one coverage renderer, shared by the compact tile and the table.
     //
-    // server_songs is null until an alignment sweep has actually measured the
-    // server. In that case coverage is UNKNOWN and we render an empty bar - the
-    // old code fell back to resolved/resolved, i.e. a permanently full bar for a
-    // server that had never been measured.
+    // server_songs is null until the hourly dashboard refresh has counted the
+    // server's library (it skips that while nothing is analyzed yet). In that
+    // case coverage is UNKNOWN and we render an empty bar - the old code fell
+    // back to resolved/resolved, i.e. a permanently full bar for a server that
+    // had never been measured.
     function coverageInto(host, serverSongs, resolved) {
         if (serverSongs === null) {
             const bar = document.createElement('div');
@@ -775,7 +776,7 @@
             bar.appendChild(empty);
             const msg = document.createElement('div');
             msg.className = 'muted';
-            msg.textContent = 'Not yet aligned - run an alignment sweep';
+            msg.textContent = 'Not measured yet - counted after the first analysis';
             host.appendChild(bar);
             host.appendChild(msg);
             return;
@@ -839,7 +840,7 @@
             const duplicateCopies = s.duplicate_copies || 0;
             const songsTd = document.createElement('td');
             songsTd.textContent = serverSongs === null
-                ? 'not yet aligned' : serverSongs.toLocaleString();
+                ? 'not measured yet' : serverSongs.toLocaleString();
             const dupTd = document.createElement('td');
             dupTd.textContent = duplicateCopies ? duplicateCopies.toLocaleString() : '-';
             // No coverage column here: it is the Library coverage tile's job.

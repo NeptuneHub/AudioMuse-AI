@@ -1158,12 +1158,15 @@ if not _is_worker:
     cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
     cron_thread.start()
 
-    # Dashboard stats refresher: runs once at startup, then hourly.
+    # Dashboard stats refresher: runs once at startup, then hourly - or every
+    # 5 minutes while any server still lacks its first library measure, so a
+    # fresh install's coverage panel fills in soon after the first analysis.
+    # Also counts each server's library size as part of the refresh.
     # Keeps heavy content/index aggregates off the request path.
     def _dashboard_stats_refresher_loop():
         try:
             from time import sleep
-            from app_dashboard import refresh_dashboard_stats
+            from app_dashboard import refresh_dashboard_stats, dashboard_refresh_interval
 
             # Wait a minute after startup so the initial DB/index warm-up and
             # first incoming requests have time to settle before we kick off
@@ -1174,7 +1177,7 @@ if not _is_worker:
                     refresh_dashboard_stats(app)
                 except Exception:
                     app.logger.exception('dashboard stats refresh failed')
-                sleep(3600)
+                sleep(dashboard_refresh_interval(app))
         except Exception:
             app.logger.exception('dashboard stats refresher main loop error')
 

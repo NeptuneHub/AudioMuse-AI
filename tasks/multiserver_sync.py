@@ -52,6 +52,10 @@ Main Features:
 * Empty-catalogue guard: while nothing is analyzed yet every sweep completes
   instantly without fetching, so first-install server adds and restarts cost
   nothing; the first analysis creates the mappings itself.
+* Per-server library sizes are NOT owned here: the dashboard's snapshot
+  refresher counts every server's catalogue at Flask startup and hourly;
+  sweeps and cleaning just keep ``track_count`` fresh from fetches they
+  already perform.
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
   per-server counts stay truthful; pruning is skipped when the fetch looks
   partial so a transient provider error never mass-deletes valid mappings.

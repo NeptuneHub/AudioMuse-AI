@@ -192,8 +192,9 @@ def _collect_music_server_metrics(cur):
                              already counted (COUNT(*) - COUNT(DISTINCT item_id)).
       ``resolved``         - provider tracks with a map row (the coverage numerator).
 
-    ``server_songs`` is None until a sweep has fetched the server's catalogue at
-    least once. It is NEVER back-filled from ``resolved``: doing so would make
+    ``server_songs`` is None until the server's catalogue has been counted at
+    least once (snapshot refresh, alignment sweep, or cleaning all store it).
+    It is NEVER back-filled from ``resolved``: doing so would make
     coverage exactly resolved/resolved = 100% for a server that has never been
     measured, which is the one number a never-swept server cannot possibly know.
     The UI renders None as "not yet aligned" with an empty bar.
@@ -534,6 +535,57 @@ def _load_dashboard_stats(cur):
         return {}, None
 
 
+# Each server's library size is snapshot data like everything else: counted
+# here during the scheduled refresh (startup + hourly) by enumerating the
+# server's catalogue - no provider exposes a bare count. Skipped while nothing
+# is analyzed yet: coverage is meaningless on an empty catalogue and a fresh
+# install must not walk providers just for a number nobody can use.
+def _refresh_server_track_counts(cur):
+    try:
+        from tasks.mediaserver import registry
+        from tasks.multiserver_sync import fetch_server_catalogue, _store_server_track_count
+
+        if not _table_exists(cur, 'music_servers'):
+            return
+        cur.execute("SELECT COUNT(*) FROM score")
+        if not cur.fetchone()[0]:
+            return
+        servers = registry.list_servers()
+    except Exception:
+        logger.exception("Could not list servers for the track-count refresh")
+        return
+    for server in servers:
+        try:
+            count = len(fetch_server_catalogue(server))
+            _store_server_track_count(get_db(), server['server_id'], count)
+        except Exception:
+            logger.exception(
+                "Could not refresh the track count for server %s; keeping the previous value",
+                server.get('name'),
+            )
+
+
+# Seconds until the next snapshot refresh: hourly normally, every 5 minutes
+# while any server still lacks its first library measure so a fresh install's
+# coverage panel fills in soon after the first analysis.
+def dashboard_refresh_interval(app, fast=300, slow=3600):
+    try:
+        with app.app_context():
+            db = get_db()
+            cur = db.cursor()
+            try:
+                if not _table_exists(cur, 'music_servers'):
+                    return slow
+                cur.execute("SELECT COUNT(*) FROM music_servers WHERE track_count IS NULL")
+                unmeasured = cur.fetchone()[0]
+            finally:
+                cur.close()
+        return fast if unmeasured else slow
+    except Exception:
+        logger.debug("Dashboard refresh-interval probe failed", exc_info=True)
+        return slow
+
+
 def refresh_dashboard_stats(app):
     """Recompute content metrics and upsert them into the
     ``dashboard_stats`` singleton row. Intended to be called from
@@ -548,6 +600,13 @@ def refresh_dashboard_stats(app):
             db = get_db()
             cur = db.cursor(cursor_factory=DictCursor)
             try:
+                try:
+                    _refresh_server_track_counts(cur)
+                except Exception:
+                    logger.exception(
+                        "Server track-count refresh failed; continuing with the snapshot"
+                    )
+                    _safe_rollback(cur)
                 content = _collect_content_metrics(cur)
             finally:
                 cur.close()
