@@ -6,18 +6,23 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Unit tests for the app_backup chunked-restore endpoint.
+"""Unit tests for the app_backup create, download, and chunked-restore endpoints.
 
 Posts restore chunks to confirm confirmation, file, and chunk-field
-validation plus the cross-chunk restore locking behavior.
+validation plus the cross-chunk restore locking behavior, and exercises the
+two-step create-then-download backup flow.
 
 Main Features:
 * Confirmation, missing-file, and chunk-field/range validation returning 400.
 * First-chunk lock-held and later-chunk lock-missing returning 409.
+* Create returning the zipped backup file name as JSON; download serving only
+  filenames matching the backup pattern and 404ing everything else.
+* Zip-or-sql detection by magic bytes with in-zip .sql extraction for restore.
 """
 
 import io
 import os
+import zipfile
 from unittest.mock import MagicMock
 
 import pytest
@@ -89,6 +94,78 @@ class TestRestoreValidation:
         resp = _post(client, chunk_num=chunk_num, total_chunks=total_chunks)
         assert resp.status_code == 400
         assert 'Invalid chunk numbers' in resp.get_json()['error']
+
+
+class TestCreateAndDownload:
+    def test_create_returns_zipped_backup_filename_json(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+
+        def fake_run(cmd, **kwargs):
+            kwargs['stdout'].write('-- dump\n')
+            return MagicMock(returncode=0, stderr='')
+
+        monkeypatch.setattr(app_backup.subprocess, 'run', fake_run)
+        resp = client.post('/api/backup/create')
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body['success'] is True
+        assert body['filename'].endswith('.zip')
+        assert app_backup._BACKUP_FILENAME_RE.fullmatch(body['filename'])
+        assert body['size_bytes'] > 0
+        with zipfile.ZipFile(tmp_path / body['filename']) as zf:
+            member = zf.namelist()[0]
+            assert member.endswith('.sql')
+            assert zf.read(member) == b'-- dump\n'
+        assert not (tmp_path / member).exists()
+
+    def test_download_serves_backup_as_attachment(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+        name = 'audiomuse_backup_20260717_120000.sql'
+        (tmp_path / name).write_bytes(b'-- dump\n')
+        resp = client.get(f'/api/backup/download/{name}')
+        assert resp.status_code == 200
+        assert resp.data == b'-- dump\n'
+        assert 'attachment' in resp.headers['Content-Disposition']
+
+    def test_download_rejects_filename_outside_backup_pattern(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+        (tmp_path / 'secret.txt').write_bytes(b'nope')
+        resp = client.get('/api/backup/download/secret.txt')
+        assert resp.status_code == 404
+
+    def test_download_missing_backup_file_is_404(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+        resp = client.get('/api/backup/download/audiomuse_backup_20260717_120000.sql')
+        assert resp.status_code == 404
+
+
+class TestExtractSqlIfZip:
+    def test_plain_sql_file_passes_through_unchanged(self, tmp_path):
+        dump = tmp_path / 'dump.sql'
+        dump.write_bytes(b'SELECT 1;\n')
+        source, extracted = app_backup._extract_sql_if_zip(str(dump), io.StringIO())
+        assert source == str(dump)
+        assert extracted is None
+
+    def test_zip_upload_extracts_inner_sql_to_temp_file(self, tmp_path):
+        inner = b'SELECT 42;\n'
+        zpath = tmp_path / 'dump.zip'
+        with zipfile.ZipFile(zpath, 'w') as zf:
+            zf.writestr('audiomuse_backup_20260717_120000.sql', inner)
+        source, extracted = app_backup._extract_sql_if_zip(str(zpath), io.StringIO())
+        assert source == extracted
+        assert source != str(zpath)
+        with open(source, 'rb') as fh:
+            assert fh.read() == inner
+        os.unlink(source)
+
+    def test_zip_without_sql_member_aborts_restore(self, tmp_path):
+        zpath = tmp_path / 'dump.zip'
+        with zipfile.ZipFile(zpath, 'w') as zf:
+            zf.writestr('readme.txt', 'not sql')
+        source, extracted = app_backup._extract_sql_if_zip(str(zpath), io.StringIO())
+        assert source is None
+        assert extracted is None
 
 
 class TestRestoreLock:

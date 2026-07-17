@@ -13,9 +13,12 @@ Postgres instance, coordinating with `restart_manager` to bounce the app and
 workers around a restore.
 
 Main Features:
-* Routes: `/backup` page, `/api/backup/create`, `/api/backup/restore`.
+* Routes: `/backup` page, `/api/backup/create`, `/api/backup/download/<filename>`,
+  `/api/backup/restore`.
 * Serializes restores across containers with a self-releasing Redis lock and
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
+* Backups are compressed to .zip; restore accepts .sql or .zip uploads
+  (zip detected by magic bytes and extracted before psql).
 """
 
 import os
@@ -27,6 +30,7 @@ import threading
 import time
 import logging
 import tempfile
+import zipfile
 from datetime import datetime
 from flask import Blueprint, render_template, jsonify, request, send_file
 from redis import Redis
@@ -106,6 +110,9 @@ def _pg_cmd(tool, *extra_args):
     ]
 
 
+# Only files created by create_backup may be served by the download route.
+_BACKUP_FILENAME_RE = re.compile(r'audiomuse_backup_\d{8}_\d{6}\.(sql|zip)')
+
 # pg_dump 17+ writes `SET transaction_timeout = 0;` in the dump prologue; that
 # GUC does not exist before PG 17, so a dump from the bundled client 18 cannot
 # be replayed into a PG 15/16 server. Drop the line on the way into psql.
@@ -130,6 +137,39 @@ def _feed_dump(stdin, dump_file, result):
             stdin.close()
         except OSError:
             pass
+
+
+def _extract_sql_if_zip(dump_file, log):
+    try:
+        with open(dump_file, 'rb') as fh:
+            if fh.read(4) != b'PK\x03\x04':
+                return dump_file, None
+    except OSError as exc:
+        log.write(f"Restore FAILED: could not read backup file: {exc}\n")
+        return None, None
+    log.write("Backup file is a zip archive; extracting SQL dump.\n")
+    tmp = None
+    try:
+        with zipfile.ZipFile(dump_file) as zf:
+            member = next((n for n in zf.namelist() if n.lower().endswith('.sql')), None)
+            if member is None:
+                log.write("Restore FAILED: no .sql file found inside the zip archive.\n")
+                return None, None
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
+            with zf.open(member) as src:
+                shutil.copyfileobj(src, tmp, 1024 * 1024)
+            tmp.close()
+            log.write(f"Extracted {member} from the zip archive.\n")
+            return tmp.name, tmp.name
+    except (zipfile.BadZipFile, OSError) as exc:
+        log.write(f"Restore FAILED: could not extract zip archive: {exc}\n")
+        if tmp is not None:
+            try:
+                tmp.close()
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+        return None, None
 
 
 def _run_restore_runner(dump_file, log_file):
@@ -185,42 +225,49 @@ def _run_restore_runner(dump_file, log_file):
         )
         log.flush()
 
+        sql_source, extracted = _extract_sql_if_zip(dump_file, log)
+        log.flush()
+
         proc = None
         feeder = None
         feed_result = {}
         ret = -1
-        try:
-            proc = subprocess.Popen(
-                restore_cmd,
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
-            )
-            feeder = threading.Thread(
-                target=_feed_dump, args=(proc.stdin, dump_file, feed_result), daemon=True
-            )
-            feeder.start()
-            ret = proc.wait(timeout=3600)
-        except subprocess.TimeoutExpired:
-            if proc is not None:
-                try:
-                    proc.stdin.close()
-                except OSError:
-                    pass
-                proc.kill()
-                proc.wait()
-            ret = -1
-            log.write("Restore command timed out after 3600 seconds and was killed.\n")
+        if sql_source is None:
+            log.write("Restore aborted: no usable SQL dump to feed psql.\n")
             log.flush()
-        except Exception as exc:
-            log.write(f"Failed to execute restore command: {exc}\n")
-            log.flush()
-        finally:
-            if feeder is not None:
-                feeder.join(timeout=10)
+        else:
+            try:
+                proc = subprocess.Popen(
+                    restore_cmd,
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+                feeder = threading.Thread(
+                    target=_feed_dump, args=(proc.stdin, sql_source, feed_result), daemon=True
+                )
+                feeder.start()
+                ret = proc.wait(timeout=3600)
+            except subprocess.TimeoutExpired:
+                if proc is not None:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+                    proc.kill()
+                    proc.wait()
+                ret = -1
+                log.write("Restore command timed out after 3600 seconds and was killed.\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Failed to execute restore command: {exc}\n")
+                log.flush()
+            finally:
+                if feeder is not None:
+                    feeder.join(timeout=10)
         if ret == 0 and not feed_result.get('ok'):
             ret = 1
             log.write(
@@ -281,13 +328,16 @@ def _run_restore_runner(dump_file, log_file):
                 log.write(f"Failed to start local Flask service: {exc}\n")
                 log.flush()
 
-            try:
-                os.unlink(dump_file)
-                log.write(f"Deleted temporary dump file {dump_file}\n")
-                log.flush()
-            except Exception as exc:
-                log.write(f"Could not delete temporary dump file {dump_file}: {exc}\n")
-                log.flush()
+            for path in (dump_file, extracted):
+                if not path:
+                    continue
+                try:
+                    os.unlink(path)
+                    log.write(f"Deleted temporary dump file {path}\n")
+                    log.flush()
+                except Exception as exc:
+                    log.write(f"Could not delete temporary dump file {path}: {exc}\n")
+                    log.flush()
         finally:
             _release_restore_lock()
             try:
@@ -324,20 +374,28 @@ def create_backup():
     ---
     tags:
       - Backup
-    summary: Run pg_dump on the application database and download the resulting .sql file.
+    summary: Run pg_dump on the application database and return the backup file name.
     description: |
-      Removes any prior `audiomuse_backup_*.sql` files in BACKUP_DIR, then runs
-      `pg_dump --clean --if-exists` and streams the dump back to the client as
-      an attachment named `audiomuse_backup_<TIMESTAMP>.sql`. pg_dump is bounded
-      by a 600 second timeout.
+      Removes any prior `audiomuse_backup_*` files in BACKUP_DIR, then runs
+      `pg_dump --clean --if-exists` and compresses the dump into
+      `audiomuse_backup_<TIMESTAMP>.zip`. pg_dump is bounded by a 600 second
+      timeout. The archive itself is fetched in a second step via
+      GET /api/backup/download/<filename> so the browser can stream it
+      natively to disk.
     responses:
       200:
-        description: pg_dump succeeded; the .sql file is returned as an attachment.
+        description: pg_dump succeeded; the response carries the file name to download.
         content:
-          application/sql:
+          application/json:
             schema:
-              type: string
-              format: binary
+              type: object
+              properties:
+                success:
+                  type: boolean
+                filename:
+                  type: string
+                size_bytes:
+                  type: integer
       500:
         description: pg_dump failed, was not installed, or timed out.
         content:
@@ -352,7 +410,7 @@ def create_backup():
 
     # Remove old backup files
     for old in os.listdir(BACKUP_DIR):
-        if old.startswith('audiomuse_backup_') and old.endswith('.sql'):
+        if old.startswith('audiomuse_backup_') and old.endswith(('.sql', '.zip')):
             try:
                 os.remove(os.path.join(BACKUP_DIR, old))
             except OSError:
@@ -390,7 +448,69 @@ def create_backup():
         err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump timed out after 600 seconds.")
         return jsonify({**err, 'error': err['error_message']}), 500
 
-    logger.info("Backup created: %s", filepath)
+    zip_filename = f"audiomuse_backup_{timestamp}.zip"
+    zip_filepath = os.path.join(BACKUP_DIR, zip_filename)
+    try:
+        # Fastest deflate level: dumps are multi-GB text, level 1 still compresses
+        # them well and the default level 6 is several times slower.
+        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+            zf.write(filepath, arcname=filename)
+        os.remove(filepath)
+    except OSError:
+        logger.exception("Failed to compress backup")
+        for path in (filepath, zip_filepath):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                logger.warning("Could not delete %s after compression failure", path, exc_info=True)
+        err = error_manager.build(ERR_BACKUP_FAILED, "Failed to compress the backup file.")
+        return jsonify({**err, 'error': err['error_message']}), 500
+
+    logger.info("Backup created: %s", zip_filepath)
+    return jsonify(
+        {'success': True, 'filename': zip_filename, 'size_bytes': os.path.getsize(zip_filepath)}
+    )
+
+
+@backup_bp.route('/api/backup/download/<filename>', methods=['GET'])
+def download_backup(filename):
+    """
+    Download a previously created backup file.
+    ---
+    tags:
+      - Backup
+    summary: Stream a backup file created by /api/backup/create as an attachment.
+    parameters:
+      - in: path
+        name: filename
+        required: true
+        schema:
+          type: string
+        description: File name returned by /api/backup/create (audiomuse_backup_<TIMESTAMP>.zip).
+    responses:
+      200:
+        description: The backup file is returned as an attachment.
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      404:
+        description: Invalid or unknown backup file name.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+    """
+    if not _BACKUP_FILENAME_RE.fullmatch(filename):
+        return jsonify({'error': 'Invalid backup file name.'}), 404
+    filepath = os.path.join(BACKUP_DIR, filename)
+    if not os.path.isfile(filepath):
+        return jsonify({'error': 'Backup file not found. Create a new backup first.'}), 404
     return send_file(filepath, as_attachment=True, download_name=filename)
 
 
@@ -401,7 +521,7 @@ def restore_backup():
     ---
     tags:
       - Backup
-    summary: Upload a .sql dump (single file or chunked) and replay it via psql.
+    summary: Upload a backup (.sql or .zip, single file or chunked) and replay it via psql.
     description: |
       Acquires a 1-hour Redis lock (`audiomuse:restore_lock`) to prevent
       concurrent restores. The endpoint accepts either:
@@ -414,7 +534,8 @@ def restore_backup():
 
       When all data has been received, a detached subprocess runs psql with
       `--single-transaction` and `ON_ERROR_STOP=1` against the configured
-      Postgres database, then restarts the local Flask service.
+      Postgres database, then restarts the local Flask service. A .zip upload
+      (detected by magic bytes) is extracted to the inner .sql before replay.
     requestBody:
       required: true
       content:
@@ -429,7 +550,7 @@ def restore_backup():
               file:
                 type: string
                 format: binary
-                description: The .sql dump (or one chunk of it).
+                description: The backup as .sql or .zip (or one chunk of it).
               chunk_num:
                 type: integer
                 description: 1-indexed chunk number; omit for single-file upload.

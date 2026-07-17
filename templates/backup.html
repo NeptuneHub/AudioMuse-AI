@@ -73,7 +73,7 @@
         <!-- Create Backup -->
         <div class="backup-card">
             <h2>Create Backup</h2>
-            <p>Dump the entire audiomuse database. The backup file will be downloaded to your browser when ready.</p>
+            <p>Dump the entire audiomuse database. The backup is compressed to a .zip file and downloaded by your browser when ready.</p>
             <button id="create-backup-btn" class="btn btn-primary">Create Backup</button>
             <div id="backup-status"></div>
         </div>
@@ -81,11 +81,11 @@
         <!-- Restore Backup -->
         <div class="backup-card">
             <h2>Restore Backup</h2>
-            <p>Upload a backup file (.sql) from your machine and restore the database to that state. <strong>This will replace all current data.</strong><br>The Flask and worker containers will be restarted automatically and you will be redirected to the home page.</p>
+            <p>Upload a backup file (.sql or .zip) from your machine and restore the database to that state. <strong>This will replace all current data.</strong><br>The Flask and worker containers will be restarted automatically and you will be redirected to the home page.</p>
 
             <div style="margin-bottom:1rem;">
                 <label style="display:block; margin-bottom:0.5rem; font-weight:600;">Select backup file:</label>
-                <input type="file" id="restore-file-input" accept=".sql" style="display:none;">
+                <input type="file" id="restore-file-input" accept=".sql,.zip" style="display:none;">
                 <button type="button" id="restore-file-btn" class="btn btn-primary">Choose File</button>
                 <span id="restore-file-name" style="margin-left:0.75rem; color:var(--text-sub);">No file selected</span>
             </div>
@@ -145,23 +145,19 @@ document.addEventListener('DOMContentLoaded', () => {
         backupStatus.style.color = 'var(--text-sub)';
         try {
             const res = await fetch("{{ url_for('backup_bp.create_backup') }}", { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                const err = await res.json();
-                const structured = (typeof formatErrorText === 'function' && err.error_code) ? formatErrorText(err) : null;
-                throw new Error(structured || err.error || 'Backup failed');
+                const structured = (typeof formatErrorText === 'function' && data.error_code) ? formatErrorText(data) : null;
+                throw new Error(structured || data.error || 'Backup failed');
             }
-            const blob = await res.blob();
-            const disposition = res.headers.get('Content-Disposition') || '';
-            const match = disposition.match(/filename="?([^"]+)"?/);
-            const name = match ? match[1] : 'backup.zip';
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = name;
+            a.href = "{{ url_for('backup_bp.download_backup', filename='FILENAME') }}"
+                .replace('FILENAME', encodeURIComponent(data.filename));
             document.body.appendChild(a);
             a.click();
             a.remove();
-            URL.revokeObjectURL(a.href);
-            backupStatus.textContent = 'Backup created and download started.';
+            const sizeMB = data.size_bytes ? ' (' + (data.size_bytes / (1024 * 1024)).toFixed(1) + ' MB)' : '';
+            backupStatus.textContent = 'Backup created' + sizeMB + ' and download started.';
             backupStatus.style.color = 'var(--color-success, green)';
         } catch (e) {
             backupStatus.textContent = 'Error: ' + e.message;
