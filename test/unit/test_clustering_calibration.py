@@ -20,10 +20,11 @@ Main Features:
   at the TOP of the range
 * DBSCAN has no cluster count: eps is derived from the data (k-distance
   heuristic), then probes widen it when playlists are tiny and tighten it
-  when oversized, alongside the percentile
+  when oversized
 * A probe passes only with at least top_n_playlists keeper playlists;
-  otherwise clusters shrink toward the goal and the percentile rises
-* Oversized playlists grow the cluster range and lower the percentile
+  otherwise clusters shrink toward the goal
+* Every probe reuses the same fixed stratified sample and percentile
+* Oversized playlists grow the cluster range
 * With no passing probe the best one wins and big always beats empty
 * A probe failure still caps count-based ranges by library size
 """
@@ -44,15 +45,17 @@ def _run_calibration(monkeypatch, probe_results, method='kmeans', num_min=40, nu
 
     probes = []
     percentiles = []
+    sample_calls = []
 
     monkeypatch.setattr(
         clustering, '_calculate_target_songs_per_genre',
         lambda genre_map, percentile, min_songs: percentiles.append(percentile) or 10,
     )
-    monkeypatch.setattr(
-        clustering, '_get_stratified_song_subset',
-        lambda genre_map, target: [{'item_id': str(i)} for i in range(subset_size)],
-    )
+    def fixed_sample(_genre_map, target):
+        sample_calls.append(target)
+        return [{'item_id': str(i)} for i in range(subset_size)]
+
+    monkeypatch.setattr(clustering, '_get_stratified_song_subset', fixed_sample)
     monkeypatch.setattr(
         clustering, '_derive_dbscan_eps',
         lambda item_ids, min_samples, moods, embeddings: derived_eps,
@@ -86,6 +89,7 @@ def _run_calibration(monkeypatch, probe_results, method='kmeans', num_min=40, nu
         True,
         lambda message, local_pct, task_state=None: None,
     )
+    assert sample_calls == [10]
     return chosen, probes, percentiles
 
 
@@ -109,28 +113,28 @@ class TestKmeansCalibration:
         assert chosen == (12, 12, 50)
         assert [p['num_clusters_min_max'] for p in probes] == [(12, 12)]
 
-    def test_too_few_keepers_shrink_clusters_and_raise_the_percentile_until_enough(self, monkeypatch):
+    def test_too_few_keepers_shrink_clusters_with_one_fixed_sample(self, monkeypatch):
         chosen, probes, pcts = _run_calibration(
             monkeypatch,
             [_result([5, 8]), _result([30] * 3), _result([30] * 9)],
         )
-        assert chosen == (25, 25, 80)
+        assert chosen == (25, 25, 50)
         assert [p['num_clusters_min_max'] for p in probes] == [(100, 100), (50, 50), (25, 25)]
-        assert pcts == [50, 65, 80]
+        assert pcts == [50]
 
-    def test_oversized_playlists_grow_clusters_and_lower_the_percentile(self, monkeypatch):
+    def test_oversized_playlists_grow_clusters_without_changing_sampling(self, monkeypatch):
         chosen, probes, pcts = _run_calibration(
             monkeypatch, [_result([250] * 9), _result([100] * 9)]
         )
-        assert chosen == (60, 150, 35)
+        assert chosen == (60, 150, 50)
         assert [p['num_clusters_min_max'] for p in probes] == [(100, 100), (150, 150)]
-        assert pcts == [50, 35]
+        assert pcts == [50]
 
     def test_with_no_passing_probe_big_playlists_beat_empty_results(self, monkeypatch):
         chosen, probes, _pcts = _run_calibration(
             monkeypatch, [_result([5]), _result([400]), _result([3])]
         )
-        assert chosen == (40, 50, 65)
+        assert chosen == (40, 50, 50)
         assert len(probes) == 3
 
     def test_a_probe_failure_still_caps_the_range_by_library_size(self, monkeypatch):
@@ -168,15 +172,15 @@ class TestGmmAndSpectralCalibration:
         assert probes[0]['clustering_method'] == 'spectral'
         assert probes[0]['spectral_params_ranges'] == {'n_clusters_min': 8, 'n_clusters_max': 8}
 
-    def test_gmm_too_few_keepers_shrink_components_and_raise_the_percentile(self, monkeypatch):
+    def test_gmm_too_few_keepers_shrink_components_with_fixed_sampling(self, monkeypatch):
         chosen, probes, pcts = _run_calibration(
             monkeypatch,
             [_result([5, 8]), _result([30] * 9)],
             method='gmm',
         )
-        assert chosen == (40, 50, 65)
+        assert chosen == (40, 50, 50)
         assert probes[1]['gmm_params_ranges'] == {'n_components_min': 50, 'n_components_max': 50}
-        assert pcts == [50, 65]
+        assert pcts == [50]
 
 
 class TestDbscanCalibration:
@@ -194,7 +198,7 @@ class TestDbscanCalibration:
             'eps_min': 5.0, 'eps_max': 9.0, 'samples_min': 5, 'samples_max': 20,
         }
 
-    def test_dbscan_too_few_keepers_widen_eps_and_raise_the_percentile(self, monkeypatch):
+    def test_dbscan_too_few_keepers_widen_eps_with_fixed_sampling(self, monkeypatch):
         chosen, probes, pcts = _run_calibration(
             monkeypatch,
             [_result([5, 8]), _result([30] * 9)],
@@ -202,12 +206,12 @@ class TestDbscanCalibration:
             num_min=0.1,
             num_max=0.5,
         )
-        assert chosen == (7.5, 13.5, 65)
+        assert chosen == (7.5, 13.5, 50)
         assert probes[1]['dbscan_params_ranges']['eps_min'] == 7.5
         assert probes[1]['dbscan_params_ranges']['eps_max'] == 13.5
-        assert pcts == [50, 65]
+        assert pcts == [50]
 
-    def test_dbscan_oversized_playlists_tighten_eps_and_lower_the_percentile(self, monkeypatch):
+    def test_dbscan_oversized_playlists_tighten_eps_with_fixed_sampling(self, monkeypatch):
         chosen, _probes, pcts = _run_calibration(
             monkeypatch,
             [_result([250] * 9), _result([100] * 9)],
@@ -215,8 +219,8 @@ class TestDbscanCalibration:
             num_min=0.1,
             num_max=0.5,
         )
-        assert chosen == (pytest.approx(3.5), pytest.approx(6.3), 35)
-        assert pcts == [50, 35]
+        assert chosen == (pytest.approx(3.5), pytest.approx(6.3), 50)
+        assert pcts == [50]
 
     def test_dbscan_derivation_failure_keeps_the_configured_eps(self, monkeypatch):
         chosen, probes, _pcts = _run_calibration(
@@ -241,7 +245,7 @@ class TestDbscanCalibration:
         assert probes[1]['dbscan_params_ranges']['eps_max'] == 13.5
         assert probes[2]['dbscan_params_ranges']['eps_max'] == 13.5
         assert probes[2]['dbscan_params_ranges']['eps_min'] == pytest.approx(11.25)
-        assert chosen == (pytest.approx(11.25), 13.5, 80)
+        assert chosen == (pytest.approx(11.25), 13.5, 50)
 
     def test_a_single_giant_cluster_tightens_eps_instead_of_widening(self, monkeypatch):
         chosen, _probes, pcts = _run_calibration(
@@ -251,8 +255,8 @@ class TestDbscanCalibration:
             num_min=0.1,
             num_max=0.5,
         )
-        assert chosen == (pytest.approx(3.5), pytest.approx(6.3), 35)
-        assert pcts == [50, 35]
+        assert chosen == (pytest.approx(3.5), pytest.approx(6.3), 50)
+        assert pcts == [50]
 
     def test_a_dbscan_probe_failure_falls_back_to_the_derived_eps(self, monkeypatch):
         chosen, _probes, _pcts = _run_calibration(

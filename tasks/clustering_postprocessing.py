@@ -386,6 +386,13 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
                 if name in filtered_playlists
             }
 
+        if "playlist_primary_genres" in best_result:
+            new_result["playlist_primary_genres"] = {
+                name: genre
+                for name, genre in best_result["playlist_primary_genres"].items()
+                if name in filtered_playlists
+            }
+
         logger.info(
             f"{log_prefix}Duplicate filtering complete: {total_songs_before} -> {total_songs_after} songs total across {len(filtered_playlists)} playlists"
         )
@@ -448,6 +455,13 @@ def apply_minimum_size_filter_to_clustering_result(best_result, min_size=20, log
                 if name in large_playlists
             }
 
+        if "playlist_primary_genres" in best_result:
+            new_result["playlist_primary_genres"] = {
+                name: genre
+                for name, genre in best_result["playlist_primary_genres"].items()
+                if name in large_playlists
+            }
+
         logger.info(
             f"{log_prefix}Minimum size filtering complete: kept {len(large_playlists)} playlists, removed {removed_count} small playlists"
         )
@@ -470,6 +484,7 @@ def select_top_n_diverse_playlists(best_result, n):
     playlist_to_vector = best_result.get("playlist_to_centroid_vector_map", {})
     original_playlists = best_result.get("named_playlists", {})
     original_centroids = best_result.get("playlist_centroids", {})
+    playlist_primary_genres = best_result.get("playlist_primary_genres", {})
 
     if not playlist_to_vector or n <= 0 or n >= len(playlist_to_vector):
         logger.info(
@@ -496,6 +511,11 @@ def select_top_n_diverse_playlists(best_result, n):
     playlist_sizes = [len(original_playlists.get(name, [])) for name in available_names]
     first_idx = np.argmax(playlist_sizes)
     selected_indices.append(first_idx)
+    selected_genres = {
+        genre
+        for genre in [playlist_primary_genres.get(available_names[first_idx])]
+        if genre and genre != '__other__'
+    }
 
     is_available = np.ones(len(available_names), dtype=bool)
     is_available[first_idx] = False
@@ -504,17 +524,31 @@ def select_top_n_diverse_playlists(best_result, n):
         if not np.any(is_available):
             break
 
+        original_indices_available = np.where(is_available)[0]
+        unseen_genre_indices = np.array(
+            [
+                i for i in original_indices_available
+                if playlist_primary_genres.get(available_names[i])
+                not in selected_genres | {None, '__other__'}
+            ],
+            dtype=int,
+        )
+        candidate_indices = (
+            unseen_genre_indices
+            if unseen_genre_indices.size
+            else original_indices_available
+        )
+
         selected_vectors = available_vectors[selected_indices]
-        remaining_vectors = available_vectors[is_available]
+        remaining_vectors = available_vectors[candidate_indices]
 
         dist_matrix = cdist(remaining_vectors, selected_vectors, 'euclidean')
         min_distances = np.min(dist_matrix, axis=1)
 
-        original_indices_available = np.where(is_available)[0]
         sizes_available = np.array(
             [
                 len(original_playlists.get(available_names[i], []))
-                for i in original_indices_available
+                for i in candidate_indices
             ]
         )
         size_scores = np.log1p(sizes_available)
@@ -533,10 +567,13 @@ def select_top_n_diverse_playlists(best_result, n):
 
         best_candidate_local_idx = np.argmax(combined_scores)
 
-        best_original_idx = original_indices_available[best_candidate_local_idx]
+        best_original_idx = candidate_indices[best_candidate_local_idx]
 
         selected_indices.append(best_original_idx)
         is_available[best_original_idx] = False
+        selected_genre = playlist_primary_genres.get(available_names[best_original_idx])
+        if selected_genre and selected_genre != '__other__':
+            selected_genres.add(selected_genre)
 
     selected_names = [available_names[i] for i in selected_indices]
 
@@ -549,11 +586,18 @@ def select_top_n_diverse_playlists(best_result, n):
     filtered_vector_map = {
         name: playlist_to_vector[name] for name in selected_names if name in playlist_to_vector
     }
+    filtered_primary_genres = {
+        name: playlist_primary_genres[name]
+        for name in selected_names
+        if name in playlist_primary_genres
+    }
 
     new_result = best_result.copy()
     new_result["named_playlists"] = filtered_playlists
     new_result["playlist_centroids"] = filtered_centroids
     new_result["playlist_to_centroid_vector_map"] = filtered_vector_map
+    if playlist_primary_genres:
+        new_result["playlist_primary_genres"] = filtered_primary_genres
 
     logger.info(f"Selected {len(selected_names)} diverse playlists: {selected_names}")
 

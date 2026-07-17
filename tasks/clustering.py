@@ -32,8 +32,8 @@ Main Features:
   so playlists span the library rather than one dominant genre.
 * _calibrate_cluster_params: per-server auto-tuning for EVERY algorithm via up
   to CLUSTERING_CALIBRATION_MAX_TRIES quick single-iteration probes. KMeans,
-  GMM and Spectral tune their own cluster/component range plus the sampling
-  percentile: small libraries pin the range to top_n_playlists clusters
+  GMM and Spectral tune their own cluster/component range against one fixed
+  stratified sample: small libraries pin the range to top_n_playlists clusters
   directly (never above subset_size / (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N), never
   below subset_size / CLUSTERING_MAX_PLAYLIST_SONGS) and each probe runs at
   the TOP of the range (worst case for emptiness). DBSCAN has no cluster
@@ -41,13 +41,11 @@ Main Features:
   via _derive_dbscan_eps - the configured 0.1-0.5 default is unusable in the
   ~200-dim embedding space where every point would be noise), oversized
   components are re-split by KMeans in clustering_helper, and probes widen
-  eps when playlists come out tiny and tighten it when oversized, alongside
-  the percentile. A probe only passes with at
+  eps when playlists come out tiny and tighten it when oversized. A probe only passes with at
   least top_n_playlists playlists of MIN_PLAYLIST_SIZE_FOR_TOP_N+ songs;
-  otherwise clusters shrink toward the goal and the percentile rises to
-  sample more of the library. Oversized probes (over
-  CLUSTERING_MAX_PLAYLIST_SONGS) grow clusters/lower percentile; big beats
-  empty. On probe failure the library-size cap still applies. Calibration is
+  otherwise clusters shrink toward the goal. Oversized probes (over
+  CLUSTERING_MAX_PLAYLIST_SONGS) grow clusters; big beats empty. On probe
+  failure the library-size cap still applies. Calibration is
   skipped on crash-recovery resumes (existing batch children).
 * _name_and_prepare_playlists: score, name (optionally via AI) and persist results;
   app imports are deferred inside functions to avoid circular imports.
@@ -770,16 +768,16 @@ def _calibrate_cluster_params(
     report,
 ):
     count_based = clustering_method in ('kmeans', 'gmm', 'spectral')
-    cur_min, cur_max, cur_pct = cluster_range_min, cluster_range_max, percentile
+    cur_min, cur_max = cluster_range_min, cluster_range_max
     eps_cap = None
     try:
         best_rank = None
         best = (cluster_range_min, cluster_range_max, percentile)
+        target = _calculate_target_songs_per_genre(
+            genre_map, percentile, min_songs_per_genre
+        )
+        subset = _get_stratified_song_subset(genre_map, target)
         for attempt in range(1, CLUSTERING_CALIBRATION_MAX_TRIES + 1):
-            target = _calculate_target_songs_per_genre(
-                genre_map, cur_pct, min_songs_per_genre
-            )
-            subset = _get_stratified_song_subset(genre_map, target)
             if count_based:
                 k_floor = max(2, len(subset) // CLUSTERING_MAX_PLAYLIST_SONGS)
                 cap = max(k_floor, len(subset) // (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N))
@@ -809,7 +807,7 @@ def _calibrate_cluster_params(
                 + (f"clusters {cur_min}-{cur_max}, " if count_based
                    else f"eps {cur_min:.2f}-{cur_max:.2f}, ")
                 + f"subset {len(subset)}, need {needed} playlists of "
-                f"{MIN_PLAYLIST_SIZE_FOR_TOP_N}+ songs, percentile {cur_pct}",
+                f"{MIN_PLAYLIST_SIZE_FOR_TOP_N}+ songs, fixed percentile {percentile}",
                 3,
             )
             result = _perform_single_clustering_iteration(
@@ -860,40 +858,36 @@ def _calibrate_cluster_params(
             )
             if best_rank is None or rank > best_rank:
                 best_rank = rank
-                best = (cur_min, cur_max, cur_pct)
+                best = (cur_min, cur_max, percentile)
             if keepers >= needed and not oversized:
                 break
             if count_based:
                 if keepers < needed:
                     cur_max = max(needed, cur_max // 2)
                     cur_min = max(2, min(cur_min, cur_max))
-                    cur_pct = max(cur_pct, min(90, cur_pct + 15))
                 else:
                     cur_min = cur_min + max(1, cur_min // 2)
                     cur_max = cur_max + max(1, cur_max // 2)
-                    cur_pct = min(cur_pct, max(20, cur_pct - 15))
             elif oversized:
                 cur_min = max(0.05, cur_min * 0.7)
                 cur_max = max(cur_min * 1.2, cur_max * 0.7)
-                cur_pct = min(cur_pct, max(20, cur_pct - 15))
             else:
                 cur_min, cur_max = cur_min * 1.5, cur_max * 1.5
                 if eps_cap:
                     cur_max = min(cur_max, eps_cap)
                     cur_min = min(cur_min, cur_max)
-                cur_pct = max(cur_pct, min(90, cur_pct + 15))
         report(
             "Calibration chose "
             + (f"clusters {best[0]}-{best[1]}, " if count_based
                else f"eps {best[0]:.2f}-{best[1]:.2f}, ")
-            + f"percentile {best[2]}",
+            + f"fixed percentile {percentile}",
             4,
         )
         return best
     except Exception:
         logger.exception("Cluster calibration failed; falling back to library-size caps")
         if not count_based:
-            return cur_min, cur_max, cur_pct
+            return cur_min, cur_max, percentile
         total_tracks = sum(len(tracks) for tracks in genre_map.values())
         cap = max(2, total_tracks // (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N))
         safe_max = min(cluster_range_max, cap)

@@ -30,7 +30,7 @@ import random
 import logging
 import time
 import numpy as np
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans, DBSCAN, SpectralClustering
@@ -717,10 +717,15 @@ def _format_and_score_iteration_result(
 
     named_playlists, playlist_centroids = {}, {}
     playlist_to_centroid_vector_map = {}
+    playlist_primary_genres = {}
     unique_predominant_mood_scores = {}
     unique_predominant_other_feature_scores = {}
     item_id_to_song_index_map = {
         track_data['item_id']: i for i, track_data in enumerate(valid_tracks)
+    }
+    item_id_to_primary_genre = {
+        track_data['item_id']: _get_track_primary_genre(track_data)
+        for track_data in valid_tracks
     }
 
     for label_id, songs_list in filtered_clusters.items():
@@ -748,6 +753,16 @@ def _format_and_score_iteration_result(
             named_playlists[temp_name] = songs_list
             playlist_centroids[temp_name] = centroid_details
             playlist_to_centroid_vector_map[temp_name] = center_vec
+            genre_counts = Counter(
+                item_id_to_primary_genre.get(item_id, '__other__')
+                for item_id, _, _ in songs_list
+            )
+            known_genres = [genre for genre in STRATIFIED_GENRES if genre_counts[genre]]
+            playlist_primary_genres[temp_name] = (
+                max(known_genres, key=genre_counts.get)
+                if known_genres
+                else '__other__'
+            )
 
             if centroid_details and any(mood in active_moods for mood in centroid_details.keys()):
                 predominant_mood_key = max(
@@ -947,6 +962,7 @@ def _format_and_score_iteration_result(
         "named_playlists": named_playlists,
         "playlist_centroids": playlist_centroids,
         "playlist_to_centroid_vector_map": playlist_to_centroid_vector_map,
+        "playlist_primary_genres": playlist_primary_genres,
         "parameters": {**params, "max_songs_per_cluster": max_songs_per_cluster, "run_id": run_idx},
         "scaler_details": {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()}
         if scaler
@@ -1057,42 +1073,155 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
     return None
 
 
-def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, percent_change=0.0):
-    new_subset, new_ids = [], set()
-    if prev_ids and percent_change > 0:
-        sample_size = int(len(prev_ids) * (1.0 - percent_change))
-        if len(prev_ids) > sample_size:
-            kept_ids = set(random.sample(prev_ids, sample_size))
-        else:
-            kept_ids = set(prev_ids)
-    else:
-        kept_ids = set()
+def _fill_balanced_quotas(quotas, capacities, remaining):
+    """Distribute ``remaining`` slots to the least represented open genres."""
+    remaining = max(0, int(remaining))
+    while remaining > 0:
+        open_genres = [
+            genre for genre, capacity in capacities.items()
+            if quotas.get(genre, 0) < capacity
+        ]
+        if not open_genres:
+            break
 
-    id_to_track_map = {t['item_id']: t for g_list in genre_map.values() for t in g_list}
-    for track_id in kept_ids:
-        if track_id in id_to_track_map:
-            new_subset.append(id_to_track_map[track_id])
-            new_ids.add(track_id)
+        lowest_count = min(quotas.get(genre, 0) for genre in open_genres)
+        lowest_genres = [
+            genre for genre in open_genres
+            if quotas.get(genre, 0) == lowest_count
+        ]
+        random.shuffle(lowest_genres)
+        for genre in lowest_genres[:remaining]:
+            quotas[genre] = quotas.get(genre, 0) + 1
+            remaining -= 1
+            if remaining == 0:
+                break
+    return quotas
 
-    for genre in STRATIFIED_GENRES:
-        current_genre_count = sum(1 for t in new_subset if _get_track_primary_genre(t) == genre)
-        needed = target_per_genre - current_genre_count
-        if needed > 0:
-            candidates = [t for t in genre_map.get(genre, []) if t['item_id'] not in new_ids]
-            if candidates:
-                added_tracks = random.sample(candidates, min(needed, len(candidates)))
-                new_subset.extend(added_tracks)
-                for t in added_tracks:
-                    new_ids.add(t['item_id'])
-    if len(new_subset) > CLUSTERING_SUBSET_SONGS:
-        random.shuffle(new_subset)
-        return new_subset[:CLUSTERING_SUBSET_SONGS]
-    needed = CLUSTERING_SUBSET_SONGS - len(new_subset)
-    if needed > 0:
-        extras = [t for t in id_to_track_map.values() if t['item_id'] not in new_ids]
-        new_subset.extend(random.sample(extras, min(needed, len(extras))))
-    random.shuffle(new_subset)
-    return new_subset
+
+def _calculate_stratified_quotas(genre_tracks, sample_size, target_per_genre):
+    """Calculate every per-genre count before selecting a single track."""
+    capacities = {
+        genre: len(tracks)
+        for genre, tracks in genre_tracks.items()
+        if genre in STRATIFIED_GENRES and tracks
+    }
+    total_known = sum(capacities.values())
+    wanted_known = min(max(0, int(sample_size)), total_known)
+    target = max(0, int(target_per_genre))
+
+    base_limits = {
+        genre: min(capacity, target)
+        for genre, capacity in capacities.items()
+    }
+    if sum(base_limits.values()) >= wanted_known:
+        quotas = {genre: 0 for genre in capacities}
+        return _fill_balanced_quotas(quotas, base_limits, wanted_known)
+
+    quotas = dict(base_limits)
+    return _fill_balanced_quotas(
+        quotas,
+        capacities,
+        wanted_known - sum(quotas.values()),
+    )
+
+
+def _get_stratified_song_subset(
+    genre_map,
+    target_per_genre,
+    prev_ids=None,
+    percent_change=0.0,
+):
+    # Deduplicate first and regroup from the track's actual primary genre.  The
+    # quota calculation below therefore operates on the exact population that
+    # can be sampled, not on potentially duplicated map entries.
+    tracks_by_id = {}
+    for tracks in genre_map.values():
+        for track in tracks:
+            track_id = track.get('item_id')
+            if track_id is not None and track_id not in tracks_by_id:
+                tracks_by_id[track_id] = track
+
+    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), len(tracks_by_id))
+    if desired_size == 0:
+        return []
+
+    genre_tracks = defaultdict(list)
+    for track in tracks_by_id.values():
+        genre_tracks[_get_track_primary_genre(track)].append(track)
+
+    quotas = _calculate_stratified_quotas(
+        genre_tracks,
+        desired_size,
+        target_per_genre,
+    )
+
+    # Unknown/non-stratified tracks are used only if all recognised genres
+    # together cannot fill the configured exact sample size.
+    known_quota_total = sum(quotas.values())
+    if known_quota_total < desired_size:
+        other_capacity = len(genre_tracks.get('__other__', []))
+        quotas['__other__'] = min(
+            other_capacity,
+            desired_size - known_quota_total,
+        )
+
+    previous_ids = set(prev_ids or [])
+    change_fraction = min(1.0, max(0.0, float(percent_change)))
+    selected, selected_ids = [], set()
+
+    for genre, quota in quotas.items():
+        if quota <= 0:
+            continue
+        candidates = genre_tracks.get(genre, [])
+        previous_candidates = [
+            track for track in candidates if track['item_id'] in previous_ids
+        ]
+        keep_count = 0
+        if prev_ids is not None:
+            keep_count = min(
+                len(previous_candidates),
+                quota,
+                int(quota * (1.0 - change_fraction)),
+            )
+        kept = (
+            random.sample(previous_candidates, keep_count)
+            if keep_count < len(previous_candidates)
+            else previous_candidates
+        )
+        selected.extend(kept)
+        selected_ids.update(track['item_id'] for track in kept)
+
+        needed = quota - len(kept)
+        if needed <= 0:
+            continue
+
+        fresh = [
+            track for track in candidates
+            if track['item_id'] not in selected_ids
+            and (
+                change_fraction == 0.0
+                or track['item_id'] not in previous_ids
+            )
+        ]
+        added = random.sample(fresh, min(needed, len(fresh)))
+        selected.extend(added)
+        selected_ids.update(track['item_id'] for track in added)
+
+        # A small genre may not have enough never-before-seen tracks to rotate
+        # the requested percentage. Reuse dropped previous tracks only to keep
+        # its precomputed quota exact.
+        still_needed = quota - len(kept) - len(added)
+        if still_needed > 0:
+            remaining = [
+                track for track in candidates
+                if track['item_id'] not in selected_ids
+            ]
+            reused = random.sample(remaining, still_needed)
+            selected.extend(reused)
+            selected_ids.update(track['item_id'] for track in reused)
+
+    random.shuffle(selected)
+    return selected
 
 
 def _get_track_primary_genre(track_data):

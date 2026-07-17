@@ -242,7 +242,7 @@ CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "1000")) # Default to 10
 CLUSTERING_AUTO_CALIBRATION = os.environ.get("CLUSTERING_AUTO_CALIBRATION", "True").lower() == "true" # Automatic parameter discovery per server; False = always use the configured defaults as-is
 CLUSTERING_MAX_PLAYLIST_SONGS = int(os.environ.get("CLUSTERING_MAX_PLAYLIST_SONGS", "200")) # Calibration tries to keep playlists at or under this many songs (soft goal; big beats empty)
 CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MAX_TRIES", "3")) # Quick single-iteration probes per server before the real run
-CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact number of songs sampled per clustering iteration: stratified by genre, topped up with random songs; smaller only when the library has fewer
+CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact per-iteration sample cap; all per-genre quotas are calculated before selecting tracks, and smaller libraries contribute every clusterable song
 CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches without a better result; in-flight batches still drain
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in RQ queue (reduced from 100 to prevent resource exhaustion)
 
