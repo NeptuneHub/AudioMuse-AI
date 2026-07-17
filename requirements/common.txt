@@ -28,7 +28,6 @@ flatbuffers==25.12.19
 packaging==26.2
 protobuf==6.33.6
 sympy==1.13.1
-mcp==1.27.0
 httpx==0.28.1
 transformers==4.57.6
 huggingface-hub==0.36.2

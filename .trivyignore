@@ -23,6 +23,12 @@ GHSA-69w3-r845-3855
 # fixed only in the 5.x major line (breaking bump from the pinned 4.57.6).
 CVE-2026-4372
 GHSA-29pf-2h5f-8g72
+# transformers LightGlue trust_remote_code override RCE -- unreachable: AudioMuse
+# never loads LightGlue models nor any model from an untrusted repo (only trusted
+# bundled models). Mirrors PYSEC-2026-2290 in the pip-audit allowlist; no fix in
+# the 4.x line (fixed only in the 5.x major).
+CVE-2026-5241
+GHSA-fgcw-684q-jj6r
 
 # The onnx model-loading CVEs are intentionally NOT excluded here because they
 # are already fixed by onnx==1.21.0 in requirements/common.txt (the version Trivy
