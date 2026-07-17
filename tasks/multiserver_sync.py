@@ -46,9 +46,12 @@ Main Features:
   materialized.
 * ``recover_abandoned_sweeps`` (run by the RQ janitor) revokes sweeps whose RQ
   job died mid-run - e.g. killed by the worker restart a default-server change
-  publishes - and enqueues one replacement alignment of all servers, at most
-  once per 10 minutes; rows with no RQ job at all (enqueue failures) are left
-  to the batch-start cleanup.
+  publishes - and enqueues one matching-only replacement alignment of all
+  servers, at most once per 10 minutes; rows with no RQ job at all (enqueue
+  failures) are left to the batch-start cleanup.
+* Empty-catalogue guard: while nothing is analyzed yet every sweep completes
+  instantly without fetching, so first-install server adds and restarts cost
+  nothing; the first analysis creates the mappings itself.
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
   per-server counts stay truthful; pruning is skipped when the fetch looks
   partial so a transient provider error never mass-deletes valid mappings.
@@ -108,7 +111,10 @@ def recover_abandoned_sweeps():
     the servers it covered are never aligned. Called periodically by the RQ
     janitor: every non-terminal sweep row whose RQ job is dead - or has vanished
     from Redis entirely - is marked REVOKED and one fresh alignment covering all
-    servers is enqueued in their place. 'missing' rows are recovered here rather
+    servers is enqueued in their place (matching-only, so already-aligned
+    servers exit immediately instead of being re-fetched and re-pruned; the
+    interrupted server resumes incrementally since mapped tracks are skipped).
+    'missing' rows are recovered here rather
     than skipped: the batch-start cleanup no longer touches sweeps (starting an
     analysis used to silently revoke a running one), so nothing else would ever
     retire them and the servers panel would show a phantom sweep stuck at N%.
@@ -175,7 +181,7 @@ def recover_abandoned_sweeps():
             cur.close()
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
-            kwargs={'task_id': new_task_id},
+            kwargs={'task_id': new_task_id, 'full_refresh': False},
             job_id=new_task_id,
             job_timeout=-1,
         )
@@ -734,6 +740,16 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     stype = server['server_type']
     server_id = server['server_id']
     total_local = _local_track_count(db)
+    if not total_local:
+        report(
+            f"Nothing analyzed yet; {server['name']} aligns automatically during the first analysis.",
+            base + span,
+        )
+        return {
+            'server_id': server_id, 'name': server['name'], 'server_type': stype,
+            'target_tracks': 0, 'local_tracks': 0, 'unmapped': 0,
+            'matched': 0, 'aligned': True, 'empty_catalogue': True, 'tier_counts': {},
+        }
     unmapped_count = unmapped_local_count(db, server_id)
     if not unmapped_count and not full_refresh:
         report(
@@ -860,7 +876,9 @@ def sweep_server(server_id, task_id=None, conn=None):
         report(f"Starting alignment for {server['name']}...", 2, task_state=TASK_STATUS_STARTED)
         cancel()
         summary = _sweep_one(server, db, report, 5, 95, cancel, full_refresh=True)
-        if summary.get('aligned'):
+        if summary.get('empty_catalogue'):
+            message = "Nothing analyzed yet; alignment runs automatically during the first analysis."
+        elif summary.get('aligned'):
             message = f"{server['name']} is already aligned; nothing to do."
         else:
             message = (
@@ -951,6 +969,12 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
                 except Exception:
                     logger.debug("Rollback after failed server sweep failed", exc_info=True)
                 results.append({'server_id': server['server_id'], 'error': 'sweep failed'})
+        if all(r.get('empty_catalogue') for r in results):
+            report(
+                "Nothing analyzed yet; alignment runs automatically during the first analysis.",
+                100, task_state=TASK_STATUS_SUCCESS,
+            )
+            return results
         matched = sum(r.get('matched', 0) for r in results)
         report(
             f"Alignment complete for {len(servers)} server(s); {matched} track mappings written.",

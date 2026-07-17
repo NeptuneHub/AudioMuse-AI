@@ -1140,6 +1140,59 @@ class TestSweepAlignment:
         assert summary['aligned'] is True
         assert fetched == []
 
+    def test_empty_catalogue_sweep_is_noop_without_fetch_even_on_full_refresh(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 0)
+        fetched = []
+        monkeypatch.setattr(
+            sync.provider_probe, 'fetch_all_tracks',
+            lambda *a, **k: fetched.append(1) or [],
+        )
+        summary = sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+            full_refresh=True,
+        )
+        assert summary['aligned'] is True
+        assert summary['empty_catalogue'] is True
+        assert fetched == []
+
+    def test_sweep_all_reports_first_analysis_message_on_empty_catalogue(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+        import config
+
+        servers = [
+            {'server_id': 's1', 'name': 'One', 'server_type': 'navidrome', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+        ]
+        monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
+        reports = []
+        monkeypatch.setattr(
+            sync, '_make_reporter',
+            lambda task_id, label: (
+                lambda message, progress, task_state=None: reports.append(
+                    (message, progress, task_state)
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
+        )
+        monkeypatch.setattr(
+            sync, '_sweep_one',
+            lambda server, db, report, base, span, cancel, full_refresh=False: {
+                'server_id': server['server_id'], 'matched': 0, 'aligned': True,
+                'empty_catalogue': True, 'tier_counts': {},
+            },
+        )
+
+        results = sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
+
+        assert len(results) == 1
+        assert reports[-1][2] == config.TASK_STATUS_SUCCESS
+        assert 'Nothing analyzed yet' in reports[-1][0]
+
     def test_unmapped_rows_matched_and_written(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
@@ -1505,6 +1558,7 @@ class TestSweepAlignment:
         assert new_task_id is not None
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
         assert enqueued['job_id'] == new_task_id
+        assert enqueued['kwargs'] == {'task_id': new_task_id, 'full_refresh': False}
         revoke_calls = [e for e in executed if e[0].startswith('UPDATE task_status')]
         assert revoke_calls and revoke_calls[0][1][-1] == ['dead-sweep']
 
