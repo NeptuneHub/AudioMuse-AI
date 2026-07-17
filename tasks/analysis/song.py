@@ -6,43 +6,56 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Analysis helpers: ONNX inference, feature extraction and per-track persistence.
+"""Per-song analysis: audio decode, MusiCNN/CLAP/lyrics models and their persistence.
 
-Support code factored out of tasks.analysis so the album loop stays readable.
-Owns ONNX Runtime session creation and provider selection (CPU/CUDA/CoreML), the
-MusiCNN inference path, spectrogram/feature extraction, and the "what does this
-track still need" decisions plus the DB upserts that store each result.
+Everything that happens to ONE audio file lives here: loading it (librosa with a
+PyAV fallback), the MusiCNN analyze_track pipeline with ONNX session management
+and OOM-to-CPU retry, the CLAP and lyrics stages, and the DB writes that store
+each result under the canonical catalogue id.
 
 Main Features:
-* create_onnx_session / load_musicnn_sessions / run_inference_with_oom_fallback:
-  build sessions, resolve execution providers, and retry inference on OOM.
-* compute_album_needs / decide_track_needs: per-track dedup deciding which of
-  musicnn, CLAP and lyrics embeddings are missing (the real analysis dedup).
-* persist_* helpers upsert mood tags, embeddings, CLAP and lyrics vectors.
+* analyze_track / robust_load_audio_with_fallback: decode a file and produce the
+  MusiCNN moods + embedding; a track that cannot be decoded returns None.
+* run_clap_for_track / run_lyrics_for_track: the optional per-song stages; every
+  failure is recorded through the central error registry and never raised past
+  the stage (a DB outage is the one exception: it re-raises so the album retries).
+* persist_musicnn_results / persist_clap_embedding / refresh_other_features:
+  the writes; other_features starts as zeros and is refreshed when CLAP lands.
+* run_song_analyzed_hook: the plugin hook, carrying the server the song was
+  analyzed from (server_id / server_name).
 """
 
 import gc
 import importlib
 import logging
+import os
 
 import numpy as np
 import librosa
 import onnxruntime as ort
 
-from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
-
+from config import (
+    AUDIO_LOAD_TIMEOUT,
+    OTHER_FEATURE_LABELS,
+    PER_SONG_MODEL_RELOAD,
+)
 from database import (
     get_db,
-    get_clap_embedding,
     save_track_analysis_and_embedding,
     save_clap_embedding,
     save_lyrics_embedding,
 )
-from app_helper_artist import upsert_artist_mappings
-from psycopg2 import sql as pgsql
+from psycopg2 import OperationalError
 
 from error import error_manager
-from error.error_dictionary import ERR_LYRICS_TRANSCRIPTION
+from error.error_dictionary import (
+    ERR_DB_QUERY,
+    ERR_LYRICS_TRANSCRIPTION,
+    ERR_MODEL_INFERENCE,
+)
+
+from ..memory_utils import cleanup_cuda_memory, cleanup_onnx_session, comprehensive_memory_cleanup
+
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +103,11 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
-def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
+def resolve_providers(allow_coreml=False, cuda_options=None):
     available = ort.get_available_providers()
     chain = []
-    accel_ok = role != 'flask'
 
-    if accel_ok and 'CUDAExecutionProvider' in available:
+    if 'CUDAExecutionProvider' in available:
         chain.append(
             (
                 'CUDAExecutionProvider',
@@ -109,7 +121,7 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
             )
         )
 
-    if accel_ok and allow_coreml and 'CoreMLExecutionProvider' in available:
+    if allow_coreml and 'CoreMLExecutionProvider' in available:
         chain.append(
             (
                 'CoreMLExecutionProvider',
@@ -138,22 +150,34 @@ def _plugin_onnx_providers():
         return []
 
 
+def analysis_server_identity():
+    try:
+        from tasks.mediaserver import context, registry
+
+        server = context.active_server()
+        if server is None:
+            server = registry.get_default_server()
+        if not server:
+            return None, None
+        server_id = server.get('server_id')
+        return (str(server_id) if server_id else None), server.get('name')
+    except Exception:
+        logger.debug("Could not resolve the analysis server identity", exc_info=True)
+        return None, None
+
+
 def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding,
                            clap_embedding, top_moods, album_id, album_name, run_id):
-    """Fire plugin on_song_analyzed hooks for a finished song; guarded no-op when no plugin listens.
-
-    Fully wrapped so it can never raise into the analysis loop, and it builds the
-    payload only when a worker plugin actually registered a listener. ``run_id`` is
-    the analysis run's task id, shared by every song of one run, so a listener can
-    count or group per run.
-    """
     try:
         from plugin.manager import plugin_manager
         if not plugin_manager.enabled() or not plugin_manager.song_analyzed_hooks():
             return
+        server_id, server_name = analysis_server_identity()
         payload = {
             'item_id': str(item.get('Id')),
             'run_id': run_id,
+            'server_id': server_id,
+            'server_name': server_name,
             'audio_path': audio_path,
             'metadata': {
                 'title': item.get('Name'),
@@ -177,10 +201,6 @@ def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding
         logger.exception('Plugin song-analyzed hook dispatch failed')
 
 
-def get_provider_options(allow_coreml=False, role=None):
-    return resolve_providers(allow_coreml=allow_coreml, role=role)
-
-
 def _default_sess_options():
     opts = ort.SessionOptions()
     opts.enable_cpu_mem_arena = False
@@ -188,26 +208,23 @@ def _default_sess_options():
     return opts
 
 
-def create_onnx_session(
-    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False
-):
-    opts = provider_options or resolve_providers(allow_coreml=allow_coreml)
+def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
+    opts = provider_options or resolve_providers()
     if sess_options is None:
         sess_options = _default_sess_options()
-    extra = {'sess_options': sess_options}
     try:
         return ort.InferenceSession(
             model_path,
             providers=[p[0] for p in opts],
             provider_options=[p[1] for p in opts],
-            **extra,
+            sess_options=sess_options,
         )
     except Exception:
         logger.warning(f"Failed to load {label or model_path} with GPU - falling back to CPU")
         return ort.InferenceSession(
             model_path,
             providers=['CPUExecutionProvider'],
-            **extra,
+            sess_options=sess_options,
         )
 
 
@@ -236,7 +253,7 @@ def cleanup_musicnn_sessions(onnx_sessions, context=""):
 
 
 _OPTIONAL_MODELS = (
-    ('clap', '.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
+    ('clap', 'tasks.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
     ('lyrics', 'lyrics', 'is_lyrics_loaded', 'unload_lyrics_models'),
 )
 
@@ -245,7 +262,7 @@ def cleanup_optional_models(context=""):
     suffix = f" ({context})" if context else ""
     for label, mod, is_loaded_fn, unload_fn in _OPTIONAL_MODELS:
         try:
-            module = importlib.import_module(mod, package=__package__)
+            module = importlib.import_module(mod)
             if getattr(module, is_loaded_fn)():
                 logger.info(f"Cleaning up {label.upper()} model{suffix}")
                 getattr(module, unload_fn)()
@@ -264,13 +281,11 @@ def run_inference_with_oom_fallback(
         logger.warning(
             f"GPU OOM for {file_basename} during {label} inference - falling back to CPU"
         )
-        cpu_session = None
         try:
             try:
                 cleanup_onnx_session(session, label)
             except Exception:
                 logger.exception("Error cleaning up OOM'd %s session before CPU fallback", label)
-            session = None
             try:
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
             except Exception:
@@ -285,11 +300,15 @@ def run_inference_with_oom_fallback(
             logger.info(f"Successfully completed {label} inference on CPU after OOM")
             return result, cpu_session
         finally:
-            session = None
+            del session
 
 
 _KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+
 _MAJOR = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+
+
 _MINOR = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
 
 
@@ -326,190 +345,230 @@ def prepare_spectrogram_patches(audio, sr):
     return np.array(patches).transpose(0, 2, 1).astype(np.float32)
 
 
-def _str_ids(ids):
-    return [str(i) for i in ids]
+def _decode_audio_with_pyav(file_path, target_sr):
+    import av
+
+    resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=target_sr)
+    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if AUDIO_LOAD_TIMEOUT else None
+    chunks = []
+    total = 0
+    with av.open(file_path) as container:
+        if not container.streams.audio:
+            return np.array([], dtype=np.float32)
+        stream = container.streams.audio[0]
+        for frame in container.decode(stream):
+            for rframe in resampler.resample(frame):
+                arr = rframe.to_ndarray().reshape(-1)
+                if arr.size:
+                    chunks.append(arr)
+                    total += arr.size
+            if max_samples and total >= max_samples:
+                break
+        for rframe in resampler.resample(None):
+            arr = rframe.to_ndarray().reshape(-1)
+            if arr.size:
+                chunks.append(arr)
+    if not chunks:
+        return np.array([], dtype=np.float32)
+    audio = np.concatenate(chunks).astype(np.float32, copy=False)
+    if max_samples:
+        audio = audio[:max_samples]
+    return audio
 
 
-def get_existing_track_ids(track_ids):
-    if not track_ids:
-        return set()
-    with get_db() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id "
-            "WHERE s.item_id IN %s AND s.other_features IS NOT NULL "
-            "AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL "
-            "AND s.tempo IS NOT NULL",
-            (tuple(_str_ids(track_ids)),),
-        )
-        return {row[0] for row in cur.fetchall()}
-
-
-def fetch_existing_top_moods(track_ids, top_n_moods):
-    if not track_ids or not top_n_moods or top_n_moods <= 0:
-        return {}
+def robust_load_audio_with_fallback(file_path, target_sr=16000):
+    name = os.path.basename(file_path)
     try:
-        with get_db() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT item_id, mood_vector FROM score "
-                "WHERE item_id IN %s AND mood_vector IS NOT NULL AND mood_vector <> ''",
-                (tuple(_str_ids(track_ids)),),
-            )
-            rows = cur.fetchall()
-    except Exception as exc:
-        logger.warning(f"Failed to fetch prior moods from score table: {exc}")
-        return {}
-
-    result = {}
-    for item_id, mv in rows:
-        pairs = []
-        for part in mv.split(','):
-            k, _, v = part.partition(':')
-            k = k.strip()
-            if not k:
-                continue
-            try:
-                pairs.append((k, float(v)))
-            except ValueError:
-                continue
-        if pairs:
-            pairs.sort(key=lambda kv: kv[1], reverse=True)
-            result[str(item_id)] = dict(pairs[:top_n_moods])
-    return result
-
-
-def get_missing_ids_in_table(table_name, track_ids):
-    if not track_ids:
-        return set()
-    ids = _str_ids(track_ids)
-    with get_db() as conn, conn.cursor() as cur:
-        cur.execute(
-            pgsql.SQL("SELECT item_id FROM {} WHERE item_id IN %s").format(
-                pgsql.Identifier(table_name)
-            ),
-            (tuple(ids),),
-        )
-        existing = {row[0] for row in cur.fetchall()}
-    return set(ids) - existing
-
-
-_REFRESH_FIELDS = ('album', 'album_artist', 'year', 'rating', 'file_path')
-
-
-def refresh_track_metadata(item, album_name):
-    values = (
-        album_name,
-        item.get('OriginalAlbumArtist'),
-        item.get('Year'),
-        item.get('Rating'),
-        item.get('FilePath'),
-    )
-    if not any(v is not None for v in values):
-        return False
-    set_parts = pgsql.SQL(", ").join(
-        pgsql.SQL("{} = COALESCE(%s, {})").format(pgsql.Identifier(f), pgsql.Identifier(f))
-        for f in _REFRESH_FIELDS
-    )
-    where_parts = pgsql.SQL(" OR ").join(
-        pgsql.SQL("(%s IS NOT NULL AND {} IS DISTINCT FROM %s)").format(pgsql.Identifier(f))
-        for f in _REFRESH_FIELDS
-    )
-    query = pgsql.SQL("UPDATE score SET {} WHERE item_id = %s AND ({})").format(
-        set_parts, where_parts
-    )
-    params = (*values, str(item['Id']), *(p for v in values for p in (v, v)))
-    try:
-        with get_db() as conn, conn.cursor() as cur:
-            cur.execute(query, params)
-            changed = cur.rowcount
-            conn.commit()
-        return bool(changed)
+        audio, sr = librosa.load(file_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        if audio is None or audio.size == 0:
+            raise ValueError("Librosa returned an empty audio signal.")
+        return audio, sr
     except Exception as e:
-        logger.warning(f"[refresh_track_metadata] Failed to update '{item.get('Name')}': {e}")
-        return False
+        logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting PyAV fallback.")
+
+    try:
+        audio = _decode_audio_with_pyav(file_path, target_sr)
+        if audio is None or audio.size == 0 or not np.any(audio):
+            logger.error(f"PyAV fallback resulted in empty/silent audio for {name}.")
+            return None, None
+        return audio, target_sr
+    except Exception:
+        logger.exception(f"PyAV fallback loading also failed for {name}")
+        return None, None
 
 
-def upsert_artist_mappings_for_tracks(tracks, album_name=None):
-    last_id_by_name = {}
-    for t in tracks:
-        name, aid = t.get('AlbumArtist'), t.get('ArtistId')
-        if name and aid:
-            last_id_by_name[name] = aid
-        elif name:
-            last_id_by_name.setdefault(name, None)
-    upsert_artist_mappings((n, a) for n, a in last_id_by_name.items() if a)
-    for name, aid in last_id_by_name.items():
-        if not aid:
-            scope = f" in album '{album_name}'" if album_name else ""
-            logger.warning(f"No artist_id for '{name}'{scope}")
-
-
-def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_enabled):
-    return (
-        track_id not in existing,
-        track_id in missing_clap,
-        lyrics_enabled and track_id in missing_lyrics,
-    )
-
-
-def compute_album_needs(tracks, clap_available, lyrics_enabled):
-    ids = [str(t['Id']) for t in tracks]
-    existing = len(get_existing_track_ids(ids))
-
-    def needs_in(flag, table):
-        return flag and bool(get_missing_ids_in_table(table, ids))
-
-    return (
-        existing,
-        needs_in(clap_available, 'clap_embedding'),
-        needs_in(lyrics_enabled, 'lyrics_embedding'),
-    )
-
-
-def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
-    parts = ["MusiCNN"]
-    if clap_available:
-        parts.append("CLAP")
-    if lyrics_enabled:
-        parts.append("Lyrics")
-    if include_check_marks:
-        return [f"{p}: OK" for p in parts]
-    return parts
-
-
-def run_clap_for_track(path, track_name_full, needs_clap, clap_available, per_song_reload):
-    if not (needs_clap and clap_available):
+def _patches_for_track(audio, sr, name):
+    try:
+        patches = prepare_spectrogram_patches(audio, sr)
+        if patches is None:
+            logger.warning(f"Track too short to create spectrogram patches: {name}")
+        return patches
+    except Exception:
+        logger.exception(f"Spectrogram creation failed for {name}")
         return None
+
+
+def _sessions_for_track(onnx_sessions, model_paths):
+    if onnx_sessions is not None:
+        return onnx_sessions['embedding'], onnx_sessions['prediction'], False
+    provider_options = resolve_providers()
+    embedding_sess = create_onnx_session(
+        model_paths['embedding'], provider_options, label='embedding'
+    )
+    prediction_sess = create_onnx_session(
+        model_paths['prediction'], provider_options, label='prediction'
+    )
+    return embedding_sess, prediction_sess, True
+
+
+def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessions, name):
+    embedding_sess = prediction_sess = None
+    own_sessions = False
+    try:
+        embedding_sess, prediction_sess, own_sessions = _sessions_for_track(
+            onnx_sessions, model_paths
+        )
+
+        embeddings_per_patch, new_embedding_sess = run_inference_with_oom_fallback(
+            embedding_sess,
+            {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches},
+            DEFINED_TENSOR_NAMES['embedding']['output'],
+            model_paths['embedding'],
+            'embedding',
+            name,
+        )
+        if new_embedding_sess is not embedding_sess and onnx_sessions is not None:
+            onnx_sessions['embedding'] = new_embedding_sess
+        embedding_sess = new_embedding_sess
+
+        mood_logits, new_prediction_sess = run_inference_with_oom_fallback(
+            prediction_sess,
+            {DEFINED_TENSOR_NAMES['prediction']['input']: embeddings_per_patch},
+            DEFINED_TENSOR_NAMES['prediction']['output'],
+            model_paths['prediction'],
+            'prediction',
+            name,
+        )
+        if new_prediction_sess is not prediction_sess and onnx_sessions is not None:
+            onnx_sessions['prediction'] = new_prediction_sess
+        prediction_sess = new_prediction_sess
+
+        final_mood_predictions = sigmoid(np.mean(sigmoid(mood_logits), axis=0))
+        moods = {
+            label: float(score)
+            for label, score in zip(mood_labels_list, final_mood_predictions)
+        }
+        return np.mean(embeddings_per_patch, axis=0), moods
+    except Exception:
+        logger.exception(f"Main model inference failed for {name}")
+        return None, None
+    finally:
+        if own_sessions:
+            try:
+                cleanup_onnx_session(embedding_sess, "embedding")
+                cleanup_onnx_session(prediction_sess, "prediction")
+                cleanup_cuda_memory(force=True)
+            except Exception as cleanup_error:
+                logger.warning(f"Error during cleanup: {cleanup_error}")
+
+
+def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
+    name = os.path.basename(file_path)
+    logger.info(f"Starting analysis for: {name}")
+    nothing = (None, None, None, None) if return_audio else (None, None)
+
+    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
+    if audio is None or not np.any(audio) or audio.size == 0:
+        logger.warning(
+            f"Could not load a valid audio signal for {name} after all attempts. Skipping track."
+        )
+        return nothing
+
+    tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
+
+    final_patches = _patches_for_track(audio, sr, name)
+    if final_patches is None:
+        return nothing
+
+    embedding, moods = _run_musicnn_models(
+        final_patches, mood_labels_list, model_paths, onnx_sessions, name
+    )
+    if embedding is None:
+        return nothing
+
+    analysis_result = {
+        "tempo": tempo,
+        "key": musical_key,
+        "scale": scale,
+        "moods": moods,
+        "energy": average_energy,
+    }
+    return_values = (
+        (analysis_result, embedding, audio, sr)
+        if return_audio
+        else (analysis_result, embedding)
+    )
+    gc.collect()
+    comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+    return return_values
+
+
+def catalog_item_id(item):
+    return str(item.get('_catalog_item_id') or item.get('Id') or item.get('id'))
+
+
+def provider_item_id(item):
+    return str(item.get('Id') or item.get('id'))
+
+
+def ensure_musicnn_sessions(onnx_sessions, model_paths, session_recycler, album_name):
+    if onnx_sessions is None:
+        logger.info(f"Lazy-loading MusiCNN models for album: {album_name}")
+        return load_musicnn_sessions(model_paths)
+    if not session_recycler.should_recycle():
+        return onnx_sessions
+    logger.info(
+        f"Recycling ONNX sessions after {session_recycler.get_use_count()} tracks"
+    )
+    cleanup_musicnn_sessions(onnx_sessions, context="recycle")
+    comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+    session_recycler.mark_recycled()
+    return load_musicnn_sessions(model_paths)
+
+
+def run_clap_for_track(path, track_name_full):
     logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
     try:
-        from .clap_analyzer import analyze_audio_file
+        from ..clap_analyzer import analyze_audio_file
 
         emb, _, _ = analyze_audio_file(path)
-        if per_song_reload:
+        if PER_SONG_MODEL_RELOAD:
             try:
-                from .clap_analyzer import unload_clap_audio_only
+                from ..clap_analyzer import unload_clap_audio_only
 
                 unload_clap_audio_only()
             except Exception as e:
                 logger.debug(f"  - CLAP audio unload skipped: {e}")
         return emb
+    except OperationalError:
+        raise
     except Exception as e:
-        logger.warning(f"  - CLAP analysis failed: {e}")
+        error_manager.record(
+            error_manager.classify(e, ERR_MODEL_INFERENCE),
+            f"CLAP analysis failed for {track_name_full}: {e}",
+            exc=e, logger=logger, level=logging.WARNING,
+        )
         return None
 
 
-def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, item_id, labels):
-    zero = ",".join(f"{k}:0.00" for k in labels)
-    if label_embeddings is None:
+def compute_other_features_str(clap_embedding, label_embeddings, labels):
+    zero = zero_other_features(labels)
+    if label_embeddings is None or clap_embedding is None:
         return zero
     try:
-        from .clap_analyzer import compute_other_features_from_clap
+        from ..clap_analyzer import compute_other_features_from_clap
 
-        emb = clap_embedding
-        if emb is None and not needs_clap:
-            emb = get_clap_embedding(item_id)
-        if emb is None:
-            return zero
-        d = compute_other_features_from_clap(emb, label_embeddings)
+        d = compute_other_features_from_clap(clap_embedding, label_embeddings)
         return ",".join(f"{k}:{d.get(k, 0.0):.2f}" for k in labels)
     except Exception as e:
         logger.warning(f"  - Failed to compute other_features from CLAP: {e}")
@@ -518,7 +577,7 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
 
 def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):
     save_track_analysis_and_embedding(
-        item['Id'],
+        catalog_item_id(item),
         item['Name'],
         item.get('AlbumArtist', 'Unknown'),
         analysis['tempo'],
@@ -534,17 +593,47 @@ def persist_musicnn_results(item, analysis, top_moods, embedding, other_features
         or item.get('album_artist'),
         year=item.get('Year'),
         rating=item.get('Rating'),
-        file_path=item.get('FilePath'),
     )
 
 
-def persist_clap_embedding(item_id, embedding, needs_clap):
-    if embedding is None or not needs_clap:
+def zero_other_features(labels):
+    return ",".join(f"{label}:0.00" for label in labels)
+
+
+ZERO_OTHER_FEATURES = zero_other_features(OTHER_FEATURE_LABELS)
+
+
+def refresh_other_features(item_id, other_features_str):
+    if not other_features_str:
+        return False
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE score SET other_features = %s WHERE item_id = %s",
+                (other_features_str, str(item_id)),
+            )
+            updated = cur.rowcount
+            conn.commit()
+        return bool(updated)
+    except OperationalError:
+        raise
+    except Exception as e:
+        error_manager.record(
+            ERR_DB_QUERY, f"Could not refresh other_features for {item_id}: {e}",
+            exc=e, logger=logger, level=logging.WARNING,
+        )
+        return False
+
+
+def persist_clap_embedding(item_id, embedding):
+    if embedding is None:
         return False
     try:
         save_clap_embedding(item_id, embedding)
         logger.info("  - CLAP embedding saved (512-dim)")
         return True
+    except OperationalError:
+        raise
     except Exception as e:
         logger.warning(f"  - Failed to save CLAP embedding: {e}")
         return False
@@ -581,16 +670,10 @@ def run_lyrics_for_track(
     track_audio,
     track_sr,
     track_name_full,
-    needs_lyrics,
-    lyrics_enabled,
     robust_load_fn,
     top_moods=None,
     download_fn=None,
 ):
-    if not (needs_lyrics and lyrics_enabled):
-        if lyrics_enabled:
-            logger.info("  - Lyrics analysis already exists or skipped")
-        return False
     logger.info(f"  - Starting lyrics analysis for {track_name_full}...")
     try:
         from lyrics.lyrics_transcriber import analyze_lyrics
@@ -605,7 +688,7 @@ def run_lyrics_for_track(
             source_path=str(path) if path is not None else None,
             artist=item.get('AlbumArtist') or item.get('Artist'),
             track=item.get('Name'),
-            track_id=item.get('Id') or item.get('id'),
+            track_id=str(item.get('Id') or item.get('id') or catalog_item_id(item)),
             top_moods=top_moods,
             audio_loader=audio_loader,
         )
@@ -613,9 +696,11 @@ def run_lyrics_for_track(
         if emb is None or getattr(emb, 'size', 0) == 0:
             logger.warning(f"  - Lyrics analysis produced no embedding for {track_name_full}")
             return False
-        save_lyrics_embedding(item['Id'], emb, result.get('axis_vector'))
+        save_lyrics_embedding(catalog_item_id(item), emb, result.get('axis_vector'))
         logger.info("  - Lyrics embedding saved")
         return True
+    except OperationalError:
+        raise
     except Exception as e:
         error_manager.record(
             error_manager.classify(e, ERR_LYRICS_TRANSCRIPTION),

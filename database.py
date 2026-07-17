@@ -22,12 +22,13 @@ import json
 import logging
 import sys
 import time
+import uuid
 
 import numpy as np
 import psycopg2
 from flask import g
 from psycopg2 import sql
-from psycopg2.extras import DictCursor, Json
+from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
 
@@ -49,6 +50,8 @@ from config import (
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
+SELF_MANAGED_TASK_TYPES = ('server_sweep',)
+
 USERS_PASSWORD_CHANGED_AT_DDL = (
     "ALTER TABLE IF EXISTS audiomuse_users "
     "ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP"
@@ -57,6 +60,16 @@ USERS_PASSWORD_CHANGED_AT_DDL = (
 MAP_PROJECTION_CACHE = None
 
 _embedded_server = None
+
+# Server-side options applied to every app connection.
+#  - statement_timeout: cap runaway queries (10 min).
+#  - max_parallel_workers_per_gather=0: force SERIAL query plans. A parallel plan
+#    allocates a dynamic shared-memory segment in /dev/shm, which is small by
+#    default on containers; a big scan (e.g. the analysis work-map over a large
+#    library) then dies with DiskFull ("could not resize shared memory segment").
+#    Serial plans need no DSM and spill to normal temp files, so the app runs on
+#    any cluster regardless of /dev/shm size.
+_CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gather=0'
 
 
 def get_db():
@@ -68,7 +81,7 @@ def get_db():
                 keepalives_idle=600,
                 keepalives_interval=30,
                 keepalives_count=3,
-                options='-c statement_timeout=600000',
+                options=_CONNECT_OPTIONS,
             )
         except psycopg2.OperationalError:
             logger.exception("Failed to connect to database")
@@ -310,6 +323,7 @@ def save_task_status(
                                 THEN %s
                                 ELSE task_status.end_time
                            END
+            WHERE task_status.status IS DISTINCT FROM 'REVOKED'
         """,
             (
                 task_id,
@@ -375,6 +389,27 @@ def get_task_info_from_db(task_id):
         row_dict['running_time_seconds'] = max(0, effective_end_time - start_time)
 
     return row_dict
+
+
+def get_task_statuses(task_ids):
+    """``{task_id: status}`` for several tasks in ONE round-trip.
+
+    The per-track revocation check needs the status of a task and its parent and
+    nothing else, so it reads only the status column and asks once instead of
+    running the full get_task_info_from_db row build per task per track.
+    """
+    ids = [str(t) for t in task_ids if t]
+    if not ids:
+        return {}
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT task_id, status FROM task_status WHERE task_id = ANY(%s)", (ids,)
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+    finally:
+        cur.close()
 
 
 def get_score_data_by_ids(item_ids_list):
@@ -579,7 +614,6 @@ def save_track_analysis_and_embedding(
     album_artist=None,
     year=None,
     rating=None,
-    file_path=None,
 ):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
@@ -591,7 +625,6 @@ def save_track_analysis_and_embedding(
 
     year = _parse_year_from_date(year)
     rating = _clamp_rating(rating)
-    file_path = sanitize_db_field(file_path, max_length=1000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
 
@@ -600,8 +633,8 @@ def save_track_analysis_and_embedding(
     try:
         cur.execute(
             """
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -614,8 +647,7 @@ def save_track_analysis_and_embedding(
                 album = EXCLUDED.album,
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
-                rating = EXCLUDED.rating,
-                file_path = EXCLUDED.file_path
+                rating = EXCLUDED.rating
         """,
             (
                 item_id,
@@ -631,7 +663,6 @@ def save_track_analysis_and_embedding(
                 album_artist,
                 year,
                 rating,
-                file_path,
             ),
         )
 
@@ -696,6 +727,23 @@ def get_clap_embedding(item_id):
         cur.close()
 
 
+def get_lyrics_axis_vectors(item_ids):
+    """Return raw lyric-axis vectors for the requested tracks."""
+    if not item_ids:
+        return {}
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT item_id, axis_vector FROM lyrics_embedding "
+            "WHERE axis_vector IS NOT NULL AND item_id = ANY(%s)",
+            (list(item_ids),),
+        )
+        return {row[0]: bytes(row[1]) for row in cur.fetchall()}
+    finally:
+        cur.close()
+
+
 def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
     if lyrics_embedding_vector is None or (
         isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0
@@ -744,6 +792,136 @@ ARTIST_PROJECTION_CACHE = None
 _SCHEMA_ADVISORY_LOCK = 726354821
 
 
+def purge_media_keys_from_app_config(cur):
+    """Delete every media-server setting from app_config, returning the count.
+
+    The music_servers registry is their ONLY home (the config globals are a
+    read-only projection of its default row). Boot and the provider migration
+    both call this single implementation, so a legacy copy can never survive in
+    app_config and quietly override - or leak the credentials of - a server that
+    no longer exists.
+    """
+    cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return 0
+    cur.execute(
+        "DELETE FROM app_config WHERE key = ANY(%s)",
+        (sorted(config.MEDIASERVER_CONFIG_KEYS),),
+    )
+    return cur.rowcount or 0
+
+
+def missing_required_creds(server_type, creds):
+    """Required-but-empty credential keys for ``server_type``."""
+    required = [
+        config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
+        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(
+            (server_type or '').strip().lower(), []
+        )
+        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD
+    ]
+    creds = creds or {}
+    return [key for key in required if not creds.get(key)]
+
+
+def _seed_registry_from_legacy_config(cur):
+    """Move an ALREADY CONFIGURED legacy install's server into the registry.
+
+    Only a config that really describes a reachable server is migrated. A fresh
+    install has none - MEDIASERVER_TYPE merely defaults to 'jellyfin' with empty
+    credentials - so the registry stays EMPTY and the setup wizard opens on a
+    blank table: the user adds whichever server they actually want, and it
+    becomes the default.
+    """
+    from tasks.mediaserver.registry import creds_from_config, _default_server_name
+
+    cur.execute("SELECT COUNT(*) FROM music_servers")
+    if cur.fetchone()[0]:
+        return
+
+    seed_type = (config.MEDIASERVER_TYPE or '').strip().lower()
+    seed_creds = creds_from_config(seed_type)
+    if not config.MEDIASERVER_FIELDS_BY_TYPE.get(seed_type) or missing_required_creds(
+        seed_type, seed_creds
+    ):
+        logger.info(
+            "No media server is configured yet; the registry starts empty and the "
+            "setup wizard will add the first one."
+        )
+        return
+
+    cur.execute(
+        "INSERT INTO music_servers "
+        "(server_id, name, server_type, creds, music_libraries, is_default) "
+        "VALUES (%s, %s, %s, %s, %s, TRUE)",
+        (uuid.uuid4().hex, _default_server_name(seed_type), seed_type,
+         Json(seed_creds), config.MUSIC_LIBRARIES or ""),
+    )
+    logger.info(
+        "Migrated media-server settings for '%s' into the music_servers registry",
+        seed_type,
+    )
+
+
+def _drop_unconfigured_servers(cur):
+    """Remove credential-less rows an earlier build seeded from an empty config.
+
+    Such a row is not a server anybody can reach - it only made the setup wizard
+    show a phantom entry. One that somehow owns track mappings is kept: that was
+    a working server whose credentials were cleared, and its catalogue bindings
+    are not ours to throw away.
+    """
+    cur.execute("SELECT server_id, name, server_type, creds FROM music_servers")
+    unconfigured = [
+        (server_id, name)
+        for server_id, name, server_type, creds in cur.fetchall()
+        if missing_required_creds(server_type, creds)
+    ]
+    if not unconfigured:
+        return
+    cur.execute(
+        "DELETE FROM music_servers ms WHERE ms.server_id = ANY(%s) "
+        "AND NOT EXISTS (SELECT 1 FROM track_server_map t WHERE t.server_id = ms.server_id)",
+        ([server_id for server_id, _name in unconfigured],),
+    )
+    if cur.rowcount:
+        logger.info(
+            "Removed %d unconfigured media server(s) from the registry (%s); "
+            "add a real one from the setup wizard",
+            cur.rowcount,
+            ', '.join(name for _sid, name in unconfigured),
+        )
+
+
+def _migrate_playlist_server_column(cur):
+    cur.execute("ALTER TABLE playlist ADD COLUMN IF NOT EXISTS server_id TEXT")
+    cur.execute("SELECT EXISTS (SELECT 1 FROM playlist WHERE server_id IS NULL LIMIT 1)")
+    if cur.fetchone()[0]:
+        cur.execute(
+            "DELETE FROM playlist older USING playlist newer "
+            "WHERE older.server_id IS NULL AND newer.server_id IS NULL "
+            "AND older.playlist_name = newer.playlist_name "
+            "AND older.item_id = newer.item_id AND older.id > newer.id"
+        )
+        cur.execute(
+            "DELETE FROM playlist p USING playlist q, music_servers ms "
+            "WHERE p.server_id IS NULL AND ms.is_default "
+            "AND q.playlist_name = p.playlist_name AND q.item_id = p.item_id "
+            "AND q.server_id = ms.server_id"
+        )
+        cur.execute(
+            "UPDATE playlist SET server_id = ms.server_id FROM music_servers ms "
+            "WHERE playlist.server_id IS NULL AND ms.is_default"
+        )
+    cur.execute(
+        "ALTER TABLE playlist DROP CONSTRAINT IF EXISTS playlist_playlist_name_item_id_key"
+    )
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_name_item_server "
+        "ON playlist (playlist_name, item_id, server_id)"
+    )
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -763,6 +941,13 @@ def init_db():
                 cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)"
+            )
+            cur.execute(
+                "ALTER TABLE score ADD COLUMN IF NOT EXISTS "
+                "created_at TIMESTAMP NOT NULL DEFAULT now()"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_created_at ON score (created_at)"
             )
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')"
@@ -806,6 +991,10 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            cur.execute("DROP INDEX IF EXISTS idx_score_fingerprint")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS fingerprint")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS mbid")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS chromaprint")
 
             cur.execute(
                 "SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'"
@@ -887,15 +1076,35 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)"
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
+                "WHERE item_id NOT LIKE 'fp\\_%'"
+            )
 
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"
+            )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS playlist_name_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    server_id TEXT,
+                    playlist_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_playlist_name_history_server_created "
+                "ON playlist_name_history (server_id, created_at DESC, id DESC)"
             )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_task_status_parent ON task_status (parent_task_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_status_type_timestamp "
+                "ON task_status (task_type, timestamp DESC)"
             )
             for col_name in ['start_time', 'end_time']:
                 cur.execute(
@@ -974,6 +1183,9 @@ def init_db():
             )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "ALTER TABLE cron ADD COLUMN IF NOT EXISTS options JSONB NOT NULL DEFAULT '{}'::jsonb"
             )
             cur.execute(
                 "DELETE FROM cron a USING cron b WHERE a.task_type = b.task_type AND a.id > b.id"
@@ -1134,6 +1346,76 @@ def init_db():
 
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS music_servers (
+                    server_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    server_type TEXT NOT NULL,
+                    creds JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    music_libraries TEXT NOT NULL DEFAULT '',
+                    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_servers_single_default "
+                "ON music_servers (is_default) WHERE is_default"
+            )
+            cur.execute("ALTER TABLE music_servers DROP COLUMN IF EXISTS enabled")
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'music_servers' AND column_name = 'track_count'"
+            )
+            if not cur.fetchone():
+                cur.execute("ALTER TABLE music_servers ADD COLUMN track_count INTEGER")
+            cur.execute("SAVEPOINT ms_unique_name")
+            try:
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_servers_unique_name "
+                    "ON music_servers (lower(name))"
+                )
+                cur.execute("RELEASE SAVEPOINT ms_unique_name")
+            except Exception:
+                logger.warning("music_servers has duplicate names; unique-name index skipped")
+                cur.execute("ROLLBACK TO SAVEPOINT ms_unique_name")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS track_server_map (
+                    item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+                    server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE,
+                    provider_track_id TEXT NOT NULL,
+                    match_tier TEXT,
+                    file_path TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (item_id, server_id)
+                )
+            """)
+            cur.execute(
+                "ALTER TABLE track_server_map ADD COLUMN IF NOT EXISTS file_path TEXT"
+            )
+            _ensure_track_server_map_key(cur)
+            _migrate_file_path_to_track_server_map(cur)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS artist_server_map (
+                    artist_name TEXT NOT NULL,
+                    server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE,
+                    provider_artist_id TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (artist_name, server_id),
+                    UNIQUE (server_id, provider_artist_id)
+                )
+            """)
+            _seed_registry_from_legacy_config(cur)
+            _drop_unconfigured_servers(cur)
+            _migrate_playlist_server_column(cur)
+            removed_media_keys = purge_media_keys_from_app_config(cur)
+            if removed_media_keys:
+                logger.info(
+                    "Removed %d legacy media-server keys from app_config; "
+                    "the music_servers registry is now their only home",
+                    removed_media_keys,
+                )
+
             _create_plugins_table(cur)
 
             db.commit()
@@ -1157,8 +1439,171 @@ def connect_raw():
         keepalives_idle=600,
         keepalives_interval=30,
         keepalives_count=3,
-        options='-c statement_timeout=600000',
+        options=_CONNECT_OPTIONS,
     )
+
+
+def _migrate_file_path_to_track_server_map(cur):
+    """Move the audio path from the SHARED score row onto each server's map row.
+
+    A path is a property of a FILE ON A SERVER, not of the song. Holding one path
+    per catalogue row meant only the default server could ever write it, so the
+    matcher's two strongest tiers (path, tail) had no evidence at all for a track
+    the default happens not to have - and adding an 11th server could only match
+    such tracks by metadata. Each server now records the path IT sees.
+
+    Idempotent and loss-free by construction, so it needs no marker row: the copy
+    only fills map rows that have no path yet, and score.file_path is cleared ONLY
+    for rows whose path is already safe in at least one map row. A catalogue row
+    that is on no server keeps its path until a map row exists to carry it.
+    """
+    cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM score WHERE file_path IS NOT NULL LIMIT 1)"
+    )
+    if not cur.fetchone()[0]:
+        return
+
+    cur.execute(
+        "UPDATE track_server_map m SET file_path = s.file_path "
+        "FROM score s, music_servers ms "
+        "WHERE m.item_id = s.item_id AND m.server_id = ms.server_id "
+        "AND ms.is_default AND s.file_path IS NOT NULL AND m.file_path IS NULL"
+    )
+    moved = cur.rowcount
+
+    cur.execute(
+        "UPDATE score s SET file_path = NULL WHERE s.file_path IS NOT NULL "
+        "AND EXISTS (SELECT 1 FROM track_server_map m "
+        "WHERE m.item_id = s.item_id AND m.file_path IS NOT NULL)"
+    )
+    cleared = cur.rowcount
+    if moved or cleared:
+        logger.info(
+            "Moved %d file path(s) onto the default server's map rows and cleared "
+            "%d shared score.file_path value(s).", moved, cleared,
+        )
+
+
+def _ensure_track_server_map_key(cur):
+    """Ensure track_server_map carries the (server_id, provider_track_id) unique
+    index and the relaxed PRIMARY KEY the N:1 upserts arbitrate on. Dedupes any
+    rows that would violate the index before creating it. The caller owns the
+    transaction."""
+    cur.execute(
+        "SELECT to_regclass('public.idx_track_server_map_provider_unique') IS NULL"
+    )
+    if cur.fetchone()[0]:
+        cur.execute(
+            "DELETE FROM track_server_map older USING track_server_map newer "
+            "WHERE older.server_id = newer.server_id "
+            "AND older.provider_track_id = newer.provider_track_id "
+            "AND (older.updated_at < newer.updated_at OR "
+            "(older.updated_at = newer.updated_at AND older.item_id > newer.item_id))"
+        )
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_track_server_map_provider_unique "
+        "ON track_server_map (server_id, provider_track_id)"
+    )
+    # The PK is (server_id, provider_track_id), which cannot serve a scan of one
+    # server ORDERED BY item_id. Two hot queries need exactly that: the dashboard's
+    # COUNT(DISTINCT item_id) GROUP BY server_id (a seq scan plus an external merge
+    # sort of every mapped row, recomputed roughly every minute) and the sweep's
+    # metadata refresh (DISTINCT ON (item_id) ... ORDER BY item_id, provider_track_id,
+    # run on every alignment). Both become index-only scans with no Sort node.
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_track_server_map_server_item "
+        "ON track_server_map (server_id, item_id)"
+    )
+    relax_track_server_map_pk(cur)
+
+
+def ensure_track_server_map_schema(conn=None):
+    """Self-heal entry point for the write path: guarantees the (server_id,
+    provider_track_id) key exists so ``ON CONFLICT`` on it cannot fail with
+    "no unique or exclusion constraint matching". A worker writing before the
+    startup migration, or a database restored from a schema predating the
+    relaxation, recovers here instead of crashing the album. Commits its own
+    transaction; returns True on success."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        _ensure_track_server_map_key(cur)
+        db.commit()
+        return True
+    except Exception:
+        logger.exception("ensure_track_server_map_schema failed")
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("ensure_track_server_map_schema rollback failed", exc_info=True)
+        return False
+    finally:
+        cur.close()
+
+
+def track_server_map_pk_columns(conn=None):
+    """The columns of track_server_map's PRIMARY KEY, in key order.
+
+    The catalog is the only trustworthy answer: relax_track_server_map_pk returns
+    False both when the swap FAILED and when there was nothing to do, and
+    ensure_track_server_map_schema returns True even when the swap silently rolled
+    back, so a caller that needs to know the key really is relaxed must look here.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT a.attname::text FROM pg_constraint c "
+            "JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE "
+            "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum "
+            "WHERE c.conrelid = 'track_server_map'::regclass AND c.contype = 'p' "
+            "ORDER BY k.ord"
+        )
+        return [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+
+
+def relax_track_server_map_pk(cur):
+    """Relax track_server_map PK (item_id, server_id) -> (server_id,
+    provider_track_id) so N provider files may map to one canonical song per
+    server. Detected by COLUMNS (not name) so it is a no-op once migrated; the
+    caller owns the transaction. The replacement item-leading index is created
+    FIRST so the score FK cascade and item_id probes keep an index. The
+    constraint is deliberately NOT named: naming it would rename the backing
+    index and make the earlier CREATE UNIQUE INDEX rebuild a duplicate."""
+    cur.execute(
+        "SELECT c.conname FROM pg_constraint c "
+        "WHERE c.conrelid = 'track_server_map'::regclass AND c.contype = 'p' "
+        "AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text) "
+        "     FROM unnest(c.conkey) k "
+        "     JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k) "
+        "    = ARRAY['item_id','server_id']"
+    )
+    old_pk = cur.fetchone()
+    if not old_pk:
+        return False
+    cur.execute("SAVEPOINT tsm_pk_swap")
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_track_server_map_item "
+            "ON track_server_map (item_id, server_id)"
+        )
+        cur.execute("ALTER TABLE track_server_map DROP CONSTRAINT " + old_pk[0])
+        cur.execute(
+            "ALTER TABLE track_server_map "
+            "ADD PRIMARY KEY USING INDEX idx_track_server_map_provider_unique"
+        )
+        cur.execute("DROP INDEX IF EXISTS idx_track_server_map_reverse")
+        cur.execute("RELEASE SAVEPOINT tsm_pk_swap")
+        logger.info(
+            "track_server_map PRIMARY KEY relaxed to (server_id, provider_track_id)"
+        )
+        return True
+    except Exception:
+        logger.warning("track_server_map PK swap skipped", exc_info=True)
+        cur.execute("ROLLBACK TO SAVEPOINT tsm_pk_swap")
+        return False
 
 
 def _create_plugins_table(cur):
@@ -1516,8 +1961,9 @@ def clean_up_previous_main_tasks():
 
     try:
         cur.execute(
-            "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL",
-            (non_terminal_statuses,),
+            "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status "
+            "WHERE status IN %s AND parent_task_id IS NULL AND task_type <> ALL(%s)",
+            (non_terminal_statuses, list(SELF_MANAGED_TASK_TYPES)),
         )
         tasks_to_archive = cur.fetchall()
 
@@ -1605,7 +2051,7 @@ def clean_up_previous_main_tasks():
         cur.close()
 
 
-def get_active_main_task(task_type=None):
+def get_active_main_task(task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES):
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
@@ -1622,16 +2068,17 @@ def get_active_main_task(task_type=None):
             (task_type, non_terminal_statuses),
         )
     else:
-        cur.execute(
-            """
-            SELECT task_id, task_type, status, details
-            FROM task_status
-            WHERE status IN %s AND parent_task_id IS NULL
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """,
-            (non_terminal_statuses,),
+        query = (
+            "SELECT task_id, task_type, status, details "
+            "FROM task_status "
+            "WHERE status IN %s AND parent_task_id IS NULL"
         )
+        params = [non_terminal_statuses]
+        if exclude_task_types:
+            query += " AND task_type <> ALL(%s)"
+            params.append(list(exclude_task_types))
+        query += " ORDER BY timestamp DESC LIMIT 1"
+        cur.execute(query, tuple(params))
 
     active_task = cur.fetchone()
     cur.close()
@@ -1648,6 +2095,30 @@ def get_child_tasks_from_db(parent_task_id):
     tasks = cur.fetchall()
     cur.close()
     return [dict(row) for row in tasks]
+
+
+def count_terminal_children(parent_task_id):
+    """How many of ``parent_task_id``'s children have finished, in ONE round-trip.
+
+    A union analysis gives every phase the SAME parent, so the monitor's old
+    approach (fetch every child row, then filter in Python against this phase's
+    launched ids) pulled every earlier phase's rows too - tens of thousands of rows
+    every ten seconds, nearly all discarded. It only ever needed the count.
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT count(*) FROM task_status "
+            "WHERE parent_task_id = %s AND status IN %s",
+            (
+                parent_task_id,
+                (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED),
+            ),
+        )
+        return cur.fetchone()[0]
+    finally:
+        cur.close()
 
 
 def _child_error_from_row(row):
@@ -1971,20 +2442,122 @@ def save_artist_projection(index_name, component_map, projections):
         cur.close()
 
 
-def update_playlist_table(playlists):
+def get_recent_playlist_names(server_id, limit=60):
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("DELETE FROM playlist")
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        cur.execute(
+            "SELECT playlist_name FROM playlist_name_history "
+            "WHERE server_id IS NOT DISTINCT FROM %s "
+            "ORDER BY created_at DESC, id DESC LIMIT %s",
+            (server_id, limit),
+        )
+        names = [row[0] for row in cur.fetchall()]
+        cur.execute(
+            "SELECT DISTINCT playlist_name FROM playlist "
+            "WHERE server_id IS NOT DISTINCT FROM %s",
+            (server_id,),
+        )
+        names.extend(row[0] for row in cur.fetchall())
+        return list(dict.fromkeys(name for name in names if name))[:limit]
+    except Exception:
+        conn.rollback()
+        logger.exception("Could not load recent playlist-name history")
+        return []
+    finally:
+        cur.close()
+
+
+def update_playlist_table(playlists, server_id):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        if server_id is None:
+            cur.execute("DELETE FROM playlist WHERE server_id IS NULL")
+        else:
+            cur.execute("DELETE FROM playlist WHERE server_id = %s", (server_id,))
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM music_servers WHERE server_id = %s)",
+                (server_id,),
+            )
+            if not cur.fetchone()[0]:
+                logger.warning(
+                    "Server '%s' vanished from the registry mid-run; skipping its "
+                    "playlist rows", server_id,
+                )
+                conn.commit()
+                return
+        rows = {}
         for name, cluster in playlists.items():
             for item_id, title, author in cluster:
+                rows.setdefault((name, item_id), (name, item_id, title, author, server_id))
+        if rows:
+            execute_values(
+                cur,
+                "INSERT INTO playlist (playlist_name, item_id, title, author, server_id) VALUES %s "
+                "ON CONFLICT (playlist_name, item_id, server_id) DO NOTHING",
+                list(rows.values()),
+                page_size=5000,
+            )
+        history_names = list(dict.fromkeys(playlists))
+        if history_names:
+            cur.execute("SAVEPOINT history_names_write")
+            try:
+                execute_values(
+                    cur,
+                    "INSERT INTO playlist_name_history (server_id, playlist_name) VALUES %s",
+                    [(server_id, name) for name in history_names],
+                )
                 cur.execute(
-                    "INSERT INTO playlist (playlist_name, item_id, title, author) VALUES (%s, %s, %s, %s) ON CONFLICT (playlist_name, item_id) DO NOTHING",
-                    (name, item_id, title, author),
+                    "DELETE FROM playlist_name_history WHERE "
+                    "server_id IS NOT DISTINCT FROM %s AND created_at NOT IN ("
+                    "SELECT DISTINCT created_at FROM playlist_name_history "
+                    "WHERE server_id IS NOT DISTINCT FROM %s "
+                    "ORDER BY created_at DESC LIMIT %s)",
+                    (server_id, server_id, config.PLAYLIST_NAME_HISTORY_ROUNDS),
+                )
+                cur.execute("RELEASE SAVEPOINT history_names_write")
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT history_names_write")
+                logger.exception(
+                    "Could not record playlist-name history; keeping the playlist rows"
                 )
         conn.commit()
     except Exception:
         conn.rollback()
         logger.exception("Error updating playlist table")
+        raise
+    finally:
+        cur.close()
+
+
+def prune_playlist_rows_for_missing_servers(server_ids):
+    server_ids = list(server_ids)
+    ids = [s for s in server_ids if s]
+    keep_null = len(ids) != len(server_ids)
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        if ids and keep_null:
+            cur.execute(
+                "DELETE FROM playlist WHERE server_id IS NOT NULL AND server_id != ALL(%s)",
+                (ids,),
+            )
+        elif ids:
+            cur.execute(
+                "DELETE FROM playlist WHERE server_id IS NULL OR server_id != ALL(%s)",
+                (ids,),
+            )
+        elif keep_null:
+            cur.execute("DELETE FROM playlist WHERE server_id IS NOT NULL")
+        else:
+            return
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Error pruning playlist table")
     finally:
         cur.close()

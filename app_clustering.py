@@ -37,6 +37,7 @@ from config import (
     MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
     STRATIFIED_SAMPLING_TARGET_PERCENTILE,
     CLUSTER_ALGORITHM,
+    CLUSTERING_AUTO_CALIBRATION,
     NUM_CLUSTERS_MIN,
     NUM_CLUSTERS_MAX,
     DBSCAN_EPS_MIN,
@@ -60,7 +61,7 @@ from config import (
     OPENAI_API_KEY,
     GEMINI_API_KEY,
     GEMINI_MODEL_NAME,
-    TOP_N_PLAYLISTS,
+    TOP_N_CLUSTERING_PLAYLIST,
     MISTRAL_API_KEY,
     MISTRAL_MODEL_NAME,
     TASK_STATUS_PENDING,
@@ -129,10 +130,10 @@ def start_clustering_endpoint():
           schema:
             type: object
             properties:
-              top_n_playlists:
+              top_n_clustering_playlist:
                 type: integer
-                description: "If > 0, returns only the Top N most diverse playlists. If 0 or not provided, returns all. Defaults to value from config."
-                default: "Configured TOP_N_PLAYLISTS"
+                description: "Exact maximum number of final clustering playlists."
+                default: "Configured TOP_N_CLUSTERING_PLAYLIST"
               clustering_method:
                 type: string
                 description: Algorithm to use for clustering (e.g., kmeans, dbscan, gmm, spectral).
@@ -323,7 +324,15 @@ def start_clustering_endpoint():
     data = request.json
     job_id = str(uuid.uuid4())
 
+    # Clustering is a BATCH task, so like analysis and cleaning it always runs
+    # against every configured server, one server at a time. It used to cluster
+    # only the server picked in the sidebar, which silently left the other
+    # servers without playlists and made it inconsistent with the other batches.
     clustering_kwargs = {  # Pass all arguments as a dictionary
+        "output_server_scope": 'all',
+        "auto_calibration_param": bool(
+            data.get('auto_parameter_discovery', CLUSTERING_AUTO_CALIBRATION)
+        ),
         "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
         "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
         "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),
@@ -343,7 +352,16 @@ def start_clustering_endpoint():
         "pca_components_max": int(data.get('pca_components_max', PCA_COMPONENTS_MAX)),
         "num_clustering_runs": int(data.get('clustering_runs', CLUSTERING_RUNS)),
         "max_songs_per_cluster_val": int(data.get('max_songs_per_cluster', MAX_SONGS_PER_CLUSTER)),
-        "top_n_playlists_param": int(data.get('top_n_playlists', TOP_N_PLAYLISTS)),
+        # Keep the legacy RQ kwarg while workers roll across versions.
+        "top_n_playlists_param": int(
+            data.get(
+                'top_n_clustering_playlist',
+                data.get(
+                    'min_clustering_top',
+                    data.get('top_n_playlists', TOP_N_CLUSTERING_PLAYLIST),
+                ),
+            )
+        ),
         "min_songs_per_genre_for_stratification_param": int(
             data.get(
                 'min_songs_per_genre_for_stratification', MIN_SONGS_PER_GENRE_FOR_STRATIFICATION

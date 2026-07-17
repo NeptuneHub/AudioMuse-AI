@@ -11,7 +11,7 @@
 Serves the chat UI (mounted at `/chat`) and turns a natural-language request
 into a playlist by calling `tasks.ai.planner.plan_and_execute_once` with the
 MCP tools from `tasks.ai.tools`, then materializes the result via
-`tasks.mediaserver.create_instant_playlist`.
+`app_server_context.create_instant_playlist_for_server`.
 
 Main Features:
 * Routes: `/` chat page, `/api/config_defaults`, `/api/chatPlaylist`,
@@ -27,6 +27,7 @@ import logging
 import re
 import time
 
+import app_server_context
 from error import error_manager
 from error.error_dictionary import UNKNOWN_ERROR_CODE
 
@@ -278,6 +279,11 @@ def chat_playlist_api():
     err = _reject_missing_user_input(data)
     if err:
         return err
+    try:
+        app_server_context.resolve_request_server_id(data)
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
     log_messages = []
     resp_obj, status = _drain_pipeline(_run_chat_pipeline(data, log_messages))
     return jsonify({"response": resp_obj}), status
@@ -302,6 +308,11 @@ def chat_playlist_stream_api():
     err = _reject_missing_user_input(data)
     if err:
         return err
+    try:
+        app_server_context.resolve_request_server_id(data)
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
 
     @stream_with_context
     def generate():
@@ -585,6 +596,14 @@ def _run_chat_pipeline(data, log_messages):
     executed_query_str = plan_result['executed_query_str']
     filter_applied = plan_result.get('filter_applied', False)
 
+    scoped_pool = app_server_context.scope_results(all_songs, None, id_key='item_id')
+    if len(scoped_pool) != len(all_songs):
+        log_messages.append(
+            f"\nServer availability: removed {len(all_songs) - len(scoped_pool)} "
+            "unavailable songs before playlist selection"
+        )
+    all_songs = scoped_pool
+
     log_messages.append(
         f"\nCollected {len(all_songs)} songs (target {target_song_count}, cap {collection_cap})"
     )
@@ -853,9 +872,6 @@ def create_media_server_playlist_api():
     """
     API endpoint to create a playlist on the configured media server.
     """
-    # Local import to break circular dependency at startup
-    from tasks.mediaserver import create_instant_playlist
-
     data = request.get_json()
     if not data or 'playlist_name' not in data or 'item_ids' not in data:
         return jsonify({"message": "Error: Missing playlist_name or item_ids in request"}), 400
@@ -869,7 +885,18 @@ def create_media_server_playlist_api():
         return jsonify({"message": "Error: No songs provided to create the playlist."}), 400
 
     try:
-        created_playlist_info = create_instant_playlist(user_playlist_name, item_ids)
+        server_id = app_server_context.resolve_request_server_id(data)
+    except ValueError as exc:
+        return jsonify({"message": f"Error: {exc}"}), 400
+
+    try:
+        try:
+            info = app_server_context.create_instant_playlist_for_server(
+                user_playlist_name, item_ids, server_id
+            )
+        except ValueError as exc:
+            return jsonify({"message": f"Error: {exc}"}), 400
+        created_playlist_info = info['result']
 
         if not created_playlist_info:
             raise Exception("Media server did not return playlist information after creation.")

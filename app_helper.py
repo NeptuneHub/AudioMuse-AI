@@ -37,6 +37,7 @@ from database import (  # noqa: F401
     get_score_data_by_ids,
     load_map_projection,
     get_task_info_from_db,
+    get_task_statuses,
     get_tracks_by_ids,
     save_track_analysis_and_embedding,
     # Used internally by the build_and_store_* projection orchestration below.
@@ -254,7 +255,7 @@ def build_and_store_map_projection(index_name='main_map'):
     try:
         logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
         if _project_with_umap is not None:
-            projections = _project_with_umap([v for v in mat])
+            projections = _project_with_umap(mat)
     except Exception as e:
         logger.warning(f"UMAP projection failed during build: {e}")
         projections = None
@@ -262,7 +263,7 @@ def build_and_store_map_projection(index_name='main_map'):
     if projections is None:
         try:
             if _project_to_2d is not None:
-                projections = _project_to_2d([v for v in mat])
+                projections = _project_to_2d(mat)
         except Exception as e:
             logger.warning(f"PCA projection failed during build: {e}")
             projections = None
@@ -354,7 +355,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
         logger.info(f"Starting to build artist projection: {mat.shape[0]} component vectors found.")
         # Try UMAP first
         if _project_with_umap is not None:
-            projections = _project_with_umap([v for v in mat])
+            projections = _project_with_umap(mat)
     except Exception as e:
         logger.warning(f"UMAP projection failed for artist components: {e}")
         projections = None
@@ -363,7 +364,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     if projections is None:
         try:
             if _project_to_2d is not None:
-                projections = _project_to_2d([v for v in mat])
+                projections = _project_to_2d(mat)
         except Exception as e:
             logger.warning(f"PCA projection failed for artist components: {e}")
             projections = None
@@ -466,13 +467,21 @@ def cancel_job_and_children_recursive(
     except Exception as e_qdel:
         logger.warning(f'Failed to clear queue lists during global cancel: {e_qdel}')
 
-    # Consolidate DB: delete all task_status rows and insert a single REVOKED row for job_id
+    # Consolidate DB: wipe task_status and leave ONE REVOKED recap row for the id the
+    # user cancelled, so the table cannot grow without bound.
+    #
+    # The wipe IS the cancellation signal. Every cooperative check therefore treats a
+    # MISSING row as revoked, never as "carry on": reading absence as "not cancelled"
+    # is what let a cancelled analysis keep enqueuing albums onto the queue the cancel
+    # had just emptied. See revoked()/revoked_now() in tasks/analysis.py,
+    # make_cancel_check in tasks/multiserver_sync.py, and the guards in
+    # tasks/clustering.py.
     db = get_db()
     cur = db.cursor()
     try:
-        # Snapshot the in-flight main tasks into the persistent task_history
-        # *before* we wipe task_status, so the dashboard's history table keeps
-        # showing what was running when the user pressed Cancel.
+        # Snapshot the in-flight main tasks into the persistent task_history first,
+        # so the dashboard's history table keeps showing what was running when the
+        # user pressed Cancel.
         try:
             with db.cursor(cursor_factory=DictCursor) as snap_cur:
                 snap_cur.execute(
@@ -491,8 +500,6 @@ def cancel_job_and_children_recursive(
                             details_obj = json.loads(r['details'])
                         except Exception:
                             details_obj = None
-                    # If the task was already in a terminal status, keep that one;
-                    # otherwise mark it REVOKED.
                     final_status = (
                         r['status']
                         if r['status']
@@ -522,7 +529,8 @@ def cancel_job_and_children_recursive(
         cur.close()
 
     try:
-        # Ensure a single REVOKED row exists for job_id
+        # The single surviving row: the id the user actually cancelled, so the UI has
+        # one canonical cancelled task to show.
         save_task_status(
             job_id,
             'unknown',

@@ -179,8 +179,68 @@
     </section>
 
     <form id="setup-form" autocomplete="off">
-        <section class="section">
-                <h2>Media Server</h2>
+        <section class="section" id="music-servers-section">
+                <h2>Music Servers</h2>
+                <p class="subtitle" style="margin-top:0.75rem;">Connect one or more media servers (Jellyfin, Emby, Navidrome, Lyrion, Plex, even several of the same type). Analysis covers every configured server: the default server runs first, then each remaining server in turn. Songs shared by several servers are recognized by their audio fingerprint and analyzed only once, and songs that exist on just one server are analyzed too, so the catalogue is the union of all your libraries. Alignment sweeps map the shared content across servers as analysis progresses. Use the server switcher at the bottom of the menu to pick which server the interface works against: playlists and searches then target that server, and tracks it does not have are skipped.</p>
+                <div id="music-servers-panel" style="max-width:100%;">
+                    <div style="overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch;">
+                    <table id="music-servers-table" style="width:100%; border-collapse:collapse; min-width:480px;">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left; padding:0.35rem;">Name</th>
+                                <th style="text-align:left; padding:0.35rem;">Type</th>
+                                <th style="padding:0.35rem;">Default</th>
+                                <th style="padding:0.35rem;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="music-servers-tbody"></tbody>
+                    </table>
+                    </div>
+                    <p id="music-servers-empty" style="display:none; opacity:0.8;">No servers configured yet.</p>
+                    <p id="music-servers-error" class="inline-feedback" style="display:none;"></p>
+                    <div id="sweep-progress" style="display:none; margin-top:0.75rem;">
+                        <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <div style="flex:1; background:rgba(128,128,128,0.25); border-radius:6px; height:14px; overflow:hidden;">
+                                <div id="sweep-progress-bar" style="height:100%; width:0%; background:#4a90d9; transition:width 0.5s;"></div>
+                            </div>
+                            <span id="sweep-progress-pct" style="font-size:0.85rem; min-width:3em; text-align:right;">0%</span>
+                            <button type="button" id="sweep-cancel-btn" style="display:none;">Cancel</button>
+                        </div>
+                        <p id="sweep-progress-text" style="margin:0.35rem 0 0; font-size:0.85rem; opacity:0.9;"></p>
+                    </div>
+                </div>
+                <div style="margin:0.75rem 0; display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <button type="button" id="ms-add-btn">+ Add server</button>
+                    <button type="button" id="ms-align-btn">Align music servers</button>
+                </div>
+                <div id="music-server-form" style="display:none; margin-top:1rem; border:1px solid var(--border-color, #ccc); border-radius:8px; padding:1rem;">
+                    <h3 id="music-server-form-title" style="margin-top:0;">Add a server</h3>
+                    <input type="hidden" id="ms-edit-id" value="">
+                    <div style="display:flex; flex-direction:column; gap:0.5rem;">
+                        <label for="ms-name">Display name</label>
+                        <input type="text" id="ms-name" placeholder="e.g. Office Jellyfin" style="width:100%;">
+                        <label for="ms-type">Server type</label>
+                        <select id="ms-type" style="width:100%;">
+                            <option value="jellyfin">Jellyfin</option>
+                            <option value="emby">Emby</option>
+                            <option value="navidrome">Navidrome / Subsonic</option>
+                            <option value="lyrion">Lyrion (LMS)</option>
+                            <option value="plex">Plex</option>
+                        </select>
+                        <div id="ms-cred-fields" style="display:flex; flex-direction:column; gap:0.5rem;"></div>
+                        <input type="hidden" id="ms-libraries" value="">
+                        <div id="ms-libraries-boxes" style="display:none; flex-direction:column; gap:0.25rem;"></div>
+                        <label style="display:flex; align-items:center; gap:0.5rem;"><input type="checkbox" id="ms-make-default"> Set as the default server</label>
+                    </div>
+                    <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <button type="button" id="ms-test-btn">Test connection</button>
+                        <button type="button" id="ms-save-btn">Save server</button>
+                        <button type="button" id="ms-cancel-btn">Cancel</button>
+                    </div>
+                    <p id="ms-feedback" class="inline-feedback" style="display:none; margin-top:0.5rem;"></p>
+                </div>
+                <div id="default-server-editor" style="display:none; margin-top:1rem; border:1px solid var(--border-color, #ccc); border-radius:8px; padding:1rem;">
+                    <h3 style="margin-top:0;">Edit default server</h3>
                 <div class="field-row">
                     <label for="MEDIASERVER_TYPE" class="label-with-tooltip">
                         Media server type
@@ -215,6 +275,7 @@
                     <div id="music-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem; width:100%;"></div>
                     <small style="margin-top:0.5rem; opacity:0.85;">Changes apply to new analyses only. Run a Cleaning task to remove already-analyzed tracks from libraries you uncheck.</small>
                     <small id="music-libraries-hint" style="display:none; margin-top:0.5rem;">Select at least one library, or check "No restriction" to scan everything.</small>
+                </div>
                 </div>
             </section>
 
@@ -389,5 +450,6 @@
 {% block bodyAdditions %}
 <script src="{{ url_for('static', filename='plex_link.js') }}"></script>
 <script src="{{ url_for('static', filename='setup.js') }}"></script>
+<script src="{{ url_for('static', filename='music_servers_admin.js') }}"></script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
 {% endblock %}

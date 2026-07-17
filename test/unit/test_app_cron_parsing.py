@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from app_cron import _field_matches, cron_matches_now
+from app_cron import _cron_expr_problem, _field_matches, cron_matches_now
 
 
 FIXED_TS = 1700000000
@@ -109,3 +109,32 @@ def test_cron_matches_now_dom_dow_either_matches(utc_tz):
     assert cron_matches_now('13 22 1 11 2', FIXED_TS) is True
     assert cron_matches_now('13 22 14 11 5', FIXED_TS) is True
     assert cron_matches_now('13 22 1 11 5', FIXED_TS) is False
+
+
+def test_valid_expressions_have_no_problem():
+    assert _cron_expr_problem('0 3 * * *') is None
+    assert _cron_expr_problem('*/15 * * * 0-5') is None
+    assert _cron_expr_problem('  30 2 1 1 1  ') is None
+
+
+def test_named_weekday_is_rejected_instead_of_silently_never_firing():
+    """The matcher fails closed and silent, so '0 3 * * MON' used to be stored,
+    displayed as an active schedule, and simply never run."""
+    problem = _cron_expr_problem('0 3 * * MON')
+    assert problem and 'day of week' in problem
+
+
+def test_wrong_field_count_is_rejected():
+    assert '5 fields' in _cron_expr_problem('0 3 * *')
+    assert '5 fields' in _cron_expr_problem('@daily')
+
+
+def test_empty_expression_is_rejected():
+    assert _cron_expr_problem('') is not None
+    assert _cron_expr_problem(None) is not None
+
+
+def test_out_of_domain_value_is_rejected():
+    """A minute of 99 can never match, so the row would never fire."""
+    assert 'minute' in _cron_expr_problem('99 3 * * *')
+    assert 'hour' in _cron_expr_problem('0 25 * * *')

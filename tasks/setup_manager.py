@@ -15,6 +15,8 @@ Main Features:
 * Reads and writes typed config overrides (casting stored strings back to the
   default's type) and can bootstrap the table from valid environment config
   when it is empty.
+* Removes database overrides that no longer correspond to persistable
+  parameters in config.py, without rewriting values that are still valid.
 * Hashes secrets with Argon2, skips re-hashing values already hashed, treats
   placeholder values as unset, and reports whether server/auth setup is complete.
 """
@@ -102,8 +104,8 @@ class SetupManager:
                     finally:
                         cur.execute("SELECT pg_advisory_unlock(726354821)")
                 conn.commit()
-        except Exception as exc:
-            self.logger.warning(f"Could not ensure setup config table: {exc}")
+        except Exception:
+            self.logger.warning("Could not ensure setup config table", exc_info=True)
 
     def config_table_exists(self):
         try:
@@ -114,8 +116,8 @@ class SetupManager:
                         (DEFAULT_CONFIG_TABLE,),
                     )
                     return bool(cur.fetchone()[0])
-        except Exception as exc:
-            self.logger.warning(f"Unable to determine app_config table existence: {exc}")
+        except Exception:
+            self.logger.warning("Unable to determine app_config table existence", exc_info=True)
             return False
 
     def get_raw_overrides(self, ensure_table=True):
@@ -130,8 +132,8 @@ class SetupManager:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(f"SELECT key, value FROM {DEFAULT_CONFIG_TABLE}")
                     return {row["key"]: row["value"] for row in cur.fetchall()}
-        except Exception as exc:
-            self.logger.warning(f"Unable to read setup config overrides from DB: {exc}")
+        except Exception:
+            self.logger.warning("Unable to read setup config overrides from DB", exc_info=True)
             return {}
 
     def is_config_table_empty(self):
@@ -141,9 +143,44 @@ class SetupManager:
                 with conn.cursor() as cur:
                     cur.execute(f"SELECT EXISTS (SELECT 1 FROM {DEFAULT_CONFIG_TABLE})")
                     return not cur.fetchone()[0]
-        except Exception as exc:
-            self.logger.warning(f"Unable to determine app_config state: {exc}")
+        except Exception:
+            self.logger.warning("Unable to determine app_config state", exc_info=True)
             return True
+
+    def get_default_music_server(self):
+        """The music_servers default row, the single source of truth for the
+        media-server settings config projects onto its globals. None when the
+        table does not exist yet (pre-migration boot) or on any read problem,
+        so importing config can never fail because of the registry."""
+        if self.database_url is None:
+            return None
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT to_regclass('public.music_servers') IS NOT NULL")
+                    if not cur.fetchone()[0]:
+                        return None
+                    cur.execute(
+                        "SELECT server_type, creds, music_libraries FROM music_servers "
+                        "WHERE is_default LIMIT 1"
+                    )
+                    row = cur.fetchone()
+            if not row:
+                return None
+            creds = row[1]
+            if isinstance(creds, str):
+                try:
+                    creds = json.loads(creds)
+                except ValueError:
+                    creds = {}
+            return {
+                'server_type': row[0],
+                'creds': creds or {},
+                'music_libraries': row[2] or '',
+            }
+        except Exception:
+            self.logger.warning("Unable to read default music server from registry", exc_info=True)
+            return None
 
     def _looks_like_placeholder(self, value):
         if not isinstance(value, str):
@@ -175,7 +212,19 @@ class SetupManager:
 
     def _get_env_config_values(self, config_module):
         values = {}
-        excluded_keys = getattr(config_module, 'SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        excluded_keys = set(
+            getattr(config_module, 'SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        )
+        excluded_keys.update(
+            getattr(config_module, 'MEDIASERVER_CONFIG_KEYS', set())
+        )
+        excluded_keys.update(
+            {
+                'APP_CONFIG_RUNTIME_KEYS',
+                'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
+                'MEDIASERVER_CONFIG_KEYS',
+            }
+        )
         for name, default_value in sorted(vars(config_module).items()):
             if not name.isupper() or name.startswith('_'):
                 continue
@@ -233,6 +282,42 @@ class SetupManager:
         self.save_config_values(values)
         return True
 
+    def prune_obsolete_config_values(self, config_module):
+        config_values = self._get_env_config_values(config_module)
+        if not config_values:
+            raise RuntimeError(
+                "Refusing to prune app_config because config.py exposes no "
+                "persistable parameters"
+            )
+        valid_keys = sorted(
+            set(config_values)
+            | set(getattr(config_module, 'APP_CONFIG_RUNTIME_KEYS', set()))
+            | {'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD'}
+        )
+
+        self.ensure_table()
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DELETE FROM {DEFAULT_CONFIG_TABLE} "
+                        "WHERE NOT (key = ANY(%s)) RETURNING key",
+                        (valid_keys,),
+                    )
+                    removed_keys = sorted(row[0] for row in cur.fetchall())
+                conn.commit()
+        except Exception:
+            self.logger.warning("Unable to prune obsolete setup config values", exc_info=True)
+            raise
+
+        if removed_keys:
+            self.logger.info(
+                "Removed %d obsolete app_config parameter(s): %s",
+                len(removed_keys),
+                ", ".join(removed_keys),
+            )
+        return removed_keys
+
     def _is_argon2_password_hash(self, value):
         return isinstance(value, str) and value.startswith('$argon2')
 
@@ -264,6 +349,15 @@ class SetupManager:
     def save_config_values(self, values):
         if not isinstance(values, dict):
             raise TypeError("Expected a dictionary of config values")
+        try:
+            import config as _config
+
+            media_keys = getattr(_config, 'MEDIASERVER_CONFIG_KEYS', frozenset())
+        except Exception:
+            media_keys = frozenset()
+        values = {k: v for k, v in values.items() if k not in media_keys}
+        if not values:
+            return
         self.ensure_table()
         try:
             with self.get_connection() as conn:
@@ -289,8 +383,8 @@ class SetupManager:
                             (key, self.format_value(value)),
                         )
                 conn.commit()
-        except Exception as exc:
-            self.logger.warning(f"Unable to save setup config values: {exc}")
+        except Exception:
+            self.logger.warning("Unable to save setup config values", exc_info=True)
             raise
         try:
             import config
@@ -310,8 +404,8 @@ class SetupManager:
                         f"DELETE FROM {DEFAULT_CONFIG_TABLE} WHERE key = ANY(%s)", (list(keys),)
                     )
                 conn.commit()
-        except Exception as exc:
-            self.logger.warning(f"Unable to delete setup config values: {exc}")
+        except Exception:
+            self.logger.warning("Unable to delete setup config values", exc_info=True)
             raise
 
     def is_setup_complete(self, config_module):

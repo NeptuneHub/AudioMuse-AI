@@ -310,15 +310,28 @@ def transform(obj):
             transform(x)
 
 
-def fake_playlists(data):
-    if not isinstance(data, dict):
-        return data
+def _fake_playlist_map(playlists):
     out = {}
-    for i, (k, songs) in enumerate(data.items()):
+    for i, (k, songs) in enumerate(playlists.items()):
         if isinstance(songs, list):
             transform(songs)
             out[AIPL[i % len(AIPL)]] = songs[:14]
     return out
+
+
+def fake_playlists(data):
+    if not isinstance(data, dict):
+        return data
+    if isinstance(data.get('servers'), list):
+        for i, group in enumerate(data['servers']):
+            if not isinstance(group, dict):
+                continue
+            group['server_name'] = f"Server {chr(ord('A') + (i % 26))}"
+            group['server_id'] = f"srv-{i}"
+            if isinstance(group.get('playlists'), dict):
+                group['playlists'] = _fake_playlist_map(group['playlists'])
+        return data
+    return _fake_playlist_map(data)
 
 
 def fake_dashboard(data):
@@ -371,23 +384,6 @@ def fake_similar_artists():
             }
         )
     return out
-
-
-def fake_waveform():
-    import math
-
-    peaks = []
-    for i in range(250):
-        amp = 0.12 + 0.85 * abs(math.sin(i * 0.075)) * (0.5 + 0.5 * math.sin(i * 0.021 + 0.6))
-        amp = min(0.98, amp + (((i * 53) % 13) / 120.0))
-        peaks.append(round(-amp, 3))
-        peaks.append(round(amp, 3))
-    return {
-        "peaks": peaks,
-        "duration": 214.6,
-        "title": "Endless Skyline",
-        "author": "The Ember Echo",
-    }
 
 
 def fake_chat_response():
@@ -449,11 +445,6 @@ def handle_route(route):
             status=200,
             content_type='application/json',
             body=json.dumps(fake_similar_artists()).encode(),
-        )
-        return
-    if '/api/waveform' in low:
-        route.fulfill(
-            status=200, content_type='application/json', body=json.dumps(fake_waveform()).encode()
         )
         return
     if 'lyrics/search/axes' in low:
@@ -628,7 +619,6 @@ TEXT2KEY = {
     "Lyrics Search": "lyrics_search",
     "Music Map": "map",
     "Sonic Fingerprint": "sonic_fingerprint",
-    "Waveform": "waveform",
     "Cleaning": "cleaning",
     "Scheduled Tasks": "cron",
     "Backup and Restore": "backup",
@@ -724,10 +714,6 @@ def recipe(page, idx, key):
             page, '#start_search', '#start-autocomplete-results .autocomplete-item', q='a'
         ):
             shot(page, idx, key, '2_autocomplete')
-    elif key == 'waveform':
-        settle(page, 2)
-        if autocomplete(page, '#search_query', '#autocomplete-results .autocomplete-item', q='a'):
-            shot(page, idx, key, '1_autocomplete')
     elif key == 'clap_search':
         settle(page, 2)
         shot(page, idx, key, '1_form')

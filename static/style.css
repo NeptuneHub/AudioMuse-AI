@@ -375,7 +375,6 @@ textarea {
 #cancel-sync-btn,
 #playlistForm button,
 #similarity-form button,
-#waveform-form button,
 #artist-similarity-form button,
 #playlist-form button,
 #createPlaylistForm button {
@@ -728,7 +727,7 @@ html.dark-mode button:not(.btn):disabled {
     justify-content: center;
     gap: 0.4rem;
     width: fit-content;
-    margin: 1.5rem auto 0;
+    margin: 0.5rem auto 0;
     padding: 0.4rem 1rem;
     font-size: 0.85rem;
     font-weight: 600;
@@ -1450,3 +1449,117 @@ html.dark-mode body .similarity-badge.badge-neutral { background: #4B5563; }
 .ptag-genre      { color: hsl(var(--genre-hue, 220), 65%, 45%); }
 body.dark-mode .ptag-genre,
 html.dark-mode body .ptag-genre { color: hsl(var(--genre-hue, 220), 65%, 62%); }
+
+/* Scope chips. Tags what a page (or a dashboard section) acts on: CATALOGUE (the
+   deduplicated union of every music server) or PER SERVER (the one server chosen
+   in the sidebar picker). Only rendered when 2+ servers are configured - with one
+   server the two mean the same thing. The page-level chip is pinned to the corner
+   of the viewport (.scope-chip-corner) so it annotates the page without taking part
+   in its layout; the dashboard uses the plain chip inline on its own sections. */
+.scope-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    vertical-align: middle;
+    margin-left: 0.5rem;
+}
+.scope-catalog { background: #EDE9FE; color: #5B21B6; }
+.scope-server  { background: #DBEAFE; color: #1E40AF; }
+body.dark-mode .scope-catalog,
+html.dark-mode body .scope-catalog { background: #4C1D95; color: #DDD6FE; }
+body.dark-mode .scope-server,
+html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }
+
+/* Page-level chip: pinned to the top-right corner of the page's TITLE CARD (the
+   first `section`, the panel that holds the <h1>). position:absolute keeps it out
+   of the document flow, so adding it cannot reflow a single element of the card. */
+.scope-chip-host { position: relative; }
+.scope-chip-corner {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.9rem;
+    z-index: 2;
+    margin-left: 0;
+}
+@media (max-width: 600px) {
+    .scope-chip-corner { top: 0.5rem; right: 0.5rem; font-size: 0.55rem; }
+}
+
+/* iPhone-style ON/OFF toggle used by the Automatic Parameter Discovery flag. */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 74px;
+    height: 30px;
+    vertical-align: middle;
+}
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.toggle-slider {
+    position: absolute;
+    inset: 0;
+    cursor: pointer;
+    background-color: #9CA3AF;
+    border-radius: 30px;
+    transition: background-color 0.2s;
+}
+.toggle-slider::before {
+    content: "";
+    position: absolute;
+    height: 24px;
+    width: 24px;
+    left: 3px;
+    top: 3px;
+    background-color: #fff;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition: transform 0.2s;
+}
+.toggle-slider::after {
+    content: "OFF";
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #fff;
+    user-select: none;
+}
+.toggle-switch input:checked + .toggle-slider {
+    background-color: var(--color-primary);
+}
+.toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(44px);
+}
+.toggle-switch input:checked + .toggle-slider::after {
+    content: "ON";
+    right: auto;
+    left: 12px;
+}
+.toggle-switch input:focus-visible + .toggle-slider {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+body.dark-mode .toggle-slider,
+html.dark-mode body .toggle-slider {
+    background-color: #4B5563;
+}
+
+/* Generated Playlists: one header per server group (only with 2+ servers); the
+   chip rides the group because scope varies per group, not per section. */
+.playlist-server-header {
+    display: flex;
+    align-items: center;
+    margin: 1.1rem 0 0.4rem;
+}
+.playlist-server-header h3 { margin: 0; }

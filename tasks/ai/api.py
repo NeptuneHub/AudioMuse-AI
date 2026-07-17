@@ -15,7 +15,9 @@ Unicode text hygiene that sibling modules rely on.
 
 Main Features:
 * validate_ai_config gates each provider (URL shape, key, model) before any call is made.
-* clean_playlist_name repairs mojibake with ftfy + NFKC and strips non-ASCII; get_ai_playlist_name retries with feedback until the name fits the 5-40 char range.
+* clean_playlist_name repairs mojibake with ftfy + NFKC and strips non-ASCII.
+* get_ai_playlist_name asks small local models for one grounded concept, then
+  composes and validates the final title in code.
 """
 
 import logging
@@ -25,17 +27,74 @@ from typing import Dict, List, Optional, Tuple
 
 import ftfy
 
-import config
 from tasks.ai.providers import (
     gemini as ai_api_gemini,
     mistral as ai_api_mistral,
     openai as ai_api_openai,
 )
-from tasks.ai.prompts import build_mcp_system_prompt
+from tasks.ai.playlist_namer import GENRE_DISPLAY
+from tasks.ai.prompts import build_mcp_system_prompt, playlist_concept_prompt_template
 
 logger = logging.getLogger(__name__)
 
 VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
+
+_PLAYLIST_DIMENSION_RULES = {
+    'contrast': (
+        "Return the one ordinary emotion word for feeling both sides at once. "
+        "Do not return a rhetorical device or two labels."
+    ),
+    'function': (
+        "Complete this listener intent: I play this music for ___. Return only the "
+        "missing one-word purpose noun. Weather, place, object, scenery, and sound "
+        "descriptions are invalid."
+    ),
+    'theme': (
+        "Return one single familiar topic noun unifying the lyrics. No adjective, "
+        "phrase, metaphor, or mood label."
+    ),
+    'relationship': (
+        "Return one single familiar relationship-topic noun that captures both "
+        "the romantic subject and its emotional tone. Ignoring either part is "
+        "invalid. No adjective, phrase, metaphor, or mood label."
+    ),
+    'mood': (
+        "Return one familiar mood adjective that reads naturally immediately "
+        "before the genre. Do not return a noun, phrase, or copied sound descriptor."
+    ),
+}
+
+_CONCEPT_CONTAINER_WORDS = {
+    'background', 'collection', 'hits', 'instrumental', 'instrumentals', 'mix',
+    'music', 'playlist', 'sessions', 'songs', 'sound', 'soundtracks', 'tunes',
+    'vibes',
+}
+
+_CONCEPT_FILLER_WORDS = {'human'}
+
+_CONTRAST_NON_FEELINGS = {
+    'antithesis', 'contrast', 'dichotomy', 'dissonance', 'duality', 'irony',
+    'juxtaposition', 'oxymoron', 'paradox', 'synthesis', 'contradiction',
+    'euphoria', 'jubilance',
+}
+
+_FUNCTION_NON_NOUNS = {'relax'}
+
+_FUNCTION_BAD_TITLE_WORDS = {
+    'exercise', 'friends', 'movement', 'people', 'rest', 'work'
+}
+
+_FUNCTION_SOUND_DESCRIPTORS = {
+    'aggressive', 'calm', 'danceable', 'energetic', 'energy', 'forceful',
+    'happy', 'intense', 'joyful', 'relaxed', 'somber', 'upbeat',
+}
+
+_MOOD_BAD_TITLE_WORDS = {'joy', 'swing'}
+
+_KNOWN_GENRE_TITLES = (
+    {name.casefold() for name in GENRE_DISPLAY}
+    | {name.casefold() for name in GENRE_DISPLAY.values()}
+)
 
 
 def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
@@ -251,73 +310,165 @@ def clean_playlist_name(name: str) -> str:
         return ""
     name = ftfy.fix_text(name)
     name = unicodedata.normalize("NFKC", name)
+    name = re.sub(r"_automatic(\s*\(\d+\))?$", "", name, flags=re.IGNORECASE)
+    name = name.replace("_", " ")
     cleaned_name = re.sub(r"[^a-zA-Z0-9\s\-\&\'!\.\,\?\(\)\[\]]", "", name)
     cleaned_name = re.sub(r"\s\(\d+\)$", "", cleaned_name)
     cleaned_name = re.sub(r"\s+", " ", cleaned_name).strip()
     return cleaned_name
 
 
-def get_ai_playlist_name(
-    prompt_template: str,
-    song_list: List[Dict],
-    other_feature_scores_dict: Optional[Dict],
-    ai_config: Dict,
+def _compose_title(
+    display_concept: str, genre_word: str, naming_dimension: str, instrumental: bool
 ) -> str:
-    MIN_LENGTH = 5
-    MAX_LENGTH = 40
+    if naming_dimension in {'mood', 'contrast'}:
+        title = f'{display_concept} {genre_word}'
+    else:
+        title = f'{genre_word} {display_concept}'
+    if instrumental:
+        title += ' Instrumentals'
+    return title
 
-    max_songs = config.MAX_SONGS_IN_AI_PROMPT
-    songs_for_prompt = song_list[:max_songs]
-    formatted_song_list = "\n".join(
-        [
-            f"- {song.get('title', 'Unknown Title')} by {song.get('author', 'Unknown Artist')}"
-            for song in songs_for_prompt
-        ]
-    )
-    if len(song_list) > max_songs:
-        logger.info(
-            "Truncated song list from %d to %d songs for AI prompt to avoid token limits",
-            len(song_list),
-            max_songs,
+
+def _concept_problem_basic(raw_concept, concept, words, concept_tokens, naming_dimension):
+    if '\n' in raw_concept or '\r' in raw_concept:
+        return 'it contained more than one line'
+    if not concept:
+        return 'the concept is empty'
+    if len(concept) > 24:
+        return 'the concept is too long'
+    if concept_tokens & _CONCEPT_CONTAINER_WORDS:
+        return 'container or marketing words are not a concept'
+    if concept_tokens & _CONCEPT_FILLER_WORDS:
+        return 'the concept contains a redundant filler word'
+    if naming_dimension == 'contrast' and concept_tokens & _CONTRAST_NON_FEELINGS:
+        return 'a rhetorical term is not an emotion'
+    if '&' in concept:
+        return 'the concept combined multiple labels'
+    if naming_dimension == 'mood' and concept_tokens & _MOOD_BAD_TITLE_WORDS:
+        return 'the word is not a mood adjective grounded by the evidence'
+    if len(words) != 1:
+        return f'{naming_dimension} concepts must be one word'
+    return None
+
+
+def _stem_token(token):
+    if token.endswith('ies') and len(token) > 4:
+        return token[:-3] + 'y'
+    if token.endswith('s') and not token.endswith('ss') and len(token) > 3:
+        return token[:-1]
+    return token
+
+
+def _concept_problem_composed(concept, concept_tokens, title, naming_dimension, taken):
+    if naming_dimension == 'function' and (
+        concept_tokens & _FUNCTION_NON_NOUNS
+        or any(token.endswith('ing') for token in concept_tokens)
+    ):
+        return 'a verb or gerund is not a purpose noun'
+    if naming_dimension == 'function' and concept_tokens & _FUNCTION_BAD_TITLE_WORDS:
+        return 'the purpose word does not form a natural playlist title'
+    if naming_dimension == 'function' and concept_tokens & _FUNCTION_SOUND_DESCRIPTORS:
+        return 'a sound descriptor is not a listening purpose'
+    if title.removesuffix(' Instrumentals').casefold() in _KNOWN_GENRE_TITLES:
+        return 'the composed title is just a genre name'
+    concept_stems = {_stem_token(token) for token in concept_tokens}
+    if any(
+        concept_stems
+        & {_stem_token(token) for token in re.findall(r"[a-z0-9]+", used_title)}
+        for used_title in taken
+    ):
+        return 'the naming concept is already used by another playlist'
+    if not (5 <= len(title) <= 40) or not (2 <= len(title.split()) <= 5):
+        return 'the composed title is outside the 5-40 character or 2-5 word limit'
+    if title.casefold() in taken:
+        return 'the composed title is already used'
+    return None
+
+
+def get_ai_playlist_name(
+    genre_word: str,
+    naming_dimension: str,
+    naming_evidence: str,
+    ai_config: Dict,
+    instrumental: bool = False,
+    avoid_names: Optional[List[str]] = None,
+) -> Optional[str]:
+    dimension_rule = _PLAYLIST_DIMENSION_RULES.get(naming_dimension)
+    if not dimension_rule:
+        logger.error("Unsupported playlist naming dimension: %s", naming_dimension)
+        return None
+
+    avoid_list = avoid_names or []
+    taken = {clean_playlist_name(name).casefold() for name in avoid_list}
+    recent_names = [clean_playlist_name(name) for name in avoid_list[-8:]]
+    avoid_rule = ""
+    if recent_names:
+        avoid_rule = (
+            "Already used titles: "
+            + " | ".join(recent_names)
+            + ". Do not reuse their naming concept, even with another genre. "
         )
-
-    full_prompt = prompt_template.format(song_list_sample=formatted_song_list)
+    full_prompt = playlist_concept_prompt_template.format(
+        genre=genre_word,
+        evidence=naming_evidence,
+        dimension_rule=dimension_rule,
+        avoid_rule=avoid_rule,
+    )
     provider = (ai_config.get("provider") or "NONE").upper()
-    logger.info("Sending prompt to AI (%s):\n%s", provider, full_prompt)
+    logger.info("Sending playlist concept prompt to AI (%s):\n%s", provider, full_prompt)
 
+    genre_pattern = re.compile(
+        rf"(?<![a-z0-9]){re.escape(genre_word)}(?![a-z0-9])",
+        re.IGNORECASE,
+    )
     max_retries = 3
     current_prompt = full_prompt
 
     for attempt in range(max_retries):
-        name = generate_text(current_prompt, ai_config)
+        raw_concept = generate_text(
+            current_prompt,
+            ai_config,
+            temperature=0.7,
+            max_tokens=20,
+        )
 
-        if name in ("AI Naming Skipped",) or name.startswith("Error"):
-            return name
+        if not isinstance(raw_concept, str):
+            return None
+        if raw_concept == "AI Naming Skipped" or raw_concept.startswith("Error"):
+            return None
 
-        cleaned_name = clean_playlist_name(name)
-        if MIN_LENGTH <= len(cleaned_name) <= MAX_LENGTH:
-            return cleaned_name
+        concept = clean_playlist_name(raw_concept)
+        concept = genre_pattern.sub('', concept)
+        concept = re.sub(r"\s+", " ", concept).strip(" -.,!?()[]")
+        words = concept.split()
+        concept_tokens = set(re.findall(r"[a-z0-9]+", concept.casefold()))
+        title = _compose_title(concept.title(), genre_word, naming_dimension, instrumental)
+
+        problem = _concept_problem_basic(
+            raw_concept, concept, words, concept_tokens, naming_dimension
+        ) or _concept_problem_composed(
+            concept, concept_tokens, title, naming_dimension, taken
+        )
+        if problem is None:
+            logger.info(
+                "AI playlist concept '%s' composed as '%s' (%s)",
+                concept,
+                title,
+                naming_dimension,
+            )
+            return title
 
         logger.warning(
-            "AI generated name '%s' (%d chars) outside %d-%d range. Attempt %d/%d",
-            cleaned_name,
-            len(cleaned_name),
-            MIN_LENGTH,
-            MAX_LENGTH,
+            "AI generated playlist concept '%s' rejected because %s. Attempt %d/%d",
+            concept,
+            problem,
             attempt + 1,
             max_retries,
         )
-        if attempt < max_retries - 1:
-            feedback = (
-                f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was "
-                f"{len(cleaned_name)} characters long. It MUST be between {MIN_LENGTH} and "
-                f"{MAX_LENGTH} characters. Please try again."
-            )
-            current_prompt = full_prompt + feedback
-            continue
-        return (
-            f"Error: AI generated name '{cleaned_name}' ({len(cleaned_name)} chars) "
-            f"outside {MIN_LENGTH}-{MAX_LENGTH} range after {max_retries} attempts."
+        current_prompt = (
+            full_prompt
+            + f" Previous concept '{concept}' was rejected because {problem}. "
+            "Return a different valid concept only."
         )
-
-    return "Error: Max retries exceeded in get_ai_playlist_name"
+    return None

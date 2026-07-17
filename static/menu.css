@@ -11,6 +11,7 @@
                                         it stays inside the scrollable area */
     box-sizing: border-box;
     height: 100vh;
+    height: 100dvh;
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: contain;
@@ -75,7 +76,9 @@ html.sidebar-open .sidebar {
     list-style: none;
     padding: 0;
     margin: 0;
-    margin-top: 4rem;
+    /* Clears the fixed menu-toggle button (top: 1.5rem, ~1.9rem tall), which
+       floats above the open sidebar: without this the first entry sits under it. */
+    margin-top: 2.25rem;
 }
 
 .sidebar-nav li a,

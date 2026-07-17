@@ -24,11 +24,15 @@ Main Features:
 import logging
 import hashlib
 import numpy as np
+import os
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
+from joblib import Parallel, delayed
 from sklearn.mixture import GaussianMixture
+
+from config import INDEX_BUILD_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,8 @@ GMM_COVARIANCE_TYPE = 'diag'
 GMM_MAX_ITER = 100
 GMM_N_INIT = 3
 MIN_TRACKS_PER_ARTIST = 1
+_FETCH_TRACKS_PER_BATCH = 20000
+_MIN_ARTISTS_FOR_POOL = 32
 
 artist_index = None
 artist_map = None
@@ -52,10 +58,24 @@ def select_optimal_gmm_components(
     min_components: int = GMM_N_COMPONENTS_MIN,
     max_components: int = GMM_N_COMPONENTS_MAX,
 ) -> int:
+    return fit_best_gmm(embeddings, min_components, max_components)[0]
+
+
+def fit_best_gmm(
+    embeddings: np.ndarray,
+    min_components: int = GMM_N_COMPONENTS_MIN,
+    max_components: int = GMM_N_COMPONENTS_MAX,
+) -> Tuple[int, Optional[GaussianMixture]]:
+    """The best-BIC component count AND the model fitted with it.
+
+    The winner is handed back so the caller does not refit it: the sweep already
+    fitted it on this data with these parameters and this random_state, so a
+    refit is one more restarted EM run for numbers we have.
+    """
     n_samples = len(embeddings)
 
     if n_samples == 1:
-        return 1
+        return 1, None
 
     if n_samples <= 5:
         max_feasible = min(n_samples, max_components)
@@ -66,10 +86,11 @@ def select_optimal_gmm_components(
         max_feasible = min(min_components, n_samples)
 
     if max_feasible < 1:
-        return 1
+        return 1, None
 
     best_bic = float('inf')
     best_n_components = min(min_components, max_feasible)
+    best_gmm = None
 
     for n_components in range(1, max_feasible + 1):
         try:
@@ -87,6 +108,7 @@ def select_optimal_gmm_components(
             if bic < best_bic:
                 best_bic = bic
                 best_n_components = n_components
+                best_gmm = gmm
 
         except Exception as e:
             logger.debug(f"Failed to fit GMM with {n_components} components: {e}")
@@ -95,7 +117,7 @@ def select_optimal_gmm_components(
     logger.debug(
         f"Selected {best_n_components} components for {n_samples} samples (BIC: {best_bic:.2f})"
     )
-    return best_n_components
+    return best_n_components, best_gmm
 
 
 def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Optional[Dict]:
@@ -132,17 +154,17 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
             )
             return gmm_params
 
-        optimal_n_components = select_optimal_gmm_components(all_embeddings)
+        optimal_n_components, gmm = fit_best_gmm(all_embeddings)
 
-        gmm = GaussianMixture(
-            n_components=optimal_n_components,
-            covariance_type=GMM_COVARIANCE_TYPE,
-            max_iter=GMM_MAX_ITER,
-            n_init=GMM_N_INIT,
-            random_state=42,
-        )
-
-        gmm.fit(all_embeddings)
+        if gmm is None:
+            gmm = GaussianMixture(
+                n_components=optimal_n_components,
+                covariance_type=GMM_COVARIANCE_TYPE,
+                max_iter=GMM_MAX_ITER,
+                n_init=GMM_N_INIT,
+                random_state=42,
+            )
+            gmm.fit(all_embeddings)
 
         gmm_params = {
             'weights': gmm.weights_.tolist(),
@@ -205,6 +227,148 @@ def gmm_soft_chamfer_distance(gmm1_params: Dict, gmm2_params: Dict) -> float:
     return 0.5 * (forward + backward)
 
 
+def _gmm_worker_count(pending: int) -> int:
+    if INDEX_BUILD_WORKERS == 1 or pending < _MIN_ARTISTS_FOR_POOL:
+        return 1
+    if INDEX_BUILD_WORKERS > 1:
+        return min(INDEX_BUILD_WORKERS, pending)
+    return max(1, min(8, (os.cpu_count() or 2) // 2, pending))
+
+
+def _shutdown_gmm_pool() -> None:
+    """Release loky's worker processes, their semaphores and their temp folders.
+
+    loky holds its workers open for reuse across Parallel calls, which is right
+    while the fits are running and wrong afterwards: nothing else in this process
+    fits GMMs, and an RQ job process that exits with them still alive leaks every
+    semaphore and memmap folder they hold.
+    """
+    try:
+        from joblib.externals.loky import get_reusable_executor
+
+        get_reusable_executor().shutdown(wait=True)
+    except Exception:
+        logger.warning("Could not shut the artist GMM worker pool down", exc_info=True)
+
+
+def _fit_artist_job(job: Tuple[str, np.ndarray, str]) -> Tuple[str, Optional[Dict]]:
+    """One artist's GMM. Top level so a worker process can unpickle it."""
+    artist_name, embeddings, tracks_hash = job
+    params = fit_artist_gmm(artist_name, embeddings)
+    if params is None:
+        return artist_name, None
+    params['tracks_hash'] = tracks_hash
+    return artist_name, params
+
+
+def _cached_gmm_params(existing_gmm_params, artist_name, tracks_hash):
+    """The stored GMM for an artist whose tracks have not changed, else None."""
+    if not existing_gmm_params:
+        return None
+    params = existing_gmm_params.get(artist_name)
+    if params is not None and params.get('tracks_hash') == tracks_hash:
+        return params
+    return None
+
+
+def _artist_batches(pending, artist_tracks):
+    """Group artists so one embedding round trip covers ~_FETCH_TRACKS_PER_BATCH tracks."""
+    batch = []
+    tracks = 0
+    for artist_name in pending:
+        batch.append(artist_name)
+        tracks += len(artist_tracks[artist_name])
+        if tracks >= _FETCH_TRACKS_PER_BATCH:
+            yield batch
+            batch = []
+            tracks = 0
+    if batch:
+        yield batch
+
+
+def _artist_jobs(cur, batch, artist_tracks, artist_track_hashes):
+    """Fetch one batch of artists' embeddings and pack them into fit jobs."""
+    wanted = [track['item_id'] for name in batch for track in artist_tracks[name]]
+    cur.execute(
+        "SELECT item_id, embedding FROM embedding "
+        "WHERE item_id = ANY(%s) AND embedding IS NOT NULL",
+        (wanted,),
+    )
+    vectors = {
+        str(item_id): np.frombuffer(blob, dtype=np.float32)
+        for item_id, blob in cur.fetchall()
+        if blob
+    }
+    jobs = []
+    for artist_name in batch:
+        rows = [
+            vectors[track['item_id']]
+            for track in artist_tracks[artist_name]
+            if track['item_id'] in vectors
+        ]
+        if len(rows) < MIN_TRACKS_PER_ARTIST:
+            continue
+        jobs.append((artist_name, np.vstack(rows), artist_track_hashes[artist_name]))
+    return jobs
+
+
+def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
+    """{artist: gmm_params} for every artist that needs a (re)fit.
+
+    Two things made this the slowest step of a full rebuild, and neither was the
+    GMM itself: one embedding round trip PER ARTIST, and every artist fitted on a
+    single core. Embeddings are now fetched a batch of artists at a time, and the
+    fits - a BIC sweep of restarted EM runs, ~50 ms of pure Python each - fan out
+    across PROCESSES. Threads are useless here: the EM loop holds the GIL, and
+    measured on 300 artists they ran 3x SLOWER than serial while processes ran 6x
+    faster.
+
+    joblib's loky backend, NOT a forked pool: an index rebuild trains the IVF
+    cells (OpenMP) before it reaches the artists, and forking a process that has
+    already run OpenMP deadlocks its children - which is exactly what a fork pool
+    did here. loky starts its workers fresh, so there is no inherited OpenMP state
+    to hang on, and it holds them open across the batches.
+
+    The pool is shut down before returning. loky keeps its workers alive for
+    REUSE by default, and this runs inside an RQ job process that exits when the
+    job does: the workers outlive it, and their semaphores and memmap folders are
+    still there to be complained about at shutdown. Memmapping is off too - an
+    artist's embeddings are tens of KB, not worth a /tmp file each.
+    """
+    workers = _gmm_worker_count(len(pending))
+    logger.info(
+        "Fitting %d artist GMMs across %d worker process(es)...", len(pending), workers
+    )
+    fitted = {}
+    runner = (
+        Parallel(n_jobs=workers, backend='loky', max_nbytes=None)
+        if workers > 1
+        else None
+    )
+    try:
+        for batch in _artist_batches(pending, artist_tracks):
+            try:
+                jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
+            except Exception:
+                logger.exception(
+                    "Failed to fetch embeddings for a batch of %d artists", len(batch)
+                )
+                continue
+            if not jobs:
+                continue
+            if runner is None:
+                results = [_fit_artist_job(job) for job in jobs]
+            else:
+                results = runner(delayed(_fit_artist_job)(job) for job in jobs)
+            for artist_name, params in results:
+                if params is not None:
+                    fitted[artist_name] = params
+    finally:
+        if runner is not None:
+            _shutdown_gmm_pool()
+    return fitted
+
+
 def build_and_store_artist_index(db_conn=None):
     if db_conn is None:
         from app_helper import get_db
@@ -260,62 +424,26 @@ def build_and_store_artist_index(db_conn=None):
                 hash_input.encode(), usedforsecurity=False
             ).hexdigest()
 
-        logger.info("Fetching embeddings and fitting GMMs...")
+        cached = {
+            artist_name: _cached_gmm_params(
+                existing_gmm_params, artist_name, artist_track_hashes[artist_name]
+            )
+            for artist_name in artist_tracks
+        }
+        pending = [name for name, params in cached.items() if params is None]
+        fitted = _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes)
 
         artist_gmms = {}
         artist_names_list = []
-        reused_count = 0
-        refitted_count = 0
-
-        for idx, (artist_name, tracks) in enumerate(artist_tracks.items(), 1):
-            if idx % 50 == 0:
-                logger.info(f"Processing artist {idx}/{len(artist_tracks)}: {artist_name}")
-
-            current_hash = artist_track_hashes[artist_name]
-
-            if (
-                existing_gmm_params is not None
-                and artist_name in existing_gmm_params
-                and existing_gmm_params[artist_name].get('tracks_hash') == current_hash
-            ):
-                artist_gmms[artist_name] = existing_gmm_params[artist_name]
-                artist_names_list.append(artist_name)
-                reused_count += 1
+        for artist_name in artist_tracks:
+            params = cached[artist_name] or fitted.get(artist_name)
+            if params is None:
                 continue
+            artist_gmms[artist_name] = params
+            artist_names_list.append(artist_name)
 
-            track_embeddings = []
-            item_ids = [track['item_id'] for track in tracks]
-
-            try:
-                cur.execute(
-                    """
-                    SELECT item_id, embedding
-                    FROM embedding
-                    WHERE item_id = ANY(%s) AND embedding IS NOT NULL
-                """,
-                    (item_ids,),
-                )
-
-                embedding_rows = cur.fetchall()
-
-                for item_id, embedding_bytes in embedding_rows:
-                    if embedding_bytes:
-                        embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
-                        track_embeddings.append(embedding)
-
-            except Exception:
-                logger.exception(f"Failed to fetch embeddings for artist {artist_name}")
-                continue
-
-            if len(track_embeddings) >= MIN_TRACKS_PER_ARTIST:
-                gmm_params = fit_artist_gmm(artist_name, track_embeddings)
-
-                if gmm_params is not None:
-                    gmm_params['tracks_hash'] = current_hash
-                    artist_gmms[artist_name] = gmm_params
-                    artist_names_list.append(artist_name)
-                    refitted_count += 1
-
+        reused_count = len(artist_tracks) - len(pending)
+        refitted_count = len(fitted)
         logger.info(
             f"GMM fitting complete: {refitted_count} refitted, {reused_count} reused (unchanged), {len(artist_gmms)} total"
         )
@@ -340,7 +468,8 @@ def build_and_store_artist_index(db_conn=None):
         )
         metadata_blob = pack_artist_metadata(artist_map_dict, artist_gmms)
         ok = build_and_store_paged_ivf(
-            db_conn, ARTIST_INDEX_NAME, vectors, list(artist_names_list), gmm_vector_dim, "angular"
+            db_conn, ARTIST_INDEX_NAME, vectors, list(artist_names_list), gmm_vector_dim, "angular",
+            consume_vectors=True,
         )
         if not ok:
             db_conn.rollback()
@@ -394,7 +523,8 @@ def load_artist_index_for_querying(force_reload=False):
                 _reset_cache()
                 return
             loaded = load_paged_ivf_index(
-                conn, ARTIST_INDEX_NAME, None, "angular", conn_factory=get_db, label="artist"
+                conn, ARTIST_INDEX_NAME, None, "angular", conn_factory=get_db,
+                label="artist", track_scoped=False,
             )
             if loaded is None:
                 _reset_cache()
@@ -622,7 +752,13 @@ def find_similar_artists(
     ]
 
 
-def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List[Dict]:
+def search_artists_by_name(
+    query: str,
+    limit: int = 20,
+    offset: int = 0,
+    server_id: str | None = None,
+    include_legacy_default: bool = False,
+) -> List[Dict]:
     if not query:
         return []
 
@@ -635,16 +771,24 @@ def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List
     try:
         query_pattern = f"%{query}%"
 
+        availability = ""
+        availability_params = []
+        if server_id:
+            from tasks.mediaserver.registry import availability_sql
+
+            availability = " AND " + availability_sql('score')
+            availability_params = [server_id, bool(include_legacy_default)]
         cur.execute(
             """
             SELECT DISTINCT author, COUNT(*) as track_count
             FROM score
             WHERE author ILIKE %s AND author IS NOT NULL AND author != ''
+            """ + availability + """
             GROUP BY author
             ORDER BY track_count DESC, author
             LIMIT %s OFFSET %s
         """,
-            (query_pattern, limit, offset),
+            tuple([query_pattern] + availability_params + [limit, offset]),
         )
 
         results = []

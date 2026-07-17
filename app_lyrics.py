@@ -24,6 +24,7 @@ import logging
 
 from flask import Blueprint, jsonify, render_template, request
 
+import app_server_context
 from app_helper import attach_song_features
 from error import error_manager
 from error.error_dictionary import ERR_LYRICS_FAILED
@@ -130,6 +131,14 @@ def lyrics_search_axes_api():
     if not LYRICS_ENABLED:
         return jsonify({'error': 'Lyrics search is disabled.', 'results': []}), 400
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 with a clear message.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+
     try:
         data = request.get_json() or {}
         targets_raw = data.get('targets') or {}
@@ -154,6 +163,7 @@ def lyrics_search_axes_api():
         if not results:
             return jsonify({'error': 'No lyrics found.', 'results': []}), 404
         attach_song_features(results)
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics axis search failed")
@@ -214,6 +224,14 @@ def lyrics_search_text_api():
     if not LYRICS_ENABLED:
         return jsonify({'error': 'Lyrics search is disabled.', 'results': []}), 400
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 with a clear message.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+
     try:
         data = request.get_json() or {}
         query = (data.get('query') or '').strip()
@@ -232,6 +250,7 @@ def lyrics_search_text_api():
         if not results:
             return jsonify({'error': 'No lyrics found.', 'query': query, 'results': []}), 404
         attach_song_features(results)
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({'query': query, 'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics text search failed")

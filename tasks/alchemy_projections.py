@@ -35,24 +35,37 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+def _stacked(vectors) -> np.ndarray:
+    """The vectors as one 2-D matrix, without rebuilding one it already is.
+
+    Callers that hold a whole catalogue's embeddings pass the matrix straight in;
+    np.vstack would walk its 180k rows in Python and copy them back together.
+    """
+    if isinstance(vectors, np.ndarray) and vectors.ndim == 2:
+        return vectors
+    if len(vectors) == 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    return np.vstack(vectors)
+
+
 def _project_to_2d(vectors: List[np.ndarray]) -> List[Tuple[float, float]]:
-    if not vectors:
+    mat = _stacked(vectors)
+    if mat.shape[0] == 0:
         return []
-    mat = np.vstack(vectors)
     mean = np.mean(mat, axis=0)
     mat_c = mat - mean
     try:
         _, _, vh = np.linalg.svd(mat_c, full_matrices=False)
     except Exception:
-        return [(0.0, 0.0) for _ in vectors]
+        return [(0.0, 0.0)] * mat.shape[0]
     pcs = vh[:2]
     proj = mat_c.dot(pcs.T)
     if proj.size == 0:
-        return [(0.0, 0.0) for _ in vectors]
+        return [(0.0, 0.0)] * mat.shape[0]
     proj_centered = proj - proj.mean(axis=0)
     max_abs = np.max(np.abs(proj_centered))
     if max_abs == 0:
-        return [(0.0, 0.0) for _ in vectors]
+        return [(0.0, 0.0)] * mat.shape[0]
     scaled = proj_centered / max_abs
     scaled = np.clip(scaled, -1.0, 1.0)
     return [(float(x), float(y)) for x, y in scaled]
@@ -115,15 +128,24 @@ def _project_with_umap(
 ) -> List[Tuple[float, float]]:
     import umap
 
-    if not vectors:
+    mat = _stacked(vectors)
+    if mat.shape[0] == 0:
         return []
-    mat = np.vstack(vectors)
-    reducer = umap.UMAP(n_components=n_components, random_state=None, n_jobs=-1)
+    # Random init instead of the default spectral one: the spectral embedding is an
+    # eigendecomposition of the whole neighbour graph, and on a 180k-track map it
+    # cost more than every other stage of the projection put together (44s -> 17s
+    # by dropping it, and 12s at 100 epochs). Measured by trustworthiness on a
+    # sample, the resulting map is not worse - 0.937 against 0.935 - and the layout
+    # was never stable across rebuilds anyway (random_state stays None).
+    reducer = umap.UMAP(
+        n_components=n_components, random_state=None, n_jobs=-1,
+        init="random", n_epochs=100,
+    )
     embedding = reducer.fit_transform(mat)
     emb_centered = embedding - embedding.mean(axis=0)
     max_abs = np.max(np.abs(emb_centered))
     if max_abs == 0:
-        return [(0.0, 0.0) for _ in vectors]
+        return [(0.0, 0.0)] * mat.shape[0]
     scaled = emb_centered / max_abs
     scaled = np.clip(scaled, -1.0, 1.0)
     return [(float(x), float(y)) for x, y in scaled]

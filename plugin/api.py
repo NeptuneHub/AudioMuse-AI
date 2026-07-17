@@ -55,6 +55,7 @@ __all__ = [
     'get_score_data_by_ids', 'get_tracks_by_ids', 'get_setting', 'set_setting',
     'table', 'enqueue', 'valid_plugin_id', 'dotted_path', 'render_page',
     'manage_plugins_url', 'rq_queue_high', 'rq_queue_default',
+    'active_server_id', 'list_servers', 'use_server',
     'TASK_STATUS_PENDING', 'TASK_STATUS_STARTED', 'TASK_STATUS_PROGRESS',
     'TASK_STATUS_SUCCESS', 'TASK_STATUS_FAILURE', 'TASK_STATUS_REVOKED',
 ]
@@ -148,6 +149,36 @@ def enqueue(func, *args, queue='default', **kwargs):
         kwargs=kwargs,
         job_timeout=-1,
     )
+
+
+def active_server_id():
+    """The media server this task is currently bound to (None = the default one).
+
+    A cron-scheduled plugin task runs once per server in its schedule's scope,
+    so this tells the task which catalogue it is looking at right now.
+    """
+    from tasks.mediaserver import context as ms_context
+
+    return ms_context.active_server_id()
+
+
+def list_servers():
+    """Every configured media server (normalized dicts, credentials included)."""
+    from tasks.mediaserver import registry as ms_registry
+
+    return ms_registry.list_servers()
+
+
+def use_server(server_id):
+    """Bind every media-server call in this block to ``server_id``.
+
+    ``with api.use_server(sid): api_playlists...`` targets that server; None
+    means the default one. Plugin cron tasks are already bound per server by
+    their schedule's scope, so this is only needed for extra, explicit targeting.
+    """
+    from tasks.mediaserver import context as ms_context, registry as ms_registry
+
+    return ms_context.use_server(ms_registry.context_for(server_id) if server_id else None)
 
 
 class PluginContext:

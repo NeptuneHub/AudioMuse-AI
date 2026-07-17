@@ -6,15 +6,15 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Static check that cleaning delegates index rebuilds to the orchestrator.
+"""Static check that cleaning never rebuilds indexes or deletes catalogue rows.
 
-Parses tasks/cleaning.py with AST to confirm the orphan-cleaning task rebuilds
-indexes through the single orchestrator rather than a hand-maintained subset.
+Parses tasks/cleaning.py with AST to confirm the cleanup task only unbinds
+server mappings: it must not rebuild any index (the catalogue never changes,
+so a rebuild is wasted work) and must not call any partial builder.
 
 Main Features:
-* The cleaning task calls _run_all_index_builds
-* It never calls the individual build_and_store_* builders directly, so the full
-  index set cannot drift out of sync
+* The cleaning task calls neither _run_all_index_builds nor any
+  build_and_store_* builder: unbinding mappings never invalidates an index
 """
 
 import ast
@@ -58,18 +58,18 @@ def _called_names(func_node):
     return names
 
 
-class TestCleaningDelegatesRebuild:
-    def test_calls_run_all_index_builds(self):
+class TestCleaningNeverRebuildsOrDeletes:
+    def test_unbind_only_cleanup_never_rebuilds_indexes(self):
         funcs = _function_defs("tasks/cleaning.py")
         assert "identify_and_clean_orphaned_albums_task" in funcs
         called = _called_names(funcs["identify_and_clean_orphaned_albums_task"])
-        assert "_run_all_index_builds" in called
+        assert "_run_all_index_builds" not in called
 
-    def test_does_not_hand_maintain_a_builder_subset(self):
+    def test_does_not_call_any_partial_builder(self):
         funcs = _function_defs("tasks/cleaning.py")
         called = _called_names(funcs["identify_and_clean_orphaned_albums_task"])
         leaked = sorted(b for b in _PARTIAL_BUILDERS if b in called)
         assert not leaked, (
-            f"these builders are called directly: {leaked}. The rebuild must go "
-            "through _run_all_index_builds so the full set always stays in sync."
+            f"these builders are called directly: {leaked}. Cleanup unbinds "
+            "mappings only; it must never rebuild indexes."
         )

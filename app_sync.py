@@ -46,6 +46,15 @@ _MAX_MANIFEST_LIMIT = 1000
 _DEFAULT_LIMIT = 500
 _DEFAULT_PROJECTION_NAME = 'main_map'
 
+
+class _IdTranslationError(Exception):
+    """Raised when the canonical->server id translation for a sync page fails.
+
+    Surfaced as a 503 so sync clients retry the page instead of interpreting an
+    empty track list as a mass deletion.
+    """
+
+
 # Read-time fingerprint over the audio-analysis columns. Opaque to the client
 # (compared for equality only). Changes whenever a track is re-analyzed, so a
 # manifest diff catches in-place updates. UMAP/rating are deliberately excluded
@@ -123,17 +132,65 @@ def sync_endpoint():
     limit = min(max(1, request.args.get('limit', _DEFAULT_LIMIT, type=int)), max_limit)
     include_embeddings = request.args.get('include_embeddings', 'true').lower() != 'false'
 
-    ids_raw = request.args.get('ids')
-    id_filter = None
-    if ids_raw is not None:
-        id_filter = [i for i in ids_raw.split(',') if i][:_MAX_PAYLOAD_LIMIT]
+    from app_server_context import resolve_request_server_id
+    from tasks.mediaserver import registry
 
     try:
+        server_id = resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({"error": "Invalid server selection."}), 400
+    try:
+        server = registry.get_server(server_id) if server_id else registry.get_default_server()
+    except Exception:
+        # A canonicalized catalogue must NEVER be served with raw fp_ ids: a
+        # client keying on provider ids would read that as a mass delete+add.
+        # Fail closed (retryable 503) unless the catalogue holds no canonical
+        # ids at all, where the historical config-default identity feed is
+        # still exact (single-server/unit-test compatibility).
+        logger.exception("Music-server registry unavailable for sync")
+        if _catalogue_has_canonical_ids():
+            return jsonify(
+                {'error': 'Music-server registry unavailable; retry shortly'}
+            ), 503
+        logger.warning(
+            "Registry unavailable but the catalogue has no canonical ids; "
+            "using the config default"
+        )
+        server = None
+    if server is not None:
+        server_id = server['server_id']
+    provider_type = server['server_type'] if server else config.MEDIASERVER_TYPE
+
+    ids_raw = request.args.get('ids')
+    id_filter = None
+
+    try:
+        if ids_raw is not None:
+            provider_ids = [i for i in ids_raw.split(',') if i][:_MAX_PAYLOAD_LIMIT]
+            if server_id:
+                # Same contract as the page translation below: a registry failure
+                # is retryable (503), never an empty page the client reads as a
+                # mass deletion.
+                try:
+                    id_filter = list(
+                        registry.reverse_translate_ids(provider_ids, server_id).values()
+                    )
+                except Exception as exc:
+                    logger.exception("Sync input id translation failed")
+                    raise _IdTranslationError() from exc
+            else:
+                id_filter = provider_ids
+
         conn = get_db()
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             if manifest_mode:
-                return _manifest_page(cur, page, limit)
-            return _payload_page(cur, page, limit, include_embeddings, id_filter)
+                return _manifest_page(cur, page, limit, server_id, provider_type)
+            return _payload_page(
+                cur, page, limit, include_embeddings, id_filter, server_id, provider_type
+            )
+    except _IdTranslationError:
+        return jsonify({'error': 'Track id translation failed; check container logs'}), 503
     except Exception as e:
         logger.exception(
             "GET /api/sync failed (manifest=%s ids=%s page=%s limit=%s)",
@@ -146,30 +203,95 @@ def sync_endpoint():
         return jsonify(err), status
 
 
-def _manifest_page(cur, page, limit):
-    cur.execute("SELECT COUNT(*) AS n FROM score", ())
+def _server_ids_for_rows(rows, server_id):
+    """Canonical -> requested-server id mapping for a page of score rows.
+
+    Identity fallback covers every row on the default server (the historical
+    contract: clients receive their media server's real ids); rows the selected
+    secondary server does not have are absent and get dropped by the caller.
+    A registry failure raises ``_IdTranslationError`` so the endpoint answers
+    503 and the client retries instead of diffing an empty page.
+    """
+    from tasks.mediaserver import registry
+
+    ids = [r['item_id'] for r in rows]
+    if not server_id:
+        return {str(i): str(i) for i in ids}
+    try:
+        return registry.translate_ids(ids, server_id)
+    except Exception as exc:
+        logger.exception("Sync id translation failed")
+        raise _IdTranslationError() from exc
+
+
+def _catalogue_has_canonical_ids():
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
+            )
+            return bool(cur.fetchone()[0])
+    except Exception:
+        logger.exception("Canonical-id probe failed; failing closed")
+        return True
+
+
+def _availability_sql(alias='s'):
+    from tasks.mediaserver.registry import availability_sql
+
+    return availability_sql(alias)
+
+
+def _manifest_page(cur, page, limit, server_id, provider_type):
+    if server_id:
+        from tasks.mediaserver import registry
+        is_default = server_id == registry.get_default_server_id()
+        availability = _availability_sql('s')
+        count_sql = "SELECT COUNT(*) AS n FROM score s WHERE " + availability
+        count_params = (server_id, is_default)
+        page_where = " WHERE " + availability
+        page_params = (server_id, is_default)
+    else:
+        count_sql, count_params = "SELECT COUNT(*) AS n FROM score", ()
+        page_where, page_params = "", ()
+    cur.execute(count_sql, count_params)
     total_tracks = cur.fetchone()['n']
     offset = (page - 1) * limit
     cur.execute(
         "SELECT s.item_id, " + _FP_SQL + " AS fp "
-        "FROM score s ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
-        (limit, offset),
+        "FROM score s" + page_where + " ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
+        page_params + (limit, offset),
     )
     rows = cur.fetchall()
-    tracks = [{"id": r['item_id'], "fp": r['fp']} for r in rows]
+    server_ids = _server_ids_for_rows(rows, server_id)
+    tracks = [
+        {"id": server_ids[r['item_id']], "fp": r['fp']}
+        for r in rows
+        if r['item_id'] in server_ids
+    ]
     has_more = (offset + len(rows)) < total_tracks
     return jsonify(
         {
             "tracks": tracks,
             "total_tracks": total_tracks,
-            "provider_type": config.MEDIASERVER_TYPE,
+            "provider_type": provider_type,
             "has_more": has_more,
             "next_page": page + 1 if has_more else None,
         }
     )
 
 
-def _payload_page(cur, page, limit, include_embeddings, id_filter):
+def _payload_page(cur, page, limit, include_embeddings, id_filter, server_id, provider_type):
+    if server_id:
+        from tasks.mediaserver import registry
+        is_default = server_id == registry.get_default_server_id()
+        availability = _availability_sql('s')
+        availability_where = availability
+        availability_params = (server_id, is_default)
+    else:
+        availability_where = "TRUE"
+        availability_params = ()
     clap_on = include_embeddings and config.CLAP_ENABLED
     select_extra = ""
     join_extra = ""
@@ -193,20 +315,25 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
         else:
             placeholders = ",".join(["%s"] * len(id_filter))
             cur.execute(
-                base_select + " WHERE s.item_id IN (" + placeholders + ") ORDER BY s.item_id ASC",
-                tuple(id_filter),
+                base_select + " WHERE s.item_id IN (" + placeholders + ") AND "
+                + availability_where
+                + " ORDER BY s.item_id ASC",
+                tuple(id_filter) + availability_params,
             )
             rows = cur.fetchall()
             total_tracks = len(rows)
         has_more = False
         next_page = None
     else:
-        cur.execute("SELECT COUNT(*) AS n FROM score", ())
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM score s WHERE " + availability_where,
+            availability_params,
+        )
         total_tracks = cur.fetchone()['n']
         offset = (page - 1) * limit
         cur.execute(
-            base_select + " ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
-            (limit, offset),
+            base_select + " WHERE " + availability_where + " ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
+            availability_params + (limit, offset),
         )
         rows = cur.fetchall()
         has_more = (offset + len(rows)) < total_tracks
@@ -218,11 +345,14 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
     else:
         umap_lookup = {}
 
+    server_ids = _server_ids_for_rows(rows, server_id)
     tracks = []
     for r in rows:
+        if r['item_id'] not in server_ids:
+            continue
         ux, uy = umap_lookup.get(r['item_id'], (None, None))
         t = {
-            "id": r['item_id'],
+            "id": server_ids[r['item_id']],
             "title": r['title'],
             "artist": r['author'],
             "album_artist": r['album_artist'],
@@ -251,7 +381,7 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
         {
             "tracks": tracks,
             "total_tracks": total_tracks,
-            "provider_type": config.MEDIASERVER_TYPE,
+            "provider_type": provider_type,
             "has_more": has_more,
             "next_page": next_page,
         }

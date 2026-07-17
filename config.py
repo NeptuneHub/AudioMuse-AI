@@ -117,6 +117,48 @@ MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
     for media_type in MEDIASERVER_FIELDS_BY_TYPE
 }
 
+# Maps each media-server config field to the key its provider backend reads out
+# of the per-server ``user_creds`` dict. Lets the multi-server registry build a
+# creds dict for the default server straight from these config globals, and lets
+# secondary servers store creds under the exact keys the backends expect. Note
+# navidrome/lyrion use 'user'/'password' while jellyfin/emby use 'user_id'/'token'.
+MEDIASERVER_CRED_KEY_BY_FIELD = {
+    'JELLYFIN_URL': 'url', 'JELLYFIN_USER_ID': 'user_id', 'JELLYFIN_TOKEN': 'token',
+    'EMBY_URL': 'url', 'EMBY_USER_ID': 'user_id', 'EMBY_TOKEN': 'token',
+    'NAVIDROME_URL': 'url', 'NAVIDROME_USER': 'user', 'NAVIDROME_PASSWORD': 'password',
+    'LYRION_URL': 'url',
+    'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
+}
+
+# The ONLY persistent home of these settings is the music_servers registry
+# (default row). They are never written to app_config: init_db migrates any
+# legacy app_config rows into the registry once and deletes them, the setup
+# wizard saves them to the registry, and _apply_db_overrides projects the
+# registry's default row onto these module globals at import/refresh so every
+# legacy read keeps working. Env vars only matter as first-boot seed material.
+MEDIASERVER_CONFIG_KEYS = frozenset(
+    {'MEDIASERVER_TYPE', 'MUSIC_LIBRARIES'} | set(MEDIASERVER_CRED_KEY_BY_FIELD)
+)
+
+# The content fingerprint is the catalogue standard, not an option: the canonical
+# item_id IS the 200-bit sign signature of each track's MusiCNN embedding, encoded
+# as a scheme-versioned fp_2<50hex> id (54 chars, similarity-preserving so
+# near-identical audio matches within a few bits), minted at analyze time with zero
+# extra downloads or binaries. The leading scheme digit is what lets a future
+# widening self-migrate at startup. Legacy rows are relabelled once at Flask startup
+# from their stored embeddings. Each media server's own track id (including the
+# single/default server) is kept in the track_server_map table and translated back
+# on output.
+# There are deliberately no feature flags for this behaviour.
+
+# app_config also hosts this small set of live application state keys. They are
+# not config overrides and must not appear in the setup UI, but startup pruning
+# must retain them while their consumers still exist.
+APP_CONFIG_RUNTIME_KEYS = {
+    'PLUGIN_REPOS',
+    'PLUGIN_CATALOG_CACHE',
+}
+
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'DATABASE_URL',
     'POSTGRES_USER',
@@ -127,7 +169,10 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+    'MEDIASERVER_CRED_KEY_BY_FIELD',
+    'MEDIASERVER_CONFIG_KEYS',
     'APP_VERSION',
+    'APP_CONFIG_RUNTIME_KEYS',
     # Admin identity lives in audiomuse_users only. Never mirror it into
     # app_config - stale rows there cause deleted admins to resurrect.
     'AUDIOMUSE_USER',
@@ -140,7 +185,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.6.2"
+APP_VERSION = "v3.0.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -151,8 +196,14 @@ SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").
 # Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
 RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
-TOP_N_PLAYLISTS = int(os.environ.get("TOP_N_PLAYLISTS", "8")) # *** NEW: Default for Top N diverse playlists ***
+TOP_N_CLUSTERING_PLAYLIST = int(
+    os.environ.get(
+        "TOP_N_CLUSTERING_PLAYLIST",
+        os.environ.get("MIN_CLUSTERING_TOP", os.environ.get("TOP_N_PLAYLISTS", "10")),
+    )
+)  # Exact final cap. MIN_CLUSTERING_TOP/TOP_N_PLAYLISTS are legacy env fallbacks.
 MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", "20")) # Min songs for a playlist to be considered in the first pass of Top-N selection.
+PLAYLIST_NAME_HISTORY_ROUNDS = int(os.environ.get("PLAYLIST_NAME_HISTORY_ROUNDS", "2")) # AI naming avoids playlist names from this many previous clustering rounds (per server).
 
 # --- Algorithm Choose Constants (Read from Environment Variables) ---
 CLUSTER_ALGORITHM = os.environ.get("CLUSTER_ALGORITHM", "kmeans") # accepted dbscan, kmeans, gmm, or spectral
@@ -187,7 +238,7 @@ MINIBATCH_KMEANS_PROCESSING_BATCH_SIZE = int(os.getenv("MINIBATCH_KMEANS_PROCESS
 # Default ranges for GMM parameters
 GMM_N_COMPONENTS_MIN = int(os.getenv("GMM_N_COMPONENTS_MIN", "40"))
 GMM_N_COMPONENTS_MAX = int(os.getenv("GMM_N_COMPONENTS_MAX", "100"))
-GMM_COVARIANCE_TYPE = os.environ.get("GMM_COVARIANCE_TYPE", "full") # 'full', 'tied', 'diag', 'spherical'
+GMM_COVARIANCE_TYPE = os.environ.get("GMM_COVARIANCE_TYPE", "diag") # 'full', 'tied', 'diag', 'spherical'; diag is orders of magnitude faster on high-dim embeddings and statistically sounder at this scale
 
 # --- SpectralClustering Only Constants (Ranges for Evolutionary Approach) ---
 SPECTRAL_N_CLUSTERS_MIN = int(os.getenv("SPECTRAL_N_CLUSTERS_MIN", "40"))
@@ -201,6 +252,13 @@ PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max component
 
 # --- Clustering Runs for Diversity (New Constant) ---
 CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "1000")) # Default to 100 runs for evolutionary search
+
+# --- Per-server auto-calibration of clustering parameters and sampling percentile ---
+CLUSTERING_AUTO_CALIBRATION = os.environ.get("CLUSTERING_AUTO_CALIBRATION", "True").lower() == "true" # Automatic parameter discovery per server; False = always use the configured defaults as-is
+CLUSTERING_MAX_PLAYLIST_SONGS = int(os.environ.get("CLUSTERING_MAX_PLAYLIST_SONGS", "200")) # Calibration tries to keep playlists at or under this many songs (soft goal; big beats empty)
+CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MAX_TRIES", "3")) # Quick single-iteration probes per server before the real run
+CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact per-iteration sample cap; all per-genre quotas are calculated before selecting tracks, and smaller libraries contribute every clusterable song
+CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches without a better result; in-flight batches still drain
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in RQ queue (reduced from 100 to prevent resource exhaustion)
 
 # --- Batching Constants for Clustering Runs ---
@@ -587,7 +645,6 @@ LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "3
 # --- IVF Index Constants ---
 INDEX_NAME = os.environ.get("IVF_INDEX_NAME", "music_library")  # The primary key for our index in the DB
 IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
-IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 
 # --- Disk-Paged IVF Index Constants ---
 # The large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
@@ -606,6 +663,7 @@ IVF_RERANK_OVERFETCH = int(os.environ.get("IVF_RERANK_OVERFETCH", "4"))  # int8 
 IVF_QUERY_CACHE_MB = int(os.environ.get("IVF_QUERY_CACHE_MB", "128"))  # Hard cap (Y) on the per-request vector cache, in MB
 IVF_READ_BATCH_CELLS = int(os.environ.get("IVF_READ_BATCH_CELLS", "16"))  # Cells fetched per DB round-trip during a query
 IVF_QUERY_PARALLEL_MIN_VECTORS = int(os.environ.get("IVF_QUERY_PARALLEL_MIN_VECTORS", "8192"))  # Only fan the per-cell distance scan across threads when a query's probed cells hold at least this many vectors; smaller queries stay serial
+INDEX_BUILD_WORKERS = int(os.environ.get("INDEX_BUILD_WORKERS", "0"))  # Worker PROCESSES for the CPU-bound parts of an index rebuild (the per-artist GMM fits, which are pure-Python EM and so cannot be threaded). 0 = auto (half the cores, capped at 8); 1 = fit in-process
 IVF_GLOBAL_CACHE_MB = int(os.environ.get("IVF_GLOBAL_CACHE_MB", "1024"))  # Hard cap (MB) on the process-wide cross-request decoded-cell cache shared by all indexes; 0 disables it
 IVF_PRELOAD_ALL = os.environ.get("IVF_PRELOAD_ALL", "false").lower() == "true"  # When true, stream every cell into the global cache at load time (in-memory IVF), still bounded by IVF_GLOBAL_CACHE_MB
 IVF_GLOBAL_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_GLOBAL_CACHE_IDLE_SECONDS", "300"))  # Drop the whole global cell cache after this many seconds with no access (frees idle RAM); 0 = never drop
@@ -757,7 +815,8 @@ SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
 )
 
 # --- Database Cleaning Safety ---
-CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max orphaned albums to delete in one run
+CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report (nothing is ever deleted from the catalogue)
+SWEEP_PRUNE_MIN_FETCH_RATIO = float(os.environ.get("SWEEP_PRUNE_MIN_FETCH_RATIO", "0.5"))  # A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much
 
 # --- Stratified Sampling Constants (New) ---
 # Genres for which to enforce equal representation during stratified sampling
@@ -866,6 +925,21 @@ def _apply_db_overrides():
             # Read the value from the db and override the variable
             if _key in globals():
                 globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+
+        # Media-server settings live ONLY in the music_servers registry: project
+        # its default row onto the module globals so every legacy config read
+        # (providers, HEADERS, wizard display) sees the registry values. Legacy
+        # app_config rows may still have applied above on a not-yet-migrated
+        # install; the registry wins whenever its row exists.
+        _default_ms = _setup_manager.get_default_music_server()
+        if _default_ms:
+            globals()['MEDIASERVER_TYPE'] = (_default_ms.get('server_type') or '').lower()
+            globals()['MUSIC_LIBRARIES'] = _default_ms.get('music_libraries') or ''
+            _ms_creds = _default_ms.get('creds') or {}
+            for _field in MEDIASERVER_FIELDS_BY_TYPE.get(globals()['MEDIASERVER_TYPE'], []):
+                _cred_key = MEDIASERVER_CRED_KEY_BY_FIELD.get(_field)
+                if _cred_key:
+                    globals()[_field] = _ms_creds.get(_cred_key, '') or ''
 
         HEADERS = _compute_headers()
 

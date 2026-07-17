@@ -17,6 +17,10 @@ Main Features:
 * Tiered matching (normalised path, path tail, exact metadata, normalised
   metadata, and an optional title+artist fallback) with disc/track
   disambiguation when several candidates share a metadata key.
+* ``CandidateIndex`` builds the target-side lookups once from slim copies of
+  the candidate rows so callers can stream their own rows through
+  ``match_chunk`` in bounded-memory chunks, with a shared claimed-id set
+  keeping one provider track mapped to at most one canonical row.
 """
 
 import re
@@ -198,112 +202,174 @@ def _new_title_artist_key(new):
     return (t, a)
 
 
-def match_tracks(old_rows, new_tracks, allow_title_artist_only=False):
-    tiers = list(_TIERS)
-    if allow_title_artist_only:
-        tiers.append(_OPT_TIER_TITLE_ARTIST)
+def old_paths(old):
+    """Every path known for this catalogue row, across ALL servers that hold it.
 
-    by_norm_path = {}
-    by_tail = {}
-    by_exact_meta = {}
-    by_norm_meta = {}
-    by_title_artist = {}
-    for n in new_tracks:
-        np = normalize_path(n.get('path'))
-        if np and np not in by_norm_path:
-            by_norm_path[np] = n['id']
-        tk = path_tail_key(np)
-        if tk and tk not in by_tail:
-            by_tail[tk] = n['id']
-        ek = _new_exact_meta_key(n)
-        if ek:
-            by_exact_meta.setdefault(ek, []).append(n)
-        nk = _new_norm_meta_key(n)
-        if nk:
-            by_norm_meta.setdefault(nk, []).append(n)
-        if allow_title_artist_only:
-            tak = _new_title_artist_key(n)
-            if tak:
-                by_title_artist.setdefault(tak, []).append(n)
+    The path is a property of a FILE ON A SERVER, so one song can legitimately
+    have a different path on each server. Matching a new server against only ONE
+    of them (historically the default server's) left the path and tail tiers with
+    no evidence at all for any track the default did not happen to have.
+    """
+    paths = old.get('file_paths')
+    if paths:
+        return [p for p in paths if p]
+    single = old.get('file_path')
+    return [single] if single else []
 
-    tier_counts = {t: 0 for t in tiers}
-    tier_rank = {t: i for i, t in enumerate(tiers)}
 
-    def _pick_meta_candidate(old, candidates):
-        if len(candidates) == 1:
-            return candidates[0]
-        old_dt = extract_disc_track(old.get('file_path'))
-        if old_dt is not None:
-            for c in candidates:
-                if extract_disc_track(c.get('path')) == old_dt:
-                    return c
+def _pick_meta_candidate(old, candidates):
+    if len(candidates) == 1:
         return candidates[0]
+    for path in old_paths(old):
+        old_dt = extract_disc_track(path)
+        if old_dt is None:
+            continue
+        for c in candidates:
+            if extract_disc_track(c.get('path')) == old_dt:
+                return c
+    return candidates[0]
 
-    proposals = []
-    for old in old_rows:
-        matched = False
-        np = normalize_path(old.get('file_path'))
-        if np and np in by_norm_path:
-            proposals.append(('path', old, by_norm_path[np]))
-            matched = True
-            continue
-        tk = path_tail_key(np) if np else None
-        if tk and tk in by_tail:
-            proposals.append(('tail', old, by_tail[tk]))
-            matched = True
-            continue
-        ek = _old_exact_meta_key(old)
-        if ek and ek in by_exact_meta:
-            chosen = _pick_meta_candidate(old, by_exact_meta[ek])
-            proposals.append(('exact_meta', old, chosen['id']))
-            matched = True
-            continue
-        nk = _old_norm_meta_key(old)
-        if nk and nk in by_norm_meta:
-            chosen = _pick_meta_candidate(old, by_norm_meta[nk])
-            proposals.append(('norm_meta', old, chosen['id']))
-            matched = True
-            continue
+
+class CandidateIndex:
+    """Build-once lookup structures over a target catalogue.
+
+    Stores slim copies of the candidate rows (id, path, and the metadata keys
+    the tiers compare) so the caller can release the full fetched catalogue,
+    then matches any number of row chunks via ``match_chunk`` without holding
+    them all in memory at once.
+    """
+
+    def __init__(self, new_tracks, allow_title_artist_only=False):
+        self.tiers = list(_TIERS)
+        self._allow_title_artist_only = allow_title_artist_only
         if allow_title_artist_only:
+            self.tiers.append(_OPT_TIER_TITLE_ARTIST)
+        self._tier_rank = {t: i for i, t in enumerate(self.tiers)}
+        self.by_norm_path = {}
+        self.by_tail = {}
+        self.by_exact_meta = {}
+        self.by_norm_meta = {}
+        self.by_title_artist = {}
+        self.path_by_id = {}
+        self.size = 0
+        for n in new_tracks:
+            self.add(n)
+
+    def add(self, n):
+        slim = {
+            'id': n['id'],
+            'path': n.get('path'),
+            'title': n.get('title'),
+            'artist': n.get('artist'),
+            'album_artist': n.get('album_artist'),
+            'album': n.get('album'),
+        }
+        self.size += 1
+        if slim['path']:
+            self.path_by_id[str(slim['id'])] = slim['path']
+        np = normalize_path(slim['path'])
+        if np and np not in self.by_norm_path:
+            self.by_norm_path[np] = slim['id']
+        tk = path_tail_key(np)
+        if tk and tk not in self.by_tail:
+            self.by_tail[tk] = slim['id']
+        ek = _new_exact_meta_key(slim)
+        if ek:
+            self.by_exact_meta.setdefault(ek, []).append(slim)
+        nk = _new_norm_meta_key(slim)
+        if nk:
+            self.by_norm_meta.setdefault(nk, []).append(slim)
+        if self._allow_title_artist_only:
+            tak = _new_title_artist_key(slim)
+            if tak:
+                self.by_title_artist.setdefault(tak, []).append(slim)
+
+    def _propose(self, old):
+        norm_paths = [p for p in (normalize_path(p) for p in old_paths(old)) if p]
+        for np in norm_paths:
+            if np in self.by_norm_path:
+                return ('path', self.by_norm_path[np])
+        for np in norm_paths:
+            tk = path_tail_key(np)
+            if tk and tk in self.by_tail:
+                return ('tail', self.by_tail[tk])
+        ek = _old_exact_meta_key(old)
+        if ek and ek in self.by_exact_meta:
+            return ('exact_meta', _pick_meta_candidate(old, self.by_exact_meta[ek])['id'])
+        nk = _old_norm_meta_key(old)
+        if nk and nk in self.by_norm_meta:
+            return ('norm_meta', _pick_meta_candidate(old, self.by_norm_meta[nk])['id'])
+        if self._allow_title_artist_only:
             tak = _old_title_artist_key(old)
-            if tak and tak in by_title_artist:
-                chosen = _pick_meta_candidate(old, by_title_artist[tak])
-                proposals.append((_OPT_TIER_TITLE_ARTIST, old, chosen['id']))
-                matched = True
+            if tak and tak in self.by_title_artist:
+                return (
+                    _OPT_TIER_TITLE_ARTIST,
+                    _pick_meta_candidate(old, self.by_title_artist[tak])['id'],
+                )
+        return (None, None)
+
+    def match_chunk(self, old_rows, claimed_new_ids=None):
+        """Match ``old_rows`` against the index and return the usual result dict.
+
+        ``claimed_new_ids`` (mutated in place when given) carries the provider
+        track ids already assigned by EARLIER chunks, as ``{new_id: tier_rank}``,
+        so one provider track never maps to two canonical rows (the unique DB
+        constraint). A later chunk holding a STRICTLY BETTER tier still takes it:
+        the upsert moves the mapping and the weaker previous owner is simply left
+        unmapped for a later sweep. Without the rank, the first chunk to see a
+        provider track would own it forever - a normalized-metadata guess made in
+        chunk 1 would permanently outrank an exact path match in chunk 2, and the
+        best-match tie-break (which only looks inside one chunk) would never see
+        the pair.
+        """
+        claimed = claimed_new_ids if claimed_new_ids is not None else {}
+        proposals = []
+        for old in old_rows:
+            tier, new_id = self._propose(old)
+            if tier is not None and new_id in claimed:
+                if self._tier_rank[tier] >= claimed[new_id]:
+                    tier, new_id = None, None
+            proposals.append((tier, old, new_id))
+
+        best_for_new = {}
+        for tier, old, new_id in proposals:
+            if tier is None:
                 continue
-        if not matched:
-            proposals.append((None, old, None))
+            cur = best_for_new.get(new_id)
+            if cur is None or self._tier_rank[tier] < self._tier_rank[cur[0]]:
+                best_for_new[new_id] = (tier, old)
 
-    best_for_new = {}
-    for tier, old, new_id in proposals:
-        if tier is None:
-            continue
-        cur = best_for_new.get(new_id)
-        if cur is None or tier_rank[tier] < tier_rank[cur[0]]:
-            best_for_new[new_id] = (tier, old)
+        winners = {id(old): new_id for new_id, (_tier, old) in best_for_new.items()}
 
-    winners = {id(old): new_id for new_id, (_tier, old) in best_for_new.items()}
+        matches = {}
+        match_tiers = {}
+        tier_counts = {t: 0 for t in self.tiers}
+        unmatched = []
+        for tier, old, new_id in proposals:
+            if tier is not None and winners.get(id(old)) == new_id:
+                matches[old['item_id']] = new_id
+                match_tiers[old['item_id']] = tier
+                tier_counts[tier] += 1
+                claimed[new_id] = self._tier_rank[tier]
+            else:
+                unmatched.append(old)
 
-    matches = {}
-    match_tiers = {}
-    unmatched = []
-    for tier, old, new_id in proposals:
-        if tier is not None and winners.get(id(old)) == new_id:
-            matches[old['item_id']] = new_id
-            match_tiers[old['item_id']] = tier
-            tier_counts[tier] += 1
-        else:
-            unmatched.append(old)
+        return {
+            'matches': matches,
+            'match_tiers': match_tiers,
+            'tier_counts': tier_counts,
+            'unmatched': unmatched,
+        }
+
+
+def match_tracks(old_rows, new_tracks, allow_title_artist_only=False):
+    index = CandidateIndex(new_tracks, allow_title_artist_only=allow_title_artist_only)
+    result = index.match_chunk(old_rows)
 
     unmatched_by_album = {}
-    for old in unmatched:
+    for old in result['unmatched']:
         key = (old.get('album_artist') or old.get('author'), old.get('album'))
         unmatched_by_album.setdefault(key, []).append(old)
 
-    return {
-        'matches': matches,
-        'match_tiers': match_tiers,
-        'tier_counts': tier_counts,
-        'unmatched': unmatched,
-        'unmatched_by_album': unmatched_by_album,
-    }
+    result['unmatched_by_album'] = unmatched_by_album
+    return result

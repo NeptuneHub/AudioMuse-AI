@@ -31,6 +31,9 @@ ERR_ANALYSIS_FAILED = 2001
 ERR_ALBUM_ANALYSIS_FAILED = 2002
 ERR_ANALYSIS_NO_ALBUMS = 2003
 ERR_MODEL_INFERENCE = 2004
+ERR_ANALYSIS_NO_TRACKS_ANALYZED = 2005
+ERR_ANALYSIS_SERVER_FAILED = 2006
+ERR_TRACK_NOT_ANALYZABLE = 2007
 
 ERR_INDEX_BUILD = 3001
 ERR_INDEX_EMPTY = 3002
@@ -98,6 +101,18 @@ ERROR_REGISTRY = {
     ERR_MODEL_INFERENCE: {
         "error_class": "Model Inference Error",
         "default_message": "An analysis model failed to produce a result.",
+    },
+    ERR_ANALYSIS_NO_TRACKS_ANALYZED: {
+        "error_class": "Analysis Error",
+        "default_message": "The analysis ran to the end but could not analyze a single song.",
+    },
+    ERR_ANALYSIS_SERVER_FAILED: {
+        "error_class": "Analysis Error",
+        "default_message": "Analysis could not be completed for one or more music servers.",
+    },
+    ERR_TRACK_NOT_ANALYZABLE: {
+        "error_class": "Track Skipped",
+        "default_message": "The track carries no decodable audio and was skipped.",
     },
     ERR_INDEX_BUILD: {
         "error_class": "Index Error",

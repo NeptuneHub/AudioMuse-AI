@@ -23,6 +23,8 @@ Main Features:
 from flask import Blueprint, render_template, request, jsonify
 import logging
 
+import app_server_context
+
 logger = logging.getLogger(__name__)
 
 clap_search_bp = Blueprint('clap_search_bp', __name__, template_folder='../templates')
@@ -125,6 +127,14 @@ def clap_search_api():
             }
         ), 400
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 with a clear message.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+
     try:
         data = request.get_json()
 
@@ -152,6 +162,8 @@ def clap_search_api():
         # Perform search
         results = search_by_text(query, limit=limit)
         attach_song_features(results)
+
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
 
         return jsonify({'query': query, 'results': results, 'count': len(results)})
 

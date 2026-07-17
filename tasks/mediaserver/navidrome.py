@@ -24,6 +24,7 @@ import os
 import random
 import re
 import config
+from . import context
 
 from .helper import detect_path_format
 
@@ -34,7 +35,8 @@ NAVIDROME_API_BATCH_SIZE = 40
 
 
 def _get_target_music_folder_ids(user_creds=None):
-    folder_names_str = config.MUSIC_LIBRARIES
+    user_creds = context.active_creds(user_creds)
+    folder_names_str = context.active_libraries(config.MUSIC_LIBRARIES)
 
     if not folder_names_str.strip():
         return None
@@ -89,6 +91,7 @@ def _get_target_music_folder_ids(user_creds=None):
 
 
 def list_libraries(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     response = _navidrome_request("getMusicFolders", user_creds=user_creds)
     if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
         return []
@@ -101,8 +104,9 @@ def list_libraries(user_creds=None):
 
 
 def get_navidrome_auth_params(username=None, password=None):
-    auth_user = username or config.NAVIDROME_USER
-    auth_pass = password or config.NAVIDROME_PASSWORD
+    creds = context.active_creds()
+    auth_user = username or (creds.get('user') if creds else None) or config.NAVIDROME_USER
+    auth_pass = password or (creds.get('password') if creds else None) or config.NAVIDROME_PASSWORD
     if not auth_user or not auth_pass:
         logger.warning("Navidrome User or Password is not configured.")
         return {}
@@ -128,6 +132,7 @@ def _redact_navidrome_secrets(text):
 def _navidrome_request_ex(
     endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None
 ):
+    user_creds = context.active_creds(user_creds)
     params = params or {}
     auth_params = get_navidrome_auth_params(
         username=user_creds.get('user') if user_creds else None,
@@ -175,6 +180,7 @@ def _navidrome_request_ex(
 def _navidrome_request(
     endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None
 ):
+    user_creds = context.active_creds(user_creds)
     data, _ = _navidrome_request_ex(
         endpoint,
         params=params,
@@ -317,6 +323,7 @@ def _select_best_artist(song_item, title="Unknown"):
 
 
 def get_all_songs(user_creds=None, apply_filter=True):
+    user_creds = context.active_creds(user_creds)
     target_folder_ids = (
         _get_target_music_folder_ids(user_creds=user_creds) if apply_filter else None
     )
@@ -431,6 +438,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
 
 
 def search_albums(query, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     body = _navidrome_request(
         "search3",
         {
@@ -467,6 +475,7 @@ def _coerce_to_list(value):
 
 
 def test_connection(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     warnings = []
     body, err = _navidrome_request_ex(
         "search3",
@@ -526,6 +535,7 @@ def test_connection(user_creds=None):
 
 
 def _add_to_playlist(playlist_id, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     if not item_ids:
         return True
 
@@ -552,6 +562,7 @@ def _add_to_playlist(playlist_id, item_ids, user_creds=None):
 
 
 def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     if not item_ids:
         item_ids = []
 
@@ -634,6 +645,7 @@ def delete_playlist(playlist_id):
 
 
 def get_tracks_from_album(album_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     params = {"id": album_id}
     response = _navidrome_request("getAlbum", params, user_creds=user_creds)
     if response and "album" in response and "song" in response["album"]:
@@ -667,6 +679,7 @@ def get_tracks_from_album(album_id, user_creds=None):
 
 
 def get_playlist_by_name(playlist_name, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     response = _navidrome_request("getPlaylists", user_creds=user_creds)
     if not (response and "playlists" in response and "playlist" in response["playlists"]):
         return None
@@ -679,6 +692,7 @@ def get_playlist_by_name(playlist_name, user_creds=None):
 
 
 def _get_playlist_detail(playlist_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     detail = _navidrome_request("getPlaylist", {"id": playlist_id}, user_creds=user_creds)
     if not (detail and "playlist" in detail):
         return None
@@ -686,6 +700,7 @@ def _get_playlist_detail(playlist_id, user_creds=None):
 
 
 def get_playlist_track_ids(playlist_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     playlist = _get_playlist_detail(playlist_id, user_creds=user_creds)
     if not playlist:
         return []
@@ -698,6 +713,7 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
 
 
 def get_top_played_songs(limit, user_creds):
+    user_creds = context.active_creds(user_creds)
     all_top_songs = []
     per_album_cap = max(1, config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM)
     num_albums_to_fetch = (limit // per_album_cap) + 10
@@ -723,6 +739,7 @@ def get_top_played_songs(limit, user_creds):
 
 
 def get_last_played_time(item_id, user_creds):
+    user_creds = context.active_creds(user_creds)
     response = _navidrome_request("getSong", {"id": item_id}, user_creds=user_creds)
     if response and "song" in response:
         song = response.get("song")
@@ -749,11 +766,13 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds):
+    user_creds = context.active_creds(user_creds)
     final_playlist_name = f"{playlist_name.strip()}_instant"
     return _create_playlist_batched(final_playlist_name, item_ids, user_creds)
 
 
 def _clear_playlist_items(playlist_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     playlist = _get_playlist_detail(playlist_id, user_creds=user_creds)
     if not playlist:
         logger.error(f"Navidrome _clear_playlist_items: failed to fetch playlist {playlist_id}")
@@ -782,6 +801,7 @@ def _clear_playlist_items(playlist_id, user_creds=None):
 
 
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     if not item_ids:
         return None
 

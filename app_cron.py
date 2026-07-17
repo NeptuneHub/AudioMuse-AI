@@ -13,16 +13,18 @@ that reads enabled rows and runs the matching task (analysis, clustering,
 sonic fingerprint, or alchemy radio) when its cron expression matches now.
 
 Main Features:
-* Routes: `/cron` page and `/api/cron` (GET list, POST create/update).
-* Cron evaluation that enqueues `tasks.analysis.run_analysis_task` or
-  `tasks.clustering.run_clustering_task`, and runs the sonic-fingerprint and
-  alchemy-radio generators synchronously, guarding against re-running a job
-  that ran recently.
+* Routes: `/cron` page and `/api/cron` (GET list, POST create/update), rejecting a
+  cron expression that could never fire before it is stored as enabled.
+* Cron evaluation that ENQUEUES every task type (analysis, clustering, sonic
+  fingerprint, alchemy radio, plugin tasks): nothing runs inline on the poll
+  thread, so a slow media server cannot swallow a scheduling window.
+* Each row is claimed atomically for its wall-clock minute, so a restart or a
+  second web process cannot double-fire it.
 """
 
 from flask import Blueprint, render_template, jsonify, request
-from psycopg2.extras import DictCursor
-from database import get_db, save_task_status
+from psycopg2.extras import DictCursor, Json
+from database import get_db, save_task_status, get_active_main_task
 from taskqueue import rq_queue_high, rq_queue_default
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 import uuid
@@ -45,7 +47,7 @@ from config import (
     PCA_COMPONENTS_MAX,
     CLUSTERING_RUNS,
     MAX_SONGS_PER_CLUSTER,
-    TOP_N_PLAYLISTS,
+    TOP_N_CLUSTERING_PLAYLIST,
     MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
     STRATIFIED_SAMPLING_TARGET_PERCENTILE,
     SCORE_WEIGHT_DIVERSITY,
@@ -129,7 +131,8 @@ def get_cron_entries():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute(
-        "SELECT id, name, task_type, cron_expr, enabled, last_run, created_at FROM cron ORDER BY id"
+        "SELECT id, name, task_type, cron_expr, enabled, last_run, created_at, options "
+        "FROM cron ORDER BY id"
     )
     rows = cur.fetchall()
     cur.close()
@@ -144,6 +147,7 @@ def get_cron_entries():
                 'enabled': bool(r['enabled']),
                 'last_run': r['last_run'],
                 'created_at': str(r['created_at']),
+                'options': r['options'] if isinstance(r['options'], dict) else {},
             }
         )
     # Remove the special-case append for sonic_fingerprint; now handled by DB init
@@ -192,16 +196,35 @@ def save_cron_entry():
     """
     data = request.json or {}
     # Expected fields: id (optional), name, task_type, cron_expr, enabled
+    options = data.get('options') or {}
+    if not isinstance(options, dict):
+        return jsonify({'error': "'options' must be a JSON object"}), 400
+
+    # Coerced, never None: cron_expr is NOT NULL, so a POST that omitted it used to
+    # 500 rather than answer.
+    cron_expr = (data.get('cron_expr') or '').strip()
+
+    # Validate ONLY when the row is being enabled. cron.html re-POSTs all four
+    # built-in rows on every save, so rejecting an empty expression outright would
+    # 400 a save that merely cleared a disabled box. The matcher fails closed and
+    # silent, so an unvalidated bad expression (a very plausible '0 3 * * MON')
+    # was stored, displayed as active, and simply never fired.
+    if bool(data.get('enabled')):
+        problem = _cron_expr_problem(cron_expr)
+        if problem:
+            return jsonify({'error': problem}), 400
+
     db = get_db()
     cur = db.cursor()
     if data.get('id'):
         cur.execute(
-            "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s WHERE id=%s",
+            "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
             (
                 data.get('name'),
                 data.get('task_type'),
-                data.get('cron_expr'),
+                cron_expr,
                 bool(data.get('enabled')),
+                Json(options),
                 data.get('id'),
             ),
         )
@@ -215,23 +238,25 @@ def save_cron_entry():
         existing = cur.fetchone()
         if existing:
             cur.execute(
-                "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s WHERE id=%s",
+                "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
                 (
                     data.get('name'),
                     data.get('task_type'),
-                    data.get('cron_expr'),
+                    cron_expr,
                     bool(data.get('enabled')),
+                    Json(options),
                     existing[0],
                 ),
             )
         else:
             cur.execute(
-                "INSERT INTO cron (name, task_type, cron_expr, enabled) VALUES (%s,%s,%s,%s)",
+                "INSERT INTO cron (name, task_type, cron_expr, enabled, options) VALUES (%s,%s,%s,%s,%s)",
                 (
                     data.get('name'),
                     data.get('task_type'),
-                    data.get('cron_expr'),
+                    cron_expr,
                     bool(data.get('enabled')),
+                    Json(options),
                 ),
             )
     db.commit()
@@ -319,6 +344,43 @@ def _field_matches(field_expr, value, field_min=0):
     return False
 
 
+_CRON_FIELD_DOMAINS = (
+    ('minute', 0, 59),
+    ('hour', 0, 23),
+    ('day of month', 1, 31),
+    ('month', 1, 12),
+    ('day of week', 0, 6),
+)
+
+
+def _cron_expr_problem(expr):
+    """A human-readable reason ``expr`` can never fire, or None when it is valid.
+
+    Decided by running each field over its real domain through the SAME matcher the
+    scheduler uses, so the validator cannot drift from the thing it validates. Names
+    like MON or @daily are not supported: int() raises on them and _field_matches
+    swallows the error, so such a row would be stored, shown as active, and silently
+    never run.
+    """
+    if not expr or not str(expr).strip():
+        return "Enter a cron expression, or disable the schedule."
+    parts = str(expr).strip().split()
+    if len(parts) != 5:
+        return (
+            f"A cron expression needs 5 fields (minute hour day month weekday); "
+            f"got {len(parts)}."
+        )
+    for field_expr, (name, low, high) in zip(parts, _CRON_FIELD_DOMAINS):
+        if not any(
+            _field_matches(field_expr, value, low) for value in range(low, high + 1)
+        ):
+            return (
+                f"The {name} field '{field_expr}' never matches any value "
+                f"({low}-{high}). Use numbers, not names."
+            )
+    return None
+
+
 def cron_matches_now(expr, ts=None):
     # expr expected as 'min hour day month dow'
     t = time.localtime(ts) if ts is not None else time.localtime()
@@ -349,25 +411,73 @@ def cron_matches_now(expr, ts=None):
     return True
 
 
+def _claim_cron_minute(db, row_id, minute_start):
+    """Claim ``row_id`` for the wall-clock minute starting at ``minute_start``.
+
+    True exactly once per row per minute, however many processes or restarts race
+    for it: the predicate on last_run makes the claim atomic. The row is marked run
+    BEFORE the work is enqueued, so a crash in between drops that occurrence rather
+    than duplicating it - the right trade for a batch task.
+    """
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE cron SET last_run = %s "
+            "WHERE id = %s AND (last_run IS NULL OR last_run < %s)",
+            (minute_start, row_id, minute_start),
+        )
+        claimed = cur.rowcount == 1
+        db.commit()
+        return claimed
+    finally:
+        cur.close()
+
+
 def run_due_cron_jobs():
-    """Read enabled cron rows and enqueue analysis/clustering/sonic_fingerprint when cron matches now and not recently run."""
-    logger = logging.getLogger(__name__)
+    """Enqueue every enabled cron row whose expression matches this minute.
+
+    Every branch enqueues: nothing runs inline on the poll thread, so a slow media
+    server can never swallow a scheduling window.
+    """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute(
-        "SELECT id, name, task_type, cron_expr, enabled, last_run FROM cron WHERE enabled = true"
+        "SELECT id, name, task_type, cron_expr, enabled, last_run, options "
+        "FROM cron WHERE enabled = true"
     )
     rows = cur.fetchall()
     now_ts = time.time()
+    minute_start = now_ts - (now_ts % 60)
     for r in rows:
         try:
-            last_run = r['last_run'] or 0
-            # avoid duplicate runs within 55 seconds
-            if now_ts - float(last_run) < 55:
-                continue
             if cron_matches_now(r['cron_expr'], now_ts):
+                # Claim the row for THIS wall-clock minute before doing anything.
+                # The old guard read last_run and wrote it after enqueuing, with no
+                # predicate and a 55s window narrower than the 60s minute it was
+                # protecting, so a restart inside a matching minute could double-fire.
+                # Claiming must come AFTER the match: claiming every enabled row on
+                # every tick would stamp last_run continuously and corrupt the
+                # dashboard's Last-run display.
+                if not _claim_cron_minute(db, r['id'], minute_start):
+                    continue
                 task_type = r['task_type']
+                # Batch work always covers every configured server, one server at
+                # a time. There is no per-schedule scope: a "default server only"
+                # schedule left every other server's exclusive songs unanalyzed
+                # and without playlists, silently.
+                server_scope = 'all'
                 job_id = str(uuid.uuid4())
+                if task_type in ('analysis', 'clustering'):
+                    # The manual endpoints 409 while any main task is live; cron used
+                    # to enqueue regardless, so a nightly row could start a second
+                    # full run on top of one still in progress.
+                    active = get_active_main_task()
+                    if active:
+                        logger.info(
+                            "Cron: skipping %s, main task %s is still %s",
+                            task_type, active['task_id'], active['status'],
+                        )
+                        continue
                 if task_type == 'analysis':
                     # mark queued in task_status
                     save_task_status(
@@ -376,14 +486,22 @@ def run_due_cron_jobs():
                         TASK_STATUS_PENDING,
                         details={"message": _ENQUEUED_BY_CRON},
                     )
-                    rq_queue_high.enqueue(
-                        'tasks.analysis.run_analysis_task',
-                        args=(0, TOP_N_MOODS),
-                        job_id=job_id,
-                        description='Cron Analysis',
-                        job_timeout=-1,
-                    )
-                    logger.info(f"Cron: enqueued analysis job {job_id}")
+                    try:
+                        rq_queue_high.enqueue(
+                            'tasks.analysis.run_analysis_task',
+                            args=(0, TOP_N_MOODS),
+                            kwargs={'server_scope': server_scope},
+                            job_id=job_id,
+                            description='Cron Analysis',
+                            job_timeout=-1,
+                        )
+                        logger.info(f"Cron: enqueued analysis job {job_id}")
+                    except Exception:
+                        logger.exception("Cron: enqueue failed for analysis")
+                        save_task_status(
+                            job_id, f"main_{task_type}", TASK_STATUS_FAILURE,
+                            details={"error": "Could not enqueue the task (is Redis reachable?)"},
+                        )
                 elif task_type == 'clustering':
                     # mark queued in task_status
                     save_task_status(
@@ -408,7 +526,8 @@ def run_due_cron_jobs():
                         "pca_components_max": int(PCA_COMPONENTS_MAX),
                         "num_clustering_runs": int(CLUSTERING_RUNS),
                         "max_songs_per_cluster_val": int(MAX_SONGS_PER_CLUSTER),
-                        "top_n_playlists_param": int(TOP_N_PLAYLISTS),
+                        # Legacy RQ kwarg keeps rolling web/worker deploys compatible.
+                        "top_n_playlists_param": int(TOP_N_CLUSTERING_PLAYLIST),
                         "min_songs_per_genre_for_stratification_param": int(
                             MIN_SONGS_PER_GENRE_FOR_STRATIFICATION
                         ),
@@ -440,71 +559,53 @@ def run_due_cron_jobs():
                         "mistral_model_name_param": MISTRAL_MODEL_NAME,
                         "top_n_moods_for_clustering_param": int(TOP_N_MOODS),
                         "enable_clustering_embeddings_param": bool(ENABLE_CLUSTERING_EMBEDDINGS),
+                        "output_server_scope": server_scope,
                     }
-                    rq_queue_high.enqueue(
-                        'tasks.clustering.run_clustering_task',
-                        kwargs=clustering_kwargs,
-                        job_id=job_id,
-                        description='Cron Clustering',
-                        job_timeout=-1,
-                    )
-                    logger.info(f"Cron: enqueued clustering job {job_id}")
-                elif task_type == 'sonic_fingerprint':
-                    # Run synchronously, not via queue. Upsert a stably-named playlist on the
-                    # media server so client-side "online first" sync (e.g. Symfonium on Navidrome)
-                    # keeps tracking the same server playlist across runs (issue #336).
-                    from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
-                    from tasks.mediaserver import create_or_replace_playlist
-                    from tasks.ivf_manager import create_playlist_from_ids
-                    from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
-
                     try:
-                        fingerprint_results = generate_sonic_fingerprint()
-                        if not fingerprint_results:
-                            logger.warning(
-                                f"Cron: sonic fingerprint found no results - preserving previous playlist (job_id={job_id})"
-                            )
-                        else:
-                            track_ids = [
-                                r['item_id'] for r in fingerprint_results if 'item_id' in r
-                            ]
-                            try:
-                                try:
-                                    upserted = create_or_replace_playlist(
-                                        SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
-                                    )
-                                    playlist_id = upserted.get('Id') if upserted else None
-                                    logger.info(
-                                        f"Cron: upserted '{SONIC_FINGERPRINT_CRON_PLAYLIST_NAME}' "
-                                        f"(playlist_id={playlist_id}, tracks={len(track_ids)}, job_id={job_id})"
-                                    )
-                                except NotImplementedError:
-                                    # Unsupported backend: keep the legacy date-suffixed behavior.
-                                    legacy_name = (
-                                        f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
-                                    )
-                                    playlist_id = create_playlist_from_ids(legacy_name, track_ids)
-                                    logger.info(
-                                        f"Cron: created sonic fingerprint playlist '{legacy_name}' "
-                                        f"(playlist_id={playlist_id}, job_id={job_id})"
-                                    )
-                            except Exception:
-                                logger.exception(
-                                    "Cron: error creating/updating playlist for sonic fingerprint"
-                                )
-                        logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
-                    except Exception:
-                        logger.exception("Cron: error running sonic fingerprint")
-                elif task_type == 'alchemy_radio':
-                    from tasks.radio_manager import run_radio_playlists
-
-                    try:
-                        summary = run_radio_playlists()
-                        logger.info(
-                            f"Cron: ran radio playlists synchronously (job_id={job_id}, summary={summary})"
+                        rq_queue_high.enqueue(
+                            'tasks.clustering.run_clustering_task',
+                            kwargs=clustering_kwargs,
+                            job_id=job_id,
+                            description='Cron Clustering',
+                            job_timeout=-1,
                         )
+                        logger.info(f"Cron: enqueued clustering job {job_id}")
                     except Exception:
-                        logger.exception("Cron: error running radio playlists")
+                        logger.exception("Cron: enqueue failed for clustering")
+                        save_task_status(
+                            job_id, f"main_{task_type}", TASK_STATUS_FAILURE,
+                            details={"error": "Could not enqueue the task (is Redis reachable?)"},
+                        )
+                elif task_type in ('sonic_fingerprint', 'alchemy_radio'):
+                    # Enqueued, never run inline: these call the media server once per
+                    # server in scope, and doing that on the 60s poll thread let one
+                    # unreachable provider swallow whole scheduling windows.
+                    dotted = (
+                        'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task'
+                        if task_type == 'sonic_fingerprint'
+                        else 'tasks.radio_manager.run_radio_playlists_task'
+                    )
+                    save_task_status(
+                        job_id,
+                        task_type,
+                        TASK_STATUS_PENDING,
+                        details={"message": _ENQUEUED_BY_CRON},
+                    )
+                    try:
+                        rq_queue_default.enqueue(
+                            dotted,
+                            kwargs={'server_scope': server_scope},
+                            job_id=job_id,
+                            description=f'Cron {task_type}',
+                            job_timeout=-1,
+                        )
+                        logger.info(f"Cron: enqueued {task_type} job {job_id}")
+                    except Exception:
+                        logger.exception(f"Cron: enqueue failed for {task_type}")
+                        save_task_status(
+                            job_id, task_type, TASK_STATUS_FAILURE,
+                            details={"error": "Could not enqueue the task (is Redis reachable?)"},
+                        )
                 elif task_type.startswith('plugin.'):
                     from plugin.manager import plugin_manager
 
@@ -525,6 +626,7 @@ def run_due_cron_jobs():
                             queue.enqueue(
                                 'plugin.manager.run_plugin_task',
                                 args=(cron_task['dotted'],),
+                                kwargs={'server_scope': server_scope},
                                 job_id=job_id,
                                 description=f'Cron {task_type}',
                                 job_timeout=-1,
@@ -536,17 +638,7 @@ def run_due_cron_jobs():
                                 job_id, task_type, TASK_STATUS_FAILURE,
                                 details={"error": "Could not enqueue the task (is Redis reachable?)"},
                             )
-                # update last_run
-                cur2 = db.cursor()
-                cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))
-                db.commit()
-                cur2.close()
         except Exception:
+            db.rollback()
             logger.exception(f"Error processing cron row {r}")
     cur.close()
-
-
-"""
-NOTE: The cron table is NOT created in this file. It is typically created by a database migration or setup script (e.g., an SQL file or Alembic migration).
-Check your deployment or setup scripts for the SQL that creates the 'cron' table.
-"""

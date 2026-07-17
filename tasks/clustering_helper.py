@@ -16,6 +16,10 @@ random and evolutionary parameter mutations that the elitist search explores.
 Main Features:
 * _perform_single_clustering_iteration / _apply_clustering_model: run one
   clustering attempt end to end and return a scored result.
+* _split_oversized_clusters: DBSCAN components larger than
+  CLUSTERING_MAX_PLAYLIST_SONGS are re-split with KMeans into playlist-sized
+  chunks - music embeddings form one connected density mass, so raw DBSCAN
+  either merges everything into a single giant cluster or marks it all noise.
 * _generate_random_parameters / _mutate_parameters / _generate_evolutionary_parameters:
   sample and mutate KMeans/DBSCAN/GMM/spectral/PCA params within configured ranges.
 * Playlist shaping helpers (chunking, shuffling, optional AI naming) for each run.
@@ -26,7 +30,7 @@ import random
 import logging
 import time
 import numpy as np
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans, DBSCAN, SpectralClustering
@@ -53,6 +57,9 @@ from config import (
     MOOD_LABELS,
     MAX_DISTANCE,
     MAX_SONGS_PER_ARTIST,
+    MIN_PLAYLIST_SIZE_FOR_TOP_N,
+    CLUSTERING_MAX_PLAYLIST_SONGS,
+    CLUSTERING_SUBSET_SONGS,
     GMM_COVARIANCE_TYPE,
     SPECTRAL_N_NEIGHBORS,
     TOP_K_MOODS_FOR_PURITY_CALCULATION,
@@ -65,13 +72,19 @@ from config import (
     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
     USE_GPU_CLUSTERING,
     TASK_STATUS_SUCCESS,
+    LYRICS_ENABLED,
 )
 from .commons import score_vector
 
 from tasks.ai.api import get_ai_playlist_name
-from tasks.ai.prompts import creative_prompt_template
+from tasks.ai.playlist_namer import build_naming_context
 
-from database import get_tracks_by_ids, get_score_data_by_ids, get_task_info_from_db
+from database import (
+    get_tracks_by_ids,
+    get_score_data_by_ids,
+    get_task_info_from_db,
+    get_lyrics_axis_vectors,
+)
 from taskqueue import redis_conn
 
 
@@ -120,7 +133,11 @@ def _try_ai_name_playlist(
     gemini_model,
     mistral_key,
     mistral_model,
+    avoid_names=None,
+    primary_genre=None,
 ):
+    if (ai_provider or 'NONE').upper() == 'NONE':
+        return original_name
     ai_config = {
         'provider': ai_provider,
         'ollama_url': ollama_url,
@@ -133,15 +150,59 @@ def _try_ai_name_playlist(
         'mistral_key': mistral_key,
         'mistral_model': mistral_model,
     }
-    ai_name = get_ai_playlist_name(
-        creative_prompt_template,
-        [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
+    item_ids = [item_id for item_id, _title, _author in songs]
+    score_rows = get_score_data_by_ids(item_ids)
+    axis_blobs = {}
+    columns = []
+    if LYRICS_ENABLED:
+        try:
+            from lyrics.lyrics_transcriber import axis_columns
+
+            columns = list(axis_columns())
+            axis_blobs = get_lyrics_axis_vectors(item_ids)
+        except Exception:
+            logger.exception("Could not load lyric axes for playlist naming")
+
+    context = build_naming_context(
+        score_rows,
         centroids.get(original_name, {}),
-        ai_config,
+        axis_blobs.values(),
+        len(item_ids),
+        columns,
+        primary_genre=primary_genre,
+        diversify=True,
     )
-    if ai_name and "Error" not in ai_name:
+    logger.info(
+        "Playlist naming context for '%s': genre=%s dimension=%s evidence=%s "
+        "ideas=%s reliable_axes=%s",
+        original_name,
+        context['genre'],
+        context['naming_dimension'],
+        context['naming_evidence'],
+        context['ideas'],
+        context['axis_labels'],
+    )
+    ai_name = None
+    if context['naming_evidence'] != 'general-purpose listening':
+        ai_avoid_names = [
+            name
+            for name in (avoid_names or [])
+            if '_' not in name.partition('_automatic')[0]
+        ]
+        ai_name = get_ai_playlist_name(
+            context['genre'],
+            context['naming_dimension'],
+            context['naming_evidence'],
+            ai_config,
+            instrumental=context['instrumental'],
+            avoid_names=ai_avoid_names,
+        )
+    if ai_name:
         return ai_name.strip().replace("\n", " ")
-    logger.warning("AI naming failed for '%s': %s. Using original name.", original_name, ai_name)
+    logger.warning(
+        "AI naming failed for '%s'. Keeping the tag-based cluster name.",
+        original_name,
+    )
     return original_name
 
 
@@ -470,6 +531,23 @@ def _mutate_parameters(
     }
 
 
+def _split_oversized_clusters(labels, data):
+    labels = np.asarray(labels).copy()
+    target = max(2 * MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_MAX_PLAYLIST_SONGS // 2)
+    next_label = int(labels.max()) + 1
+    for cid in [c for c in set(labels.tolist()) if c != -1]:
+        idx = np.where(labels == cid)[0]
+        if len(idx) <= CLUSTERING_MAX_PLAYLIST_SONGS:
+            continue
+        n_sub = min(len(idx), max(2, -(-len(idx) // target)))
+        sub_labels = KMeans(
+            n_clusters=n_sub, init='k-means++', n_init=3
+        ).fit_predict(data[idx])
+        labels[idx] = next_label + sub_labels
+        next_label += n_sub
+    return labels
+
+
 def _apply_clustering_model(data, method_config, log_prefix, run_idx):
     method = method_config['method']
     params = method_config['params']
@@ -506,7 +584,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                     n_components=params['n_components'],
                     covariance_type=GMM_COVARIANCE_TYPE,
                     init_params='k-means++',
-                    n_init=10,
+                    n_init=3,
                     random_state=None,
                     reg_covar=1e-4,
                 )
@@ -524,6 +602,9 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                 raise ValueError(f"Unsupported clustering method: {method}")
 
             labels = model.fit_predict(data)
+
+        if method == 'dbscan' and labels is not None:
+            labels = _split_oversized_clusters(labels, data)
 
         centers = {}
         if hasattr(model, 'cluster_centers_') and model.cluster_centers_ is not None:
@@ -645,10 +726,15 @@ def _format_and_score_iteration_result(
 
     named_playlists, playlist_centroids = {}, {}
     playlist_to_centroid_vector_map = {}
+    playlist_primary_genres = {}
     unique_predominant_mood_scores = {}
     unique_predominant_other_feature_scores = {}
     item_id_to_song_index_map = {
         track_data['item_id']: i for i, track_data in enumerate(valid_tracks)
+    }
+    item_id_to_primary_genre = {
+        track_data['item_id']: _get_track_primary_genre(track_data)
+        for track_data in valid_tracks
     }
 
     for label_id, songs_list in filtered_clusters.items():
@@ -676,6 +762,16 @@ def _format_and_score_iteration_result(
             named_playlists[temp_name] = songs_list
             playlist_centroids[temp_name] = centroid_details
             playlist_to_centroid_vector_map[temp_name] = center_vec
+            genre_counts = Counter(
+                item_id_to_primary_genre.get(item_id, '__other__')
+                for item_id, _, _ in songs_list
+            )
+            known_genres = [genre for genre in STRATIFIED_GENRES if genre_counts[genre]]
+            playlist_primary_genres[temp_name] = (
+                max(known_genres, key=genre_counts.get)
+                if known_genres
+                else '__other__'
+            )
 
             if centroid_details and any(mood in active_moods for mood in centroid_details.keys()):
                 predominant_mood_key = max(
@@ -859,7 +955,10 @@ def _format_and_score_iteration_result(
     )
     logger.info(log_message)
 
-    logger.info(f"Run {run_idx}: Created {len(named_playlists)} clusters.")
+    logger.info(
+        f"Run {run_idx} ({params['clustering_method_config']['method']}): "
+        f"Created {len(named_playlists)} clusters."
+    )
     for name, songs in named_playlists.items():
         song_titles = [f"'{s[1]}'" for s in songs[:5]]
         log_msg = f"  - Cluster '{name}': {', '.join(song_titles)}"
@@ -872,6 +971,7 @@ def _format_and_score_iteration_result(
         "named_playlists": named_playlists,
         "playlist_centroids": playlist_centroids,
         "playlist_to_centroid_vector_map": playlist_to_centroid_vector_map,
+        "playlist_primary_genres": playlist_primary_genres,
         "parameters": {**params, "max_songs_per_cluster": max_songs_per_cluster, "run_id": run_idx},
         "scaler_details": {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()}
         if scaler
@@ -982,35 +1082,163 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
     return None
 
 
-def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, percent_change=0.0):
-    new_subset, new_ids = [], set()
-    if prev_ids and percent_change > 0:
-        sample_size = int(len(prev_ids) * (1.0 - percent_change))
-        if len(prev_ids) > sample_size:
-            kept_ids = set(random.sample(prev_ids, sample_size))
-        else:
-            kept_ids = set(prev_ids)
-    else:
-        kept_ids = set()
+def _fill_balanced_quotas(quotas, capacities, remaining):
+    remaining = max(0, int(remaining))
+    while remaining > 0:
+        open_genres = [
+            genre for genre, capacity in capacities.items()
+            if quotas.get(genre, 0) < capacity
+        ]
+        if not open_genres:
+            break
 
-    id_to_track_map = {t['item_id']: t for g_list in genre_map.values() for t in g_list}
-    for track_id in kept_ids:
-        if track_id in id_to_track_map:
-            new_subset.append(id_to_track_map[track_id])
-            new_ids.add(track_id)
+        lowest_count = min(quotas.get(genre, 0) for genre in open_genres)
+        lowest_genres = [
+            genre for genre in open_genres
+            if quotas.get(genre, 0) == lowest_count
+        ]
+        random.shuffle(lowest_genres)
+        for genre in lowest_genres[:remaining]:
+            quotas[genre] = quotas.get(genre, 0) + 1
+            remaining -= 1
+            if remaining == 0:
+                break
+    return quotas
 
-    for genre in STRATIFIED_GENRES:
-        current_genre_count = sum(1 for t in new_subset if _get_track_primary_genre(t) == genre)
-        needed = target_per_genre - current_genre_count
-        if needed > 0:
-            candidates = [t for t in genre_map.get(genre, []) if t['item_id'] not in new_ids]
-            if candidates:
-                added_tracks = random.sample(candidates, min(needed, len(candidates)))
-                new_subset.extend(added_tracks)
-                for t in added_tracks:
-                    new_ids.add(t['item_id'])
-    random.shuffle(new_subset)
-    return new_subset
+
+def _calculate_stratified_quotas(genre_tracks, sample_size, target_per_genre):
+    capacities = {
+        genre: len(tracks)
+        for genre, tracks in genre_tracks.items()
+        if genre in STRATIFIED_GENRES and tracks
+    }
+    total_known = sum(capacities.values())
+    wanted_known = min(max(0, int(sample_size)), total_known)
+    target = max(0, int(target_per_genre))
+
+    base_limits = {
+        genre: min(capacity, target)
+        for genre, capacity in capacities.items()
+    }
+    if sum(base_limits.values()) >= wanted_known:
+        quotas = dict.fromkeys(capacities, 0)
+        return _fill_balanced_quotas(quotas, base_limits, wanted_known)
+
+    quotas = dict(base_limits)
+    return _fill_balanced_quotas(
+        quotas,
+        capacities,
+        wanted_known - sum(quotas.values()),
+    )
+
+
+def _regroup_tracks_by_primary_genre(genre_map):
+    tracks_by_id = {}
+    for tracks in genre_map.values():
+        for track in tracks:
+            track_id = track.get('item_id')
+            if track_id is not None and track_id not in tracks_by_id:
+                tracks_by_id[track_id] = track
+
+    genre_tracks = defaultdict(list)
+    for track in tracks_by_id.values():
+        genre_tracks[_get_track_primary_genre(track)].append(track)
+    return tracks_by_id, genre_tracks
+
+
+def _select_tracks_for_genre(
+    candidates, quota, previous_ids, change_fraction, selected_ids, rotate
+):
+    previous_candidates = [
+        track for track in candidates if track['item_id'] in previous_ids
+    ]
+    keep_count = 0
+    if rotate:
+        keep_count = min(
+            len(previous_candidates),
+            quota,
+            int(quota * (1.0 - change_fraction)),
+        )
+    kept = (
+        random.sample(previous_candidates, keep_count)
+        if keep_count < len(previous_candidates)
+        else previous_candidates
+    )
+    chosen = list(kept)
+    selected_ids.update(track['item_id'] for track in kept)
+
+    needed = quota - len(kept)
+    if needed <= 0:
+        return chosen
+
+    fresh = [
+        track for track in candidates
+        if track['item_id'] not in selected_ids
+        and (change_fraction <= 0.0 or track['item_id'] not in previous_ids)
+    ]
+    added = random.sample(fresh, min(needed, len(fresh)))
+    chosen.extend(added)
+    selected_ids.update(track['item_id'] for track in added)
+
+    still_needed = quota - len(kept) - len(added)
+    if still_needed > 0:
+        remaining = [
+            track for track in candidates
+            if track['item_id'] not in selected_ids
+        ]
+        reused = random.sample(remaining, still_needed)
+        chosen.extend(reused)
+        selected_ids.update(track['item_id'] for track in reused)
+    return chosen
+
+
+def _get_stratified_song_subset(
+    genre_map,
+    target_per_genre,
+    prev_ids=None,
+    percent_change=0.0,
+):
+    tracks_by_id, genre_tracks = _regroup_tracks_by_primary_genre(genre_map)
+
+    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), len(tracks_by_id))
+    if desired_size == 0:
+        return []
+
+    quotas = _calculate_stratified_quotas(
+        genre_tracks,
+        desired_size,
+        target_per_genre,
+    )
+
+    known_quota_total = sum(quotas.values())
+    if known_quota_total < desired_size:
+        other_capacity = len(genre_tracks.get('__other__', []))
+        quotas['__other__'] = min(
+            other_capacity,
+            desired_size - known_quota_total,
+        )
+
+    previous_ids = set(prev_ids or [])
+    change_fraction = min(1.0, max(0.0, float(percent_change)))
+    rotate = prev_ids is not None
+    selected, selected_ids = [], set()
+
+    for genre, quota in quotas.items():
+        if quota <= 0:
+            continue
+        selected.extend(
+            _select_tracks_for_genre(
+                genre_tracks.get(genre, []),
+                quota,
+                previous_ids,
+                change_fraction,
+                selected_ids,
+                rotate,
+            )
+        )
+
+    random.shuffle(selected)
+    return selected
 
 
 def _get_track_primary_genre(track_data):

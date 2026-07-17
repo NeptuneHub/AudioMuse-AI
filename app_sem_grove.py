@@ -98,6 +98,9 @@ def sem_grove_search_api():
             return jsonify({"error": 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
 
+        import app_server_context
+
+        item_id = app_server_context.resolve_input_item_id(item_id, data)
         results = search_by_song(item_id, limit=limit)
         # results[0] is always the seed itself; if that's the only entry, no similar songs were found
         similar_count = sum(1 for r in results if not r.get("is_seed"))
@@ -111,9 +114,12 @@ def sem_grove_search_api():
                 }
             ), 404
 
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         attach_song_features(results)
         return jsonify({"results": results, "count": len(results)})
 
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     except Exception:
         logger.exception("SemGrove search failed")
         return jsonify({"error": "An internal error occurred."}), 500

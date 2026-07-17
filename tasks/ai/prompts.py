@@ -25,17 +25,10 @@ from typing import Dict, List, Optional
 import config
 
 
-creative_prompt_template = (
-    "You are an expert music collector and MUST give a title to this playlist.\n"
-    "The title MUST represent the mood and the activity of when you are listening to the playlist.\n"
-    "The title MUST use ONLY standard ASCII (a-z, A-Z, 0-9, spaces, and - & ' ! . , ? ( ) [ ]).\n"
-    "The title MUST be within the range of 5 to 40 characters long.\n"
-    "No special fonts or emojis.\n"
-    "* BAD EXAMPLES: 'Ambient Electronic Space - Electric Soundscapes - Emotional Waves' (Too long/descriptive)\n"
-    "* BAD EXAMPLES: 'Blues Rock Fast Tracks' (Too direct/literal, not evocative enough)\n"
-    "* BAD EXAMPLES: '\\U0001D5DD\\U0001D5C2\\U0001D5C8 \\U0001D5C2\\U0001D5CB\\U0001D5C8\\U0001D5C7\\U0001D5C2 \\U0001D5C9\\U0001D5CB\\U0001D5C8\\U0001D5C7\\U0001D5C2' (Non-standard characters)\n\n"
-    "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n\n"
-    "This is the playlist:\n{song_list_sample}\n\n"
+playlist_concept_prompt_template = (
+    "Concept extraction only. Genre: {genre}. Verified evidence: {evidence}. "
+    "{dimension_rule} Use one ordinary word. Concept only: no genre, title, "
+    "explanation, marketing/container word, or invented context. {avoid_rule}"
 )
 
 

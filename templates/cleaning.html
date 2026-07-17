@@ -433,25 +433,21 @@
         function displayCleaningResults(data) {
             const summaryDiv = document.getElementById('cleaning-summary');
 
-            if (data.deleted_count > 0) {
+            if ((data.unbound_mappings || 0) > 0 || (data.orphaned_tracks_count || 0) > 0) {
                 summaryDiv.innerHTML = `
-                    <h3>✅ Database Cleaning Completed Successfully</h3>
-                    <p><strong>Total albums on media server:</strong> ${data.total_media_server_albums}</p>
-                    <p><strong>Total tracks on media server:</strong> ${data.total_media_server_tracks}</p>
-                    <p><strong>Total tracks in database (before cleaning):</strong> ${data.total_database_tracks}</p>
-                    <p><strong>Orphaned albums found:</strong> ${data.orphaned_albums_count}</p>
-                    <p><strong>Orphaned tracks deleted:</strong> ${data.deleted_count}</p>
-                    ${data.failed_deletions && data.failed_deletions.length > 0 ?
-                        `<p><strong>Failed deletions:</strong> ${data.failed_deletions.length}</p>` : ''}
-                    <p style="color: var(--color-success); font-weight: bold;">Database cleaned successfully! ${data.deleted_count} orphaned tracks removed.</p>
+                    <h3>✅ Library Cleanup Completed</h3>
+                    <p><strong>Total tracks on media server(s):</strong> ${data.total_media_server_tracks}</p>
+                    <p><strong>Total tracks in database:</strong> ${data.total_database_tracks}</p>
+                    <p><strong>Stale server mappings unbound:</strong> ${data.unbound_mappings}</p>
+                    <p><strong>Catalogue tracks currently on no server:</strong> ${data.orphaned_tracks_count}</p>
+                    <p style="color: var(--color-success); font-weight: bold;">Cleanup finished. The catalogue itself was not modified; tracks on no server are hidden by the per-server availability filter.</p>
                 `;
             } else {
                 summaryDiv.innerHTML = `
-                    <h3>✅ Database is Clean</h3>
-                    <p><strong>Total albums on media server:</strong> ${data.total_media_server_albums}</p>
-                    <p><strong>Total tracks on media server:</strong> ${data.total_media_server_tracks}</p>
+                    <h3>✅ Library is Clean</h3>
+                    <p><strong>Total tracks on media server(s):</strong> ${data.total_media_server_tracks}</p>
                     <p><strong>Total tracks in database:</strong> ${data.total_database_tracks}</p>
-                    <p style="color: var(--color-success); font-weight: bold;">No orphaned tracks found. Your database is already clean!</p>
+                    <p style="color: var(--color-success); font-weight: bold;">Every server mapping is current and every catalogue track is on at least one server.</p>
                 `;
             }
         }

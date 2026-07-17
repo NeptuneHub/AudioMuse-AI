@@ -237,6 +237,30 @@ def register(ctx):
 
 Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
 
+### Scheduled tasks and multiple music servers
+
+Music servers hold different catalogues, so a scheduled plugin task runs **once
+per music server**, on **every** configured server, one at a time - like every
+other batch task in AudioMuse-AI. There is no scope selector to choose from. Your
+function does not change: every media-server call inside it - playlist creation,
+listening history, downloads - already targets the server of the current run.
+Ask who that is, or target another server explicitly, through the API:
+
+```python
+from plugin.api import active_server_id, list_servers, use_server
+
+def daily_job():
+    logger.info("running against server %s", active_server_id() or "default")
+    # ... playlists created here land on the server of this run
+
+    with use_server(some_other_server_id):   # only if you need a specific one
+        ...
+```
+
+Tracks are stored once in a shared catalogue under a canonical id, so a task
+that only reads the database sees the same songs on every run; use
+`active_server_id()` when the work is server-specific.
+
 You can also ship a default schedule (disabled, so the admin stays in control) by inserting the cron row in your `on_install` hook. SongCounter does this for its `index_log` task: every hour it stores a timestamped snapshot of the index sizes in its own table, keeps only the last 10 rows, and shows them as a small log on its page.
 
 ```python
@@ -280,7 +304,8 @@ Register a listener with `ctx.on_song_analyzed(func)` and AudioMuse-AI calls it 
 
 Your function receives one dict:
 
-* `item_id` - the media-server id (string).
+* `item_id` - the track's id **on the server being analyzed** (string). A multi-server analysis runs one phase per server, so during the Plex phase this is the Plex id, during the Jellyfin phase the Jellyfin id. Use `server_id`/`server_name` below to know which. To reach the same track on another configured server, translate it with `from tasks.mediaserver import registry; registry.translate_ids([item_id], other_server_id)`. See [MULTI_SERVER.md](MULTI_SERVER.md).
+* `server_id`, `server_name` - which music server this song was analyzed FROM (the phase's server; on a single-server install, the default server). `None` only if the registry could not be read.
 * `run_id` - the analysis run's task id. Every song of one "Start Analysis" shares the same `run_id`, so you can count or group per run (reset when it changes).
 * `audio_path` - the temporary audio file on disk. It is deleted right after your listener returns, so read it now if you need it.
 * `metadata` - `title`, `artist`, `album`, `album_artist`, `year`, `rating`, `file_path`, `album_id`, `album_name`.

@@ -16,6 +16,8 @@ Main Features:
 * Metadata normalization drops leading "the", remaster/feat/live tags
 * Tiered matching prefers path over exact then normalized metadata
 * Collisions resolve to the higher tier and multi-disc disambiguates by disc/track
+* Chunked CandidateIndex.match_chunk with a shared claimed set is equivalent to
+  the one-shot match_tracks result for any chunk size
 """
 
 import os
@@ -654,3 +656,192 @@ class TestArtistHierarchy:
         assert fn({'artist': None, 'album_artist': 'B'}) == 'B'
         assert fn({'artist': '', 'album_artist': 'B'}) == 'B'
         assert fn({}) is None
+
+
+def _tiered_catalogue():
+    old_rows = []
+    new_tracks = []
+    expected_matches = {}
+    expected_tiers = {}
+
+    for i in range(10):
+        old_rows.append(_old(
+            f'p{i}',
+            file_path=f'/media/music/PathArt{i}/PathAlb{i}/PathTrack{i}.flac',
+            title=f'Path Track {i}', author=f'Path Artist {i}', album=f'Path Album {i}',
+        ))
+        new_tracks.append(_new(
+            f'npath{i}',
+            path=f'/music/PathArt{i}/PathAlb{i}/PathTrack{i}.flac',
+            title=f'Path Track {i}', artist=f'Path Artist {i}', album=f'Path Album {i}',
+        ))
+        expected_matches[f'p{i}'] = f'npath{i}'
+        expected_tiers[f'p{i}'] = 'path'
+
+    for i in range(10):
+        old_rows.append(_old(
+            f't{i}',
+            file_path=f'/unknownroot/one{i}/TailArt{i}/TailAlb{i}/TailTrack{i}.flac',
+            title=f'Tail Track {i}', author=f'Tail Artist {i}', album=f'Tail Album {i}',
+        ))
+        new_tracks.append(_new(
+            f'ntail{i}',
+            path=f'/anotherroot/two{i}/TailArt{i}/TailAlb{i}/TailTrack{i}.flac',
+            title=f'Tail Track {i}', artist=f'Tail Artist {i}', album=f'Tail Album {i}',
+        ))
+        expected_matches[f't{i}'] = f'ntail{i}'
+        expected_tiers[f't{i}'] = 'tail'
+
+    for i in range(10):
+        old_rows.append(_old(
+            f'e{i}',
+            title=f'Exact Song {i}', author=f'Exact Artist {i}', album=f'Exact Album {i}',
+        ))
+        new_tracks.append(_new(
+            f'nexact{i}',
+            title=f'Exact Song {i}', artist=f'Exact Artist {i}', album=f'Exact Album {i}',
+        ))
+        expected_matches[f'e{i}'] = f'nexact{i}'
+        expected_tiers[f'e{i}'] = 'exact_meta'
+
+    for i in range(10):
+        old_rows.append(_old(
+            f'm{i}',
+            title=f'Norm Song {i} (Remastered 2011)',
+            author=f'The Norm Artist {i}', album=f'Norm Album {i}',
+        ))
+        new_tracks.append(_new(
+            f'nnorm{i}',
+            title=f'Norm Song {i}', artist=f'Norm Artist {i}', album=f'Norm Album {i}',
+        ))
+        expected_matches[f'm{i}'] = f'nnorm{i}'
+        expected_tiers[f'm{i}'] = 'norm_meta'
+
+    for i in range(10):
+        old_rows.append(_old(
+            f'x{i}',
+            file_path=f'lonely{i}.flac',
+            title=f'Ghost {i}', author=f'Ghost Artist {i}',
+        ))
+
+    for j in range(5):
+        new_tracks.append(_new(
+            f'ncomp{j}',
+            path=f'/music/CompArt{j}/CompAlb{j}/CompTrack{j}.flac',
+            title=f'Comp Song {j}', artist=f'Comp Artist {j}', album=f'Comp Album {j}',
+        ))
+        old_rows.append(_old(
+            f'cA{j}',
+            file_path=f'/media/music/CompArt{j}/CompAlb{j}/CompTrack{j}.flac',
+            title=f'Unrelated {j}', author=f'Unrelated Artist {j}',
+            album=f'Unrelated Album {j}',
+        ))
+        old_rows.append(_old(
+            f'cB{j}',
+            title=f'Comp Song {j}', author=f'Comp Artist {j}', album=f'Comp Album {j}',
+        ))
+        expected_matches[f'cA{j}'] = f'ncomp{j}'
+        expected_tiers[f'cA{j}'] = 'path'
+
+    for j in range(5):
+        new_tracks.append(_new(
+            f'nx{j}',
+            path=f'/music/Distract{j}/Nowhere{j}/Void{j}.flac',
+            title=f'Void {j}', artist=f'Void Artist {j}', album=f'Void Album {j}',
+        ))
+
+    expected_unmatched = {f'x{i}' for i in range(10)} | {f'cB{j}' for j in range(5)}
+    return old_rows, new_tracks, expected_matches, expected_tiers, expected_unmatched
+
+
+def _run_chunked(matcher, old_rows, new_tracks, chunk_size):
+    index = matcher.CandidateIndex(new_tracks)
+    claimed = {}
+    matches = {}
+    tiers = {}
+    for start in range(0, len(old_rows), chunk_size):
+        result = index.match_chunk(old_rows[start:start + chunk_size], claimed)
+        matches.update(result['matches'])
+        tiers.update(result['match_tiers'])
+    return matches, tiers
+
+
+class TestChunkedEquivalence:
+    def test_baseline_covers_every_tier_and_competition(self, matcher):
+        old_rows, new_tracks, expected_matches, expected_tiers, expected_unmatched = (
+            _tiered_catalogue()
+        )
+        result = matcher.match_tracks(old_rows, new_tracks)
+        assert result['matches'] == expected_matches
+        assert result['match_tiers'] == expected_tiers
+        assert {row['item_id'] for row in result['unmatched']} == expected_unmatched
+
+    @pytest.mark.parametrize('chunk_size', [1, 7, 65])
+    def test_chunked_matching_equals_one_shot(self, matcher, chunk_size):
+        old_rows, new_tracks, expected_matches, expected_tiers, _unmatched = (
+            _tiered_catalogue()
+        )
+        baseline = matcher.match_tracks(old_rows, new_tracks)
+        matches, tiers = _run_chunked(matcher, old_rows, new_tracks, chunk_size)
+        assert matches == baseline['matches'] == expected_matches
+        assert tiers == baseline['match_tiers'] == expected_tiers
+
+
+class TestClaimStealingAcrossChunks:
+    """A later chunk with a STRONGER tier must be able to take a provider track.
+
+    The `claimed` map spans chunks while the best-match tie-break only sees one
+    chunk, so without a tier rank the first chunk to touch a provider track owned
+    it forever - a normalized-metadata guess would permanently outrank an exact
+    path match that arrives later, and nothing ever re-matched it.
+    """
+
+    def test_stronger_later_tier_takes_the_track(self, matcher):
+        new_tracks = [{
+            'id': 'p1', 'path': '/music/song.flac',
+            'title': 'Song', 'artist': 'Artist', 'album': 'Album',
+        }]
+        weak = {
+            'item_id': 'fp_weak', 'file_path': '/elsewhere/other.flac',
+            'title': 'Song', 'author': 'Artist', 'album': 'Album', 'album_artist': 'Artist',
+        }
+        strong = {
+            'item_id': 'fp_strong', 'file_path': '/music/song.flac',
+            'title': 'Different', 'author': 'Other', 'album': 'Other', 'album_artist': 'Other',
+        }
+
+        index = matcher.CandidateIndex(new_tracks)
+        claimed = {}
+        first = index.match_chunk([weak], claimed)
+        second = index.match_chunk([strong], claimed)
+
+        assert first['matches'] == {'fp_weak': 'p1'}
+        # The exact-path row wins it in the next chunk...
+        assert second['matches'] == {'fp_strong': 'p1'}
+        assert second['match_tiers']['fp_strong'] == 'path'
+        # ...and the weak owner is left for a later sweep (the upsert moves the
+        # provider id, so the database never holds both).
+        assert claimed['p1'] == index._tier_rank['path']
+
+    def test_weaker_later_tier_does_not_steal(self, matcher):
+        new_tracks = [{
+            'id': 'p1', 'path': '/music/song.flac',
+            'title': 'Song', 'artist': 'Artist', 'album': 'Album',
+        }]
+        strong = {
+            'item_id': 'fp_strong', 'file_path': '/music/song.flac',
+            'title': 'Song', 'author': 'Artist', 'album': 'Album', 'album_artist': 'Artist',
+        }
+        weak = {
+            'item_id': 'fp_weak', 'file_path': '/elsewhere/other.flac',
+            'title': 'Song', 'author': 'Artist', 'album': 'Album', 'album_artist': 'Artist',
+        }
+
+        index = matcher.CandidateIndex(new_tracks)
+        claimed = {}
+        first = index.match_chunk([strong], claimed)
+        second = index.match_chunk([weak], claimed)
+
+        assert first['matches'] == {'fp_strong': 'p1'}
+        assert second['matches'] == {}
+        assert [row['item_id'] for row in second['unmatched']] == ['fp_weak']

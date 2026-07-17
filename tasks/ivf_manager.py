@@ -333,7 +333,8 @@ def build_and_store_ivf_index(db_conn=None):
             logger.warning("No valid audio embeddings found for IVF index build. Aborting.")
             return
         if build_and_store_paged_ivf(
-            db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC
+            db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC,
+            consume_vectors=True,
         ):
             db_conn.commit()
             logger.info("Audio IVF index build and database storage complete.")
@@ -898,11 +899,22 @@ def _compute_num_to_query(n, radius_similarity, eliminate_duplicates, mood_simil
 
 
 def _build_initial_neighbor_results(neighbor_vec_ids, distances, target_item_id):
+    """Neighbours as {item_id, distance}, each track at most ONCE.
+
+    Two slots of the index can name the same track - a legacy migration merges
+    duplicate recordings into one catalogue row and points both of their slots
+    at it - and their vectors are near-identical, so without this the same song
+    comes back twice, side by side. Neighbours arrive nearest-first, so the slot
+    kept is the closest one.
+    """
     initial_results = []
+    seen = set()
     for vec_id, dist in zip(neighbor_vec_ids, distances):
         item_id = id_map.get(vec_id)
-        if item_id and item_id != target_item_id:
-            initial_results.append({"item_id": item_id, "distance": float(dist)})
+        if not item_id or item_id == target_item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        initial_results.append({"item_id": item_id, "distance": float(dist)})
     return initial_results
 
 
@@ -1045,7 +1057,11 @@ def _find_nearest_neighbors_by_id_impl(
         else eliminate_duplicates
     )
     eff_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
-    _result_key = (target_item_id, int(n), bool(eff_eliminate), bool(eff_mood), bool(eff_radius))
+    from .paged_ivf import active_availability_scope
+    _result_key = (
+        active_availability_scope(), target_item_id, int(n), bool(eff_eliminate),
+        bool(eff_mood), bool(eff_radius),
+    )
     _cached = _neighbor_result_cache.get(_result_key)
     if _cached is not None:
         return [dict(r) for r in _cached]
@@ -1165,11 +1181,7 @@ def _find_nearest_neighbors_by_vector_impl(
         )
         return []
 
-    initial_results = [
-        {"item_id": id_map.get(vec_id), "distance": float(dist)}
-        for vec_id, dist in zip(neighbor_vec_ids, distances)
-        if id_map.get(vec_id) is not None
-    ]
+    initial_results = _build_initial_neighbor_results(neighbor_vec_ids, distances, None)
 
     if initial_results:
         _prime_request_f32(_fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results]))
@@ -1202,7 +1214,9 @@ def get_max_distance_for_id(target_item_id: str):
     if target_vec_id is None:
         return None
 
-    _cached = _max_distance_cache.get(target_item_id)
+    from .paged_ivf import active_availability_scope
+    cache_key = (active_availability_scope(), target_item_id)
+    _cached = _max_distance_cache.get(cache_key)
     if _cached is not None:
         return dict(_cached)
 
@@ -1217,7 +1231,7 @@ def get_max_distance_for_id(target_item_id: str):
         return None
     far_item_id = id_map.get(far_vec_id) if far_vec_id is not None else None
     result = {'max_distance': float(max_d), 'farthest_item_id': far_item_id}
-    _max_distance_cache.put(target_item_id, result)
+    _max_distance_cache.put(cache_key, result)
     return dict(result)
 
 
@@ -1258,7 +1272,12 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
 
 
 def search_tracks_unified(
-    search_query: str, limit: int = 20, offset: int = 0, item_id_filter: set | None = None
+    search_query: str,
+    limit: int = 20,
+    offset: int = 0,
+    item_id_filter: set | None = None,
+    server_id: str | None = None,
+    include_legacy_default: bool = False,
 ):
     from app_helper import get_db
     from psycopg2.extras import DictCursor
@@ -1296,6 +1315,9 @@ def search_tracks_unified(
         where_sql = " AND ".join(where_clauses)
         score_sql = " + ".join(score_clauses)
 
+        if item_id_filter is not None and not item_id_filter:
+            return []
+
         id_filter_sql = ""
         id_filter_params: list = []
         if item_id_filter:
@@ -1303,12 +1325,25 @@ def search_tracks_unified(
             id_filter_sql = f" AND item_id IN ({id_placeholders})"
             id_filter_params = list(item_id_filter)
 
-        all_params = params[: len(tokens)] + id_filter_params + params[len(tokens) :]
+        availability_sql = ""
+        availability_params: list = []
+        if server_id:
+            from tasks.mediaserver.registry import availability_sql as _availability_sql
+
+            availability_sql = " AND " + _availability_sql('score')
+            availability_params = [server_id, bool(include_legacy_default)]
+
+        all_params = (
+            params[: len(tokens)]
+            + id_filter_params
+            + availability_params
+            + params[len(tokens) :]
+        )
 
         query = f"""
             SELECT item_id, title, author, album, album_artist
             FROM score
-            WHERE {where_sql}{id_filter_sql}
+            WHERE {where_sql}{id_filter_sql}{availability_sql}
             ORDER BY ({score_sql}) DESC,
                      title,
                      author,

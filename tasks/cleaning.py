@@ -6,17 +6,31 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Library cleanup task: prune analysis rows for tracks no longer on the server.
+"""Library cleanup task: unbind server mappings for tracks a server no longer has.
 
-Runs as an RQ job. Compares the media server's current track set against the
-analyzed rows in the database and removes orphaned entries (and their embeddings)
-so stale data does not leak into clustering, similarity or radio results.
+Runs as an RQ job. Fetches the current track set of every configured media
+server through the sweep's OWN enumeration and pruning
+(``multiserver_sync.fetch_server_catalogue`` / ``prune_stale_mappings``, library
+filter applied), so the prune baseline can never disagree with the enumeration
+that created the mappings, and removes ONLY that server's rows from
+track_server_map for tracks it no longer has. The
+centralized catalogue is NEVER touched: a song that disappeared from one
+server keeps its analysis, embeddings and mappings on every other server, and
+a song present on no server at all stays in the catalogue as unbound (it
+simply stops appearing in server-scoped results via the availability mask).
+Because no catalogue row changes, no index rebuild is needed. A server whose
+fetch fails, returns nothing, or looks partial is skipped, so an incomplete
+library view can never unbind valid mappings.
 
 Main Features:
-* identify_and_clean_orphaned_albums_task: the RQ entry point that detects tracks
-  present in the DB but absent from the server and deletes them in batches.
-* delete_orphaned_albums_sync: synchronous helper that removes analysis and
-  embedding rows for a set of orphaned track ids across the related tables.
+* identify_and_clean_orphaned_albums_task: the RQ entry point that fetches each
+  server's tracks and prunes that server's stale mappings only.
+* Reuses the sweep's public helpers rather than re-implementing the fetch and
+  the prune, so cleaning and the sweep can never drift apart.
+* Refreshes each server's stored library size (``music_servers.track_count``)
+  from the fetch it already performs, keeping the dashboard's coverage
+  denominator current on every cleaning run.
+* Reports (never deletes) the catalogue tracks currently bound to no server.
 """
 
 import time
@@ -31,7 +45,7 @@ from config import CLEANING_SAFETY_LIMIT
 from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
 
-from .mediaserver import get_recent_albums, get_tracks_from_album
+from .mediaserver import registry
 
 from psycopg2 import OperationalError
 
@@ -46,6 +60,14 @@ def identify_and_clean_orphaned_albums_task():
         TASK_STATUS_PROGRESS,
         TASK_STATUS_SUCCESS,
         TASK_STATUS_FAILURE,
+        TASK_STATUS_REVOKED,
+    )
+    from .multiserver_sync import (
+        fetch_server_catalogue,
+        prune_stale_mappings,
+        make_cancel_check,
+        SweepCancelled,
+        _store_server_track_count,
     )
 
     current_job = get_current_job(redis_conn)
@@ -53,9 +75,9 @@ def identify_and_clean_orphaned_albums_task():
 
     with app.app_context():
         initial_details = {
-            "message": "Starting orphaned album identification...",
+            "message": "Starting per-server library cleanup...",
             "log": [
-                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Orphaned album identification task started."
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Library cleanup task started."
             ],
         }
         save_task_status(
@@ -87,240 +109,156 @@ def identify_and_clean_orphaned_albums_task():
                 current_task_id, "cleaning", task_state, progress=progress, details=details
             )
 
+        cancel, close_cancel = make_cancel_check(current_task_id)
         try:
-            log_and_update_main("Starting orphaned album identification...", 5)
+            log_and_update_main("Starting per-server library cleanup...", 5)
 
-            log_and_update_main("Fetching all albums from media server...", 10)
-            all_media_server_albums = get_recent_albums(0)
+            servers = registry.servers_for_scope('all')
+            present_canonical_ids = set()
+            failed_servers = []
+            refused_servers = []
+            unbound_total = 0
+            unbound_by_server = {}
+            total_tracks_on_servers = 0
 
-            if not all_media_server_albums:
+            for server_idx, server in enumerate(servers):
+                cancel()
+                server_name = server['name'] if server else 'default server'
+                server_id = server['server_id'] if server else None
+                window_start = 10 + int(70 * server_idx / len(servers))
                 log_and_update_main(
-                    "No albums found on media server.", 95, task_state=TASK_STATUS_PROGRESS
+                    f"Fetching the track list from {server_name}...", window_start
                 )
-                log_and_update_main("Rebuilding all indexes and maps...", 96)
                 try:
-                    from .analysis import _run_all_index_builds
-
-                    _run_all_index_builds(log_fn=None)
-                    log_and_update_main("OK All indexes and maps rebuilt successfully.", 99)
-                except Exception as e:
-                    logger.warning(f"Failed to rebuild indexes and maps: {e}")
-                    log_and_update_main(
-                        f"Warning: Failed to rebuild indexes and maps: {str(e)}", 99
-                    )
-
-                summary = {
-                    "status": "SUCCESS",
-                    "message": "No albums found on media server.",
-                    "orphaned_albums": [],
-                    "deleted_count": 0,
-                }
-                log_and_update_main(
-                    "OK Database cleaning completed - no albums on media server!",
-                    100,
-                    task_state=TASK_STATUS_SUCCESS,
-                    final_summary_details=summary,
-                )
-                return summary
-
-            log_and_update_main(f"Found {len(all_media_server_albums)} albums on media server", 20)
-
-            log_and_update_main("Collecting all track IDs from media server...", 25)
-            media_server_track_ids = set()
-            albums_processed = 0
-
-            for idx, album in enumerate(all_media_server_albums):
-                try:
-                    album_tracks = get_tracks_from_album(album['Id'])
-                    if album_tracks:
-                        for track in album_tracks:
-                            media_server_track_ids.add(str(track['Id']))
-                    albums_processed += 1
-
-                    if idx % 10 == 0:
-                        progress = 25 + int(50 * (idx / float(len(all_media_server_albums))))
-                        log_and_update_main(
-                            f"Processed {albums_processed}/{len(all_media_server_albums)} albums...",
-                            progress,
-                        )
-
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to get tracks for album {album.get('Name', 'Unknown')}: {e}"
-                    )
+                    tracks = fetch_server_catalogue(server)
+                except Exception:
+                    logger.exception(f"Failed to fetch the library from {server_name}")
+                    failed_servers.append(server_name)
                     continue
+                if not tracks:
+                    logger.warning(
+                        f"No tracks found on {server_name}; skipping its cleanup "
+                        "so a fetch problem cannot unbind everything."
+                    )
+                    failed_servers.append(server_name)
+                    continue
+                provider_ids = {str(t['id']) for t in tracks if t.get('id')}
+                tracks = None
+                total_tracks_on_servers += len(provider_ids)
+                log_and_update_main(
+                    f"Found {len(provider_ids)} tracks on {server_name}",
+                    window_start + int(35 / len(servers)),
+                )
 
-            log_and_update_main(
-                f"Found {len(media_server_track_ids)} total tracks on media server", 75
-            )
+                if server_id:
+                    _store_server_track_count(get_db(), server_id, len(provider_ids))
+                    refused = []
+                    unbound = prune_stale_mappings(
+                        get_db(), server_id, sorted(provider_ids), refused=refused
+                    )
+                    if refused:
+                        refused_servers.append(server_name)
+                    unbound_by_server[server_name] = unbound
+                    unbound_total += unbound
+                    if unbound:
+                        log_and_update_main(
+                            f"Unbound {unbound} tracks no longer on {server_name} "
+                            "(kept in the shared catalogue).",
+                            window_start + int(70 / len(servers)),
+                        )
+                provider_list = sorted(provider_ids)
+                for start in range(0, len(provider_list), 5000):
+                    cancel()
+                    chunk = provider_list[start:start + 5000]
+                    mapping = registry.reverse_translate_ids(chunk, server_id)
+                    present_canonical_ids.update(str(v) for v in mapping.values())
 
-            log_and_update_main("Fetching all track IDs from database...", 80)
+            log_and_update_main("Checking for catalogue tracks bound to no server...", 85)
             with get_db() as conn, conn.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT s.item_id, s.title, s.author
-                    FROM score s
-                    JOIN embedding e ON s.item_id = e.item_id
-                """)
-                database_tracks = cur.fetchall()
-
-            database_track_ids = {row[0] for row in database_tracks}
-            log_and_update_main(f"Found {len(database_track_ids)} tracks in database", 85)
-
-            orphaned_track_ids = database_track_ids - media_server_track_ids
-            log_and_update_main(f"Identified {len(orphaned_track_ids)} orphaned tracks", 90)
-
-            orphaned_albums_info = defaultdict(lambda: {"tracks": [], "track_count": 0})
-
-            for track_data in database_tracks:
-                track_id, title, author = track_data
-                if track_id in orphaned_track_ids:
-                    album_key = f"{author}" if author else "Unknown Artist"
-                    orphaned_albums_info[album_key]["tracks"].append(
-                        {"item_id": track_id, "title": title, "author": author}
-                    )
-                    orphaned_albums_info[album_key]["track_count"] += 1
-
-            orphaned_albums_list = []
-            for artist, info in orphaned_albums_info.items():
-                orphaned_albums_list.append(
-                    {"artist": artist, "track_count": info["track_count"], "tracks": info["tracks"]}
+                cur.execute(
+                    "SELECT s.item_id FROM score s "
+                    "JOIN embedding e ON s.item_id = e.item_id"
                 )
+                database_track_ids = {row[0] for row in cur.fetchall()}
 
-            orphaned_albums_list.sort(key=lambda x: x["track_count"], reverse=True)
-
-            total_orphaned_albums = len(orphaned_albums_list)
-            safety_limit_applied = False
-            if total_orphaned_albums > CLEANING_SAFETY_LIMIT:
-                safety_limit_applied = True
-                log_and_update_main(
-                    f"Safety limit: Found {total_orphaned_albums} orphaned albums, limiting to first {CLEANING_SAFETY_LIMIT} for safety",
-                    92,
-                )
-                orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
-                limited_track_ids = set()
-                for album in orphaned_albums_list:
-                    for track in album["tracks"]:
-                        limited_track_ids.add(track["item_id"])
-                orphaned_track_ids = limited_track_ids
-
-            if len(orphaned_track_ids) == 0:
-                log_and_update_main(
-                    "OK No orphaned tracks found. Database is clean!",
-                    95,
-                    task_state=TASK_STATUS_PROGRESS,
-                )
-                log_and_update_main("Rebuilding all indexes and maps...", 96)
-                try:
-                    from .analysis import _run_all_index_builds
-
-                    _run_all_index_builds(log_fn=None)
-                    log_and_update_main("OK All indexes and maps rebuilt successfully.", 99)
-                except Exception as e:
-                    logger.warning(f"Failed to rebuild indexes and maps: {e}")
-                    log_and_update_main(
-                        f"Warning: Failed to rebuild indexes and maps: {str(e)}", 99
-                    )
-
-                summary = {
-                    "total_media_server_albums": len(all_media_server_albums),
-                    "total_media_server_tracks": len(media_server_track_ids),
-                    "total_database_tracks": len(database_track_ids),
-                    "orphaned_tracks_count": 0,
-                    "orphaned_albums_count": 0,
-                    "deleted_count": 0,
-                }
-
-                log_and_update_main(
-                    "OK Database cleaning completed - no orphaned tracks found!",
-                    100,
-                    task_state=TASK_STATUS_SUCCESS,
-                    final_summary_details=summary,
-                )
-                return {
-                    "status": "SUCCESS",
-                    "message": "No orphaned tracks found. Database is clean!",
-                    **summary,
-                }
-
-            log_and_update_main(
-                f"Starting automatic deletion of {len(orphaned_track_ids)} orphaned tracks...", 93
+            fully_unbound = (
+                database_track_ids - present_canonical_ids if not failed_servers else set()
             )
+            orphaned_albums_info = defaultdict(lambda: {"tracks": [], "track_count": 0})
+            report_ids = list(fully_unbound)[:CLEANING_SAFETY_LIMIT * 50]
+            if report_ids:
+                with get_db() as conn, conn.cursor() as cur:
+                    for start in range(0, len(report_ids), 5000):
+                        chunk = report_ids[start:start + 5000]
+                        cur.execute(
+                            "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
+                            (chunk,),
+                        )
+                        for track_id, title, author in cur.fetchall():
+                            album_key = f"{author}" if author else "Unknown Artist"
+                            orphaned_albums_info[album_key]["tracks"].append(
+                                {"item_id": track_id, "title": title, "author": author}
+                            )
+                            orphaned_albums_info[album_key]["track_count"] += 1
 
-            deletion_result = delete_orphaned_albums_sync(list(orphaned_track_ids))
+            orphaned_albums_list = [
+                {"artist": artist, "track_count": info["track_count"], "tracks": info["tracks"]}
+                for artist, info in orphaned_albums_info.items()
+            ]
+            orphaned_albums_list.sort(key=lambda x: x["track_count"], reverse=True)
+            orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
 
             summary = {
-                "total_media_server_albums": len(all_media_server_albums),
-                "total_media_server_tracks": len(media_server_track_ids),
+                "total_media_server_tracks": total_tracks_on_servers,
+                "total_catalogue_tracks_present": len(present_canonical_ids),
                 "total_database_tracks": len(database_track_ids),
-                "orphaned_tracks_count": len(orphaned_track_ids),
+                "orphaned_tracks_count": len(fully_unbound),
                 "orphaned_albums_count": len(orphaned_albums_list),
                 "orphaned_albums": orphaned_albums_list,
-                "deletion_result": deletion_result,
-                "deleted_count": deletion_result.get("deleted_count", 0),
-                "failed_deletions": deletion_result.get("failed_deletions", []),
+                "unbound_mappings": unbound_total,
+                "unbound_by_server": unbound_by_server,
+                "failed_servers": failed_servers,
+                "prune_refused_servers": refused_servers,
+                "deleted_count": 0,
             }
 
-            if deletion_result["status"] == "SUCCESS":
-                log_and_update_main(
-                    f"OK Successfully deleted {deletion_result['deleted_count']} orphaned tracks.",
-                    96,
+            state = TASK_STATUS_FAILURE if failed_servers else TASK_STATUS_SUCCESS
+            if failed_servers:
+                message = (
+                    f"Cleanup finished with problems: server(s) {', '.join(failed_servers)} "
+                    f"could not be fully read and were skipped; {unbound_total} stale "
+                    "mappings unbound elsewhere. The catalogue was not modified."
                 )
-
-                log_and_update_main("Rebuilding all indexes and maps after cleaning...", 97)
-                try:
-                    from .analysis import _run_all_index_builds
-
-                    _run_all_index_builds(log_fn=None)
-                    log_and_update_main(
-                        "OK All indexes and maps rebuilt successfully after cleaning.", 99
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to rebuild indexes and maps after cleaning: {e}")
-                    log_and_update_main(
-                        f"Warning: Failed to rebuild indexes and maps: {str(e)}", 99
-                    )
-
-                safety_message = (
-                    f" (Safety limit: deleted {len(orphaned_albums_list)} out of {total_orphaned_albums} albums)"
-                    if safety_limit_applied
-                    else ""
+            elif refused_servers:
+                message = (
+                    f"Cleanup finished: {unbound_total} stale server mappings unbound, but "
+                    f"server(s) {', '.join(refused_servers)} returned fewer than half the "
+                    "tracks they still have mapped, so their stale mappings were NOT pruned. "
+                    "Re-run the cleanup if the library really did shrink that much."
                 )
-
-                log_and_update_main(
-                    f"OK Cleaning complete! Identified and deleted {len(orphaned_albums_list)} orphaned albums ({deletion_result['deleted_count']} tracks).{safety_message}",
-                    100,
-                    task_state=TASK_STATUS_SUCCESS,
-                    final_summary_details=summary,
-                )
-
-                if safety_limit_applied:
-                    remaining_count = total_orphaned_albums - len(orphaned_albums_list)
-                    if remaining_count > 0:
-                        log_and_update_main(
-                            f"Safety note: {remaining_count} additional orphaned albums remain. Run cleaning again to process more.",
-                            100,
-                            task_state=TASK_STATUS_SUCCESS,
-                        )
-
-                return {
-                    "status": "SUCCESS",
-                    "message": f"Successfully cleaned {deletion_result['deleted_count']} orphaned tracks from {len(orphaned_albums_list)} albums",
-                    **summary,
-                }
             else:
-                log_and_update_main(
-                    f"Cleaning partially failed. Deletion error: {deletion_result.get('message', 'Unknown error')}",
-                    100,
-                    task_state=TASK_STATUS_FAILURE,
-                    final_summary_details=summary,
+                message = (
+                    f"Cleanup complete: {unbound_total} stale server mappings unbound; "
+                    f"{len(fully_unbound)} catalogue tracks are now on no server and are "
+                    "hidden from results by the per-server availability filter."
                 )
-                raise RuntimeError(
-                    f"Deletion failed: {deletion_result.get('message', 'Unknown error')}"
-                )
+            log_and_update_main(message, 100, task_state=state, final_summary_details=summary)
+            return {"status": "SUCCESS" if not failed_servers else "FAILURE",
+                    "message": message, **summary}
 
+        except SweepCancelled:
+            # Must precede the generic handler below, or a user pressing Stop is
+            # recorded as ERR_CLEANING_FAILED and re-raised into an RQ retry.
+            logger.info("Library cleanup revoked by the user; stopping.")
+            log_and_update_main(
+                "Library cleanup cancelled.",
+                current_progress,
+                task_state=TASK_STATUS_REVOKED,
+            )
+            return {"status": TASK_STATUS_REVOKED, "message": "Library cleanup cancelled."}
         except OperationalError as e:
             logger.exception(
-                "Database connection error during cleaning identification. This job will be retried."
+                "Database connection error during cleaning. This job will be retried."
             )
             err = error_manager.record(ERR_DB_CONNECTION, str(e))
             log_and_update_main(
@@ -331,128 +269,16 @@ def identify_and_clean_orphaned_albums_task():
             )
             raise
         except Exception as e:
-            logger.critical(f"Orphaned album identification failed: {e}", exc_info=True)
+            logger.critical(f"Library cleanup failed: {e}", exc_info=True)
             err = error_manager.record(
                 error_manager.classify(e, ERR_CLEANING_FAILED), str(e)
             )
             log_and_update_main(
-                f"X Orphaned album identification failed: {e}",
+                f"X Library cleanup failed: {e}",
                 current_progress,
                 task_state=TASK_STATUS_FAILURE,
                 error=err,
             )
             raise
-
-
-def delete_orphaned_albums_sync(orphaned_track_ids):
-    from app_helper import get_db
-
-    if not orphaned_track_ids:
-        return {"status": "SUCCESS", "message": "No tracks to delete", "deleted_count": 0}
-
-    try:
-        deleted_count = 0
-        failed_deletions = []
-
-        with get_db() as conn:
-            with conn.cursor() as cur:
-
-                def _table_exists(table_name):
-                    try:
-                        cur.execute("SELECT to_regclass(%s)", (table_name,))
-                        row = cur.fetchone()
-                        return bool(row and row[0] is not None)
-                    except Exception as e:
-                        logger.warning(f"Could not check existence of table {table_name}: {e}")
-                        return False
-
-                def _delete_from_child_table(table_name):
-                    if not _table_exists(table_name):
-                        logger.info(f"Skipping {table_name}: table does not exist.")
-                        return
-                    logger.info(
-                        f"Deleting {len(orphaned_track_ids)} tracks from {table_name} table..."
-                    )
-                    for track_id in orphaned_track_ids:
-                        try:
-                            cur.execute(
-                                f"DELETE FROM {table_name} WHERE item_id = %s",
-                                (track_id,),
-                            )
-                            logger.debug(f"Deleted {table_name} for track ID: {track_id}")
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to delete {table_name} for track {track_id}: {e}"
-                            )
-                            failed_deletions.append(
-                                {"track_id": track_id, "table": table_name, "error": str(e)}
-                            )
-
-                _delete_from_child_table("embedding")
-                _delete_from_child_table("lyrics_embedding")
-                _delete_from_child_table("clap_embedding")
-
-                logger.info(f"Deleting {len(orphaned_track_ids)} tracks from score table...")
-                for track_id in orphaned_track_ids:
-                    try:
-                        cur.execute("DELETE FROM score WHERE item_id = %s", (track_id,))
-                        if cur.rowcount > 0:
-                            deleted_count += 1
-                            logger.debug(f"Deleted score for track ID: {track_id}")
-                        else:
-                            logger.warning(f"No score record found for track ID: {track_id}")
-                    except Exception as e:
-                        logger.warning(f"Failed to delete score for track {track_id}: {e}")
-                        failed_deletions.append(
-                            {"track_id": track_id, "table": "score", "error": str(e)}
-                        )
-
-                conn.commit()
-                logger.info(f"Successfully deleted {deleted_count} orphaned tracks from database")
-
-        try:
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    for track_id in orphaned_track_ids:
-                        cur.execute("DELETE FROM playlist WHERE item_id = %s", (track_id,))
-                    conn.commit()
-                    logger.info("Cleaned up playlist references for deleted tracks")
-        except Exception as e:
-            logger.warning(f"Failed to clean up playlist references: {e}")
-
-        try:
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        DELETE FROM artist_mapping
-                        WHERE artist_name NOT IN (
-                            SELECT DISTINCT author
-                            FROM score
-                            WHERE author IS NOT NULL AND author != ''
-                        )
-                    """)
-                    orphaned_artists_count = cur.rowcount
-                    conn.commit()
-                    if orphaned_artists_count > 0:
-                        logger.info(
-                            f"Cleaned up {orphaned_artists_count} orphaned artists from artist_mapping table"
-                        )
-        except Exception as e:
-            logger.warning(f"Failed to clean up orphaned artists from artist_mapping: {e}")
-
-        return {
-            "status": "SUCCESS",
-            "message": f"Successfully deleted {deleted_count} orphaned tracks",
-            "deleted_count": deleted_count,
-            "failed_deletions": failed_deletions,
-            "total_requested": len(orphaned_track_ids),
-        }
-
-    except Exception as e:
-        logger.exception("Failed to delete orphaned albums")
-        return {
-            "status": "FAILURE",
-            "message": f"Failed to delete orphaned albums: {str(e)}",
-            "deleted_count": 0,
-            "error": str(e),
-        }
+        finally:
+            close_cancel()

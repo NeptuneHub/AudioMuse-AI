@@ -106,7 +106,7 @@ def _load_audio_model():
 
     session = None
 
-    from tasks.analysis_helper import resolve_providers
+    from tasks.analysis.song import resolve_providers
 
     provider_options = resolve_providers(
         allow_coreml=True,

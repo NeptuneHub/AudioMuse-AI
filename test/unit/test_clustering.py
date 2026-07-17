@@ -73,6 +73,295 @@ class TestParameterMutation:
         assert result == 90
 
 
+class TestViablePlaylistSelection:
+    def test_viable_playlists_counts_only_min_size_playlists_capped_at_minimum(self):
+        from tasks.clustering import _viable_playlists
+        import config
+
+        result = {
+            'named_playlists': {
+                **{
+                    f'big{i}': list(range(25))
+                    for i in range(config.TOP_N_CLUSTERING_PLAYLIST + 3)
+                },
+                'tiny': list(range(5)),
+            }
+        }
+        assert _viable_playlists(result) == config.TOP_N_CLUSTERING_PLAYLIST
+        assert _viable_playlists({'named_playlists': {'tiny': list(range(5))}}) == 0
+        assert _viable_playlists(None) == 0
+        assert _viable_playlists(result, target=3) == 3
+        assert _viable_playlists({'fitness_score': -1.0}) == 0
+
+    def test_a_viable_result_outranks_a_higher_scoring_shredded_result(self):
+        from tasks.clustering import _viable_playlists
+
+        shredded = {
+            'named_playlists': {'A': list(range(30)), 'B': list(range(5))},
+            'fitness_score': 99.0,
+        }
+        viable = {
+            'named_playlists': {f'P{i}': list(range(25)) for i in range(8)},
+            'fitness_score': 10.0,
+        }
+        shredded_rank = (_viable_playlists(shredded), shredded['fitness_score'])
+        viable_rank = (_viable_playlists(viable), viable['fitness_score'])
+        assert viable_rank > shredded_rank
+
+
+class TestEarlyStopCounting:
+    @staticmethod
+    def _batch_result(score):
+        import config
+
+        return {
+            'status': config.TASK_STATUS_SUCCESS,
+            'iterations_completed_in_batch': 20,
+            'best_result_from_batch': {
+                'fitness_score': score,
+                'parameters': {'method': 'kmeans'},
+                'named_playlists': {f'P{i}': list(range(25)) for i in range(8)},
+            },
+        }
+
+    def _run_monitor(self, monkeypatch, batch_results, initial_check=False, top_n=10):
+        from tasks import clustering
+        import config
+
+        children = []
+        results = {}
+        for i, result in enumerate(batch_results):
+            status = config.TASK_STATUS_SUCCESS if result else config.TASK_STATUS_FAILURE
+            children.append({
+                'task_id': f'p_batch_{i}', 'status': status,
+                'sub_type_identifier': f'Batch_{i}', 'details': None,
+            })
+            results[f'p_batch_{i}'] = result
+        monkeypatch.setattr(clustering, 'get_child_tasks_from_db', lambda pid: children)
+        monkeypatch.setattr(
+            clustering, 'get_job_result_safely',
+            lambda job_id, pid, task_type: results[job_id],
+        )
+        state = {
+            'runs_completed': 0, 'total_runs': 100, 'best_score': -1.0,
+            'best_result': None, 'active_jobs': {}, 'elite_solutions': [],
+            'last_subset_ids': [], 'processed_job_ids': set(),
+            'batch_start_times': {}, 'failed_batches': set(),
+            'timed_out_batches': set(), 'job_prefix': 'p',
+            'stale_batches': 0, 'top_n_clustering_playlist': top_n,
+        }
+        clustering._monitor_and_process_batches(state, 'p', initial_check=initial_check)
+        return state
+
+    def test_three_batches_without_a_better_result_mark_the_search_stale(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), self._batch_result(9),
+             self._batch_result(8), self._batch_result(7)],
+        )
+        assert state['stale_batches'] == 3
+        assert state['best_score'] == 10
+
+    def test_a_better_batch_resets_the_stale_counter(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), self._batch_result(9),
+             self._batch_result(12), self._batch_result(11)],
+        )
+        assert state['stale_batches'] == 1
+        assert state['best_score'] == 12
+
+    def test_failed_batches_count_toward_the_early_stop(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), None, None],
+        )
+        assert state['stale_batches'] == 2
+
+    def test_recovery_scans_do_not_count_stale_batches(self, monkeypatch):
+        state = self._run_monitor(
+            monkeypatch,
+            [self._batch_result(10), self._batch_result(9),
+             self._batch_result(8), self._batch_result(7)],
+            initial_check=True,
+        )
+        assert state['stale_batches'] == 0
+
+    def test_an_explicit_zero_keep_all_target_is_not_coerced_to_the_default(self, monkeypatch):
+        from tasks import clustering
+
+        seen_targets = []
+        original = clustering._viable_playlists
+
+        def spy(result, target):
+            seen_targets.append(target)
+            return original(result, target)
+
+        monkeypatch.setattr(clustering, '_viable_playlists', spy)
+        self._run_monitor(monkeypatch, [self._batch_result(10)], top_n=0)
+        assert seen_targets
+        assert all(target == 0 for target in seen_targets)
+
+
+class TestSubsetExactSize:
+    def test_an_oversized_stratified_sample_has_exact_precomputed_size(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
+        genre_map = {
+            'rock': [
+                {'item_id': str(i), 'mood_vector': 'rock:0.9'} for i in range(300)
+            ]
+        }
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 200)
+        assert len(subset) == 50
+
+    def test_oversized_sample_balances_genres_before_selecting_tracks(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
+        monkeypatch.setattr(clustering_helper, 'STRATIFIED_GENRES', ['rock', 'pop', 'jazz'])
+        genre_map = {
+            'rock': [
+                {'item_id': f'r{i}', 'mood_vector': 'rock:0.9'} for i in range(300)
+            ],
+            'pop': [
+                {'item_id': f'p{i}', 'mood_vector': 'pop:0.9'} for i in range(300)
+            ],
+            'jazz': [
+                {'item_id': f'j{i}', 'mood_vector': 'jazz:0.9'} for i in range(10)
+            ],
+        }
+
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 200)
+        counts = {
+            genre: sum(
+                clustering_helper._get_track_primary_genre(track) == genre
+                for track in subset
+            )
+            for genre in genre_map
+        }
+
+        assert len(subset) == 50
+        assert counts == {'rock': 20, 'pop': 20, 'jazz': 10}
+
+    def test_real_configured_cap_is_exact_and_stratified(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 10_000)
+        monkeypatch.setattr(clustering_helper, 'STRATIFIED_GENRES', ['rock', 'pop', 'jazz'])
+        genre_map = {
+            genre: [
+                {'item_id': f'{genre}-{i}', 'mood_vector': f'{genre}:0.9'}
+                for i in range(5000)
+            ]
+            for genre in ('rock', 'pop', 'jazz')
+        }
+
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 5000)
+        counts = [
+            sum(
+                clustering_helper._get_track_primary_genre(track) == genre
+                for track in subset
+            )
+            for genre in genre_map
+        ]
+
+        assert len(subset) == 10_000
+        assert max(counts) - min(counts) <= 1
+
+    def test_top_up_stays_stratified_when_base_target_is_too_small(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
+        monkeypatch.setattr(clustering_helper, 'STRATIFIED_GENRES', ['rock', 'pop', 'jazz'])
+        genre_map = {
+            'rock': [
+                {'item_id': f'r{i}', 'mood_vector': 'rock:0.9'} for i in range(1000)
+            ],
+            'pop': [
+                {'item_id': f'p{i}', 'mood_vector': 'pop:0.9'} for i in range(100)
+            ],
+            'jazz': [
+                {'item_id': f'j{i}', 'mood_vector': 'jazz:0.9'} for i in range(10)
+            ],
+        }
+
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 5)
+        counts = {
+            genre: sum(
+                clustering_helper._get_track_primary_genre(track) == genre
+                for track in subset
+            )
+            for genre in genre_map
+        }
+
+        assert len(subset) == 50
+        assert counts == {'rock': 20, 'pop': 20, 'jazz': 10}
+
+    def test_a_sparse_stratified_sample_is_topped_up_with_random_songs(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
+        genre_map = {
+            'rock': [
+                {'item_id': f'r{i}', 'mood_vector': 'rock:0.9'} for i in range(20)
+            ],
+            '__other__': [
+                {'item_id': f'o{i}', 'mood_vector': ''} for i in range(100)
+            ],
+        }
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 10)
+        assert len(subset) == 50
+        assert len({t['item_id'] for t in subset}) == 50
+
+    def test_a_library_smaller_than_the_subset_size_returns_every_song(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 50)
+        genre_map = {
+            'rock': [
+                {'item_id': f'r{i}', 'mood_vector': 'rock:0.9'} for i in range(30)
+            ],
+            'pop': [
+                {'item_id': f'p{i}', 'mood_vector': 'pop:0.9'} for i in range(10)
+            ],
+        }
+        subset = clustering_helper._get_stratified_song_subset(genre_map, 10)
+        expected_ids = {
+            track['item_id']
+            for tracks in genre_map.values()
+            for track in tracks
+        }
+
+        assert len(subset) == 40
+        assert {track['item_id'] for track in subset} == expected_ids
+
+
+class TestDbscanOversizeSplit:
+    def test_an_oversized_dbscan_cluster_is_split_into_playlist_sized_chunks(self):
+        from tasks.clustering_helper import _split_oversized_clusters
+        import config
+
+        rng = np.random.default_rng(3)
+        data = rng.standard_normal((600, 4))
+        labels = np.zeros(600, dtype=int)
+        split = _split_oversized_clusters(labels, data)
+        sizes = [int((split == c).sum()) for c in set(split.tolist()) if c != -1]
+        assert len(sizes) >= 2
+        assert max(sizes) <= config.CLUSTERING_MAX_PLAYLIST_SONGS
+        assert sum(sizes) == 600
+
+    def test_small_clusters_and_noise_are_left_untouched(self):
+        from tasks.clustering_helper import _split_oversized_clusters
+
+        rng = np.random.default_rng(3)
+        data = rng.standard_normal((60, 4))
+        labels = np.array([0] * 30 + [1] * 20 + [-1] * 10)
+        split = _split_oversized_clusters(labels, data)
+        assert (split == labels).all()
+
+
 class TestDataPreparationAndScaling:
     def test_prepare_and_scale_data_with_features(self):
         from tasks.clustering_helper import _prepare_and_scale_data
@@ -642,6 +931,212 @@ class TestSelectTopNDiversePlaylists:
         result = select_top_n_diverse_playlists(best_result, n=2)
 
         assert 'Large' in result['named_playlists']
+
+    def test_default_strategy_returns_two_top_variants_and_four_other_genres(
+        self, monkeypatch
+    ):
+        from tasks import clustering_postprocessing
+
+        monkeypatch.setattr(
+            clustering_postprocessing.secrets,
+            'choice',
+            lambda options: options[0],
+        )
+        specs = {
+            'Rock Center': ('rock', 0.0, 100),
+            'Rock Near': ('rock', 0.1, 90),
+            'Rock Far': ('rock', 10.0, 70),
+            'Pop Low': ('pop', 20.0, 60),
+            'Pop Middle': ('pop', 25.0, 60),
+            'Pop High': ('pop', 30.0, 60),
+            'Indie Low': ('indie', 40.0, 60),
+            'Indie Middle': ('indie', 45.0, 60),
+            'Indie High': ('indie', 50.0, 60),
+            'Jazz': ('jazz', 60.0, 60),
+            'Soul': ('soul', 70.0, 60),
+            'Folk': ('folk', 80.0, 60),
+            'Country': ('country', 90.0, 60),
+        }
+        best_result = {
+            'named_playlists': {
+                name: [{'item_id': f'{name}-{i}'} for i in range(size)]
+                for name, (_genre, _vector, size) in specs.items()
+            },
+            'playlist_centroids': {
+                name: [vector] for name, (_genre, vector, _size) in specs.items()
+            },
+            'playlist_to_centroid_vector_map': {
+                name: np.array([vector])
+                for name, (_genre, vector, _size) in specs.items()
+            },
+            'playlist_primary_genres': {
+                name: genre for name, (genre, _vector, _size) in specs.items()
+            },
+        }
+
+        result = clustering_postprocessing.select_diverse_playlists_with_genre_coverage(
+            best_result,
+            limit=10,
+            primary_genre_counts={
+                'rock': 3000, 'pop': 2500, 'indie': 2000,
+                'jazz': 500, 'soul': 400, 'folk': 300, 'country': 200,
+            },
+        )
+
+        selected_genres = list(result['playlist_primary_genres'].values())
+        assert len(selected_genres) == 10
+        assert selected_genres.count('rock') == 2
+        assert selected_genres.count('pop') == 2
+        assert selected_genres.count('indie') == 2
+        assert selected_genres.count('jazz') == 1
+        assert selected_genres.count('soul') == 1
+        assert selected_genres.count('folk') == 1
+        assert selected_genres.count('country') == 1
+        assert {'Rock Center', 'Rock Far'} <= set(result['named_playlists'])
+        assert 'Rock Near' not in result['named_playlists']
+
+    def test_other_four_use_distinct_non_top_genres_and_maximin_centroids(self):
+        from tasks.clustering_postprocessing import (
+            select_diverse_playlists_with_genre_coverage,
+        )
+
+        specs = {
+            'Rock A': ('rock', 0.0), 'Rock B': ('rock', 1.0),
+            'Pop A': ('pop', 10.0), 'Pop B': ('pop', 11.0),
+            'Jazz A': ('jazz', 20.0), 'Jazz B': ('jazz', 21.0),
+            'Soul Near': ('soul', 21.1), 'Soul Far': ('soul', 100.0),
+            'Folk': ('folk', 200.0), 'Metal': ('metal', 300.0),
+            'Country': ('country', 400.0),
+        }
+        best_result = {
+            'named_playlists': {
+                name: [{'item_id': f'{name}-{i}'} for i in range(30)]
+                for name in specs
+            },
+            'playlist_centroids': {
+                name: [vector] for name, (_genre, vector) in specs.items()
+            },
+            'playlist_to_centroid_vector_map': {
+                name: np.array([vector]) for name, (_genre, vector) in specs.items()
+            },
+            'playlist_primary_genres': {
+                name: genre for name, (genre, _vector) in specs.items()
+            },
+        }
+
+        result = select_diverse_playlists_with_genre_coverage(
+            best_result,
+            limit=10,
+            primary_genre_counts={
+                'rock': 3000, 'pop': 2500, 'jazz': 2000, 'soul': 1000,
+                'folk': 900, 'metal': 800, 'country': 700,
+            },
+        )
+
+        selected = result['playlist_primary_genres']
+        non_top = [genre for genre in selected.values() if genre not in {'rock', 'pop', 'jazz'}]
+        assert len(non_top) == 4
+        assert len(set(non_top)) == 4
+        assert 'Soul Far' in result['named_playlists']
+        assert 'Soul Near' not in result['named_playlists']
+
+    def test_limit_is_a_hard_cap_and_short_candidate_sets_are_returned_whole(self):
+        from tasks.clustering_postprocessing import select_top_n_diverse_playlists
+
+        many = {
+            'named_playlists': {
+                f'P{i}': [{'item_id': f's{i}'}] for i in range(20)
+            },
+            'playlist_centroids': {f'P{i}': [float(i)] for i in range(20)},
+            'playlist_to_centroid_vector_map': {
+                f'P{i}': np.array([float(i)]) for i in range(20)
+            },
+        }
+        short = {
+            key: dict(list(value.items())[:4])
+            for key, value in many.items()
+        }
+
+        assert len(select_top_n_diverse_playlists(many, 10)['named_playlists']) == 10
+        assert len(select_top_n_diverse_playlists(short, 10)['named_playlists']) == 4
+
+    def test_naming_receives_recent_names_from_previous_runs(self, monkeypatch):
+        from tasks import clustering
+
+        received_avoid_names = []
+
+        def fake_name(*args, **kwargs):
+            received_avoid_names.extend(args[13])
+            return 'Happy Pop'
+
+        monkeypatch.setattr(clustering, '_try_ai_name_playlist', fake_name)
+        result = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster': [('song-1', 'Song', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {'cluster': 'pop'},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+            previous_playlist_names=['Pop Heartbreak_automatic'],
+        )
+
+        assert received_avoid_names == ['Pop Heartbreak_automatic']
+        assert 'Happy Pop_automatic' in result
+
+    def test_newest_first_history_is_reversed_so_the_prompt_window_stays_fresh(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        received_avoid_names = []
+
+        def fake_name(*args, **kwargs):
+            received_avoid_names.extend(args[13])
+            return 'Happy Pop'
+
+        monkeypatch.setattr(clustering, '_try_ai_name_playlist', fake_name)
+        clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster': [('song-1', 'Song', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+            previous_playlist_names=['Newest Pop_automatic', 'Oldest Rock_automatic'],
+        )
+
+        assert received_avoid_names == [
+            'Oldest Rock_automatic', 'Newest Pop_automatic'
+        ]
+
+    def test_two_clusters_with_the_same_final_name_get_numbered_not_overwritten(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        monkeypatch.setattr(
+            clustering, '_try_ai_name_playlist', lambda *args, **kwargs: 'Happy Pop'
+        )
+        result = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster_a': [('song-1', 'Song 1', 'Artist')],
+                    'cluster_b': [('song-2', 'Song 2', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+        )
+
+        assert 'Happy Pop_automatic' in result
+        assert 'Happy Pop (2)_automatic' in result
+        assert result['Happy Pop_automatic'] == [('song-1', 'Song 1', 'Artist')]
+        assert result['Happy Pop (2)_automatic'] == [('song-2', 'Song 2', 'Artist')]
 
     def test_select_top_n_skips_when_n_too_large(self):
         from tasks.clustering_postprocessing import select_top_n_diverse_playlists

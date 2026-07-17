@@ -32,11 +32,11 @@ import numpy as np
 
 
 class TestAnalyzeTrackMemoryCleanup:
-    @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis_helper.librosa')
-    @patch('tasks.analysis.create_onnx_session')
-    @patch('tasks.analysis.cleanup_onnx_session')
-    @patch('tasks.analysis.cleanup_cuda_memory')
+    @patch('tasks.analysis.song.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.song.librosa')
+    @patch('tasks.analysis.song.create_onnx_session')
+    @patch('tasks.analysis.song.cleanup_onnx_session')
+    @patch('tasks.analysis.song.cleanup_cuda_memory')
     def test_cleanup_on_inference_error(
         self,
         mock_cuda_cleanup,
@@ -79,9 +79,9 @@ class TestAnalyzeTrackMemoryCleanup:
         assert mock_session_cleanup.call_count >= 2
         assert mock_cuda_cleanup.called
 
-    @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.librosa')
-    @patch('tasks.analysis.ort')
+    @patch('tasks.analysis.song.robust_load_audio_with_fallback')
+    @patch('tasks.analysis.song.librosa')
+    @patch('tasks.analysis.song.ort')
     def test_no_cleanup_with_album_sessions(self, mock_ort, mock_librosa, mock_load_audio):
         from tasks.analysis import analyze_track
 
@@ -110,7 +110,7 @@ class TestAnalyzeTrackMemoryCleanup:
         for key in ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']:
             onnx_sessions[key].run.return_value = [np.random.randn(10, 2)]
 
-        with patch('tasks.analysis.cleanup_onnx_session') as mock_cleanup:
+        with patch('tasks.analysis.song.cleanup_onnx_session') as mock_cleanup:
             analyze_track(
                 "/tmp/test.mp3",
                 ["happy", "sad"],
@@ -131,17 +131,17 @@ class TestAnalyzeTrackMemoryCleanup:
 
 
 class TestAnalyzeAlbumMemoryCleanup:
-    @patch('tasks.analysis.get_tracks_from_album')
-    @patch('tasks.analysis.download_track')
-    @patch('tasks.analysis.analyze_track')
-    @patch('tasks.analysis_helper.get_db')
-    @patch('tasks.analysis.ort')
-    @patch('tasks.analysis.cleanup_onnx_session')
+    @patch('tasks.analysis.album.get_tracks_from_album')
+    @patch('tasks.analysis.album.download_track')
+    @patch('tasks.analysis.album.analyze_track')
+    @patch('tasks.analysis.helper.get_db')
+    @patch('tasks.analysis.song.ort')
+    @patch('tasks.analysis.song.cleanup_onnx_session')
     @patch('tasks.memory_utils.cleanup_cuda_memory')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
     @patch('app_helper.redis_conn')
-    @patch('tasks.analysis.get_current_job')
+    @patch('tasks.analysis.album.get_current_job')
     def test_cleanup_on_database_error(
         self,
         mock_get_job,
@@ -174,11 +174,11 @@ class TestAnalyzeAlbumMemoryCleanup:
         with pytest.raises(OperationalError):
             analyze_album_task("album_123", "Test Album", 5, None)
 
-    @patch('tasks.analysis.get_tracks_from_album')
-    @patch('tasks.analysis.comprehensive_memory_cleanup')
+    @patch('tasks.analysis.album.get_tracks_from_album')
+    @patch('tasks.analysis.album.comprehensive_memory_cleanup')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
-    @patch('tasks.analysis.get_current_job')
+    @patch('tasks.analysis.album.get_current_job')
     @patch('app_helper.get_db')
     @patch('tasks.clap_analyzer.unload_clap_model')
     @patch('tasks.clap_analyzer.is_clap_model_loaded')
@@ -206,18 +206,18 @@ class TestAnalyzeAlbumMemoryCleanup:
         assert mock_memory_cleanup.called
         assert mock_clap_unload.called
 
-    @patch('tasks.analysis.get_tracks_from_album')
-    @patch('tasks.analysis.download_track')
-    @patch('tasks.analysis.analyze_track')
+    @patch('tasks.analysis.album.get_tracks_from_album')
+    @patch('tasks.analysis.album.download_track')
+    @patch('tasks.analysis.album.analyze_track')
     @patch('app_helper.get_db')
-    @patch('tasks.analysis_helper.create_onnx_session')
-    @patch('tasks.analysis_helper.cleanup_onnx_session')
-    @patch('tasks.analysis.cleanup_cuda_memory')
+    @patch('tasks.analysis.song.create_onnx_session')
+    @patch('tasks.analysis.song.cleanup_onnx_session')
+    @patch('tasks.analysis.album.cleanup_cuda_memory')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
-    @patch('tasks.analysis.get_current_job')
+    @patch('tasks.analysis.album.get_current_job')
     @patch('app_helper.save_track_analysis_and_embedding')
-    @patch('tasks.analysis.os.remove')
+    @patch('tasks.analysis.album.os.remove')
     def test_cleanup_onnx_sessions_on_success(
         self,
         mock_remove,
@@ -269,7 +269,8 @@ class TestAnalyzeAlbumMemoryCleanup:
             16000,
         )
 
-        with patch('tasks.clap_analyzer.is_clap_available', return_value=False):
+        with patch('tasks.clap_analyzer.is_clap_available', return_value=False), \
+                patch('tasks.analysis.album._ah.run_lyrics_for_track', return_value=True):
             analyze_album_task("album_123", "Test Album", 5, None)
 
         assert mock_session_cleanup.call_count >= 2

@@ -250,26 +250,74 @@ class TestGetStratifiedSongSubset:
         assert isinstance(subset, list)
         assert len(subset) >= 0
 
-    def test_excludes_previous_ids(self):
+    def test_rotation_keeps_the_subset_at_the_exact_configured_size(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 4)
         genre_map = {
-            'Rock': [
-                {'item_id': 'r1', 'mood_vector': 'Rock:0.8'},
-                {'item_id': 'r2', 'mood_vector': 'Rock:0.7'},
-                {'item_id': 'r3', 'mood_vector': 'Rock:0.9'},
-            ],
-            'Pop': [
-                {'item_id': 'p1', 'mood_vector': 'Pop:0.8'},
-                {'item_id': 'p2', 'mood_vector': 'Pop:0.7'},
+            'rock': [
+                {'item_id': f'r{i}', 'mood_vector': 'rock:0.9'} for i in range(10)
             ],
         }
-        target_per_genre = 2
-        prev_ids = ['r1', 'p1']
+        prev_ids = ['r0', 'r1', 'r2', 'r3']
 
-        subset = _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=prev_ids)
+        subset = _get_stratified_song_subset(
+            genre_map, 2, prev_ids=prev_ids, percent_change=0.5
+        )
 
-        subset_ids = {track['item_id'] for track in subset}
-        assert 'r1' not in subset_ids
-        assert 'p1' not in subset_ids
+        assert len(subset) == 4
+        assert len({track['item_id'] for track in subset}) == 4
+
+    def test_fresh_runs_draw_different_random_tracks_with_equal_genre_counts(
+        self, monkeypatch
+    ):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 30)
+        genre_map = {
+            genre: [
+                {'item_id': f'{genre}-{i}', 'mood_vector': f'{genre}:0.9'}
+                for i in range(100)
+            ]
+            for genre in ('rock', 'pop', 'jazz')
+        }
+
+        random.seed(101)
+        first = _get_stratified_song_subset(genre_map, target_per_genre=10)
+        random.seed(202)
+        second = _get_stratified_song_subset(genre_map, target_per_genre=10)
+
+        first_ids = {track['item_id'] for track in first}
+        second_ids = {track['item_id'] for track in second}
+        assert first_ids != second_ids
+        for genre in ('rock', 'pop', 'jazz'):
+            assert sum(track['item_id'].startswith(f'{genre}-') for track in first) == 10
+            assert sum(track['item_id'].startswith(f'{genre}-') for track in second) == 10
+
+    def test_rotation_changes_configured_fraction_in_every_genre(self, monkeypatch):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'CLUSTERING_SUBSET_SONGS', 30)
+        genre_map = {
+            genre: [
+                {'item_id': f'{genre}-{i}', 'mood_vector': f'{genre}:0.9'}
+                for i in range(100)
+            ]
+            for genre in ('rock', 'pop', 'jazz')
+        }
+        previous = _get_stratified_song_subset(genre_map, target_per_genre=10)
+        previous_ids = {track['item_id'] for track in previous}
+
+        rotated = _get_stratified_song_subset(
+            genre_map,
+            target_per_genre=10,
+            prev_ids=previous_ids,
+            percent_change=0.2,
+        )
+        rotated_ids = {track['item_id'] for track in rotated}
+
+        assert len(rotated_ids) == 30
+        assert len(previous_ids & rotated_ids) == 24
 
 
 class TestGetTrackPrimaryGenre:
@@ -293,3 +341,137 @@ class TestGetTrackPrimaryGenre:
         genre = _get_track_primary_genre(track_data)
 
         assert genre == '__other__'
+
+
+class TestAIPlaylistNaming:
+    @staticmethod
+    def _call(monkeypatch, ai_result, naming_evidence=None, avoid=None):
+        from tasks import clustering_helper
+
+        monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
+
+        def fail_if_lyrics_are_queried(_ids):
+            raise AssertionError('lyrics DB must not be queried when disabled')
+
+        monkeypatch.setattr(
+            clustering_helper,
+            'get_lyrics_axis_vectors',
+            fail_if_lyrics_are_queried,
+        )
+        monkeypatch.setattr(
+            clustering_helper,
+            'get_score_data_by_ids',
+            lambda _ids: [{'mood_vector': 'indie:0.8', 'other_features': 'party:0.8'}],
+        )
+        monkeypatch.setattr(
+            clustering_helper,
+            'build_naming_context',
+            lambda *args, **kwargs: {
+                'genre': 'Indie',
+                'ideas': ['bittersweet', 'solitude'],
+                'naming_brief': 'melancholic lyrics over upbeat music',
+                'naming_dimension': 'contrast',
+                'naming_evidence': naming_evidence or (
+                    'melancholic lyrics contrasted with upbeat energetic music'
+                ),
+                'instrumental': False,
+                'axis_labels': {'AXIS_3_EMOTIONAL_VALENCE': 'MELANCHOLIC'},
+            },
+        )
+        received = {}
+
+        def fake_ai(
+            genre,
+            naming_dimension,
+            naming_evidence,
+            config,
+            instrumental=False,
+            avoid_names=None,
+        ):
+            received.update(
+                genre=genre,
+                naming_dimension=naming_dimension,
+                naming_evidence=naming_evidence,
+                instrumental=instrumental,
+                provider=config['provider'],
+                avoid_names=avoid_names,
+            )
+            return ai_result
+
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', fake_ai)
+        result = clustering_helper._try_ai_name_playlist(
+            'Old_Cluster_Name',
+            [('i1', 'Song', 'Artist')],
+            {'Old_Cluster_Name': {'party': 0.8}},
+            'OLLAMA',
+            'http://localhost:11434/api/generate',
+            'qwen3.5:9b',
+            '', '', '', '', '', '', '',
+            avoid if avoid is not None else ['Existing Indie Name'],
+        )
+        return result, received
+
+    def test_grounded_context_is_sent_to_the_ai(self, monkeypatch):
+        result, received = self._call(monkeypatch, 'Bittersweet Indie Solitude')
+
+        assert result == 'Bittersweet Indie Solitude'
+        assert received == {
+            'genre': 'Indie',
+            'naming_dimension': 'contrast',
+            'naming_evidence': (
+                'melancholic lyrics contrasted with upbeat energetic music'
+            ),
+            'instrumental': False,
+            'provider': 'OLLAMA',
+            'avoid_names': ['Existing Indie Name'],
+        }
+
+    def test_tag_style_names_are_filtered_from_the_ai_avoid_list(self, monkeypatch):
+        _result, received = self._call(
+            monkeypatch,
+            'Calm Indie',
+            avoid=[
+                'Rock_Pop_Medium_Happy_Party_1_automatic',
+                'Bubbly Pop_automatic',
+                'Indie_Rock_Medium_Sad_Happy',
+            ],
+        )
+
+        assert received['avoid_names'] == ['Bubbly Pop_automatic']
+
+    def test_failed_ai_naming_keeps_the_tag_based_cluster_name(self, monkeypatch):
+        result, _received = self._call(monkeypatch, None)
+
+        assert result == 'Old_Cluster_Name'
+
+    def test_general_context_skips_ai_and_keeps_the_tag_based_cluster_name(self, monkeypatch):
+        result, received = self._call(
+            monkeypatch,
+            'Invented Indie Mood',
+            naming_evidence='general-purpose listening',
+        )
+
+        assert result == 'Old_Cluster_Name'
+        assert received == {}
+
+    def test_disabled_ai_keeps_the_tag_based_cluster_name_without_db_or_ai_calls(
+        self, monkeypatch
+    ):
+        from tasks import clustering_helper
+
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError('AI-disabled naming must not touch the DB or AI')
+
+        monkeypatch.setattr(clustering_helper, 'get_score_data_by_ids', must_not_run)
+        monkeypatch.setattr(clustering_helper, 'build_naming_context', must_not_run)
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', must_not_run)
+
+        result = clustering_helper._try_ai_name_playlist(
+            'Rock_Aggressive_Fast_Danceable',
+            [('i1', 'Song', 'Artist')],
+            {},
+            'NONE',
+            '', '', '', '', '', '', '', '', '',
+        )
+
+        assert result == 'Rock_Aggressive_Fast_Danceable'

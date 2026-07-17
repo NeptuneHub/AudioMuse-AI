@@ -54,6 +54,7 @@ if ENABLE_PROXY_FIX:
 from flask_app import app
 
 # Import helper functions
+import app_server_context
 from app_helper import (
     get_db,
     close_db,
@@ -240,6 +241,11 @@ _is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
 if not _is_worker:
     with app.app_context():
         init_db()
+        # Keep app_config aligned with the parameters that config.py still
+        # accepts. Valid rows are never rewritten; only retired keys are
+        # removed. Run this before the optional empty-table bootstrap so a
+        # database containing only obsolete keys can be initialized cleanly.
+        setup_manager.prune_obsolete_config_values(config)
         setup_manager.bootstrap_env_config_if_empty(config)
         # Bootstrap / reconcile the first admin account:
         #   - If audiomuse_users already has an admin, purge any legacy
@@ -253,6 +259,32 @@ if not _is_worker:
             seed_admin_from_env()
         except Exception as _seed_exc:
             app.logger.warning("seed_admin_from_env failed at startup: %s", _seed_exc)
+
+        # Media-server settings live only in the music_servers registry: config
+        # globals are projected from its default row at import (config module),
+        # init_db migrates legacy app_config rows into it and deletes them, so
+        # no config<->registry sync is needed here anymore.
+
+        # One-time legacy catalogue migration, Flask startup ONLY: relabel any
+        # provider-keyed (or retired-scheme) rows to the canonical signature id.
+        # Pure DB work from stored embeddings; an instant no-op on every later
+        # boot. A relabel renames tracks without moving a single vector, so the
+        # migration repoints the existing indexes at the new ids rather than
+        # rebuilding them, and similarity keeps working across it.
+        try:
+            from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
+            _relabel = canonicalize_fingerprinted_ids()
+            if _relabel.get('relabelled'):
+                app.logger.info(
+                    "Startup migration relabelled %s catalogue ids; the similarity "
+                    "indexes were repointed at them, no rebuild needed.",
+                    _relabel['relabelled'],
+                )
+        except Exception as _migrate_exc:
+            app.logger.warning(
+                "Startup catalogue-id migration failed (will retry next boot): %s",
+                _migrate_exc,
+            )
 
         # Finalize JWT_SECRET - must happen after DB init so the value can be
         # persisted and shared across all gunicorn workers.
@@ -499,27 +531,27 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
     tasks_to_cancel = cur.fetchall()
     cur.close()
 
-    total_cancelled_jobs = 0
-    cancelled_main_task_ids = []
-    for task_row in tasks_to_cancel:
-        cancelled_jobs_for_this_main_task = cancel_job_and_children_recursive(
-            task_row['task_id'],
-            reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
-        )
-        if cancelled_jobs_for_this_main_task > 0:
-            total_cancelled_jobs += cancelled_jobs_for_this_main_task
-            cancelled_main_task_ids.append(task_row['task_id'])
-
-    if total_cancelled_jobs > 0:
+    # Decide 404 BEFORE any destructive call: the cancel empties both queues and
+    # revokes every row, so running it first and then reporting "nothing found"
+    # (because RQ happened to hold no live job) would be a lie about a wipe that
+    # already happened.
+    if not tasks_to_cancel:
         return jsonify(
-            {
-                "message": f"Cancellation initiated for {len(cancelled_main_task_ids)} main tasks of type '{task_type_prefix}' and their children. Total jobs affected: {total_cancelled_jobs}.",
-                "cancelled_main_tasks": cancelled_main_task_ids,
-            }
-        ), 200
+            {"message": f"No active tasks of type '{task_type_prefix}' found to cancel."}
+        ), 404
+
+    cancelled_main_task_ids = [r['task_id'] for r in tasks_to_cancel]
+    total_cancelled_jobs = cancel_job_and_children_recursive(
+        cancelled_main_task_ids[0],
+        reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
+    )
+
     return jsonify(
-        {"message": f"No active tasks of type '{task_type_prefix}' found to cancel."}
-    ), 404
+        {
+            "message": f"Cancellation initiated for {len(cancelled_main_task_ids)} main tasks of type '{task_type_prefix}' and their children. Total jobs affected: {total_cancelled_jobs}.",
+            "cancelled_main_tasks": cancelled_main_task_ids,
+        }
+    ), 200
 
 
 @app.route('/api/last_task', methods=['GET'])
@@ -707,6 +739,7 @@ def get_config_endpoint():
             "max_songs_per_cluster": config.MAX_SONGS_PER_CLUSTER,
             "max_songs_per_artist": config.MAX_SONGS_PER_ARTIST,
             "cluster_algorithm": config.CLUSTER_ALGORITHM,
+            "clustering_auto_calibration": config.CLUSTERING_AUTO_CALIBRATION,
             "num_clusters_min": config.NUM_CLUSTERS_MIN,
             "num_clusters_max": config.NUM_CLUSTERS_MAX,
             "dbscan_eps_min": config.DBSCAN_EPS_MIN,
@@ -732,7 +765,7 @@ def get_config_endpoint():
             "top_n_moods": config.TOP_N_MOODS,
             "mood_labels": config.MOOD_LABELS,
             "clustering_runs": config.CLUSTERING_RUNS,
-            "top_n_playlists": config.TOP_N_PLAYLISTS,
+            "top_n_clustering_playlist": config.TOP_N_CLUSTERING_PLAYLIST,
             "enable_clustering_embeddings": config.ENABLE_CLUSTERING_EMBEDDINGS,
             "score_weight_diversity": config.SCORE_WEIGHT_DIVERSITY,
             "score_weight_silhouette": config.SCORE_WEIGHT_SILHOUETTE,
@@ -754,43 +787,55 @@ def get_config_endpoint():
 @app.route('/api/playlists', methods=['GET'])
 def get_playlists_endpoint():
     """
-    All generated playlists.
+    All generated playlists, grouped per server.
     ---
     tags:
       - Playlists
-    summary: Return every saved playlist with its tracks, grouped by playlist name.
+    summary: Return the last clustering run's playlists of every server, grouped per server.
     responses:
       200:
-        description: Playlist map (playlist_name -> list of tracks).
+        description: Per-server playlist groups (default server first).
         content:
           application/json:
             schema:
               type: object
-              additionalProperties:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    item_id:
-                      type: string
-                    title:
-                      type: string
-                    author:
-                      type: string
+              properties:
+                multi_server:
+                  type: boolean
+                servers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      server_id:
+                        type: string
+                        nullable: true
+                      server_name:
+                        type: string
+                      is_default:
+                        type: boolean
+                      playlists:
+                        type: object
+                        additionalProperties:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              item_id:
+                                type: string
+                              title:
+                                type: string
+                              author:
+                                type: string
     """
-    from collections import defaultdict  # Local import if not used elsewhere globally
-
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
-    rows = cur.fetchall()
+    cur.execute(
+        "SELECT playlist_name, item_id, title, author, server_id FROM playlist ORDER BY playlist_name"
+    )
+    rows = [dict(row) for row in cur.fetchall()]
     cur.close()
-    playlists_data = defaultdict(list)
-    for row in rows:
-        playlists_data[row['playlist_name']].append(
-            {"item_id": row['item_id'], "title": row['title'], "author": row['author']}
-        )
-    return jsonify(dict(playlists_data)), 200
+    return jsonify(app_server_context.group_playlist_rows_by_server(rows)), 200
 
 
 # --- Redis index reload listener (restored pre-e308673 logic, with map reload added) ---
@@ -919,7 +964,6 @@ def _register_blueprints(flask_app):
     from app_external import external_bp
     from app_alchemy import alchemy_bp
     from app_map import map_bp
-    from app_waveform import waveform_bp
     from app_artist_similarity import artist_similarity_bp
     from app_clap_search import clap_search_bp
     from app_lyrics import lyrics_search_bp
@@ -929,6 +973,7 @@ def _register_blueprints(flask_app):
     from app_dashboard import dashboard_bp
     from app_users import users_bp
     from app_sync import sync_bp
+    from app_music_servers import music_servers_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
     flask_app.register_blueprint(clustering_bp)
@@ -940,7 +985,6 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(external_bp, url_prefix='/external')
     flask_app.register_blueprint(alchemy_bp)
     flask_app.register_blueprint(map_bp)
-    flask_app.register_blueprint(waveform_bp)
     flask_app.register_blueprint(artist_similarity_bp)
     flask_app.register_blueprint(clap_search_bp)
     flask_app.register_blueprint(lyrics_search_bp)
@@ -950,6 +994,7 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(dashboard_bp)
     flask_app.register_blueprint(users_bp)
     flask_app.register_blueprint(sync_bp)
+    flask_app.register_blueprint(music_servers_bp)
 
     try:
         from plugin.blueprint import plugins_bp
@@ -1088,10 +1133,10 @@ if not _is_worker:
     listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
     listener_thread.start()
 
-    # Start a cron manager thread that checks enabled cron entries every 60 seconds
+    # Start a cron manager thread that evaluates enabled cron entries once a minute.
     def _cron_manager_loop():
         try:
-            from time import sleep
+            import time as _time
             from app_cron import run_due_cron_jobs
 
             while True:
@@ -1100,19 +1145,28 @@ if not _is_worker:
                         run_due_cron_jobs()
                 except Exception:
                     app.logger.exception('cron manager failed')
-                sleep(60)
+                # Sleep to the next minute boundary, not a flat 60s. A flat sleep
+                # AFTER variable-length work makes the tick period 60 + work_time,
+                # so the second-of-minute it lands on drifts forward and eventually
+                # skips a whole wall-clock minute - and a cron scheduled in a skipped
+                # minute simply never ran, silently. run_due_cron_jobs claims each
+                # row on its minute bucket, so an early tick cannot double-fire.
+                _time.sleep(max(1.0, 60.0 - (_time.time() % 60.0)))
         except Exception:
             app.logger.exception('cron manager main loop error')
 
     cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
     cron_thread.start()
 
-    # Dashboard stats refresher: runs once at startup, then hourly.
+    # Dashboard stats refresher: runs once at startup, then hourly - or every
+    # 5 minutes while any server still lacks its first library measure, so a
+    # fresh install's coverage panel fills in soon after the first analysis.
+    # Also counts each server's library size as part of the refresh.
     # Keeps heavy content/index aggregates off the request path.
     def _dashboard_stats_refresher_loop():
         try:
             from time import sleep
-            from app_dashboard import refresh_dashboard_stats
+            from app_dashboard import refresh_dashboard_stats, dashboard_refresh_interval
 
             # Wait a minute after startup so the initial DB/index warm-up and
             # first incoming requests have time to settle before we kick off
@@ -1123,7 +1177,7 @@ if not _is_worker:
                     refresh_dashboard_stats(app)
                 except Exception:
                     app.logger.exception('dashboard stats refresh failed')
-                sleep(3600)
+                sleep(dashboard_refresh_interval(app))
         except Exception:
             app.logger.exception('dashboard stats refresher main loop error')
 

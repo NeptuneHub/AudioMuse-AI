@@ -73,8 +73,9 @@ LAYERS = [
         "tasks.ai.providers.mistral",
     },
     {"app_helper", "app_helper_artist", "tasks.ai.api"},
-    {"tasks.clustering_helper", "tasks.analysis_helper"},
-    {"tasks.clustering", "tasks.analysis"},
+    {"tasks.clustering_helper", "tasks.analysis.song"},
+    {"tasks.analysis.helper", "tasks.analysis"},
+    {"tasks.clustering", "tasks.analysis.main", "tasks.analysis.album", "tasks.analysis.index"},
     {"app"},
 ]
 
@@ -88,7 +89,7 @@ FORBIDDEN_IMPORTS = [
     ("tasks.ai.providers.gemini", "tasks.ai.api"),
     ("tasks.ai.providers.mistral", "tasks.ai.api"),
     ("app_helper", "tasks.clustering"),
-    ("app_helper", "tasks.analysis"),
+    ("app_helper", "tasks.analysis.main"),
 ]
 
 INDEPENDENT_GROUPS = [
@@ -103,7 +104,6 @@ INDEPENDENT_GROUPS = [
         "app_external",
         "app_alchemy",
         "app_map",
-        "app_waveform",
         "app_artist_similarity",
         "app_clap_search",
         "app_lyrics",

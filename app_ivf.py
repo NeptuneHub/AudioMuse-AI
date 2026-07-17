@@ -24,6 +24,8 @@ import json
 import threading
 import numpy as np
 
+import app_server_context
+
 # Import the new config option
 from config import (
     SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
@@ -37,7 +39,6 @@ from tasks.ivf_manager import (
     find_nearest_neighbors_by_id,
     find_nearest_neighbors_by_vector,
     get_max_distance_for_id,
-    create_playlist_from_ids,
     search_tracks_unified,
     get_item_id_by_title_and_artist,
 )
@@ -86,8 +87,9 @@ def _vector_neighbors_or_error(vector, num_neighbors, eliminate_duplicates, ctx,
 
 
 # Build similar-tracks JSON list from neighbor results (shared serializer)
-def _serialize_neighbor_results(neighbor_results):
-    return serialize_neighbor_results(neighbor_results)
+def _serialize_neighbor_results(neighbor_results, requested_n=None):
+    rows = serialize_neighbor_results(neighbor_results)
+    return app_server_context.scope_results(rows, requested_n, id_key='item_id')
 
 
 _MOOD_CENTROIDS_DATA = {}  # mood_name -> list of centroid dicts (with vectors)
@@ -251,8 +253,18 @@ def search_tracks_endpoint():
     offset = start
 
     try:
+        try:
+            selected_server_id, include_legacy = app_server_context.selected_server_scope()
+        except ValueError:
+            logger.warning("Invalid server selection.", exc_info=True)
+            return jsonify({'error': 'Invalid server selection.'}), 400
         raw_results = search_tracks_unified(
-            search_query, limit=limit, offset=offset, item_id_filter=item_id_filter
+            search_query,
+            limit=limit,
+            offset=offset,
+            item_id_filter=item_id_filter,
+            server_id=selected_server_id,
+            include_legacy_default=include_legacy,
         )
         results = []
         for r in raw_results:
@@ -270,6 +282,7 @@ def search_tracks_endpoint():
                 )
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify(results)
     except Exception:
         logger.exception("Error during track search")
@@ -408,6 +421,14 @@ def get_similar_tracks_endpoint():
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 instead of surfacing later as a 500.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+
     # --- Mood centroid mode: use centroid vector instead of a song ---
     if mood_param and centroid_index_param is not None:
         _ensure_mood_centroids_loaded()
@@ -435,7 +456,7 @@ def get_similar_tracks_endpoint():
         )
         if err:
             return err
-        return jsonify(_serialize_neighbor_results(neighbor_results))
+        return jsonify(_serialize_neighbor_results(neighbor_results, num_neighbors))
 
     # --- Anchor mode: use anchor's centroid vector ---
     if anchor_id_param is not None:
@@ -457,13 +478,16 @@ def get_similar_tracks_endpoint():
         )
         if err:
             return err
-        return jsonify(_serialize_neighbor_results(neighbor_results))
+        return jsonify(_serialize_neighbor_results(neighbor_results, num_neighbors))
 
     # --- Standard song-based mode ---
     target_item_id = None
 
     if item_id:
-        target_item_id = item_id
+        try:
+            target_item_id = app_server_context.resolve_input_item_id(item_id)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     elif title and artist:
         resolved_id = get_item_id_by_title_and_artist(title, artist)
         if not resolved_id:
@@ -491,7 +515,7 @@ def get_similar_tracks_endpoint():
                 {"error": "Target track not found in index or no similar tracks found."}
             ), 404
 
-        return jsonify(_serialize_neighbor_results(neighbor_results))
+        return jsonify(_serialize_neighbor_results(neighbor_results, num_neighbors))
     except RuntimeError as e:
         return _neighbor_search_error_response(target_item_id, e, is_runtime=True)
     except Exception as e:
@@ -535,6 +559,10 @@ def get_max_distance_endpoint():
     item_id = request.args.get('item_id')
     if not item_id:
         return jsonify({"error": "Missing 'item_id' parameter."}), 400
+    try:
+        item_id = app_server_context.resolve_input_item_id(item_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     try:
         result = get_max_distance_for_id(item_id)
@@ -681,17 +709,44 @@ def create_media_server_playlist():
     # Optional user credentials may be provided by the client (e.g., from the Sonic Fingerprint UI)
     user_creds = data.get('user_creds') if isinstance(data, dict) else None
 
+    from app_server_context import (
+        resolve_request_server_id,
+        create_instant_playlist_for_server,
+    )
     try:
-        new_playlist_id = create_playlist_from_ids(
-            playlist_name, final_track_ids, user_creds=user_creds
+        server_id = resolve_request_server_id(data)
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({"error": "Invalid server selection."}), 400
+
+    try:
+        try:
+            info = create_instant_playlist_for_server(
+                playlist_name, final_track_ids, server_id, user_creds=user_creds
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        result = info['result']
+        new_playlist_id = result.get('Id') if isinstance(result, dict) else result
+        if not new_playlist_id:
+            logger.error(
+                "Playlist '%s' was not created on server %s: the media server "
+                "returned no playlist (see worker/container logs)",
+                playlist_name, server_id,
+            )
+            return jsonify(
+                {"error": "The media server did not create the playlist; check container logs."}
+            ), 502
+        logger.info(
+            f"Created playlist '{playlist_name}' on server {server_id} "
+            f"({info['mapped']} mapped, {info['skipped']} unavailable)."
         )
-
-        logger.info(f"Successfully created playlist '{playlist_name}' with ID {new_playlist_id}.")
-
         return jsonify(
             {
-                "message": f"Playlist '{playlist_name}' created successfully!",
+                "message": f"Playlist '{playlist_name}' created on the selected server ({info['mapped']} tracks, {info['skipped']} unavailable).",
                 "playlist_id": new_playlist_id,
+                "mapped": info['mapped'],
+                "skipped": info['skipped'],
             }
         ), 201
 

@@ -14,6 +14,8 @@ against each radio's anchor and pushing the result to the media server.
 Main Features:
 * Generates tracks per radio from its stored anchor, result count, and
   temperature, skipping radios that yield no results.
+* Runs against every enabled media server in the requested scope (all or
+  default), isolating failures so one server cannot abort the others.
 * Upserts each playlist, falling back to create_playlist when the provider does
   not support create_or_replace_playlist, and returns a created/failed summary.
 """
@@ -26,52 +28,105 @@ from .mediaserver import create_or_replace_playlist, create_playlist
 logger = logging.getLogger(__name__)
 
 
-def run_radio_playlists():
+def run_radio_playlists(server_scope="all"):
     from database import get_alchemy_radios
+    from .mediaserver import registry
 
     radios = [r for r in get_alchemy_radios() if r.get('enabled')]
-    logger.info(f"Radio playlist run started for {len(radios)} enabled radios.")
+    servers = registry.servers_for_scope(server_scope)
+    logger.info(
+        "Radio playlist run started for %d radio(s) across %d server(s).",
+        len(radios), len(servers),
+    )
 
-    generated = []
     failed = []
-    for radio in radios:
-        playlist_name = radio['name']
-        try:
-            outcome = song_alchemy(
-                add_items=[{'type': 'anchor', 'id': radio['anchor_id']}],
-                n_results=int(radio['n_results']),
-                temperature=float(radio['temperature']),
-            )
-            item_ids = [r['item_id'] for r in (outcome.get('results') or []) if r.get('item_id')]
-            if item_ids:
-                generated.append((playlist_name, item_ids))
-            else:
-                failed.append(playlist_name)
-                logger.warning(
-                    f"Radio '{radio['name']}' produced no results; skipping playlist creation."
-                )
-        except Exception:
-            failed.append(playlist_name)
-            logger.exception(f"Radio '{radio['name']}' failed; skipping playlist creation.")
-
     created = 0
-    for playlist_name, item_ids in generated:
+    for server in servers:
+        server_name = server['name'] if server else 'default server'
         try:
-            try:
-                create_or_replace_playlist(playlist_name, item_ids)
-            except NotImplementedError:
-                create_playlist(playlist_name, item_ids)
-            created += 1
-            logger.info(f"Radio playlist '{playlist_name}' upserted with {len(item_ids)} tracks.")
+            with registry.bind(server):
+                for radio in radios:
+                    playlist_name = radio['name']
+                    try:
+                        outcome = song_alchemy(
+                            add_items=[{'type': 'anchor', 'id': radio['anchor_id']}],
+                            n_results=int(radio['n_results']),
+                            temperature=float(radio['temperature']),
+                        )
+                        item_ids = [
+                            row['item_id']
+                            for row in (outcome.get('results') or [])
+                            if row.get('item_id')
+                        ]
+                        if not item_ids:
+                            raise ValueError("no tracks available on this server")
+                        try:
+                            create_or_replace_playlist(playlist_name, item_ids)
+                        except NotImplementedError:
+                            create_playlist(playlist_name, item_ids)
+                        created += 1
+                        logger.info(
+                            "Radio playlist '%s' upserted on %s with %d tracks.",
+                            playlist_name, server_name, len(item_ids),
+                        )
+                    except Exception:
+                        failed.append(
+                            f"{playlist_name}@{server_name}" if len(servers) > 1 else playlist_name
+                        )
+                        logger.exception(
+                            "Radio '%s' failed on %s; skipping.", playlist_name, server_name
+                        )
         except Exception:
-            failed.append(playlist_name)
-            logger.exception(f"Failed to upsert playlist '{playlist_name}' on the media server.")
+            logger.exception(
+                "Radio playlist run failed on %s; continuing with remaining servers.",
+                server_name,
+            )
 
     summary = {
-        "message": f"Created {created} radio playlist(s) from {len(radios)} enabled radio(s).",
+        "message": f"Created {created} server radio playlist(s).",
         "radios_enabled": len(radios),
+        "servers_enabled": len(servers),
         "playlists_created": created,
         "failed": failed,
     }
     logger.info(f"Radio playlist run finished: {summary}")
     return summary
+
+
+def run_radio_playlists_task(server_scope="all"):
+    """RQ entrypoint for the alchemy_radio cron row.
+
+    Cron used to call run_radio_playlists inline on the Flask poll thread, so a
+    slow provider blocked every other scheduled job for the length of its timeout
+    and the run had no task_status row at all: invisible in the task list and
+    impossible to cancel. It runs on a worker now, like every other cron task.
+    """
+    from flask_app import app
+    from database import save_task_status
+    from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
+    from rq import get_current_job
+
+    job = get_current_job()
+    task_id = job.id if job else None
+    with app.app_context():
+        if task_id:
+            save_task_status(
+                task_id, 'alchemy_radio', TASK_STATUS_STARTED, progress=0,
+                details={"message": "Building radio playlists..."},
+            )
+        try:
+            summary = run_radio_playlists(server_scope=server_scope)
+        except Exception:
+            logger.exception("Radio playlist cron run failed")
+            if task_id:
+                save_task_status(
+                    task_id, 'alchemy_radio', TASK_STATUS_FAILURE, progress=100,
+                    details={"error": "Radio playlist run failed; check the container logs."},
+                )
+            raise
+        if task_id:
+            save_task_status(
+                task_id, 'alchemy_radio', TASK_STATUS_SUCCESS, progress=100,
+                details=summary,
+            )
+        return summary

@@ -26,6 +26,27 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
 
+    // Fixed elements attach to the LAYOUT viewport: under pinch-zoom the
+    // visual viewport pans away from it and the open menu's bottom edge
+    // appears mid-screen. While open, pin the sidebar to the visual viewport.
+    const syncSidebarToVisualViewport = () => {
+        if (!window.visualViewport) return;
+        if (!sidebar.classList.contains('open')) {
+            sidebar.style.top = '';
+            sidebar.style.left = '';
+            sidebar.style.height = '';
+            return;
+        }
+        const vv = window.visualViewport;
+        sidebar.style.top = vv.offsetTop + 'px';
+        sidebar.style.left = vv.offsetLeft + 'px';
+        sidebar.style.height = vv.height + 'px';
+    };
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', syncSidebarToVisualViewport);
+        window.visualViewport.addEventListener('scroll', syncSidebarToVisualViewport);
+    }
+
     // Function to open the menu
     const openMenu = ({ focus = true } = {}) => {
         sidebar.classList.add('open');
@@ -33,6 +54,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.documentElement.classList.add('sidebar-open');
         localStorage.setItem('menuOpen', 'true');
         setSidebarA11y(true);
+        syncSidebarToVisualViewport();
         if (focus) focusFirstInSidebar();
     };
 
@@ -43,6 +65,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.documentElement.classList.remove('sidebar-open');
         localStorage.setItem('menuOpen', 'false');
         setSidebarA11y(false);
+        syncSidebarToVisualViewport();
         if (returnFocus && menuToggle) menuToggle.focus();
     };
 
@@ -52,6 +75,7 @@ document.addEventListener('DOMContentLoaded', function() {
         sidebar.classList.add('open');
         mainContent.classList.add('sidebar-open');
         setSidebarA11y(true);
+        syncSidebarToVisualViewport();
     } else {
         setSidebarA11y(false);
     }

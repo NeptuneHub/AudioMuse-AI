@@ -179,7 +179,12 @@ def start_cleaning_endpoint():
       500:
         description: Server error during task enqueue.
     """
-    active_task = get_active_main_task()
+    # Cleaning is the ONE start that must also refuse while a sweep is running: both
+    # prune track_server_map, each against a snapshot of the server's catalogue taken
+    # minutes earlier, so an overlap lets cleaning delete the mappings the sweep just
+    # wrote. Every other task type may run alongside a sweep, so they keep the
+    # default exclusion.
+    active_task = get_active_main_task(exclude_task_types=())
     if active_task:
         return jsonify(
             {

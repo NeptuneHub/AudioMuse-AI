@@ -446,7 +446,6 @@ class TestSemGroveRoundTrip:
         def fake_load():
             import json as _json
             import ivf as _ivf
-            from config import IVF_QUERY_EF
 
             whitening = _json.loads(whitening_json)
             std_lyrics = np.array(whitening["std_lyrics"], dtype=np.float32)
@@ -458,7 +457,6 @@ class TestSemGroveRoundTrip:
 
             stream = io.BytesIO(index_binary)
             loaded = _ivf.Index.load(stream)
-            loaded.ef = IVF_QUERY_EF
 
             id_map_ = {int(k): v for k, v in _json.loads(index_idmap).items()}
             reverse_id_map = {v: k for k, v in id_map_.items()}

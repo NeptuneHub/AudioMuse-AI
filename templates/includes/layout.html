@@ -24,6 +24,11 @@
     {% include 'includes/reverse_proxy_prefix.html' %}
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+    <style>
+        .server-selector-nav { display: none; padding: 0.4rem 0 0; }
+        .server-selector-nav.active { display: block; }
+        .server-selector-nav .server-selector { width: 100%; padding: 0.4rem 0.5rem; border-radius: 6px; }
+    </style>
 
     {% block headAdditions %}
         {# head additions from template will be set here #}
@@ -43,7 +48,40 @@
 
         <div class="main-content" id="main-content">
             <button class="menu-toggle" type="button" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">&#9776;</button>
-            <div class="container">
+            {#
+              Scope of every functionality page, keyed by the `active` value the
+              route already passes. Two scopes and only two:
+                catalogue  - acts on the deduplicated union of all music servers.
+                             Batch work (analysis, clustering, cleaning, cron)
+                             always covers every server, one at a time.
+                server     - acts on the ONE server chosen in the sidebar picker.
+              Admin pages count too: backup dumps the WHOLE database (every server,
+              the whole catalogue), users are global accounts, and the wizard defines
+              all the servers - so those are catalogue, not per server. Provider
+              migration is the one admin page that really does act on a single server.
+              The dashboard is absent on purpose: it mixes both scopes and chips its
+              own sections.
+            #}
+            {% set page_scopes = {
+                'index': 'catalogue',
+                'cleaning': 'catalogue',
+                'cron': 'catalogue',
+                'backup': 'catalogue',
+                'users': 'catalogue',
+                'setup': 'catalogue',
+                'plugins': 'catalogue',
+                'provider_migration': 'server',
+                'similarity': 'server',
+                'path': 'server',
+                'alchemy': 'server',
+                'chat': 'server',
+                'map': 'server',
+                'lyrics_search': 'server',
+                'clap_search': 'server',
+                'artist_similarity': 'server',
+                'sonic_fingerprint': 'server'
+            } %}
+            <div class="container" data-page-scope="{{ page_scopes.get(active, '') }}">
                 {% block content %}
                     {# content from template will be set here #}
                 {% endblock %}
@@ -51,12 +89,17 @@
         </div>
     </div>
 
+    {# The chip itself is rendered by static/server_selector.js: it already knows how
+       many servers are configured, and the scope only means something once there are
+       at least two. #}
+
     {% block bodyAdditions %}
         {# body additions from template will be set here #}
     {% endblock %}
 
     <script src="{{ url_for('static', filename='song_tags.js') }}"></script>
     <script src="{{ url_for('static', filename='error_display.js') }}"></script>
+    <script src="{{ url_for('static', filename='server_selector.js') }}"></script>
 </body>
 </html>
 {% block postHTMLScripts %}

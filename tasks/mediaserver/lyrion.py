@@ -23,6 +23,7 @@ import os
 from urllib.parse import unquote, urlparse
 import config
 
+from . import context
 from .helper import detect_path_format, is_auth_error
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ def _lyrion_titles_response(response):
 
 
 def _get_target_paths_for_filtering():
-    folder_names_str = config.MUSIC_LIBRARIES
+    folder_names_str = context.active_libraries(config.MUSIC_LIBRARIES)
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
     if not folder_names_str.strip():
@@ -136,7 +137,7 @@ def _get_target_paths_for_filtering():
 
 
 def _get_target_music_folder_ids():
-    folder_names_str = config.MUSIC_LIBRARIES
+    folder_names_str = context.active_libraries(config.MUSIC_LIBRARIES)
 
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
@@ -238,6 +239,7 @@ def _get_target_music_folder_ids():
 
 
 def list_libraries(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     response = _jsonrpc_request("musicfolder", [0, 999999], user_creds=user_creds)
     if not response:
         return []
@@ -287,10 +289,14 @@ def _get_first_player():
         return "10.42.6.0"
 
 
+def _lyrion_base_url(user_creds=None):
+    creds = context.active_creds(user_creds)
+    return creds.get('url') if creds and creds.get('url') else config.LYRION_URL
+
+
 def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None):
-    base_url = (
-        user_creds.get('url') if user_creds and user_creds.get('url') else config.LYRION_URL
-    ).rstrip('/')
+    user_creds = context.active_creds(user_creds)
+    base_url = _lyrion_base_url(user_creds).rstrip('/')
     url = f"{base_url}/jsonrpc.js"
     payload = {"id": 1, "method": "slim.request", "params": [player_id, [method, *params]]}
     auth = None
@@ -374,7 +380,7 @@ def download_track(temp_dir, item):
             logger.error("Lyrion item does not have a track ID.")
             return None
 
-        download_url = f"{config.LYRION_URL}/music/{track_id}/download"
+        download_url = f"{_lyrion_base_url()}/music/{track_id}/download"
 
         file_extension = item.get('Path', '.mp3')
         if file_extension and '.' in file_extension:
@@ -659,11 +665,38 @@ def get_recent_albums(limit):
     return filtered_albums
 
 
-def get_all_songs(user_creds=None):
-    target_paths = _get_target_paths_for_filtering()
+def _path_is_under(track_path, target_path):
+    """True when ``track_path`` is inside the ``target_path`` folder.
 
-    if target_paths is not None:
-        logger.warning("LYRION FOLDER FILTERING IS DISABLED - fetching all songs instead")
+    Anchored on whole path components: a bare substring test would put
+    '/music/Kid Rock Anthology/x.flac' inside a folder configured as 'Rock'.
+    """
+    target = target_path.strip('/')
+    if not target:
+        return False
+    normalized = track_path.replace('\\', '/')
+    return (
+        normalized.startswith(target + '/')
+        or normalized.startswith('/' + target + '/')
+        or ('/' + target + '/') in normalized
+    )
+
+
+def _song_in_target_paths(song, target_paths):
+    for field in ('url', 'FilePath'):
+        value = song.get(field)
+        if not value:
+            continue
+        track_path = str(value).lower()
+        for target_path in target_paths:
+            if _path_is_under(track_path, target_path):
+                return True
+    return False
+
+
+def get_all_songs(user_creds=None, apply_filter=True):
+    user_creds = context.active_creds(user_creds)
+    target_paths = _get_target_paths_for_filtering() if apply_filter else None
 
     logger.info("Fetching all songs from Lyrion")
     response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyR"], user_creds=user_creds)
@@ -698,14 +731,21 @@ def get_all_songs(user_creds=None):
                 'Rating': int(int(song.get('rating')) / 20) if song.get('rating') else None,
                 'FilePath': _decode_lyrion_url(song.get('url')),
             }
-            all_songs.append(mapped_song)
+            if target_paths is None or _song_in_target_paths(mapped_song, target_paths):
+                all_songs.append(mapped_song)
 
-        logger.info(f"Found {len(songs)} total songs")
+        if target_paths is None:
+            logger.info(f"Found {len(songs)} total songs")
+        else:
+            logger.info(
+                f"Found {len(all_songs)} songs in configured folders ({len(songs)} total on server)"
+            )
 
     return all_songs
 
 
 def search_albums(query, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     body = _jsonrpc_request(
         "albums", [0, 10, f"search:{query}", "tags:lyja"], user_creds=user_creds
     )
@@ -737,6 +777,7 @@ def search_albums(query, user_creds=None):
 
 
 def test_connection(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     warnings = []
     try:
         body = _jsonrpc_request("titles", [0, 100, "tags:galduAyR"], user_creds=user_creds)
@@ -950,6 +991,7 @@ def delete_playlist(playlist_id):
 
 
 def get_tracks_from_album(album_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     logger.info(f"Attempting to fetch tracks for album ID: {album_id}")
 
     try:
@@ -1157,6 +1199,7 @@ def create_instant_playlist(playlist_name, item_ids):
 
 
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     if not item_ids:
         return None
 

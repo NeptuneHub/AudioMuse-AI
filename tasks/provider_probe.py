@@ -6,17 +6,21 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Probe a media provider and normalise its track metadata for migration.
+"""Probe a media provider and normalise its track metadata.
 
-Thin, provider-agnostic wrapper over the mediaserver clients used by the
-migration flow to test connectivity, enumerate libraries, and pull tracks.
+Thin, provider-agnostic wrapper over the mediaserver clients, used by the
+provider-migration flow and by the multi-server sweep to test connectivity,
+enumerate libraries, and pull whole catalogues.
 
 Main Features:
 * Supports jellyfin, emby, navidrome, lyrion, and plex, rejecting any other
   provider type early.
 * Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, Subsonic
   camelCase, and lower-case variants) into one flat track dict, coercing the
-  year to an int.
+  year to an int; track lists are normalised in place so the raw provider list
+  never coexists with a full normalised copy.
+* The normalised dict carries exactly what the consumers read: the id, path and
+  metadata the sweep matches on, plus the artist id and rating it aligns.
 """
 
 from tasks import mediaserver
@@ -29,11 +33,11 @@ def _normalize_track(item):
             'path': None,
             'title': None,
             'artist': None,
+            'artist_id': None,
             'album_artist': None,
             'album': None,
             'year': None,
-            'track_number': None,
-            'disc_number': None,
+            'rating': None,
         }
 
     def _try(*keys):
@@ -55,11 +59,11 @@ def _normalize_track(item):
         'path': _try('Path', 'path', 'url'),
         'title': _try('Name', 'name', 'title'),
         'artist': _try('AlbumArtist', 'artist', 'author'),
+        'artist_id': _try('ArtistId', 'artistId', 'artist_id'),
         'album_artist': _try('OriginalAlbumArtist', 'albumArtist', 'AlbumArtist'),
         'album': _try('Album', 'album'),
         'year': year,
-        'track_number': _try('IndexNumber', 'track_number', 'track'),
-        'disc_number': _try('ParentIndexNumber', 'disc_number', 'disc'),
+        'rating': _try('Rating', 'rating', 'userRating'),
     }
 
 
@@ -76,10 +80,14 @@ def _normalize_provider_type(provider_type):
     return t
 
 
-def fetch_all_tracks(provider_type, creds):
+def fetch_all_tracks(provider_type, creds, apply_filter=False):
     t = _normalize_provider_type(provider_type)
-    items = mediaserver.get_all_songs(user_creds=creds, provider_type=t, apply_filter=False)
-    return [_normalize_track(item) for item in items or []]
+    items = mediaserver.get_all_songs(
+        user_creds=creds, provider_type=t, apply_filter=apply_filter
+    ) or []
+    for i in range(len(items)):
+        items[i] = _normalize_track(items[i])
+    return items
 
 
 def search_albums(provider_type, creds, query):
@@ -89,8 +97,10 @@ def search_albums(provider_type, creds, query):
 
 def get_album_tracks(provider_type, creds, album_id):
     t = _normalize_provider_type(provider_type)
-    items = mediaserver.get_tracks_from_album(album_id, user_creds=creds, provider_type=t)
-    return [_normalize_track(item) for item in items or []]
+    items = mediaserver.get_tracks_from_album(album_id, user_creds=creds, provider_type=t) or []
+    for i in range(len(items)):
+        items[i] = _normalize_track(items[i])
+    return items
 
 
 def test_connection(provider_type, creds):

@@ -77,6 +77,7 @@ hiddenimports = [
     "app",
     "rq_worker",
     "rq_worker_high_priority",
+    "rq_heartbeat_worker",
     "rq_janitor",
     "restart_listener",
     "waitress",

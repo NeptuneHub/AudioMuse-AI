@@ -129,7 +129,7 @@ Additional DB & deployment knobs (explicit)
 Operational notes:
 
 - Logging & observability: application logs should be captured by the container runtime and RQ job meta status is stored in `task_status`. Keep API keys out of logs.
-- Index reloads: the worker performing `build_and_store_voyager_index` must publish `index-updates` to notify the web process; the web process must run `listen_for_index_reloads` so it can reload the binary index in memory without restart.
+- Index reloads: the worker performing the index rebuild (`build_and_store_ivf_index` and friends) must publish `index-updates` to notify the web process; the web process must run `listen_for_index_reloads` so it can refresh its cached index state without restart.
 
 ### **0.4. Concurrency Algorithm Deep Dive**
 
@@ -158,13 +158,13 @@ Monitoring & Observability
 Implementation pointers (current code locations)
 
 - Orchestration & monitoring: `tasks/clustering.py` (run_clustering_task, run_clustering_batch_task, _monitor_and_process_batches).
-- Analysis batching: `tasks/analysis.py` (run_analysis_task, analyze_album_task, build_and_store_voyager_index).
+- Analysis batching: `tasks/analysis.py` (run_analysis_task, analyze_album_task, rebuild_all_indexes_task).
 - Cancellation & status: `tasks/commons.py` and `tasks/__init__.py` helpers used by multiple tasks to read/update `task_status` and check revocation.
 
 Relevant environment variables and tuning knobs
 
 - `ITERATIONS_PER_BATCH_JOB`, `MAX_CONCURRENT_BATCH_JOBS`, `CLUSTERING_BATCH_TIMEOUT_MINUTES`, `CLUSTERING_MAX_FAILED_BATCHES`, `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS` - tuning these directly affects parallelism, latency to first results, and fault tolerance.
-- `MAX_QUEUED_ANALYSIS_JOBS`, `REBUILD_INDEX_BATCH_SIZE` - control analysis job parallelism and how often the Voyager index is rebuilt during a large analysis run.
+- `MAX_QUEUED_ANALYSIS_JOBS`, `REBUILD_INDEX_BATCH_SIZE` - control analysis job parallelism and how often the similarity indexes are rebuilt during a large analysis run.
 
 Operational recommendations
 
@@ -195,7 +195,7 @@ From a user's perspective, the "Song Analysis" feature is the core data-gatherin
    * **Progress:** A percentage bar indicating overall completion.  
    * **Details / Log:** Provides human-readable logs, such as which album is currently being processed or how many albums have been launched, skipped, or completed.  
 5. **Control:** The user can click the **"Cancel Current Task"** button at any time to stop the main analysis task and any in-progress album analysis tasks it has spawned.  
-6. **Outcome:** Once the task is complete, the application's database is populated with detailed audio features and vector embeddings for all new or updated songs. The system also builds (or rebuilds) a fast-search vector index (Voyager) in the background. This analyzed data is now ready to be used by the "Start Clustering," "Song Path," and other features.
+6. **Outcome:** Once the task is complete, the application's database is populated with detailed audio features and vector embeddings for all new or updated songs. The system also builds (or rebuilds) a fast-search vector index (disk-paged IVF) in the background. This analyzed data is now ready to be used by the "Start Clustering," "Song Path," and other features.
 
 #### **Core Purpose**
 
@@ -223,12 +223,11 @@ This function, running in an RQ worker, acts as the "orchestrator."
 2. **Iterate & Check:** It loops through every album, checking against the PostgreSQL database (configured via DATABASE\_URL) to see if all tracks already exist in the score and embedding tables.  
 3. **Spawn Child Tasks:** For new or incomplete albums, it enqueues a tasks.analysis.analyze\_album\_task child task.  
 4. **Manage Parallelism:** The main task monitors the number of active\_jobs and limits concurrent enqueued album tasks to MAX\_QUEUED\_ANALYSIS\_JOBS.  
-5. **Batch Indexing (Voyager Index Generation):** After every REBUILD\_INDEX\_BATCH\_SIZE completed child tasks, it triggers build\_and\_store\_voyager\_index (from voyager\_manager.py). This function:  
+5. **Batch Indexing (Mid-Run Index Rebuilds):** After every REBUILD\_INDEX\_BATCH\_SIZE completed album child tasks, it enqueues a rebuild\_all\_indexes\_task job on the default queue, so newly analyzed songs become searchable while a large run is still in progress. That job:  
    * Fetches all item\_id and embedding vectors from the PostgreSQL database (embedding table).  
-   * Builds a new Voyager index in memory using these vectors. Configuration parameters like VOYAGER\_METRIC, VOYAGER\_EF\_CONSTRUCTION, and VOYAGER\_M are used here.  
-   * Saves the built index binary data and an ID map (Voyager internal ID \-\> item\_id) back to the database (voyager\_index\_data table).  
-   * Publishes a reload message via Redis (redis\_conn.publish('index-updates', 'reload')) to notify the web server process(es) to load the new index into memory.  
-6. **Finalize:** After all albums, it runs a final index build and publishes the reload message.
+   * Rebuilds every similarity index: the disk-paged IVF vector index (stored in the ivf\_dir / ivf\_cell tables, tuned via IVF\_METRIC, IVF\_NLIST\_MAX, IVF\_NPROBE, etc.) plus the CLAP text-search, lyrics, SemGrove and artist indexes and the map projections.  
+   * Publishes a reload message via Redis (redis\_conn.publish('index-updates', 'reload')) to notify the web server process(es) to refresh their cached index state.  
+6. **Finalize:** After all albums, it runs a final full index build and publishes the reload message.
 
 #### **Stage 3: Album-Level Task (analyze\_album\_task)**
 
@@ -279,7 +278,7 @@ The Song Analysis functionality is configured by the following environment varia
 * NUM\_RECENT\_ALBUMS: The default number of recent albums to scan if the user doesn't specify. 0 means scan all albums.  
 * AUDIO\_LOAD\_TIMEOUT: The maximum time (in seconds) the system will spend trying to load a single audio file before giving up. Prevents corrupt files from stalling the entire analysis.  
 * MAX\_QUEUED\_ANALYSIS\_JOBS: Controls the parallelism of the main analysis task by limiting how many album-analysis child jobs can be in the queue at one time.  
-* REBUILD\_INDEX\_BATCH\_SIZE: Controls how often the Voyager (vector search) index is rebuilt during a large analysis run. A smaller number means new songs are searchable faster, but with more overhead.
+* REBUILD\_INDEX\_BATCH\_SIZE: Controls how often the similarity indexes are rebuilt during a large analysis run (a rebuild job is enqueued after this many completed albums). A smaller number means new songs are searchable faster, but with more overhead.
 
 #### **Model & Analysis Parameters**
 
@@ -294,12 +293,12 @@ Additional analysis tuning & normalization constants
 * `TEMPO_MIN_BPM`, `TEMPO_MAX_BPM` - Tempo normalization bounds in beats-per-minute used when extracting and scaling tempo for score vectors.
 * `DB_FETCH_CHUNK_SIZE` - Chunk size used by batch jobs when fetching large numbers of tracks from the DB. Useful to tune for memory/IO tradeoffs during clustering/analysis rebuilds.
 
-#### **Voyager Index Building (Used during Analysis)**
+#### **IVF Index Building (Used during Analysis)**
 
-* INDEX\_NAME: The name used to store the index in the database (e.g., music\_library).  
-* VOYAGER\_METRIC: The distance metric used for building the index (angular or euclidean).  
-* VOYAGER\_EF\_CONSTRUCTION: Voyager build-time parameter affecting index quality and build speed.  
-* VOYAGER\_M: Voyager build-time parameter affecting index quality and memory usage.
+* IVF\_INDEX\_NAME: The name used to store the index in the database (e.g., music\_library).  
+* IVF\_METRIC: The distance metric used for building the index (angular, euclidean or dot).  
+* IVF\_NLIST\_MAX: Upper cap on the number of IVF cells (coarse centroids) created at build time.  
+* IVF\_NPROBE: How many cells are probed per query; the dominant recall/latency knob.
 
 ## **2\. Song Clustering**
 
@@ -1182,15 +1181,15 @@ Key User Interactions & Workflow
 3. The cleaning job performs these high-level steps:
    - Fetch all albums/tracks from the configured media server via the mediaserver adapter (Navidrome/Jellyfin/Emby).
    - Read all tracks currently present in the application's PostgreSQL database (score + embedding tables).
-   - Compute the set difference to discover orphaned tracks (in DB but not on the media server).
+   - Compute the set difference to discover orphaned tracks (in DB but no longer on any enabled media server).
    - Group orphaned tracks by artist/album and present a summary.
    - Apply a safety limit (configured via `CLEANING_SAFETY_LIMIT`) to avoid accidental large deletions.
-   - Optionally delete the orphaned tracks and related references (embedding rows, playlist entries), and rebuild the Voyager index.
+   - Optionally delete the orphaned tracks and related references (embedding rows, playlist entries), and rebuild the similarity indexes.
 4. The UI polls the task status (same `active_tasks` / `status` APIs used elsewhere) and displays a live log, progress bar, and final summary. The user can cancel the running task via `/api/cancel/<task_id>`.
 
 Outcome
 
-After a successful run the database has fewer stale records, the Voyager index is rebuilt, and the UI shows a detailed summary of deleted tracks and any failures.
+After a successful run the database has fewer stale records, the similarity indexes are rebuilt, and the UI shows a detailed summary of deleted tracks and any failures.
 
 ### **9.2. Technical Analysis (Algorithm-Level)**
 
@@ -1203,8 +1202,8 @@ Stage 1: Job Enqueueing
 
 Stage 2: Media Server Enumeration
 
-1. The cleaning task calls the mediaserver adapter's `get_recent_albums(0)` or equivalent to fetch all albums/tracks from the media server (0 indicates fetch all).
-2. It iterates albums and collects all media-server track IDs. It handles transient errors per-album, logs warnings, and continues rather than failing the whole job.
+1. The cleaning task enumerates every enabled media server (via the server registry): for each one it calls the mediaserver adapter's `get_recent_albums(0)` or equivalent to fetch that server's full album/track set (0 indicates fetch all), and translates each server's provider track ids to the canonical catalogue ids.
+2. It iterates albums and collects the union of all servers' track IDs. If any server's catalogue cannot be fully fetched, the run aborts without deleting anything, so a transient provider error never wipes valid rows.
 
 Stage 3: Database Scan & Orphan Detection
 
@@ -1216,7 +1215,7 @@ Stage 4: Safety, Presentation, and Deletion
 
 1. Safety: If the number of orphaned albums/tracks exceeds `CLEANING_SAFETY_LIMIT`, the job limits the deletion set to the first N (and logs that the safety limit was applied).
 2. Deletion: The task calls `delete_orphaned_albums_sync(orphaned_track_ids)` which removes rows from `embedding`, `score`, and any playlist/auxiliary tables referencing those tracks, handling FK constraints and committing in a transaction. Failures are collected and returned.
-3. Rebuild Index: On success (or even when no orphans were found), the task rebuilds the Voyager index by calling `build_and_store_voyager_index(get_db())` to ensure the in-memory index matches the DB.
+3. Rebuild Index: On success (or even when no orphans were found), the task rebuilds all similarity indexes and maps via `_run_all_index_builds()` to ensure the stored indexes match the DB.
 
 Stage 5: Logging & Task Status
 
@@ -1235,7 +1234,7 @@ The cleaning process uses core infra variables and a few cleaning-specific ones.
 Core Infra
 
 * `REDIS_URL` - Required by RQ for job queueing and for the background listener used elsewhere.
-* `DATABASE_URL` - Required to query and delete database rows, and to rebuild the Voyager index.
+* `DATABASE_URL` - Required to query and delete database rows, and to rebuild the similarity indexes.
 * `MEDIASERVER_TYPE`, `NAVIDROME_URL`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, etc. - Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
 
 Cleaning-Specific
@@ -1313,7 +1312,7 @@ Analysis & Clustering Defaults (used when enqueueing cron jobs)
 
 * `TOP_N_MOODS` - Number of moods passed to analysis jobs when scheduled.
 * `CLUSTER_ALGORITHM`, `NUM_CLUSTERS_MIN`, `NUM_CLUSTERS_MAX`, `DBSCAN_EPS_MIN`, `DBSCAN_EPS_MAX`, `DBSCAN_MIN_SAMPLES_MIN`, `DBSCAN_MIN_SAMPLES_MAX`, `GMM_N_COMPONENTS_MIN`, `GMM_N_COMPONENTS_MAX`, `SPECTRAL_N_CLUSTERS_MIN`, `SPECTRAL_N_CLUSTERS_MAX`, `PCA_COMPONENTS_MIN`, `PCA_COMPONENTS_MAX` - Default ranges used to compose clustering kwargs.
-* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_PLAYLISTS`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` - High-level clustering behavior used when cron enqueues clustering.
+* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_CLUSTERING_PLAYLIST`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` - High-level clustering behavior used when cron enqueues clustering.
 * `SCORE_WEIGHT_*` and other scoring weights - Defaults applied to scheduled clustering runs.
 * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` - AI naming defaults applied when scheduled clustering requests automatic playlist naming.
 

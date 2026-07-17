@@ -21,6 +21,7 @@ Main Features:
 from flask import Blueprint, jsonify, request, render_template
 import logging
 
+import app_server_context
 from error import error_manager
 from error.error_dictionary import ERR_INDEX_EMPTY, UNKNOWN_ERROR_CODE
 from tasks.artist_gmm_manager import find_similar_artists, search_artists_by_name, get_artist_tracks
@@ -102,7 +103,19 @@ def search_artists_endpoint():
     offset = start
 
     try:
-        results = search_artists_by_name(query, limit=limit, offset=offset)
+        try:
+            server_id, include_legacy = app_server_context.selected_server_scope()
+        except ValueError:
+            logger.warning("Invalid server selection.", exc_info=True)
+            return jsonify({'error': 'Invalid server selection.'}), 400
+        results = search_artists_by_name(
+            query,
+            limit=limit,
+            offset=offset,
+            server_id=server_id,
+            include_legacy_default=include_legacy,
+        )
+        results = app_server_context.scope_artist_results(results)
         return jsonify(results)
     except Exception:
         logger.exception("Error during artist search")
@@ -181,19 +194,33 @@ def get_similar_artists_endpoint():
     )
 
     # Accept either artist name or artist_id
-    query_artist = artist or artist_id
+    try:
+        server_id = app_server_context.resolve_request_server_id()
+        query_artist = artist or app_server_context.resolve_artist_identifier(artist_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     if not query_artist:
         return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
 
+    # Overfetch only when the per-server availability filter can drop rows;
+    # single-server installs keep the exact requested n.
+    from tasks.mediaserver import registry
+
+    if server_id is None and not registry.has_secondary_servers():
+        fetch_n = n
+    else:
+        fetch_n = max(n * 10, 100)
+
     try:
         similar_artists = find_similar_artists(
             query_artist,
-            n=n,
+            n=fetch_n,
             ef_search=ef_search,
             include_component_matches=include_component_matches,
         )
 
+        similar_artists = app_server_context.scope_artist_results(similar_artists, n)
         if not similar_artists:
             return jsonify(
                 {
@@ -260,14 +287,20 @@ def get_artist_tracks_endpoint():
     artist_id = request.args.get('artist_id')
 
     # Accept either artist name or artist_id
-    query_artist = artist or artist_id
+    try:
+        query_artist = artist or app_server_context.resolve_artist_identifier(artist_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     if not query_artist:
         return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
 
     try:
         tracks = get_artist_tracks(query_artist)
+        tracks = app_server_context.scope_results(tracks, None, id_key='item_id')
         return jsonify(tracks)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     except Exception:
         logger.exception(f"Error getting tracks for artist '{query_artist}'")
         return jsonify(

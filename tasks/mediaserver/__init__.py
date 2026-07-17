@@ -25,6 +25,9 @@ from importlib import import_module
 
 import config
 
+from . import context
+from .context import use_server
+
 logger = logging.getLogger(__name__)
 
 _PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby', 'plex')
@@ -33,9 +36,17 @@ _warned_unsupported = set()
 _PLAYLIST_NAME_REQUIRED = "Playlist name is required."
 _TRACK_IDS_REQUIRED = "Track IDs are required."
 
+_PUBLIC_SERVER_API = (
+    'resolve_emby_jellyfin_user', 'delete_playlists_by_suffix', 'delete_automatic_playlists',
+    'get_recent_albums', 'get_tracks_from_album', 'download_track', 'get_all_songs',
+    'list_libraries', 'search_albums', 'test_connection', 'get_playlist_by_name',
+    'get_all_playlists', 'get_playlist_track_ids', 'create_playlist', 'create_instant_playlist',
+    'create_or_replace_playlist', 'get_top_played_songs', 'get_last_played_time', 'get_lyrics',
+)
+
 
 def _provider(provider_type=None):
-    name = provider_type or config.MEDIASERVER_TYPE
+    name = provider_type or context.active_type(config.MEDIASERVER_TYPE)
     if name not in _PROVIDER_NAMES:
         if name not in _warned_unsupported:
             _warned_unsupported.add(name)
@@ -48,10 +59,20 @@ def _provider(provider_type=None):
     return import_module('.' + name, __name__)
 
 
-def resolve_emby_jellyfin_user(identifier, token):
-    if config.MEDIASERVER_TYPE in ('jellyfin', 'emby'):
-        return _provider().resolve_user(identifier, token)
-    return []
+def resolve_emby_jellyfin_user(identifier, token=None):
+    """Resolve a username to its provider user id on the ACTIVE server.
+
+    The provider's base URL already follows the bound server (its helpers read
+    the active context), and the token does too: a caller-supplied one wins,
+    otherwise the bound server's own token is used, falling back to config for
+    the unbound default.
+    """
+    stype = context.active_type(config.MEDIASERVER_TYPE)
+    if stype not in ('jellyfin', 'emby'):
+        return []
+    creds = context.active_creds({'token': token} if token else None) or {}
+    fallback = config.JELLYFIN_TOKEN if stype == 'jellyfin' else config.EMBY_TOKEN
+    return _provider(stype).resolve_user(identifier, creds.get('token') or fallback)
 
 
 def _delete_matching_playlists(playlists_to_check, delete_function, suffix):
@@ -93,6 +114,7 @@ def get_recent_albums(limit):
 
 
 def get_tracks_from_album(album_id, user_creds=None, provider_type=None):
+    user_creds = context.active_creds(user_creds)
     provider = _provider(provider_type)
     if provider is None:
         return []
@@ -168,16 +190,16 @@ def _detect_audio_format(filepath):
 
 
 def get_all_songs(user_creds=None, provider_type=None, apply_filter=True):
-    provider_type = provider_type or config.MEDIASERVER_TYPE
+    user_creds = context.active_creds(user_creds)
+    provider_type = provider_type or context.active_type(config.MEDIASERVER_TYPE)
     provider = _provider(provider_type)
     if provider is None:
         return []
-    if provider_type == 'navidrome':
-        return provider.get_all_songs(user_creds=user_creds, apply_filter=apply_filter)
-    return provider.get_all_songs(user_creds=user_creds)
+    return provider.get_all_songs(user_creds=user_creds, apply_filter=apply_filter)
 
 
 def list_libraries(user_creds=None, provider_type=None):
+    user_creds = context.active_creds(user_creds)
     provider = _provider(provider_type)
     if provider is None:
         return {'libraries': [], 'unsupported': True}
@@ -185,6 +207,7 @@ def list_libraries(user_creds=None, provider_type=None):
 
 
 def search_albums(query, user_creds=None, provider_type=None):
+    user_creds = context.active_creds(user_creds)
     provider = _provider(provider_type)
     if provider is None:
         return []
@@ -192,7 +215,8 @@ def search_albums(query, user_creds=None, provider_type=None):
 
 
 def test_connection(user_creds=None, provider_type=None):
-    provider_type = provider_type or config.MEDIASERVER_TYPE
+    user_creds = context.active_creds(user_creds)
+    provider_type = provider_type or context.active_type(config.MEDIASERVER_TYPE)
     provider = _provider(provider_type)
     if provider is None:
         return {
@@ -224,12 +248,46 @@ def get_all_playlists():
 def get_playlist_track_ids(playlist_id, user_creds=None):
     if not playlist_id:
         return []
+    user_creds = context.active_creds(user_creds)
     provider = _provider()
     if provider is None:
         return []
-    if config.MEDIASERVER_TYPE == 'lyrion':
+    if context.active_type(config.MEDIASERVER_TYPE) == 'lyrion':
         return provider.get_playlist_track_ids(playlist_id)
     return provider.get_playlist_track_ids(playlist_id, user_creds=user_creds)
+
+
+def _to_server_ids(item_ids):
+    """Translate canonical catalogue ids to the active (or default) server's
+    real track ids. This is the SINGLE translation point for playlist creation:
+    callers pass canonical ids and must never pre-translate. Legacy provider
+    ids map to themselves on the default server, so mixed catalogues pass
+    through unchanged. Raises ValueError when the server has NONE of the
+    requested tracks, so no caller can report a playlist that was never sent
+    to the provider."""
+    from .registry import translate_ids
+
+    server_id = context.active_server_id()
+    try:
+        mapping = translate_ids(item_ids, server_id)
+    except Exception:
+        try:
+            from database import connect_raw
+            raw = connect_raw()
+            try:
+                mapping = translate_ids(item_ids, server_id, conn=raw)
+            finally:
+                raw.close()
+        except Exception:
+            logger.exception("Playlist id translation failed; sending ids unchanged")
+            return list(item_ids)
+    translated = [mapping[str(i)] for i in item_ids if str(i) in mapping]
+    if item_ids and not translated:
+        raise ValueError(
+            f"None of the {len(item_ids)} requested tracks are available on "
+            f"server {server_id or 'default'}; playlist not created."
+        )
+    return translated
 
 
 def create_playlist(base_name, item_ids):
@@ -237,8 +295,9 @@ def create_playlist(base_name, item_ids):
         raise ValueError(_PLAYLIST_NAME_REQUIRED)
     if not item_ids:
         raise ValueError(_TRACK_IDS_REQUIRED)
+    item_ids = _to_server_ids(item_ids)
     provider = _provider()
-    if provider is not None:
+    if provider is not None and item_ids:
         provider.create_playlist(base_name, item_ids)
 
 
@@ -248,10 +307,12 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     if not item_ids:
         raise ValueError(_TRACK_IDS_REQUIRED)
 
+    user_creds = context.active_creds(user_creds)
+    item_ids = _to_server_ids(item_ids)
     provider = _provider()
     if provider is None:
         return None
-    if config.MEDIASERVER_TYPE == 'lyrion':
+    if context.active_type(config.MEDIASERVER_TYPE) == 'lyrion':
         return provider.create_instant_playlist(playlist_name, item_ids)
     return provider.create_instant_playlist(playlist_name, item_ids, user_creds)
 
@@ -262,28 +323,32 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     if not item_ids:
         raise ValueError(_TRACK_IDS_REQUIRED)
 
+    user_creds = context.active_creds(user_creds)
+    item_ids = _to_server_ids(item_ids)
     provider = _provider()
     if provider is None:
         raise NotImplementedError(
-            f"create_or_replace_playlist not supported for MEDIASERVER_TYPE={config.MEDIASERVER_TYPE!r}"
+            f"create_or_replace_playlist not supported for MEDIASERVER_TYPE={context.active_type(config.MEDIASERVER_TYPE)!r}"
         )
     return provider.create_or_replace_playlist(playlist_name, item_ids, user_creds)
 
 
 def get_top_played_songs(limit, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     provider = _provider()
     if provider is None:
         return []
-    if config.MEDIASERVER_TYPE == 'lyrion':
+    if context.active_type(config.MEDIASERVER_TYPE) == 'lyrion':
         return provider.get_top_played_songs(limit)
     return provider.get_top_played_songs(limit, user_creds)
 
 
 def get_last_played_time(item_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     provider = _provider()
     if provider is None:
         return None
-    if config.MEDIASERVER_TYPE == 'lyrion':
+    if context.active_type(config.MEDIASERVER_TYPE) == 'lyrion':
         return provider.get_last_played_time(item_id)
     return provider.get_last_played_time(item_id, user_creds)
 
@@ -293,3 +358,39 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
     if provider is None:
         return None
     return provider.get_lyrics(track_id, timeout=timeout)
+
+
+class BoundServer:
+    """A media-server dispatcher bound to one registry server via the active context.
+
+    Every public dispatcher function is exposed as a method that runs inside the
+    bound server's context, so ``for_server(sid).get_all_songs()`` targets that
+    server while the module-level functions keep targeting the config default.
+    """
+
+    def __init__(self, server_context, server_id=None):
+        self._ctx = server_context
+        self.server_id = server_id
+
+    def __getattr__(self, name):
+        if name in _PUBLIC_SERVER_API:
+            fn = globals()[name]
+            ctx = self._ctx
+
+            def _bound(*args, **kwargs):
+                with use_server(ctx):
+                    return fn(*args, **kwargs)
+
+            return _bound
+        raise AttributeError(name)
+
+
+def for_server(server_id, conn=None):
+    """Return a BoundServer for ``server_id`` (config default when it is the default/None).
+
+    Pass ``conn`` (a raw psycopg2 connection) when calling from a worker where no
+    Flask application context exists; the registry lookup uses it instead of the
+    request-scoped connection.
+    """
+    from .registry import context_for
+    return BoundServer(context_for(server_id, conn), server_id)

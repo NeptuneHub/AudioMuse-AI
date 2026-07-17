@@ -372,7 +372,7 @@ class TestJellyfinDeletePlaylist:
         from tasks.mediaserver.jellyfin import delete_playlist
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
-        mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="test-token"'}
+        mock_config.JELLYFIN_TOKEN = 'test-token'
 
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
@@ -2800,6 +2800,7 @@ class TestJellyfinGetAllSongsPagination:
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.MUSIC_LIBRARIES = ''
         mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="token"'}
         mock_get.side_effect = [_audio_page(500), _audio_page(3, start=500)]
 
@@ -2818,6 +2819,7 @@ class TestJellyfinGetAllSongsPagination:
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.MUSIC_LIBRARIES = ''
         mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="token"'}
         mock_get.side_effect = [
             _audio_page(500),
@@ -2834,10 +2836,56 @@ class TestJellyfinGetAllSongsPagination:
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.MUSIC_LIBRARIES = ''
         mock_config.HEADERS = {}
         mock_get.side_effect = [_audio_page(0)]
 
         assert get_all_songs() == []
+
+    @patch('tasks.mediaserver.jellyfin.requests.get')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_library_filter_fetches_only_matching_libraries(self, mock_config, mock_get):
+        from tasks.mediaserver.jellyfin import get_all_songs
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.MUSIC_LIBRARIES = 'Music'
+        mock_config.HEADERS = {}
+
+        folders = Mock()
+        folders.raise_for_status = Mock()
+        folders.json.return_value = [
+            {'Name': 'Music', 'ItemId': 'lib1', 'CollectionType': 'music'},
+            {'Name': 'Audiobooks', 'ItemId': 'lib2', 'CollectionType': 'music'},
+        ]
+        mock_get.side_effect = [folders, _audio_page(2)]
+
+        songs = get_all_songs()
+
+        assert len(songs) == 2
+        assert mock_get.call_count == 2
+        page_params = mock_get.call_args_list[1].kwargs['params']
+        assert page_params['ParentId'] == 'lib1'
+
+    @patch('tasks.mediaserver.jellyfin.requests.get')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_library_filter_with_no_match_returns_no_songs(self, mock_config, mock_get):
+        from tasks.mediaserver.jellyfin import get_all_songs
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.MUSIC_LIBRARIES = 'Nope'
+        mock_config.HEADERS = {}
+
+        folders = Mock()
+        folders.raise_for_status = Mock()
+        folders.json.return_value = [
+            {'Name': 'Music', 'ItemId': 'lib1', 'CollectionType': 'music'},
+        ]
+        mock_get.side_effect = [folders]
+
+        assert get_all_songs() == []
+        assert mock_get.call_count == 1
 
 
 class TestEmbyGetAllSongsRaisesOnFailure:
@@ -2848,6 +2896,7 @@ class TestEmbyGetAllSongsRaisesOnFailure:
 
         mock_config.EMBY_URL = 'http://emby:8096'
         mock_config.EMBY_USER_ID = 'user123'
+        mock_config.MUSIC_LIBRARIES = ''
         mock_config.HEADERS = {'X-Emby-Token': 'token'}
         mock_get.side_effect = [
             _audio_page(1000),
@@ -2864,6 +2913,7 @@ class TestEmbyGetAllSongsRaisesOnFailure:
 
         mock_config.EMBY_URL = 'http://emby:8096'
         mock_config.EMBY_USER_ID = 'user123'
+        mock_config.MUSIC_LIBRARIES = ''
         mock_config.HEADERS = {}
         mock_get.side_effect = [_audio_page(0)]
 

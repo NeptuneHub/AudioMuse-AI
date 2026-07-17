@@ -59,7 +59,7 @@ These parameters can be left as-is:
 
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
-| `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
+| `CLEANING_SAFETY_LIMIT` | Max unbound-on-every-server albums listed in the cleaning report (cleaning never deletes catalogue rows) | `100`             |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Navidrome/Jellyfin: Use library/folder names. | `""` (empty - scan all) |
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
 | `WORKER_URL` | This is the Url your worker instance runs on. The server instance uses this parameter to call the worker. Make sure to include /worker at the end of the url (e.g. http://worker.example.com:8029/worker) | `false` |
@@ -87,8 +87,13 @@ These are the default parameters used when launching analysis or clustering task
 | `MAX_SONGS_PER_ARTIST`                      | Max songs from one artist per cluster.                                                                                    | `3`             |
 | `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `1000`          |
-| `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
+| `TOP_N_CLUSTERING_PLAYLIST`                 | Exact final playlist cap. With the default 10, select two centroid-distant playlists for each of the three most represented genres, then four centroid-distant playlists with distinct non-top genres. | `10`            |
 | `USE_GPU_CLUSTERING`                        | When true enable the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
+| `CLUSTERING_AUTO_CALIBRATION`               | Automatic parameter discovery: per server, quick probe runs tune cluster count/eps and sampling percentile before the real run. False = always use the configured defaults as-is. | `true`          |
+| `CLUSTERING_MAX_PLAYLIST_SONGS`             | Auto-calibration soft target: try to keep generated playlists at or under this many songs (big still beats empty).        | `200`           |
+| `CLUSTERING_CALIBRATION_MAX_TRIES`          | Auto-calibration probe runs per server before the real clustering starts.                                                 | `3`             |
+| `CLUSTERING_SUBSET_SONGS`                   | Exact number of songs sampled per clustering iteration: stratified by genre, topped up with random songs. Smaller only when the library has fewer songs. | `10000`         |
+| `CLUSTERING_EARLY_STOP_BATCHES`             | Finish clustering early after this many consecutive batches without a better result (running batches still complete; no new ones are enqueued). | `3`             |
 | **Similarity General**                      |                                                                                                                           |                 |
 | `IVF_METRIC`                                | Distance metric used by the similarity index: `angular` (cosine), `euclidean`, or `dot` (inner product). Changing it requires an index rebuild.                                                                                            | `angular`       |
 | **Disk-Paged IVF Similarity Index**         |                                                                                                                            |                 |
@@ -145,7 +150,7 @@ These are the default parameters used when launching analysis or clustering task
 | **GMM Ranges**                              |                                                                                            |                                        |
 | `GMM_N_COMPONENTS_MIN`                      | Min components for GMM.                                                                   | `40`                                   |
 | `GMM_N_COMPONENTS_MAX`                      | Max components for GMM.                                                                   | `100`                                  |
-| `GMM_COVARIANCE_TYPE`                       | Covariance type for GMM (task uses `full`).                                               | `full`                                 |
+| `GMM_COVARIANCE_TYPE`                       | Covariance type for GMM: `diag` (default, fast on embeddings), `full`, `tied`, `spherical`. | `diag`                                 |
 | **Spectral Ranges**                         |                                                                                            |                                        |
 | `SPECTRAL_N_CLUSTERS_MIN`                   | Min components for Spectral clustering.                                                   | `40`                                   |
 | `SPECTRAL_N_CLUSTERS_MAX`                   | Max components for Spectral clustering.                                                   | `100`                                  |
@@ -157,7 +162,7 @@ These are the default parameters used when launching analysis or clustering task
 | `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OpenAI` or `NONE`.                           | `NONE`                                 |
 | `AI_REQUEST_TIMEOUT_SECONDS`                | Timeout (in seconds) for AI API requests. Increase for slower hardware or larger models.  | `300`                                  |
 | `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
-| `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample between runs (0.0 to 1.0).       | `0.2`                                  |
+| `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample on every run, including the first run of a batch (0.0 to 1.0; limited when a genre has no unsampled alternatives). | `0.2`                                  |
 | `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`    | Minimum number of songs to target per stratified genre during sampling.                   | `100`                                  |
 | `STRATIFIED_SAMPLING_TARGET_PERCENTILE`     | Percentile of genre song counts to use for target songs per stratified genre.             | `50`                                   |
 | `OLLAMA_SERVER_URL`                         | URL for your Ollama instance (if `AI_MODEL_PROVIDER` is OLLAMA).                          | `http://<your-ip>:11434/api/generate` |

@@ -33,6 +33,7 @@ from config import (
     DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS,
 )
 from app_helper import top_stratified_genre
+import app_server_context
 import numpy as np
 import math  # Import the math module
 
@@ -242,6 +243,21 @@ def find_path_endpoint():
     """
     start_song_id = request.args.get('start_song_id')
     end_song_id = request.args.get('end_song_id')
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+    try:
+        resolved_endpoints = app_server_context.resolve_input_item_ids(
+            [i for i in (start_song_id, end_song_id) if i]
+        )
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    if start_song_id:
+        start_song_id = resolved_endpoints.get(start_song_id, start_song_id)
+    if end_song_id:
+        end_song_id = resolved_endpoints.get(end_song_id, end_song_id)
     start_mood = request.args.get('start_mood')
     end_mood = request.args.get('end_mood')
     start_anchor = request.args.get('start_anchor')
@@ -387,6 +403,8 @@ def find_path_endpoint():
             if total_distance is not None and math.isfinite(total_distance)
             else 0.0
         )
+
+        path = app_server_context.scope_results(path, None, id_key='item_id')
 
         return jsonify({"path": path, "total_distance": final_distance})
 

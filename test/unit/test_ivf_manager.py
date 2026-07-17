@@ -646,3 +646,34 @@ class TestResultCache:
         c = _ResultCache(0, 10)
         c.put("k", 1)
         assert c.get("k") is None
+
+
+class TestNeighborResultDeduplication:
+    """A migration merges duplicate recordings into one catalogue row and points
+    both of their index slots at it. Their vectors are near-identical, so both
+    slots hit on the same query - the results must still name the track once."""
+
+    def test_two_slots_naming_one_track_yield_it_once(self):
+        from tasks import ivf_manager
+
+        with patch.object(
+            ivf_manager, 'id_map',
+            {0: 'fp_2a', 1: 'fp_2b', 2: 'fp_2a', 3: 'fp_2c'},
+        ):
+            results = ivf_manager._build_initial_neighbor_results(
+                [0, 1, 2, 3], [0.01, 0.02, 0.011, 0.03], 'fp_2seed'
+            )
+
+        assert [r['item_id'] for r in results] == ['fp_2a', 'fp_2b', 'fp_2c']
+        # Neighbours arrive nearest-first, so the slot kept is the closest one.
+        assert results[0]['distance'] == pytest.approx(0.01)
+
+    def test_target_and_unknown_slots_are_dropped(self):
+        from tasks import ivf_manager
+
+        with patch.object(ivf_manager, 'id_map', {0: 'seed', 1: None, 2: 'fp_2b'}):
+            results = ivf_manager._build_initial_neighbor_results(
+                [0, 1, 2], [0.0, 0.1, 0.2], 'seed'
+            )
+
+        assert [r['item_id'] for r in results] == ['fp_2b']

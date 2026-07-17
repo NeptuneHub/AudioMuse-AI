@@ -264,7 +264,7 @@ class _OnnxWhisperPipeline:
         )
 
         try:
-            from tasks.analysis_helper import create_onnx_session
+            from tasks.analysis.song import create_onnx_session
 
             self.encoder_session = create_onnx_session(
                 str(encoder_path), sess_options=sess_opts, label='whisper_encoder'

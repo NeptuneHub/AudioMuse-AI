@@ -72,7 +72,8 @@ class TestSearchQueryValidation:
             resp = client.get('/search', query_string={'search_query': 'a'})
         assert resp.status_code == 200
         assert resp.get_json() == results
-        backend.assert_called_once_with('a')
+        assert backend.call_count == 1
+        assert backend.call_args.args[0] == 'a'
 
     def test_valid_query_reaches_backend_and_returns_its_value(self, ext, client):
         results = [{'item_id': 'id-1', 'title': 'Song', 'author': 'Artist'}]
@@ -80,11 +81,13 @@ class TestSearchQueryValidation:
             resp = client.get('/search', query_string={'search_query': 'abc'})
         assert resp.status_code == 200
         assert resp.get_json() == results
-        backend.assert_called_once_with('abc')
+        assert backend.call_count == 1
+        assert backend.call_args.args[0] == 'abc'
 
     def test_legacy_title_artist_params_build_query(self, ext, client):
         with patch.object(ext, 'search_tracks_unified', return_value=[]) as backend:
             resp = client.get('/search', query_string={'title': 'Hello', 'artist': 'Adele'})
         assert resp.status_code == 200
         assert resp.get_json() == []
-        backend.assert_called_once_with('Adele Hello')
+        assert backend.call_count == 1
+        assert backend.call_args.args[0] == 'Adele Hello'

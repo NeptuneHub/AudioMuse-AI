@@ -12,7 +12,7 @@ Verifies that item-id endpoints and the AI tool-impl IN clause pass ids as
 bound query parameters rather than interpolating them into the SQL string.
 
 Main Features:
-* Score, embedding and waveform endpoints pass the id as a bound param
+* Score and embedding endpoints pass the id as a bound param
 * The song-similarity IN clause is parameterized with placeholders
 """
 
@@ -44,12 +44,6 @@ def _import_app_external():
     with patch.dict(sys.modules, stubs):
         import app_external
     return app_external
-
-
-def _import_app_waveform():
-    import app_waveform
-
-    return app_waveform
 
 
 def _recording_db():
@@ -91,21 +85,6 @@ class TestItemIdEndpointsParameterized:
         db, cur = _recording_db()
         with patch.object(app_helper, 'get_db', return_value=db):
             resp = app.test_client().get('/get_embedding', query_string={'id': EVIL})
-        assert resp.status_code == 404
-        sql = cur.execute.call_args[0][0]
-        params = cur.execute.call_args[0][1]
-        assert '%s' in sql
-        assert params == (EVIL,)
-        assert EVIL not in sql
-
-    def test_waveform_endpoint_passes_item_id_as_param(self):
-        wf = _import_app_waveform()
-        app = Flask(__name__)
-        app.register_blueprint(wf.waveform_bp)
-        app.config['TESTING'] = True
-        db, cur = _recording_db()
-        with patch.object(wf, 'get_db', return_value=db):
-            resp = app.test_client().get('/api/waveform', query_string={'item_id': EVIL})
         assert resp.status_code == 404
         sql = cur.execute.call_args[0][0]
         params = cur.execute.call_args[0][1]

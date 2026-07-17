@@ -129,7 +129,7 @@ class TestLoadArtistIndexForQuerying:
 
 analysis_mod = None
 try:
-    import tasks.analysis as analysis_mod  # noqa: E402  (heavy: librosa/onnx)
+    import tasks.analysis.index as analysis_mod  # noqa: E402  (heavy: librosa/onnx)
     import tasks.ivf_manager  # noqa: F401  (builder modules patched in _patched)
     import tasks.clap_text_search  # noqa: F401
     import tasks.lyrics_manager  # noqa: F401
@@ -156,8 +156,8 @@ _BUILDER_SOURCE_MODULES = {
     "build_and_store_lyrics_axes_index": "tasks.lyrics_manager",
     "build_and_store_sem_grove_index": "tasks.sem_grove_manager",
     "build_and_store_artist_index": "tasks.artist_gmm_manager",
-    "build_and_store_map_projection": "tasks.analysis",
-    "build_and_store_artist_projection": "tasks.analysis",
+    "build_and_store_map_projection": "tasks.analysis.index",
+    "build_and_store_artist_projection": "tasks.analysis.index",
 }
 
 
@@ -171,7 +171,7 @@ class TestRunAllIndexBuilds:
             mocks = {}
             for name, module in _BUILDER_SOURCE_MODULES.items():
                 mocks[name] = stack.enter_context(patch(f"{module}.{name}"))
-            for name in ("get_db", "redis_conn", "_release_freed_ram_to_os"):
+            for name in ("get_db", "redis_conn", "release_memory_to_os"):
                 mocks[name] = stack.enter_context(patch.object(analysis_mod, name))
             yield mocks
 
@@ -181,7 +181,7 @@ class TestRunAllIndexBuilds:
         for name in _BUILDER_NAMES:
             assert mocks[name].called, f"{name} was not invoked by the orchestrator"
         assert mocks["redis_conn"].publish.called
-        assert mocks["_release_freed_ram_to_os"].called
+        assert mocks["release_memory_to_os"].called
 
     def test_non_fatal_failure_does_not_abort_remaining_builders(self):
         with self._patched() as mocks:

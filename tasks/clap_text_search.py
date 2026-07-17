@@ -260,12 +260,17 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
             results = []
             artist_counts: dict = {}
+            seen: set = set()
             for vec_id, distance in zip(neighbor_ids, distances):
                 if len(results) >= limit:
                     break
                 item_id = id_map.get(int(vec_id))
-                if item_id is None:
+                # Two slots can name the same track (a migration merges duplicate
+                # recordings into one row), and their vectors are near-identical,
+                # so the same song would otherwise come back twice.
+                if item_id is None or item_id in seen:
                     continue
+                seen.add(item_id)
 
                 metadata = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
                 author = metadata.get('author', '')
