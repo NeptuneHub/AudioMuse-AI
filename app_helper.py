@@ -117,12 +117,17 @@ def sanitize_task_details(details, state, task_type=None):
     details.pop('final_subset_track_ids', None)
     details.pop('full_best_result_from_batch', None)
     summary = details.get('final_summary_details')
-    if isinstance(summary, dict):
-        for album in summary.get('orphaned_albums') or []:
-            if isinstance(album, dict):
-                for track in album.get('tracks') or []:
-                    if isinstance(track, dict):
-                        track.pop('item_id', None)
+    if isinstance(summary, dict) and isinstance(summary.get('orphaned_albums'), list):
+        from tasks.simhash import is_fingerprint_id
+        for album in summary['orphaned_albums']:
+            if not isinstance(album, dict) or not isinstance(album.get('tracks'), list):
+                continue
+            for track in album['tracks']:
+                # Hide only the internal canonical (fp_) id; a legacy provider id is
+                # not internal, so keep it - matching the is_fingerprint_id gate used
+                # everywhere else, instead of over-stripping legacy installs.
+                if isinstance(track, dict) and is_fingerprint_id(str(track.get('item_id'))):
+                    track.pop('item_id', None)
 
     log_entries = details.get('log')
     if isinstance(log_entries, list) and len(log_entries) > 10:

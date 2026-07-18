@@ -153,12 +153,6 @@ def build_map_cache():
     logger = logging.getLogger(__name__)
     logger.info('Building map JSON cache (this reads the DB once).')
 
-    # A rebuild is the moment the catalogue's id space can have flipped legacy->fp_
-    # (e.g. a canonicalization just ran). Reset the memoized probe so the fast path
-    # can never serve a stale "no canonical ids" verdict and leak raw fp_ bytes.
-    _HAS_CANONICAL_IDS = None
-    _HAS_CANONICAL_CHECKED_AT = 0.0
-
     conn = get_db()
     cur = conn.cursor()
     try:
@@ -198,6 +192,15 @@ def build_map_cache():
                 'embedding': emb,
             }
         )
+
+    # Set the canonical-id memo from the ids just loaded - NO extra DB probe. The
+    # fast path may stream these cached bytes verbatim only when NONE is a canonical
+    # fp_ id; a rebuild (e.g. after canonicalization) reflects the legacy->fp_ flip
+    # exactly here, instead of a reset that re-triggered a score seq-scan on every
+    # routine rebuild. Canonicalization is one-way, so this only ever flips to True.
+    from tasks.simhash import is_fingerprint_id
+    _HAS_CANONICAL_IDS = any(is_fingerprint_id(it['item_id']) for it in items)
+    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
 
     if not items:
         # empty cache

@@ -102,3 +102,24 @@ class TestSanitizeTaskDetails:
         assert 'item_id' not in track
         assert track == {'title': 'T', 'author': 'A'}
         assert out['final_summary_details']['orphaned_tracks_count'] == 1
+
+    def test_cleaning_orphaned_legacy_track_id_is_kept(self):
+        out = sanitize_task_details(
+            {
+                'final_summary_details': {
+                    'orphaned_albums': [
+                        {'artist': 'A', 'track_count': 1,
+                         'tracks': [{'item_id': 'jelly-legacy-1', 'title': 'T', 'author': 'A'}]},
+                    ],
+                }
+            },
+            'SUCCESS', 'cleaning',
+        )
+        # A legacy provider id is not an internal fp_ id, so it must NOT be stripped.
+        assert out['final_summary_details']['orphaned_albums'][0]['tracks'][0]['item_id'] == 'jelly-legacy-1'
+
+    def test_non_list_orphaned_albums_does_not_crash(self):
+        out = sanitize_task_details(
+            {'final_summary_details': {'orphaned_albums': 'unexpected'}}, 'SUCCESS', 'cleaning'
+        )
+        assert out['final_summary_details']['orphaned_albums'] == 'unexpected'

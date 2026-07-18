@@ -1636,14 +1636,21 @@ def dry_run_report(session_id):
 
     old_rows = _load_score_rows_as_dicts()
 
-    # The old_id column carries the source server's provider id (translated once up
-    # front). An internal fp_ id must never reach ANY response - this is an
-    # authenticated GET like any other - so a source row with no provider mapping
-    # gets a BLANK old_id (fail closed) rather than its raw canonical id; the row
-    # stays identifiable by its old_path / old_artist / old_album / old_track columns.
-    old_id_provider_map = _source_provider_id_map(
-        [old.get('item_id') for old in old_rows]
-    )
+    # The old_id column carries the source server's provider id. An internal fp_ id
+    # must never reach ANY response - this is an authenticated GET like any other -
+    # so a source row with no provider mapping gets a BLANK old_id (fail closed)
+    # rather than its raw canonical id. A GENUINE translation error 503s here (so a
+    # transient DB hiccup does not silently blank every row with no admin signal);
+    # only a truly unmapped row blanks, its other columns (path/artist/album/track,
+    # any of which may itself be empty) the best remaining hint.
+    from tasks.mediaserver import registry
+    try:
+        old_id_provider_map = registry.translate_ids(
+            [str(old['item_id']) for old in old_rows if old.get('item_id')], None
+        )
+    except Exception:
+        logger.exception("Dry-run report source id translation failed")
+        return jsonify({'error': 'Report generation failed; retry shortly.'}), 503
 
     buf = io.StringIO()
     writer = csv.writer(buf)
