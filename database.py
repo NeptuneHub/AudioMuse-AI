@@ -614,6 +614,7 @@ def save_track_analysis_and_embedding(
     album_artist=None,
     year=None,
     rating=None,
+    duration=None,
 ):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
@@ -633,8 +634,8 @@ def save_track_analysis_and_embedding(
     try:
         cur.execute(
             """
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, duration)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -647,7 +648,8 @@ def save_track_analysis_and_embedding(
                 album = EXCLUDED.album,
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
-                rating = EXCLUDED.rating
+                rating = EXCLUDED.rating,
+                duration = COALESCE(EXCLUDED.duration, score.duration)
         """,
             (
                 item_id,
@@ -663,6 +665,7 @@ def save_track_analysis_and_embedding(
                 album_artist,
                 year,
                 rating,
+                duration,
             ),
         )
 
@@ -991,6 +994,9 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            cur.execute(
+                "ALTER TABLE score ADD COLUMN IF NOT EXISTS duration DOUBLE PRECISION"
+            )
             cur.execute("DROP INDEX IF EXISTS idx_score_fingerprint")
             cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS fingerprint")
             cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS mbid")

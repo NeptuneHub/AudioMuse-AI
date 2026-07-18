@@ -19,8 +19,9 @@ Main Features:
 * load_server_work_map: ONE keyset-paginated scan per server (provider id ->
   work bit mask), so the phase loop decides skip-or-launch from memory.
 * resolve_track_identity / claim_new_canonical_id / load_fingerprint_index:
-  content identity via the embedding signature, settled against the DB so
-  concurrent workers converge on one catalogue row per recording.
+  content identity via the embedding signature, confirmed by exact cosine plus
+  track-duration agreement and settled against the DB so concurrent workers
+  converge on one catalogue row per recording.
 * make_task_reporter: the one task_status reporter every analysis task uses
   (capped log, job.meta mirror, optional progress rescaling and DB throttling).
 * flush_pending_track_maps: per-track map-row flush, so a killed worker cannot
@@ -274,16 +275,19 @@ def replan_for_catalogue_row(plan, item_id):
     )
 
 
-def resolve_track_identity(fingerprint_index, embedding, item, source_server_id):
+def resolve_track_identity(fingerprint_index, embedding, item, source_server_id,
+                           duration=None):
     from tasks import simhash
 
     from .song import provider_item_id
 
     provider_id = provider_item_id(item)
     refresh_fingerprint_index(fingerprint_index)
-    kind, resolved_id = fingerprint_index.resolve(embedding)
+    kind, resolved_id = fingerprint_index.resolve(embedding, duration=duration)
     if kind == 'new' and resolved_id is not None:
-        kind, resolved_id = claim_new_canonical_id(fingerprint_index, resolved_id, embedding)
+        kind, resolved_id = claim_new_canonical_id(
+            fingerprint_index, resolved_id, embedding, duration=duration
+        )
     if resolved_id is None:
         resolved_id = simhash.unsignable_canonical_id(source_server_id, provider_id)
         kind = 'unsignable'
@@ -552,6 +556,13 @@ def _fetch_embedding_blob(item_id):
     return bytes(row[0]) if row and row[0] is not None else None
 
 
+def _fetch_row_duration(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT duration FROM score WHERE item_id = %s", (str(item_id),))
+        row = cur.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
 _FINGERPRINT_INDEX_TTL_SECONDS = 300.0
 
 
@@ -577,14 +588,14 @@ def refresh_fingerprint_index(resolver, force=False):
                 cached['watermark'] = cur.fetchone()[0]
                 return resolver
             cur.execute(
-                "SELECT item_id, created_at FROM score "
+                "SELECT item_id, created_at, duration FROM score "
                 "WHERE created_at > %s AND item_id LIKE 'fp\\_2%%' "
                 "AND length(item_id) = %s ORDER BY created_at",
                 (cached['watermark'], CANONICAL_ID_LEN),
             )
             rows = cur.fetchall()
-        for item_id, created_at in rows:
-            resolver.register(item_id)
+        for item_id, created_at, duration in rows:
+            resolver.register(item_id, duration=duration)
             cached['watermark'] = created_at
         if rows:
             logger.info(
@@ -608,17 +619,20 @@ def load_fingerprint_index():
             cached['built'] = now
         return cached['resolver']
 
-    resolver = CatalogResolver(embedding_fetcher=_fetch_embedding_blob)
+    resolver = CatalogResolver(
+        embedding_fetcher=_fetch_embedding_blob,
+        duration_fetcher=_fetch_row_duration,
+    )
     with get_db() as conn, conn.cursor() as cur:
         cur.execute("SELECT now()")
         watermark = cur.fetchone()[0]
         cur.execute(
-            "SELECT item_id FROM score "
+            "SELECT item_id, duration FROM score "
             "WHERE item_id LIKE 'fp\\_2%%' AND length(item_id) = %s",
             (CANONICAL_ID_LEN,),
         )
-        for (item_id,) in cur.fetchall():
-            resolver.register(item_id)
+        for item_id, duration in cur.fetchall():
+            resolver.register(item_id, duration=duration)
     cached['built'] = now
     cached['resolver'] = resolver
     cached['watermark'] = watermark
@@ -633,16 +647,19 @@ def catalogue_embedding(item_id):
     return vector if vector.size else None
 
 
-def _is_same_recording(embedding, other):
-    from tasks.simhash import cosine_distance
+def _is_same_recording(embedding, other, duration=None, other_duration_fn=None):
+    from tasks.simhash import cosine_distance, durations_compatible
     from config import DUPLICATE_DISTANCE_THRESHOLD_COSINE
 
     if other is None:
         return False
-    return cosine_distance(embedding, other) <= DUPLICATE_DISTANCE_THRESHOLD_COSINE
+    if cosine_distance(embedding, other) > DUPLICATE_DISTANCE_THRESHOLD_COSINE:
+        return False
+    other_duration = other_duration_fn() if other_duration_fn is not None else None
+    return durations_compatible(duration, other_duration)
 
 
-def claim_new_canonical_id(resolver, minted_id, embedding):
+def claim_new_canonical_id(resolver, minted_id, embedding, duration=None):
     from tasks.simhash import mint_canonical_id, signature_from_canonical_id
 
     if not minted_id:
@@ -657,11 +674,15 @@ def claim_new_canonical_id(resolver, minted_id, embedding):
                     candidate,
                     embedding=embedding,
                     signature=signature_from_canonical_id(candidate),
+                    duration=duration,
                 )
             return ('new', candidate)
 
         stored = catalogue_embedding(candidate)
-        if _is_same_recording(embedding, stored):
+        if _is_same_recording(
+            embedding, stored, duration=duration,
+            other_duration_fn=lambda candidate=candidate: _fetch_row_duration(candidate),
+        ):
             logger.info(
                 "Canonical id %s was minted concurrently by another worker for the "
                 "same recording; adopting it instead of persisting a duplicate.",
@@ -670,8 +691,9 @@ def claim_new_canonical_id(resolver, minted_id, embedding):
             return ('existing', candidate)
 
         logger.warning(
-            "Canonical id %s already belongs to a DIFFERENT recording (signature "
-            "collision); minting the next free id rather than overwriting it.",
+            "Canonical id %s already belongs to a track this one cannot be proven "
+            "identical to (different audio, different duration, or unknown "
+            "duration); minting the next free id rather than overwriting it.",
             candidate,
         )
         if stored is not None:

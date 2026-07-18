@@ -113,7 +113,7 @@ def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
 
 
 def _stage_identity(item, plan, track_name_full, musicnn_embedding, fingerprint_index,
-                    pending_track_maps):
+                    pending_track_maps, track_duration=None):
     from ..mediaserver import context as server_context
 
     source_server_id = (
@@ -122,7 +122,8 @@ def _stage_identity(item, plan, track_name_full, musicnn_embedding, fingerprint_
     if fingerprint_index is None:
         fingerprint_index = _ah.load_fingerprint_index()
     kind, track_id_str, provider_id = _ah.resolve_track_identity(
-        fingerprint_index, musicnn_embedding, item, source_server_id
+        fingerprint_index, musicnn_embedding, item, source_server_id,
+        duration=track_duration,
     )
     if source_server_id:
         tier = 'analysis' if kind == 'unsignable' else 'fingerprint'
@@ -227,6 +228,7 @@ def _analyze_single_track(
             fingerprint_index, plan, track_id_str, keep_analysis = _stage_identity(
                 item, plan, track_name_full, musicnn_embedding, fingerprint_index,
                 pending_track_maps,
+                track_duration=musicnn_analysis.get('duration_seconds'),
             )
             if not keep_analysis:
                 musicnn_analysis = musicnn_embedding = None

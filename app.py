@@ -286,6 +286,23 @@ if not _is_worker:
                 _migrate_exc,
             )
 
+        # One-time duplicate verification for installs merged by an early 3.0
+        # build (fp_ ids, but merged before track length was considered): each
+        # catalogue id mapping multiple files whose survivor has no duration yet
+        # is re-checked with the duration rule; false duplicates are unmapped so
+        # the next analysis re-analyzes them under their own ids. It is
+        # table-derived (score.duration), so it is an instant no-op after the
+        # legacy migration and after its own first pass - no stored flag that a
+        # config cleanup could wipe, no second duration fetch on a legacy upgrade.
+        try:
+            from tasks.duplicate_repair import repair_duplicate_track_maps
+            repair_duplicate_track_maps()
+        except Exception as _repair_exc:
+            app.logger.warning(
+                "Startup catalogue duplicate check failed (will retry next boot): %s",
+                _repair_exc,
+            )
+
         # Finalize JWT_SECRET - must happen after DB init so the value can be
         # persisted and shared across all gunicorn workers.
         _jwt_secret = resolve_jwt_secret(setup_manager)

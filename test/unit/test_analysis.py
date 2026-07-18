@@ -252,10 +252,12 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
                 'key': 'C',
                 'scale': 'major',
                 'moods': {'happy': 0.9},
+                'duration_seconds': 200.0,
             },
             fake_embedding,
         ),
     )
+    monkeypatch.setattr(helper, '_fetch_row_duration', lambda item_id: 200.0)
 
     monkeypatch.setattr(analysis, 'LYRICS_ENABLED', lyrics_enabled)
     monkeypatch.setattr(clap, 'is_clap_available', lambda: True if clap_broken else False)
@@ -340,7 +342,7 @@ def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path
 
     known_id = simhash.canonical_id_str(simhash.embedding_signature(_FAKE_EMBEDDING))
     catalog = simhash.CatalogResolver()
-    catalog.register(known_id, embedding=_FAKE_EMBEDDING)
+    catalog.register(known_id, embedding=_FAKE_EMBEDDING, duration=201.0)
 
     item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
     persisted_ids, map_upserts = [], []
@@ -352,6 +354,46 @@ def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == []
     assert map_upserts == [('srv-def', {'prov1': (known_id, 'fingerprint', None)})]
+
+
+def test_same_audio_with_different_duration_gets_its_own_id(monkeypatch, tmp_path):
+    from tasks import simhash
+
+    known_id = simhash.canonical_id_str(simhash.embedding_signature(_FAKE_EMBEDDING))
+    catalog = simhash.CatalogResolver()
+    catalog.register(known_id, embedding=_FAKE_EMBEDDING, duration=300.0)
+
+    item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch, tmp_path, item, catalog, persisted_ids, map_upserts
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert len(persisted_ids) == 1
+    assert persisted_ids[0] != known_id
+    assert persisted_ids[0].startswith('fp_2')
+
+
+def test_same_audio_with_unknown_catalogue_duration_gets_its_own_id(
+    monkeypatch, tmp_path
+):
+    from tasks import simhash
+
+    known_id = simhash.canonical_id_str(simhash.embedding_signature(_FAKE_EMBEDDING))
+    catalog = simhash.CatalogResolver()
+    catalog.register(known_id, embedding=_FAKE_EMBEDDING)
+
+    item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch, tmp_path, item, catalog, persisted_ids, map_upserts
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert len(persisted_ids) == 1
+    assert persisted_ids[0] != known_id
+    assert persisted_ids[0].startswith('fp_2')
 
 
 def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
@@ -505,8 +547,9 @@ def test_a_signature_collision_is_refuted_against_the_catalogue_not_the_cache(
 
     assert kind == 'new', "a collision with DIFFERENT audio must never be adopted"
     assert settled != minted, "it must step to the next free id, not clobber the row"
-    assert resolver.confirms(theirs, minted), (
-        "and the refused id must now cache the CATALOGUE's embedding, or the next "
+    cached = resolver._embedding_for(minted)
+    assert simhash.cosine_distance(theirs, cached) <= 0.01, (
+        "the refused id must now cache the CATALOGUE's embedding, or the next "
         "copy of this audio resolves straight back onto the row we just refused"
     )
 

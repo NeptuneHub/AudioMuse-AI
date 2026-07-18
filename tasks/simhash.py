@@ -16,8 +16,13 @@ is similarity-preserving (a re-encode of the same recording flips only a few
 borderline bits, distinct songs differ by tens), so near signatures propose
 identity; the decision is then confirmed by the EXACT cosine distance between
 the raw embeddings using the same ``DUPLICATE_DISTANCE_THRESHOLD_COSINE`` the
-Similar Songs duplicate filter already trusts. Everything deciding identity is
-derived from the audio itself.
+Similar Songs duplicate filter already trusts, AND by the track duration:
+two tracks are the same recording only when their lengths agree within
+``DURATION_TOLERANCE_SECONDS`` (the AcoustID rule). A missing duration on
+either side means "cannot prove same recording" and identity splits rather
+than merges - a false split is a harmless duplicate row, a false merge
+deletes a song. Everything deciding identity is derived from the audio
+itself.
 
 Main Features:
 * ``embedding_signature`` / ``signature_batch`` (vectorized) compute the
@@ -25,8 +30,8 @@ Main Features:
   and recover it from the ``fp_2`` id.
 * ``SignatureIndex`` banded Hamming-tolerant candidate lookup (pigeonhole
   guarantee within ``SIGNATURE_MATCH_MAX_HAMMING`` bits).
-* ``CatalogResolver.resolve``: signature proposes, raw-embedding cosine
-  confirms, collisions mint the next free id.
+* ``CatalogResolver.resolve``: signature proposes, raw-embedding cosine plus
+  duration agreement confirm, collisions mint the next free id.
 * ``near_duplicate_pairs`` / ``confirm_pairs`` / ``merge_pairs``: the streaming
   whole-catalogue form the startup migration drives itself.
 * ``is_fingerprint_id`` recognizes any ``fp_``-prefixed catalogue id.
@@ -40,7 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from config import DUPLICATE_DISTANCE_THRESHOLD_COSINE
+from config import DUPLICATE_DISTANCE_THRESHOLD_COSINE, DURATION_TOLERANCE_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -196,11 +201,44 @@ def signature_matrix(rows):
     return packed, valid
 
 
-def confirm_pairs(left_vectors, right_vectors):
-    """Which candidate pairs the EXACT raw-embedding cosine confirms.
+def durations_compatible(duration_a, duration_b):
+    try:
+        a = float(duration_a) if duration_a is not None else None
+        b = float(duration_b) if duration_b is not None else None
+    except (TypeError, ValueError):
+        return False
+    if a is None or b is None or not np.isfinite(a) or not np.isfinite(b):
+        return False
+    if a <= 0 or b <= 0:
+        return False
+    return abs(a - b) <= DURATION_TOLERANCE_SECONDS
+
+
+def _duration_mask(left_durations, right_durations, size):
+    left = np.full(size, np.nan) if left_durations is None else np.asarray(
+        [np.nan if d is None else d for d in left_durations], dtype=np.float64
+    )
+    right = np.full(size, np.nan) if right_durations is None else np.asarray(
+        [np.nan if d is None else d for d in right_durations], dtype=np.float64
+    )
+    with np.errstate(invalid='ignore'):
+        return (
+            np.isfinite(left)
+            & np.isfinite(right)
+            & (left > 0)
+            & (right > 0)
+            & (np.abs(left - right) <= DURATION_TOLERANCE_SECONDS)
+        )
+
+
+def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durations=None):
+    """Which candidate pairs the EXACT raw-embedding cosine AND duration confirm.
 
     Row-wise, so a caller can feed it one batch of embeddings at a time instead
-    of holding the catalogue's. A zero/absent vector never confirms.
+    of holding the catalogue's. A zero/absent vector never confirms, and neither
+    does a pair whose track lengths are unknown or disagree beyond
+    ``DURATION_TOLERANCE_SECONDS`` - the embedding says "sounds the same", only
+    the duration can say "is the same recording".
     """
     left_vectors = np.asarray(left_vectors, dtype=np.float32)
     right_vectors = np.asarray(right_vectors, dtype=np.float32)
@@ -218,6 +256,7 @@ def confirm_pairs(left_vectors, right_vectors):
         (distance <= DUPLICATE_DISTANCE_THRESHOLD_COSINE)
         & (left_norms > 0)
         & (right_norms > 0)
+        & _duration_mask(left_durations, right_durations, left_vectors.shape[0])
     )
 
 
@@ -544,35 +583,43 @@ class SignatureIndex:
         return [self._ids[row] for row in candidates[order]]
 
 class CatalogResolver:
-    """Identity resolver: the signature proposes, the raw embedding confirms.
+    """Identity resolver: the signature proposes, embedding + duration confirm.
 
     A track resolves to an existing catalogue row only when its signature lands
     within Hamming tolerance of that row AND the exact cosine distance between
     the raw embeddings is within ``DUPLICATE_DISTANCE_THRESHOLD_COSINE`` (the
-    Similar Songs duplicate rule). Anything else mints its own id; an exact
-    id-string collision of genuinely different content takes the next free
-    signature (identity across installs never relies on id equality, only on
-    track_server_map).
+    Similar Songs duplicate rule) AND the two track lengths agree within
+    ``DURATION_TOLERANCE_SECONDS``. An unknown duration on either side splits:
+    a sonically homogeneous library puts genuinely DIFFERENT recordings inside
+    the cosine threshold, and only the length can tell them apart. Anything
+    else mints its own id; an exact id-string collision of genuinely different
+    content takes the next free signature (identity across installs never
+    relies on id equality, only on track_server_map).
 
-    ``embedding_fetcher(item_id)`` supplies the raw embedding of a catalogue row
-    that was not registered with one (for example rows predating this run).
+    ``embedding_fetcher(item_id)`` / ``duration_fetcher(item_id)`` supply the
+    raw embedding and stored duration of a catalogue row that was not
+    registered with them (for example rows predating this run).
     """
 
-    def __init__(self, embedding_fetcher=None):
+    def __init__(self, embedding_fetcher=None, duration_fetcher=None):
         self._index = SignatureIndex()
         self._taken = set()
         self._embeddings = {}
+        self._durations = {}
         self._fetcher = embedding_fetcher
+        self._duration_fetcher = duration_fetcher
 
     def drop_cached_embeddings(self):
         self._embeddings.clear()
 
-    def register(self, item_id, embedding=None, signature=None):
+    def register(self, item_id, embedding=None, signature=None, duration=None):
         item_id = str(item_id)
         self._taken.add(item_id)
         if embedding is not None:
             row = _as_matrix([embedding])[0]
             self._embeddings[item_id] = row
+        if duration is not None:
+            self._durations[item_id] = duration
         if signature is None:
             signature = signature_from_canonical_id(item_id)
         if signature is not None:
@@ -595,41 +642,61 @@ class CatalogResolver:
         self._embeddings[item_id] = row
         return row
 
-    def confirms(self, embedding, candidate_id):
+    def _duration_for(self, item_id):
+        if item_id in self._durations:
+            return self._durations[item_id]
+        if self._duration_fetcher is None:
+            return None
+        try:
+            fetched = self._duration_fetcher(item_id)
+        except Exception:
+            logger.exception("Duration fetch failed for %s", item_id)
+            return None
+        self._durations[item_id] = fetched
+        return fetched
+
+    def confirms(self, embedding, candidate_id, duration=None):
         """Is ``candidate_id`` the same recording as ``embedding``?
 
-        The signature only ever PROPOSES; this exact cosine takes the decision.
-        Public because the analysis mint path needs it to tell a concurrently
-        minted duplicate (adopt it) from a genuine signature collision between two
+        The signature only ever PROPOSES; the exact cosine plus the duration
+        agreement take the decision, and an unknown duration refuses. Public
+        because the analysis mint path needs it to tell a concurrently minted
+        duplicate (adopt it) from a genuine signature collision between two
         different recordings (step to the next free id).
         """
         candidate_embedding = self._embedding_for(candidate_id)
         if candidate_embedding is None:
             return False
-        return (
+        if (
             cosine_distance(embedding, candidate_embedding)
-            <= DUPLICATE_DISTANCE_THRESHOLD_COSINE
-        )
+            > DUPLICATE_DISTANCE_THRESHOLD_COSINE
+        ):
+            return False
+        return durations_compatible(duration, self._duration_for(candidate_id))
 
     _confirms = confirms
 
-    def resolve(self, embedding, signature=None):
+    def resolve(self, embedding, signature=None, duration=None):
         """('existing', id) when the audio is already catalogued, else ('new', id).
 
-        A 'new' resolution registers the returned id (with this embedding), so
-        the next copy of the same audio in the same run resolves to it.
+        A 'new' resolution registers the returned id (with this embedding and
+        duration), so the next copy of the same audio in the same run resolves
+        to it. Candidates come back nearest-first; the duration veto then walks
+        past same-sounding tracks of a different length, so each distinct
+        recording anchors its own id even when many share a signature.
         """
         if signature is None:
             signature = embedding_signature(embedding)
         if signature is None:
             return ('new', None)
         for candidate_id in self._index.find_candidates(signature):
-            if self._confirms(embedding, candidate_id):
+            if self._confirms(embedding, candidate_id, duration=duration):
                 return ('existing', candidate_id)
         new_id = mint_canonical_id(signature, self._taken)
         self.register(
             new_id,
             embedding=embedding,
             signature=signature_from_canonical_id(new_id),
+            duration=duration,
         )
         return ('new', new_id)

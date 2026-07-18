@@ -905,38 +905,99 @@ class TestIndexRepoint:
         canonicalize._repoint_indexes(cursor, {'jf_1': 'fp_2aa'})
 
 
+def _patch_provider_durations(monkeypatch, durations):
+    from tasks import fingerprint_canonicalize as canonicalize
+
+    monkeypatch.setattr(
+        canonicalize, '_fetch_provider_durations',
+        lambda source_id, conn: dict(durations),
+    )
+    monkeypatch.setattr(
+        canonicalize, '_durations_for_rows',
+        lambda cur, ids, rows, provider_durations, source_id: {
+            ids[int(row)]: provider_durations.get(ids[int(row)]) for row in rows
+        },
+    )
+
+
 class TestEmbeddingCanonicalization:
-    def test_builds_canonical_ids_from_stored_embeddings(self):
+    def test_builds_canonical_ids_from_stored_embeddings(self, monkeypatch):
         import numpy as np
         from tasks import simhash
         from tasks import fingerprint_canonicalize as canonicalize
 
+        _patch_provider_durations(monkeypatch, {})
         embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
         cursor = _legacy_cursor([('legacy-provider-id', embedding)])
-        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
         assert mapping == {
             'legacy-provider-id': simhash.canonical_id_str(simhash.embedding_signature(embedding))
         }
         assert duplicate_mapping == {}
 
-    def test_same_audio_copies_merge(self):
+    def test_same_audio_copies_with_matching_duration_merge(self, monkeypatch):
         import numpy as np
         from tasks import fingerprint_canonicalize as canonicalize
 
+        _patch_provider_durations(
+            monkeypatch, {'copy-one': 200.0, 'copy-two': 200.0}
+        )
         embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
         cursor = _legacy_cursor([
             ('copy-one', embedding),
             ('copy-two', embedding),
         ])
-        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
         assert list(mapping.keys()) == ['copy-one']
         assert duplicate_mapping == {'copy-two': next(iter(mapping.values()))}
 
-    def test_same_signature_different_audio_never_merges(self):
+    def test_same_audio_copies_with_different_duration_never_merge(self, monkeypatch):
+        import numpy as np
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        _patch_provider_durations(
+            monkeypatch, {'copy-one': 200.0, 'copy-two': 210.0}
+        )
+        embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
+        cursor = _legacy_cursor([
+            ('copy-one', embedding),
+            ('copy-two', embedding),
+        ])
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
+        assert duplicate_mapping == {}
+        assert set(mapping.keys()) == {'copy-one', 'copy-two'}
+        assert mapping['copy-one'] != mapping['copy-two']
+
+    def test_same_audio_copies_with_unknown_duration_never_merge(self, monkeypatch):
+        import numpy as np
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        _patch_provider_durations(monkeypatch, {})
+        embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
+        cursor = _legacy_cursor([
+            ('copy-one', embedding),
+            ('copy-two', embedding),
+        ])
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
+        assert duplicate_mapping == {}
+        assert set(mapping.keys()) == {'copy-one', 'copy-two'}
+
+    def test_same_signature_different_audio_never_merges(self, monkeypatch):
         import numpy as np
         from tasks import simhash
         from tasks import fingerprint_canonicalize as canonicalize
 
+        _patch_provider_durations(
+            monkeypatch, {'copy-one': 200.0, 'copy-two': 200.0}
+        )
         half = simhash.SIGNATURE_BITS // 2
         first = np.concatenate(
             [np.full(half, 1.0), np.full(half, -1.0)]
@@ -953,7 +1014,9 @@ class TestEmbeddingCanonicalization:
             ('copy-one', first.tobytes()),
             ('copy-two', second.tobytes()),
         ])
-        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
         assert duplicate_mapping == {}
         assert set(mapping.keys()) == {'copy-one', 'copy-two'}
         assert mapping['copy-one'] != mapping['copy-two']
@@ -1013,7 +1076,9 @@ class TestEmbeddingCanonicalization:
             def rollback(self):
                 pass
 
-        monkeypatch.setattr(canonicalize, '_build_mapping', lambda cur: ({}, {}))
+        monkeypatch.setattr(
+            canonicalize, '_build_mapping', lambda cur, source_id: ({}, {}, {})
+        )
         monkeypatch.setattr(
             canonicalize.registry, 'get_default_server_id', lambda conn=None: 'sid'
         )

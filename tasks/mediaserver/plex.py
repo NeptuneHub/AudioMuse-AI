@@ -101,6 +101,7 @@ def _normalize_track(item):
         'FilePath': part.get('file') if part else None,
         'Container': media[0].get('container') if media and isinstance(media[0], dict) else None,
         'PartKey': part.get('key') if part else None,
+        'DurationSeconds': (item.get('duration') / 1000.0) if item.get('duration') else None,
     }
 
 

@@ -846,6 +846,9 @@ DUPLICATE_DISTANCE_THRESHOLD_COSINE = float(os.getenv("DUPLICATE_DISTANCE_THRESH
 DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", "0.05"))
 DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN", "0.15"))
 DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOKBACK", "1"))
+# Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
+# recording for catalogue identity. Same rule AcoustID uses (7s). Unknown duration = not the same.
+DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "7.0"))
 
 # --- Mood Similarity Filtering ---
 # Threshold for mood similarity filtering. Lower values = stricter filtering (more similar moods required).

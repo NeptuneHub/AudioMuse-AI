@@ -26,6 +26,24 @@ Main Features:
 from tasks import mediaserver
 
 
+def _duration_seconds(item):
+    seconds = item.get('DurationSeconds')
+    if seconds is None:
+        ticks = item.get('RunTimeTicks')
+        if ticks is not None:
+            try:
+                seconds = float(ticks) / 10_000_000.0
+            except (TypeError, ValueError):
+                return None
+        else:
+            seconds = item.get('duration')
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
 def _normalize_track(item):
     if item is None:
         return {
@@ -38,6 +56,7 @@ def _normalize_track(item):
             'album': None,
             'year': None,
             'rating': None,
+            'duration': None,
         }
 
     def _try(*keys):
@@ -64,6 +83,7 @@ def _normalize_track(item):
         'album': _try('Album', 'album'),
         'year': year,
         'rating': _try('Rating', 'rating', 'userRating'),
+        'duration': _duration_seconds(item),
     }
 
 
