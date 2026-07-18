@@ -193,18 +193,21 @@ class TestRealDuplicateRepair:
         # both files still map to it under that new id.
         assert _maps(db, _current(real)) == ['pr1', 'pr2']
         assert _duration(db, _current(real)) == pytest.approx(200.0)
-        # False duplicate: map rows gone, but the score/embedding row survives. With
-        # no length and no map row it keeps its old-scheme id (nothing to relabel).
-        assert _maps(db, false) == []
-        assert _duration(db, false) is None
+        # False duplicate: map rows gone and no length -> it's an ORPHAN. It is now
+        # bumped to the current scheme (kept, never deleted) so the version gate can
+        # go cold; a future server that has the track can re-map it under the new id.
+        assert _maps(db, _current(false)) == []
+        assert _duration(db, false) == 'gone'  # old-scheme id no longer exists
+        assert _duration(db, _current(false)) is None  # bumped, still carries no length
         with db.cursor() as cur:
             cur.execute("SELECT count(*) FROM score")
             assert cur.fetchone()[0] == 2, "a false merge never deletes a score row"
             cur.execute("SELECT count(*) FROM embedding")
             assert cur.fetchone()[0] == 2
 
-        # Second run is a no-op and NEVER calls the server: the real survivor now
-        # carries a duration and the false group has dissolved.
+        # Second run short-circuits on the version gate and NEVER calls the server:
+        # the real survivor carries a length and the false orphan is now current-scheme,
+        # so no older-scheme row is left to keep the migration alive.
         def explode(server):
             raise AssertionError("the second run must not contact the music server")
 
@@ -213,7 +216,7 @@ class TestRealDuplicateRepair:
             '_server_durations', explode,
         )
         second = _run(db, monkeypatch, durations)
-        assert second['checked'] == 0 and second['removed'] == 0
+        assert second == {'skipped': 'up_to_date'}
 
     def test_single_file_rows_are_backfilled_and_then_idempotent(self, db, monkeypatch):
         # The 88% case: rows mapping ONE file get their length stamped (never

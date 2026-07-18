@@ -259,7 +259,7 @@ def _release_gmm_pool_temp_folders() -> None:
         manager = getattr(executor, "_temp_folder_manager", None)
         if manager is None:
             return
-        for folder in list(getattr(manager, "_cached_temp_folders", {}).values()):
+        for folder in getattr(manager, "_cached_temp_folders", {}).values():
             if folder and not os.path.isdir(folder):
                 os.makedirs(folder, exist_ok=True)
         manager._clean_temporary_resources(force=True, allow_non_empty=True)
@@ -330,35 +330,41 @@ def _artist_jobs(cur, batch, artist_tracks, artist_track_hashes):
     return jobs
 
 
+def _run_fit_batches(cur, pending, artist_tracks, artist_track_hashes, dispatch):
+    fitted = {}
+    for batch in _artist_batches(pending, artist_tracks):
+        try:
+            jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
+        except Exception:
+            logger.exception(
+                "Failed to fetch embeddings for a batch of %d artists", len(batch)
+            )
+            continue
+        if not jobs:
+            continue
+        for artist_name, params in dispatch(jobs):
+            if params is not None:
+                fitted[artist_name] = params
+    return fitted
+
+
 def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
     workers = _gmm_worker_count(len(pending))
     logger.info(
         "Fitting %d artist GMMs across %d worker process(es)...", len(pending), workers
     )
-    fitted = {}
-
-    def _fit_all(dispatch):
-        for batch in _artist_batches(pending, artist_tracks):
-            try:
-                jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
-            except Exception:
-                logger.exception(
-                    "Failed to fetch embeddings for a batch of %d artists", len(batch)
-                )
-                continue
-            if not jobs:
-                continue
-            for artist_name, params in dispatch(jobs):
-                if params is not None:
-                    fitted[artist_name] = params
-
     if workers <= 1:
-        _fit_all(lambda jobs: [_fit_artist_job(job) for job in jobs])
-        return fitted
+        return _run_fit_batches(
+            cur, pending, artist_tracks, artist_track_hashes,
+            lambda jobs: [_fit_artist_job(job) for job in jobs],
+        )
 
     try:
         with Parallel(n_jobs=workers, backend='loky', max_nbytes=None) as runner:
-            _fit_all(lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs))
+            fitted = _run_fit_batches(
+                cur, pending, artist_tracks, artist_track_hashes,
+                lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs),
+            )
             _release_gmm_pool_temp_folders()
     finally:
         _shutdown_gmm_pool()

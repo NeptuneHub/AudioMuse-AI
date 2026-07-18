@@ -87,17 +87,10 @@ def _empty_totals():
 def _old_scheme_where(alias='s'):
     """(sql, params) matching an OLDER-version signature id that must be bumped up.
 
-    A signature id (fp_1..fp_9 of the canonical length) whose version digit is not
-    the current one. Config drives the current head, so a future bump needs no code
-    change here.
+    Delegates to the single spelling of the predicate in ``simhash.signature_id_sql``
+    so a future scheme bump touches one place.
     """
-    head = simhash.CURRENT_ID_HEAD
-    sql = (
-        "{a}.item_id LIKE 'fp\\_%%' AND length({a}.item_id) = %s "
-        "AND substring({a}.item_id from 4 for 1) BETWEEN '1' AND '9' "
-        "AND left({a}.item_id, %s) <> %s".format(a=alias)
-    )
-    return sql, [simhash.CANONICAL_ID_LEN, len(head), head]
+    return simhash.signature_id_sql(alias)
 
 
 def _old_scheme_rows_exist(cur):
@@ -415,10 +408,11 @@ def _run_backfill(db, cur, prefetched=None):
 def _run_migration(db, cur, prefetched=None):
     try:
         totals = _run_backfill(db, cur, prefetched)
-        # HARD version gate: bump every older id that now carries a length up to the
-        # current scheme. Rows a skipped/unreliable server left NULL keep their old
-        # id and are retried next boot; everything else becomes current, so the gate
-        # above is false from then on and this whole step is skipped forever.
+        # HARD version gate: bump every older id that now carries a length (plus any
+        # orphan no server maps) up to the current scheme. Rows a skipped/unreliable
+        # server left NULL keep their old id and retry next boot; everything else
+        # becomes current, so the gate above goes false and this step is skipped
+        # forever - an unmappable orphan can no longer keep it alive.
         from tasks.fingerprint_canonicalize import relabel_scheme_to_current
         totals['relabelled'] = relabel_scheme_to_current(cur, only_with_duration=True)
         db.commit()

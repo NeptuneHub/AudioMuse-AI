@@ -67,3 +67,32 @@ def test_requested_n_still_trims_after_translation(monkeypatch):
     out = app_server_context.scope_results(rows, 1, id_key='item_id')
 
     assert out == [{'item_id': 'jelly-1'}]
+
+
+def _wire_translate_error(monkeypatch):
+    monkeypatch.setattr(app_server_context, 'resolve_request_server_id',
+                        lambda *a, **k: 'srv1')
+    monkeypatch.setattr(registry, 'has_secondary_servers', lambda *a, **k: True)
+
+    def _boom(ids, sid, conn=None):
+        raise RuntimeError('registry down')
+    monkeypatch.setattr(registry, 'translate_ids', _boom)
+
+
+def test_translation_error_fails_closed_dropping_fp_but_keeping_legacy_ids(monkeypatch):
+    _wire_translate_error(monkeypatch)
+    rows = [{'item_id': 'fp_2aaa'}, {'item_id': 'legacy-1'}]
+
+    out = app_server_context.scope_results(rows, None, id_key='item_id')
+
+    assert [r['item_id'] for r in out] == ['legacy-1']
+    assert not any(str(r['item_id']).startswith('fp_') for r in out)
+
+
+def test_translate_ids_for_request_drops_fp_and_keeps_legacy_on_error(monkeypatch):
+    _wire_translate_error(monkeypatch)
+
+    mapping = app_server_context.translate_ids_for_request(['fp_2aaa', 'legacy-1'])
+
+    assert 'fp_2aaa' not in mapping
+    assert mapping.get('legacy-1') == 'legacy-1'

@@ -487,6 +487,10 @@ def _default_provider_ids(cur, default_id, item_ids):
     return {str(item_id): str(provider_id) for item_id, provider_id in cur.fetchall()}
 
 
+def _copy_escape(value):
+    return str(value).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' ')
+
+
 def _copy_pairs(cur, table, mapping):
     """COPY a {old_id: new_id} mapping into ``table`` (id, id) - one stream, no
     per-row round trips."""
@@ -495,8 +499,8 @@ def _copy_pairs(cur, table, mapping):
         buffer.write(
             "%s\t%s\n"
             % (
-                str(old_id).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
-                str(new_id).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
+                _copy_escape(old_id),
+                _copy_escape(new_id),
             )
         )
     buffer.seek(0)
@@ -572,8 +576,8 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids,
             % (
                 canonical.replace('\t', ' '),
                 source_id,
-                provider_id.replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
-                r'\N' if not path else str(path).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
+                _copy_escape(provider_id),
+                r'\N' if not path else _copy_escape(path),
                 r'\N' if duration is None else repr(float(duration)),
             )
         )
@@ -697,21 +701,22 @@ def relabel_scheme_to_current(cur, only_with_duration=True):
     A pure key rewrite - the signature body is unchanged, only the version digit -
     so there is no re-hashing, no re-clustering and no id collision (fp_3 can never
     equal an fp_2). Reuses the same drop-FK / single UPDATE / repoint-index path the
-    provider relabel uses. ``only_with_duration`` bumps solely the rows that already
-    carry a length (so a server the duration backfill had to skip keeps its fp_2 id
-    and is retried next boot, instead of being marked done without a length).
+    provider relabel uses. ``only_with_duration`` bumps rows that already carry a
+    length PLUS orphaned old-scheme rows no server maps: a server the backfill merely
+    skipped keeps its old id and retries next boot, but an orphan (no track_server_map
+    row, so no server can ever supply a length) is bumped anyway so the version gate
+    can finally go cold. Orphans are relabelled, never deleted, so a future server
+    that has the track can re-map it.
     """
     from tasks import simhash
 
     head = simhash.CURRENT_ID_HEAD
-    guard = (
-        "item_id LIKE 'fp\\_%%' AND length(item_id) = %s "
-        "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
-        "AND left(item_id, %s) <> %s"
-    )
-    params = [simhash.CANONICAL_ID_LEN, len(head), head]
+    guard, params = simhash.signature_id_sql()
     if only_with_duration:
-        guard += " AND duration IS NOT NULL"
+        guard += (
+            " AND (duration IS NOT NULL OR NOT EXISTS ("
+            "SELECT 1 FROM track_server_map t WHERE t.item_id = score.item_id))"
+        )
     cur.execute("SELECT item_id FROM score WHERE " + guard, params)
     old_ids = [row[0] for row in cur.fetchall()]
     if not old_ids:

@@ -385,6 +385,16 @@ def is_fingerprint_id(item_id):
     return isinstance(item_id, str) and item_id.startswith(_ID_PREFIX)
 
 
+def signature_id_sql(alias=''):
+    col = f"{alias}.item_id" if alias else "item_id"
+    sql = (
+        f"{col} LIKE 'fp\\_%%' AND length({col}) = %s "
+        f"AND substring({col} from 4 for 1) BETWEEN '1' AND '9' "
+        f"AND left({col}, %s) <> %s"
+    )
+    return sql, [CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD]
+
+
 def cosine_distance(embedding_a, embedding_b):
     """Cosine distance between two raw embeddings (the Similar Songs metric).
 
