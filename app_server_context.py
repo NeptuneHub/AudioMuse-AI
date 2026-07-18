@@ -190,23 +190,37 @@ def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_
     return {'result': result, 'requested': requested, 'mapped': mapped, 'skipped': skipped}
 
 
-def scope_results(rows, requested_n=None, id_key='item_id'):
+def scope_results(rows, requested_n=None, id_key='item_id', translate=True):
     """Drop rows not on the selected server, then trim to ``requested_n``.
 
     Filtering applies to the default too because any server may be a subset.
+    ``translate`` (default True) also rewrites each surviving row's id to that
+    server's own provider id - see ``filter_rows_for_request_server``.
     """
-    filtered = filter_rows_for_request_server(rows, id_key)
+    filtered = filter_rows_for_request_server(rows, id_key, translate=translate)
     if requested_n is not None and requested_n >= 0:
         return filtered[:requested_n]
     return filtered
 
 
-def filter_rows_for_request_server(rows, id_key='item_id'):
-    """Drop result rows whose track is not on the request's selected server.
+def filter_rows_for_request_server(rows, id_key='item_id', translate=True):
+    """Drop result rows not on the request's selected server, and (by default)
+    rewrite each surviving id to that server's own provider id.
 
-    ``id_key`` is a dict key or a callable that extracts the canonical item_id.
-    Raises ValueError for an unknown ``server`` parameter so the
-    endpoint can answer 400; a registry failure fails open (rows unchanged).
+    An API response must NEVER expose the internal canonical (fp_) id: a Jellyfin
+    or Navidrome plugin gets back a list of ids and hands them straight to its own
+    server, where an fp_ id means nothing. So every list-of-ids endpoint returns
+    the id of the request's server - the default one, or the ``server`` the caller
+    selected. ``translate`` rewrites ``id_key`` to that provider id; the mapping is
+    the very ``translate_ids`` result already used to filter, so it costs nothing
+    extra. Internal callers that must stay in canonical space (e.g. a pool about to
+    be handed to create_instant_playlist_for_server, which re-translates) pass
+    ``translate=False``.
+
+    ``id_key`` is a dict key or a callable that extracts the canonical item_id; a
+    callable disables the rewrite (there is nothing to write back to). Raises
+    ValueError for an unknown ``server`` parameter so the endpoint can answer 400;
+    a registry failure fails open (rows unchanged).
 
     A single-server install skips translation only while its ids are still LEGACY,
     where translation is the identity and the filter cannot drop anything. Once the
@@ -233,6 +247,8 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
         and not any(is_fingerprint_id(i) for i in ids)
         and not registry.has_secondary_servers()
     ):
+        # Legacy single-server install: item_id already IS the provider id, so the
+        # rows are already server-native and nothing has to be dropped or rewritten.
         return rows
 
     try:
@@ -240,7 +256,12 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
     except Exception:
         logger.exception("Server availability filtering failed; returning rows unfiltered")
         return rows
-    return [r for r in rows if _get(r) in mapping]
+    kept = [r for r in rows if _get(r) in mapping]
+    if translate and not callable(id_key):
+        for r in kept:
+            if isinstance(r, dict):
+                r[id_key] = mapping[r[id_key]]
+    return kept
 
 
 def group_playlist_rows_by_server(rows):

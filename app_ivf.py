@@ -626,20 +626,25 @@ def get_track_endpoint():
     try:
         from app_helper import get_score_data_by_ids
 
-        details = get_score_data_by_ids([item_id])
+        # Accept either the server's provider id or a canonical id on input, and
+        # never echo the internal fp_ id back: scope_results rewrites the response
+        # id to the request server's own provider id (and 404s if not on it).
+        canonical_id = app_server_context.resolve_input_item_id(item_id)
+        details = get_score_data_by_ids([canonical_id])
         if not details:
             return jsonify({"error": f"Item '{item_id}' not found."}), 404
-        # Return only the basic fields
         d = details[0]
-        return jsonify(
-            {
-                "item_id": d.get('item_id'),
-                "title": d.get('title'),
-                "author": d.get('author'),
-                "album": (d.get('album') or 'unknown'),
-                "album_artist": (d.get('album_artist') or 'unknown'),
-            }
-        ), 200
+        row = {
+            "item_id": d.get('item_id'),
+            "title": d.get('title'),
+            "author": d.get('author'),
+            "album": (d.get('album') or 'unknown'),
+            "album_artist": (d.get('album_artist') or 'unknown'),
+        }
+        scoped = app_server_context.scope_results([row], None, id_key='item_id')
+        if not scoped:
+            return jsonify({"error": f"Item '{item_id}' not found."}), 404
+        return jsonify(scoped[0]), 200
     except Exception:
         logger.exception(f"Unexpected error fetching track {item_id}")
         return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, _UNEXPECTED_ERROR_MSG)), 500
@@ -718,6 +723,13 @@ def create_media_server_playlist():
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
         return jsonify({"error": "Invalid server selection."}), 400
+
+    # The client posts back the ids it got from a list endpoint - the selected
+    # server's provider ids (never the internal fp_ id). Canonicalize them so the
+    # dispatcher can translate them to the target server exactly once. A canonical
+    # id passed through unchanged, so older clients keep working too.
+    resolved = app_server_context.resolve_input_item_ids(final_track_ids, data)
+    final_track_ids = [resolved.get(i, i) for i in final_track_ids]
 
     try:
         try:

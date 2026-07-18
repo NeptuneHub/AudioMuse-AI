@@ -596,7 +596,12 @@ def _run_chat_pipeline(data, log_messages):
     executed_query_str = plan_result['executed_query_str']
     filter_applied = plan_result.get('filter_applied', False)
 
-    scoped_pool = app_server_context.scope_results(all_songs, None, id_key='item_id')
+    # Keep canonical ids here: this pool is filtered for availability but stays
+    # internal - it feeds playlist selection and create_instant_playlist_for_server,
+    # which re-translates to the server's ids itself. Translating now would double it.
+    scoped_pool = app_server_context.scope_results(
+        all_songs, None, id_key='item_id', translate=False
+    )
     if len(scoped_pool) != len(all_songs):
         log_messages.append(
             f"\nServer availability: removed {len(all_songs) - len(scoped_pool)} "
