@@ -1732,24 +1732,21 @@ class TestSweepAlignment:
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        # The legacy count must distinguish "counted zero" from "query failed",
-        # or a transient error latches the scan as done forever.
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
         # Columns: server_id, name, type, is_default, rows_total, unique_songs.
-        # No track_count: the dashboard never walks a server for a library size.
+        # Purely local: one GROUP BY over track_server_map, no track_count walk
+        # and no score scan (the legacy anti-join is gone).
         cur.fetchall.return_value = [
             ('s1', 'Jellyfin', 'jellyfin', True, 188032, 188000),
             ('s2', 'PLEX', 'plex', False, 46, 46),
             ('s3', 'Fresh', 'navidrome', False, 0, 0),
         ]
         rows = dash._collect_music_server_metrics(cur)
-        # Default server: legacy add-on (25) lifts unique_songs and resolved; the
-        # 32-file gap between rows_total and unique_songs is duplicate copies.
-        assert rows[0]['unique_songs'] == 188025
+        # resolved is just the mapped-row count; the 32-file gap between rows_total
+        # and unique_songs is duplicate copies.
+        assert rows[0]['unique_songs'] == 188000
         assert rows[0]['duplicate_copies'] == 32
-        assert rows[0]['resolved'] == 188057
+        assert rows[0]['resolved'] == 188032
         assert rows[1]['unique_songs'] == 46
         assert rows[1]['duplicate_copies'] == 0
         assert rows[1]['resolved'] == 46
@@ -2111,34 +2108,26 @@ class TestRegistrySeeding:
         assert not any('DELETE FROM music_servers' in sql for sql, _p in cur.executed)
 
 
-class TestDashboardLegacyCountLatch:
-    def test_failed_count_is_not_latched_as_done(self, monkeypatch):
-        """A transient DB error must not be read as 'no legacy rows left'."""
+class TestDashboardHasNoLegacyScoreScan:
+    def test_per_server_metrics_never_scan_score(self, monkeypatch):
+        # The legacy provider-keyed anti-join over score is gone: per-server
+        # metrics are a single GROUP BY over track_server_map and must not call
+        # _counted_or_none (the only path that scanned score here).
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: None)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
+
+        def _boom(*a, **k):
+            raise AssertionError('per-server metrics must not scan score')
+
+        monkeypatch.setattr(dash, '_counted_or_none', _boom)
         cur = MagicMock()
         cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, 40, 40)]
 
         rows = dash._collect_music_server_metrics(cur)
 
         assert rows[0]['resolved'] == 40
-        assert dash._LEGACY_UNMAPPED_DONE == {}
-
-    def test_real_zero_retires_the_scan(self, monkeypatch):
-        import app_dashboard as dash
-
-        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 0)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
-        cur = MagicMock()
-        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, 40, 40)]
-
-        dash._collect_music_server_metrics(cur)
-
-        assert dash._LEGACY_UNMAPPED_DONE == {'d1': True}
+        assert not hasattr(dash, '_LEGACY_UNMAPPED_DONE')
 
 
 class TestLyrionFolderFilterIsAnchored:

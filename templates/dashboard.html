@@ -195,13 +195,8 @@
     .muted { color: var(--text-muted); font-size: 0.85rem; }
 
     /* .scope-chip / .scope-catalog / .scope-server live in style.css, shared with
-       the corner chip server_selector.js pins on every page. */
-    /* One server: "catalogue" and "per server" describe the same songs, so the
-       chips say nothing. Hidden rather than never-rendered, so a second server
-       being added brings them back on the next poll. */
-    #main-content-inner.single-server .scope-chip { display: none; }
-
-    /* Coverage bars, shared by the per-server tile and the server table. */
+       the corner chip server_selector.js pins on every page. Always shown, even
+       on a single-server install, so every page carries its scope label. */
 </style>
 {% endblock %}
 
@@ -371,7 +366,7 @@
     const charts = {};
 
     // Which caption each section gets. A section is in exactly one list: it is
-    // either read from the hourly snapshot or recomputed live on every poll.
+    // either read from the background snapshot or recomputed live on every poll.
     const SNAPSHOT_CAPTIONS = [
         'keynumbers-updated', 'content-updated', 'music-servers-updated',
     ];
@@ -531,7 +526,7 @@
             div.style.gridColumn = '1 / -1';
             div.innerHTML = `<h3>Catalogue</h3>
                              <div class="dash-stat" style="font-size:1rem;">First snapshot is still being computed</div>
-                             <div class="dash-substat">It lands about a minute after startup, then refreshes hourly.</div>`;
+                             <div class="dash-substat">It lands about a minute after startup, then refreshes every minute.</div>`;
             host.appendChild(div);
             return;
         }
@@ -539,26 +534,18 @@
         const totalSongs = c.total_songs || 0;
         const totalArtists = c.distinct_artists || 0;
 
-        // There is deliberately no "analyzed (MusiCNN) %" here. A song only
-        // enters the catalogue when it is analyzed, so that number is always
-        // 100% and says nothing. Every number on this page describes the
-        // analyzed catalogue itself, never the size of a remote library.
+        // Just the number on each card: no subtitle, no subset line.
         const cards = [
-            { title: 'Songs', value: totalSongs.toLocaleString(),
-              sub: 'in the analyzed catalogue<br>'
-                   + subsetLine('CLAP', c.clap_indexed, totalSongs) },
-            { title: 'Artists', value: totalArtists.toLocaleString(),
-              sub: subsetLine('With an artist model', c.gmm_indexed, totalArtists) },
-            { title: 'Albums', value: (c.distinct_albums || 0).toLocaleString(),
-              sub: '&nbsp;' },
+            { title: 'Songs', value: totalSongs.toLocaleString() },
+            { title: 'Artists', value: totalArtists.toLocaleString() },
+            { title: 'Albums', value: (c.distinct_albums || 0).toLocaleString() },
         ];
 
         cards.forEach(card => {
             const div = document.createElement('div');
             div.className = 'dash-stat-card';
             div.innerHTML = `<h3>${card.title}</h3>
-                             <div class="dash-stat">${card.value}</div>
-                             <div class="dash-substat">${card.sub || ''}</div>`;
+                             <div class="dash-stat">${card.value}</div>`;
             host.appendChild(div);
         });
     }
@@ -762,9 +749,6 @@
             // key. Treat that as "not in this snapshot yet", not as "no servers".
             const content = d.content || {};
             const servers = Array.isArray(content.music_servers) ? content.music_servers : [];
-            // The scope chips only mean something once a second server exists.
-            const root = document.getElementById('main-content-inner');
-            if (root) root.classList.toggle('single-server', servers.length < 2);
             renderKeyNumbers(d);
             renderWorkers(d.workers);
             renderRecentTasks(d.recent_tasks);
@@ -777,11 +761,11 @@
             // Exactly two captions on this page, one per cadence.
             //
             // A SNAPSHOT section must stamp stats_updated_at and NEVER
-            // generated_at: stamping the request time made an hour-old number
+            // generated_at: stamping the request time made a stale number
             // look freshly computed, because the caption ticked every 30s while
             // the data underneath it sat still.
             const snapshot = d.stats_updated_at
-                ? 'Snapshot taken ' + d.stats_updated_at + ' - recomputed hourly'
+                ? 'Snapshot taken ' + d.stats_updated_at + ' - recomputed every minute'
                 : 'First snapshot is still being computed - it lands about a minute after startup';
             const live = d.generated_at
                 ? 'Live - updated ' + d.generated_at + ' - refreshes every 30s'

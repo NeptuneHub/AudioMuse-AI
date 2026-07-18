@@ -128,16 +128,15 @@
 
     // Page scope chip, pinned to the top-right corner of the page's TITLE CARD.
     //
-    // Only shown with TWO OR MORE servers: with one server "catalogue" and "per
-    // server" describe the same set of songs, so the distinction is noise.
-    // Positioned absolutely inside the card so it cannot reflow the page it
-    // annotates.
+    // Shown whenever at least one server is configured, so every page always
+    // carries its CATALOGUE / PER SERVER label. Positioned absolutely inside the
+    // card so it cannot reflow the page it annotates.
     function renderScopeChip() {
         var existing = document.getElementById('page-scope-chip');
         if (existing) {
             existing.remove();
         }
-        if (state.servers.length < 2) {
+        if (state.servers.length < 1) {
             return;
         }
         var root = document.querySelector('.container[data-page-scope]');

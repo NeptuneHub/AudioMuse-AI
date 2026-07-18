@@ -340,7 +340,7 @@ def fake_dashboard(data):
         c['total_songs'] = 2437
         c['distinct_artists'] = 612
         c['distinct_albums'] = 348
-        for kk in ('musicnn_indexed', 'clap_indexed', 'gmm_indexed'):
+        for kk in ('clap_indexed',):
             if kk in c:
                 c[kk] = 2437
         tg = c.get('top_genre')

@@ -16,14 +16,16 @@ Every number the dashboard publishes is classified on two axes:
 * SCOPE - CATALOG (the deduplicated union of every server, i.e. the ``score``
   table) or SERVER (one music server, i.e. ``music_servers`` + the
   ``track_server_map`` rows pointing at it). Nothing is both.
-* CADENCE - SNAPSHOT (needs a big query, so it is computed once at startup and
-  then hourly into the ``dashboard_stats`` singleton) or LIVE (cheap enough to
-  recompute on every poll). Nothing is in between.
+* CADENCE - SNAPSHOT (precomputed into the ``dashboard_stats`` singleton) or
+  LIVE (cheap enough to recompute on every poll). Nothing is in between. The
+  SNAPSHOT itself refreshes on two timers that merge into the one blob: the
+  cheap FAST metrics every 60s, and the single heavy mood scan hourly.
 
 Main Features:
 * Routes: `/` dashboard page and `/api/dashboard/summary`.
-* SNAPSHOT tier: every CATALOG aggregate plus the per-SERVER alignment counts,
-  refreshed by ``refresh_dashboard_stats()`` at startup and hourly.
+* SNAPSHOT tier: the FAST block (CATALOG counts, per-SERVER counts, tempo) via
+  ``refresh_dashboard_stats()`` every 60s; the MOOD block (Genres + Moods
+  Coverage) via ``refresh_dashboard_mood_stats()`` hourly.
 * LIVE tier: workers (Redis), recent tasks and cron (tiny tables) only.
 """
 
@@ -40,10 +42,6 @@ from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
-
-# Per-server flag set once the default server's legacy NOT-EXISTS count hits 0:
-# it only ever shrinks after canonicalization, so the scan can be skipped then.
-_LEGACY_UNMAPPED_DONE = {}
 
 
 @dashboard_bp.route('/')
@@ -71,9 +69,9 @@ def _safe_rollback(cur):
 
 
 def _counted_or_none(cur, sql, params=None):
-    """Run a COUNT and return it, or None if the query failed. Never 0-on-error:
-    a transient failure that returned 0 would be published into the hourly
-    snapshot as a real "nothing analyzed" and stay on screen for an hour."""
+    # Run a COUNT and return it, or None if the query failed. Never 0-on-error: a
+    # transient failure that returned 0 would be published into the snapshot as a
+    # real "nothing analyzed" and stay on screen until the next refresh.
     try:
         cur.execute(sql, params or ())
         row = cur.fetchone()
@@ -95,20 +93,6 @@ def _table_exists(cur, name):
     except Exception:
         _safe_rollback(cur)
         return False
-
-
-def _count_gmm_eligible_artists(cur):
-    """Artists the GMM index is built from: those with at least one analyzed
-    track. Counted in the DB rather than read from the web process's in-memory
-    ``artist_map``, which is 0 whenever the index failed to load and is not the
-    same population as ``distinct_artists`` (which includes artists with no
-    embedding at all)."""
-    return _counted_or_none(
-        cur,
-        "SELECT COUNT(DISTINCT s.author) FROM score s "
-        "JOIN embedding e ON e.item_id = s.item_id "
-        "WHERE s.author IS NOT NULL AND s.author <> ''",
-    )
 
 
 def _collect_workers():
@@ -181,10 +165,8 @@ def _collect_music_server_metrics(cur):
     # Per-configured-server view of the ANALYZED catalogue: how many analyzed
     # songs are mapped to each server, split into distinct songs and the extra
     # duplicate files that collapse onto a song already counted. Entirely local
-    # (track_server_map + score); it never walks a media server. The default
-    # server also counts legacy provider-keyed rows predating canonicalization.
-    # SNAPSHOT tier (GROUP BY over track_server_map plus a legacy anti-join over
-    # score). Empty list when the registry table does not exist yet.
+    # (a single GROUP BY over track_server_map); it never walks a media server
+    # and never scans score. Empty list when the registry table does not exist.
     servers = []
     try:
         if not _table_exists(cur, 'music_servers'):
@@ -203,21 +185,6 @@ def _collect_music_server_metrics(cur):
             rows_total = int(r[4] or 0)
             unique_songs = int(r[5] or 0)
             duplicate_copies = max(rows_total - unique_songs, 0)
-            legacy = 0
-            if r[3] and not _LEGACY_UNMAPPED_DONE.get(r[0]):
-                counted = _counted_or_none(
-                    cur,
-                    "SELECT COUNT(*) FROM score s "
-                    "WHERE s.item_id NOT LIKE 'fp\\_%%' AND NOT EXISTS ("
-                    "SELECT 1 FROM track_server_map m "
-                    "WHERE m.item_id = s.item_id AND m.server_id = %s)",
-                    (r[0],),
-                )
-                if counted == 0:
-                    _LEGACY_UNMAPPED_DONE[r[0]] = True
-                legacy = counted or 0
-            unique_songs += legacy
-            resolved = rows_total + legacy
             servers.append(
                 {
                     'name': r[1],
@@ -225,7 +192,7 @@ def _collect_music_server_metrics(cur):
                     'is_default': bool(r[3]),
                     'unique_songs': unique_songs,
                     'duplicate_copies': duplicate_copies,
-                    'resolved': resolved,
+                    'resolved': rows_total,
                 }
             )
     except Exception as e:
@@ -234,10 +201,15 @@ def _collect_music_server_metrics(cur):
     return servers
 
 
-def _collect_content_metrics(cur):
+def _collect_fast_metrics(cur):
+    # The FAST tier: every aggregate here is a single indexed count/GROUP BY that
+    # stays under a few seconds even on a 1M-song library, so it is cheap enough
+    # to recompute every 60 seconds. The one expensive scan (mood vectors) lives
+    # in _collect_mood_metrics on its own hourly cadence.
+    #
     # Every count uses _counted_or_none so a transient DB failure is a None (not
-    # a 0): refresh_dashboard_stats then skips the whole upsert rather than
-    # persisting zeros over the last good snapshot for an hour.
+    # a 0): the caller then skips the whole upsert rather than persisting zeros
+    # over the last good snapshot.
     #
     # There is deliberately no "musicnn analyzed %" here: a song only enters
     # `score` at analysis time and save_track_analysis_and_embedding writes its
@@ -261,14 +233,10 @@ def _collect_content_metrics(cur):
             "COALESCE(NULLIF(album_artist, ''), author) AS aa, album FROM score "
             "WHERE album IS NOT NULL AND album <> '') t",
         ),
-        # Genuine subsets of the catalogue: CLAP and the artist GMM are separate
-        # passes that run after analysis, so these percentages can really be < 100.
+        # A genuine subset of the catalogue: CLAP is a separate pass that runs
+        # after analysis, so its percentage can really be < 100.
         'clap_indexed': _counted_or_none(cur, "SELECT COUNT(*) FROM clap_embedding"),
-        'gmm_indexed': _count_gmm_eligible_artists(cur),
     }
-    # The per-SERVER block. It shares the SNAPSHOT tier because it is a big query
-    # (GROUP BY over track_server_map plus an anti-join over score), not because
-    # it is catalogue-wide - it is the only per-server data on the page.
     metrics['music_servers'] = _collect_music_server_metrics(cur)
     # Cleared on any query failure below so the caller can refuse to publish a
     # partial snapshot. Popped before serialization.
@@ -276,54 +244,9 @@ def _collect_content_metrics(cur):
         metrics[k] is None
         for k in (
             'total_songs', 'distinct_artists', 'distinct_albums',
-            'clap_indexed', 'gmm_indexed',
+            'clap_indexed',
         )
     )
-
-    # Parse mood vectors into the two signals the dashboard renders:
-    #  - mood_dominant_counts: per-song dominant-label counts -> Genres chart.
-    #  - other_feature_totals: emotional mood scores summed across songs
-    #    (other_features column) -> Moods Coverage pie.
-    # Both columns are the plain `key:value,key:value` text produced by
-    # save_track_analysis_and_embedding(), parsed directly (never JSON). A NAMED
-    # server-side cursor streams the whole table in chunks so the web process
-    # never buffers all ~180k rows at once (an unnamed cursor would).
-    mood_dominant_counts = {}
-    other_feature_totals = {}
-    try:
-        with cur.connection.cursor(name='dash_mood_scan') as scan:
-            scan.itersize = 20000
-            scan.execute(
-                "SELECT mood_vector, other_features FROM score "
-                "WHERE mood_vector IS NOT NULL AND mood_vector <> ''"
-            )
-            for mv, of in scan:
-                if not mv:
-                    continue
-                parsed = _parse_keyval(mv)
-                if not parsed:
-                    continue
-                dom = max(parsed.items(), key=lambda kv: kv[1])[0]
-                mood_dominant_counts[dom] = mood_dominant_counts.get(dom, 0) + 1
-
-                if of:
-                    of_parsed = _parse_keyval(of)
-                    for k, s in of_parsed.items():
-                        if k in ('tempo_normalized', 'energy_normalized'):
-                            continue
-                        other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
-    except Exception as e:
-        logger.debug(f"dashboard: mood aggregation failed: {e}")
-        _safe_rollback(cur)
-        metrics['_complete'] = False
-
-    # Genre breakdown: dominant-mood counts from mood_vector (genre-like labels).
-    top_genre = sorted(mood_dominant_counts.items(), key=lambda kv: kv[1], reverse=True)
-    metrics['top_genre'] = [{'label': k, 'count': int(v)} for k, v in top_genre]
-    # Moods Coverage: emotional mood vector (other_features):
-    # danceable / aggressive / happy / party / relaxed / sad.
-    emotional = sorted(other_feature_totals.items(), key=lambda kv: kv[1], reverse=True)
-    metrics['moods_coverage'] = [{'label': k, 'score': round(v, 2)} for k, v in emotional]
 
     # Tempo profile: bucket songs into slow/medium/fast/very-fast. Always
     # populate the key so the UI can render a real (possibly-zero) chart
@@ -361,6 +284,64 @@ def _collect_content_metrics(cur):
         metrics['_complete'] = False
 
     return metrics
+
+
+def _collect_mood_metrics(cur):
+    # The SLOW tier: the ONE full-table scan on the dashboard. It streams every
+    # score row and parses the mood_vector / other_features text in Python, which
+    # is ~tens of seconds on a 1M-song library - far too heavy for the 60s fast
+    # cadence, so it runs on its own hourly timer and is merged into the same
+    # snapshot blob. Genre and mood distributions barely move minute to minute,
+    # so hourly is plenty.
+    #
+    # Two signals are derived:
+    #  - mood_dominant_counts: per-song dominant-label counts -> Genres chart.
+    #  - other_feature_totals: emotional mood scores summed across songs
+    #    (other_features column) -> Moods Coverage pie.
+    # Both columns are the plain `key:value,key:value` text produced by
+    # save_track_analysis_and_embedding(), parsed directly (never JSON). A NAMED
+    # server-side cursor streams the whole table in chunks so the web process
+    # never buffers all rows at once (an unnamed cursor would).
+    mood_dominant_counts = {}
+    other_feature_totals = {}
+    complete = True
+    try:
+        with cur.connection.cursor(name='dash_mood_scan') as scan:
+            scan.itersize = 20000
+            scan.execute(
+                "SELECT mood_vector, other_features FROM score "
+                "WHERE mood_vector IS NOT NULL AND mood_vector <> ''"
+            )
+            for mv, of in scan:
+                if not mv:
+                    continue
+                parsed = _parse_keyval(mv)
+                if not parsed:
+                    continue
+                dom = max(parsed.items(), key=lambda kv: kv[1])[0]
+                mood_dominant_counts[dom] = mood_dominant_counts.get(dom, 0) + 1
+
+                if of:
+                    of_parsed = _parse_keyval(of)
+                    for k, s in of_parsed.items():
+                        if k in ('tempo_normalized', 'energy_normalized'):
+                            continue
+                        other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
+    except Exception as e:
+        logger.debug(f"dashboard: mood aggregation failed: {e}")
+        _safe_rollback(cur)
+        complete = False
+
+    # Genre breakdown: dominant-mood counts from mood_vector (genre-like labels).
+    top_genre = sorted(mood_dominant_counts.items(), key=lambda kv: kv[1], reverse=True)
+    # Moods Coverage: emotional mood vector (other_features):
+    # danceable / aggressive / happy / party / relaxed / sad.
+    emotional = sorted(other_feature_totals.items(), key=lambda kv: kv[1], reverse=True)
+    return {
+        'top_genre': [{'label': k, 'count': int(v)} for k, v in top_genre],
+        'moods_coverage': [{'label': k, 'score': round(v, 2)} for k, v in emotional],
+        '_complete': complete,
+    }
 
 
 def _parse_keyval(s):
@@ -508,67 +489,93 @@ def _load_dashboard_stats(cur):
         return {}, None
 
 
-# Seconds between snapshot refreshes. The dashboard reports the analyzed
-# catalogue only and never walks a media server, so a flat hourly cadence is
-# all the content aggregates need.
-DASHBOARD_REFRESH_INTERVAL_SECONDS = 3600
+# The dashboard snapshot refreshes on two cadences that merge into the same
+# dashboard_stats blob:
+#  - FAST (every 60s): the cheap counts, per-server, and tempo. All stay under a
+#    few seconds even on a 1M-song library.
+#  - MOOD (hourly): the one full-table mood scan behind the Genres and Moods
+#    Coverage charts (~tens of seconds on 1M rows); its distributions barely move
+#    minute to minute, so it never needs the fast cadence.
+DASHBOARD_REFRESH_INTERVAL_SECONDS = 60
+DASHBOARD_MOOD_REFRESH_INTERVAL_SECONDS = 3600
 
 
 def dashboard_refresh_interval(app):
     return DASHBOARD_REFRESH_INTERVAL_SECONDS
 
 
-def refresh_dashboard_stats(app):
-    # Recompute the content metrics and upsert them into the dashboard_stats
-    # singleton. Called from a background thread at startup and then hourly.
-    # Runs in an app context so get_db() works, and commits so the new values
-    # are visible to later requests.
+def _merge_dashboard_content(db, content):
+    # Merge the given keys into the dashboard_stats singleton with `content ||`,
+    # so the fast refresh never clobbers the hourly mood keys and vice versa. The
+    # jsonb || is applied inside a single UPDATE, so concurrent fast/mood writes
+    # each merge onto the latest committed blob (row lock serializes them).
+    cur = db.cursor()
+    try:
+        try:
+            cur.execute(
+                f"INSERT INTO dashboard_stats (id, updated_at, content) "
+                f"VALUES (1, {UTC_NOW_SQL}, %s::jsonb) "
+                f"ON CONFLICT (id) DO UPDATE SET "
+                f"updated_at = EXCLUDED.updated_at, "
+                f"content = COALESCE(dashboard_stats.content, '{{}}'::jsonb) "
+                f"|| EXCLUDED.content",
+                (json.dumps(content),),
+            )
+        except psycopg2.Error as e:
+            if getattr(e, 'pgcode', None) == '42P10' or 'ON CONFLICT' in str(e):
+                logger.warning(
+                    "dashboard_stats upsert fallback due missing unique constraint: %s", e
+                )
+                _safe_rollback(cur)
+                cur.execute("SELECT content FROM dashboard_stats WHERE id = 1")
+                row = cur.fetchone()
+                merged = dict(row[0]) if row and row[0] else {}
+                merged.update(content)
+                cur.execute("DELETE FROM dashboard_stats WHERE id = 1")
+                cur.execute(
+                    f"INSERT INTO dashboard_stats (id, updated_at, content) "
+                    f"VALUES (1, {UTC_NOW_SQL}, %s::jsonb)",
+                    (json.dumps(merged),),
+                )
+            else:
+                raise
+        db.commit()
+    finally:
+        cur.close()
+
+
+def _refresh_dashboard_block(app, collect, label):
+    # Shared driver for both cadences: collect a block of metrics, refuse to
+    # publish a partial one, and merge it into the snapshot blob.
     started = time.time()
     try:
         with app.app_context():
             db = get_db()
             cur = db.cursor(cursor_factory=DictCursor)
             try:
-                content = _collect_content_metrics(cur)
+                content = collect(cur)
             finally:
                 cur.close()
 
             if not content.pop('_complete', True):
                 logger.warning(
-                    "dashboard_stats refresh skipped: a core count or scan failed; "
-                    "keeping the previous snapshot"
+                    "%s refresh skipped: a query failed; keeping the previous snapshot",
+                    label,
                 )
                 return
 
-            cur2 = db.cursor()
-            try:
-                try:
-                    cur2.execute(
-                        f"INSERT INTO dashboard_stats (id, updated_at, content) "
-                        f"VALUES (1, {UTC_NOW_SQL}, %s::jsonb) "
-                        f"ON CONFLICT (id) DO UPDATE SET "
-                        f"updated_at = EXCLUDED.updated_at, "
-                        f"content = EXCLUDED.content",
-                        (json.dumps(content),),
-                    )
-                except psycopg2.Error as e:
-                    if getattr(e, 'pgcode', None) == '42P10' or 'ON CONFLICT' in str(e):
-                        logger.warning(
-                            "dashboard_stats upsert fallback due missing unique constraint: %s", e
-                        )
-                        _safe_rollback(cur2)
-                        cur2.execute("DELETE FROM dashboard_stats WHERE id = 1")
-                        cur2.execute(
-                            f"INSERT INTO dashboard_stats (id, updated_at, content) "
-                            f"VALUES (1, {UTC_NOW_SQL}, %s::jsonb)",
-                            (json.dumps(content),),
-                        )
-                    else:
-                        raise
-                db.commit()
-            finally:
-                cur2.close()
-        elapsed = time.time() - started
-        logger.info(f"dashboard_stats refreshed in {elapsed:.1f}s")
+            _merge_dashboard_content(db, content)
+        logger.info("%s refreshed in %.1fs", label, time.time() - started)
     except Exception:
-        logger.exception("refresh_dashboard_stats failed")
+        logger.exception("%s refresh failed", label)
+
+
+def refresh_dashboard_stats(app):
+    # FAST cadence (every 60s): cheap counts, per-server, tempo.
+    _refresh_dashboard_block(app, _collect_fast_metrics, "dashboard_stats")
+
+
+def refresh_dashboard_mood_stats(app):
+    # MOOD cadence (hourly): the full-table mood scan behind the Genres and Moods
+    # Coverage charts.
+    _refresh_dashboard_block(app, _collect_mood_metrics, "dashboard mood stats")
