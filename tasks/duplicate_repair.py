@@ -142,16 +142,166 @@ def _unmap_false_groups(cur, server_id, false_ids):
     return removed
 
 
+def _force_no_autocommit(db):
+    try:
+        db.autocommit = False
+    except Exception:
+        logger.debug("Could not force autocommit off", exc_info=True)
+
+
+def _rollback(db):
+    try:
+        db.rollback()
+    except Exception:
+        logger.debug("Rollback failed", exc_info=True)
+
+
+def _release(cur, db, acquired, own_conn):
+    if cur is not None:
+        if acquired:
+            try:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_REPAIR_ADVISORY_LOCK,))
+                if own_conn:
+                    db.commit()
+            except Exception:
+                logger.debug("Advisory unlock failed", exc_info=True)
+        cur.close()
+    if own_conn:
+        db.close()
+
+
+def _log_start_banner(total_groups, server_count):
+    logger.info("=" * 64)
+    logger.info(
+        "START OF CATALOGUE ID DUPLICATE CHECK ON %d SONGS: these catalogue "
+        "ids map more than one file on their server and were merged before "
+        "track length was considered (%d server(s) involved).",
+        total_groups, server_count,
+    )
+    logger.info(
+        "One-time step: durations come from the music server's metadata "
+        "listing, no audio is downloaded. Real duplicates (same audio, same "
+        "length) are kept; false duplicates are unmapped so the next analysis "
+        "run re-analyzes them under their own correct ids."
+    )
+    logger.info("=" * 64)
+
+
+def _log_progress(totals, total_groups):
+    logger.info(
+        "Catalogue id duplicate check: %d%% (%d/%d songs checked; "
+        "%d real duplicates, %d false so far)",
+        int(round(100.0 * totals['checked'] / total_groups)),
+        totals['checked'], total_groups, totals['real'], totals['false'],
+    )
+
+
+def _log_complete(total_groups, totals):
+    logger.info("=" * 64)
+    logger.info(
+        "CATALOGUE ID DUPLICATE CHECK COMPLETE: of the initial %d duplicated "
+        "songs, %d are REAL duplicates (kept, their length recorded) and %d "
+        "were FALSE duplicates from the old id calculation; %d file "
+        "mapping(s) removed. The next analysis run will re-analyze those "
+        "files and give each one its own correct catalogue id.",
+        total_groups, totals['real'], totals['false'], totals['removed'],
+    )
+    logger.info("=" * 64)
+
+
+def _server_durations_or_skip(db, server_id, groups, totals):
+    server = registry.get_server(server_id, conn=db)
+    if server is None:
+        logger.warning(
+            "Catalogue id duplicate check: server %s no longer exists; "
+            "leaving its %d songs to a later start.", server_id, len(groups),
+        )
+        totals['checked'] += len(groups)
+        return None
+    try:
+        durations = _server_durations(server)
+    except Exception:
+        logger.exception(
+            "Catalogue id duplicate check: could not list tracks from "
+            "server '%s'; its %d songs stay unconfirmed and the check "
+            "retries them on the next start.",
+            _server_label(server, server_id), len(groups),
+        )
+        totals['checked'] += len(groups)
+        return None
+    member_ids = [
+        provider_id
+        for provider_ids in groups.values()
+        for provider_id in provider_ids
+    ]
+    known = sum(1 for provider_id in member_ids if provider_id in durations)
+    if known < _MIN_KNOWN_DURATION_RATIO * len(member_ids):
+        logger.warning(
+            "Catalogue id duplicate check: server '%s' returned durations "
+            "for only %d of %d mapped files; listing looks unreliable, "
+            "retrying this server on the next start.",
+            _server_label(server, server_id), known, len(member_ids),
+        )
+        totals['checked'] += len(groups)
+        return None
+    return durations
+
+
+def _process_server(db, cur, server_id, groups, totals, total_groups, step):
+    durations = _server_durations_or_skip(db, server_id, groups, totals)
+    if durations is None:
+        return
+    real_durations = {}
+    false_ids = []
+    for item_id, provider_ids in groups.items():
+        consensus = _group_duration(provider_ids, durations)
+        if consensus is None:
+            totals['false'] += 1
+            false_ids.append(item_id)
+        else:
+            totals['real'] += 1
+            real_durations[item_id] = consensus
+        totals['checked'] += 1
+        if totals['checked'] % step == 0 or totals['checked'] == total_groups:
+            _log_progress(totals, total_groups)
+    _stamp_real_durations(cur, real_durations)
+    totals['removed'] += _unmap_false_groups(cur, server_id, false_ids)
+    if false_ids:
+        cur.execute(
+            "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
+            (server_id,),
+        )
+    db.commit()
+
+
+def _run_check(db, cur):
+    try:
+        groups_by_server = _groups_needing_check(cur)
+        total_groups = sum(len(groups) for groups in groups_by_server.values())
+        if not total_groups:
+            return {'checked': 0, 'real': 0, 'false': 0, 'removed': 0}
+        _log_start_banner(total_groups, len(groups_by_server))
+        step = max(1, total_groups // 10)
+        totals = {'checked': 0, 'real': 0, 'false': 0, 'removed': 0}
+        for server_id, groups in groups_by_server.items():
+            _process_server(db, cur, server_id, groups, totals, total_groups, step)
+        _log_complete(total_groups, totals)
+        return totals
+    except Exception:
+        _rollback(db)
+        logger.exception(
+            "Catalogue id duplicate check failed; it retries on the next start"
+        )
+        raise
+
+
 def repair_duplicate_track_maps(conn=None):
     own_conn = conn is None
     db = conn or connect_raw()
     acquired = False
     cur = None
     try:
-        try:
-            db.autocommit = False
-        except Exception:
-            logger.debug("Could not force autocommit off", exc_info=True)
+        _force_no_autocommit(db)
         cur = db.cursor()
         cur.execute("SELECT pg_try_advisory_lock(%s)", (_REPAIR_ADVISORY_LOCK,))
         acquired = bool(cur.fetchone()[0])
@@ -161,124 +311,6 @@ def repair_duplicate_track_maps(conn=None):
                 "lock; skipping on this one."
             )
             return {'skipped': 'locked'}
-        try:
-            groups_by_server = _groups_needing_check(cur)
-            total_groups = sum(len(groups) for groups in groups_by_server.values())
-            if not total_groups:
-                return {'checked': 0, 'real': 0, 'false': 0, 'removed': 0}
-
-            logger.info("=" * 64)
-            logger.info(
-                "START OF CATALOGUE ID DUPLICATE CHECK ON %d SONGS: these catalogue "
-                "ids map more than one file on their server and were merged before "
-                "track length was considered (%d server(s) involved).",
-                total_groups, len(groups_by_server),
-            )
-            logger.info(
-                "One-time step: durations come from the music server's metadata "
-                "listing, no audio is downloaded. Real duplicates (same audio, same "
-                "length) are kept; false duplicates are unmapped so the next analysis "
-                "run re-analyzes them under their own correct ids."
-            )
-            logger.info("=" * 64)
-
-            step = max(1, total_groups // 10)
-            checked = real = false = removed = 0
-
-            for server_id, groups in groups_by_server.items():
-                server = registry.get_server(server_id, conn=db)
-                if server is None:
-                    logger.warning(
-                        "Catalogue id duplicate check: server %s no longer exists; "
-                        "leaving its %d songs to a later start.", server_id, len(groups),
-                    )
-                    checked += len(groups)
-                    continue
-                try:
-                    durations = _server_durations(server)
-                except Exception:
-                    logger.exception(
-                        "Catalogue id duplicate check: could not list tracks from "
-                        "server '%s'; its %d songs stay unconfirmed and the check "
-                        "retries them on the next start.",
-                        _server_label(server, server_id), len(groups),
-                    )
-                    checked += len(groups)
-                    continue
-
-                member_ids = [
-                    provider_id
-                    for provider_ids in groups.values()
-                    for provider_id in provider_ids
-                ]
-                known = sum(1 for provider_id in member_ids if provider_id in durations)
-                if known < _MIN_KNOWN_DURATION_RATIO * len(member_ids):
-                    logger.warning(
-                        "Catalogue id duplicate check: server '%s' returned durations "
-                        "for only %d of %d mapped files; listing looks unreliable, "
-                        "retrying this server on the next start.",
-                        _server_label(server, server_id), known, len(member_ids),
-                    )
-                    checked += len(groups)
-                    continue
-
-                real_durations = {}
-                false_ids = []
-                for item_id, provider_ids in groups.items():
-                    consensus = _group_duration(provider_ids, durations)
-                    if consensus is None:
-                        false += 1
-                        false_ids.append(item_id)
-                    else:
-                        real += 1
-                        real_durations[item_id] = consensus
-                    checked += 1
-                    if checked % step == 0 or checked == total_groups:
-                        logger.info(
-                            "Catalogue id duplicate check: %d%% (%d/%d songs checked; "
-                            "%d real duplicates, %d false so far)",
-                            int(round(100.0 * checked / total_groups)),
-                            checked, total_groups, real, false,
-                        )
-
-                _stamp_real_durations(cur, real_durations)
-                removed += _unmap_false_groups(cur, server_id, false_ids)
-                if false_ids:
-                    cur.execute(
-                        "UPDATE music_servers SET updated_at = now() "
-                        "WHERE server_id = %s",
-                        (server_id,),
-                    )
-                db.commit()
-
-            logger.info("=" * 64)
-            logger.info(
-                "CATALOGUE ID DUPLICATE CHECK COMPLETE: of the initial %d duplicated "
-                "songs, %d are REAL duplicates (kept, their length recorded) and %d "
-                "were FALSE duplicates from the old id calculation; %d file "
-                "mapping(s) removed. The next analysis run will re-analyze those "
-                "files and give each one its own correct catalogue id.",
-                total_groups, real, false, removed,
-            )
-            logger.info("=" * 64)
-            return {'checked': checked, 'real': real, 'false': false, 'removed': removed}
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                logger.debug("Rollback failed", exc_info=True)
-            logger.exception(
-                "Catalogue id duplicate check failed; it retries on the next start"
-            )
-            raise
+        return _run_check(db, cur)
     finally:
-        if cur is not None:
-            if acquired:
-                try:
-                    cur.execute("SELECT pg_advisory_unlock(%s)", (_REPAIR_ADVISORY_LOCK,))
-                    db.commit()
-                except Exception:
-                    logger.debug("Advisory unlock failed", exc_info=True)
-            cur.close()
-        if own_conn:
-            db.close()
+        _release(cur, db, acquired, own_conn)

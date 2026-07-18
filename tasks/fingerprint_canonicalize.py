@@ -488,8 +488,8 @@ def _copy_pairs(cur, table, mapping):
         buffer.write(
             "%s\t%s\n"
             % (
-                str(old_id).replace('\t', ' ').replace('\n', ' '),
-                str(new_id).replace('\t', ' ').replace('\n', ' '),
+                str(old_id).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
+                str(new_id).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
             )
         )
     buffer.seek(0)
@@ -565,8 +565,8 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids,
             % (
                 canonical.replace('\t', ' '),
                 source_id,
-                provider_id.replace('\t', ' ').replace('\n', ' '),
-                r'\N' if not path else str(path).replace('\t', ' ').replace('\n', ' '),
+                provider_id.replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
+                r'\N' if not path else str(path).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' '),
                 r'\N' if duration is None else repr(float(duration)),
             )
         )

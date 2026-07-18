@@ -113,15 +113,15 @@ class TestNormalizeTrack:
 
     def test_duration_from_runtimeticks_converts_to_seconds(self, probe):
         t = probe._normalize_track({'Id': 'j1', 'RunTimeTicks': 2_000_000_000})
-        assert t['duration'] == 200.0
+        assert t['duration'] == pytest.approx(200.0)
 
     def test_duration_seconds_passes_through(self, probe):
         t = probe._normalize_track({'Id': 'p1', 'DurationSeconds': 215.5})
-        assert t['duration'] == 215.5
+        assert t['duration'] == pytest.approx(215.5)
 
     def test_subsonic_raw_duration_is_seconds(self, probe):
         t = probe._normalize_track({'id': 'n1', 'duration': 187})
-        assert t['duration'] == 187.0
+        assert t['duration'] == pytest.approx(187.0)
 
     def test_missing_or_invalid_duration_becomes_none(self, probe):
         assert probe._normalize_track({'Id': 'x'})['duration'] is None

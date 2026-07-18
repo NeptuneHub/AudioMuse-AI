@@ -82,6 +82,13 @@ def _str_key(value):
     return str(value) if value is not None else None
 
 
+def _duration_seconds(value):
+    try:
+        return float(value) / 1000.0 if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_track(item):
     part = _first_part(item)
     media = item.get('Media') or []
@@ -101,7 +108,7 @@ def _normalize_track(item):
         'FilePath': part.get('file') if part else None,
         'Container': media[0].get('container') if media and isinstance(media[0], dict) else None,
         'PartKey': part.get('key') if part else None,
-        'DurationSeconds': (item.get('duration') / 1000.0) if item.get('duration') else None,
+        'DurationSeconds': _duration_seconds(item.get('duration')),
     }
 
 

@@ -168,7 +168,7 @@ class TestRealDuplicateRepair:
         assert result == {'checked': 2, 'real': 1, 'false': 1, 'removed': 2}
         # Real duplicate: both files still mapped, length stamped.
         assert _maps(db, real) == ['pr1', 'pr2']
-        assert _duration(db, real) == 200.0
+        assert _duration(db, real) == pytest.approx(200.0)
         # False duplicate: map rows gone, but the score/embedding row survives.
         assert _maps(db, false) == []
         assert _duration(db, false) is None

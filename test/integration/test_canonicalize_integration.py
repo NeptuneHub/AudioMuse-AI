@@ -211,6 +211,32 @@ class TestRealCanonicalization:
             )
             assert cur.fetchone()[0] == 0, "no embedding may lose its score parent"
 
+    def test_backslash_in_id_and_path_survives_the_copy_streams(self, db):
+        from tasks import fingerprint_canonicalize as fc
+
+        # backslash is COPY's escape char, so a Windows path (or a provider id with
+        # a backslash) must be escaped or the relabel-map and track_server_map COPY
+        # streams corrupt the row. Exercises both _copy_pairs and
+        # _copy_track_server_map.
+        tracks = [
+            ('jf\\odd', 'C:\\Music\\Album\\01 Song.flac', _distinct_embedding(1)),
+            ('jf-2', '/music/B/02.flac', _distinct_embedding(2)),
+        ]
+        _build(db, tracks)
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['relabelled'] == 2
+        rows = _score(db)
+        assert all(item_id.startswith('fp_2') for item_id, _ in rows), (
+            "the backslash id must still relabel, not corrupt the relabel map"
+        )
+        by_provider = {p: path for p, _item, path in _maps(db)}
+        assert 'jf\\odd' in by_provider, "the backslash provider id survives the COPY"
+        assert by_provider['jf\\odd'] == 'C:\\Music\\Album\\01 Song.flac', (
+            "the Windows path round-trips intact"
+        )
+
     def test_identical_audio_with_matching_duration_merges_to_one_row(
         self, db, monkeypatch
     ):
@@ -252,7 +278,7 @@ class TestRealCanonicalization:
                 "SELECT duration FROM score WHERE item_id = %s",
                 (by_provider['jf-3'][0],),
             )
-            assert cur.fetchone()[0] == 300.0, (
+            assert cur.fetchone()[0] == pytest.approx(300.0), (
                 "the migration must backfill score.duration from the server metadata"
             )
 
