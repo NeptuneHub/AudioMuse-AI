@@ -24,6 +24,7 @@ Main Features:
 import gc
 import json
 import math
+import time
 import logging
 from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
@@ -54,19 +55,35 @@ map_bp = Blueprint('map_bp', __name__)
 # Keys: '100','75','50','25' each maps to dict with 'json_bytes' and 'json_gzip_bytes' and 'projection'
 MAP_JSON_CACHE = {}
 
+# Memoized canonical-id probe. Canonicalization is one-way, so a True is sticky
+# forever; a False is re-probed at most once per TTL. This keeps the map fast path
+# from seq-scanning score on every request of a not-yet-canonicalized library.
+_HAS_CANONICAL_IDS = None
+_HAS_CANONICAL_CHECKED_AT = 0.0
+_HAS_CANONICAL_TTL = 60.0
+
 
 def _catalogue_has_canonical_ids():
-    """True when score holds canonical fp_ ids (fails closed on error)."""
+    """True when score holds canonical fp_ ids (memoized; fails closed on error)."""
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    if _HAS_CANONICAL_IDS:
+        return True
+    now = time.monotonic()
+    if _HAS_CANONICAL_IDS is False and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
+        return False
     try:
         conn = get_db()
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
             )
-            return bool(cur.fetchone()[0])
+            result = bool(cur.fetchone()[0])
     except Exception:
         logger.exception("Canonical-id probe failed; failing closed")
         return True
+    _HAS_CANONICAL_IDS = result
+    _HAS_CANONICAL_CHECKED_AT = now
+    return result
 
 
 def _pick_top_mood(mood_vector_str):

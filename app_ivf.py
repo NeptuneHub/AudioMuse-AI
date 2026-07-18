@@ -578,8 +578,9 @@ def get_max_distance_endpoint():
                 [far_id]
             ).get(str(far_id))
         return jsonify(result)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
     except RuntimeError:
         logger.exception(f"Runtime error computing max distance for {item_id}")
         return jsonify(
@@ -738,7 +739,7 @@ def create_media_server_playlist():
     # dispatcher can translate them to the target server exactly once. A canonical
     # id passed through unchanged, so older clients keep working too.
     resolved = app_server_context.resolve_input_item_ids(final_track_ids, data)
-    final_track_ids = [resolved.get(i, i) for i in final_track_ids]
+    final_track_ids = [resolved.get(str(i), i) for i in final_track_ids]
 
     try:
         try:

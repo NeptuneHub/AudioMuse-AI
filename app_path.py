@@ -134,6 +134,25 @@ def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
     return _find_nearest_song_excluding_vector(centroid_vec, exclude_id=other_song_id)
 
 
+# The audio IVF index is availability-masked per server, but the SemGrove (lyrics)
+# index is not - so scope its candidates to the selected server HERE rather than
+# building a global path and dropping off-server nodes afterward. Overfetch, then
+# keep only candidates present on the selected (or default) server.
+def _server_scoped_neighbors(neighbors_fn):
+    from tasks.mediaserver import registry
+
+    server_id = app_server_context.resolve_request_server_id()
+    if server_id is None and not registry.has_secondary_servers():
+        return neighbors_fn
+
+    def scoped(query, n=100):
+        raw = neighbors_fn(query, n=max(n * 5, n + 50)) or []
+        available = registry.translate_ids([r['item_id'] for r in raw], server_id)
+        return [r for r in raw if r['item_id'] in available][:n]
+
+    return scoped
+
+
 # Create a Blueprint for the path finding routes
 path_bp = Blueprint('path_bp', __name__, template_folder='../templates')
 
@@ -364,8 +383,8 @@ def find_path_endpoint():
                 max_steps,
                 path_fix_size=path_fix_size,
                 get_vector_fn=get_sem_grove_vector_by_id,
-                neighbors_fn=find_sem_grove_neighbors_by_vector,
-                neighbors_by_id_fn=find_sem_grove_neighbors_by_id,
+                neighbors_fn=_server_scoped_neighbors(find_sem_grove_neighbors_by_vector),
+                neighbors_by_id_fn=_server_scoped_neighbors(find_sem_grove_neighbors_by_id),
                 metric="angular",
                 dup_threshold_cosine=DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS,
             )

@@ -256,8 +256,10 @@ def filter_rows_for_request_server(rows, id_key='item_id', translate=True):
     try:
         mapping = registry.translate_ids(ids, server_id)
     except Exception:
-        logger.exception("Server availability filtering failed; returning rows unfiltered")
-        return rows
+        # Fail CLOSED for canonical ids: keep legacy provider ids but drop fp_ rows
+        # so a transient registry error never re-emits an internal id to the client.
+        logger.exception("Server availability filtering failed; dropping fp_ rows to avoid a leak")
+        mapping = {i: i for i in ids if not is_fingerprint_id(i)}
     kept = [r for r in rows if _get(r) in mapping]
     if translate and not callable(id_key):
         for r in kept:
@@ -297,8 +299,10 @@ def translate_ids_for_request(item_ids):
     try:
         return registry.translate_ids(ids, server_id)
     except Exception:
-        logger.exception("Request id translation failed; using ids as-is")
-        return {i: i for i in ids}
+        # Fail CLOSED for canonical ids: keep legacy provider ids (safe identity)
+        # but drop fp_ ids so a transient registry error never leaks an internal id.
+        logger.exception("Request id translation failed; dropping fp_ ids to avoid a leak")
+        return {i: i for i in ids if not is_fingerprint_id(i)}
 
 
 def group_playlist_rows_by_server(rows):
@@ -331,12 +335,17 @@ def group_playlist_rows_by_server(rows):
         except Exception:
             logger.exception("Playlist id translation failed for server '%s'", server_id)
 
+    from tasks.simhash import is_fingerprint_id
     by_server = {}
     for row in rows:
         server_id = row.get('server_id')
         mapping = translation_by_server.get(server_id)
         if mapping is None:
+            # Deleted/unknown server or a translation error: keep a legacy provider
+            # id (safe) but never surface an internal fp_ id, even for a dead server.
             provider_id = row.get('item_id')
+            if is_fingerprint_id(provider_id):
+                continue
         else:
             provider_id = mapping.get(row.get('item_id'))
             if provider_id is None:
