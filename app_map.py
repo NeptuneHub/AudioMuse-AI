@@ -55,6 +55,13 @@ map_bp = Blueprint('map_bp', __name__)
 # Keys: '100','75','50','25' each maps to dict with 'json_bytes' and 'json_gzip_bytes' and 'projection'
 MAP_JSON_CACHE = {}
 
+# Per-server precomputed map buckets, keyed by (server_key, percent). The union
+# MAP_JSON_CACHE above stays in canonical (fp_) ids; this holds each server's OWN
+# provider ids, already serialized and gzipped, so a canonicalized/multi-server
+# request streams precomputed bytes instead of translating the whole catalogue on
+# every call. Built for the default server at cache-build time, lazily for others.
+MAP_SERVER_JSON_CACHE = {}
+
 # Memoized canonical-id probe. Canonicalization is one-way, so a True is sticky
 # forever; a False is re-probed at most once per TTL. This keeps the map fast path
 # from seq-scanning score on every request of a not-yet-canonicalized library.
@@ -285,11 +292,106 @@ def build_map_cache():
         new_cache[k] = entry
 
     MAP_JSON_CACHE = new_cache
+    MAP_SERVER_JSON_CACHE.clear()
+    _warm_server_buckets()
     logger.info(
         'Map JSON cache built: %d total items; cache sizes: %s',
         n,
         {k: v['count'] for k, v in MAP_JSON_CACHE.items()},
     )
+
+
+def _translated_bucket(entry, server_id):
+    """A cached union bucket rewritten to ``server_id``'s provider ids, dropping
+    fp_/unmapped rows, and re-serialized + gzipped. None when the bucket is empty.
+
+    server_id None means the default server. Fails CLOSED on a registry error:
+    legacy provider ids stay as identity, fp_ ids are dropped, never leaked.
+    """
+    raw = entry.get('json_gzip_bytes')
+    raw = gzip.decompress(raw) if raw else entry.get('json_bytes')
+    if not raw:
+        return None
+    from tasks.mediaserver import registry
+    from tasks.simhash import is_fingerprint_id
+
+    payload = json.loads(raw)
+    items = payload.get('items') or []
+    ids = [it.get('item_id') for it in items if it.get('item_id')]
+    try:
+        mapping = registry.translate_ids(ids, server_id)
+    except Exception:
+        logger.exception('Map id translation failed; dropping fp_ rows to avoid a leak')
+        mapping = {i: i for i in ids if not is_fingerprint_id(i)}
+    kept = []
+    for it in items:
+        provider_id = mapping.get(it.get('item_id'))
+        if provider_id is None:
+            continue
+        it['item_id'] = provider_id
+        kept.append(it)
+    payload['items'] = kept
+    payload['count'] = len(kept)
+    js = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    try:
+        gz = gzip.compress(js)
+    except Exception:
+        return {'json_bytes': js, 'projection': payload.get('projection'), 'count': len(kept)}
+    return {'json_gzip_bytes': gz, 'projection': payload.get('projection'), 'count': len(kept)}
+
+
+def _warm_server_buckets():
+    """Precompute EVERY configured server's translated buckets (plus the default)
+    so the first /api/map for ANY server streams bytes instead of translating the
+    whole catalogue live. Runs at build time in the cache-build background thread.
+
+    Skipped for a legacy single-server install with no canonical ids, where the
+    zero-cost verbatim fast path already applies.
+    """
+    from tasks.mediaserver import registry
+
+    try:
+        needs = _catalogue_has_canonical_ids() or registry.has_secondary_servers()
+    except Exception:
+        logger.exception('Map pre-warm scope probe failed; warming defensively')
+        needs = True
+    if not needs:
+        return
+
+    try:
+        servers = registry.list_servers()
+    except Exception:
+        logger.exception('Map pre-warm could not list servers; warming default only')
+        servers = []
+    try:
+        default_id = registry.get_default_server_id()
+    except Exception:
+        default_id = None
+
+    def _warm(server_key, server_id):
+        for k, entry in MAP_JSON_CACHE.items():
+            try:
+                translated = _translated_bucket(entry, server_id)
+            except Exception:
+                logger.exception('Map pre-warm failed for server %s bucket %s', server_key, k)
+                continue
+            if translated is not None:
+                MAP_SERVER_JSON_CACHE[(server_key, k)] = translated
+
+    # None resolves to the default server, keyed '__default__' for requests with no
+    # ?server=. Each configured server is also warmed under its own id so an explicit
+    # ?server=<id> hits the cache; the default's own id reuses the '__default__' work
+    # (same translation target) rather than translating the whole catalogue twice.
+    _warm('__default__', None)
+    for server in servers:
+        sid = server['server_id']
+        if sid == default_id:
+            for k in MAP_JSON_CACHE:
+                mirror = MAP_SERVER_JSON_CACHE.get(('__default__', k))
+                if mirror is not None:
+                    MAP_SERVER_JSON_CACHE[(sid, k)] = mirror
+        else:
+            _warm(sid, sid)
 
 
 def init_map_cache():
@@ -322,6 +424,30 @@ def map_ui():
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
     return response
+
+
+def _bucket_response(entry):
+    """Stream a precomputed bucket's bytes, honoring Accept-Encoding: gzip."""
+    accept_enc = request.headers.get('Accept-Encoding', '')
+    gz = entry.get('json_gzip_bytes')
+    if gz and 'gzip' in accept_enc.lower():
+        resp = Response(gz, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Encoding'] = 'gzip'
+        resp.headers['Content-Length'] = str(len(gz))
+    elif gz:
+        raw = gzip.decompress(gz)
+        resp = Response(raw, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Length'] = str(len(raw))
+    elif entry.get('json_bytes'):
+        raw = entry['json_bytes']
+        resp = Response(raw, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Length'] = str(len(raw))
+    else:
+        return jsonify({'items': [], 'projection': 'none'})
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 @map_bp.route('/api/map', methods=['GET'])
@@ -411,48 +537,24 @@ def map_api():
         return jsonify({'error': 'Invalid server selection.'}), 400
     from tasks.mediaserver import registry
 
-    # The raw-bytes fast path streams score.item_id verbatim; that is safe only
-    # while ids are still legacy provider ids. Once the catalogue is canonicalized
-    # (fp_ ids) it must go through the translating filter path too, or the response
-    # would leak internal ids on a single-server install with no ?server= param.
+    # The legacy fast path streams score.item_id verbatim; that is safe only while
+    # ids are still legacy provider ids. Once the catalogue is canonicalized (fp_
+    # ids), or a secondary server exists, or a ?server= is selected, serve the
+    # per-server bucket instead: it is precomputed ONCE to that server's provider
+    # ids (fp_ dropped) and pre-gzipped, so every request streams bytes rather than
+    # re-translating the whole catalogue. ALL configured servers are warmed at build
+    # time; a lookup miss (a server added since the last build) builds+caches lazily.
     if server_id is not None or registry.has_secondary_servers() or _catalogue_has_canonical_ids():
-        raw = entry.get('json_gzip_bytes')
-        raw = gzip.decompress(raw) if raw else entry.get('json_bytes')
-        if not raw:
-            return jsonify({'items': [], 'projection': 'none'})
-        payload = json.loads(raw)
-        items = app_server_context.filter_rows_for_request_server(
-            payload.get('items') or [], id_key='item_id'
-        )
-        payload['items'] = items
-        payload['count'] = len(items)
-        resp = jsonify(payload)
-        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-        resp.headers['Pragma'] = 'no-cache'
-        resp.headers['Expires'] = '0'
-        return resp
+        server_key = server_id or '__default__'
+        cached = MAP_SERVER_JSON_CACHE.get((server_key, pct))
+        if cached is None:
+            cached = _translated_bucket(entry, server_id)
+            if cached is None:
+                return jsonify({'items': [], 'projection': 'none'})
+            MAP_SERVER_JSON_CACHE[(server_key, pct)] = cached
+        return _bucket_response(cached)
 
-    accept_enc = request.headers.get('Accept-Encoding', '')
-    gz = entry.get('json_gzip_bytes')
-    if gz and 'gzip' in accept_enc.lower():
-        resp = Response(gz, mimetype='application/json; charset=utf-8')
-        resp.headers['Content-Encoding'] = 'gzip'
-        resp.headers['Content-Length'] = str(len(gz))
-    elif gz:
-        raw = gzip.decompress(gz)
-        resp = Response(raw, mimetype='application/json; charset=utf-8')
-        resp.headers['Content-Length'] = str(len(raw))
-    elif entry.get('json_bytes'):
-        raw = entry['json_bytes']
-        resp = Response(raw, mimetype='application/json; charset=utf-8')
-        resp.headers['Content-Length'] = str(len(raw))
-    else:
-        return jsonify({'items': [], 'projection': 'none'})
-
-    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-    resp.headers['Pragma'] = 'no-cache'
-    resp.headers['Expires'] = '0'
-    return resp
+    return _bucket_response(entry)
 
 
 @map_bp.route('/api/map_cache_status', methods=['GET'])
