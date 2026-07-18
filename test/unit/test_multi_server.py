@@ -2187,6 +2187,10 @@ class TestPlaylistGrouping:
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(registry, 'list_servers', lambda conn=None: servers)
+        monkeypatch.setattr(
+            registry, 'translate_ids',
+            lambda ids, server_id, conn=None: {str(i): str(i) for i in ids},
+        )
 
     def test_playlist_rows_group_per_server_with_default_first(self, monkeypatch):
         import app_server_context as ctx
@@ -2252,6 +2256,25 @@ class TestPlaylistGrouping:
         assert result['multi_server'] is False
         assert result['servers'][0]['server_name'] == 'default server'
         assert result['servers'][0]['server_id'] is None
+
+    def test_known_server_item_ids_are_translated_to_provider_ids(self, monkeypatch):
+        import app_server_context as ctx
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: [
+            {'server_id': 's1', 'name': 'One', 'is_default': True},
+        ])
+        monkeypatch.setattr(
+            registry, 'translate_ids',
+            lambda ids, server_id, conn=None: {'i1': 'prov1'},
+        )
+        result = ctx.group_playlist_rows_by_server([
+            self._row('Rock', 'i1', 's1'),
+            self._row('Rock', 'i2', 's1'),
+        ])
+        assert result['servers'][0]['playlists']['Rock'] == [
+            {'item_id': 'prov1', 'title': 'Title i1', 'author': 'Artist'}
+        ]
 
     def test_registry_failure_still_returns_every_row_grouped(self, monkeypatch):
         import app_server_context as ctx

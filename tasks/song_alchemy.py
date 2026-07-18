@@ -78,7 +78,7 @@ def _get_artist_gmm_vectors_and_weights(
         load_artist_index_for_querying,
         reverse_artist_map,
     )
-    from app_helper_artist import get_artist_name_by_id
+    from tasks.mediaserver import registry
 
     if artist_gmm_params is None:
         load_artist_index_for_querying()
@@ -88,7 +88,7 @@ def _get_artist_gmm_vectors_and_weights(
         return [], []
 
     artist_name = artist_identifier
-    resolved_name = get_artist_name_by_id(artist_identifier)
+    resolved_name = registry.artist_names_for_ids([artist_identifier]).get(str(artist_identifier))
     if resolved_name:
         artist_name = resolved_name
 
@@ -363,7 +363,7 @@ def song_alchemy(
     subtract_distance: float | None = None,
     temperature: float | None = None,
 ) -> dict:
-    from app_helper_artist import get_artist_name_by_id
+    from tasks.mediaserver import registry
 
     if n_results is None:
         n_results = config.ALCHEMY_DEFAULT_N_RESULTS
@@ -545,7 +545,7 @@ def song_alchemy(
             logger.info(f"Retrieved {len(gmm_vecs)} GMM components for artist {artist_id}")
             for comp_idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
                 artist_name = artist_id
-                resolved = get_artist_name_by_id(artist_id)
+                resolved = registry.artist_names_for_ids([artist_id]).get(str(artist_id))
                 if resolved:
                     artist_name = resolved
                 logger.info(
@@ -645,7 +645,7 @@ def song_alchemy(
             logger.info(f"Retrieved {len(gmm_vecs)} GMM components for artist {artist_id}")
             for comp_idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
                 artist_name = artist_id
-                resolved = get_artist_name_by_id(artist_id)
+                resolved = registry.artist_names_for_ids([artist_id]).get(str(artist_id))
                 if resolved:
                     artist_name = resolved
                 logger.info(

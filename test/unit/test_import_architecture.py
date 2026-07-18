@@ -72,7 +72,7 @@ LAYERS = [
         "tasks.ai.providers.gemini",
         "tasks.ai.providers.mistral",
     },
-    {"app_helper", "app_helper_artist", "tasks.ai.api"},
+    {"app_helper", "tasks.ai.api"},
     {"tasks.clustering_helper", "tasks.analysis.song"},
     {"tasks.analysis.helper", "tasks.analysis"},
     {"tasks.clustering", "tasks.analysis.main", "tasks.analysis.album", "tasks.analysis.index"},
@@ -82,8 +82,6 @@ LAYERS = [
 FORBIDDEN_IMPORTS = [
     ("database", "app_helper"),
     ("taskqueue", "app_helper"),
-    ("database", "app_helper_artist"),
-    ("taskqueue", "app_helper_artist"),
     ("tasks.ai.prompts", "tasks.ai.api"),
     ("tasks.ai.providers.openai", "tasks.ai.api"),
     ("tasks.ai.providers.gemini", "tasks.ai.api"),

@@ -35,7 +35,7 @@ Main Features:
   of re-implementing the fetch and the prune, so the two can never drift apart.
 * Zero-download alignment: matching from catalogue metadata only.
 * Artist links: each swept server's ``artist_server_map`` rows are upserted
-  from its fetched catalogue (legacy ``artist_mapping`` too for the default).
+  from its fetched catalogue.
 * Catalogue metadata refresh: album, album artist, year and rating are
   batch-updated for every track mapped to the swept server; ``file_path``
   only from the default server (it is the matcher's top-priority tier).
@@ -587,28 +587,16 @@ def _collect_artist_maps(tracks):
 
 
 def _write_artist_maps(db, server, artist_maps):
-    """Upsert the server's artist links from its fetched catalogue.
-
-    The same registry write path analysis uses at analyze time; for the default
-    server the legacy ``artist_mapping`` fallback table is refreshed too.
-    """
+    """Upsert the server's artist links from its fetched catalogue - the same
+    registry write path analysis uses at analyze time, for every server including
+    the default."""
     if not artist_maps:
         return 0
     try:
-        written = registry.upsert_artist_maps(server['server_id'], artist_maps, conn=db)
+        return registry.upsert_artist_maps(server['server_id'], artist_maps, conn=db)
     except Exception:
         logger.exception("Artist map upsert failed for server %s", server['server_id'])
         return 0
-    if server.get('is_default'):
-        try:
-            from flask_app import app
-            from app_helper_artist import upsert_artist_mappings
-
-            with app.app_context():
-                upsert_artist_mappings(artist_maps.items())
-        except Exception:
-            logger.exception("Legacy artist mapping refresh failed for the default server")
-    return written
 
 
 _META_FIELDS = ('album', 'album_artist', 'year', 'rating')

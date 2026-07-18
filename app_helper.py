@@ -308,7 +308,8 @@ def build_and_store_artist_projection(index_name='artist_map'):
         logger.warning("No artist GMM params available to build artist projection.")
         return False
 
-    from app_helper_artist import get_artist_id_by_name
+    from tasks.mediaserver import registry
+    artist_ids = registry.artist_ids_for_names(list(loaded_params.keys()))
 
     # Two-pass build: first pass counts components and infers dim, second
     # pass fills a single pre-allocated ndarray. Avoids the previous
@@ -336,7 +337,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
         weights = gmm.get('weights') or []
         if not len(means):
             continue
-        artist_id = get_artist_id_by_name(artist_name) or artist_name
+        artist_id = artist_ids.get(artist_name) or artist_name
         for comp_idx in range(len(means)):
             mat[row_i] = np.asarray(means[comp_idx], dtype=np.float32)
             component_map.append(

@@ -659,9 +659,9 @@ def _resolve_indexed_artist_name(query_artist):
     if query_artist in reverse_artist_map:
         return query_artist
 
-    from app_helper_artist import get_artist_name_by_id
+    from tasks.mediaserver import registry
 
-    resolved_name = get_artist_name_by_id(query_artist)
+    resolved_name = registry.artist_names_for_ids([query_artist]).get(str(query_artist))
     if resolved_name:
         logger.info(f"Resolved artist ID '{query_artist}' to name '{resolved_name}'")
         return resolved_name
@@ -689,11 +689,11 @@ def _score_candidate_artists(labels, query_id, query_gmm):
 def _build_similar_artist_result(
     score, candidate_artist, candidate_gmm, query_gmm, artist_name, include_component_matches
 ):
-    from app_helper_artist import get_artist_id_by_name
+    from tasks.mediaserver import registry
 
     result = {
         'artist': candidate_artist,
-        'artist_id': get_artist_id_by_name(candidate_artist),
+        'artist_id': registry.artist_ids_for_names([candidate_artist]).get(candidate_artist),
         'divergence': float(score),
     }
     if include_component_matches:
@@ -763,7 +763,7 @@ def search_artists_by_name(
         return []
 
     from app_helper import get_db
-    from app_helper_artist import get_artist_id_by_name
+    from tasks.mediaserver import registry
 
     conn = get_db()
     cur = conn.cursor()
@@ -791,10 +791,12 @@ def search_artists_by_name(
             tuple([query_pattern] + availability_params + [limit, offset]),
         )
 
-        results = []
-        for author, track_count in cur.fetchall():
-            artist_id = get_artist_id_by_name(author)
-            results.append({'artist': author, 'artist_id': artist_id, 'track_count': track_count})
+        rows = cur.fetchall()
+        artist_ids = registry.artist_ids_for_names([author for author, _ in rows], server_id)
+        results = [
+            {'artist': author, 'artist_id': artist_ids.get(author), 'track_count': track_count}
+            for author, track_count in rows
+        ]
 
         return results
 
@@ -808,11 +810,11 @@ def search_artists_by_name(
 
 def get_artist_tracks(artist_identifier: str) -> List[Dict]:
     from app_helper import get_db
-    from app_helper_artist import get_artist_name_by_id
+    from tasks.mediaserver import registry
 
     artist_name = artist_identifier
     if artist_identifier:
-        resolved_name = get_artist_name_by_id(artist_identifier)
+        resolved_name = registry.artist_names_for_ids([artist_identifier]).get(str(artist_identifier))
         if resolved_name:
             artist_name = resolved_name
 

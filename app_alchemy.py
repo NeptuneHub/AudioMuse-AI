@@ -289,6 +289,31 @@ def alchemy_api():
         results['results'] = app_server_context.scope_results(
             results.get('results'), n, id_key='item_id'
         )
+        # filtered_out rows are engine-selected songs; translate their canonical
+        # ids to the selected server and drop any not present there.
+        results['filtered_out'] = app_server_context.scope_results(
+            results.get('filtered_out') or [], None, id_key='item_id'
+        )
+        # add_points / sub_points mix real song points (a catalogue id) with
+        # synthetic anchor/mood/artist-component/playlist markers; translate only
+        # the song points so the response never carries an internal fp_ id.
+        song_point_ids = [
+            point['item_id']
+            for key in ('add_points', 'sub_points')
+            for point in (results.get(key) or [])
+            if point.get('type') == 'song' and point.get('item_id')
+        ]
+        point_translation = app_server_context.translate_ids_for_request(song_point_ids)
+        for key in ('add_points', 'sub_points'):
+            kept_points = []
+            for point in results.get(key) or []:
+                if point.get('type') == 'song':
+                    provider_id = point_translation.get(str(point.get('item_id')))
+                    if provider_id is None:
+                        continue
+                    point['item_id'] = provider_id
+                kept_points.append(point)
+            results[key] = kept_points
         # Keep full centroid in response for client-side save action, but not in anchor list endpoint.
         return jsonify(results)
     except ValueError:
@@ -760,6 +785,12 @@ def artist_projections_api():
         description: Failure to read cache.
     """
     from database import ARTIST_PROJECTION_CACHE
+    from tasks.mediaserver import registry
+
+    try:
+        server_id = app_server_context.resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     try:
         if not ARTIST_PROJECTION_CACHE:
@@ -771,13 +802,24 @@ def artist_projections_api():
         if projection is None or len(component_map) == 0:
             return jsonify({'components': [], 'count': 0})
 
+        # The cache stores the legacy/default artist_id; expose the selected
+        # server's provider artist id instead (None when the artist is absent
+        # there, never a wrong server's id).
+        artist_names = [
+            comp_info.get('artist_name')
+            for comp_info in component_map
+            if comp_info.get('artist_name')
+        ]
+        provider_artist_ids = registry.artist_ids_for_names(artist_names, server_id)
+
         # Build response with components and their 2D projections
         components = []
         for idx, comp_info in enumerate(component_map):
             if idx < len(projection):
+                artist_name = comp_info.get('artist_name')
                 components.append(
                     {
-                        'artist_id': comp_info['artist_id'],
+                        'artist_id': provider_artist_ids.get(artist_name) if artist_name else None,
                         'artist_name': comp_info.get('artist_name', comp_info['artist_id']),
                         'component_idx': comp_info['component_idx'],
                         'weight': comp_info['weight'],

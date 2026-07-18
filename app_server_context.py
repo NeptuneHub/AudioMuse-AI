@@ -19,6 +19,8 @@ Main Features:
   (provider ids in, canonical ids out) before they reach the shared indexes.
 * ``create_instant_playlist_for_server`` translates canonical track ids to the
   target server's ids and creates the playlist there (identity for the default).
+* ``filter_rows_for_request_server`` / ``translate_ids_for_request`` rewrite result
+  ids to the selected server's provider ids so no response leaks an internal id.
 * ``group_playlist_rows_by_server`` shapes stored clustering playlists into the
   grouped-per-server structure the Generated Playlists UI renders.
 * Credential masking and a template-friendly server list for the UI.
@@ -264,6 +266,41 @@ def filter_rows_for_request_server(rows, id_key='item_id', translate=True):
     return kept
 
 
+def translate_ids_for_request(item_ids):
+    """Map canonical item_ids to the request server's provider ids.
+
+    The field-level counterpart to ``filter_rows_for_request_server`` for
+    responses that carry ids OUTSIDE a top-level row (a nested song list, a
+    single scalar id): returns ``{canonical_id: provider_id}`` for the ids that
+    exist on the request's selected (or default) server. An id absent from the
+    server is simply missing from the map, so the caller drops it rather than
+    leak an internal fp_ id.
+
+    Honors the same legacy single-server short-circuit as
+    ``filter_rows_for_request_server`` (identity while ids are still legacy
+    provider ids) and fails open to identity on a registry error. Raises
+    ValueError for an unknown ``server`` parameter so the endpoint can answer 400.
+    """
+    ids = [str(i) for i in (item_ids or []) if i]
+    if not ids:
+        return {}
+    server_id = resolve_request_server_id()
+    from tasks.mediaserver import registry
+    from tasks.simhash import is_fingerprint_id
+
+    if (
+        server_id is None
+        and not any(is_fingerprint_id(i) for i in ids)
+        and not registry.has_secondary_servers()
+    ):
+        return {i: i for i in ids}
+    try:
+        return registry.translate_ids(ids, server_id)
+    except Exception:
+        logger.exception("Request id translation failed; using ids as-is")
+        return {i: i for i in ids}
+
+
 def group_playlist_rows_by_server(rows):
     from tasks.mediaserver import registry
 
@@ -272,12 +309,42 @@ def group_playlist_rows_by_server(rows):
     except Exception:
         logger.exception("Failed to list media servers for playlist grouping")
         servers = []
+
+    # A stored playlist row holds the internal canonical item_id; an API response
+    # must expose each server's own provider id instead. This endpoint returns
+    # every server at once, so translate per server_id group (not for one
+    # request-selected server) via that server's translate_ids mapping. Rows for a
+    # server that no longer exists, or a group whose translation errors, fail OPEN
+    # and keep the stored id: those remnants can no longer reach a live server, and
+    # emptying them on a transient error would be worse than the display-only id.
+    known_server_ids = {server['server_id'] for server in servers}
+    translation_by_server = {}
+    ids_by_server = {}
+    for row in rows:
+        if row.get('item_id'):
+            ids_by_server.setdefault(row.get('server_id'), []).append(row['item_id'])
+    for server_id, ids in ids_by_server.items():
+        if server_id is not None and server_id not in known_server_ids:
+            continue
+        try:
+            translation_by_server[server_id] = registry.translate_ids(ids, server_id)
+        except Exception:
+            logger.exception("Playlist id translation failed for server '%s'", server_id)
+
     by_server = {}
     for row in rows:
-        by_server.setdefault(row.get('server_id'), {}).setdefault(
+        server_id = row.get('server_id')
+        mapping = translation_by_server.get(server_id)
+        if mapping is None:
+            provider_id = row.get('item_id')
+        else:
+            provider_id = mapping.get(row.get('item_id'))
+            if provider_id is None:
+                continue
+        by_server.setdefault(server_id, {}).setdefault(
             row['playlist_name'], []
         ).append(
-            {'item_id': row['item_id'], 'title': row['title'], 'author': row['author']}
+            {'item_id': provider_id, 'title': row['title'], 'author': row['author']}
         )
     groups = []
     for server in servers:

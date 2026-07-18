@@ -570,7 +570,16 @@ def get_max_distance_endpoint():
             return jsonify(
                 {"error": f"Item '{item_id}' not found in index or index unavailable."}
             ), 404
+        # farthest_item_id comes from the internal index; expose the selected
+        # server's provider id (None when that item is not on it), never the fp_ id.
+        far_id = result.get('farthest_item_id')
+        if far_id:
+            result['farthest_item_id'] = app_server_context.translate_ids_for_request(
+                [far_id]
+            ).get(str(far_id))
         return jsonify(result)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     except RuntimeError:
         logger.exception(f"Runtime error computing max distance for {item_id}")
         return jsonify(

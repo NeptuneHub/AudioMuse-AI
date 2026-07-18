@@ -465,12 +465,6 @@ def _clear_default_server_artist_map(cur):
                 cur.rowcount,
             )
 
-    # The legacy artist_mapping table has no server column: it only ever held the
-    # default server's artist ids, so all of it is stale after a repoint.
-    cur.execute("SELECT to_regclass('public.artist_mapping')")
-    if cur.fetchone()[0] is not None:
-        cur.execute("DELETE FROM artist_mapping")
-
 
 def _run_migration_transaction(
     cur,

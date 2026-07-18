@@ -237,8 +237,9 @@ def search_tracks_endpoint():
         try:
             mapping = registry.translate_ids([r['item_id'] for r in results], server_id)
         except Exception:
-            logger.exception("External search id translation failed; returning canonical ids")
-            return jsonify(results)
+            # Fail closed: never emit untranslated canonical ids to the client.
+            logger.exception("External search id translation failed")
+            return jsonify({"error": "An error occurred during search."}), 500
         translated = []
         for r in results:
             if r['item_id'] not in mapping:

@@ -597,16 +597,16 @@ def upsert_artist_maps(server_id, mapping, conn=None):
     )
 
 
-def _artist_lookup(values, server_id, conn, map_columns, legacy_columns):
-    """Directional artist_server_map lookup with the default-server legacy
-    fallback to artist_mapping; ``map_columns``/``legacy_columns`` are constant
-    (source, result) column pairs, never caller input."""
+def _artist_lookup(values, server_id, conn, map_columns):
+    """Directional artist_server_map lookup; ``map_columns`` is a constant
+    (source, result) column pair, never caller input. The default server's ids now
+    live in artist_server_map like every other server's (the legacy artist_mapping
+    table was folded in and dropped at startup), so there is no fallback."""
     wanted = [str(value) for value in values if value]
     if not wanted:
         return {}
     db = conn or get_db()
-    default_id = get_default_server_id(db)
-    target = server_id or default_id
+    target = server_id or get_default_server_id(db)
     if not target:
         return {}
     src, dst = map_columns
@@ -617,18 +617,7 @@ def _artist_lookup(values, server_id, conn, map_columns, legacy_columns):
             f"WHERE server_id = %s AND {src} = ANY(%s)",
             (target, wanted),
         )
-        result = {str(row[0]): str(row[1]) for row in cur.fetchall()}
-        if target == default_id:
-            missing = [value for value in wanted if value not in result]
-            if missing:
-                legacy_src, legacy_dst = legacy_columns
-                cur.execute(
-                    f"SELECT {legacy_src}, {legacy_dst} FROM artist_mapping "
-                    f"WHERE {legacy_src} = ANY(%s)",
-                    (missing,),
-                )
-                result.update({str(row[0]): str(row[1]) for row in cur.fetchall()})
-        return result
+        return {str(row[0]): str(row[1]) for row in cur.fetchall()}
     finally:
         cur.close()
 
@@ -637,7 +626,6 @@ def artist_names_for_ids(provider_artist_ids, server_id=None, conn=None):
     return _artist_lookup(
         provider_artist_ids, server_id, conn,
         map_columns=('provider_artist_id', 'artist_name'),
-        legacy_columns=('artist_id', 'artist_name'),
     )
 
 
@@ -645,7 +633,6 @@ def artist_ids_for_names(artist_names, server_id=None, conn=None):
     return _artist_lookup(
         artist_names, server_id, conn,
         map_columns=('artist_name', 'provider_artist_id'),
-        legacy_columns=('artist_name', 'artist_id'),
     )
 
 

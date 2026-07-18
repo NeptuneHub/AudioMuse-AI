@@ -55,6 +55,20 @@ map_bp = Blueprint('map_bp', __name__)
 MAP_JSON_CACHE = {}
 
 
+def _catalogue_has_canonical_ids():
+    """True when score holds canonical fp_ ids (fails closed on error)."""
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
+            )
+            return bool(cur.fetchone()[0])
+    except Exception:
+        logger.exception("Canonical-id probe failed; failing closed")
+        return True
+
+
 def _pick_top_mood(mood_vector_str):
     """Return top mood label from 'label:score,label2:score' string.
     If parsing fails, return 'unknown'."""
@@ -380,7 +394,11 @@ def map_api():
         return jsonify({'error': 'Invalid server selection.'}), 400
     from tasks.mediaserver import registry
 
-    if server_id is not None or registry.has_secondary_servers():
+    # The raw-bytes fast path streams score.item_id verbatim; that is safe only
+    # while ids are still legacy provider ids. Once the catalogue is canonicalized
+    # (fp_ ids) it must go through the translating filter path too, or the response
+    # would leak internal ids on a single-server install with no ?server= param.
+    if server_id is not None or registry.has_secondary_servers() or _catalogue_has_canonical_ids():
         raw = entry.get('json_gzip_bytes')
         raw = gzip.decompress(raw) if raw else entry.get('json_bytes')
         if not raw:
