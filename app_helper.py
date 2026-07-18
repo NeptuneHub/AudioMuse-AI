@@ -109,6 +109,21 @@ def sanitize_task_details(details, state, task_type=None):
         details.pop('checked_album_ids', None)
     details.pop('traceback', None)
 
+    # Internal canonical (fp_) ids must never reach a task-status response. The
+    # clustering-batch child stows raw sampled ids, and the cleaning summary lists
+    # orphaned tracks (on no server, so untranslatable) by their catalogue id.
+    # Strip them here - no UI reads these, and the parent tasks read the job's
+    # return value, not this display copy.
+    details.pop('final_subset_track_ids', None)
+    details.pop('full_best_result_from_batch', None)
+    summary = details.get('final_summary_details')
+    if isinstance(summary, dict):
+        for album in summary.get('orphaned_albums') or []:
+            if isinstance(album, dict):
+                for track in album.get('tracks') or []:
+                    if isinstance(track, dict):
+                        track.pop('item_id', None)
+
     log_entries = details.get('log')
     if isinstance(log_entries, list) and len(log_entries) > 10:
         details['log'] = [

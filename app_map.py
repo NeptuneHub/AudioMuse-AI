@@ -149,8 +149,15 @@ def build_map_cache():
     and build cached JSON blobs for 100/75/50/25 percent samples. This should be called
     once at startup inside app.app_context()."""
     global MAP_JSON_CACHE
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
     logger = logging.getLogger(__name__)
     logger.info('Building map JSON cache (this reads the DB once).')
+
+    # A rebuild is the moment the catalogue's id space can have flipped legacy->fp_
+    # (e.g. a canonicalization just ran). Reset the memoized probe so the fast path
+    # can never serve a stale "no canonical ids" verdict and leak raw fp_ bytes.
+    _HAS_CANONICAL_IDS = None
+    _HAS_CANONICAL_CHECKED_AT = 0.0
 
     conn = get_db()
     cur = conn.cursor()

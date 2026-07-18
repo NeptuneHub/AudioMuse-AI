@@ -559,6 +559,8 @@ def get_max_distance_endpoint():
     item_id = request.args.get('item_id')
     if not item_id:
         return jsonify({"error": "Missing 'item_id' parameter."}), 400
+    # Echo the caller's own id in errors, never the resolved internal canonical id.
+    raw_item_id = item_id
     try:
         item_id = app_server_context.resolve_input_item_id(item_id)
     except ValueError as exc:
@@ -568,7 +570,7 @@ def get_max_distance_endpoint():
         result = get_max_distance_for_id(item_id)
         if result is None:
             return jsonify(
-                {"error": f"Item '{item_id}' not found in index or index unavailable."}
+                {"error": f"Item '{raw_item_id}' not found in index or index unavailable."}
             ), 404
         # farthest_item_id comes from the internal index; expose the selected
         # server's provider id (None when that item is not on it), never the fp_ id.
