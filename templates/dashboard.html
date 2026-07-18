@@ -195,8 +195,9 @@
     .muted { color: var(--text-muted); font-size: 0.85rem; }
 
     /* .scope-chip / .scope-catalog / .scope-server live in style.css, shared with
-       the corner chip server_selector.js pins on every page. Always shown, even
-       on a single-server install, so every page carries its scope label. */
+       the corner chip server_selector.js pins on every page. Hidden by default and
+       revealed only once server_selector.js puts .multi-server on <body> (2+ servers),
+       so a single-server install never even flashes them during load. */
 </style>
 {% endblock %}
 
@@ -365,11 +366,11 @@
 (function() {
     const charts = {};
 
-    // Which caption each section gets. A section is in exactly one list: it is
-    // either read from the background snapshot or recomputed live on every poll.
-    const SNAPSHOT_CAPTIONS = [
-        'keynumbers-updated', 'content-updated', 'music-servers-updated',
-    ];
+    // Which caption each section gets. A section is in exactly one list, by its
+    // cadence: FAST snapshot keys (every 60s), CHARTS snapshot keys (hourly,
+    // stamped separately), or LIVE (recomputed on every poll).
+    const FAST_CAPTIONS = ['keynumbers-updated', 'music-servers-updated'];
+    const CHARTS_CAPTIONS = ['content-updated'];
     const LIVE_CAPTIONS = ['workers-updated', 'recent-updated', 'cron-updated'];
 
     const isDark = () => document.body.classList.contains('dark-mode')
@@ -758,23 +759,28 @@
             renderMusicServers(servers);
             renderCron(d.cron);
 
-            // Exactly two captions on this page, one per cadence.
-            //
-            // A SNAPSHOT section must stamp stats_updated_at and NEVER
-            // generated_at: stamping the request time made a stale number
-            // look freshly computed, because the caption ticked every 30s while
-            // the data underneath it sat still.
-            const snapshot = d.stats_updated_at
+            // Three captions, one per cadence. A snapshot section stamps its own
+            // computed-at time and NEVER generated_at: stamping the request time
+            // made stale data look freshly computed, because the caption ticked
+            // every 30s while the data underneath it sat still. The charts section
+            // is hourly, so it uses its own charts_updated_at - not the fast tier's
+            // every-minute stamp, which is exactly what made the Genres/Moods
+            // charts read "recomputed every minute" when they are recomputed hourly.
+            const fast = d.stats_updated_at
                 ? 'Snapshot taken ' + d.stats_updated_at + ' - recomputed every minute'
                 : 'First snapshot is still being computed - it lands about a minute after startup';
+            const charts = content.charts_updated_at
+                ? 'Snapshot taken ' + content.charts_updated_at + ' - recomputed hourly'
+                : 'Charts are still being computed - they land about a minute after startup';
             const live = d.generated_at
                 ? 'Live - updated ' + d.generated_at + ' - refreshes every 30s'
                 : 'Live';
-            SNAPSHOT_CAPTIONS.forEach(id => setText(id, snapshot));
+            FAST_CAPTIONS.forEach(id => setText(id, fast));
+            CHARTS_CAPTIONS.forEach(id => setText(id, charts));
             LIVE_CAPTIONS.forEach(id => setText(id, live));
         } catch (e) {
             console.error('Dashboard load failed', e);
-            SNAPSHOT_CAPTIONS.concat(LIVE_CAPTIONS)
+            FAST_CAPTIONS.concat(CHARTS_CAPTIONS).concat(LIVE_CAPTIONS)
                 .forEach(id => setText(id, 'Could not load - check the container log.'));
         }
     }

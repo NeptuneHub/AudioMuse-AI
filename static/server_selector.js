@@ -128,15 +128,15 @@
 
     // Page scope chip, pinned to the top-right corner of the page's TITLE CARD.
     //
-    // Shown whenever at least one server is configured, so every page always
-    // carries its CATALOGUE / PER SERVER label. Positioned absolutely inside the
-    // card so it cannot reflow the page it annotates.
+    // Only rendered once 2+ servers are configured: with a single server CATALOGUE
+    // and PER SERVER mean the same thing, so the label is noise. Positioned
+    // absolutely inside the card so it cannot reflow the page it annotates.
     function renderScopeChip() {
         var existing = document.getElementById('page-scope-chip');
         if (existing) {
             existing.remove();
         }
-        if (state.servers.length < 1) {
+        if (state.servers.length < 2) {
             return;
         }
         var root = document.querySelector('.container[data-page-scope]');
@@ -195,6 +195,7 @@
                 if (current && !state.servers.some(function (s) { return s.server_id === current; })) {
                     localStorage.removeItem(STORAGE_KEY);
                 }
+                document.body.classList.toggle('multi-server', state.servers.length >= 2);
                 render();
                 renderScopeChip();
             })

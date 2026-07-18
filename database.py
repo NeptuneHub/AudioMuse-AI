@@ -1086,6 +1086,13 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
                 "WHERE item_id NOT LIKE 'fp\\_%'"
             )
+            # The startup duration backfill finds fp_2 rows with no length via this
+            # partial index; it shrinks to empty as rows get a length, so the
+            # one-time check stays instant even on a huge catalogue.
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_null_duration ON score (item_id) "
+                "WHERE duration IS NULL AND item_id LIKE 'fp\\_2%'"
+            )
 
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"

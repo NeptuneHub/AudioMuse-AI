@@ -165,7 +165,7 @@ class TestRealDuplicateRepair:
         result = _run(db, monkeypatch, durations)
         db.commit()
 
-        assert result == {'checked': 2, 'real': 1, 'false': 1, 'removed': 2}
+        assert (result['real'], result['false'], result['removed']) == (1, 1, 2)
         # Real duplicate: both files still mapped, length stamped.
         assert _maps(db, real) == ['pr1', 'pr2']
         assert _duration(db, real) == pytest.approx(200.0)
@@ -188,7 +188,62 @@ class TestRealDuplicateRepair:
             '_server_durations', explode,
         )
         second = _run(db, monkeypatch, durations)
-        assert second == {'checked': 0, 'real': 0, 'false': 0, 'removed': 0}
+        assert second['checked'] == 0 and second['removed'] == 0
+
+    def test_single_file_rows_are_backfilled_and_then_idempotent(self, db, monkeypatch):
+        # The 88% case: rows mapping ONE file get their length stamped (never
+        # unmapped), and the whole check no-ops on the next run.
+        a = _fp_id('d')
+        b = _fp_id('e')
+        with db.cursor() as cur:
+            _seed_group(cur, a, ['pa'])
+            _seed_group(cur, b, ['pb'])
+        db.commit()
+
+        result = _run(db, monkeypatch, {'pa': 200.0, 'pb': 314.0})
+        db.commit()
+
+        assert result['backfilled'] == 2
+        assert result['removed'] == 0
+        assert _duration(db, a) == pytest.approx(200.0)
+        assert _duration(db, b) == pytest.approx(314.0)
+        assert _maps(db, a) == ['pa'] and _maps(db, b) == ['pb']
+
+        def explode(server):
+            raise AssertionError("backfilled single-file rows must not be re-listed")
+
+        from tasks import duplicate_repair as dr
+        monkeypatch.setattr(dr, '_server_durations', explode)
+        second = _run(db, monkeypatch, {})
+        assert second['checked'] == 0
+
+    def test_single_file_without_server_length_gets_sentinel_and_is_one_time(
+        self, db, monkeypatch
+    ):
+        from tasks import duplicate_repair as dr
+
+        # A RELIABLE listing (most lengths present, so the server is not skipped)
+        # that just misses one file: that file gets the 0 sentinel so it is
+        # one-time; the others get their real length.
+        k1, k2, missing = _fp_id('f'), _fp_id('g'), _fp_id('h')
+        with db.cursor() as cur:
+            _seed_group(cur, k1, ['pk1'])
+            _seed_group(cur, k2, ['pk2'])
+            _seed_group(cur, missing, ['pmiss'])
+        db.commit()
+
+        result = _run(db, monkeypatch, {'pk1': 200.0, 'pk2': 300.0})  # 2/3 known
+        db.commit()
+
+        assert result['backfilled'] == 2 and result['no_length'] == 1
+        assert _duration(db, missing) == pytest.approx(dr._NO_SERVER_DURATION)
+        assert _maps(db, missing) == ['pmiss'], "a single file is never unmapped"
+
+        def explode(server):
+            raise AssertionError("a sentinel row must not be re-listed")
+
+        monkeypatch.setattr(dr, '_server_durations', explode)
+        assert _run(db, monkeypatch, {})['checked'] == 0
 
     def test_survivor_with_duration_is_never_examined(self, db, monkeypatch):
         # A legacy-migrated survivor already has a duration; the check must skip it
@@ -205,5 +260,5 @@ class TestRealDuplicateRepair:
         monkeypatch.setattr(dr, '_server_durations', explode)
         result = dr.repair_duplicate_track_maps(conn=db)
 
-        assert result == {'checked': 0, 'real': 0, 'false': 0, 'removed': 0}
+        assert result['checked'] == 0
         assert _maps(db, already) == ['p1', 'p2']

@@ -1177,32 +1177,32 @@ if not _is_worker:
 
     # Dashboard stats refresher: reports the analyzed catalogue only (local score
     # + track_server_map), never walks a media server. Two cadences merge into the
-    # same snapshot blob - the cheap counts/per-server/tempo every 60s, and the
-    # heavy full-table mood scan (Genres + Moods Coverage charts) hourly.
+    # same snapshot blob - the cheap counts/per-server every 60s, and the
+    # whole-library distribution charts (Genres, Moods Coverage, Tempo) hourly.
     def _dashboard_stats_refresher_loop():
         try:
             from time import sleep
             from app_dashboard import (
                 refresh_dashboard_stats,
-                refresh_dashboard_mood_stats,
+                refresh_dashboard_charts_stats,
                 dashboard_refresh_interval,
-                DASHBOARD_MOOD_REFRESH_INTERVAL_SECONDS,
+                DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS,
             )
 
             # Wait a minute after startup so the initial DB/index warm-up and
             # first incoming requests have time to settle before we kick off
             # the content scans.
             sleep(60)
-            fast_interval = dashboard_refresh_interval(app)
-            ticks_per_mood = max(1, DASHBOARD_MOOD_REFRESH_INTERVAL_SECONDS // fast_interval)
+            fast_interval = dashboard_refresh_interval()
+            ticks_per_charts = max(1, DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS // fast_interval)
             tick = 0
             while True:
                 try:
                     refresh_dashboard_stats(app)
-                    # Mood scan on its own hourly cadence: at startup (tick 0) so
-                    # the charts fill in, then once every ticks_per_mood fast ticks.
-                    if tick % ticks_per_mood == 0:
-                        refresh_dashboard_mood_stats(app)
+                    # Distribution charts on their own hourly cadence: at startup
+                    # (tick 0) so they fill in, then once every ticks_per_charts.
+                    if tick % ticks_per_charts == 0:
+                        refresh_dashboard_charts_stats(app)
                 except Exception:
                     app.logger.exception('dashboard stats refresh failed')
                 tick += 1

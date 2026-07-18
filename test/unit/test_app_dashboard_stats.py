@@ -18,15 +18,13 @@ Main Features:
 * The tautological musicnn "analyzed %" stays out of the payload
 * The per-server block travels inside the snapshot, not the request path
 * The template cannot regress to a percentage that rounds up into a false 100%
-* The FAST metrics refresh every 60s; the heavy mood scan stays hourly; neither
-  walks a media server
+* The FAST counts refresh every 60s; the distribution charts (Genres, Moods,
+  Tempo) stay hourly with their own timestamp; neither walks a media server
 """
 
 import re
 from pathlib import Path
 from unittest.mock import MagicMock
-
-from flask import Flask
 
 import app_dashboard as dash
 
@@ -47,14 +45,16 @@ class TestRefreshInterval:
     def test_fast_refresh_is_60s_with_no_db_probe(self, monkeypatch):
         # The fast tier is cheap enough to recompute every 60s, and it must not
         # touch the DB just to decide when to run again.
-        monkeypatch.setattr(dash, 'get_db', lambda: (_ for _ in ()).throw(
-            AssertionError('refresh interval must not query the DB')))
-        assert dash.dashboard_refresh_interval(Flask('t')) == 60
+        def _fail_if_db_touched():
+            raise AssertionError('refresh interval must not query the DB')
+        monkeypatch.setattr(dash, 'get_db', _fail_if_db_touched)
+        assert dash.dashboard_refresh_interval() == 60
 
-    def test_mood_scan_stays_on_its_own_hourly_cadence(self):
-        # The one heavy full-table scan runs far less often than the fast tier.
-        assert dash.DASHBOARD_MOOD_REFRESH_INTERVAL_SECONDS == 3600
-        assert (dash.DASHBOARD_MOOD_REFRESH_INTERVAL_SECONDS
+    def test_charts_stay_on_their_own_hourly_cadence(self):
+        # The distribution charts (one needs a full-table scan) run far less often
+        # than the fast tier.
+        assert dash.DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS == 3600
+        assert (dash.DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS
                 > dash.DASHBOARD_REFRESH_INTERVAL_SECONDS)
 
 
@@ -82,9 +82,10 @@ class TestSnapshotCompleteness:
 
 
 class TestCadenceSplit:
-    def test_fast_block_carries_no_mood_scan_keys(self, monkeypatch):
-        # The Genres / Moods Coverage data is the ONE heavy full-table scan; it
-        # must not ride in the 60s fast block.
+    def test_fast_block_carries_no_distribution_chart_keys(self, monkeypatch):
+        # The distribution charts (Genres, Moods Coverage, Tempo) are the hourly
+        # block - one needs a full-table scan - so NONE of them may ride in the
+        # 60s fast block.
         monkeypatch.setattr(dash, '_collect_music_server_metrics', lambda cur: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
 
@@ -92,14 +93,18 @@ class TestCadenceSplit:
 
         assert 'top_genre' not in metrics
         assert 'moods_coverage' not in metrics
-        # The cheap tempo profile DOES stay in the fast block.
-        assert 'tempo_profile' in metrics
+        assert 'tempo_profile' not in metrics
+        assert 'total_songs' in metrics
 
-    def test_mood_block_carries_only_the_chart_keys(self):
-        metrics = dash._collect_mood_metrics(_cursor_with())
+    def test_charts_block_carries_the_charts_and_its_own_timestamp(self):
+        metrics = dash._collect_charts_metrics(_cursor_with())
 
         assert 'top_genre' in metrics
         assert 'moods_coverage' in metrics
+        assert 'tempo_profile' in metrics
+        # Its OWN stamp, so the UI can say "hourly" honestly instead of borrowing
+        # the fast tier's every-minute stamp.
+        assert metrics['charts_updated_at']
         assert 'total_songs' not in metrics
         # 'happy' is the dominant label of the single mocked row.
         assert metrics['top_genre'][0]['label'] == 'happy'
@@ -137,7 +142,7 @@ class TestSnapshotContract:
 
         src = inspect.getsource(dash.dashboard_summary)
         assert '_collect_fast_metrics' not in src
-        assert '_collect_mood_metrics' not in src
+        assert '_collect_charts_metrics' not in src
         assert '_collect_music_server_metrics' not in src
         assert 'FROM score' not in src
 

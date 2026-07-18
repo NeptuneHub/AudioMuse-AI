@@ -37,6 +37,7 @@ class FakeCursor:
         squashed = ' '.join(sql.split())
         self.conn.executed.append((squashed, params))
         self._last = squashed
+        self._last_params = params
         if squashed.startswith('DELETE FROM track_server_map'):
             server_id, item_ids = params
             groups = self.conn.state['groups']
@@ -50,6 +51,11 @@ class FakeCursor:
     def fetchone(self):
         if self._last and 'pg_try_advisory_lock' in self._last:
             return (self.conn.state.get('lock_free', True),)
+        if self._last and self._last.startswith('SELECT count(*) FROM track_server_map'):
+            server_id = self._last_params[0]
+            # default 0 => the "if mapped" guard is inert => the server is
+            # processed; a test wanting the unreliable-skip sets a big count.
+            return (self.conn.state.get('mapped', {}).get(server_id, 0),)
         return None
 
     def close(self):
@@ -78,15 +84,15 @@ class FakeConn:
 
 @pytest.fixture
 def harness(monkeypatch):
-    state = {'groups': {}, 'durations': {}, 'servers': {}, 'stamped': []}
+    state = {'groups': {}, 'durations': {}, 'servers': {}, 'stamped': [], 'mapped': {}}
     monkeypatch.setattr(dr, '_groups_needing_check', lambda cur: state['groups'])
     monkeypatch.setattr(
         dr.registry, 'get_server',
         lambda server_id, conn=None: state['servers'].get(server_id),
     )
     monkeypatch.setattr(
-        dr, '_stamp_real_durations',
-        lambda cur, real_durations: state['stamped'].append(dict(real_durations)),
+        dr, '_stamp_durations',
+        lambda cur, durations_to_write: state['stamped'].append(dict(durations_to_write)),
     )
 
     def durations_for(server):
@@ -105,6 +111,13 @@ def _server_row(server_id):
             'creds': {}}
 
 
+def _totals(**kw):
+    base = {'checked': 0, 'backfilled': 0, 'no_length': 0,
+            'real': 0, 'false': 0, 'removed': 0}
+    base.update(kw)
+    return base
+
+
 def _deletes(conn):
     return [
         params for sql, params in conn.executed
@@ -117,20 +130,48 @@ def test_reads_and_writes_no_app_config(harness, monkeypatch):
     # boot. The check must never touch app_config at all now.
     monkeypatch.delattr(dr, 'get_app_config_value', raising=False)
     monkeypatch.delattr(dr, 'set_app_config_value', raising=False)
-    assert dr.repair_duplicate_track_maps(conn=harness['conn']) == {
-        'checked': 0, 'real': 0, 'false': 0, 'removed': 0
-    }
+    assert dr.repair_duplicate_track_maps(conn=harness['conn']) == _totals()
 
 
-def test_no_null_duration_groups_is_instant_noop(harness):
+def test_no_null_duration_rows_is_instant_noop(harness):
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
-    assert result == {'checked': 0, 'real': 0, 'false': 0, 'removed': 0}
+    assert result == _totals()
     assert _deletes(harness['conn']) == []
     assert harness['stamped'] == []
     # No START banner, no server contact when there is nothing to check.
     assert not any(
         'START OF CATALOGUE' in str(sql) for sql, _p in harness['conn'].executed
     )
+
+
+def test_single_file_rows_get_their_length_backfilled(harness):
+    # The 88% case: rows mapping ONE file just need their length stamped so they
+    # can be a duration-confirmed merge target for a future copy. They are never
+    # unmapped, even when the group set has no duplicates at all.
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': ['p1'], 'fp_2bbb': ['p2']}}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 314.0}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result == _totals(checked=2, backfilled=2)
+    assert _deletes(harness['conn']) == [], "a single-file row is never unmapped"
+    assert harness['stamped'] == [{'fp_2aaa': 200.0, 'fp_2bbb': 314.0}]
+
+
+def test_single_file_with_no_server_length_gets_the_sentinel(harness):
+    # A single file the server reports no length for is stamped with the 0
+    # sentinel so the whole catalogue is not re-listed for it on every boot; it
+    # is NOT unmapped.
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': ['p1'], 'fp_2bbb': ['p2']}}
+    harness['durations']['srv'] = {'p1': 200.0}  # p2 unknown
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result == _totals(checked=2, backfilled=1, no_length=1)
+    assert _deletes(harness['conn']) == []
+    assert harness['stamped'] == [{'fp_2aaa': 200.0, 'fp_2bbb': dr._NO_SERVER_DURATION}]
 
 
 def test_real_duplicates_are_kept_and_stamped(harness):
@@ -140,7 +181,7 @@ def test_real_duplicates_are_kept_and_stamped(harness):
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
 
-    assert result == {'checked': 1, 'real': 1, 'false': 0, 'removed': 0}
+    assert result == _totals(checked=1, real=1)
     assert _deletes(harness['conn']) == []
     # The survivor's length is recorded so the group is never re-examined.
     assert harness['stamped'] == [{'fp_2aaa': 200.0}]
@@ -159,7 +200,7 @@ def test_false_duplicates_lose_only_their_map_rows(harness):
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
 
-    assert result == {'checked': 2, 'real': 1, 'false': 1, 'removed': 2}
+    assert result == _totals(checked=2, real=1, false=1, removed=2)
     deletes = _deletes(harness['conn'])
     assert len(deletes) == 1
     assert deletes[0] == ('srv', ['fp_2aaa'])
@@ -171,7 +212,7 @@ def test_false_duplicates_lose_only_their_map_rows(harness):
     assert touched, "unmapping must invalidate the availability cache token"
 
 
-def test_missing_member_duration_makes_the_group_false(harness):
+def test_missing_member_duration_makes_a_multi_file_group_false(harness):
     harness['servers']['srv'] = _server_row('srv')
     harness['groups'] = {'srv': {'fp_2aaa': ['p1', 'p2', 'p3', 'p4']}}
     harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0, 'p3': 200.0}
@@ -197,18 +238,40 @@ def test_unreachable_server_leaves_its_groups_for_next_start(harness):
 
 
 def test_unreliable_listing_skips_the_server(harness):
+    # The server has 1000 mapped tracks but the listing returned only 2: a broken
+    # fetch, skip and retry. (Reliability is fetched-vs-mapped, not vs NULL rows.)
     harness['servers']['srv'] = _server_row('srv')
+    harness['mapped']['srv'] = 1000
     harness['groups'] = {'srv': {
         'fp_2aaa': ['p1', 'p2'],
         'fp_2bbb': ['p3', 'p4'],
     }}
-    harness['durations']['srv'] = {'p1': 200.0}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0}
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
 
     assert result['removed'] == 0
     assert _deletes(harness['conn']) == []
     assert harness['stamped'] == []
+
+
+def test_orphan_null_rows_do_not_skip_a_healthy_server(harness):
+    # THE BUG: the NULL rows are orphans (not in the server listing), but the
+    # server IS healthy (its whole catalogue came back). It must NOT be skipped -
+    # the orphans get the sentinel so the catalogue is never re-listed for them.
+    harness['servers']['srv'] = _server_row('srv')
+    harness['mapped']['srv'] = 500  # a real catalogue...
+    harness['groups'] = {'srv': {'fp_2orph1': ['x1'], 'fp_2orph2': ['x2']}}
+    # ...but the server returns 480 OTHER tracks and none of the two orphans
+    harness['durations']['srv'] = {'other%d' % i: 100.0 + i for i in range(480)}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result == _totals(checked=2, no_length=2)
+    assert _deletes(harness['conn']) == [], "orphan single-file rows are never unmapped"
+    assert harness['stamped'] == [
+        {'fp_2orph1': dr._NO_SERVER_DURATION, 'fp_2orph2': dr._NO_SERVER_DURATION}
+    ]
 
 
 def test_deleted_server_is_skipped(harness):
@@ -235,6 +298,33 @@ def test_one_bad_server_does_not_block_the_good_one(harness):
     assert result['false'] == 1
     assert result['removed'] == 2
     assert _deletes(harness['conn'])[0][0] == 'ok'
+
+
+def test_servers_are_fetched_in_parallel(harness, monkeypatch):
+    import threading
+
+    n = 3
+    barrier = threading.Barrier(n, timeout=8)
+    for i in range(n):
+        sid = 'srv%d' % i
+        harness['servers'][sid] = _server_row(sid)
+        harness['groups'][sid] = {'fp_2%s' % (chr(97 + i) * 4): ['pa', 'pb']}
+        harness['durations'][sid] = {'pa': 200.0, 'pb': 200.0}
+
+    def barrier_fetch(server):
+        # Only returns once ALL n servers are fetching at the same instant.
+        # A sequential fetch arrives one at a time -> the barrier times out ->
+        # BrokenBarrierError -> the server is skipped (real stays 0). Parallel
+        # fetch has all n threads reach the barrier together and pass.
+        barrier.wait()
+        return harness['durations'][server['server_id']]
+
+    monkeypatch.setattr(dr, '_server_durations', barrier_fetch)
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result['real'] == n, "all servers must be listed concurrently, not one by one"
+    assert result['checked'] == n
 
 
 def test_another_replica_holding_the_lock_skips(harness):

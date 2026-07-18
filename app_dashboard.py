@@ -19,13 +19,14 @@ Every number the dashboard publishes is classified on two axes:
 * CADENCE - SNAPSHOT (precomputed into the ``dashboard_stats`` singleton) or
   LIVE (cheap enough to recompute on every poll). Nothing is in between. The
   SNAPSHOT itself refreshes on two timers that merge into the one blob: the
-  cheap FAST metrics every 60s, and the single heavy mood scan hourly.
+  cheap FAST metrics every 60s, and the heavier distribution charts hourly.
 
 Main Features:
 * Routes: `/` dashboard page and `/api/dashboard/summary`.
-* SNAPSHOT tier: the FAST block (CATALOG counts, per-SERVER counts, tempo) via
-  ``refresh_dashboard_stats()`` every 60s; the MOOD block (Genres + Moods
-  Coverage) via ``refresh_dashboard_mood_stats()`` hourly.
+* SNAPSHOT tier: the FAST block (CATALOG counts, per-SERVER counts) via
+  ``refresh_dashboard_stats()`` every 60s; the CHARTS block (Genres, Moods
+  Coverage, Tempo) via ``refresh_dashboard_charts_stats()`` hourly, carrying its
+  own ``charts_updated_at`` stamp so the UI can label it honestly.
 * LIVE tier: workers (Redis), recent tasks and cron (tiny tables) only.
 """
 
@@ -202,10 +203,11 @@ def _collect_music_server_metrics(cur):
 
 
 def _collect_fast_metrics(cur):
-    # The FAST tier: every aggregate here is a single indexed count/GROUP BY that
-    # stays under a few seconds even on a 1M-song library, so it is cheap enough
-    # to recompute every 60 seconds. The one expensive scan (mood vectors) lives
-    # in _collect_mood_metrics on its own hourly cadence.
+    # The FAST tier (every 60s): each aggregate here is a single indexed
+    # count/GROUP BY that stays under a few seconds even on a 1M-song library.
+    # The whole-library DISTRIBUTION charts (Genres, Moods, Tempo) do not move
+    # minute to minute and one of them needs a full-table scan, so they all live
+    # in _collect_charts_metrics on the hourly cadence instead.
     #
     # Every count uses _counted_or_none so a transient DB failure is a None (not
     # a 0): the caller then skips the whole upsert rather than persisting zeros
@@ -238,8 +240,8 @@ def _collect_fast_metrics(cur):
         'clap_indexed': _counted_or_none(cur, "SELECT COUNT(*) FROM clap_embedding"),
     }
     metrics['music_servers'] = _collect_music_server_metrics(cur)
-    # Cleared on any query failure below so the caller can refuse to publish a
-    # partial snapshot. Popped before serialization.
+    # Cleared on any query failure so the caller can refuse to publish a partial
+    # snapshot. Popped before serialization.
     metrics['_complete'] = not any(
         metrics[k] is None
         for k in (
@@ -247,54 +249,16 @@ def _collect_fast_metrics(cur):
             'clap_indexed',
         )
     )
-
-    # Tempo profile: bucket songs into slow/medium/fast/very-fast. Always
-    # populate the key so the UI can render a real (possibly-zero) chart
-    # rather than the "still collecting" placeholder when no songs have
-    # a tempo yet.
-    metrics['tempo_profile'] = {
-        'slow': 0,
-        'medium': 0,
-        'fast': 0,
-        'very_fast': 0,
-        'avg_tempo': None,
-    }
-    try:
-        cur.execute(
-            "SELECT "
-            "  COUNT(*) FILTER (WHERE tempo > 0 AND tempo < 85) AS slow, "
-            "  COUNT(*) FILTER (WHERE tempo >= 85 AND tempo < 110) AS medium, "
-            "  COUNT(*) FILTER (WHERE tempo >= 110 AND tempo < 140) AS fast, "
-            "  COUNT(*) FILTER (WHERE tempo >= 140) AS very_fast, "
-            "  AVG(tempo) FILTER (WHERE tempo > 0) AS avg_tempo "
-            "FROM score WHERE tempo IS NOT NULL"
-        )
-        r = cur.fetchone()
-        if r:
-            metrics['tempo_profile'] = {
-                'slow': int(r[0] or 0),
-                'medium': int(r[1] or 0),
-                'fast': int(r[2] or 0),
-                'very_fast': int(r[3] or 0),
-                'avg_tempo': round(float(r[4]), 1) if r[4] is not None else None,
-            }
-    except Exception as e:
-        logger.warning(f"dashboard: tempo profile query failed: {e}", exc_info=True)
-        _safe_rollback(cur)
-        metrics['_complete'] = False
-
     return metrics
 
 
-def _collect_mood_metrics(cur):
-    # The SLOW tier: the ONE full-table scan on the dashboard. It streams every
-    # score row and parses the mood_vector / other_features text in Python, which
-    # is ~tens of seconds on a 1M-song library - far too heavy for the 60s fast
-    # cadence, so it runs on its own hourly timer and is merged into the same
-    # snapshot blob. Genre and mood distributions barely move minute to minute,
-    # so hourly is plenty.
+def _collect_charts_metrics(cur):
+    # The SLOW tier (hourly): the whole-library DISTRIBUTION charts. None of them
+    # move minute to minute, and Genres/Moods need the ONE heavy full-table scan
+    # (streaming every score row and parsing the mood_vector / other_features text
+    # in Python is ~tens of seconds on a 1M-song library), so all three share the
+    # hourly cadence and one `charts_updated_at` stamp, kept off the 60s path.
     #
-    # Two signals are derived:
     #  - mood_dominant_counts: per-song dominant-label counts -> Genres chart.
     #  - other_feature_totals: emotional mood scores summed across songs
     #    (other_features column) -> Moods Coverage pie.
@@ -337,11 +301,46 @@ def _collect_mood_metrics(cur):
     # Moods Coverage: emotional mood vector (other_features):
     # danceable / aggressive / happy / party / relaxed / sad.
     emotional = sorted(other_feature_totals.items(), key=lambda kv: kv[1], reverse=True)
-    return {
+    metrics = {
         'top_genre': [{'label': k, 'count': int(v)} for k, v in top_genre],
         'moods_coverage': [{'label': k, 'score': round(v, 2)} for k, v in emotional],
-        '_complete': complete,
     }
+
+    # Tempo profile: bucket songs into slow/medium/fast/very-fast. Always populate
+    # the key so the UI renders a real (possibly-zero) chart rather than the "still
+    # collecting" placeholder when no songs have a tempo yet.
+    metrics['tempo_profile'] = {
+        'slow': 0, 'medium': 0, 'fast': 0, 'very_fast': 0, 'avg_tempo': None,
+    }
+    try:
+        cur.execute(
+            "SELECT "
+            "  COUNT(*) FILTER (WHERE tempo > 0 AND tempo < 85) AS slow, "
+            "  COUNT(*) FILTER (WHERE tempo >= 85 AND tempo < 110) AS medium, "
+            "  COUNT(*) FILTER (WHERE tempo >= 110 AND tempo < 140) AS fast, "
+            "  COUNT(*) FILTER (WHERE tempo >= 140) AS very_fast, "
+            "  AVG(tempo) FILTER (WHERE tempo > 0) AS avg_tempo "
+            "FROM score WHERE tempo IS NOT NULL"
+        )
+        r = cur.fetchone()
+        if r:
+            metrics['tempo_profile'] = {
+                'slow': int(r[0] or 0),
+                'medium': int(r[1] or 0),
+                'fast': int(r[2] or 0),
+                'very_fast': int(r[3] or 0),
+                'avg_tempo': round(float(r[4]), 1) if r[4] is not None else None,
+            }
+    except Exception as e:
+        logger.warning(f"dashboard: tempo profile query failed: {e}", exc_info=True)
+        _safe_rollback(cur)
+        complete = False
+
+    # The charts' OWN timestamp, so the UI can honestly say these refresh hourly
+    # rather than borrowing the fast tier's every-minute stamp.
+    metrics['charts_updated_at'] = time.strftime(LOCAL_TZ_FMT)
+    metrics['_complete'] = complete
+    return metrics
 
 
 def _parse_keyval(s):
@@ -491,23 +490,23 @@ def _load_dashboard_stats(cur):
 
 # The dashboard snapshot refreshes on two cadences that merge into the same
 # dashboard_stats blob:
-#  - FAST (every 60s): the cheap counts, per-server, and tempo. All stay under a
-#    few seconds even on a 1M-song library.
-#  - MOOD (hourly): the one full-table mood scan behind the Genres and Moods
-#    Coverage charts (~tens of seconds on 1M rows); its distributions barely move
-#    minute to minute, so it never needs the fast cadence.
+#  - FAST (every 60s): the cheap counts and per-server rows. All stay under a few
+#    seconds even on a 1M-song library.
+#  - CHARTS (hourly): the whole-library distribution charts (Genres, Moods,
+#    Tempo). One of them needs a full-table scan (~tens of seconds on 1M rows) and
+#    none move minute to minute, so they carry their own hourly timestamp.
 DASHBOARD_REFRESH_INTERVAL_SECONDS = 60
-DASHBOARD_MOOD_REFRESH_INTERVAL_SECONDS = 3600
+DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS = 3600
 
 
-def dashboard_refresh_interval(app):
+def dashboard_refresh_interval():
     return DASHBOARD_REFRESH_INTERVAL_SECONDS
 
 
 def _merge_dashboard_content(db, content):
     # Merge the given keys into the dashboard_stats singleton with `content ||`,
-    # so the fast refresh never clobbers the hourly mood keys and vice versa. The
-    # jsonb || is applied inside a single UPDATE, so concurrent fast/mood writes
+    # so the fast refresh never clobbers the hourly chart keys and vice versa. The
+    # jsonb || is applied inside a single UPDATE, so concurrent fast/chart writes
     # each merge onto the latest committed blob (row lock serializes them).
     cur = db.cursor()
     try:
@@ -571,11 +570,11 @@ def _refresh_dashboard_block(app, collect, label):
 
 
 def refresh_dashboard_stats(app):
-    # FAST cadence (every 60s): cheap counts, per-server, tempo.
+    # FAST cadence (every 60s): cheap counts and per-server rows.
     _refresh_dashboard_block(app, _collect_fast_metrics, "dashboard_stats")
 
 
-def refresh_dashboard_mood_stats(app):
-    # MOOD cadence (hourly): the full-table mood scan behind the Genres and Moods
-    # Coverage charts.
-    _refresh_dashboard_block(app, _collect_mood_metrics, "dashboard mood stats")
+def refresh_dashboard_charts_stats(app):
+    # CHARTS cadence (hourly): the whole-library distribution charts (Genres,
+    # Moods Coverage, Tempo), one of which needs a full-table mood scan.
+    _refresh_dashboard_block(app, _collect_charts_metrics, "dashboard charts stats")
