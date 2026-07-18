@@ -96,7 +96,7 @@ class TestCanonicalId:
     def test_id_round_trip(self):
         signature = simhash.embedding_signature(_embedding(9))
         cid = simhash.canonical_id_str(signature)
-        assert cid.startswith('fp_2') and len(cid) == simhash.CANONICAL_ID_LEN
+        assert cid.startswith(simhash.CURRENT_ID_HEAD) and len(cid) == simhash.CANONICAL_ID_LEN
         assert simhash.is_fingerprint_id(cid)
         assert simhash.signature_from_canonical_id(cid) == signature
 
@@ -166,7 +166,7 @@ class TestCatalogResolver:
         emb = _embedding(13)
         resolver = simhash.CatalogResolver()
         kind, first = resolver.resolve(emb, duration=200.0)
-        assert kind == 'new' and first.startswith('fp_2')
+        assert kind == 'new' and first.startswith(simhash.CURRENT_ID_HEAD)
         reencoded = emb + np.float32(1e-4) * _embedding(14)
         kind2, second = resolver.resolve(reencoded, duration=201.5)
         assert (kind2, second) == ('existing', first)

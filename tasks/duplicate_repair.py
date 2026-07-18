@@ -56,9 +56,9 @@ from psycopg2.extras import execute_values
 import config
 from database import connect_raw
 from tasks import provider_probe
+from tasks import simhash
 from tasks.mediaserver import context as ms_context
 from tasks.mediaserver import registry
-from tasks.simhash import CANONICAL_ID_LEN
 
 logger = logging.getLogger(__name__)
 
@@ -80,29 +80,55 @@ _REPAIR_ADVISORY_LOCK = 726354823
 def _empty_totals():
     return {
         'checked': 0, 'backfilled': 0, 'no_length': 0,
-        'real': 0, 'false': 0, 'removed': 0,
+        'real': 0, 'false': 0, 'removed': 0, 'relabelled': 0,
     }
 
 
-def _groups_needing_check(cur):
-    """EVERY current-scheme fp_2 row that has NO duration yet, with its files.
+def _old_scheme_where(alias='s'):
+    """(sql, params) matching an OLDER-version signature id that must be bumped up.
 
-    A row WITH a duration was already confirmed - by the legacy migration or a
-    previous run - so it is skipped; that is what makes this a table-derived
-    one-time step with no stored flag. Both single-file rows (which just need
-    their length stamped) and multi-file rows (duplicates to confirm) are
-    returned; the size of the file list tells them apart. Only current-scheme
-    signature ids qualify: an fp_0 (no-signature) id is always a single file and
-    an fp_1 (retired scheme) id is relabelled by the migration first.
+    A signature id (fp_1..fp_9 of the canonical length) whose version digit is not
+    the current one. Config drives the current head, so a future bump needs no code
+    change here.
     """
+    head = simhash.CURRENT_ID_HEAD
+    sql = (
+        "{a}.item_id LIKE 'fp\\_%%' AND length({a}.item_id) = %s "
+        "AND substring({a}.item_id from 4 for 1) BETWEEN '1' AND '9' "
+        "AND left({a}.item_id, %s) <> %s".format(a=alias)
+    )
+    return sql, [simhash.CANONICAL_ID_LEN, len(head), head]
+
+
+def _old_scheme_rows_exist(cur):
+    """The one-time gate: are there any older-version ids left to migrate?
+
+    Once the migration has bumped every id to the current scheme this is false and
+    the whole step is skipped instantly - no server is ever contacted again. This
+    is the hard version gate: it does not infer 'done' from durations, so orphans
+    the server has no length for can never re-trigger it.
+    """
+    where, params = _old_scheme_where('score')
+    cur.execute("SELECT EXISTS (SELECT 1 FROM score WHERE " + where + ")", params)
+    return bool(cur.fetchone()[0])
+
+
+def _groups_needing_check(cur):
+    """Older-version rows with NO duration yet, grouped (server, item_id) -> files.
+
+    The duration backfill only needs the rows still missing a length; the version
+    relabel afterwards handles the rest. Both single-file rows (stamp the length)
+    and multi-file rows (duplicates to confirm) come back; the file-list size tells
+    them apart.
+    """
+    where, params = _old_scheme_where('s')
     cur.execute(
         "SELECT tsm.server_id, s.item_id, array_agg(tsm.provider_track_id) "
         "FROM track_server_map tsm "
         "JOIN score s ON s.item_id = tsm.item_id "
-        "WHERE s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s "
-        "AND s.duration IS NULL "
+        "WHERE " + where + " AND s.duration IS NULL "
         "GROUP BY tsm.server_id, s.item_id",
-        (CANONICAL_ID_LEN,),
+        params,
     )
     groups = {}
     for server_id, item_id, provider_ids in cur.fetchall():
@@ -242,7 +268,7 @@ def _log_complete(total_groups, totals):
     logger.info("=" * 64)
 
 
-def _fetch_all_server_durations(db, groups_by_server):
+def _fetch_all_server_durations(db, groups_by_server, prefetched=None):
     """Every server's duration map, all fetched CONCURRENTLY.
 
     The catalogue listing per server is one slow HTTP round trip and they are
@@ -254,9 +280,23 @@ def _fetch_all_server_durations(db, groups_by_server):
     first. A server that no longer exists or cannot be listed maps to None, so
     its groups are left for the next start. NOT a per-id/batch fetch: still one
     whole-catalogue listing per server, just no longer serialized.
+
+    ``prefetched`` is the legacy migration's own whole-server listing from earlier
+    this same boot: a server already in it is NOT listed again (that second full
+    listing was minutes of pure waste on a mixed upgrade). The legacy listing is
+    unfiltered, a superset of the filtered one, so it can only widen coverage.
     """
+    prefetched = prefetched or {}
+    durations = {sid: prefetched[sid] for sid in groups_by_server if sid in prefetched}
+    if durations:
+        logger.info(
+            "Catalogue duration backfill: reusing the legacy migration's listing "
+            "for %d server(s) - not listing them again.", len(durations),
+        )
     servers = {}
     for server_id in groups_by_server:
+        if server_id in durations:
+            continue
         server = registry.get_server(server_id, conn=db)
         if server is None:
             logger.warning(
@@ -266,7 +306,6 @@ def _fetch_all_server_durations(db, groups_by_server):
             )
         else:
             servers[server_id] = server
-    durations = {}
     if not servers:
         return durations
     workers = min(len(servers), _MAX_FETCH_THREADS)
@@ -345,43 +384,54 @@ def _process_server(db, cur, server_id, groups, durations, totals, total_groups,
     db.commit()
 
 
-def _run_check(db, cur):
+def _run_backfill(db, cur, prefetched=None):
+    """Give every older-version NULL-duration row a length (real or sentinel)."""
+    groups_by_server = _groups_needing_check(cur)
+    total_groups = sum(len(groups) for groups in groups_by_server.values())
+    totals = _empty_totals()
+    if not total_groups:
+        return totals
+    _log_start_banner(total_groups, len(groups_by_server))
+    step = max(1, total_groups // 10)
+    # Fetch every server's catalogue concurrently, THEN write sequentially on
+    # the single DB cursor (the fetch is the slow part; the DB writes are not
+    # thread-safe and stay on this thread).
+    logger.info(
+        "Catalogue duration backfill: listing %d server catalogue(s) for track "
+        "lengths - this is the slow part (metadata only, no audio downloaded); "
+        "startup continues as soon as it returns...", len(groups_by_server),
+    )
+    durations_by_server = _fetch_all_server_durations(db, groups_by_server, prefetched)
+    logger.info("Catalogue duration backfill: server listing done, writing lengths...")
+    for server_id, groups in groups_by_server.items():
+        _process_server(
+            db, cur, server_id, groups, durations_by_server.get(server_id),
+            totals, total_groups, step,
+        )
+    _log_complete(total_groups, totals)
+    return totals
+
+
+def _run_migration(db, cur, prefetched=None):
     try:
-        groups_by_server = _groups_needing_check(cur)
-        total_groups = sum(len(groups) for groups in groups_by_server.values())
-        if not total_groups:
-            return _empty_totals()
-        _log_start_banner(total_groups, len(groups_by_server))
-        step = max(1, total_groups // 10)
-        totals = _empty_totals()
-        # Fetch every server's catalogue concurrently, THEN write sequentially on
-        # the single DB cursor (the fetch is the slow part; the DB writes are not
-        # thread-safe and stay on this thread).
-        logger.info(
-            "Catalogue duration backfill: listing %d server catalogue(s) for track "
-            "lengths - this is the slow part (metadata only, no audio downloaded); "
-            "startup continues as soon as it returns...", len(groups_by_server),
-        )
-        durations_by_server = _fetch_all_server_durations(db, groups_by_server)
-        logger.info(
-            "Catalogue duration backfill: server listing done, writing lengths..."
-        )
-        for server_id, groups in groups_by_server.items():
-            _process_server(
-                db, cur, server_id, groups, durations_by_server.get(server_id),
-                totals, total_groups, step,
-            )
-        _log_complete(total_groups, totals)
+        totals = _run_backfill(db, cur, prefetched)
+        # HARD version gate: bump every older id that now carries a length up to the
+        # current scheme. Rows a skipped/unreliable server left NULL keep their old
+        # id and are retried next boot; everything else becomes current, so the gate
+        # above is false from then on and this whole step is skipped forever.
+        from tasks.fingerprint_canonicalize import relabel_scheme_to_current
+        totals['relabelled'] = relabel_scheme_to_current(cur, only_with_duration=True)
+        db.commit()
         return totals
     except Exception:
         _rollback(db)
         logger.exception(
-            "Catalogue id duplicate check failed; it retries on the next start"
+            "Catalogue duration migration failed; it retries on the next start"
         )
         raise
 
 
-def repair_duplicate_track_maps(conn=None):
+def repair_duplicate_track_maps(conn=None, prefetched_durations=None):
     own_conn = conn is None
     db = conn or connect_raw()
     acquired = False
@@ -393,10 +443,14 @@ def repair_duplicate_track_maps(conn=None):
         acquired = bool(cur.fetchone()[0])
         if not acquired:
             logger.info(
-                "Catalogue id duplicate check: another replica already holds the "
+                "Catalogue duration migration: another replica already holds the "
                 "lock; skipping on this one."
             )
             return {'skipped': 'locked'}
-        return _run_check(db, cur)
+        # Hard version gate: no older-scheme ids left -> already migrated -> instant
+        # no-op, the server is never listed again (survives orphans with no length).
+        if not _old_scheme_rows_exist(cur):
+            return {'skipped': 'up_to_date'}
+        return _run_migration(db, cur, prefetched_durations)
     finally:
         _release(cur, db, acquired, own_conn)

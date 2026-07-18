@@ -271,6 +271,7 @@ if not _is_worker:
         # boot. A relabel renames tracks without moving a single vector, so the
         # migration repoints the existing indexes at the new ids rather than
         # rebuilding them, and similarity keeps working across it.
+        _relabel = {}
         try:
             from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
             _relabel = canonicalize_fingerprinted_ids()
@@ -296,7 +297,12 @@ if not _is_worker:
         # config cleanup could wipe, no second duration fetch on a legacy upgrade.
         try:
             from tasks.duplicate_repair import repair_duplicate_track_maps
-            repair_duplicate_track_maps()
+            # Reuse the whole-server listing the legacy migration just did so a
+            # mixed upgrade (provider ids plus leftover older-scheme rows) does not
+            # list the same server twice on one boot - its only slow step.
+            repair_duplicate_track_maps(
+                prefetched_durations=_relabel.get('server_durations'),
+            )
         except Exception as _repair_exc:
             app.logger.warning(
                 "Startup catalogue duplicate check failed (will retry next boot): %s",

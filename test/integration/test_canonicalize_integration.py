@@ -15,7 +15,7 @@ can look at it. Until now nothing exercised it end to end - the only test stubbe
 _build_mapping to return nothing, so it proved the no-op path and nothing else.
 
 Main Features:
-* A legacy catalogue is relabelled for real: provider ids become fp_2 content ids,
+* A legacy catalogue is relabelled for real: provider ids become content ids,
   the provider ids survive in track_server_map, and the legacy score.file_path
   moves onto the server's own map row.
 * Identical audio with matching duration merges into ONE catalogue row and the
@@ -192,7 +192,7 @@ class TestRealCanonicalization:
 
         rows = _score(db)
         assert len(rows) == 3
-        assert all(item_id.startswith('fp_2') for item_id, _ in rows), (
+        assert all(item_id.startswith(simhash.CURRENT_ID_HEAD) for item_id, _ in rows), (
             "every legacy provider id must become a content id"
         )
 
@@ -228,7 +228,7 @@ class TestRealCanonicalization:
 
         assert result['relabelled'] == 2
         rows = _score(db)
-        assert all(item_id.startswith('fp_2') for item_id, _ in rows), (
+        assert all(item_id.startswith(simhash.CURRENT_ID_HEAD) for item_id, _ in rows), (
             "the backslash id must still relabel, not corrupt the relabel map"
         )
         by_provider = {p: path for p, _item, path in _maps(db)}

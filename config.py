@@ -849,6 +849,10 @@ DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOK
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
 # recording for catalogue identity. Same rule AcoustID uses (7s). Unknown duration = not the same.
 DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "7.0"))
+# Version of the fp_<n> content-id scheme. New ids are minted as fp_<this>, and the startup
+# migration relabels every older-version fp_ id up to it exactly once (fp_2 -> fp_3 added track
+# duration). To force a one-time catalogue re-migration in the future, bump ONLY this number.
+CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "3"))
 
 # --- Mood Similarity Filtering ---
 # Threshold for mood similarity filtering. Lower values = stricter filtering (more similar moods required).

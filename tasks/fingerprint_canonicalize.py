@@ -85,7 +85,14 @@ _TRACK_KEYED_INDEXES = (
     'lyrics_axes_index',
     'sem_grove_index',
 )
-_CURRENT_SCHEME_SQL = "(s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s)"
+# Any signature content id (fp_1..fp_9), current or older, is already a resolved
+# catalogue row - canonicalize only turns PROVIDER ids into content ids and never
+# re-resolves an existing one; bumping the scheme version (fp_2 -> fp_3) is the
+# duration migration's cheap relabel, not a re-hash from embeddings.
+_CURRENT_SCHEME_SQL = (
+    "(s.item_id LIKE 'fp\\_%%' AND length(s.item_id) = %s "
+    "AND substring(s.item_id from 4 for 1) BETWEEN '1' AND '9')"
+)
 # Analysis deliberately keeps a track whose embedding yields no usable signature
 # (non-finite or constant) under its PROVIDER id, and records that with the
 # 'analysis' match tier. Such a row can never be relabelled, so counting it as
@@ -684,6 +691,52 @@ def _repoint_indexes(cur, renames):
     )
 
 
+def relabel_scheme_to_current(cur, only_with_duration=True):
+    """Bump every older-version content id (fp_2) up to the current scheme (fp_3).
+
+    A pure key rewrite - the signature body is unchanged, only the version digit -
+    so there is no re-hashing, no re-clustering and no id collision (fp_3 can never
+    equal an fp_2). Reuses the same drop-FK / single UPDATE / repoint-index path the
+    provider relabel uses. ``only_with_duration`` bumps solely the rows that already
+    carry a length (so a server the duration backfill had to skip keeps its fp_2 id
+    and is retried next boot, instead of being marked done without a length).
+    """
+    from tasks import simhash
+
+    head = simhash.CURRENT_ID_HEAD
+    guard = (
+        "item_id LIKE 'fp\\_%%' AND length(item_id) = %s "
+        "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
+        "AND left(item_id, %s) <> %s"
+    )
+    params = [simhash.CANONICAL_ID_LEN, len(head), head]
+    if only_with_duration:
+        guard += " AND duration IS NOT NULL"
+    cur.execute("SELECT item_id FROM score WHERE " + guard, params)
+    old_ids = [row[0] for row in cur.fetchall()]
+    if not old_ids:
+        return 0
+    mapping = {old: simhash.to_current_scheme_id(old) for old in old_ids}
+
+    fk_embedding = find_fk(cur, 'embedding', 'item_id') or 'embedding_item_id_fkey'
+    fk_clap = find_fk(cur, 'clap_embedding', 'item_id') or 'clap_embedding_item_id_fkey'
+    cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
+    lyrics_exists = bool(cur.fetchone()[0])
+    fk_lyrics = (
+        (find_fk(cur, 'lyrics_embedding', 'item_id') or 'lyrics_embedding_item_id_fkey')
+        if lyrics_exists else None
+    )
+    _drop_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
+    _populate_relabel_map(cur, mapping)
+    _relabel_item_ids(cur, lyrics_exists)
+    _readd_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
+    _repoint_indexes(cur, mapping)
+    logger.info(
+        "Catalogue scheme relabel: bumped %d ids up to %s.", len(mapping), head,
+    )
+    return len(mapping)
+
+
 class CanonicalizationVerificationError(RuntimeError):
     """The rewrite produced a catalogue that violates its own invariants."""
 
@@ -812,6 +865,8 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
     cur = db.cursor()
     relabelled = 0
     duplicates = 0
+    source_id = None
+    provider_durations = {}
     prev_timeout = None
     try:
         if not own_conn:
@@ -934,4 +989,14 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         if own_conn:
             db.close()
 
-    return {'relabelled': relabelled, 'duplicates': duplicates}
+    # The whole-server duration listing is handed to the caller so the duplicate
+    # repair reuses it instead of listing the same server a second time on this
+    # same boot (its only slow step). Keyed by server so the repair matches it to
+    # the groups it has to backfill.
+    return {
+        'relabelled': relabelled,
+        'duplicates': duplicates,
+        'source_server_id': source_id,
+        'server_durations': ({source_id: provider_durations}
+                             if source_id and provider_durations else {}),
+    }

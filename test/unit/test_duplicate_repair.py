@@ -84,8 +84,15 @@ class FakeConn:
 
 @pytest.fixture
 def harness(monkeypatch):
-    state = {'groups': {}, 'durations': {}, 'servers': {}, 'stamped': [], 'mapped': {}}
+    state = {'groups': {}, 'durations': {}, 'servers': {}, 'stamped': [],
+             'mapped': {}, 'old_scheme': True, 'relabelled': 0}
     monkeypatch.setattr(dr, '_groups_needing_check', lambda cur: state['groups'])
+    monkeypatch.setattr(dr, '_old_scheme_rows_exist', lambda cur: state['old_scheme'])
+    from tasks import fingerprint_canonicalize as fc
+    monkeypatch.setattr(
+        fc, 'relabel_scheme_to_current',
+        lambda cur, only_with_duration=True: state['relabelled'],
+    )
     monkeypatch.setattr(
         dr.registry, 'get_server',
         lambda server_id, conn=None: state['servers'].get(server_id),
@@ -113,7 +120,7 @@ def _server_row(server_id):
 
 def _totals(**kw):
     base = {'checked': 0, 'backfilled': 0, 'no_length': 0,
-            'real': 0, 'false': 0, 'removed': 0}
+            'real': 0, 'false': 0, 'removed': 0, 'relabelled': 0}
     base.update(kw)
     return base
 
@@ -157,6 +164,43 @@ def test_single_file_rows_get_their_length_backfilled(harness):
     assert result == _totals(checked=2, backfilled=2)
     assert _deletes(harness['conn']) == [], "a single-file row is never unmapped"
     assert harness['stamped'] == [{'fp_2aaa': 200.0, 'fp_2bbb': 314.0}]
+
+
+def test_prefetched_durations_are_reused_without_relisting(harness):
+    # A mixed upgrade: the legacy migration already listed this server this same
+    # boot and handed its durations here. The repair MUST reuse them and never
+    # list the same server a second time. The fetcher is armed to raise, so if it
+    # were called at all the test would fail.
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': ['p1'], 'fp_2bbb': ['p2']}}
+    harness['durations']['srv'] = RuntimeError('must not re-list an already-listed server')
+
+    result = dr.repair_duplicate_track_maps(
+        conn=harness['conn'],
+        prefetched_durations={'srv': {'p1': 200.0, 'p2': 314.0}},
+    )
+
+    assert result == _totals(checked=2, backfilled=2)
+    assert harness['stamped'] == [{'fp_2aaa': 200.0, 'fp_2bbb': 314.0}]
+
+
+def test_prefetch_covers_one_server_the_other_is_still_listed(harness):
+    # Only the server the legacy migration listed is reused; a different server
+    # with older-scheme rows is listed normally.
+    harness['servers']['a'] = _server_row('a')
+    harness['servers']['b'] = _server_row('b')
+    harness['groups'] = {'a': {'fp_2aaa': ['p1']}, 'b': {'fp_2bbb': ['p2']}}
+    harness['durations']['a'] = RuntimeError('server a was prefetched, must not re-list')
+    harness['durations']['b'] = {'p2': 150.0}
+
+    result = dr.repair_duplicate_track_maps(
+        conn=harness['conn'],
+        prefetched_durations={'a': {'p1': 200.0}},
+    )
+
+    assert result == _totals(checked=2, backfilled=2)
+    stamped = {k: v for row in harness['stamped'] for k, v in row.items()}
+    assert stamped == {'fp_2aaa': 200.0, 'fp_2bbb': 150.0}
 
 
 def test_single_file_with_no_server_length_gets_the_sentinel(harness):

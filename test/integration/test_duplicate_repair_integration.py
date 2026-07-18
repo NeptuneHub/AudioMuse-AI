@@ -18,10 +18,11 @@ no-op with no server contact.
 Main Features:
 * A real false duplicate loses only its track_server_map rows; its score and
   embedding rows are never touched.
-* A real duplicate is kept and its length is stamped onto score.duration, so the
-  second run selects nothing and never calls the music server again.
+* A real duplicate is kept and its length is stamped onto score.duration, then its
+  id is bumped to the current scheme, so the second run's version gate is an
+  instant no-op that never calls the music server again.
 * A survivor that already carries a duration (a legacy-migrated row) is never
-  examined - no double duration fetch on a legacy upgrade.
+  re-fetched - it is only relabelled to the current scheme.
 """
 
 import os
@@ -36,11 +37,21 @@ except Exception:  # pragma: no cover
 pytestmark = pytest.mark.integration
 
 
+# The repair now closes with the fp_2 -> fp_3 scheme relabel, which drops/re-adds
+# the embedding-table FKs, rewrites item_id across score/playlist/embedding tables
+# and repoints the similarity index maps - so the schema has to carry those tables
+# too, exactly as production does, or the relabel cannot run.
 _SCHEMA = [
     "CREATE TABLE score (item_id TEXT PRIMARY KEY, title TEXT, "
     "duration DOUBLE PRECISION)",
     "CREATE TABLE embedding (item_id TEXT PRIMARY KEY REFERENCES score (item_id) "
     "ON DELETE CASCADE, embedding BYTEA)",
+    "CREATE TABLE clap_embedding (item_id TEXT PRIMARY KEY REFERENCES score (item_id) "
+    "ON DELETE CASCADE, embedding BYTEA)",
+    "CREATE TABLE lyrics_embedding (item_id TEXT PRIMARY KEY REFERENCES score (item_id) "
+    "ON DELETE CASCADE, embedding BYTEA, axis_vector BYTEA)",
+    "CREATE TABLE playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, "
+    "title TEXT, author TEXT, server_id TEXT)",
     "CREATE TABLE music_servers (server_id TEXT PRIMARY KEY, name TEXT, "
     "server_type TEXT, creds JSONB DEFAULT '{}', is_default BOOLEAN DEFAULT TRUE, "
     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -49,6 +60,10 @@ _SCHEMA = [
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
     "provider_track_id TEXT NOT NULL, match_tier TEXT, "
     "PRIMARY KEY (server_id, provider_track_id))",
+    "CREATE TABLE map_projection_data (index_name VARCHAR(255) PRIMARY KEY, "
+    "projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
+    "embedding_dimension INTEGER NOT NULL)",
+    "CREATE TABLE ivf_dir (name TEXT PRIMARY KEY, blob_data BYTEA NOT NULL)",
 ]
 
 
@@ -85,13 +100,21 @@ def _fp_id(suffix):
     return ('fp_2' + body)[:CANONICAL_ID_LEN]
 
 
+def _current(item_id):
+    # The id a seeded fp_2 row carries AFTER the repair's scheme relabel bumps it.
+    from tasks import simhash
+
+    return simhash.to_current_scheme_id(item_id)
+
+
 @pytest.fixture
 def db(pg_dsn):
     conn = psycopg2.connect(pg_dsn)
     with conn.cursor() as cur:
         cur.execute(
             "DROP TABLE IF EXISTS track_server_map, music_servers, embedding, "
-            "score CASCADE"
+            "clap_embedding, lyrics_embedding, playlist, map_projection_data, "
+            "ivf_dir, score CASCADE"
         )
         for ddl in _SCHEMA:
             cur.execute(ddl)
@@ -166,10 +189,12 @@ class TestRealDuplicateRepair:
         db.commit()
 
         assert (result['real'], result['false'], result['removed']) == (1, 1, 2)
-        # Real duplicate: both files still mapped, length stamped.
-        assert _maps(db, real) == ['pr1', 'pr2']
-        assert _duration(db, real) == pytest.approx(200.0)
-        # False duplicate: map rows gone, but the score/embedding row survives.
+        # Real duplicate: length stamped, so its id is bumped to the current scheme;
+        # both files still map to it under that new id.
+        assert _maps(db, _current(real)) == ['pr1', 'pr2']
+        assert _duration(db, _current(real)) == pytest.approx(200.0)
+        # False duplicate: map rows gone, but the score/embedding row survives. With
+        # no length and no map row it keeps its old-scheme id (nothing to relabel).
         assert _maps(db, false) == []
         assert _duration(db, false) is None
         with db.cursor() as cur:
@@ -205,17 +230,19 @@ class TestRealDuplicateRepair:
 
         assert result['backfilled'] == 2
         assert result['removed'] == 0
-        assert _duration(db, a) == pytest.approx(200.0)
-        assert _duration(db, b) == pytest.approx(314.0)
-        assert _maps(db, a) == ['pa'] and _maps(db, b) == ['pb']
+        # Both got a length, so both were bumped to the current scheme.
+        assert _duration(db, _current(a)) == pytest.approx(200.0)
+        assert _duration(db, _current(b)) == pytest.approx(314.0)
+        assert _maps(db, _current(a)) == ['pa'] and _maps(db, _current(b)) == ['pb']
 
         def explode(server):
             raise AssertionError("backfilled single-file rows must not be re-listed")
 
         from tasks import duplicate_repair as dr
         monkeypatch.setattr(dr, '_server_durations', explode)
+        # No older-scheme row is left, so the version gate short-circuits instantly.
         second = _run(db, monkeypatch, {})
-        assert second['checked'] == 0
+        assert second == {'skipped': 'up_to_date'}
 
     def test_single_file_without_server_length_gets_sentinel_and_is_one_time(
         self, db, monkeypatch
@@ -236,29 +263,58 @@ class TestRealDuplicateRepair:
         db.commit()
 
         assert result['backfilled'] == 2 and result['no_length'] == 1
-        assert _duration(db, missing) == pytest.approx(dr._NO_SERVER_DURATION)
-        assert _maps(db, missing) == ['pmiss'], "a single file is never unmapped"
+        # The sentinel (0.0) is a non-NULL length, so the row is also relabelled.
+        assert _duration(db, _current(missing)) == pytest.approx(dr._NO_SERVER_DURATION)
+        assert _maps(db, _current(missing)) == ['pmiss'], "a single file is never unmapped"
 
         def explode(server):
             raise AssertionError("a sentinel row must not be re-listed")
 
         monkeypatch.setattr(dr, '_server_durations', explode)
-        assert _run(db, monkeypatch, {})['checked'] == 0
+        # Every row now carries a length and is on the current scheme: instant skip.
+        assert _run(db, monkeypatch, {}) == {'skipped': 'up_to_date'}
 
-    def test_survivor_with_duration_is_never_examined(self, db, monkeypatch):
-        # A legacy-migrated survivor already has a duration; the check must skip it
-        # entirely (no second duration fetch after a legacy upgrade).
+    def test_survivor_with_duration_is_relabelled_but_never_re_fetched(self, db, monkeypatch):
+        # A legacy-migrated survivor already has a duration; the backfill must not
+        # look at it (no second duration fetch after a legacy upgrade), but the
+        # scheme relabel still bumps it up to the current id.
         already = _fp_id('c')
         with db.cursor() as cur:
             _seed_group(cur, already, ['p1', 'p2'], duration=200.0)
         db.commit()
 
         def explode(server):
-            raise AssertionError("a duration-bearing survivor must not be checked")
+            raise AssertionError("a duration-bearing survivor must not be re-fetched")
 
         from tasks import duplicate_repair as dr
         monkeypatch.setattr(dr, '_server_durations', explode)
         result = dr.repair_duplicate_track_maps(conn=db)
 
         assert result['checked'] == 0
-        assert _maps(db, already) == ['p1', 'p2']
+        assert result['relabelled'] == 1
+        assert _maps(db, _current(already)) == ['p1', 'p2']
+        assert _duration(db, _current(already)) == pytest.approx(200.0)
+
+    def test_prefetched_durations_avoid_a_second_server_listing(self, db, monkeypatch):
+        # The legacy migration already listed this server earlier in the same boot
+        # and handed its durations to the repair; the repair must reuse them and
+        # never list the server a second time (the whole point of the fix).
+        a = _fp_id('m')
+        with db.cursor() as cur:
+            _seed_group(cur, a, ['pa'])
+        db.commit()
+
+        from tasks import duplicate_repair as dr
+
+        def explode(server):
+            raise AssertionError("a prefetched server must not be listed again")
+
+        monkeypatch.setattr(dr, '_server_durations', explode)
+        result = dr.repair_duplicate_track_maps(
+            conn=db, prefetched_durations={'srv': {'pa': 200.0}},
+        )
+        db.commit()
+
+        assert result['backfilled'] == 1
+        assert _duration(db, _current(a)) == pytest.approx(200.0)
+        assert _maps(db, _current(a)) == ['pa']

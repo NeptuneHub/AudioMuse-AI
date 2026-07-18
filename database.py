@@ -1086,12 +1086,19 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
                 "WHERE item_id NOT LIKE 'fp\\_%'"
             )
-            # The startup duration backfill finds fp_2 rows with no length via this
-            # partial index; it shrinks to empty as rows get a length, so the
-            # one-time check stays instant even on a huge catalogue.
+            # The startup duration migration's hard version gate ("are there any
+            # older-scheme ids left?") reads this partial index. It shrinks to
+            # empty once everything is bumped to the current scheme, so the gate
+            # stays instant on a huge catalogue and the server is never re-listed.
+            from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+            cur.execute("DROP INDEX IF EXISTS idx_score_null_duration")
+            cur.execute("DROP INDEX IF EXISTS idx_score_old_scheme")
             cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_score_null_duration ON score (item_id) "
-                "WHERE duration IS NULL AND item_id LIKE 'fp\\_2%'"
+                "CREATE INDEX idx_score_old_scheme ON score (item_id) "
+                "WHERE item_id LIKE 'fp\\_%%' AND length(item_id) = %d "
+                "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
+                "AND left(item_id, %d) <> '%s'"
+                % (CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD)
             )
 
             cur.execute(

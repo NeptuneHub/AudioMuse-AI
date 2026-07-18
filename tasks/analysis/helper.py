@@ -589,8 +589,10 @@ def refresh_fingerprint_index(resolver, force=False):
                 return resolver
             cur.execute(
                 "SELECT item_id, created_at, duration FROM score "
-                "WHERE created_at > %s AND item_id LIKE 'fp\\_2%%' "
-                "AND length(item_id) = %s ORDER BY created_at",
+                "WHERE created_at > %s AND item_id LIKE 'fp\\_%%' "
+                "AND length(item_id) = %s "
+                "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
+                "ORDER BY created_at",
                 (cached['watermark'], CANONICAL_ID_LEN),
             )
             rows = cur.fetchall()
@@ -628,7 +630,8 @@ def load_fingerprint_index():
         watermark = cur.fetchone()[0]
         cur.execute(
             "SELECT item_id, duration FROM score "
-            "WHERE item_id LIKE 'fp\\_2%%' AND length(item_id) = %s",
+            "WHERE item_id LIKE 'fp\\_%%' AND length(item_id) = %s "
+            "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9'",
             (CANONICAL_ID_LEN,),
         )
         for item_id, duration in cur.fetchall():

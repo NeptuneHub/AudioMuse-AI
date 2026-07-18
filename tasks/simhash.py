@@ -45,7 +45,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from config import DUPLICATE_DISTANCE_THRESHOLD_COSINE, DURATION_TOLERANCE_SECONDS
+from config import (
+    CATALOGUE_ID_SCHEME_VERSION,
+    DUPLICATE_DISTANCE_THRESHOLD_COSINE,
+    DURATION_TOLERANCE_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +57,13 @@ SIGNATURE_BITS = 200
 SIGNATURE_MATCH_MAX_HAMMING = 10
 
 _ID_PREFIX = "fp_"
-_ID_SCHEME = "2"
+# The current scheme digit comes from config so a future bump is a one-line change.
+# Every fp_<n> with n in 1..9 encodes the same 200-bit signature the same way, so an
+# older-version id still decodes; only the digit (and thus the id STRING) differs, and
+# the startup migration relabels older versions up to the current one.
+_ID_SCHEME = str(CATALOGUE_ID_SCHEME_VERSION)
 _ID_HEAD = _ID_PREFIX + _ID_SCHEME
+CURRENT_ID_HEAD = _ID_HEAD  # public: the current-scheme head, e.g. "fp_3"
 _HEX_LEN = ((SIGNATURE_BITS + 7) // 8) * 2
 CANONICAL_ID_LEN = len(_ID_HEAD) + _HEX_LEN
 _SIGNATURE_MASK = (1 << SIGNATURE_BITS) - 1
@@ -332,13 +341,39 @@ def mint_canonical_id(signature, taken):
     return item_id
 
 
+def is_signature_id(item_id):
+    """A content id of ANY scheme version (fp_1..fp_9), current or older.
+
+    Scheme 0 is the no-signature ``fp_0`` id, so it is excluded. Length pins it to
+    the canonical shape so a retired-shape id (different hex length) is not counted.
+    """
+    return (
+        isinstance(item_id, str)
+        and len(item_id) == CANONICAL_ID_LEN
+        and item_id[:len(_ID_PREFIX)] == _ID_PREFIX
+        and '1' <= item_id[len(_ID_PREFIX):len(_ID_HEAD)] <= '9'
+    )
+
+
+def is_current_scheme_id(item_id):
+    return isinstance(item_id, str) and item_id.startswith(_ID_HEAD) \
+        and len(item_id) == CANONICAL_ID_LEN
+
+
+def to_current_scheme_id(item_id):
+    """Rewrite any signature id to the current scheme, keeping its 200-bit body.
+
+    Just the version digit changes, so the mapping is total and collision-free: two
+    different versions of the same signature converge to the same current id.
+    """
+    if not is_signature_id(item_id):
+        return item_id
+    return _ID_HEAD + item_id[len(_ID_HEAD):]
+
+
 def signature_from_canonical_id(item_id):
-    """Recover the signature from a current-scheme id, or None for anything else."""
-    if (
-        not is_fingerprint_id(item_id)
-        or len(item_id) != CANONICAL_ID_LEN
-        or not item_id.startswith(_ID_HEAD)
-    ):
+    """Recover the signature from any-version content id, or None for anything else."""
+    if not is_signature_id(item_id):
         return None
     try:
         return int(item_id[len(_ID_HEAD):], 16) & _SIGNATURE_MASK

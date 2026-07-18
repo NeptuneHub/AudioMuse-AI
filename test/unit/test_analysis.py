@@ -372,7 +372,7 @@ def test_same_audio_with_different_duration_gets_its_own_id(monkeypatch, tmp_pat
     assert result['status'] == 'SUCCESS'
     assert len(persisted_ids) == 1
     assert persisted_ids[0] != known_id
-    assert persisted_ids[0].startswith('fp_2')
+    assert persisted_ids[0].startswith(simhash.CURRENT_ID_HEAD)
 
 
 def test_same_audio_with_unknown_catalogue_duration_gets_its_own_id(
@@ -393,7 +393,7 @@ def test_same_audio_with_unknown_catalogue_duration_gets_its_own_id(
     assert result['status'] == 'SUCCESS'
     assert len(persisted_ids) == 1
     assert persisted_ids[0] != known_id
-    assert persisted_ids[0].startswith('fp_2')
+    assert persisted_ids[0].startswith(simhash.CURRENT_ID_HEAD)
 
 
 def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
@@ -423,7 +423,7 @@ def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
     assert result['status'] == 'SUCCESS'
     assert len(persisted_ids) == 1
     assert persisted_ids[0] != taken_id
-    assert persisted_ids[0].startswith('fp_2')
+    assert persisted_ids[0].startswith(simhash.CURRENT_ID_HEAD)
     assert map_upserts == [('srv-def', {'prov1': (persisted_ids[0], 'fingerprint', None)})]
 
 
