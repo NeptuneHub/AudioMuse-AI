@@ -1148,16 +1148,18 @@ def match_album():
         _rematch_album_rows(session_id, newly_matched, still_unmatched)
     else:
         _merge_manual_matches(session_id, newly_matched)
-    # Expose the source server's provider ids, never the internal fp_ id; the
-    # count stays the true unmatched total even if an id has no provider mapping.
+    # Expose the source server's provider ids, never the internal fp_ id. The count
+    # tracks the id list exactly (both drop any id with no provider mapping) so the
+    # wizard's counter and its rendered rows never disagree.
     unmatched_mapping = _source_provider_id_map(still_unmatched)
+    unmatched_item_ids = [
+        unmatched_mapping[i] for i in still_unmatched if i in unmatched_mapping
+    ]
     return jsonify(
         {
             'matched': len(newly_matched),
-            'unmatched': len(still_unmatched),
-            'unmatched_item_ids': [
-                unmatched_mapping[i] for i in still_unmatched if i in unmatched_mapping
-            ],
+            'unmatched': len(unmatched_item_ids),
+            'unmatched_item_ids': unmatched_item_ids,
         }
     )
 
@@ -1634,8 +1636,10 @@ def dry_run_report(session_id):
 
     old_rows = _load_score_rows_as_dicts()
 
-    # The old_id column must carry the source server's provider id, not the
-    # internal fp_ id; translate every source row's id once up front.
+    # The old_id column carries the source server's provider id (translated once up
+    # front). This CSV is an admin-only audit download that never reaches a media
+    # server, so a source row with no provider mapping falls back to its canonical
+    # id below rather than a blank, keeping every audit row identifiable.
     old_id_provider_map = _source_provider_id_map(
         [old.get('item_id') for old in old_rows]
     )
@@ -1671,7 +1675,7 @@ def dry_run_report(session_id):
             source = 'orphan'
         writer.writerow(
             [
-                old_id_provider_map.get(old_id, ''),
+                old_id_provider_map.get(old_id) or old_id,
                 old.get('author') or old.get('album_artist') or '',
                 old.get('album') or '',
                 old.get('album_artist') or '',
