@@ -30,6 +30,11 @@
         .server-selector-nav .server-selector { width: 100%; padding: 0.4rem 0.5rem; border-radius: 6px; }
     </style>
 
+    <!-- Loaded in <head> so the server-selector fetch wrapper is installed before
+         any page script can issue an /api request (every call must be scoped to the
+         selected server). -->
+    <script src="{{ url_for('static', filename='server_selector.js') }}"></script>
+
     {% block headAdditions %}
         {# head additions from template will be set here #}
     {% endblock %}
@@ -99,7 +104,6 @@
 
     <script src="{{ url_for('static', filename='song_tags.js') }}"></script>
     <script src="{{ url_for('static', filename='error_display.js') }}"></script>
-    <script src="{{ url_for('static', filename='server_selector.js') }}"></script>
 </body>
 </html>
 {% block postHTMLScripts %}

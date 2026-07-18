@@ -596,7 +596,12 @@ def _run_chat_pipeline(data, log_messages):
     executed_query_str = plan_result['executed_query_str']
     filter_applied = plan_result.get('filter_applied', False)
 
-    scoped_pool = app_server_context.scope_results(all_songs, None, id_key='item_id')
+    # Keep canonical ids here: this pool is filtered for availability but stays
+    # internal - it feeds playlist selection and create_instant_playlist_for_server,
+    # which re-translates to the server's ids itself. Translating now would double it.
+    scoped_pool = app_server_context.scope_results(
+        all_songs, None, id_key='item_id', translate=False
+    )
     if len(scoped_pool) != len(all_songs):
         log_messages.append(
             f"\nServer availability: removed {len(all_songs) - len(scoped_pool)} "
@@ -800,6 +805,14 @@ def _run_chat_pipeline(data, log_messages):
 
     actual_model_used = ai_config.get(f'{ai_provider.lower()}_model')
 
+    # The pool stayed canonical for internal selection/ordering; translate the
+    # FINAL list to the selected server's provider ids so the response never emits
+    # an internal fp_ id. /api/create_playlist resolves them back to canonical.
+    if final_query_results_list:
+        final_query_results_list = app_server_context.scope_results(
+            final_query_results_list, None, id_key='item_id'
+        )
+
     # Return final response object (caller wraps it for HTTP).
     return (
         {
@@ -888,6 +901,12 @@ def create_media_server_playlist_api():
         server_id = app_server_context.resolve_request_server_id(data)
     except ValueError as exc:
         return jsonify({"message": f"Error: {exc}"}), 400
+
+    # The client posts back the provider ids it got from /api/chatPlaylist;
+    # canonicalize them so the dispatcher translates to the target server exactly
+    # once. A canonical id passes through unchanged (older clients keep working).
+    resolved = app_server_context.resolve_input_item_ids(item_ids, data)
+    item_ids = [resolved.get(str(i), i) for i in item_ids]
 
     try:
         try:

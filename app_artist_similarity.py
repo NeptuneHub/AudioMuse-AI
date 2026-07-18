@@ -228,6 +228,34 @@ def get_similar_artists_endpoint():
                 }
             ), 404
 
+        # scope_artist_results only rewrites the top-level artist_id; the nested
+        # representative-song lists carry canonical item_ids, so translate those to
+        # the selected server's provider ids (dropping songs not present there).
+        if include_component_matches:
+            song_lists = [
+                (match, key)
+                for artist in similar_artists
+                for match in (artist.get('component_matches') or [])
+                for key in ('artist1_representative_songs', 'artist2_representative_songs')
+                if match.get(key)
+            ]
+            nested_ids = [
+                song['item_id']
+                for match, key in song_lists
+                for song in match[key]
+                if song.get('item_id')
+            ]
+            mapping = app_server_context.translate_ids_for_request(nested_ids)
+            for match, key in song_lists:
+                kept_songs = []
+                for song in match[key]:
+                    provider_id = mapping.get(str(song.get('item_id')))
+                    if provider_id is None:
+                        continue
+                    song['item_id'] = provider_id
+                    kept_songs.append(song)
+                match[key] = kept_songs
+
         return jsonify(similar_artists)
 
     except RuntimeError:

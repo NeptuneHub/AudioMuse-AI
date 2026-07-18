@@ -251,6 +251,24 @@ def _shutdown_gmm_pool() -> None:
         logger.warning("Could not shut the artist GMM worker pool down", exc_info=True)
 
 
+def _release_gmm_pool_temp_folders() -> None:
+    try:
+        from joblib.externals.loky import get_reusable_executor
+
+        executor = get_reusable_executor(reuse=True)
+        manager = getattr(executor, "_temp_folder_manager", None)
+        if manager is None:
+            return
+        for folder in getattr(manager, "_cached_temp_folders", {}).values():
+            if folder and not os.path.isdir(folder):
+                os.makedirs(folder, exist_ok=True)
+        manager._clean_temporary_resources(force=True, allow_non_empty=True)
+    except Exception:
+        logger.debug(
+            "Could not release artist GMM pool scratch folders", exc_info=True
+        )
+
+
 def _fit_artist_job(job: Tuple[str, np.ndarray, str]) -> Tuple[str, Optional[Dict]]:
     """One artist's GMM. Top level so a worker process can unpickle it."""
     artist_name, embeddings, tracks_hash = job
@@ -312,60 +330,44 @@ def _artist_jobs(cur, batch, artist_tracks, artist_track_hashes):
     return jobs
 
 
+def _run_fit_batches(cur, pending, artist_tracks, artist_track_hashes, dispatch):
+    fitted = {}
+    for batch in _artist_batches(pending, artist_tracks):
+        try:
+            jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
+        except Exception:
+            logger.exception(
+                "Failed to fetch embeddings for a batch of %d artists", len(batch)
+            )
+            continue
+        if not jobs:
+            continue
+        for artist_name, params in dispatch(jobs):
+            if params is not None:
+                fitted[artist_name] = params
+    return fitted
+
+
 def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
-    """{artist: gmm_params} for every artist that needs a (re)fit.
-
-    Two things made this the slowest step of a full rebuild, and neither was the
-    GMM itself: one embedding round trip PER ARTIST, and every artist fitted on a
-    single core. Embeddings are now fetched a batch of artists at a time, and the
-    fits - a BIC sweep of restarted EM runs, ~50 ms of pure Python each - fan out
-    across PROCESSES. Threads are useless here: the EM loop holds the GIL, and
-    measured on 300 artists they ran 3x SLOWER than serial while processes ran 6x
-    faster.
-
-    joblib's loky backend, NOT a forked pool: an index rebuild trains the IVF
-    cells (OpenMP) before it reaches the artists, and forking a process that has
-    already run OpenMP deadlocks its children - which is exactly what a fork pool
-    did here. loky starts its workers fresh, so there is no inherited OpenMP state
-    to hang on, and it holds them open across the batches.
-
-    The pool is shut down before returning. loky keeps its workers alive for
-    REUSE by default, and this runs inside an RQ job process that exits when the
-    job does: the workers outlive it, and their semaphores and memmap folders are
-    still there to be complained about at shutdown. Memmapping is off too - an
-    artist's embeddings are tens of KB, not worth a /tmp file each.
-    """
     workers = _gmm_worker_count(len(pending))
     logger.info(
         "Fitting %d artist GMMs across %d worker process(es)...", len(pending), workers
     )
-    fitted = {}
-    runner = (
-        Parallel(n_jobs=workers, backend='loky', max_nbytes=None)
-        if workers > 1
-        else None
-    )
+    if workers <= 1:
+        return _run_fit_batches(
+            cur, pending, artist_tracks, artist_track_hashes,
+            lambda jobs: [_fit_artist_job(job) for job in jobs],
+        )
+
     try:
-        for batch in _artist_batches(pending, artist_tracks):
-            try:
-                jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
-            except Exception:
-                logger.exception(
-                    "Failed to fetch embeddings for a batch of %d artists", len(batch)
-                )
-                continue
-            if not jobs:
-                continue
-            if runner is None:
-                results = [_fit_artist_job(job) for job in jobs]
-            else:
-                results = runner(delayed(_fit_artist_job)(job) for job in jobs)
-            for artist_name, params in results:
-                if params is not None:
-                    fitted[artist_name] = params
+        with Parallel(n_jobs=workers, backend='loky', max_nbytes=None) as runner:
+            fitted = _run_fit_batches(
+                cur, pending, artist_tracks, artist_track_hashes,
+                lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs),
+            )
+            _release_gmm_pool_temp_folders()
     finally:
-        if runner is not None:
-            _shutdown_gmm_pool()
+        _shutdown_gmm_pool()
     return fitted
 
 
@@ -659,9 +661,9 @@ def _resolve_indexed_artist_name(query_artist):
     if query_artist in reverse_artist_map:
         return query_artist
 
-    from app_helper_artist import get_artist_name_by_id
+    from tasks.mediaserver import registry
 
-    resolved_name = get_artist_name_by_id(query_artist)
+    resolved_name = registry.artist_names_for_ids([query_artist]).get(str(query_artist))
     if resolved_name:
         logger.info(f"Resolved artist ID '{query_artist}' to name '{resolved_name}'")
         return resolved_name
@@ -689,11 +691,11 @@ def _score_candidate_artists(labels, query_id, query_gmm):
 def _build_similar_artist_result(
     score, candidate_artist, candidate_gmm, query_gmm, artist_name, include_component_matches
 ):
-    from app_helper_artist import get_artist_id_by_name
+    from tasks.mediaserver import registry
 
     result = {
         'artist': candidate_artist,
-        'artist_id': get_artist_id_by_name(candidate_artist),
+        'artist_id': registry.artist_ids_for_names([candidate_artist]).get(candidate_artist),
         'divergence': float(score),
     }
     if include_component_matches:
@@ -763,7 +765,7 @@ def search_artists_by_name(
         return []
 
     from app_helper import get_db
-    from app_helper_artist import get_artist_id_by_name
+    from tasks.mediaserver import registry
 
     conn = get_db()
     cur = conn.cursor()
@@ -791,10 +793,12 @@ def search_artists_by_name(
             tuple([query_pattern] + availability_params + [limit, offset]),
         )
 
-        results = []
-        for author, track_count in cur.fetchall():
-            artist_id = get_artist_id_by_name(author)
-            results.append({'artist': author, 'artist_id': artist_id, 'track_count': track_count})
+        rows = cur.fetchall()
+        artist_ids = registry.artist_ids_for_names([author for author, _ in rows], server_id)
+        results = [
+            {'artist': author, 'artist_id': artist_ids.get(author), 'track_count': track_count}
+            for author, track_count in rows
+        ]
 
         return results
 
@@ -808,11 +812,11 @@ def search_artists_by_name(
 
 def get_artist_tracks(artist_identifier: str) -> List[Dict]:
     from app_helper import get_db
-    from app_helper_artist import get_artist_name_by_id
+    from tasks.mediaserver import registry
 
     artist_name = artist_identifier
     if artist_identifier:
-        resolved_name = get_artist_name_by_id(artist_identifier)
+        resolved_name = registry.artist_names_for_ids([artist_identifier]).get(str(artist_identifier))
         if resolved_name:
             artist_name = resolved_name
 

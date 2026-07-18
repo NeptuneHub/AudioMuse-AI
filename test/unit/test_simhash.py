@@ -12,13 +12,16 @@ Verifies the 200-bit per-dimension sign signature: deterministic across input
 forms, similarity-preserving (a re-encode flips few bits, distinct songs flip
 many), the fp_2<50hex> id round-trip, the banded candidate index, and the
 resolver contract: identity is decided by the raw-embedding cosine (the Similar
-Songs duplicate rule) with the signature only proposing candidates - two songs
-sharing a signature but failing the cosine stay separate rows.
+Songs duplicate rule) PLUS track-duration agreement within
+DURATION_TOLERANCE_SECONDS, with the signature only proposing candidates - two
+songs sharing a signature but failing the cosine or the duration stay separate
+rows, and an unknown duration always splits.
 
 Main Features:
 * Signature determinism, similarity window, invalid-input handling.
 * fp_2 id round-trip and legacy-scheme rejection.
-* Resolver: cosine confirms, collisions mint the next free id.
+* Resolver: cosine plus duration confirm, collisions mint the next free id.
+* Duration ladder: same-sounding tracks partition into one id per length.
 """
 
 import numpy as np
@@ -93,7 +96,7 @@ class TestCanonicalId:
     def test_id_round_trip(self):
         signature = simhash.embedding_signature(_embedding(9))
         cid = simhash.canonical_id_str(signature)
-        assert cid.startswith('fp_2') and len(cid) == simhash.CANONICAL_ID_LEN
+        assert cid.startswith(simhash.CURRENT_ID_HEAD) and len(cid) == simhash.CANONICAL_ID_LEN
         assert simhash.is_fingerprint_id(cid)
         assert simhash.signature_from_canonical_id(cid) == signature
 
@@ -138,15 +141,64 @@ class TestSignatureIndex:
         assert index.find_candidates(base) == ['exact', 'two-bits']
 
 
+class TestDurationsCompatible:
+    def test_within_tolerance_is_compatible(self):
+        assert simhash.durations_compatible(200.0, 200.0)
+        assert simhash.durations_compatible(200.0, 207.0)
+        assert simhash.durations_compatible(207.0, 200.0)
+
+    def test_beyond_tolerance_is_not_compatible(self):
+        assert not simhash.durations_compatible(200.0, 207.1)
+        assert not simhash.durations_compatible(200.0, 210.0)
+
+    def test_unknown_or_invalid_duration_never_compatible(self):
+        assert not simhash.durations_compatible(None, 200.0)
+        assert not simhash.durations_compatible(200.0, None)
+        assert not simhash.durations_compatible(None, None)
+        assert not simhash.durations_compatible(0.0, 0.0)
+        assert not simhash.durations_compatible(-5.0, -5.0)
+        assert not simhash.durations_compatible(float('nan'), 200.0)
+        assert not simhash.durations_compatible('junk', 200.0)
+
+
 class TestCatalogResolver:
-    def test_same_audio_resolves_to_existing(self):
+    def test_same_audio_same_duration_resolves_to_existing(self):
         emb = _embedding(13)
         resolver = simhash.CatalogResolver()
-        kind, first = resolver.resolve(emb)
-        assert kind == 'new' and first.startswith('fp_2')
+        kind, first = resolver.resolve(emb, duration=200.0)
+        assert kind == 'new' and first.startswith(simhash.CURRENT_ID_HEAD)
         reencoded = emb + np.float32(1e-4) * _embedding(14)
-        kind2, second = resolver.resolve(reencoded)
+        kind2, second = resolver.resolve(reencoded, duration=201.5)
         assert (kind2, second) == ('existing', first)
+
+    def test_same_audio_unknown_duration_mints_new_id(self):
+        emb = _embedding(13)
+        resolver = simhash.CatalogResolver()
+        _kind, first = resolver.resolve(emb, duration=200.0)
+        kind, second = resolver.resolve(emb)
+        assert kind == 'new'
+        assert second != first
+
+    def test_same_audio_different_duration_mints_new_id(self):
+        emb = _embedding(13)
+        resolver = simhash.CatalogResolver()
+        _kind, first = resolver.resolve(emb, duration=200.0)
+        kind, second = resolver.resolve(emb, duration=210.0)
+        assert kind == 'new'
+        assert second != first
+
+    def test_duration_ladder_partitions_same_sounding_tracks_by_length(self):
+        emb = _embedding(13)
+        durations = [200.0, 200.0, 210.0, 210.0, 220.0, 220.0]
+        resolver = simhash.CatalogResolver()
+        results = [resolver.resolve(emb, duration=d) for d in durations]
+        ids = [item_id for _kind, item_id in results]
+        kinds = [kind for kind, _item_id in results]
+        assert kinds == ['new', 'existing', 'new', 'existing', 'new', 'existing']
+        assert ids[0] == ids[1]
+        assert ids[2] == ids[3]
+        assert ids[4] == ids[5]
+        assert len({ids[0], ids[2], ids[4]}) == 3
 
     def test_same_signature_different_audio_gets_own_id(self):
         first, second = _same_signature_different_song()
@@ -156,28 +208,71 @@ class TestCatalogResolver:
         )
         assert simhash.cosine_distance(first, second) > 0.01
         resolver = simhash.CatalogResolver()
-        _kind, first_id = resolver.resolve(first)
-        kind, second_id = resolver.resolve(second)
+        _kind, first_id = resolver.resolve(first, duration=200.0)
+        kind, second_id = resolver.resolve(second, duration=200.0)
         assert kind == 'new'
         assert second_id != first_id
-        kind3, again = resolver.resolve(second)
+        kind3, again = resolver.resolve(second, duration=200.0)
         assert (kind3, again) == ('existing', second_id)
 
-    def test_lazy_fetcher_supplies_preexisting_embeddings(self):
+    def test_lazy_fetchers_supply_preexisting_embedding_and_duration(self):
         emb = _embedding(16)
         signature = simhash.embedding_signature(emb)
         cid = simhash.canonical_id_str(signature)
         fetched = []
+        duration_fetched = []
 
         def fetcher(item_id):
             fetched.append(item_id)
             return emb.tobytes()
 
-        resolver = simhash.CatalogResolver(embedding_fetcher=fetcher)
+        def duration_fetcher(item_id):
+            duration_fetched.append(item_id)
+            return 200.0
+
+        resolver = simhash.CatalogResolver(
+            embedding_fetcher=fetcher, duration_fetcher=duration_fetcher
+        )
         resolver.register(cid)
-        kind, resolved = resolver.resolve(emb)
+        kind, resolved = resolver.resolve(emb, duration=200.0)
         assert (kind, resolved) == ('existing', cid)
         assert fetched == [cid]
+        assert duration_fetched == [cid]
+
+    def test_duration_mismatch_skips_the_expensive_cosine(self):
+        # In a homogeneous library resolve() walks every same-signature candidate;
+        # a length mismatch must reject BEFORE the embedding is fetched, or every
+        # candidate costs an embedding fetch + 200-dim cosine and analysis pins a
+        # core scanning the whole cluster per track (the O(n^2) regression).
+        emb = _embedding(13)
+        signature = simhash.embedding_signature(emb)
+        cid = simhash.canonical_id_str(signature)
+        fetched = []
+
+        resolver = simhash.CatalogResolver(
+            embedding_fetcher=lambda item_id: fetched.append(item_id) or emb.tobytes(),
+            duration_fetcher=lambda item_id: 500.0,
+        )
+        resolver.register(cid)
+        kind, _resolved = resolver.resolve(emb, duration=200.0)
+        assert kind == 'new'
+        assert fetched == [], (
+            "a length mismatch must skip the embedding fetch and cosine entirely"
+        )
+
+    def test_catalogue_row_without_stored_duration_never_absorbs(self):
+        emb = _embedding(16)
+        signature = simhash.embedding_signature(emb)
+        cid = simhash.canonical_id_str(signature)
+
+        resolver = simhash.CatalogResolver(
+            embedding_fetcher=lambda _item_id: emb.tobytes(),
+            duration_fetcher=lambda _item_id: None,
+        )
+        resolver.register(cid)
+        kind, resolved = resolver.resolve(emb, duration=200.0)
+        assert kind == 'new'
+        assert resolved != cid
 
     def test_unusable_embedding_resolves_to_nothing(self):
         resolver = simhash.CatalogResolver()
@@ -198,6 +293,7 @@ class TestBatchResolveMatchesStreaming:
         rows = centers[idx] + rng.standard_normal(
             (n, simhash.SIGNATURE_BITS)
         ).astype(np.float32) * 0.35
+        durations = rng.uniform(60.0, 600.0, size=n)
         # Genuine re-encodes of earlier tracks: these must merge.
         ndup = int(n * dup_frac)
         dst = rng.choice(np.arange(n // 2, n), size=ndup, replace=False)
@@ -205,17 +301,20 @@ class TestBatchResolveMatchesStreaming:
         rows[dst] = rows[src] + rng.standard_normal(
             (ndup, simhash.SIGNATURE_BITS)
         ) * 0.002
-        return rows.astype(np.float32)
+        durations[dst] = durations[src] + rng.uniform(-2.0, 2.0, size=ndup)
+        return rows.astype(np.float32), durations
 
     @staticmethod
-    def _streaming_parents(rows):
+    def _streaming_parents(rows, durations):
         blobs = [row.tobytes() for row in rows]
         signatures = simhash.signature_batch(blobs)
         resolver = simhash.CatalogResolver()
         minted = {}
         parents = []
         for index, (blob, signature) in enumerate(zip(blobs, signatures)):
-            kind, item_id = resolver.resolve(blob, signature=signature)
+            kind, item_id = resolver.resolve(
+                blob, signature=signature, duration=durations[index]
+            )
             if kind == 'existing':
                 parents.append(minted[item_id])
             else:
@@ -223,33 +322,42 @@ class TestBatchResolveMatchesStreaming:
                 parents.append(index)
         return np.array(parents)
 
-    def _batch_parents(self, packed, valid, rows):
+    def _batch_parents(self, packed, valid, rows, durations):
         """The whole-catalogue resolution, composed exactly as the startup
         migration composes it (near_duplicate_pairs -> confirm_pairs ->
         merge_pairs). There is no in-memory shortcut for this in production."""
         left, right = simhash.near_duplicate_pairs(packed, valid)
         if left.size == 0:
             return np.arange(packed.shape[0], dtype=np.int64)
-        confirmed = simhash.confirm_pairs(rows[left], rows[right])
+        confirmed = simhash.confirm_pairs(
+            rows[left], rows[right], durations[left], durations[right]
+        )
         return simhash.merge_pairs(
             packed.shape[0], packed, left[confirmed], right[confirmed]
         )
 
     @pytest.mark.parametrize('seed', [0, 1, 2, 3])
     def test_same_merges_as_the_streaming_resolver(self, seed):
-        rows = self._catalogue(600, seed)
+        rows, durations = self._catalogue(600, seed)
         packed, valid = simhash.signature_matrix(rows)
 
-        batch = self._batch_parents(packed, valid, rows)
-        streaming = self._streaming_parents(rows)
+        batch = self._batch_parents(packed, valid, rows, durations)
+        streaming = self._streaming_parents(rows, durations)
 
         assert np.array_equal(batch, streaming)
         assert int((batch != np.arange(len(rows))).sum()) > 0
 
-    def test_a_merged_row_is_never_a_merge_target(self):
-        rows = self._catalogue(400, seed=9)
+    def test_unknown_durations_merge_nothing(self):
+        rows, _durations = self._catalogue(200, seed=4)
         packed, valid = simhash.signature_matrix(rows)
-        parent = self._batch_parents(packed, valid, rows)
+        unknown = np.full(len(rows), np.nan)
+        parent = self._batch_parents(packed, valid, rows, unknown)
+        assert np.array_equal(parent, np.arange(len(rows)))
+
+    def test_a_merged_row_is_never_a_merge_target(self):
+        rows, durations = self._catalogue(400, seed=9)
+        packed, valid = simhash.signature_matrix(rows)
+        parent = self._batch_parents(packed, valid, rows, durations)
         for child, target in enumerate(parent):
             if target != child:
                 assert parent[target] == target, "merge chains must not form"
@@ -258,14 +366,15 @@ class TestBatchResolveMatchesStreaming:
     def test_distinct_audio_is_never_merged(self):
         rng = np.random.default_rng(3)
         rows = rng.standard_normal((300, simhash.SIGNATURE_BITS)).astype(np.float32)
+        durations = rng.uniform(60.0, 600.0, size=300)
         packed, valid = simhash.signature_matrix(rows)
-        parent = self._batch_parents(packed, valid, rows)
+        parent = self._batch_parents(packed, valid, rows, durations)
         assert np.array_equal(parent, np.arange(len(rows)))
 
     def test_unusable_embeddings_stay_their_own_track(self):
-        rows = self._catalogue(50, seed=5)
+        rows, durations = self._catalogue(50, seed=5)
         rows[7] = 0.0
         packed, valid = simhash.signature_matrix(rows)
         assert valid[7] is np.False_
-        parent = self._batch_parents(packed, valid, rows)
+        parent = self._batch_parents(packed, valid, rows, durations)
         assert parent[7] == 7

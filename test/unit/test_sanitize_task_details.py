@@ -71,3 +71,55 @@ class TestSanitizeTaskDetails:
     def test_success_task_is_not_given_an_error(self):
         out = sanitize_task_details({'log': ['ok']}, 'SUCCESS', 'x')
         assert 'error' not in out
+
+    def test_clustering_batch_internal_track_ids_are_stripped(self):
+        out = sanitize_task_details(
+            {
+                'best_score_in_batch': 12.0,
+                'final_subset_track_ids': ['fp_3aaa', 'fp_3bbb'],
+                'full_best_result_from_batch': {'named_playlists': {'Rock': ['fp_3ccc']}},
+            },
+            'SUCCESS', 'clustering_batch',
+        )
+        assert 'final_subset_track_ids' not in out
+        assert 'full_best_result_from_batch' not in out
+        assert out['best_score_in_batch'] == 12.0
+
+    def test_cleaning_orphaned_track_item_ids_are_stripped_keeping_labels(self):
+        out = sanitize_task_details(
+            {
+                'final_summary_details': {
+                    'orphaned_tracks_count': 1,
+                    'orphaned_albums': [
+                        {'artist': 'A', 'track_count': 1,
+                         'tracks': [{'item_id': 'fp_3zzz', 'title': 'T', 'author': 'A'}]},
+                    ],
+                }
+            },
+            'SUCCESS', 'cleaning',
+        )
+        track = out['final_summary_details']['orphaned_albums'][0]['tracks'][0]
+        assert 'item_id' not in track
+        assert track == {'title': 'T', 'author': 'A'}
+        assert out['final_summary_details']['orphaned_tracks_count'] == 1
+
+    def test_cleaning_orphaned_legacy_track_id_is_kept(self):
+        out = sanitize_task_details(
+            {
+                'final_summary_details': {
+                    'orphaned_albums': [
+                        {'artist': 'A', 'track_count': 1,
+                         'tracks': [{'item_id': 'jelly-legacy-1', 'title': 'T', 'author': 'A'}]},
+                    ],
+                }
+            },
+            'SUCCESS', 'cleaning',
+        )
+        # A legacy provider id is not an internal fp_ id, so it must NOT be stripped.
+        assert out['final_summary_details']['orphaned_albums'][0]['tracks'][0]['item_id'] == 'jelly-legacy-1'
+
+    def test_non_list_orphaned_albums_does_not_crash(self):
+        out = sanitize_task_details(
+            {'final_summary_details': {'orphaned_albums': 'unexpected'}}, 'SUCCESS', 'cleaning'
+        )
+        assert out['final_summary_details']['orphaned_albums'] == 'unexpected'

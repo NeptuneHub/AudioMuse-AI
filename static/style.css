@@ -1452,12 +1452,14 @@ html.dark-mode body .ptag-genre { color: hsl(var(--genre-hue, 220), 65%, 62%); }
 
 /* Scope chips. Tags what a page (or a dashboard section) acts on: CATALOGUE (the
    deduplicated union of every music server) or PER SERVER (the one server chosen
-   in the sidebar picker). Only rendered when 2+ servers are configured - with one
-   server the two mean the same thing. The page-level chip is pinned to the corner
-   of the viewport (.scope-chip-corner) so it annotates the page without taking part
-   in its layout; the dashboard uses the plain chip inline on its own sections. */
+   in the sidebar picker). Hidden by default and revealed only once server_selector.js
+   confirms 2+ servers and puts .multi-server on <body> - with one server the two
+   scopes mean the same thing, and default-hidden means a single-server install never
+   flashes a chip on the way in. The page-level chip is pinned to the corner of the
+   viewport (.scope-chip-corner) so it annotates the page without taking part in its
+   layout; the dashboard uses the plain chip inline on its own sections. */
 .scope-chip {
-    display: inline-block;
+    display: none;
     padding: 2px 8px;
     border-radius: 12px;
     font-size: 0.62rem;
@@ -1468,6 +1470,7 @@ html.dark-mode body .ptag-genre { color: hsl(var(--genre-hue, 220), 65%, 62%); }
     vertical-align: middle;
     margin-left: 0.5rem;
 }
+body.multi-server .scope-chip { display: inline-block; }
 .scope-catalog { background: #EDE9FE; color: #5B21B6; }
 .scope-server  { background: #DBEAFE; color: #1E40AF; }
 body.dark-mode .scope-catalog,

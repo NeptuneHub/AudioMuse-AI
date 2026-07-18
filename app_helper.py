@@ -109,6 +109,26 @@ def sanitize_task_details(details, state, task_type=None):
         details.pop('checked_album_ids', None)
     details.pop('traceback', None)
 
+    # Internal canonical (fp_) ids must never reach a task-status response. The
+    # clustering-batch child stows raw sampled ids, and the cleaning summary lists
+    # orphaned tracks (on no server, so untranslatable) by their catalogue id.
+    # Strip them here - no UI reads these, and the parent tasks read the job's
+    # return value, not this display copy.
+    details.pop('final_subset_track_ids', None)
+    details.pop('full_best_result_from_batch', None)
+    summary = details.get('final_summary_details')
+    if isinstance(summary, dict) and isinstance(summary.get('orphaned_albums'), list):
+        from tasks.simhash import is_fingerprint_id
+        for album in summary['orphaned_albums']:
+            if not isinstance(album, dict) or not isinstance(album.get('tracks'), list):
+                continue
+            for track in album['tracks']:
+                # Hide only the internal canonical (fp_) id; a legacy provider id is
+                # not internal, so keep it - matching the is_fingerprint_id gate used
+                # everywhere else, instead of over-stripping legacy installs.
+                if isinstance(track, dict) and is_fingerprint_id(str(track.get('item_id'))):
+                    track.pop('item_id', None)
+
     log_entries = details.get('log')
     if isinstance(log_entries, list) and len(log_entries) > 10:
         details['log'] = [
@@ -308,7 +328,8 @@ def build_and_store_artist_projection(index_name='artist_map'):
         logger.warning("No artist GMM params available to build artist projection.")
         return False
 
-    from app_helper_artist import get_artist_id_by_name
+    from tasks.mediaserver import registry
+    artist_ids = registry.artist_ids_for_names(list(loaded_params.keys()))
 
     # Two-pass build: first pass counts components and infers dim, second
     # pass fills a single pre-allocated ndarray. Avoids the previous
@@ -336,7 +357,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
         weights = gmm.get('weights') or []
         if not len(means):
             continue
-        artist_id = get_artist_id_by_name(artist_name) or artist_name
+        artist_id = artist_ids.get(artist_name) or artist_name
         for comp_idx in range(len(means)):
             mat[row_i] = np.asarray(means[comp_idx], dtype=np.float32)
             component_map.append(

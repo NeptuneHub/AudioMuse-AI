@@ -15,10 +15,11 @@ can look at it. Until now nothing exercised it end to end - the only test stubbe
 _build_mapping to return nothing, so it proved the no-op path and nothing else.
 
 Main Features:
-* A legacy catalogue is relabelled for real: provider ids become fp_2 content ids,
+* A legacy catalogue is relabelled for real: provider ids become content ids,
   the provider ids survive in track_server_map, and the legacy score.file_path
   moves onto the server's own map row.
-* Identical audio merges into ONE catalogue row and the merged row keeps its path.
+* Identical audio with matching duration merges into ONE catalogue row and the
+  merged row keeps its path; a different or unknown duration always splits.
 * The verification gate ROLLS BACK a rewrite that violates its invariants, leaving
   the catalogue byte-for-byte as it was.
 * The embedding cascade is re-added even when no constraint existed to find.
@@ -43,7 +44,7 @@ _SCHEMA = [
     "CREATE TABLE score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, "
     "album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, "
     "mood_vector TEXT, energy REAL, other_features TEXT, year INTEGER, "
-    "rating INTEGER, file_path TEXT)",
+    "rating INTEGER, file_path TEXT, duration DOUBLE PRECISION)",
     "CREATE TABLE playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, "
     "item_id TEXT, title TEXT, author TEXT, server_id TEXT)",
     "CREATE UNIQUE INDEX idx_playlist_name_item_server "
@@ -166,6 +167,13 @@ def db(pg_dsn):
     conn.close()
 
 
+@pytest.fixture(autouse=True)
+def no_provider_listing(monkeypatch):
+    from tasks import fingerprint_canonicalize as fc
+
+    monkeypatch.setattr(fc, '_fetch_provider_durations', lambda source_id, conn: {})
+
+
 class TestRealCanonicalization:
     def test_legacy_catalogue_is_relabelled_and_the_path_moves_to_the_map_row(self, db):
         from tasks import fingerprint_canonicalize as fc
@@ -184,7 +192,7 @@ class TestRealCanonicalization:
 
         rows = _score(db)
         assert len(rows) == 3
-        assert all(item_id.startswith('fp_2') for item_id, _ in rows), (
+        assert all(item_id.startswith(simhash.CURRENT_ID_HEAD) for item_id, _ in rows), (
             "every legacy provider id must become a content id"
         )
 
@@ -203,9 +211,42 @@ class TestRealCanonicalization:
             )
             assert cur.fetchone()[0] == 0, "no embedding may lose its score parent"
 
-    def test_identical_audio_merges_to_one_row_and_keeps_its_path(self, db):
+    def test_backslash_in_id_and_path_survives_the_copy_streams(self, db):
         from tasks import fingerprint_canonicalize as fc
 
+        # backslash is COPY's escape char, so a Windows path (or a provider id with
+        # a backslash) must be escaped or the relabel-map and track_server_map COPY
+        # streams corrupt the row. Exercises both _copy_pairs and
+        # _copy_track_server_map.
+        tracks = [
+            ('jf\\odd', 'C:\\Music\\Album\\01 Song.flac', _distinct_embedding(1)),
+            ('jf-2', '/music/B/02.flac', _distinct_embedding(2)),
+        ]
+        _build(db, tracks)
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['relabelled'] == 2
+        rows = _score(db)
+        assert all(item_id.startswith(simhash.CURRENT_ID_HEAD) for item_id, _ in rows), (
+            "the backslash id must still relabel, not corrupt the relabel map"
+        )
+        by_provider = {p: path for p, _item, path in _maps(db)}
+        assert 'jf\\odd' in by_provider, "the backslash provider id survives the COPY"
+        assert by_provider['jf\\odd'] == 'C:\\Music\\Album\\01 Song.flac', (
+            "the Windows path round-trips intact"
+        )
+
+    def test_identical_audio_with_matching_duration_merges_to_one_row(
+        self, db, monkeypatch
+    ):
+        from tasks import fingerprint_canonicalize as fc
+
+        monkeypatch.setattr(
+            fc,
+            '_fetch_provider_durations',
+            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 201.5, 'jf-3': 300.0},
+        )
         same = _distinct_embedding(7)
         tracks = [
             ('jf-1', '/music/Album/01 Rio.flac', same),
@@ -231,6 +272,61 @@ class TestRealCanonicalization:
         )
         assert by_provider['jf-1'][1] == '/music/Album/01 Rio.flac'
         assert by_provider['jf-2'][1] == '/music/Best Of/07 Rio.flac'
+
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT duration FROM score WHERE item_id = %s",
+                (by_provider['jf-3'][0],),
+            )
+            assert cur.fetchone()[0] == pytest.approx(300.0), (
+                "the migration must backfill score.duration from the server metadata"
+            )
+
+    def test_same_sounding_audio_with_different_length_stays_two_songs(
+        self, db, monkeypatch
+    ):
+        from tasks import fingerprint_canonicalize as fc
+
+        monkeypatch.setattr(
+            fc,
+            '_fetch_provider_durations',
+            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 210.0},
+        )
+        same = _distinct_embedding(7)
+        tracks = [
+            ('jf-1', '/music/Brendel/nocturne.flac', same),
+            ('jf-2', '/music/Arrau/nocturne.flac', same.copy()),
+        ]
+        _build(db, tracks)
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['duplicates'] == 0, (
+            "same embedding but different length is a DIFFERENT recording"
+        )
+        rows = _score(db)
+        assert len(rows) == 2
+        maps = _maps(db)
+        assert len({item for _p, item, _f in maps}) == 2, (
+            "each file keeps its own catalogue id"
+        )
+
+    def test_unknown_durations_merge_nothing(self, db):
+        from tasks import fingerprint_canonicalize as fc
+
+        same = _distinct_embedding(7)
+        tracks = [
+            ('jf-1', '/music/Album/01 Rio.flac', same),
+            ('jf-2', '/music/Best Of/07 Rio.flac', same.copy()),
+        ]
+        _build(db, tracks)
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['duplicates'] == 0, (
+            "without durations nothing can be proven identical, so nothing merges"
+        )
+        assert len(_score(db)) == 2
 
     def test_a_rewrite_that_fails_its_own_checks_is_rolled_back(self, db, monkeypatch):
         """The point of no return. A rewrite that would commit a corrupt catalogue

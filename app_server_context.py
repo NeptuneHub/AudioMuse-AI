@@ -19,6 +19,8 @@ Main Features:
   (provider ids in, canonical ids out) before they reach the shared indexes.
 * ``create_instant_playlist_for_server`` translates canonical track ids to the
   target server's ids and creates the playlist there (identity for the default).
+* ``filter_rows_for_request_server`` / ``translate_ids_for_request`` rewrite result
+  ids to the selected server's provider ids so no response leaks an internal id.
 * ``group_playlist_rows_by_server`` shapes stored clustering playlists into the
   grouped-per-server structure the Generated Playlists UI renders.
 * Credential masking and a template-friendly server list for the UI.
@@ -120,6 +122,24 @@ def resolve_input_item_id(raw_id, data=None):
     return resolve_input_item_ids([raw_id], data).get(str(raw_id), str(raw_id))
 
 
+def provider_echo_id(raw_id):
+    """The id to echo back in a response or error message.
+
+    Returns the caller's own id unchanged UNLESS it is an internal canonical
+    (fp_) id, in which case it is translated to the selected/default server's
+    provider id (None when the item is not on that server). Never returns an fp_
+    id, so an endpoint that echoes a caller-supplied id cannot leak one.
+    """
+    if not raw_id:
+        return raw_id
+    from tasks.simhash import is_fingerprint_id
+
+    if not is_fingerprint_id(str(raw_id)):
+        return raw_id
+    canonical = resolve_input_item_id(raw_id)
+    return translate_ids_for_request([canonical]).get(str(canonical))
+
+
 def resolve_artist_identifier(identifier, data=None):
     """Turn a selected-server artist id into the shared artist name."""
     if not identifier:
@@ -190,23 +210,37 @@ def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_
     return {'result': result, 'requested': requested, 'mapped': mapped, 'skipped': skipped}
 
 
-def scope_results(rows, requested_n=None, id_key='item_id'):
+def scope_results(rows, requested_n=None, id_key='item_id', translate=True):
     """Drop rows not on the selected server, then trim to ``requested_n``.
 
     Filtering applies to the default too because any server may be a subset.
+    ``translate`` (default True) also rewrites each surviving row's id to that
+    server's own provider id - see ``filter_rows_for_request_server``.
     """
-    filtered = filter_rows_for_request_server(rows, id_key)
+    filtered = filter_rows_for_request_server(rows, id_key, translate=translate)
     if requested_n is not None and requested_n >= 0:
         return filtered[:requested_n]
     return filtered
 
 
-def filter_rows_for_request_server(rows, id_key='item_id'):
-    """Drop result rows whose track is not on the request's selected server.
+def filter_rows_for_request_server(rows, id_key='item_id', translate=True):
+    """Drop result rows not on the request's selected server, and (by default)
+    rewrite each surviving id to that server's own provider id.
 
-    ``id_key`` is a dict key or a callable that extracts the canonical item_id.
-    Raises ValueError for an unknown ``server`` parameter so the
-    endpoint can answer 400; a registry failure fails open (rows unchanged).
+    An API response must NEVER expose the internal canonical (fp_) id: a Jellyfin
+    or Navidrome plugin gets back a list of ids and hands them straight to its own
+    server, where an fp_ id means nothing. So every list-of-ids endpoint returns
+    the id of the request's server - the default one, or the ``server`` the caller
+    selected. ``translate`` rewrites ``id_key`` to that provider id; the mapping is
+    the very ``translate_ids`` result already used to filter, so it costs nothing
+    extra. Internal callers that must stay in canonical space (e.g. a pool about to
+    be handed to create_instant_playlist_for_server, which re-translates) pass
+    ``translate=False``.
+
+    ``id_key`` is a dict key or a callable that extracts the canonical item_id; a
+    callable disables the rewrite (there is nothing to write back to). Raises
+    ValueError for an unknown ``server`` parameter so the endpoint can answer 400;
+    a registry failure fails open (rows unchanged).
 
     A single-server install skips translation only while its ids are still LEGACY,
     where translation is the identity and the filter cannot drop anything. Once the
@@ -233,14 +267,60 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
         and not any(is_fingerprint_id(i) for i in ids)
         and not registry.has_secondary_servers()
     ):
+        # Legacy single-server install: item_id already IS the provider id, so the
+        # rows are already server-native and nothing has to be dropped or rewritten.
         return rows
 
     try:
         mapping = registry.translate_ids(ids, server_id)
     except Exception:
-        logger.exception("Server availability filtering failed; returning rows unfiltered")
-        return rows
-    return [r for r in rows if _get(r) in mapping]
+        # Fail CLOSED for canonical ids: keep legacy provider ids but drop fp_ rows
+        # so a transient registry error never re-emits an internal id to the client.
+        logger.exception("Server availability filtering failed; dropping fp_ rows to avoid a leak")
+        mapping = {i: i for i in ids if not is_fingerprint_id(i)}
+    kept = [r for r in rows if _get(r) in mapping]
+    if translate and not callable(id_key):
+        for r in kept:
+            if isinstance(r, dict):
+                r[id_key] = mapping[r[id_key]]
+    return kept
+
+
+def translate_ids_for_request(item_ids):
+    """Map canonical item_ids to the request server's provider ids.
+
+    The field-level counterpart to ``filter_rows_for_request_server`` for
+    responses that carry ids OUTSIDE a top-level row (a nested song list, a
+    single scalar id): returns ``{canonical_id: provider_id}`` for the ids that
+    exist on the request's selected (or default) server. An id absent from the
+    server is simply missing from the map, so the caller drops it rather than
+    leak an internal fp_ id.
+
+    Honors the same legacy single-server short-circuit as
+    ``filter_rows_for_request_server`` (identity while ids are still legacy
+    provider ids) and fails open to identity on a registry error. Raises
+    ValueError for an unknown ``server`` parameter so the endpoint can answer 400.
+    """
+    ids = [str(i) for i in (item_ids or []) if i]
+    if not ids:
+        return {}
+    server_id = resolve_request_server_id()
+    from tasks.mediaserver import registry
+    from tasks.simhash import is_fingerprint_id
+
+    if (
+        server_id is None
+        and not any(is_fingerprint_id(i) for i in ids)
+        and not registry.has_secondary_servers()
+    ):
+        return {i: i for i in ids}
+    try:
+        return registry.translate_ids(ids, server_id)
+    except Exception:
+        # Fail CLOSED for canonical ids: keep legacy provider ids (safe identity)
+        # but drop fp_ ids so a transient registry error never leaks an internal id.
+        logger.exception("Request id translation failed; dropping fp_ ids to avoid a leak")
+        return {i: i for i in ids if not is_fingerprint_id(i)}
 
 
 def group_playlist_rows_by_server(rows):
@@ -251,12 +331,47 @@ def group_playlist_rows_by_server(rows):
     except Exception:
         logger.exception("Failed to list media servers for playlist grouping")
         servers = []
+
+    # A stored playlist row holds the internal canonical item_id; an API response
+    # must expose each server's own provider id instead. This endpoint returns
+    # every server at once, so translate per server_id group (not for one
+    # request-selected server) via that server's translate_ids mapping. Rows for a
+    # server that no longer exists, or a group whose translation errors, fail OPEN
+    # and keep the stored id: those remnants can no longer reach a live server, and
+    # emptying them on a transient error would be worse than the display-only id.
+    known_server_ids = {server['server_id'] for server in servers}
+    translation_by_server = {}
+    ids_by_server = {}
+    for row in rows:
+        if row.get('item_id'):
+            ids_by_server.setdefault(row.get('server_id'), []).append(row['item_id'])
+    for server_id, ids in ids_by_server.items():
+        if server_id is not None and server_id not in known_server_ids:
+            continue
+        try:
+            translation_by_server[server_id] = registry.translate_ids(ids, server_id)
+        except Exception:
+            logger.exception("Playlist id translation failed for server '%s'", server_id)
+
+    from tasks.simhash import is_fingerprint_id
     by_server = {}
     for row in rows:
-        by_server.setdefault(row.get('server_id'), {}).setdefault(
+        server_id = row.get('server_id')
+        mapping = translation_by_server.get(server_id)
+        if mapping is None:
+            # Deleted/unknown server or a translation error: keep a legacy provider
+            # id (safe) but never surface an internal fp_ id, even for a dead server.
+            provider_id = row.get('item_id')
+            if is_fingerprint_id(provider_id):
+                continue
+        else:
+            provider_id = mapping.get(row.get('item_id'))
+            if provider_id is None:
+                continue
+        by_server.setdefault(server_id, {}).setdefault(
             row['playlist_name'], []
         ).append(
-            {'item_id': row['item_id'], 'title': row['title'], 'author': row['author']}
+            {'item_id': provider_id, 'title': row['title'], 'author': row['author']}
         )
     groups = []
     for server in servers:

@@ -18,7 +18,7 @@ Main Features:
 * Artist mapping names/ids are sanitized and truncated the same way
 """
 
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 import numpy as np
 
 
@@ -206,79 +206,3 @@ class TestSaveTrackStringSanitization:
         assert "世界" in values[1]
         assert "艺术家" in values[2]
         assert "Артист" in values[2]
-
-
-class TestArtistMappingSanitization:
-    @patch('app_helper_artist.get_db')
-    def test_artist_sanitize_removes_nul_bytes(self, mock_get_db):
-        from app_helper_artist import upsert_artist_mapping
-
-        mock_conn = MagicMock()
-        mock_cur = MagicMock()
-        mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cur)
-        mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
-        mock_get_db.return_value = mock_conn
-
-        artist_name = "Artist\x00Name"
-        artist_id = "artist_123"
-
-        upsert_artist_mapping(artist_name, artist_id)
-
-        call_args = mock_cur.execute.call_args
-        values = call_args[0][1]
-
-        assert "\x00" not in values[0]
-        assert values[0] == "ArtistName"
-
-    @patch('app_helper_artist.get_db')
-    def test_artist_sanitize_truncates_long_names(self, mock_get_db):
-        from app_helper_artist import upsert_artist_mapping
-
-        mock_conn = MagicMock()
-        mock_cur = MagicMock()
-        mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cur)
-        mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
-        mock_get_db.return_value = mock_conn
-
-        long_name = "A" * 600
-        artist_id = "artist_123"
-
-        upsert_artist_mapping(long_name, artist_id)
-
-        call_args = mock_cur.execute.call_args
-        values = call_args[0][1]
-
-        assert len(values[0]) == 500
-
-    @patch('app_helper_artist.get_db')
-    def test_artist_sanitize_handles_empty_inputs(self, mock_get_db):
-        from app_helper_artist import upsert_artist_mapping
-
-        mock_get_db.return_value = MagicMock()
-
-        upsert_artist_mapping(None, "artist_123")
-        upsert_artist_mapping("Artist", None)
-        upsert_artist_mapping("", "artist_123")
-        upsert_artist_mapping("Artist", "")
-
-        assert not mock_get_db.called
-
-    @patch('app_helper_artist.get_db')
-    def test_artist_id_truncation(self, mock_get_db):
-        from app_helper_artist import upsert_artist_mapping
-
-        mock_conn = MagicMock()
-        mock_cur = MagicMock()
-        mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cur)
-        mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
-        mock_get_db.return_value = mock_conn
-
-        artist_name = "Artist"
-        long_id = "id_" + "X" * 300
-
-        upsert_artist_mapping(artist_name, long_id)
-
-        call_args = mock_cur.execute.call_args
-        values = call_args[0][1]
-
-        assert len(values[1]) == 200

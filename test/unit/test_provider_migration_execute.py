@@ -272,7 +272,6 @@ class TestExecuteProviderMigration:
         assert 'UPDATE TRACK_SERVER_MAP' in joined
         # Artist ids are the one thing the matcher cannot repoint, so they are cleared.
         assert 'DELETE FROM ARTIST_SERVER_MAP' in joined
-        assert 'DELETE FROM ARTIST_MAPPING' in joined
         # The registry is the only home of media-server settings: the default
         # row is repointed and the legacy app_config copies are cleared, never
         # rewritten (they would keep serving the OLD provider on the next boot).
@@ -494,9 +493,9 @@ class TestMigrationClearsStaleArtistIds:
     """The default server's artist ids belong to the OLD provider after a migration.
 
     Track ids are repointed (the matcher produced a new id for each), but artists
-    have no such mapping - so, exactly like the legacy artist_mapping table, the
-    default server's artist_server_map rows are cleared and rebuilt by the next
-    analysis. Secondary servers did not migrate and keep theirs.
+    have no such mapping, so the default server's artist_server_map rows are
+    cleared and rebuilt by the next analysis. Secondary servers did not migrate
+    and keep theirs.
     """
 
     def test_default_servers_artist_rows_are_deleted(self, mig):

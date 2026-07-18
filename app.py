@@ -271,6 +271,7 @@ if not _is_worker:
         # boot. A relabel renames tracks without moving a single vector, so the
         # migration repoints the existing indexes at the new ids rather than
         # rebuilding them, and similarity keeps working across it.
+        _relabel = {}
         try:
             from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
             _relabel = canonicalize_fingerprinted_ids()
@@ -284,6 +285,28 @@ if not _is_worker:
             app.logger.warning(
                 "Startup catalogue-id migration failed (will retry next boot): %s",
                 _migrate_exc,
+            )
+
+        # One-time duplicate verification for installs merged by an early 3.0
+        # build (fp_ ids, but merged before track length was considered): each
+        # catalogue id mapping multiple files whose survivor has no duration yet
+        # is re-checked with the duration rule; false duplicates are unmapped so
+        # the next analysis re-analyzes them under their own ids. It is
+        # table-derived (score.duration), so it is an instant no-op after the
+        # legacy migration and after its own first pass - no stored flag that a
+        # config cleanup could wipe, no second duration fetch on a legacy upgrade.
+        try:
+            from tasks.duplicate_repair import repair_duplicate_track_maps
+            # Reuse the whole-server listing the legacy migration just did so a
+            # mixed upgrade (provider ids plus leftover older-scheme rows) does not
+            # list the same server twice on one boot - its only slow step.
+            repair_duplicate_track_maps(
+                prefetched_durations=_relabel.get('server_durations'),
+            )
+        except Exception as _repair_exc:
+            app.logger.warning(
+                "Startup catalogue duplicate check failed (will retry next boot): %s",
+                _repair_exc,
             )
 
         # Finalize JWT_SECRET - must happen after DB init so the value can be
@@ -1158,26 +1181,38 @@ if not _is_worker:
     cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
     cron_thread.start()
 
-    # Dashboard stats refresher: runs once at startup, then hourly - or every
-    # 5 minutes while any server still lacks its first library measure, so a
-    # fresh install's coverage panel fills in soon after the first analysis.
-    # Also counts each server's library size as part of the refresh.
-    # Keeps heavy content/index aggregates off the request path.
+    # Dashboard stats refresher: reports the analyzed catalogue only (local score
+    # + track_server_map), never walks a media server. Two cadences merge into the
+    # same snapshot blob - the cheap counts/per-server every 60s, and the
+    # whole-library distribution charts (Genres, Moods Coverage, Tempo) hourly.
     def _dashboard_stats_refresher_loop():
         try:
             from time import sleep
-            from app_dashboard import refresh_dashboard_stats, dashboard_refresh_interval
+            from app_dashboard import (
+                refresh_dashboard_stats,
+                refresh_dashboard_charts_stats,
+                dashboard_refresh_interval,
+                DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS,
+            )
 
             # Wait a minute after startup so the initial DB/index warm-up and
             # first incoming requests have time to settle before we kick off
-            # the heavy content/indexes scan.
+            # the content scans.
             sleep(60)
+            fast_interval = dashboard_refresh_interval()
+            ticks_per_charts = max(1, DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS // fast_interval)
+            tick = 0
             while True:
                 try:
                     refresh_dashboard_stats(app)
+                    # Distribution charts on their own hourly cadence: at startup
+                    # (tick 0) so they fill in, then once every ticks_per_charts.
+                    if tick % ticks_per_charts == 0:
+                        refresh_dashboard_charts_stats(app)
                 except Exception:
                     app.logger.exception('dashboard stats refresh failed')
-                sleep(dashboard_refresh_interval(app))
+                tick += 1
+                sleep(fast_interval)
         except Exception:
             app.logger.exception('dashboard stats refresher main loop error')
 

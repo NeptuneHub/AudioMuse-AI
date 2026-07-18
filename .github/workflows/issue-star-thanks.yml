@@ -2,7 +2,10 @@
 # (GitHub Actions has no "discussion closed" trigger), post a short automated
 # message: a thank-you if the author already starred the repo, otherwise an
 # invitation to star it. Bots and the project's own team (owner, members,
-# collaborators) are skipped.
+# collaborators) are skipped. Since June 2026 GitHub restricts a repo's
+# stargazer list to admins/collaborators, so the star check reads the
+# author's own starred-repos list instead; if that check fails it falls
+# back to the invitation message.
 
 name: Thank issue and discussion authors when resolved
 
@@ -24,7 +27,7 @@ jobs:
       issues: write
     steps:
       - name: Post a short thank-you comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -46,13 +49,26 @@ jobs:
               return;
             }
 
-            const stargazers = await github.paginate(
-              github.rest.activity.listStargazersForRepo,
-              { owner, repo, per_page: 100 },
-            );
-            const hasStarred = stargazers.some(
-              (u) => u.login.toLowerCase() === author.toLowerCase(),
-            );
+            const fullName = `${owner}/${repo}`.toLowerCase();
+            let hasStarred = false;
+            try {
+              let pages = 0;
+              for await (const { data } of github.paginate.iterator(
+                github.rest.activity.listReposStarredByUser,
+                { username: author, per_page: 100 },
+              )) {
+                if (data.some((r) => ((r.full_name || (r.repo && r.repo.full_name) || '')).toLowerCase() === fullName)) {
+                  hasStarred = true;
+                  break;
+                }
+                if (++pages >= 30) {
+                  console.log(`Stopped star check for ${author} after ${pages} pages.`);
+                  break;
+                }
+              }
+            } catch (error) {
+              console.log(`Could not check stars for ${author}: ${error.message}`);
+            }
 
             const thanksForStar = `We've closed the issue now, thanks for having starred AudioMuse-AI and supporting self-hosted music here on GitHub! It really helps the project grow!`;
 
@@ -72,7 +88,7 @@ jobs:
       discussions: write
     steps:
       - name: Post a short thank-you comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -89,13 +105,26 @@ jobs:
               return;
             }
 
-            const stargazers = await github.paginate(
-              github.rest.activity.listStargazersForRepo,
-              { owner, repo, per_page: 100 },
-            );
-            const hasStarred = stargazers.some(
-              (u) => u.login.toLowerCase() === author.toLowerCase(),
-            );
+            const fullName = `${owner}/${repo}`.toLowerCase();
+            let hasStarred = false;
+            try {
+              let pages = 0;
+              for await (const { data } of github.paginate.iterator(
+                github.rest.activity.listReposStarredByUser,
+                { username: author, per_page: 100 },
+              )) {
+                if (data.some((r) => ((r.full_name || (r.repo && r.repo.full_name) || '')).toLowerCase() === fullName)) {
+                  hasStarred = true;
+                  break;
+                }
+                if (++pages >= 30) {
+                  console.log(`Stopped star check for ${author} after ${pages} pages.`);
+                  break;
+                }
+              }
+            } catch (error) {
+              console.log(`Could not check stars for ${author}: ${error.message}`);
+            }
 
             const thanksForStar = `Your discussion has its answer now - thanks for having starred AudioMuse-AI and supporting self-hosted music here on GitHub! It really helps the project grow!`;
 

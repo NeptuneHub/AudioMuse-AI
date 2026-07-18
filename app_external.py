@@ -99,8 +99,9 @@ def get_score_endpoint():
         if score_data:
             # Convert DictRow to a standard dictionary for consistent JSON output;
             # echo the id the caller asked with so their key keeps matching.
+            from app_server_context import provider_echo_id
             payload = dict(score_data)
-            payload['item_id'] = raw_id
+            payload['item_id'] = provider_echo_id(raw_id)
             return jsonify(payload)
         else:
             return jsonify({"error": f"Score not found for id: {raw_id}"}), 404
@@ -154,8 +155,9 @@ def get_embedding_endpoint():
             embedding_data = cur.fetchone()
 
         if embedding_data:
+            from app_server_context import provider_echo_id
             embedding_dict = dict(embedding_data)
-            embedding_dict['item_id'] = raw_id
+            embedding_dict['item_id'] = provider_echo_id(raw_id)
             if embedding_dict.get('embedding'):
                 # The embedding is stored as BYTEA, convert it back to a list of floats
                 embedding_vector = np.frombuffer(embedding_dict['embedding'], dtype=np.float32)
@@ -237,8 +239,9 @@ def search_tracks_endpoint():
         try:
             mapping = registry.translate_ids([r['item_id'] for r in results], server_id)
         except Exception:
-            logger.exception("External search id translation failed; returning canonical ids")
-            return jsonify(results)
+            # Fail closed: never emit untranslated canonical ids to the client.
+            logger.exception("External search id translation failed")
+            return jsonify({"error": "An error occurred during search."}), 500
         translated = []
         for r in results:
             if r['item_id'] not in mapping:

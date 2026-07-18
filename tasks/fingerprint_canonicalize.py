@@ -9,8 +9,8 @@
 """Relabel legacy catalogue rows so item_id becomes the embedding signature.
 
 The canonical id is the 200-bit per-dimension sign signature of each track's
-stored MusiCNN embedding (tasks.simhash), so this is a pure database operation:
-no downloads, no binaries, no audio decoding. It runs ONCE per lifetime of a
+stored MusiCNN embedding (tasks.simhash), so this is a database operation: no
+downloads, no binaries, no audio decoding. It runs ONCE per lifetime of a
 legacy row, at Flask container startup, and is an instant no-op afterwards;
 analysis mints canonical ids directly at analyze time so nothing here runs
 during analysis. It is NOT once per lifetime of an INSTALL: identity is derived
@@ -23,10 +23,16 @@ provider-migration feature uses (score, playlist, and all embedding tables,
 with the embedding foreign keys dropped and re-added around it). A legacy row
 merges into an existing catalogue row ONLY when its signature is within
 tolerance AND the exact raw-embedding cosine confirms it is the same audio
-(the Similar Songs duplicate rule) - identity is decided purely by the
-content. The source server's real ids are preserved in track_server_map so
-output can be translated back; rows without an embedding keep their provider
-id and keep working via the identity translation fallback.
+(the Similar Songs duplicate rule) AND the two track durations agree within
+DURATION_TOLERANCE_SECONDS - a homogeneous library (say, solo piano) puts
+genuinely different recordings inside the cosine threshold, and only the
+length tells them apart. Durations come from ONE paged metadata listing of
+the source server (no audio downloads) and are backfilled into
+score.duration; if the server is unreachable the migration still runs and
+simply merges nothing, which is always safe. The source server's real ids
+are preserved in track_server_map so output can be translated back; rows
+without an embedding keep their provider id and keep working via the
+identity translation fallback.
 
 Main Features:
 * One-time, idempotent startup relabel of legacy rows, resolved for the whole
@@ -79,7 +85,14 @@ _TRACK_KEYED_INDEXES = (
     'lyrics_axes_index',
     'sem_grove_index',
 )
-_CURRENT_SCHEME_SQL = "(s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s)"
+# Any signature content id (fp_1..fp_9), current or older, is already a resolved
+# catalogue row - canonicalize only turns PROVIDER ids into content ids and never
+# re-resolves an existing one; bumping the scheme version (fp_2 -> fp_3) is the
+# duration migration's cheap relabel, not a re-hash from embeddings.
+_CURRENT_SCHEME_SQL = (
+    "(s.item_id LIKE 'fp\\_%%' AND length(s.item_id) = %s "
+    "AND substring(s.item_id from 4 for 1) BETWEEN '1' AND '9')"
+)
 # Analysis deliberately keeps a track whose embedding yields no usable signature
 # (non-finite or constant) under its PROVIDER id, and records that with the
 # 'analysis' match tier. Such a row can never be relabelled, so counting it as
@@ -131,7 +144,78 @@ def _hash_catalogue(cur, sql, params, ids, packed, valid, offset):
         scan.close()
 
 
-def _confirm_candidates(cur, ids, left, right):
+def _fetch_provider_durations(source_id, conn):
+    from tasks import provider_probe
+    from tasks.mediaserver import context as ms_context
+
+    try:
+        server = registry.get_server(source_id, conn=conn)
+        if server is None:
+            logger.warning(
+                "Legacy catalogue migration: no server row for %s; track durations "
+                "unavailable, duplicate merging disabled for this run.", source_id,
+            )
+            return {}
+        logger.info(
+            "Legacy catalogue migration: fetching track durations from the music "
+            "server (metadata listing only, no downloads)..."
+        )
+        with ms_context.use_server(server):
+            tracks = provider_probe.fetch_all_tracks(
+                server['server_type'], server['creds'], apply_filter=False
+            )
+        durations = {
+            str(track['id']): track['duration']
+            for track in tracks
+            if track.get('id') is not None and track.get('duration') is not None
+        }
+        logger.info(
+            "Legacy catalogue migration: got durations for %d of %d server tracks.",
+            len(durations), len(tracks),
+        )
+        return durations
+    except Exception:
+        logger.exception(
+            "Legacy catalogue migration: could not fetch track durations from the "
+            "music server; duplicate merging disabled for this run (every legacy "
+            "track keeps its own id, nothing is lost)."
+        )
+        return {}
+
+
+def _durations_for_rows(cur, ids, rows, provider_durations, source_id):
+    wanted = list({ids[int(row)] for row in rows})
+    durations = {}
+    for begin in range(0, len(wanted), _CHUNK_ROWS):
+        chunk = wanted[begin:begin + _CHUNK_ROWS]
+        cur.execute(
+            "SELECT item_id, duration FROM score "
+            "WHERE duration IS NOT NULL AND item_id = ANY(%s)",
+            (chunk,),
+        )
+        for item_id, duration in cur.fetchall():
+            durations[str(item_id)] = float(duration)
+    unresolved = [i for i in wanted if i not in durations]
+    direct = [i for i in unresolved if i in provider_durations]
+    for item_id in direct:
+        durations[item_id] = provider_durations[item_id]
+    unresolved = [i for i in unresolved if i not in durations]
+    if unresolved and provider_durations:
+        for begin in range(0, len(unresolved), _CHUNK_ROWS):
+            chunk = unresolved[begin:begin + _CHUNK_ROWS]
+            cur.execute(
+                "SELECT item_id, provider_track_id FROM track_server_map "
+                "WHERE server_id = %s AND item_id = ANY(%s)",
+                (source_id, chunk),
+            )
+            for item_id, provider_id in cur.fetchall():
+                value = provider_durations.get(str(provider_id))
+                if value is not None:
+                    durations.setdefault(str(item_id), value)
+    return durations
+
+
+def _confirm_candidates(cur, ids, left, right, duration_of):
     """Keep the candidate pairs the EXACT raw-embedding cosine confirms.
 
     Bounded memory, whatever the library's size. The embeddings are read back one
@@ -180,6 +264,8 @@ def _confirm_candidates(cur, ids, left, right):
             confirmed = simhash.confirm_pairs(
                 vectors[np.searchsorted(rows, left_slice)],
                 vectors[np.searchsorted(rows, right_slice)],
+                left_durations=[duration_of.get(ids[int(row)]) for row in left_slice],
+                right_durations=[duration_of.get(ids[int(row)]) for row in right_slice],
             )
             if confirmed.any():
                 kept_left.append(left_slice[confirmed])
@@ -193,13 +279,14 @@ def _confirm_candidates(cur, ids, left, right):
     return np.concatenate(kept_left), np.concatenate(kept_right)
 
 
-def _build_mapping(cur):
+def _build_mapping(cur, source_id):
     """{legacy_id: canonical_id} to relabel plus {legacy_id: existing_id} to merge.
 
     Legacy rows are everything whose item_id is not a current-scheme signature
     id: provider ids and ids minted by retired schemes alike. The legacy COUNT
     runs FIRST, so a fully migrated catalogue returns instantly without loading
-    anything.
+    anything. Also returns the provider duration map so the caller can backfill
+    score.duration for the rows it relabels.
 
     Identity is resolved in vectorized BATCHES, never catalogue-at-once: the
     embeddings are hashed ``_CHUNK_ROWS`` at a time and dropped (only their
@@ -225,7 +312,7 @@ def _build_mapping(cur):
     )
     total = cur.fetchone()[0]
     if not total:
-        return {}, {}
+        return {}, {}, {}
     cur.execute(
         "SELECT COUNT(*) FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
@@ -240,10 +327,13 @@ def _build_mapping(cur):
         "%d tracks from their stored embeddings.", total,
     )
     logger.info(
-        "One-time step (first start after upgrade only); no downloads, pure "
-        "database work. Streamed in batches of %d tracks.", _CHUNK_ROWS,
+        "One-time step (first start after upgrade only); no audio downloads, "
+        "database work plus one metadata listing. Streamed in batches of %d tracks.",
+        _CHUNK_ROWS,
     )
     logger.info("=" * 64)
+
+    provider_durations = _fetch_provider_durations(source_id, cur.connection)
 
     ids = []
     rows_total = total + canonical_total
@@ -295,7 +385,12 @@ def _build_mapping(cur):
         )
 
     left, right = simhash.near_duplicate_pairs(packed, valid, progress=_band_progress)
-    left, right = _confirm_candidates(cur, ids, left, right)
+    duration_of = {}
+    if left.size:
+        duration_of = _durations_for_rows(
+            cur, ids, np.concatenate((left, right)), provider_durations, source_id
+        )
+    left, right = _confirm_candidates(cur, ids, left, right, duration_of)
     # A canonical row may only ever be a merge TARGET, never a child. merge_pairs
     # refuses a merge whose target has itself already merged, so a confirmed
     # canonical-vs-canonical pair (which the emit loop below discards anyway, since
@@ -328,7 +423,7 @@ def _build_mapping(cur):
         legacy_loaded, time.monotonic() - resolved_at,
         len(mapping), len(duplicate_mapping),
     )
-    return mapping, duplicate_mapping
+    return mapping, duplicate_mapping, provider_durations
 
 
 def _merge_duplicate_rows(cur, duplicate_mapping):
@@ -392,6 +487,10 @@ def _default_provider_ids(cur, default_id, item_ids):
     return {str(item_id): str(provider_id) for item_id, provider_id in cur.fetchall()}
 
 
+def _copy_escape(value):
+    return str(value).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' ')
+
+
 def _copy_pairs(cur, table, mapping):
     """COPY a {old_id: new_id} mapping into ``table`` (id, id) - one stream, no
     per-row round trips."""
@@ -400,8 +499,8 @@ def _copy_pairs(cur, table, mapping):
         buffer.write(
             "%s\t%s\n"
             % (
-                str(old_id).replace('\t', ' ').replace('\n', ' '),
-                str(new_id).replace('\t', ' ').replace('\n', ' '),
+                _copy_escape(old_id),
+                _copy_escape(new_id),
             )
         )
     buffer.seek(0)
@@ -454,36 +553,44 @@ def _legacy_paths_by_item_id(cur):
     return {str(item_id): path for item_id, path in cur.fetchall()}
 
 
-def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids, legacy_paths):
+def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids,
+                           legacy_paths, provider_durations=None):
     """Stream the preserved provider ids in with COPY, not row-by-row INSERTs.
 
     One 200k-row COPY into an unlogged staging table beats tens of thousands of
     parameterised VALUES tuples: the client does no per-row round trip and the
-    server does no per-row parse.
+    server does no per-row parse. The same staging table backfills
+    score.duration from the provider metadata, so the relabelled catalogue can
+    take part in duration-confirmed identity from now on.
     """
     if not all_changes:
         return
+    provider_durations = provider_durations or {}
     buffer = io.StringIO()
     for old_id, canonical in all_changes.items():
-        provider_id = default_provider_ids.get(str(old_id), str(old_id))
+        provider_id = str(default_provider_ids.get(str(old_id), str(old_id)))
         path = legacy_paths.get(str(old_id))
+        duration = provider_durations.get(provider_id)
         buffer.write(
-            "%s\t%s\t%s\t%s\n"
+            "%s\t%s\t%s\t%s\t%s\n"
             % (
                 canonical.replace('\t', ' '),
                 source_id,
-                str(provider_id).replace('\t', ' ').replace('\n', ' '),
-                r'\N' if not path else str(path).replace('\t', ' ').replace('\n', ' '),
+                _copy_escape(provider_id),
+                r'\N' if not path else _copy_escape(path),
+                r'\N' if duration is None else repr(float(duration)),
             )
         )
     buffer.seek(0)
     cur.execute(
         "CREATE TEMP TABLE incoming_default_map "
-        "(item_id TEXT, server_id TEXT, provider_track_id TEXT, file_path TEXT) "
+        "(item_id TEXT, server_id TEXT, provider_track_id TEXT, file_path TEXT, "
+        "duration DOUBLE PRECISION) "
         "ON COMMIT DROP"
     )
     cur.copy_expert(
-        "COPY incoming_default_map (item_id, server_id, provider_track_id, file_path) "
+        "COPY incoming_default_map "
+        "(item_id, server_id, provider_track_id, file_path, duration) "
         "FROM STDIN",
         buffer,
     )
@@ -495,6 +602,16 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids, le
         "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
         "file_path = COALESCE(EXCLUDED.file_path, track_server_map.file_path)"
     )
+    cur.execute(
+        "UPDATE score s SET duration = i.duration FROM incoming_default_map i "
+        "WHERE s.item_id = i.item_id AND i.duration IS NOT NULL "
+        "AND s.duration IS NULL"
+    )
+    if cur.rowcount:
+        logger.info(
+            "Legacy catalogue migration: backfilled track duration for %d "
+            "catalogue rows from the server metadata.", cur.rowcount,
+        )
 
 
 def _repoint_indexes(cur, renames):
@@ -576,6 +693,53 @@ def _repoint_indexes(cur, renames):
         ", ".join(repointed) if repointed else "no index",
         time.monotonic() - started,
     )
+
+
+def relabel_scheme_to_current(cur, only_with_duration=True):
+    """Bump every older-version content id (fp_2) up to the current scheme (fp_3).
+
+    A pure key rewrite - the signature body is unchanged, only the version digit -
+    so there is no re-hashing, no re-clustering and no id collision (fp_3 can never
+    equal an fp_2). Reuses the same drop-FK / single UPDATE / repoint-index path the
+    provider relabel uses. ``only_with_duration`` bumps rows that already carry a
+    length PLUS orphaned old-scheme rows no server maps: a server the backfill merely
+    skipped keeps its old id and retries next boot, but an orphan (no track_server_map
+    row, so no server can ever supply a length) is bumped anyway so the version gate
+    can finally go cold. Orphans are relabelled, never deleted, so a future server
+    that has the track can re-map it.
+    """
+    from tasks import simhash
+
+    head = simhash.CURRENT_ID_HEAD
+    guard, params = simhash.signature_id_sql()
+    if only_with_duration:
+        guard += (
+            " AND (duration IS NOT NULL OR NOT EXISTS ("
+            "SELECT 1 FROM track_server_map t WHERE t.item_id = score.item_id))"
+        )
+    cur.execute("SELECT item_id FROM score WHERE " + guard, params)
+    old_ids = [row[0] for row in cur.fetchall()]
+    if not old_ids:
+        return 0
+    mapping = {old: simhash.to_current_scheme_id(old) for old in old_ids}
+
+    fk_embedding = find_fk(cur, 'embedding', 'item_id') or 'embedding_item_id_fkey'
+    fk_clap = find_fk(cur, 'clap_embedding', 'item_id') or 'clap_embedding_item_id_fkey'
+    cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
+    lyrics_exists = bool(cur.fetchone()[0])
+    fk_lyrics = (
+        (find_fk(cur, 'lyrics_embedding', 'item_id') or 'lyrics_embedding_item_id_fkey')
+        if lyrics_exists else None
+    )
+    _drop_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
+    _populate_relabel_map(cur, mapping)
+    _relabel_item_ids(cur, lyrics_exists)
+    _readd_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
+    _repoint_indexes(cur, mapping)
+    logger.info(
+        "Catalogue scheme relabel: bumped %d ids up to %s.", len(mapping), head,
+    )
+    return len(mapping)
 
 
 class CanonicalizationVerificationError(RuntimeError):
@@ -706,6 +870,8 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
     cur = db.cursor()
     relabelled = 0
     duplicates = 0
+    source_id = None
+    provider_durations = {}
     prev_timeout = None
     try:
         if not own_conn:
@@ -725,7 +891,7 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             )
             return {'skipped': 'no_default'}
         _log("Computing canonical ids from stored embeddings...")
-        mapping, duplicate_mapping = _build_mapping(cur)
+        mapping, duplicate_mapping, provider_durations = _build_mapping(cur, source_id)
         duplicates = len(duplicate_mapping)
         if not mapping and not duplicate_mapping:
             db.commit()
@@ -764,7 +930,8 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
 
         _log("Preserving the server's real track ids in track_server_map...")
         _copy_track_server_map(
-            cur, source_id, all_changes, default_provider_ids, legacy_paths
+            cur, source_id, all_changes, default_provider_ids, legacy_paths,
+            provider_durations,
         )
         cur.execute(
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
@@ -827,4 +994,14 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         if own_conn:
             db.close()
 
-    return {'relabelled': relabelled, 'duplicates': duplicates}
+    # The whole-server duration listing is handed to the caller so the duplicate
+    # repair reuses it instead of listing the same server a second time on this
+    # same boot (its only slow step). Keyed by server so the repair matches it to
+    # the groups it has to backfill.
+    return {
+        'relabelled': relabelled,
+        'duplicates': duplicates,
+        'source_server_id': source_id,
+        'server_durations': ({source_id: provider_durations}
+                             if source_id and provider_durations else {}),
+    }

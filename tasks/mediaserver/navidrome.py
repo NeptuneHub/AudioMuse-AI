@@ -366,6 +366,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
                             'Year': s.get('year'),
                             'Rating': s.get('userRating') if s.get('userRating') else None,
                             'FilePath': raw_path,
+                            'DurationSeconds': s.get('duration'),
                         }
                     )
 
@@ -431,6 +432,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
                         'Year': song.get('Year'),
                         'Rating': song.get('Rating'),
                         'FilePath': song.get('FilePath'),
+                        'DurationSeconds': song.get('duration'),
                     }
                 )
 

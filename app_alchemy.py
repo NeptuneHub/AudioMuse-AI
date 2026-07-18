@@ -286,9 +286,47 @@ def alchemy_api():
                 temperature=temperature,
             )
         attach_song_features(results.get('results'))
-        results['results'] = app_server_context.scope_results(
-            results.get('results'), n, id_key='item_id'
-        )
+        # Translate every song id in the response with ONE registry round-trip: the
+        # main results, the filtered_out set, and the song-type add/sub points all
+        # resolve to the selected server's provider ids from a single mapping (the
+        # rest of add/sub points are synthetic anchor/mood/artist/playlist markers).
+        result_rows = results.get('results') or []
+        filtered_rows = results.get('filtered_out') or []
+        song_points = [
+            point
+            for key in ('add_points', 'sub_points')
+            for point in (results.get(key) or [])
+            if point.get('type') == 'song'
+        ]
+        all_ids = [
+            row['item_id']
+            for row in (result_rows + filtered_rows + song_points)
+            if row.get('item_id')
+        ]
+        mapping = app_server_context.translate_ids_for_request(all_ids)
+
+        def _translate_song_rows(rows):
+            kept = []
+            for row in rows:
+                provider_id = mapping.get(str(row.get('item_id')))
+                if provider_id is None:
+                    continue
+                row['item_id'] = provider_id
+                kept.append(row)
+            return kept
+
+        results['results'] = _translate_song_rows(result_rows)[:n]
+        results['filtered_out'] = _translate_song_rows(filtered_rows)
+        for key in ('add_points', 'sub_points'):
+            kept_points = []
+            for point in results.get(key) or []:
+                if point.get('type') == 'song':
+                    provider_id = mapping.get(str(point.get('item_id')))
+                    if provider_id is None:
+                        continue
+                    point['item_id'] = provider_id
+                kept_points.append(point)
+            results[key] = kept_points
         # Keep full centroid in response for client-side save action, but not in anchor list endpoint.
         return jsonify(results)
     except ValueError:
@@ -760,6 +798,13 @@ def artist_projections_api():
         description: Failure to read cache.
     """
     from database import ARTIST_PROJECTION_CACHE
+    from tasks.mediaserver import registry
+
+    try:
+        server_id = app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
 
     try:
         if not ARTIST_PROJECTION_CACHE:
@@ -771,13 +816,25 @@ def artist_projections_api():
         if projection is None or len(component_map) == 0:
             return jsonify({'components': [], 'count': 0})
 
+        # The cache stores the legacy/default artist_id; expose the selected
+        # server's provider artist id instead, falling back to the artist NAME
+        # (a safe, non-internal identifier the similar-artists endpoint accepts)
+        # so a node without an artist_server_map row still has a live click-through.
+        artist_names = [
+            comp_info.get('artist_name')
+            for comp_info in component_map
+            if comp_info.get('artist_name')
+        ]
+        provider_artist_ids = registry.artist_ids_for_names(artist_names, server_id)
+
         # Build response with components and their 2D projections
         components = []
         for idx, comp_info in enumerate(component_map):
             if idx < len(projection):
+                artist_name = comp_info.get('artist_name')
                 components.append(
                     {
-                        'artist_id': comp_info['artist_id'],
+                        'artist_id': (provider_artist_ids.get(artist_name) or artist_name) if artist_name else None,
                         'artist_name': comp_info.get('artist_name', comp_info['artist_id']),
                         'component_idx': comp_info['component_idx'],
                         'weight': comp_info['weight'],

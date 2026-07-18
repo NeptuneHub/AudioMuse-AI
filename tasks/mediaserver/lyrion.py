@@ -730,6 +730,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
                 'Year': int(song.get('year')) if song.get('year') else None,
                 'Rating': int(int(song.get('rating')) / 20) if song.get('rating') else None,
                 'FilePath': _decode_lyrion_url(song.get('url')),
+                'DurationSeconds': song.get('duration'),
             }
             if target_paths is None or _song_in_target_paths(mapped_song, target_paths):
                 all_songs.append(mapped_song)

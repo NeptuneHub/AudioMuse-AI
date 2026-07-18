@@ -317,6 +317,40 @@ def session_start():
     return jsonify({'session_id': row[0]})
 
 
+def _source_provider_id_map(canonical_ids):
+    # Map source-catalogue canonical item_ids to the default (source) server's
+    # provider ids so a migration response never exposes an internal fp_ id.
+    # Unmapped ids are omitted (fail closed); a registry error yields an empty map.
+    ids = [str(i) for i in canonical_ids if i]
+    if not ids:
+        return {}
+    from tasks.mediaserver import registry
+    try:
+        return registry.translate_ids(ids, None)
+    except Exception:
+        logger.exception("Migration source id translation failed")
+        return {}
+
+
+def _translate_state_source_ids(state):
+    # Rewrite the canonical old_id keys in a session state's manual_matches /
+    # manual_unmatches to the source server's provider ids for the API response.
+    manual_matches = state.get('manual_matches')
+    manual_unmatches = state.get('manual_unmatches')
+    ids = []
+    if isinstance(manual_matches, dict):
+        ids += list(manual_matches.keys())
+    if isinstance(manual_unmatches, list):
+        ids += manual_unmatches
+    mapping = _source_provider_id_map(ids)
+    if isinstance(manual_matches, dict):
+        state['manual_matches'] = {
+            mapping[k]: v for k, v in manual_matches.items() if k in mapping
+        }
+    if isinstance(manual_unmatches, list):
+        state['manual_unmatches'] = [mapping[i] for i in manual_unmatches if i in mapping]
+
+
 @migration_bp.route('/api/migration/session/<int:session_id>', methods=['GET'])
 def session_get(session_id):
     """
@@ -373,6 +407,8 @@ def session_get(session_id):
             state = json.loads(state)
         except Exception:
             state = {}
+    if isinstance(state, dict):
+        _translate_state_source_ids(state)
     return jsonify(
         {
             'id': _id,
@@ -1112,11 +1148,18 @@ def match_album():
         _rematch_album_rows(session_id, newly_matched, still_unmatched)
     else:
         _merge_manual_matches(session_id, newly_matched)
+    # Expose the source server's provider ids, never the internal fp_ id. The count
+    # tracks the id list exactly (both drop any id with no provider mapping) so the
+    # wizard's counter and its rendered rows never disagree.
+    unmatched_mapping = _source_provider_id_map(still_unmatched)
+    unmatched_item_ids = [
+        unmatched_mapping[i] for i in still_unmatched if i in unmatched_mapping
+    ]
     return jsonify(
         {
             'matched': len(newly_matched),
-            'unmatched': len(still_unmatched),
-            'unmatched_item_ids': still_unmatched,
+            'unmatched': len(unmatched_item_ids),
+            'unmatched_item_ids': unmatched_item_ids,
         }
     )
 
@@ -1593,6 +1636,22 @@ def dry_run_report(session_id):
 
     old_rows = _load_score_rows_as_dicts()
 
+    # The old_id column carries the source server's provider id. An internal fp_ id
+    # must never reach ANY response - this is an authenticated GET like any other -
+    # so a source row with no provider mapping gets a BLANK old_id (fail closed)
+    # rather than its raw canonical id. A GENUINE translation error 503s here (so a
+    # transient DB hiccup does not silently blank every row with no admin signal);
+    # only a truly unmapped row blanks, its other columns (path/artist/album/track,
+    # any of which may itself be empty) the best remaining hint.
+    from tasks.mediaserver import registry
+    try:
+        old_id_provider_map = registry.translate_ids(
+            [str(old['item_id']) for old in old_rows if old.get('item_id')], None
+        )
+    except Exception:
+        logger.exception("Dry-run report source id translation failed")
+        return jsonify({'error': 'Report generation failed; retry shortly.'}), 503
+
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(
@@ -1624,7 +1683,7 @@ def dry_run_report(session_id):
             source = 'orphan'
         writer.writerow(
             [
-                old_id,
+                old_id_provider_map.get(old_id, ''),
                 old.get('author') or old.get('album_artist') or '',
                 old.get('album') or '',
                 old.get('album_artist') or '',

@@ -183,7 +183,6 @@ _SCHEMA_DDL = [
     "CREATE TABLE artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, "
     "projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, "
     "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-    "CREATE TABLE artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)",
     "CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, "
     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
     "CREATE TABLE migration_session (id SERIAL PRIMARY KEY, "
@@ -373,8 +372,9 @@ def _seed_library(conn, source_rendered, segmented=False, source_type='jellyfin'
             ('artist_main', psycopg2.Binary(b'\x00'), '{}'),
         )
         cur.execute(
-            "INSERT INTO artist_mapping (artist_name, artist_id) VALUES (%s, %s)",
-            ('Daft Punk', 'old-artist-id'),
+            "INSERT INTO artist_server_map (artist_name, server_id, provider_artist_id) "
+            "VALUES (%s, %s, %s)",
+            ('Daft Punk', _DEFAULT_SERVER_ID, 'old-artist-id'),
         )
     conn.commit()
 
@@ -591,9 +591,8 @@ def test_real_provider_migration(source, target, migration_db):
         # produces an id per TRACK), so they are dropped and the next analysis rebuilds
         # them. Artist ANALYSIS is keyed by artist NAME, which a provider swap does not
         # change, so the artist indexes survive untouched like the track ones.
-        for table in ('artist_mapping', 'artist_server_map'):
-            cur.execute(f"SELECT COUNT(*) FROM {table}")
-            assert cur.fetchone()[0] == 0, f"{table} holds dead provider ids; must be cleared"
+        cur.execute("SELECT COUNT(*) FROM artist_server_map")
+        assert cur.fetchone()[0] == 0, "artist_server_map holds dead provider ids; must be cleared"
         for table in (
             'artist_index_data',
             'artist_metadata_data',

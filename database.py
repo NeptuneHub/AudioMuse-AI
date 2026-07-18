@@ -614,6 +614,7 @@ def save_track_analysis_and_embedding(
     album_artist=None,
     year=None,
     rating=None,
+    duration=None,
 ):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
@@ -633,8 +634,8 @@ def save_track_analysis_and_embedding(
     try:
         cur.execute(
             """
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, duration)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -647,7 +648,8 @@ def save_track_analysis_and_embedding(
                 album = EXCLUDED.album,
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
-                rating = EXCLUDED.rating
+                rating = EXCLUDED.rating,
+                duration = COALESCE(EXCLUDED.duration, score.duration)
         """,
             (
                 item_id,
@@ -663,6 +665,7 @@ def save_track_analysis_and_embedding(
                 album_artist,
                 year,
                 rating,
+                duration,
             ),
         )
 
@@ -922,6 +925,46 @@ def _migrate_playlist_server_column(cur):
     )
 
 
+def _migrate_artist_mapping_to_server_map(cur):
+    """One-time: fold the legacy default-only ``artist_mapping`` into
+    ``artist_server_map`` (keyed by the default server), then DROP it.
+
+    Gated purely by the table's existence, so it is an instant no-op once done and
+    a fresh install (which never creates the table) skips it. Runs inside init_db,
+    which already holds the schema advisory lock, so replicas are serialized. After
+    this, artist_server_map is the sole source of truth and the read-time fallback
+    to artist_mapping is gone.
+    """
+    cur.execute("SELECT to_regclass('public.artist_mapping')")
+    if cur.fetchone()[0] is None:
+        return
+    cur.execute("SELECT server_id FROM music_servers WHERE is_default LIMIT 1")
+    row = cur.fetchone()
+    default_id = row[0] if row else None
+    if default_id is not None:
+        cur.execute(
+            "INSERT INTO artist_server_map "
+            "(artist_name, server_id, provider_artist_id, updated_at) "
+            "SELECT artist_name, %s, artist_id, now() FROM artist_mapping "
+            "WHERE artist_name IS NOT NULL AND artist_id IS NOT NULL "
+            "ON CONFLICT DO NOTHING",
+            (default_id,),
+        )
+        migrated = cur.rowcount
+        cur.execute("DROP TABLE artist_mapping")
+        logger.info(
+            "Folded legacy artist_mapping into artist_server_map for the default "
+            "server (%d artist(s)) and dropped the obsolete table.", migrated,
+        )
+        return
+    # No default server to attribute the rows to: drop it if empty, otherwise leave
+    # it for a boot where a default exists.
+    cur.execute("SELECT EXISTS (SELECT 1 FROM artist_mapping)")
+    if not cur.fetchone()[0]:
+        cur.execute("DROP TABLE artist_mapping")
+        logger.info("Dropped the empty legacy artist_mapping table.")
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -991,6 +1034,9 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            cur.execute(
+                "ALTER TABLE score ADD COLUMN IF NOT EXISTS duration DOUBLE PRECISION"
+            )
             cur.execute("DROP INDEX IF EXISTS idx_score_fingerprint")
             cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS fingerprint")
             cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS mbid")
@@ -1079,6 +1125,20 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
                 "WHERE item_id NOT LIKE 'fp\\_%'"
+            )
+            # The startup duration migration's hard version gate ("are there any
+            # older-scheme ids left?") reads this partial index. It shrinks to
+            # empty once everything is bumped to the current scheme, so the gate
+            # stays instant on a huge catalogue and the server is never re-listed.
+            from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+            cur.execute("DROP INDEX IF EXISTS idx_score_null_duration")
+            cur.execute("DROP INDEX IF EXISTS idx_score_old_scheme")
+            cur.execute(
+                "CREATE INDEX idx_score_old_scheme ON score (item_id) "
+                "WHERE item_id LIKE 'fp\\_%%' AND length(item_id) = %d "
+                "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
+                "AND left(item_id, %d) <> '%s'"
+                % (CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD)
             )
 
             cur.execute(
@@ -1221,9 +1281,6 @@ def init_db():
                 cur.execute(
                     "ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)"
                 )
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)"
-            )
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'app_config')"
             )
@@ -1407,6 +1464,7 @@ def init_db():
             """)
             _seed_registry_from_legacy_config(cur)
             _drop_unconfigured_servers(cur)
+            _migrate_artist_mapping_to_server_map(cur)
             _migrate_playlist_server_column(cur)
             removed_media_keys = purge_media_keys_from_app_config(cur)
             if removed_media_keys:

@@ -59,6 +59,7 @@ class TestNormalizeTrack:
         'album',
         'year',
         'rating',
+        'duration',
     }
 
     def test_none_item_returns_empty_shape(self, probe):
@@ -109,6 +110,25 @@ class TestNormalizeTrack:
     def test_year_invalid_string_becomes_none(self, probe):
         t = probe._normalize_track({'Id': 'x', 'Year': 'not a year'})
         assert t['year'] is None
+
+    def test_duration_from_runtimeticks_converts_to_seconds(self, probe):
+        t = probe._normalize_track({'Id': 'j1', 'RunTimeTicks': 2_000_000_000})
+        assert t['duration'] == pytest.approx(200.0)
+
+    def test_duration_seconds_passes_through(self, probe):
+        t = probe._normalize_track({'Id': 'p1', 'DurationSeconds': 215.5})
+        assert t['duration'] == pytest.approx(215.5)
+
+    def test_subsonic_raw_duration_is_seconds(self, probe):
+        t = probe._normalize_track({'id': 'n1', 'duration': 187})
+        assert t['duration'] == pytest.approx(187.0)
+
+    def test_missing_or_invalid_duration_becomes_none(self, probe):
+        assert probe._normalize_track({'Id': 'x'})['duration'] is None
+        assert probe._normalize_track({'Id': 'x', 'DurationSeconds': 'junk'})['duration'] is None
+        assert probe._normalize_track({'Id': 'x', 'RunTimeTicks': 'junk'})['duration'] is None
+        assert probe._normalize_track({'Id': 'x', 'DurationSeconds': 0})['duration'] is None
+        assert probe._normalize_track({'Id': 'x', 'DurationSeconds': -3})['duration'] is None
 
     def test_keys_always_present(self, probe):
         t = probe._normalize_track({'Id': 'only-id'})

@@ -502,6 +502,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         "scale": scale,
         "moods": moods,
         "energy": average_energy,
+        "duration_seconds": float(audio.size) / float(sr) if sr else None,
     }
     return_values = (
         (analysis_result, embedding, audio, sr)
@@ -593,6 +594,7 @@ def persist_musicnn_results(item, analysis, top_moods, embedding, other_features
         or item.get('album_artist'),
         year=item.get('Year'),
         rating=item.get('Rating'),
+        duration=analysis.get('duration_seconds'),
     )
 
 

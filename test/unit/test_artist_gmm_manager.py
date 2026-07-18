@@ -255,8 +255,6 @@ class TestGmmSoftChamfer:
 
 class TestFindSimilarArtistsRerank:
     def test_reranks_candidates_and_excludes_self(self, monkeypatch):
-        import sys
-        import types
         import tasks.artist_gmm_manager as agm
 
         A = [1.0, 0.0, 0.0, 0.0]
@@ -285,10 +283,12 @@ class TestFindSimilarArtistsRerank:
         monkeypatch.setattr(agm, "reverse_artist_map", reverse)
         monkeypatch.setattr(agm, "artist_gmm_params", gmm_params)
 
-        fake_mod = types.ModuleType("app_helper_artist")
-        fake_mod.get_artist_id_by_name = lambda name: f"id-{name}"
-        fake_mod.get_artist_name_by_id = lambda x: None
-        monkeypatch.setitem(sys.modules, "app_helper_artist", fake_mod)
+        from tasks.mediaserver import registry as _registry
+        monkeypatch.setattr(_registry, "artist_names_for_ids", lambda ids, *a, **k: {})
+        monkeypatch.setattr(
+            _registry, "artist_ids_for_names",
+            lambda names, *a, **k: {str(n): f"id-{n}" for n in names},
+        )
 
         res = agm.find_similar_artists("Q", n=2)
         names = [r["artist"] for r in res]

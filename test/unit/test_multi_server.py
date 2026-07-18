@@ -905,38 +905,99 @@ class TestIndexRepoint:
         canonicalize._repoint_indexes(cursor, {'jf_1': 'fp_2aa'})
 
 
+def _patch_provider_durations(monkeypatch, durations):
+    from tasks import fingerprint_canonicalize as canonicalize
+
+    monkeypatch.setattr(
+        canonicalize, '_fetch_provider_durations',
+        lambda source_id, conn: dict(durations),
+    )
+    monkeypatch.setattr(
+        canonicalize, '_durations_for_rows',
+        lambda cur, ids, rows, provider_durations, source_id: {
+            ids[int(row)]: provider_durations.get(ids[int(row)]) for row in rows
+        },
+    )
+
+
 class TestEmbeddingCanonicalization:
-    def test_builds_canonical_ids_from_stored_embeddings(self):
+    def test_builds_canonical_ids_from_stored_embeddings(self, monkeypatch):
         import numpy as np
         from tasks import simhash
         from tasks import fingerprint_canonicalize as canonicalize
 
+        _patch_provider_durations(monkeypatch, {})
         embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
         cursor = _legacy_cursor([('legacy-provider-id', embedding)])
-        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
         assert mapping == {
             'legacy-provider-id': simhash.canonical_id_str(simhash.embedding_signature(embedding))
         }
         assert duplicate_mapping == {}
 
-    def test_same_audio_copies_merge(self):
+    def test_same_audio_copies_with_matching_duration_merge(self, monkeypatch):
         import numpy as np
         from tasks import fingerprint_canonicalize as canonicalize
 
+        _patch_provider_durations(
+            monkeypatch, {'copy-one': 200.0, 'copy-two': 200.0}
+        )
         embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
         cursor = _legacy_cursor([
             ('copy-one', embedding),
             ('copy-two', embedding),
         ])
-        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
         assert list(mapping.keys()) == ['copy-one']
         assert duplicate_mapping == {'copy-two': next(iter(mapping.values()))}
 
-    def test_same_signature_different_audio_never_merges(self):
+    def test_same_audio_copies_with_different_duration_never_merge(self, monkeypatch):
+        import numpy as np
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        _patch_provider_durations(
+            monkeypatch, {'copy-one': 200.0, 'copy-two': 210.0}
+        )
+        embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
+        cursor = _legacy_cursor([
+            ('copy-one', embedding),
+            ('copy-two', embedding),
+        ])
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
+        assert duplicate_mapping == {}
+        assert set(mapping.keys()) == {'copy-one', 'copy-two'}
+        assert mapping['copy-one'] != mapping['copy-two']
+
+    def test_same_audio_copies_with_unknown_duration_never_merge(self, monkeypatch):
+        import numpy as np
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        _patch_provider_durations(monkeypatch, {})
+        embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
+        cursor = _legacy_cursor([
+            ('copy-one', embedding),
+            ('copy-two', embedding),
+        ])
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
+        assert duplicate_mapping == {}
+        assert set(mapping.keys()) == {'copy-one', 'copy-two'}
+
+    def test_same_signature_different_audio_never_merges(self, monkeypatch):
         import numpy as np
         from tasks import simhash
         from tasks import fingerprint_canonicalize as canonicalize
 
+        _patch_provider_durations(
+            monkeypatch, {'copy-one': 200.0, 'copy-two': 200.0}
+        )
         half = simhash.SIGNATURE_BITS // 2
         first = np.concatenate(
             [np.full(half, 1.0), np.full(half, -1.0)]
@@ -953,7 +1014,9 @@ class TestEmbeddingCanonicalization:
             ('copy-one', first.tobytes()),
             ('copy-two', second.tobytes()),
         ])
-        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        mapping, duplicate_mapping, _durations = canonicalize._build_mapping(
+            cursor, 'srv'
+        )
         assert duplicate_mapping == {}
         assert set(mapping.keys()) == {'copy-one', 'copy-two'}
         assert mapping['copy-one'] != mapping['copy-two']
@@ -1013,7 +1076,9 @@ class TestEmbeddingCanonicalization:
             def rollback(self):
                 pass
 
-        monkeypatch.setattr(canonicalize, '_build_mapping', lambda cur: ({}, {}))
+        monkeypatch.setattr(
+            canonicalize, '_build_mapping', lambda cur, source_id: ({}, {}, {})
+        )
         monkeypatch.setattr(
             canonicalize.registry, 'get_default_server_id', lambda conn=None: 'sid'
         )
@@ -1663,53 +1728,30 @@ class TestSweepAlignment:
         assert enqueued == [1]
         assert connections == [1]
 
-    def test_dashboard_metrics_measure_each_server_against_its_own_catalogue(self, monkeypatch):
+    def test_dashboard_metrics_count_each_servers_analyzed_songs_locally(self, monkeypatch):
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        # The legacy count must distinguish "counted zero" from "query failed",
-        # or a transient error latches the scan as done forever.
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
-        # Columns: server_id, name, type, is_default, track_count, rows_total, unique_songs
+        # Columns: server_id, name, type, is_default, rows_total, unique_songs.
+        # Purely local: one GROUP BY over track_server_map, no track_count walk
+        # and no score scan (the legacy anti-join is gone).
         cur.fetchall.return_value = [
-            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032, 188000),
-            ('s2', 'PLEX', 'plex', False, 120, 46, 46),
-            ('s3', 'Fresh', 'navidrome', False, None, 0, 0),
+            ('s1', 'Jellyfin', 'jellyfin', True, 188032, 188000),
+            ('s2', 'PLEX', 'plex', False, 46, 46),
+            ('s3', 'Fresh', 'navidrome', False, 0, 0),
         ]
         rows = dash._collect_music_server_metrics(cur)
-        # Default server: legacy add-on (25) lifts unique_songs and resolved; the
-        # 32-file gap between rows_total and unique_songs is duplicate copies.
-        assert rows[0]['unique_songs'] == 188025
+        # resolved is just the mapped-row count; the 32-file gap between rows_total
+        # and unique_songs is duplicate copies.
+        assert rows[0]['unique_songs'] == 188000
         assert rows[0]['duplicate_copies'] == 32
-        assert rows[0]['resolved'] == 188057
+        assert rows[0]['resolved'] == 188032
         assert rows[1]['unique_songs'] == 46
         assert rows[1]['duplicate_copies'] == 0
         assert rows[1]['resolved'] == 46
-        assert rows[1]['server_songs'] == 120
-
-    def test_never_swept_server_reports_unknown_library_size(self, monkeypatch):
-        """server_songs must stay None until a sweep has actually measured the
-        server. Back-filling it from `resolved` made coverage resolved/resolved,
-        i.e. a permanent 100% for a server nobody had ever counted."""
-        import app_dashboard as dash
-
-        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
-        cur = MagicMock()
-        cur.fetchall.return_value = [
-            # The default server, never swept, but with mapped rows: the old code
-            # set server_songs = resolved here and drew a full coverage bar.
-            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032, 188000),
-            # A non-default server, never swept, with mappings.
-            ('s2', 'PLEX', 'plex', False, None, 46, 46),
-        ]
-        rows = dash._collect_music_server_metrics(cur)
-        assert rows[0]['server_songs'] is None
-        assert rows[1]['server_songs'] is None
-        assert all('catalogue_songs' not in r for r in rows)
+        # No remote library size is ever surfaced by the dashboard.
+        assert all('server_songs' not in r for r in rows)
 
     def test_sweep_stores_server_track_count(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -2066,34 +2108,26 @@ class TestRegistrySeeding:
         assert not any('DELETE FROM music_servers' in sql for sql, _p in cur.executed)
 
 
-class TestDashboardLegacyCountLatch:
-    def test_failed_count_is_not_latched_as_done(self, monkeypatch):
-        """A transient DB error must not be read as 'no legacy rows left'."""
+class TestDashboardHasNoLegacyScoreScan:
+    def test_per_server_metrics_never_scan_score(self, monkeypatch):
+        # The legacy provider-keyed anti-join over score is gone: per-server
+        # metrics are a single GROUP BY over track_server_map and must not call
+        # _counted_or_none (the only path that scanned score here).
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: None)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
+
+        def _boom(*a, **k):
+            raise AssertionError('per-server metrics must not scan score')
+
+        monkeypatch.setattr(dash, '_counted_or_none', _boom)
         cur = MagicMock()
-        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40, 40)]
+        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, 40, 40)]
 
         rows = dash._collect_music_server_metrics(cur)
 
         assert rows[0]['resolved'] == 40
-        assert dash._LEGACY_UNMAPPED_DONE == {}
-
-    def test_real_zero_retires_the_scan(self, monkeypatch):
-        import app_dashboard as dash
-
-        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 0)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
-        cur = MagicMock()
-        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40, 40)]
-
-        dash._collect_music_server_metrics(cur)
-
-        assert dash._LEGACY_UNMAPPED_DONE == {'d1': True}
+        assert not hasattr(dash, '_LEGACY_UNMAPPED_DONE')
 
 
 class TestLyrionFolderFilterIsAnchored:
@@ -2153,6 +2187,10 @@ class TestPlaylistGrouping:
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(registry, 'list_servers', lambda conn=None: servers)
+        monkeypatch.setattr(
+            registry, 'translate_ids',
+            lambda ids, server_id, conn=None: {str(i): str(i) for i in ids},
+        )
 
     def test_playlist_rows_group_per_server_with_default_first(self, monkeypatch):
         import app_server_context as ctx
@@ -2218,6 +2256,25 @@ class TestPlaylistGrouping:
         assert result['multi_server'] is False
         assert result['servers'][0]['server_name'] == 'default server'
         assert result['servers'][0]['server_id'] is None
+
+    def test_known_server_item_ids_are_translated_to_provider_ids(self, monkeypatch):
+        import app_server_context as ctx
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: [
+            {'server_id': 's1', 'name': 'One', 'is_default': True},
+        ])
+        monkeypatch.setattr(
+            registry, 'translate_ids',
+            lambda ids, server_id, conn=None: {'i1': 'prov1'},
+        )
+        result = ctx.group_playlist_rows_by_server([
+            self._row('Rock', 'i1', 's1'),
+            self._row('Rock', 'i2', 's1'),
+        ])
+        assert result['servers'][0]['playlists']['Rock'] == [
+            {'item_id': 'prov1', 'title': 'Title i1', 'author': 'Artist'}
+        ]
 
     def test_registry_failure_still_returns_every_row_grouped(self, monkeypatch):
         import app_server_context as ctx

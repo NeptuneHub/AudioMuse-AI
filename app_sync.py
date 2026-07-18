@@ -216,7 +216,11 @@ def _server_ids_for_rows(rows, server_id):
 
     ids = [r['item_id'] for r in rows]
     if not server_id:
-        return {str(i): str(i) for i in ids}
+        # No server to translate against (e.g. no default configured). The identity
+        # feed is exact for a legacy catalogue whose item_id IS the provider id, but
+        # a canonical fp_ id must never be echoed - drop it rather than leak it.
+        from tasks.simhash import is_fingerprint_id
+        return {str(i): str(i) for i in ids if not is_fingerprint_id(str(i))}
     try:
         return registry.translate_ids(ids, server_id)
     except Exception as exc:
