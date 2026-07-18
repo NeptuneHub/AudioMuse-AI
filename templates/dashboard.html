@@ -202,19 +202,6 @@
     #main-content-inner.single-server .scope-chip { display: none; }
 
     /* Coverage bars, shared by the per-server tile and the server table. */
-    .cov-bar {
-        height: 8px;
-        border-radius: 4px;
-        background: rgba(128, 128, 128, 0.25);
-        overflow: hidden;
-        margin-bottom: 4px;
-    }
-    /* width:0 by default: a fill div with no explicit width is width:auto, i.e.
-       a full bar. An unknown coverage must render EMPTY, not complete. */
-    .cov-bar > div { height: 100%; width: 0; background: var(--color-primary, #4a90d9); }
-    .cov-row { padding: 6px 0; }
-    .cov-row + .cov-row { border-top: 1px solid var(--border-color); }
-    .cov-name { font-weight: 600; font-size: 0.85rem; margin-bottom: 4px; }
 </style>
 {% endblock %}
 
@@ -234,28 +221,13 @@
         <div class="dash-grid" id="key-numbers"></div>
     </section>
 
-    <!-- Library coverage. Per-SERVER, so it is hidden entirely on a single-server
-         install (same rule as Music Server Status): with one server there is
-         nothing to compare and the section is just noise. -->
-    <section id="library-coverage-section" class="scope-chip-host" style="display:none;">
-        <span class="scope-chip scope-chip-corner scope-server">Per server</span>
-        <h2>Library coverage
-            <span class="info-tooltip" tabindex="0">
-                <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">How much of each music server's own library has made it into the analyzed catalogue. Measured against that server's library size, counted by the hourly dashboard refresh, so it is the one number that tells you whether analysis still has work to do. It is per server on purpose: a track that has never been analyzed exists on no catalogue, so there is no catalogue-wide version of this figure.</span>
-            </span>
-        </h2>
-        <p class="muted dash-updated" id="coverage-updated">Loading…</p>
-        <div id="coverage-body" class="dash-stat-card"><span class="muted">Loading…</span></div>
-    </section>
-
     <!-- Music Server Status (only when more than one server is configured) -->
     <section id="music-server-status-section" class="scope-chip-host" style="display:none;">
         <span class="scope-chip scope-chip-corner scope-server">Per server</span>
         <h2>Music Server Status
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. A song present on two servers is ONE song in the catalogue, so these per-server counts add up to more than the catalogue total - never sum them. "Songs on server" is that server's own library size as of its last alignment sweep. "Unique in catalogue" counts THAT server's distinct songs matched to the catalogue; "Duplicate files" are extra copies of a song already counted (same audio, several files). How much of each server is analyzed is shown in Library coverage above.</span>
+                <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. A song present on two servers is ONE song in the catalogue, so these per-server counts add up to more than the catalogue total - never sum them. "Unique in catalogue" counts THAT server's distinct analyzed songs; "Duplicate files" are extra copies of a song already counted (same audio, several files).</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
@@ -265,11 +237,10 @@
                     <th>Server</th>
                     <th class="col-medium">Type</th>
                     <th class="col-narrow">Default</th>
-                    <th class="col-medium">Songs on server</th>
                     <th class="col-medium">Unique in catalogue</th>
                     <th class="col-narrow">Duplicate files</th>
                 </tr></thead>
-                <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -402,8 +373,7 @@
     // Which caption each section gets. A section is in exactly one list: it is
     // either read from the hourly snapshot or recomputed live on every poll.
     const SNAPSHOT_CAPTIONS = [
-        'keynumbers-updated', 'content-updated',
-        'coverage-updated', 'music-servers-updated',
+        'keynumbers-updated', 'content-updated', 'music-servers-updated',
     ];
     const LIVE_CAPTIONS = ['workers-updated', 'recent-updated', 'cron-updated'];
 
@@ -571,8 +541,8 @@
 
         // There is deliberately no "analyzed (MusiCNN) %" here. A song only
         // enters the catalogue when it is analyzed, so that number is always
-        // 100% and says nothing. "How much of my library is analyzed" is a
-        // per-server question and is answered by the Library coverage tile.
+        // 100% and says nothing. Every number on this page describes the
+        // analyzed catalogue itself, never the size of a remote library.
         const cards = [
             { title: 'Songs', value: totalSongs.toLocaleString(),
               sub: 'in the analyzed catalogue<br>'
@@ -759,70 +729,6 @@
         });
     }
 
-    // The one coverage renderer, shared by the compact tile and the table.
-    //
-    // server_songs is null until the hourly dashboard refresh has counted the
-    // server's library (it skips that while nothing is analyzed yet). In that
-    // case coverage is UNKNOWN and we render an empty bar - the old code fell
-    // back to resolved/resolved, i.e. a permanently full bar for a server that
-    // had never been measured.
-    function coverageInto(host, serverSongs, resolved) {
-        if (serverSongs === null) {
-            const bar = document.createElement('div');
-            bar.className = 'cov-bar';
-            const empty = document.createElement('div');
-            // Explicit 0: an unset width is width:auto, which paints a FULL bar.
-            empty.style.width = '0%';
-            bar.appendChild(empty);
-            const msg = document.createElement('div');
-            msg.className = 'muted';
-            msg.textContent = 'Not measured yet - counted after the first analysis';
-            host.appendChild(bar);
-            host.appendChild(msg);
-            return;
-        }
-        const r = ratio(resolved, serverSongs);
-        const bar = document.createElement('div');
-        bar.className = 'cov-bar';
-        const fill = document.createElement('div');
-        // The bar width is floored exactly like the label, so a 99.6% bar cannot
-        // render visually full while the text says 99.6%.
-        fill.style.width = r.pct + '%';
-        bar.appendChild(fill);
-        const label = document.createElement('div');
-        label.textContent = resolved.toLocaleString() + ' of '
-            + serverSongs.toLocaleString() + ' (' + r.text + ')';
-        host.appendChild(bar);
-        host.appendChild(label);
-    }
-
-    // Compact per-SERVER coverage tile. Hidden below two servers, exactly like
-    // the Music Server Status table: both are per-server sections and neither
-    // earns its space on a single-server install.
-    function renderCoverage(servers) {
-        const section = document.getElementById('library-coverage-section');
-        const host = document.getElementById('coverage-body');
-        if (!section || !host) return;
-        if (!Array.isArray(servers) || servers.length < 2) {
-            section.style.display = 'none';
-            return;
-        }
-        section.style.display = '';
-        host.innerHTML = '';
-        servers.forEach(s => {
-            const serverSongs = (s.server_songs === null || s.server_songs === undefined)
-                ? null : (s.server_songs || 0);
-            const row = document.createElement('div');
-            row.className = 'cov-row';
-            const name = document.createElement('div');
-            name.className = 'cov-name';
-            name.textContent = s.name;
-            row.appendChild(name);
-            coverageInto(row, serverSongs, s.resolved || 0);
-            host.appendChild(row);
-        });
-    }
-
     function renderMusicServers(servers) {
         const section = document.getElementById('music-server-status-section');
         if (!section) return;
@@ -835,19 +741,12 @@
         tbody.innerHTML = '';
         servers.forEach(s => {
             const tr = document.createElement('tr');
-            const serverSongs = (s.server_songs === null || s.server_songs === undefined)
-                ? null : (s.server_songs || 0);
             const duplicateCopies = s.duplicate_copies || 0;
-            const songsTd = document.createElement('td');
-            songsTd.textContent = serverSongs === null
-                ? 'not measured yet' : serverSongs.toLocaleString();
             const dupTd = document.createElement('td');
             dupTd.textContent = duplicateCopies ? duplicateCopies.toLocaleString() : '-';
-            // No coverage column here: it is the Library coverage tile's job.
             tr.appendChild(textCell(s.name || '-'));
             tr.appendChild(textCell(s.server_type || '-'));
             tr.appendChild(textCell(s.is_default ? 'yes' : ''));
-            tr.appendChild(songsTd);
             tr.appendChild(textCell((s.unique_songs || 0).toLocaleString()));
             tr.appendChild(dupTd);
             tbody.appendChild(tr);
@@ -872,7 +771,6 @@
             renderTopGenre(content.top_genre);
             renderMoodsCoverage(content.moods_coverage);
             renderTempo(content.tempo_profile);
-            renderCoverage(servers);
             renderMusicServers(servers);
             renderCron(d.cron);
 

@@ -1728,7 +1728,7 @@ class TestSweepAlignment:
         assert enqueued == [1]
         assert connections == [1]
 
-    def test_dashboard_metrics_measure_each_server_against_its_own_catalogue(self, monkeypatch):
+    def test_dashboard_metrics_count_each_servers_analyzed_songs_locally(self, monkeypatch):
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
@@ -1737,11 +1737,12 @@ class TestSweepAlignment:
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
         monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
-        # Columns: server_id, name, type, is_default, track_count, rows_total, unique_songs
+        # Columns: server_id, name, type, is_default, rows_total, unique_songs.
+        # No track_count: the dashboard never walks a server for a library size.
         cur.fetchall.return_value = [
-            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032, 188000),
-            ('s2', 'PLEX', 'plex', False, 120, 46, 46),
-            ('s3', 'Fresh', 'navidrome', False, None, 0, 0),
+            ('s1', 'Jellyfin', 'jellyfin', True, 188032, 188000),
+            ('s2', 'PLEX', 'plex', False, 46, 46),
+            ('s3', 'Fresh', 'navidrome', False, 0, 0),
         ]
         rows = dash._collect_music_server_metrics(cur)
         # Default server: legacy add-on (25) lifts unique_songs and resolved; the
@@ -1752,29 +1753,8 @@ class TestSweepAlignment:
         assert rows[1]['unique_songs'] == 46
         assert rows[1]['duplicate_copies'] == 0
         assert rows[1]['resolved'] == 46
-        assert rows[1]['server_songs'] == 120
-
-    def test_never_swept_server_reports_unknown_library_size(self, monkeypatch):
-        """server_songs must stay None until a sweep has actually measured the
-        server. Back-filling it from `resolved` made coverage resolved/resolved,
-        i.e. a permanent 100% for a server nobody had ever counted."""
-        import app_dashboard as dash
-
-        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 25)
-        monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
-        cur = MagicMock()
-        cur.fetchall.return_value = [
-            # The default server, never swept, but with mapped rows: the old code
-            # set server_songs = resolved here and drew a full coverage bar.
-            ('s1', 'Jellyfin', 'jellyfin', True, None, 188032, 188000),
-            # A non-default server, never swept, with mappings.
-            ('s2', 'PLEX', 'plex', False, None, 46, 46),
-        ]
-        rows = dash._collect_music_server_metrics(cur)
-        assert rows[0]['server_songs'] is None
-        assert rows[1]['server_songs'] is None
-        assert all('catalogue_songs' not in r for r in rows)
+        # No remote library size is ever surfaced by the dashboard.
+        assert all('server_songs' not in r for r in rows)
 
     def test_sweep_stores_server_track_count(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -2140,7 +2120,7 @@ class TestDashboardLegacyCountLatch:
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: None)
         monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
-        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40, 40)]
+        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, 40, 40)]
 
         rows = dash._collect_music_server_metrics(cur)
 
@@ -2154,7 +2134,7 @@ class TestDashboardLegacyCountLatch:
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 0)
         monkeypatch.setattr(dash, '_LEGACY_UNMAPPED_DONE', {})
         cur = MagicMock()
-        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, None, 40, 40)]
+        cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, 40, 40)]
 
         dash._collect_music_server_metrics(cur)
 

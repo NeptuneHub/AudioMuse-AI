@@ -178,37 +178,20 @@ def _collect_task_metrics(cur):
 
 
 def _collect_music_server_metrics(cur):
-    """Per-configured-server alignment status: the SERVER half of the dashboard.
-    Servers hold DIFFERENT catalogues that may only partially overlap, so each
-    server is measured against its OWN library size (``track_count``, captured by
-    the last alignment sweep), never against the union catalogue.
-
-    A server may hold several duplicate FILES of one song (many provider tracks,
-    one canonical id), so the counts are split:
-      ``unique_songs``     - distinct catalogue songs on the server
-                             (COUNT(DISTINCT item_id); the default also counts
-                             legacy provider-keyed rows predating canonicalization).
-      ``duplicate_copies`` - extra provider files that collapse onto a song
-                             already counted (COUNT(*) - COUNT(DISTINCT item_id)).
-      ``resolved``         - provider tracks with a map row (the coverage numerator).
-
-    ``server_songs`` is None until the server's catalogue has been counted at
-    least once (snapshot refresh, alignment sweep, or cleaning all store it).
-    It is NEVER back-filled from ``resolved``: doing so would make
-    coverage exactly resolved/resolved = 100% for a server that has never been
-    measured, which is the one number a never-swept server cannot possibly know.
-    The UI renders None as "not yet aligned" with an empty bar.
-
-    Part of the SNAPSHOT tier (it costs a GROUP BY over track_server_map plus an
-    anti-join over score, so it must never sit on the request path). Empty list
-    when the registry table does not exist yet."""
+    # Per-configured-server view of the ANALYZED catalogue: how many analyzed
+    # songs are mapped to each server, split into distinct songs and the extra
+    # duplicate files that collapse onto a song already counted. Entirely local
+    # (track_server_map + score); it never walks a media server. The default
+    # server also counts legacy provider-keyed rows predating canonicalization.
+    # SNAPSHOT tier (GROUP BY over track_server_map plus a legacy anti-join over
+    # score). Empty list when the registry table does not exist yet.
     servers = []
     try:
         if not _table_exists(cur, 'music_servers'):
             return servers
         cur.execute(
             "SELECT ms.server_id, ms.name, ms.server_type, ms.is_default, "
-            "ms.track_count, COALESCE(m.rows_total, 0), COALESCE(m.unique_songs, 0) "
+            "COALESCE(m.rows_total, 0), COALESCE(m.unique_songs, 0) "
             "FROM music_servers ms LEFT JOIN "
             "(SELECT server_id, COUNT(*) AS rows_total, "
             "COUNT(DISTINCT item_id) AS unique_songs "
@@ -217,15 +200,11 @@ def _collect_music_server_metrics(cur):
             "ORDER BY ms.is_default DESC, ms.name ASC"
         )
         for r in cur.fetchall():
-            rows_total = int(r[5] or 0)
-            unique_songs = int(r[6] or 0)
+            rows_total = int(r[4] or 0)
+            unique_songs = int(r[5] or 0)
             duplicate_copies = max(rows_total - unique_songs, 0)
             legacy = 0
             if r[3] and not _LEGACY_UNMAPPED_DONE.get(r[0]):
-                # Legacy rows keep their provider id and are implicitly on the
-                # default server until canonicalization maps them explicitly.
-                # They are distinct items with no map row, so they add to both
-                # unique_songs and resolved without adding duplicates.
                 counted = _counted_or_none(
                     cur,
                     "SELECT COUNT(*) FROM score s "
@@ -234,21 +213,16 @@ def _collect_music_server_metrics(cur):
                     "WHERE m.item_id = s.item_id AND m.server_id = %s)",
                     (r[0],),
                 )
-                # Only a real zero retires the scan. A failed query must not be
-                # read as "no legacy rows left", or the count stays wrong for
-                # the life of the process.
                 if counted == 0:
                     _LEGACY_UNMAPPED_DONE[r[0]] = True
                 legacy = counted or 0
             unique_songs += legacy
             resolved = rows_total + legacy
-            server_songs = r[4]
             servers.append(
                 {
                     'name': r[1],
                     'server_type': r[2],
                     'is_default': bool(r[3]),
-                    'server_songs': int(server_songs) if server_songs is not None else None,
                     'unique_songs': unique_songs,
                     'duplicate_copies': duplicate_copies,
                     'resolved': resolved,
@@ -268,9 +242,8 @@ def _collect_content_metrics(cur):
     # There is deliberately no "musicnn analyzed %" here: a song only enters
     # `score` at analysis time and save_track_analysis_and_embedding writes its
     # `embedding` row in the same transaction, so that ratio is ~100% by
-    # construction. The catalogue IS the set of analyzed songs. The real
-    # "how much of my library is analyzed" question is per-SERVER (resolved vs
-    # music_servers.track_count) and lives in _collect_music_server_metrics.
+    # construction. The catalogue IS the set of analyzed songs. The per-SERVER
+    # breakdown of those analyzed songs lives in _collect_music_server_metrics.
     metrics = {
         'total_songs': _counted_or_none(cur, "SELECT COUNT(*) FROM score"),
         'distinct_artists': _counted_or_none(
@@ -535,78 +508,27 @@ def _load_dashboard_stats(cur):
         return {}, None
 
 
-# Each server's library size is snapshot data like everything else: counted
-# here during the scheduled refresh (startup + hourly) by enumerating the
-# server's catalogue - no provider exposes a bare count. Skipped while nothing
-# is analyzed yet: coverage is meaningless on an empty catalogue and a fresh
-# install must not walk providers just for a number nobody can use.
-def _refresh_server_track_counts(cur):
-    try:
-        from tasks.mediaserver import registry
-        from tasks.multiserver_sync import fetch_server_catalogue, _store_server_track_count
-
-        if not _table_exists(cur, 'music_servers'):
-            return
-        cur.execute("SELECT COUNT(*) FROM score")
-        if not cur.fetchone()[0]:
-            return
-        servers = registry.list_servers()
-    except Exception:
-        logger.exception("Could not list servers for the track-count refresh")
-        return
-    for server in servers:
-        try:
-            count = len(fetch_server_catalogue(server))
-            _store_server_track_count(get_db(), server['server_id'], count)
-        except Exception:
-            logger.exception(
-                "Could not refresh the track count for server %s; keeping the previous value",
-                server.get('name'),
-            )
+# Seconds between snapshot refreshes. The dashboard reports the analyzed
+# catalogue only and never walks a media server, so a flat hourly cadence is
+# all the content aggregates need.
+DASHBOARD_REFRESH_INTERVAL_SECONDS = 3600
 
 
-# Seconds until the next snapshot refresh: hourly normally, every 5 minutes
-# while any server still lacks its first library measure so a fresh install's
-# coverage panel fills in soon after the first analysis.
-def dashboard_refresh_interval(app, fast=300, slow=3600):
-    try:
-        with app.app_context():
-            db = get_db()
-            cur = db.cursor()
-            try:
-                if not _table_exists(cur, 'music_servers'):
-                    return slow
-                cur.execute("SELECT COUNT(*) FROM music_servers WHERE track_count IS NULL")
-                unmeasured = cur.fetchone()[0]
-            finally:
-                cur.close()
-        return fast if unmeasured else slow
-    except Exception:
-        logger.debug("Dashboard refresh-interval probe failed", exc_info=True)
-        return slow
+def dashboard_refresh_interval(app):
+    return DASHBOARD_REFRESH_INTERVAL_SECONDS
 
 
 def refresh_dashboard_stats(app):
-    """Recompute content metrics and upsert them into the
-    ``dashboard_stats`` singleton row. Intended to be called from
-    a background thread at app startup and then once per hour.
-
-    Runs inside an app context so ``get_db()`` works, and commits the
-    result so the new values are visible to subsequent requests.
-    """
+    # Recompute the content metrics and upsert them into the dashboard_stats
+    # singleton. Called from a background thread at startup and then hourly.
+    # Runs in an app context so get_db() works, and commits so the new values
+    # are visible to later requests.
     started = time.time()
     try:
         with app.app_context():
             db = get_db()
             cur = db.cursor(cursor_factory=DictCursor)
             try:
-                try:
-                    _refresh_server_track_counts(cur)
-                except Exception:
-                    logger.exception(
-                        "Server track-count refresh failed; continuing with the snapshot"
-                    )
-                    _safe_rollback(cur)
                 content = _collect_content_metrics(cur)
             finally:
                 cur.close()

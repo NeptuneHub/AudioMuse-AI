@@ -87,9 +87,13 @@ def _groups_needing_check(cur):
 
 
 def _server_durations(server):
+    # apply_filter=True so a server whose AudioMuse config is a subset of a much
+    # larger media library only lists the configured folders, not the whole
+    # server. The duplicate provider ids are all analyzed tracks, so they live in
+    # the configured libraries and are always covered.
     with ms_context.use_server(server):
         tracks = provider_probe.fetch_all_tracks(
-            server['server_type'], server['creds'], apply_filter=False
+            server['server_type'], server['creds'], apply_filter=True
         )
     return {
         str(track['id']): track['duration']
