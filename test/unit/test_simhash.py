@@ -239,6 +239,27 @@ class TestCatalogResolver:
         assert fetched == [cid]
         assert duration_fetched == [cid]
 
+    def test_duration_mismatch_skips_the_expensive_cosine(self):
+        # In a homogeneous library resolve() walks every same-signature candidate;
+        # a length mismatch must reject BEFORE the embedding is fetched, or every
+        # candidate costs an embedding fetch + 200-dim cosine and analysis pins a
+        # core scanning the whole cluster per track (the O(n^2) regression).
+        emb = _embedding(13)
+        signature = simhash.embedding_signature(emb)
+        cid = simhash.canonical_id_str(signature)
+        fetched = []
+
+        resolver = simhash.CatalogResolver(
+            embedding_fetcher=lambda item_id: fetched.append(item_id) or emb.tobytes(),
+            duration_fetcher=lambda item_id: 500.0,
+        )
+        resolver.register(cid)
+        kind, _resolved = resolver.resolve(emb, duration=200.0)
+        assert kind == 'new'
+        assert fetched == [], (
+            "a length mismatch must skip the embedding fetch and cosine entirely"
+        )
+
     def test_catalogue_row_without_stored_duration_never_absorbs(self):
         emb = _embedding(16)
         signature = simhash.embedding_signature(emb)

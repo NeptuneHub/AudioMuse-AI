@@ -537,6 +537,7 @@ class SignatureIndex:
         self._bands = [{} for _ in range(_BAND_COUNT)]
         self._ids = []
         self._packed = np.empty((0, SIGNATURE_BYTES), dtype=np.uint8)
+        self._durations = np.empty(0, dtype=np.float64)
         self._count = 0
 
     def _reserve(self, rows):
@@ -546,21 +547,36 @@ class SignatureIndex:
         grown = np.zeros((capacity, SIGNATURE_BYTES), dtype=np.uint8)
         grown[: self._count] = self._packed[: self._count]
         self._packed = grown
+        grown_durations = np.full(capacity, np.nan, dtype=np.float64)
+        grown_durations[: self._count] = self._durations[: self._count]
+        self._durations = grown_durations
 
-    def add(self, canonical_id, signature):
+    def add(self, canonical_id, signature, duration=None):
         if signature is None:
             return
         signature &= _SIGNATURE_MASK
         row = self._count
         self._reserve(row + 1)
         self._packed[row] = _pack_signature(signature)
+        self._durations[row] = (
+            np.nan if duration is None else float(duration)
+        )
         self._ids.append(canonical_id)
         self._count += 1
         for band in range(_BAND_COUNT):
             self._bands[band].setdefault(_band_key(signature, band), []).append(row)
 
-    def find_candidates(self, signature):
-        """All canonical ids within tolerance, sorted nearest-first."""
+    def find_candidates(self, signature, duration=None):
+        """Canonical ids within Hamming tolerance, sorted nearest-first.
+
+        When ``duration`` is given, candidates whose stored length disagrees by
+        more than ``DURATION_TOLERANCE_SECONDS`` are dropped BEFORE the popcount -
+        a single vectorized number compare. This is what keeps a sonically
+        homogeneous library (thousands of tracks sharing one signature) from
+        making the caller walk the whole cluster per track: only the handful with
+        a plausible length survive to be confirmed. A candidate whose length is
+        unknown (NaN) is kept, so the confirm step can still fetch and judge it.
+        """
         if signature is None or not self._count:
             return []
         signature &= _SIGNATURE_MASK
@@ -572,6 +588,16 @@ class SignatureIndex:
         if not rows:
             return []
         candidates = np.unique(np.asarray(rows, dtype=np.int64))
+        if duration is not None:
+            candidate_durations = self._durations[candidates]
+            with np.errstate(invalid='ignore'):
+                length_ok = np.isnan(candidate_durations) | (
+                    np.abs(candidate_durations - float(duration))
+                    <= DURATION_TOLERANCE_SECONDS
+                )
+            candidates = candidates[length_ok]
+            if not candidates.size:
+                return []
         distances = _POPCOUNT[self._packed[candidates] ^ _pack_signature(signature)].sum(
             axis=1, dtype=np.int16
         )
@@ -623,7 +649,7 @@ class CatalogResolver:
         if signature is None:
             signature = signature_from_canonical_id(item_id)
         if signature is not None:
-            self._index.add(item_id, signature)
+            self._index.add(item_id, signature, duration=duration)
 
     def _embedding_for(self, item_id):
         cached = self._embeddings.get(item_id)
@@ -663,16 +689,24 @@ class CatalogResolver:
         because the analysis mint path needs it to tell a concurrently minted
         duplicate (adopt it) from a genuine signature collision between two
         different recordings (step to the next free id).
+
+        Duration is checked FIRST because it is a single number compare while the
+        cosine needs the candidate's embedding fetched and a 200-dim dot product.
+        A homogeneous library (every track shares a signature) makes ``resolve``
+        walk every candidate, and the length rejects almost all of them; doing
+        that reject before the cosine keeps the walk O(candidates) cheap instead
+        of O(candidates) EMBEDDING FETCHES - the difference between a fast analysis
+        and one that pins a core scanning the whole cluster per track.
         """
+        if not durations_compatible(duration, self._duration_for(candidate_id)):
+            return False
         candidate_embedding = self._embedding_for(candidate_id)
         if candidate_embedding is None:
             return False
-        if (
+        return (
             cosine_distance(embedding, candidate_embedding)
-            > DUPLICATE_DISTANCE_THRESHOLD_COSINE
-        ):
-            return False
-        return durations_compatible(duration, self._duration_for(candidate_id))
+            <= DUPLICATE_DISTANCE_THRESHOLD_COSINE
+        )
 
     _confirms = confirms
 
@@ -689,7 +723,7 @@ class CatalogResolver:
             signature = embedding_signature(embedding)
         if signature is None:
             return ('new', None)
-        for candidate_id in self._index.find_candidates(signature):
+        for candidate_id in self._index.find_candidates(signature, duration=duration):
             if self._confirms(embedding, candidate_id, duration=duration):
                 return ('existing', candidate_id)
         new_id = mint_canonical_id(signature, self._taken)
