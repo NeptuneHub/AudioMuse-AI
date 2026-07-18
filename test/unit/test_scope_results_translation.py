@@ -96,3 +96,22 @@ def test_translate_ids_for_request_drops_fp_and_keeps_legacy_on_error(monkeypatc
 
     assert 'fp_2aaa' not in mapping
     assert mapping.get('legacy-1') == 'legacy-1'
+
+
+def test_provider_echo_id_returns_a_non_fp_input_unchanged(monkeypatch):
+    _wire(monkeypatch, 'srv1', {'fp_2aaa': 'jelly-1'})
+    assert app_server_context.provider_echo_id('jelly-1') == 'jelly-1'
+    assert app_server_context.provider_echo_id('legacy-xyz') == 'legacy-xyz'
+    assert app_server_context.provider_echo_id(None) is None
+
+
+def test_provider_echo_id_translates_a_supplied_fp_to_the_provider_id(monkeypatch):
+    _wire(monkeypatch, 'srv1', {'fp_2aaa': 'jelly-1'})
+    monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda rid, data=None: rid)
+    assert app_server_context.provider_echo_id('fp_2aaa') == 'jelly-1'
+
+
+def test_provider_echo_id_never_echoes_an_fp_not_on_the_server(monkeypatch):
+    _wire(monkeypatch, 'srv1', {'fp_2aaa': 'jelly-1'})  # fp_2zzz has no mapping
+    monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda rid, data=None: rid)
+    assert app_server_context.provider_echo_id('fp_2zzz') is None

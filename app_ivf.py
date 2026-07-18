@@ -570,7 +570,7 @@ def get_max_distance_endpoint():
         result = get_max_distance_for_id(item_id)
         if result is None:
             return jsonify(
-                {"error": f"Item '{raw_item_id}' not found in index or index unavailable."}
+                {"error": f"Item '{app_server_context.provider_echo_id(raw_item_id)}' not found in index or index unavailable."}
             ), 404
         # farthest_item_id comes from the internal index; expose the selected
         # server's provider id (None when that item is not on it), never the fp_ id.
@@ -644,7 +644,7 @@ def get_track_endpoint():
         canonical_id = app_server_context.resolve_input_item_id(item_id)
         details = get_score_data_by_ids([canonical_id])
         if not details:
-            return jsonify({"error": f"Item '{item_id}' not found."}), 404
+            return jsonify({"error": f"Item '{app_server_context.provider_echo_id(item_id)}' not found."}), 404
         d = details[0]
         row = {
             "item_id": d.get('item_id'),
@@ -655,7 +655,7 @@ def get_track_endpoint():
         }
         scoped = app_server_context.scope_results([row], None, id_key='item_id')
         if not scoped:
-            return jsonify({"error": f"Item '{item_id}' not found."}), 404
+            return jsonify({"error": f"Item '{app_server_context.provider_echo_id(item_id)}' not found."}), 404
         return jsonify(scoped[0]), 200
     except Exception:
         logger.exception(f"Unexpected error fetching track {item_id}")

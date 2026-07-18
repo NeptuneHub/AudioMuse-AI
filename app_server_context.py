@@ -122,6 +122,24 @@ def resolve_input_item_id(raw_id, data=None):
     return resolve_input_item_ids([raw_id], data).get(str(raw_id), str(raw_id))
 
 
+def provider_echo_id(raw_id):
+    """The id to echo back in a response or error message.
+
+    Returns the caller's own id unchanged UNLESS it is an internal canonical
+    (fp_) id, in which case it is translated to the selected/default server's
+    provider id (None when the item is not on that server). Never returns an fp_
+    id, so an endpoint that echoes a caller-supplied id cannot leak one.
+    """
+    if not raw_id:
+        return raw_id
+    from tasks.simhash import is_fingerprint_id
+
+    if not is_fingerprint_id(str(raw_id)):
+        return raw_id
+    canonical = resolve_input_item_id(raw_id)
+    return translate_ids_for_request([canonical]).get(str(canonical))
+
+
 def resolve_artist_identifier(identifier, data=None):
     """Turn a selected-server artist id into the shared artist name."""
     if not identifier:
