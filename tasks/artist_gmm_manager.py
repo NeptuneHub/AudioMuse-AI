@@ -251,6 +251,24 @@ def _shutdown_gmm_pool() -> None:
         logger.warning("Could not shut the artist GMM worker pool down", exc_info=True)
 
 
+def _release_gmm_pool_temp_folders() -> None:
+    try:
+        from joblib.externals.loky import get_reusable_executor
+
+        executor = get_reusable_executor(reuse=True)
+        manager = getattr(executor, "_temp_folder_manager", None)
+        if manager is None:
+            return
+        for folder in list(getattr(manager, "_cached_temp_folders", {}).values()):
+            if folder and not os.path.isdir(folder):
+                os.makedirs(folder, exist_ok=True)
+        manager._clean_temporary_resources(force=True, allow_non_empty=True)
+    except Exception:
+        logger.debug(
+            "Could not release artist GMM pool scratch folders", exc_info=True
+        )
+
+
 def _fit_artist_job(job: Tuple[str, np.ndarray, str]) -> Tuple[str, Optional[Dict]]:
     """One artist's GMM. Top level so a worker process can unpickle it."""
     artist_name, embeddings, tracks_hash = job
@@ -313,39 +331,13 @@ def _artist_jobs(cur, batch, artist_tracks, artist_track_hashes):
 
 
 def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
-    """{artist: gmm_params} for every artist that needs a (re)fit.
-
-    Two things made this the slowest step of a full rebuild, and neither was the
-    GMM itself: one embedding round trip PER ARTIST, and every artist fitted on a
-    single core. Embeddings are now fetched a batch of artists at a time, and the
-    fits - a BIC sweep of restarted EM runs, ~50 ms of pure Python each - fan out
-    across PROCESSES. Threads are useless here: the EM loop holds the GIL, and
-    measured on 300 artists they ran 3x SLOWER than serial while processes ran 6x
-    faster.
-
-    joblib's loky backend, NOT a forked pool: an index rebuild trains the IVF
-    cells (OpenMP) before it reaches the artists, and forking a process that has
-    already run OpenMP deadlocks its children - which is exactly what a fork pool
-    did here. loky starts its workers fresh, so there is no inherited OpenMP state
-    to hang on, and it holds them open across the batches.
-
-    The pool is shut down before returning. loky keeps its workers alive for
-    REUSE by default, and this runs inside an RQ job process that exits when the
-    job does: the workers outlive it, and their semaphores and memmap folders are
-    still there to be complained about at shutdown. Memmapping is off too - an
-    artist's embeddings are tens of KB, not worth a /tmp file each.
-    """
     workers = _gmm_worker_count(len(pending))
     logger.info(
         "Fitting %d artist GMMs across %d worker process(es)...", len(pending), workers
     )
     fitted = {}
-    runner = (
-        Parallel(n_jobs=workers, backend='loky', max_nbytes=None)
-        if workers > 1
-        else None
-    )
-    try:
+
+    def _fit_all(dispatch):
         for batch in _artist_batches(pending, artist_tracks):
             try:
                 jobs = _artist_jobs(cur, batch, artist_tracks, artist_track_hashes)
@@ -356,16 +348,20 @@ def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
                 continue
             if not jobs:
                 continue
-            if runner is None:
-                results = [_fit_artist_job(job) for job in jobs]
-            else:
-                results = runner(delayed(_fit_artist_job)(job) for job in jobs)
-            for artist_name, params in results:
+            for artist_name, params in dispatch(jobs):
                 if params is not None:
                     fitted[artist_name] = params
+
+    if workers <= 1:
+        _fit_all(lambda jobs: [_fit_artist_job(job) for job in jobs])
+        return fitted
+
+    try:
+        with Parallel(n_jobs=workers, backend='loky', max_nbytes=None) as runner:
+            _fit_all(lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs))
+            _release_gmm_pool_temp_folders()
     finally:
-        if runner is not None:
-            _shutdown_gmm_pool()
+        _shutdown_gmm_pool()
     return fitted
 
 
