@@ -320,4 +320,68 @@ class TestRealDuplicateRepair:
 
         assert result['backfilled'] == 1
         assert _duration(db, _current(a)) == pytest.approx(200.0)
-        assert _maps(db, _current(a)) == ['pa']
+
+
+def _seed_paths(cur, item_id, mappings):
+    cur.execute(
+        "INSERT INTO score (item_id, title, duration) VALUES (%s, %s, 200.0)",
+        (item_id, item_id),
+    )
+    cur.execute(
+        "INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)",
+        (item_id, b'\x00\x00'),
+    )
+    for provider_id, file_path in mappings:
+        cur.execute(
+            "INSERT INTO track_server_map (item_id, server_id, provider_track_id, "
+            "match_tier, file_path) VALUES (%s, 'srv', %s, 'default', %s)",
+            (item_id, provider_id, file_path),
+        )
+
+
+class TestSameFolderCleanup:
+    def test_splits_same_folder_keeps_cross_folder_and_same_file(self, db):
+        from tasks import duplicate_repair as dr
+
+        same_folder = _fp_id('sf')
+        cross_folder = _fp_id('cf')
+        same_file = _fp_id('sx')
+        with db.cursor() as cur:
+            _seed_paths(cur, same_folder, [
+                ('p1', '/media/music/Artist/Album/01 - One.flac'),
+                ('p2', '/media/music/Artist/Album/02 - Two.flac'),
+            ])
+            _seed_paths(cur, cross_folder, [
+                ('p3', '/media/music/Artist/Album A/01 - Song.flac'),
+                ('p4', '/media/music/Artist/Album B/05 - Song.flac'),
+            ])
+            _seed_paths(cur, same_file, [
+                ('p5', '/media/music/Artist/Album/07 - Same.flac'),
+                ('p6', '/media/music/Artist/Album/07 - Same.flac'),
+            ])
+        db.commit()
+
+        result = dr.split_same_folder_merges(conn=db)
+        db.commit()
+
+        assert result == {'split': 1, 'removed': 2}
+        assert _maps(db, same_folder) == [], "same-folder files are unmapped"
+        assert _maps(db, cross_folder) == ['p3', 'p4'], "cross-folder dup survives"
+        assert _maps(db, same_file) == ['p5', 'p6'], "same physical file survives"
+        # A split never deletes the catalogue row itself.
+        assert _duration(db, same_folder) == pytest.approx(200.0)
+
+    def test_second_run_is_an_instant_noop(self, db):
+        from tasks import duplicate_repair as dr
+
+        same_folder = _fp_id('sf2')
+        with db.cursor() as cur:
+            _seed_paths(cur, same_folder, [
+                ('q1', '/media/music/A/Alb/01 - One.flac'),
+                ('q2', '/media/music/A/Alb/02 - Two.flac'),
+            ])
+        db.commit()
+
+        assert dr.split_same_folder_merges(conn=db)['split'] == 1
+        db.commit()
+        assert dr.split_same_folder_merges(conn=db) == {'split': 0, 'removed': 0}

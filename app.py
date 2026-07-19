@@ -309,6 +309,20 @@ if not _is_worker:
                 _repair_exc,
             )
 
+        # Version-agnostic and marker-free: split any catalogue id that merged two
+        # distinct files sitting in the SAME folder (an album never holds one
+        # recording twice, so they are different songs). One indexed GROUP BY that
+        # returns only the conflicts, so it is an instant no-op once clean - the
+        # conflict itself is the "already done" signal, no scheme bump, no table.
+        try:
+            from tasks.duplicate_repair import split_same_folder_merges
+            split_same_folder_merges()
+        except Exception as _folder_exc:
+            app.logger.warning(
+                "Startup same-folder cleanup failed (will retry next boot): %s",
+                _folder_exc,
+            )
+
         # Finalize JWT_SECRET - must happen after DB init so the value can be
         # persisted and shared across all gunicorn workers.
         _jwt_secret = resolve_jwt_secret(setup_manager)

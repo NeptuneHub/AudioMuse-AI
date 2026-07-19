@@ -75,6 +75,7 @@ _NO_SERVER_DURATION = 0.0
 # replica runs this check on a multi-replica boot instead of every replica
 # pulling each server's catalogue at once.
 _REPAIR_ADVISORY_LOCK = 726354823
+_SAME_FOLDER_ADVISORY_LOCK = 726354824
 
 
 def _empty_totals():
@@ -208,11 +209,11 @@ def _rollback(db):
         logger.debug("Rollback failed", exc_info=True)
 
 
-def _release(cur, db, acquired, own_conn):
+def _release(cur, db, acquired, own_conn, lock=_REPAIR_ADVISORY_LOCK):
     if cur is not None:
         if acquired:
             try:
-                cur.execute("SELECT pg_advisory_unlock(%s)", (_REPAIR_ADVISORY_LOCK,))
+                cur.execute("SELECT pg_advisory_unlock(%s)", (lock,))
                 if own_conn:
                     db.commit()
             except Exception:
@@ -457,3 +458,56 @@ def repair_duplicate_track_maps(conn=None, prefetched_durations=None):
         return _run_migration(db, cur, prefetched_durations)
     finally:
         _release(cur, db, acquired, own_conn)
+
+
+def _same_folder_conflicts(cur):
+    cur.execute(
+        "SELECT server_id, item_id FROM track_server_map "
+        "WHERE file_path IS NOT NULL "
+        "GROUP BY server_id, item_id, regexp_replace(file_path, '/[^/]+$', '') "
+        "HAVING count(DISTINCT file_path) > 1"
+    )
+    by_server = {}
+    for server_id, item_id in cur.fetchall():
+        by_server.setdefault(str(server_id), set()).add(str(item_id))
+    return {server_id: list(ids) for server_id, ids in by_server.items()}
+
+
+def split_same_folder_merges(conn=None):
+    own_conn = conn is None
+    db = conn or connect_raw()
+    acquired = False
+    cur = None
+    try:
+        _force_no_autocommit(db)
+        cur = db.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_SAME_FOLDER_ADVISORY_LOCK,))
+        acquired = bool(cur.fetchone()[0])
+        if not acquired:
+            return {'skipped': 'locked'}
+        by_server = _same_folder_conflicts(cur)
+        if not by_server:
+            return {'split': 0, 'removed': 0}
+        split = 0
+        removed = 0
+        for server_id, item_ids in by_server.items():
+            removed += _unmap_false_groups(cur, server_id, item_ids)
+            split += len(item_ids)
+            cur.execute(
+                "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
+                (server_id,),
+            )
+        db.commit()
+        logger.info(
+            "Same-folder cleanup: split %d merged group(s) that held two distinct "
+            "files from one folder (%d mapping(s) unmapped; each re-analyzes under "
+            "its own id).",
+            split, removed,
+        )
+        return {'split': split, 'removed': removed}
+    except Exception:
+        _rollback(db)
+        logger.exception("Same-folder cleanup failed; it retries on the next start")
+        return {'error': 'failed'}
+    finally:
+        _release(cur, db, acquired, own_conn, _SAME_FOLDER_ADVISORY_LOCK)
