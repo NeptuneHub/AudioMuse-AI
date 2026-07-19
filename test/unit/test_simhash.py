@@ -284,6 +284,85 @@ class TestCatalogResolver:
         assert resolver.resolve(np.zeros(simhash.SIGNATURE_BITS)) == ('new', None)
 
 
+class TestFolderRule:
+    def test_folder_key_strips_mount_and_filename(self):
+        assert simhash.folder_key(
+            '/media/music/Artist/Album/01 - Song.flac'
+        ) == 'artist/album'
+        assert simhash.folder_key(
+            '/mnt/music/Artist/Album/02 - Other.flac'
+        ) == 'artist/album'
+
+    def test_same_folder_distinct_files_conflict(self):
+        assert simhash.same_folder_conflict(
+            '/media/music/A/Alb/01 - One.flac',
+            '/media/music/A/Alb/02 - Two.flac',
+        ) is True
+
+    def test_same_file_is_not_a_conflict(self):
+        path = '/media/music/A/Alb/01 - One.flac'
+        assert simhash.same_folder_conflict(path, path) is False
+
+    def test_different_folders_do_not_conflict(self):
+        assert simhash.same_folder_conflict(
+            '/media/music/A/Album A/01 - Song.flac',
+            '/media/music/A/Album B/05 - Song.flac',
+        ) is False
+
+    def test_unknown_path_never_conflicts(self):
+        assert simhash.same_folder_conflict(None, '/media/music/A/Alb/x.flac') is False
+
+    def test_group_conflict_detects_two_files_in_one_folder(self):
+        assert simhash.folder_conflict_in_group([
+            '/media/music/A/Alb/01 - x.flac',
+            '/media/music/A/Alb/02 - y.flac',
+        ]) is True
+
+    def test_group_across_folders_has_no_conflict(self):
+        assert simhash.folder_conflict_in_group([
+            '/media/music/A/Alb1/01 - x.flac',
+            '/media/music/A/Alb2/01 - x.flac',
+        ]) is False
+
+    def test_same_audio_same_duration_same_folder_mints_new_id(self):
+        emb = _embedding(21)
+        resolver = simhash.CatalogResolver()
+        _kind, first = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb/01 - One.flac'
+        )
+        kind, second = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb/02 - Two.flac'
+        )
+        assert kind == 'new'
+        assert second != first
+
+    def test_same_audio_same_duration_different_folder_merges(self):
+        emb = _embedding(21)
+        resolver = simhash.CatalogResolver()
+        _kind, first = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb1/01 - One.flac'
+        )
+        kind, second = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb2/01 - One.flac'
+        )
+        assert (kind, second) == ('existing', first)
+
+    def test_folder_veto_uses_the_path_fetcher_for_persisted_rows(self):
+        emb = _embedding(22)
+        cid = simhash.canonical_id_str(simhash.embedding_signature(emb))
+        resolver = simhash.CatalogResolver(
+            embedding_fetcher=lambda _id: emb.tobytes(),
+            duration_fetcher=lambda _id: 200.0,
+            path_fetcher=lambda _id: ['/media/music/A/Alb/01 - One.flac'],
+        )
+        resolver.register(cid)
+        kind, resolved = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb/02 - Two.flac'
+        )
+        assert kind == 'new'
+        assert resolved != cid
+
+
 class TestBatchResolveMatchesStreaming:
     """The whole-catalogue resolver must decide identity exactly like the
     streaming one - it rewrites every id in the catalogue, so "faster" is only

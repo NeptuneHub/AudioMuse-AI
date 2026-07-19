@@ -116,7 +116,8 @@ def _groups_needing_check(cur):
     """
     where, params = _old_scheme_where('s')
     cur.execute(
-        "SELECT tsm.server_id, s.item_id, array_agg(tsm.provider_track_id) "
+        "SELECT tsm.server_id, s.item_id, array_agg(tsm.provider_track_id), "
+        "array_agg(tsm.file_path) "
         "FROM track_server_map tsm "
         "JOIN score s ON s.item_id = tsm.item_id "
         "WHERE " + where + " AND s.duration IS NULL "
@@ -124,10 +125,11 @@ def _groups_needing_check(cur):
         params,
     )
     groups = {}
-    for server_id, item_id, provider_ids in cur.fetchall():
-        groups.setdefault(str(server_id), {})[str(item_id)] = [
-            str(provider_id) for provider_id in provider_ids
-        ]
+    for server_id, item_id, provider_ids, file_paths in cur.fetchall():
+        groups.setdefault(str(server_id), {})[str(item_id)] = (
+            [str(provider_id) for provider_id in provider_ids],
+            [path for path in file_paths if path],
+        )
     return groups
 
 
@@ -348,10 +350,13 @@ def _process_server(db, cur, server_id, groups, durations, totals, total_groups,
         return
     to_stamp = {}
     false_ids = []
-    for item_id, provider_ids in groups.items():
+    for item_id, (provider_ids, file_paths) in groups.items():
         consensus = _group_duration(provider_ids, durations)
         is_duplicate = len(provider_ids) > 1
-        if consensus is not None:
+        if is_duplicate and simhash.folder_conflict_in_group(file_paths):
+            false_ids.append(item_id)
+            totals['false'] += 1
+        elif consensus is not None:
             # single file -> its length; real duplicate -> the agreed length
             to_stamp[item_id] = consensus
             totals['real' if is_duplicate else 'backfilled'] += 1

@@ -86,7 +86,16 @@ class FakeConn:
 def harness(monkeypatch):
     state = {'groups': {}, 'durations': {}, 'servers': {}, 'stamped': [],
              'mapped': {}, 'old_scheme': True, 'relabelled': 0}
-    monkeypatch.setattr(dr, '_groups_needing_check', lambda cur: state['groups'])
+    def _grouped(cur):
+        shaped = {}
+        for server_id, items in state['groups'].items():
+            shaped[server_id] = {
+                item_id: value if isinstance(value, tuple) else (value, [])
+                for item_id, value in items.items()
+            }
+        return shaped
+
+    monkeypatch.setattr(dr, '_groups_needing_check', _grouped)
     monkeypatch.setattr(dr, '_old_scheme_rows_exist', lambda cur: state['old_scheme'])
     from tasks import fingerprint_canonicalize as fc
     monkeypatch.setattr(
@@ -268,6 +277,48 @@ def test_missing_member_duration_makes_a_multi_file_group_false(harness):
     assert result['false'] == 1
     assert _deletes(harness['conn'])[0] == ('srv', ['fp_2aaa'])
     assert harness['stamped'] == [{}]
+
+
+def test_same_folder_distinct_files_are_split_even_when_durations_agree(harness):
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': (['p1', 'p2'], [
+        '/media/music/Artist/Album/01 - One.flac',
+        '/media/music/Artist/Album/02 - Two.flac',
+    ])}}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result['false'] == 1
+    assert _deletes(harness['conn'])[0] == ('srv', ['fp_2aaa'])
+
+
+def test_same_recording_across_folders_survives_the_folder_rule(harness):
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': (['p1', 'p2'], [
+        '/media/music/Artist/Album A/01 - Song.flac',
+        '/media/music/Artist/Album B/05 - Song.flac',
+    ])}}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result == _totals(checked=1, real=1)
+    assert _deletes(harness['conn']) == []
+
+
+def test_same_file_mapped_twice_is_not_a_folder_conflict(harness):
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': (['p1', 'p2'], [
+        '/media/music/Artist/Album/01 - Song.flac',
+        '/media/music/Artist/Album/01 - Song.flac',
+    ])}}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result == _totals(checked=1, real=1)
+    assert _deletes(harness['conn']) == []
 
 
 def test_unreachable_server_leaves_its_groups_for_next_start(harness):

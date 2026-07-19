@@ -283,7 +283,9 @@ def resolve_track_identity(fingerprint_index, embedding, item, source_server_id,
 
     provider_id = provider_item_id(item)
     refresh_fingerprint_index(fingerprint_index)
-    kind, resolved_id = fingerprint_index.resolve(embedding, duration=duration)
+    kind, resolved_id = fingerprint_index.resolve(
+        embedding, duration=duration, path=item.get('FilePath')
+    )
     if kind == 'new' and resolved_id is not None:
         kind, resolved_id = claim_new_canonical_id(
             fingerprint_index, resolved_id, embedding, duration=duration
@@ -563,6 +565,16 @@ def _fetch_row_duration(item_id):
     return float(row[0]) if row and row[0] is not None else None
 
 
+def _fetch_row_paths(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT file_path FROM track_server_map "
+            "WHERE item_id = %s AND file_path IS NOT NULL",
+            (str(item_id),),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 _FINGERPRINT_INDEX_TTL_SECONDS = 300.0
 
 
@@ -624,6 +636,7 @@ def load_fingerprint_index():
     resolver = CatalogResolver(
         embedding_fetcher=_fetch_embedding_blob,
         duration_fetcher=_fetch_row_duration,
+        path_fetcher=_fetch_row_paths,
     )
     with get_db() as conn, conn.cursor() as cur:
         cur.execute("SELECT now()")

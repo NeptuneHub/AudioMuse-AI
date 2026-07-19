@@ -279,6 +279,32 @@ def _confirm_candidates(cur, ids, left, right, duration_of):
     return np.concatenate(kept_left), np.concatenate(kept_right)
 
 
+def _reject_same_folder_pairs(cur, ids, left, right):
+    if left.size == 0:
+        return left, right
+    involved = list({ids[int(row)] for row in np.concatenate((left, right))})
+    path_of = {}
+    for begin in range(0, len(involved), _CHUNK_ROWS):
+        chunk = involved[begin:begin + _CHUNK_ROWS]
+        cur.execute(
+            "SELECT item_id, file_path FROM score "
+            "WHERE file_path IS NOT NULL AND item_id = ANY(%s)",
+            (chunk,),
+        )
+        for item_id, file_path in cur.fetchall():
+            path_of[str(item_id)] = file_path
+    keep = np.array(
+        [
+            not simhash.same_folder_conflict(
+                path_of.get(ids[int(left_row)]), path_of.get(ids[int(right_row)])
+            )
+            for left_row, right_row in zip(left, right)
+        ],
+        dtype=bool,
+    )
+    return left[keep], right[keep]
+
+
 def _build_mapping(cur, source_id):
     """{legacy_id: canonical_id} to relabel plus {legacy_id: existing_id} to merge.
 
@@ -391,6 +417,7 @@ def _build_mapping(cur, source_id):
             cur, ids, np.concatenate((left, right)), provider_durations, source_id
         )
     left, right = _confirm_candidates(cur, ids, left, right, duration_of)
+    left, right = _reject_same_folder_pairs(cur, ids, left, right)
     # A canonical row may only ever be a merge TARGET, never a child. merge_pairs
     # refuses a merge whose target has itself already merged, so a confirmed
     # canonical-vs-canonical pair (which the emit loop below discards anyway, since
