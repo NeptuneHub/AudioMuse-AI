@@ -16,9 +16,12 @@ Main Features:
 * Externally supplied album sessions are not cleaned up by the callee
 * analyze_album_task runs comprehensive cleanup and CLAP unload in finally
 * Database failure re-raises while still tearing down loaded models
+* Session recycle empties the old dict and frees old GPU sessions before allocating new ones
 """
 
+import gc
 import sys
+import weakref
 from unittest.mock import MagicMock, patch
 
 if "jwt" not in sys.modules:
@@ -37,8 +40,6 @@ class _FakeSession:
 
 class TestMusicnnSessionRecycleFreesGpuBeforeAlloc:
     def test_cleanup_musicnn_sessions_empties_dict_and_drops_every_reference(self):
-        import gc
-        import weakref
         from tasks.analysis.song import cleanup_musicnn_sessions
 
         sessions = {'embedding': _FakeSession(), 'prediction': _FakeSession()}
@@ -51,8 +52,6 @@ class TestMusicnnSessionRecycleFreesGpuBeforeAlloc:
         assert all(r() is None for r in refs)
 
     def test_ensure_musicnn_sessions_releases_old_gpu_sessions_before_loading_new(self):
-        import gc
-        import weakref
         from tasks.analysis import song
         from tasks.memory_utils import SessionRecycler
 

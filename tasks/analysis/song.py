@@ -248,8 +248,8 @@ def cleanup_musicnn_sessions(onnx_sessions, context=""):
         session = onnx_sessions.pop(name, None)
         try:
             cleanup_onnx_session(session, name)
-        except Exception as e:
-            logger.warning(f"Error cleaning up {name} session: {e}")
+        except Exception:
+            logger.exception(f"Error cleaning up {name} session")
         session = None
     gc.collect()
 
@@ -411,7 +411,7 @@ def _patches_for_track(audio, sr, name):
 
 
 def _sessions_for_track(onnx_sessions, model_paths):
-    if onnx_sessions is not None:
+    if onnx_sessions:
         return onnx_sessions['embedding'], onnx_sessions['prediction'], False
     provider_options = resolve_providers()
     embedding_sess = create_onnx_session(
@@ -439,7 +439,7 @@ def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessi
             'embedding',
             name,
         )
-        if new_embedding_sess is not embedding_sess and onnx_sessions is not None:
+        if new_embedding_sess is not embedding_sess and onnx_sessions:
             onnx_sessions['embedding'] = new_embedding_sess
         embedding_sess = new_embedding_sess
 
@@ -451,7 +451,7 @@ def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessi
             'prediction',
             name,
         )
-        if new_prediction_sess is not prediction_sess and onnx_sessions is not None:
+        if new_prediction_sess is not prediction_sess and onnx_sessions:
             onnx_sessions['prediction'] = new_prediction_sess
         prediction_sess = new_prediction_sess
 
