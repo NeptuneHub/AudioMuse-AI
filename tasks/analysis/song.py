@@ -244,11 +244,13 @@ def cleanup_musicnn_sessions(onnx_sessions, context=""):
         return
     suffix = f" ({context})" if context else ""
     logger.info(f"Cleaning up {len(onnx_sessions)} MusiCNN model sessions{suffix}")
-    for name, session in onnx_sessions.items():
+    for name in list(onnx_sessions.keys()):
+        session = onnx_sessions.pop(name, None)
         try:
             cleanup_onnx_session(session, name)
         except Exception as e:
             logger.warning(f"Error cleaning up {name} session: {e}")
+        session = None
     gc.collect()
 
 
