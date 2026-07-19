@@ -75,7 +75,7 @@ _BROWSE_FILTERS = ('all', 'unique', 'duplicates', 'orphan')
 _BROWSE_MIN_QUERY = 2
 
 
-@dashboard_bp.route('/browse')
+@dashboard_bp.route('/browse', methods=['GET'])
 def browse_page():
     try:
         servers = [
@@ -552,10 +552,12 @@ def _collect_fast_metrics(cur):
     _orphan_row = next(
         (s for s in metrics['music_servers'] if s.get('is_orphan')), None
     )
-    metrics['orphan_songs'] = (
-        _orphan_row['unique_songs'] if _orphan_row
-        else (0 if metrics['music_servers'] else None)
-    )
+    if _orphan_row:
+        metrics['orphan_songs'] = _orphan_row['unique_songs']
+    elif metrics['music_servers']:
+        metrics['orphan_songs'] = 0
+    else:
+        metrics['orphan_songs'] = None
     # Cleared on any query failure so the caller can refuse to publish a partial
     # snapshot. Popped before serialization.
     metrics['_complete'] = not any(

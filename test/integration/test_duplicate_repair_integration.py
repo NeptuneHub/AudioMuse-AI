@@ -58,7 +58,7 @@ _SCHEMA = [
     "CREATE TABLE track_server_map ("
     "item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE, "
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
-    "provider_track_id TEXT NOT NULL, match_tier TEXT, "
+    "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
     "PRIMARY KEY (server_id, provider_track_id))",
     "CREATE TABLE map_projection_data (index_name VARCHAR(255) PRIMARY KEY, "
     "projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
@@ -139,8 +139,8 @@ def _seed_group(cur, item_id, provider_ids, duration=None):
     for provider_id in provider_ids:
         cur.execute(
             "INSERT INTO track_server_map (item_id, server_id, provider_track_id, "
-            "match_tier) VALUES (%s, 'srv', %s, 'default')",
-            (item_id, provider_id),
+            "match_tier, file_path) VALUES (%s, 'srv', %s, 'default', %s)",
+            (item_id, provider_id, "/music/%s/song.flac" % provider_id),
         )
 
 

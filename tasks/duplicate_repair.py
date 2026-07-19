@@ -324,6 +324,27 @@ def _fetch_all_server_durations(db, groups_by_server, prefetched=None):
     return durations
 
 
+def _classify_group(item_id, provider_ids, file_paths, durations, totals, to_stamp, false_ids):
+    consensus = _group_duration(provider_ids, durations)
+    is_duplicate = len(provider_ids) > 1
+    if is_duplicate and simhash.folder_conflict_in_group(file_paths):
+        false_ids.append(item_id)
+        totals['false'] += 1
+    elif consensus is not None:
+        # single file -> its length; real duplicate -> the agreed length
+        to_stamp[item_id] = consensus
+        totals['real' if is_duplicate else 'backfilled'] += 1
+    elif is_duplicate:
+        # lengths disagree or are missing -> a false merge; unmap and re-analyze
+        false_ids.append(item_id)
+        totals['false'] += 1
+    else:
+        # single file the server has no length for: stamp the sentinel so the
+        # catalogue is not re-listed for it forever (never unmap a single file)
+        to_stamp[item_id] = _NO_SERVER_DURATION
+        totals['no_length'] += 1
+
+
 def _process_server(db, cur, server_id, groups, durations, totals, total_groups, step):
     if durations is None:
         # server gone or unreachable (already logged) - retried next start
@@ -351,24 +372,7 @@ def _process_server(db, cur, server_id, groups, durations, totals, total_groups,
     to_stamp = {}
     false_ids = []
     for item_id, (provider_ids, file_paths) in groups.items():
-        consensus = _group_duration(provider_ids, durations)
-        is_duplicate = len(provider_ids) > 1
-        if is_duplicate and simhash.folder_conflict_in_group(file_paths):
-            false_ids.append(item_id)
-            totals['false'] += 1
-        elif consensus is not None:
-            # single file -> its length; real duplicate -> the agreed length
-            to_stamp[item_id] = consensus
-            totals['real' if is_duplicate else 'backfilled'] += 1
-        elif is_duplicate:
-            # lengths disagree or are missing -> a false merge; unmap and re-analyze
-            false_ids.append(item_id)
-            totals['false'] += 1
-        else:
-            # single file the server has no length for: stamp the sentinel so the
-            # catalogue is not re-listed for it forever (never unmap a single file)
-            to_stamp[item_id] = _NO_SERVER_DURATION
-            totals['no_length'] += 1
+        _classify_group(item_id, provider_ids, file_paths, durations, totals, to_stamp, false_ids)
         totals['checked'] += 1
         if totals['checked'] % step == 0 or totals['checked'] == total_groups:
             _log_progress(totals, total_groups)
