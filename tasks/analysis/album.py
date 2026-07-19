@@ -84,10 +84,14 @@ class TrackNotAnalyzable(Exception):
     pass
 
 
+class TrackSourceUnavailable(Exception):
+    pass
+
+
 def _stage_download(item, track_name_full):
     path = download_track(TEMP_DIR, item)
     if not path:
-        raise RuntimeError(f"Failed to download required audio for {track_name_full}")
+        raise TrackSourceUnavailable(f"source audio unavailable for {track_name_full}")
     return path
 
 
@@ -371,6 +375,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             fingerprint_index = None
             pending_track_maps = {}
             failed_tracks = []
+            unavailable_tracks = []
             map_flush_errors = []
             last_revocation_check = float('-inf')
 
@@ -440,6 +445,13 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         ERR_TRACK_NOT_ANALYZABLE, str(e), logger=logger, level=logging.WARNING
                     )
                     tracks_not_analyzable_count += 1
+                except TrackSourceUnavailable:
+                    logger.warning(
+                        "Source audio unavailable for '%s' (deleted or moved on the "
+                        "server); skipping it and continuing with the album.",
+                        track_name_full,
+                    )
+                    unavailable_tracks.append(track_name_full)
                 except Exception as e:
                     logger.exception(
                         f"Track analysis failed for '{track_name_full}'; continuing with the next track."
@@ -459,10 +471,21 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
 
             _ah.raise_album_failures(failed_tracks, map_flush_errors, total_tracks_in_album)
 
+            album_had_reachable_tracks = bool(
+                tracks_analyzed_count or tracks_skipped_count or tracks_not_analyzable_count
+            )
+            if unavailable_tracks and not album_had_reachable_tracks:
+                raise RuntimeError(
+                    f"Every track in '{album_name}' was unavailable for download "
+                    f"({len(unavailable_tracks)}/{total_tracks_in_album}); the album "
+                    "source appears entirely missing from the server."
+                )
+
             summary = {
                 "tracks_analyzed": tracks_analyzed_count,
                 "tracks_skipped": tracks_skipped_count,
                 "tracks_not_analyzable": tracks_not_analyzable_count,
+                "tracks_unavailable": len(unavailable_tracks),
                 "total_tracks_in_album": total_tracks_in_album,
             }
             completion_message = f"Album '{album_name}' analysis complete."
@@ -470,6 +493,11 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 completion_message += (
                     f" {tracks_not_analyzable_count}/{total_tracks_in_album} track(s) carried no "
                     "analyzable audio and were skipped."
+                )
+            if unavailable_tracks:
+                completion_message += (
+                    f" {len(unavailable_tracks)}/{total_tracks_in_album} track(s) were "
+                    "unavailable on the server and were skipped."
                 )
             log_and_update_album_task(
                 completion_message,
