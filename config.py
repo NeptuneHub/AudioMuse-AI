@@ -182,6 +182,11 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # corrupt the value on reload (cast_value can't reverse str(ndarray)).
     'LYRICS_INSTRUMENTAL_EMBEDDING',
     'LYRICS_INSTRUMENTAL_AXIS_FILL',
+    # Catalogue-identity correctness constant, NOT a user preference: it must
+    # always track the code default so a tightened rule reaches every install.
+    # Excluded so it is never written to app_config, never overrides from the DB,
+    # and any stale row from an older version is pruned on the next boot.
+    'DURATION_TOLERANCE_SECONDS',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
