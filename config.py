@@ -185,7 +185,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.0.2"
+APP_VERSION = "v3.0.3"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -847,8 +847,9 @@ DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS = float(os.getenv("DUPLICATE_DISTANCE
 DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN", "0.15"))
 DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOKBACK", "1"))
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
-# recording for catalogue identity. Same rule AcoustID uses (7s). Unknown duration = not the same.
-DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "7.0"))
+# recording for catalogue identity. Tightened to 1s: two songs that merely sound alike but
+# differ in length by more than this are kept separate. Unknown duration = not the same.
+DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "1.0"))
 # Version of the fp_<n> content-id scheme. New ids are minted as fp_<this>, and the startup
 # migration relabels every older-version fp_ id up to it exactly once (fp_2 -> fp_3 added track
 # duration). To force a one-time catalogue re-migration in the future, bump ONLY this number.

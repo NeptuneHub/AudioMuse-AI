@@ -143,13 +143,15 @@ class TestSignatureIndex:
 
 class TestDurationsCompatible:
     def test_within_tolerance_is_compatible(self):
+        tol = simhash.DURATION_TOLERANCE_SECONDS
         assert simhash.durations_compatible(200.0, 200.0)
-        assert simhash.durations_compatible(200.0, 207.0)
-        assert simhash.durations_compatible(207.0, 200.0)
+        assert simhash.durations_compatible(200.0, 200.0 + tol)   # exactly at the tolerance
+        assert simhash.durations_compatible(200.0 + tol, 200.0)
 
     def test_beyond_tolerance_is_not_compatible(self):
-        assert not simhash.durations_compatible(200.0, 207.1)
-        assert not simhash.durations_compatible(200.0, 210.0)
+        tol = simhash.DURATION_TOLERANCE_SECONDS
+        assert not simhash.durations_compatible(200.0, 200.0 + tol + 0.1)
+        assert not simhash.durations_compatible(200.0, 200.0 + tol + 3.0)
 
     def test_unknown_or_invalid_duration_never_compatible(self):
         assert not simhash.durations_compatible(None, 200.0)
@@ -168,7 +170,9 @@ class TestCatalogResolver:
         kind, first = resolver.resolve(emb, duration=200.0)
         assert kind == 'new' and first.startswith(simhash.CURRENT_ID_HEAD)
         reencoded = emb + np.float32(1e-4) * _embedding(14)
-        kind2, second = resolver.resolve(reencoded, duration=201.5)
+        # A re-encode within the length tolerance is the same recording.
+        kind2, second = resolver.resolve(
+            reencoded, duration=200.0 + simhash.DURATION_TOLERANCE_SECONDS)
         assert (kind2, second) == ('existing', first)
 
     def test_same_audio_unknown_duration_mints_new_id(self):

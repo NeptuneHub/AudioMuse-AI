@@ -242,10 +242,12 @@ class TestRealCanonicalization:
     ):
         from tasks import fingerprint_canonicalize as fc
 
+        # jf-2 sits within the length tolerance of jf-1, whatever the tolerance is.
+        tol = fc.config.DURATION_TOLERANCE_SECONDS
         monkeypatch.setattr(
             fc,
             '_fetch_provider_durations',
-            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 201.5, 'jf-3': 300.0},
+            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 200.0 + tol, 'jf-3': 300.0},
         )
         same = _distinct_embedding(7)
         tracks = [

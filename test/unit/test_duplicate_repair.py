@@ -219,9 +219,11 @@ def test_single_file_with_no_server_length_gets_the_sentinel(harness):
 
 
 def test_real_duplicates_are_kept_and_stamped(harness):
+    tol = dr.config.DURATION_TOLERANCE_SECONDS
     harness['servers']['srv'] = _server_row('srv')
     harness['groups'] = {'srv': {'fp_2aaa': ['p1', 'p2', 'p3']}}
-    harness['durations']['srv'] = {'p1': 200.0, 'p2': 201.0, 'p3': 206.9}
+    # Spans exactly the tolerance, so it stays a REAL group whatever the tolerance is.
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0, 'p3': 200.0 + tol}
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
 
