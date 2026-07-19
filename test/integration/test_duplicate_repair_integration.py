@@ -96,7 +96,7 @@ def pg_dsn():
 def _fp_id(suffix):
     from tasks.simhash import CANONICAL_ID_LEN
 
-    body = suffix * CANONICAL_ID_LEN
+    body = (suffix.encode('utf-8').hex() or '0') * CANONICAL_ID_LEN
     return ('fp_2' + body)[:CANONICAL_ID_LEN]
 
 
