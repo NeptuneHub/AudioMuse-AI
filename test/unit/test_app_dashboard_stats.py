@@ -147,6 +147,68 @@ class TestSnapshotContract:
         assert 'FROM score' not in src
 
 
+class TestOrphanAndOverlapRows:
+    @staticmethod
+    def _cursor(server_rows, distinct_mapped, orphan_count):
+        # Two fetchone() calls in order: COUNT(DISTINCT item_id) then the orphan
+        # anti-join count.
+        cur = MagicMock()
+        cur.fetchall.return_value = server_rows
+        cur.fetchone.side_effect = [(distinct_mapped,), (orphan_count,)]
+        return cur
+
+    # Jellyfin 181366 uniques + Plex 2166 = 183532; 183380 distinct mapped means
+    # 152 songs sit on both servers; 2755 more are bound to no server.
+    _TWO_SERVERS = [
+        ('s1', 'Jellyfin', 'jellyfin', True, 183732, 181366),
+        ('s2', 'Plex', 'plex', False, 2212, 2166),
+    ]
+
+    def test_unbound_songs_become_a_trailing_orphan_row(self, monkeypatch):
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        cur = self._cursor(self._TWO_SERVERS, 183380, 2755)
+
+        servers = dash._collect_music_server_metrics(cur)
+
+        orphan = servers[-1]
+        assert orphan['name'] == 'Orphan'
+        assert orphan['is_orphan'] is True
+        assert orphan['unique_songs'] == 2755
+        # An orphan is bound to no server, so it has no duplicate FILES.
+        assert orphan['duplicate_copies'] == 0
+
+    def test_shared_songs_become_a_negative_overlap_row(self, monkeypatch):
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        cur = self._cursor(self._TWO_SERVERS, 183380, 2755)
+
+        servers = dash._collect_music_server_metrics(cur)
+
+        overlap = [s for s in servers if s.get('is_overlap')]
+        assert len(overlap) == 1
+        assert overlap[0]['name'] == 'On multiple servers'
+        assert overlap[0]['unique_songs'] == -152
+
+    def test_unique_column_sums_to_the_catalogue_total(self, monkeypatch):
+        # 181366 + 2166 - 152 (overlap) + 2755 (orphan) == 186135.
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        cur = self._cursor(self._TWO_SERVERS, 183380, 2755)
+
+        servers = dash._collect_music_server_metrics(cur)
+
+        assert sum(s['unique_songs'] for s in servers) == 186135
+
+    def test_no_synthetic_rows_when_disjoint_and_fully_bound(self, monkeypatch):
+        # distinct_mapped == sum of per-server uniques (no overlap) and == total
+        # (no orphan): neither adjustment row appears.
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        cur = self._cursor([('s1', 'Jellyfin', 'jellyfin', True, 100, 100)], 100, 0)
+
+        servers = dash._collect_music_server_metrics(cur)
+
+        assert [s['name'] for s in servers] == ['Jellyfin']
+        assert all(not s.get('is_orphan') and not s.get('is_overlap') for s in servers)
+
+
 class TestTemplateCannotRoundUpToOneHundred:
     """The false 100% lived in the template, so guard it there. There is no JS
     runner in this repo, so this asserts the constructs that caused it are gone

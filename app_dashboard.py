@@ -196,6 +196,48 @@ def _collect_music_server_metrics(cur):
                     'resolved': rows_total,
                 }
             )
+        # On multiple servers: a song present on N servers is counted once in each
+        # server row above, so summing those rows over-counts it by N-1. This is a
+        # NEGATIVE adjustment removing that excess, measured against the distinct
+        # mapped ids so it is exact for any N (a song on 3 servers needs -2).
+        cur.execute("SELECT COUNT(DISTINCT item_id) FROM track_server_map")
+        mapped_row = cur.fetchone()
+        distinct_mapped = int(mapped_row[0] or 0) if mapped_row else 0
+        overlap_excess = sum(s['unique_songs'] for s in servers) - distinct_mapped
+        if overlap_excess > 0:
+            servers.append(
+                {
+                    'name': 'On multiple servers',
+                    'server_type': None,
+                    'is_default': False,
+                    'unique_songs': -overlap_excess,
+                    'duplicate_copies': 0,
+                    'resolved': 0,
+                    'is_overlap': True,
+                }
+            )
+        # Orphans: analyzed songs bound to NO server (score is append-only, so a
+        # removed server / cleaned file / gone track leaves its score row behind).
+        # With the overlap adjustment above, each song is counted exactly once, so
+        # the "Unique in catalogue" column now sums to the catalogue total.
+        cur.execute(
+            "SELECT COUNT(*) FROM score s WHERE NOT EXISTS "
+            "(SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id)"
+        )
+        orphan_row = cur.fetchone()
+        orphan_count = int(orphan_row[0] or 0) if orphan_row else 0
+        if orphan_count > 0:
+            servers.append(
+                {
+                    'name': 'Orphan',
+                    'server_type': None,
+                    'is_default': False,
+                    'unique_songs': orphan_count,
+                    'duplicate_copies': 0,
+                    'resolved': orphan_count,
+                    'is_orphan': True,
+                }
+            )
     except Exception as e:
         logger.debug(f"dashboard: music server metrics failed: {e}")
         _safe_rollback(cur)

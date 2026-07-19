@@ -118,6 +118,9 @@
     }
     .dash-table .col-narrow { width: 70px; }
     .dash-table .col-medium { width: 110px; }
+    /* The Orphan and "on multiple servers" rows are accounting lines, not real
+       servers: mute them so they read as adjustments under the configured ones. */
+    .dash-note-row td { color: var(--text-muted); font-style: italic; }
     /* Music Server Status: shrink a little, then scroll the wrapper horizontally
        rather than squish every column. The min-width keeps ~170px for the
        Server name (the one flexible column) after the fixed columns take
@@ -223,7 +226,7 @@
         <h2>Music Server Status
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. A song present on two servers is ONE song in the catalogue, so these per-server counts add up to more than the catalogue total - never sum them. "Unique in catalogue" counts THAT server's distinct analyzed songs; "Duplicate files" are extra copies of a song already counted (same audio, several files).</span>
+                <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. "Unique in catalogue" counts THAT server's distinct analyzed songs; "Duplicate files" are extra copies of a song already counted (same audio, several files). The "On multiple servers" row is a NEGATIVE adjustment: a song on more than one server is counted in each server row above, so it is subtracted once to avoid double-counting. The "Orphan" row counts songs bound to NO server (a removed server or deleted file leaves the analysis in the catalogue). With both, the "Unique in catalogue" column sums exactly to the total unique songs.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
@@ -535,11 +538,11 @@
         const totalSongs = c.total_songs || 0;
         const totalArtists = c.distinct_artists || 0;
 
-        // Just the number on each card: no subtitle, no subset line.
+        // "(unique)" in the title: the counts exclude duplicate files.
         const cards = [
-            { title: 'Songs', value: totalSongs.toLocaleString() },
-            { title: 'Artists', value: totalArtists.toLocaleString() },
-            { title: 'Albums', value: (c.distinct_albums || 0).toLocaleString() },
+            { title: 'Songs (unique)', value: totalSongs.toLocaleString() },
+            { title: 'Artists (unique)', value: totalArtists.toLocaleString() },
+            { title: 'Albums (unique)', value: (c.distinct_albums || 0).toLocaleString() },
         ];
 
         cards.forEach(card => {
@@ -720,7 +723,12 @@
     function renderMusicServers(servers) {
         const section = document.getElementById('music-server-status-section');
         if (!section) return;
-        if (!Array.isArray(servers) || servers.length < 2) {
+        // The Orphan and "on multiple servers" rows are synthetic tallies, not
+        // configured servers: the section still only shows when more than one real
+        // server exists.
+        const realServers = Array.isArray(servers)
+            ? servers.filter(s => !s.is_orphan && !s.is_overlap) : [];
+        if (realServers.length < 2) {
             section.style.display = 'none';
             return;
         }
@@ -729,6 +737,7 @@
         tbody.innerHTML = '';
         servers.forEach(s => {
             const tr = document.createElement('tr');
+            if (s.is_orphan || s.is_overlap) tr.className = 'dash-note-row';
             const duplicateCopies = s.duplicate_copies || 0;
             const dupTd = document.createElement('td');
             dupTd.textContent = duplicateCopies ? duplicateCopies.toLocaleString() : '-';
