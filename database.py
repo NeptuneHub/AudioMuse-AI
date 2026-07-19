@@ -1121,6 +1121,15 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)"
             )
+            # The Browse "Albums" view groups/orders by the album identity
+            # COALESCE(NULLIF(album_artist,''), author) (album_artist, falling back
+            # to author), which the raw (album_artist, album) index above cannot
+            # serve. This functional index lets that list stream in order and stop
+            # at the page's LIMIT instead of seq-scanning + sorting the whole score.
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_album_browse ON score "
+                "((COALESCE(NULLIF(album_artist, ''), author)), album)"
+            )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "

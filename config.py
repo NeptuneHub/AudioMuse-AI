@@ -855,6 +855,14 @@ DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "1.0"
 # duration). To force a one-time catalogue re-migration in the future, bump ONLY this number.
 CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "3"))
 
+# --- Dashboard "Browse" listing view ---
+# Rows per page in the Song/Artist/Album browse view opened from the dashboard.
+DASHBOARD_BROWSE_PAGE_SIZE = int(os.environ.get("DASHBOARD_BROWSE_PAGE_SIZE", "100"))
+# The deepest OFFSET a browse query may reach. Guards a 1M-row catalogue from a
+# pathological deep-page scan: past this the API stops paging and asks the user to
+# refine with search/filters (every query is always LIMIT-bounded regardless).
+DASHBOARD_BROWSE_MAX_OFFSET = int(os.environ.get("DASHBOARD_BROWSE_MAX_OFFSET", "50000"))
+
 # --- Mood Similarity Filtering ---
 # Threshold for mood similarity filtering. Lower values = stricter filtering (more similar moods required).
 # Range: 0.0 (identical moods only) to 1.0 (any mood difference allowed)
