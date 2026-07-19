@@ -162,12 +162,14 @@ def _collect_task_metrics(cur):
     return recent
 
 
-def _collect_music_server_metrics(cur):
+def _collect_music_server_metrics(cur, total_songs=None):
     # Per-configured-server view of the ANALYZED catalogue: how many analyzed
     # songs are mapped to each server, split into distinct songs and the extra
-    # duplicate files that collapse onto a song already counted. Entirely local
-    # (a single GROUP BY over track_server_map); it never walks a media server
-    # and never scans score. Empty list when the registry table does not exist.
+    # duplicate files that collapse onto a song already counted. Reads only
+    # track_server_map (the per-server GROUP BY plus one overall COUNT(DISTINCT)
+    # for the overlap adjustment) and derives the orphan count by arithmetic from
+    # the caller's already-counted total_songs, so it never scans score itself.
+    # Empty list when the registry table does not exist.
     servers = []
     try:
         if not _table_exists(cur, 'music_servers'):
@@ -194,6 +196,48 @@ def _collect_music_server_metrics(cur):
                     'unique_songs': unique_songs,
                     'duplicate_copies': duplicate_copies,
                     'resolved': rows_total,
+                }
+            )
+        # On multiple servers: a song present on N servers is counted once in each
+        # server row above, so summing those rows over-counts it by N-1. This is a
+        # NEGATIVE adjustment removing that excess, measured against the distinct
+        # mapped ids so it is exact for any N (a song on 3 servers needs -2).
+        cur.execute("SELECT COUNT(DISTINCT item_id) FROM track_server_map")
+        mapped_row = cur.fetchone()
+        distinct_mapped = int(mapped_row[0] or 0) if mapped_row else 0
+        overlap_excess = sum(s['unique_songs'] for s in servers) - distinct_mapped
+        if overlap_excess > 0:
+            servers.append(
+                {
+                    'name': 'On multiple servers',
+                    'server_type': None,
+                    'is_default': False,
+                    'unique_songs': -overlap_excess,
+                    'duplicate_copies': 0,
+                    'resolved': 0,
+                    'is_overlap': True,
+                }
+            )
+        # Orphans: analyzed songs bound to NO server (score is append-only, so a
+        # removed server / cleaned file / gone track leaves its score row behind).
+        # Every mapped id references a score row, so orphans = total songs minus the
+        # distinct mapped ones - pure arithmetic from the caller's count, no anti-join
+        # scan of score on this 60s path. With the overlap adjustment above, each song
+        # is counted once, so the "Unique in catalogue" column sums to the total.
+        orphan_count = (
+            max(0, int(total_songs) - distinct_mapped)
+            if total_songs is not None else 0
+        )
+        if orphan_count > 0:
+            servers.append(
+                {
+                    'name': 'Orphan',
+                    'server_type': None,
+                    'is_default': False,
+                    'unique_songs': orphan_count,
+                    'duplicate_copies': 0,
+                    'resolved': orphan_count,
+                    'is_orphan': True,
                 }
             )
     except Exception as e:
@@ -239,7 +283,9 @@ def _collect_fast_metrics(cur):
         # after analysis, so its percentage can really be < 100.
         'clap_indexed': _counted_or_none(cur, "SELECT COUNT(*) FROM clap_embedding"),
     }
-    metrics['music_servers'] = _collect_music_server_metrics(cur)
+    metrics['music_servers'] = _collect_music_server_metrics(
+        cur, total_songs=metrics['total_songs']
+    )
     # Cleared on any query failure so the caller can refuse to publish a partial
     # snapshot. Popped before serialization.
     metrics['_complete'] = not any(

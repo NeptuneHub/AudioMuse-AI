@@ -1741,6 +1741,9 @@ class TestSweepAlignment:
             ('s2', 'PLEX', 'plex', False, 46, 46),
             ('s3', 'Fresh', 'navidrome', False, 0, 0),
         ]
+        # COUNT(DISTINCT item_id) over track_server_map == the sum of per-server
+        # uniques here, so no "on multiple servers" adjustment row is added.
+        cur.fetchone.return_value = (188046,)
         rows = dash._collect_music_server_metrics(cur)
         # resolved is just the mapped-row count; the 32-file gap between rows_total
         # and unique_songs is duplicate copies.
@@ -2123,6 +2126,8 @@ class TestDashboardHasNoLegacyScoreScan:
         monkeypatch.setattr(dash, '_counted_or_none', _boom)
         cur = MagicMock()
         cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, 40, 40)]
+        # distinct mapped == the single server's uniques: no overlap row.
+        cur.fetchone.return_value = (40,)
 
         rows = dash._collect_music_server_metrics(cur)
 
