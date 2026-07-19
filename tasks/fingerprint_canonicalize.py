@@ -699,8 +699,11 @@ def relabel_scheme_to_current(cur, only_with_duration=True):
     """Bump every older-version content id (fp_2) up to the current scheme (fp_3).
 
     A pure key rewrite - the signature body is unchanged, only the version digit -
-    so there is no re-hashing, no re-clustering and no id collision (fp_3 can never
-    equal an fp_2). Reuses the same drop-FK / single UPDATE / repoint-index path the
+    so there is no re-hashing and no re-clustering. A bumped fp_2 can still land on
+    an fp_3 that already exists (the duration veto keeps two same-signature rows
+    apart), so each target is minted through mint_canonical_id and steps to the next
+    free id instead of colliding on score_pkey. Reuses the same drop-FK / single
+    UPDATE / repoint-index path the
     provider relabel uses. ``only_with_duration`` bumps rows that already carry a
     length PLUS orphaned old-scheme rows no server maps: a server the backfill merely
     skipped keeps its old id and retries next boot, but an orphan (no track_server_map
@@ -721,7 +724,14 @@ def relabel_scheme_to_current(cur, only_with_duration=True):
     old_ids = [row[0] for row in cur.fetchall()]
     if not old_ids:
         return 0
-    mapping = {old: simhash.to_current_scheme_id(old) for old in old_ids}
+    cur.execute("SELECT item_id FROM score")
+    taken = {row[0] for row in cur.fetchall()}
+    taken.difference_update(old_ids)
+    mapping = {}
+    for old in old_ids:
+        new = simhash.mint_canonical_id(simhash.signature_from_canonical_id(old), taken)
+        taken.add(new)
+        mapping[old] = new
 
     fk_embedding = find_fk(cur, 'embedding', 'item_id') or 'embedding_item_id_fkey'
     fk_clap = find_fk(cur, 'clap_embedding', 'item_id') or 'clap_embedding_item_id_fkey'
