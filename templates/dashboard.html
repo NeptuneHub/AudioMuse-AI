@@ -220,7 +220,7 @@
         <div class="dash-grid" id="key-numbers"></div>
     </section>
 
-    <!-- Music Server Status (only when more than one server is configured) -->
+    <!-- Music Server Status (shown when at least one server is configured) -->
     <section id="music-server-status-section" class="scope-chip-host" style="display:none;">
         <span class="scope-chip scope-chip-corner scope-server">Per server</span>
         <h2>Music Server Status
@@ -724,11 +724,12 @@
         const section = document.getElementById('music-server-status-section');
         if (!section) return;
         // The Orphan and "on multiple servers" rows are synthetic tallies, not
-        // configured servers: the section still only shows when more than one real
-        // server exists.
+        // configured servers. The section shows for ANY configured server (even a
+        // single one) so its duplicate-files and orphan counts are always visible;
+        // it only hides when no server is configured at all.
         const realServers = Array.isArray(servers)
             ? servers.filter(s => !s.is_orphan && !s.is_overlap) : [];
-        if (realServers.length < 2) {
+        if (realServers.length < 1) {
             section.style.display = 'none';
             return;
         }
