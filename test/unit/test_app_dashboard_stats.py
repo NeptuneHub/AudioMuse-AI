@@ -63,7 +63,8 @@ class TestSnapshotCompleteness:
         # A transient DB error must not be published as a real 0. The old code
         # used a 0-on-failure count for clap, so one blip pinned "CLAP: 0 (0.0%)"
         # on screen until the next refresh.
-        monkeypatch.setattr(dash, '_collect_music_server_metrics', lambda cur: [])
+        monkeypatch.setattr(dash, '_collect_music_server_metrics',
+                            lambda cur, total_songs=None: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None:
                             None if 'clap_embedding' in sql else 10)
 
@@ -73,7 +74,8 @@ class TestSnapshotCompleteness:
         assert metrics['_complete'] is False
 
     def test_a_complete_fast_block_is_publishable(self, monkeypatch):
-        monkeypatch.setattr(dash, '_collect_music_server_metrics', lambda cur: [])
+        monkeypatch.setattr(dash, '_collect_music_server_metrics',
+                            lambda cur, total_songs=None: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
 
         metrics = dash._collect_fast_metrics(_cursor_with())
@@ -86,7 +88,8 @@ class TestCadenceSplit:
         # The distribution charts (Genres, Moods Coverage, Tempo) are the hourly
         # block - one needs a full-table scan - so NONE of them may ride in the
         # 60s fast block.
-        monkeypatch.setattr(dash, '_collect_music_server_metrics', lambda cur: [])
+        monkeypatch.setattr(dash, '_collect_music_server_metrics',
+                            lambda cur, total_songs=None: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
 
         metrics = dash._collect_fast_metrics(_cursor_with())
@@ -115,7 +118,8 @@ class TestSnapshotContract:
         # A song only enters `score` when it is analyzed, and its embedding row
         # is written in the same transaction, so musicnn/total is ~100% by
         # construction. Publishing it invited a permanent, meaningless 100%.
-        monkeypatch.setattr(dash, '_collect_music_server_metrics', lambda cur: [])
+        monkeypatch.setattr(dash, '_collect_music_server_metrics',
+                            lambda cur, total_songs=None: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
 
         metrics = dash._collect_fast_metrics(_cursor_with())
@@ -128,7 +132,8 @@ class TestSnapshotContract:
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
         monkeypatch.setattr(
             dash, '_collect_music_server_metrics',
-            lambda cur: [{'name': 'Jellyfin', 'unique_songs': 5, 'resolved': 5}],
+            lambda cur, total_songs=None: [
+                {'name': 'Jellyfin', 'unique_songs': 5, 'resolved': 5}],
         )
 
         metrics = dash._collect_fast_metrics(_cursor_with())
@@ -149,16 +154,16 @@ class TestSnapshotContract:
 
 class TestOrphanAndOverlapRows:
     @staticmethod
-    def _cursor(server_rows, distinct_mapped, orphan_count):
-        # Two fetchone() calls in order: COUNT(DISTINCT item_id) then the orphan
-        # anti-join count.
+    def _cursor(server_rows, distinct_mapped):
+        # One fetchone() call: COUNT(DISTINCT item_id) over track_server_map. The
+        # orphan count is arithmetic from the passed total_songs, not a query.
         cur = MagicMock()
         cur.fetchall.return_value = server_rows
-        cur.fetchone.side_effect = [(distinct_mapped,), (orphan_count,)]
+        cur.fetchone.return_value = (distinct_mapped,)
         return cur
 
     # Jellyfin 181366 uniques + Plex 2166 = 183532; 183380 distinct mapped means
-    # 152 songs sit on both servers; 2755 more are bound to no server.
+    # 152 songs sit on both servers; with 186135 total, 2755 are bound to no server.
     _TWO_SERVERS = [
         ('s1', 'Jellyfin', 'jellyfin', True, 183732, 181366),
         ('s2', 'Plex', 'plex', False, 2212, 2166),
@@ -166,9 +171,9 @@ class TestOrphanAndOverlapRows:
 
     def test_unbound_songs_become_a_trailing_orphan_row(self, monkeypatch):
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        cur = self._cursor(self._TWO_SERVERS, 183380, 2755)
+        cur = self._cursor(self._TWO_SERVERS, 183380)
 
-        servers = dash._collect_music_server_metrics(cur)
+        servers = dash._collect_music_server_metrics(cur, total_songs=186135)
 
         orphan = servers[-1]
         assert orphan['name'] == 'Orphan'
@@ -179,9 +184,9 @@ class TestOrphanAndOverlapRows:
 
     def test_shared_songs_become_a_negative_overlap_row(self, monkeypatch):
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        cur = self._cursor(self._TWO_SERVERS, 183380, 2755)
+        cur = self._cursor(self._TWO_SERVERS, 183380)
 
-        servers = dash._collect_music_server_metrics(cur)
+        servers = dash._collect_music_server_metrics(cur, total_songs=186135)
 
         overlap = [s for s in servers if s.get('is_overlap')]
         assert len(overlap) == 1
@@ -191,19 +196,41 @@ class TestOrphanAndOverlapRows:
     def test_unique_column_sums_to_the_catalogue_total(self, monkeypatch):
         # 181366 + 2166 - 152 (overlap) + 2755 (orphan) == 186135.
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        cur = self._cursor(self._TWO_SERVERS, 183380, 2755)
+        cur = self._cursor(self._TWO_SERVERS, 183380)
 
-        servers = dash._collect_music_server_metrics(cur)
+        servers = dash._collect_music_server_metrics(cur, total_songs=186135)
 
         assert sum(s['unique_songs'] for s in servers) == 186135
+
+    def test_orphan_derived_by_arithmetic_never_scans_score(self, monkeypatch):
+        # The orphan count is total_songs - distinct_mapped, so the ONLY query the
+        # helper runs past the per-server GROUP BY is the overlap COUNT(DISTINCT);
+        # it must never issue an anti-join / COUNT over score.
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        cur = self._cursor(self._TWO_SERVERS, 183380)
+
+        dash._collect_music_server_metrics(cur, total_songs=186135)
+
+        executed = " ".join(str(call.args[0]) for call in cur.execute.call_args_list)
+        assert "FROM score" not in executed
+
+    def test_orphan_row_skipped_when_total_songs_unavailable(self, monkeypatch):
+        # A failed total-songs count arrives as None; the helper must not crash or
+        # invent an orphan row (the snapshot is refused upstream anyway).
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        cur = self._cursor(self._TWO_SERVERS, 183380)
+
+        servers = dash._collect_music_server_metrics(cur, total_songs=None)
+
+        assert all(not s.get('is_orphan') for s in servers)
 
     def test_no_synthetic_rows_when_disjoint_and_fully_bound(self, monkeypatch):
         # distinct_mapped == sum of per-server uniques (no overlap) and == total
         # (no orphan): neither adjustment row appears.
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
-        cur = self._cursor([('s1', 'Jellyfin', 'jellyfin', True, 100, 100)], 100, 0)
+        cur = self._cursor([('s1', 'Jellyfin', 'jellyfin', True, 100, 100)], 100)
 
-        servers = dash._collect_music_server_metrics(cur)
+        servers = dash._collect_music_server_metrics(cur, total_songs=100)
 
         assert [s['name'] for s in servers] == ['Jellyfin']
         assert all(not s.get('is_orphan') and not s.get('is_overlap') for s in servers)
