@@ -31,6 +31,57 @@ import pytest
 import numpy as np
 
 
+class _FakeSession:
+    pass
+
+
+class TestMusicnnSessionRecycleFreesGpuBeforeAlloc:
+    def test_cleanup_musicnn_sessions_empties_dict_and_drops_every_reference(self):
+        import gc
+        import weakref
+        from tasks.analysis.song import cleanup_musicnn_sessions
+
+        sessions = {'embedding': _FakeSession(), 'prediction': _FakeSession()}
+        refs = [weakref.ref(s) for s in sessions.values()]
+
+        cleanup_musicnn_sessions(sessions, context="recycle")
+        gc.collect()
+
+        assert sessions == {}
+        assert all(r() is None for r in refs)
+
+    def test_ensure_musicnn_sessions_releases_old_gpu_sessions_before_loading_new(self):
+        import gc
+        import weakref
+        from tasks.analysis import song
+        from tasks.memory_utils import SessionRecycler
+
+        old_sessions = {'embedding': _FakeSession(), 'prediction': _FakeSession()}
+        old_ref = weakref.ref(old_sessions['embedding'])
+        observed = {}
+
+        def fake_load(model_paths):
+            gc.collect()
+            observed['old_alive_when_new_allocated'] = old_ref() is not None
+            return {'embedding': _FakeSession(), 'prediction': _FakeSession()}
+
+        recycler = SessionRecycler(recycle_interval=1)
+        recycler.increment()
+
+        with patch.object(song, 'load_musicnn_sessions', side_effect=fake_load), \
+                patch.object(song, 'comprehensive_memory_cleanup', return_value={}):
+            new_sessions = song.ensure_musicnn_sessions(
+                old_sessions,
+                {'embedding': 'e.onnx', 'prediction': 'p.onnx'},
+                recycler,
+                "Album",
+            )
+
+        assert observed['old_alive_when_new_allocated'] is False
+        assert new_sessions is not old_sessions
+        assert old_ref() is None
+
+
 class TestAnalyzeTrackMemoryCleanup:
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     @patch('tasks.analysis.song.librosa')
