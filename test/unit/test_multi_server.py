@@ -468,7 +468,7 @@ class TestFingerprintAsId:
         conn = MagicMock()
         assert registry.translate_ids(['a', 'b'], None, conn=conn) == {'a': 'a', 'b': 'b'}
 
-    def test_default_dropped_canonical_ids_log_warning(self, monkeypatch, caplog):
+    def test_default_dropped_canonical_ids_log_info(self, monkeypatch, caplog):
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
@@ -476,7 +476,7 @@ class TestFingerprintAsId:
         cursor.fetchall.return_value = []
         conn = MagicMock()
         conn.cursor.return_value = cursor
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             result = registry.translate_ids(['fp_deadbeef', 'legacy'], None, conn=conn)
         assert result == {'legacy': 'legacy'}
         assert 'no mapping on the default server' in caplog.text
