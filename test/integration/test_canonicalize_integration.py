@@ -63,6 +63,11 @@ _SCHEMA = [
     "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
     "PRIMARY KEY (server_id, provider_track_id))",
+    "CREATE TABLE chromaprint ("
+    "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
+    "provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "PRIMARY KEY (server_id, provider_track_id))",
     "CREATE TABLE map_projection_data (index_name VARCHAR(255) PRIMARY KEY, "
     "projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
     "embedding_dimension INTEGER NOT NULL)",
@@ -113,7 +118,7 @@ def _build(conn, tracks, embedding_ddl=_EMBEDDING_FK):
     startup migration has ever run."""
     with conn.cursor() as cur:
         cur.execute(
-            "DROP TABLE IF EXISTS track_server_map, music_servers, embedding, "
+            "DROP TABLE IF EXISTS chromaprint, track_server_map, music_servers, embedding, "
             "clap_embedding, lyrics_embedding, playlist, map_projection_data, "
             "ivf_dir, score CASCADE"
         )

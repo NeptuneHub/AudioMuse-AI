@@ -43,7 +43,8 @@ def _server(server_id, name, default=False):
 def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   reverse_by_server, db_track_ids, author_by_id=None,
                   prune_results=None, stored_counts=None, mark_refused=None,
-                  clean_catalogue=True, rebuild_calls=None):
+                  clean_catalogue=True, rebuild_calls=None,
+                  chromaprint_split_result=None):
     from tasks import cleaning
     from tasks import multiserver_sync
 
@@ -93,6 +94,13 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     fake_index = types.ModuleType('tasks.analysis.index')
     fake_index._run_all_index_builds = _fake_run_all_index_builds
     monkeypatch.setitem(sys.modules, 'tasks.analysis.index', fake_index)
+
+    # Chromaprint dedup (Path B) is invoked inline before the rebuild; stub it so the
+    # unit test controls the split count without a real fpcalc/DB round trip.
+    cp_result = chromaprint_split_result or {'split': 0, 'removed': 0}
+    fake_dup_repair = types.ModuleType('tasks.duplicate_repair')
+    fake_dup_repair.split_chromaprint_false_merges = lambda conn=None: cp_result
+    monkeypatch.setitem(sys.modules, 'tasks.duplicate_repair', fake_dup_repair)
 
     fake_app_helper = types.ModuleType('app_helper')
     fake_app_helper.redis_conn = object()
@@ -288,6 +296,20 @@ class TestCleaningOrphanHandling:
         )
         assert result['status'] == 'SUCCESS'
         assert len(rebuilds) == 1
+
+    def test_chromaprint_false_merge_splits_are_reported(self, monkeypatch):
+        # Cleaning runs the Chromaprint dedup (Path B) and surfaces how many false
+        # merges it split, so the user sees the benefit in the run summary.
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True)],
+            tracks_by_server={'s1': [{'id': 'j1'}]},
+            reverse_by_server={'s1': {'j1': 'fp_1'}},
+            db_track_ids={'fp_1'},
+            chromaprint_split_result={'split': 3, 'removed': 6},
+        )
+        assert result['status'] == 'SUCCESS'
+        assert result['chromaprint_splits'] == 3
 
     def test_orphans_are_kept_when_catalogue_cleaning_is_disabled(self, monkeypatch):
         # Same complete view as above, but the per-run flag is off (the default): the

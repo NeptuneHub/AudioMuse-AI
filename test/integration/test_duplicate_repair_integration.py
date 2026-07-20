@@ -64,6 +64,10 @@ _SCHEMA = [
     "projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
     "embedding_dimension INTEGER NOT NULL)",
     "CREATE TABLE ivf_dir (name TEXT PRIMARY KEY, blob_data BYTEA NOT NULL)",
+    "CREATE TABLE chromaprint (server_id TEXT NOT NULL REFERENCES music_servers "
+    "(server_id) ON DELETE CASCADE, provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "PRIMARY KEY (server_id, provider_track_id))",
 ]
 
 
@@ -112,9 +116,9 @@ def db(pg_dsn):
     conn = psycopg2.connect(pg_dsn)
     with conn.cursor() as cur:
         cur.execute(
-            "DROP TABLE IF EXISTS track_server_map, music_servers, embedding, "
-            "clap_embedding, lyrics_embedding, playlist, map_projection_data, "
-            "ivf_dir, score CASCADE"
+            "DROP TABLE IF EXISTS track_server_map, chromaprint, music_servers, "
+            "embedding, clap_embedding, lyrics_embedding, playlist, "
+            "map_projection_data, ivf_dir, score CASCADE"
         )
         for ddl in _SCHEMA:
             cur.execute(ddl)
@@ -416,3 +420,84 @@ class TestSameFolderCleanup:
         assert dr.split_same_folder_merges(conn=db)['split'] == 1
         db.commit()
         assert dr.split_same_folder_merges(conn=db) == {'split': 0, 'removed': 0}
+
+
+def _fp_blob(values):
+    import zlib
+
+    import numpy as np
+
+    arr = np.asarray(values, dtype=np.int64).astype(np.uint32)
+    return zlib.compress(arr.tobytes())
+
+
+def _seed_chromaprint(cur, provider_id, blob):
+    cur.execute(
+        "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint) "
+        "VALUES ('srv', %s, %s)",
+        (provider_id, psycopg2.Binary(blob) if blob is not None else None),
+    )
+
+
+class TestChromaprintCleanup:
+    def test_splits_disagreeing_keeps_agreeing_and_skips_missing(self, db):
+        from tasks import duplicate_repair as dr
+
+        base = list(range(1, 121))
+        flipped = [v ^ 0xFFFFFFFF for v in base]  # every bit inverted -> disagree
+        disagree = _fp_id('cpd')
+        agree = _fp_id('cpa')
+        missing = _fp_id('cpm')
+        with db.cursor() as cur:
+            _seed_paths(cur, disagree, [
+                ('d1', '/media/music/Artist/Album/01 - A.flac'),
+                ('d2', '/media/music/Artist/Album/02 - B.flac'),
+            ])
+            _seed_paths(cur, agree, [
+                ('a1', '/media/music/Artist/AlbumX/01 - C.flac'),
+                ('a2', '/media/music/Artist/AlbumY/03 - C.flac'),
+            ])
+            _seed_paths(cur, missing, [
+                ('m1', '/media/music/Artist/AlbumZ/01 - D.flac'),
+                ('m2', '/media/music/Artist/AlbumZ/02 - E.flac'),
+            ])
+            _seed_chromaprint(cur, 'd1', _fp_blob(base))
+            _seed_chromaprint(cur, 'd2', _fp_blob(flipped))
+            _seed_chromaprint(cur, 'a1', _fp_blob(base))
+            _seed_chromaprint(cur, 'a2', _fp_blob(base))
+            # missing group: only one file has a fingerprint -> no definitive pair
+            _seed_chromaprint(cur, 'm1', _fp_blob(base))
+        db.commit()
+
+        result = dr.split_chromaprint_false_merges(conn=db)
+        db.commit()
+
+        assert result == {'split': 1, 'removed': 2}
+        assert _maps(db, disagree) == [], "Chromaprint disagreement unmaps the false merge"
+        assert _maps(db, agree) == ['a1', 'a2'], "matching fingerprints keep the merge"
+        assert _maps(db, missing) == ['m1', 'm2'], "a group we cannot fully judge is left alone"
+        # A split never deletes the catalogue row itself.
+        assert _duration(db, disagree) == pytest.approx(200.0)
+        with db.cursor() as cur:
+            cur.execute("SELECT count(*) FROM score")
+            assert cur.fetchone()[0] == 3
+
+    def test_second_run_is_an_instant_noop(self, db):
+        from tasks import duplicate_repair as dr
+
+        base = list(range(1, 121))
+        flipped = [v ^ 0xFFFFFFFF for v in base]
+        merged = _fp_id('cp2')
+        with db.cursor() as cur:
+            _seed_paths(cur, merged, [
+                ('x1', '/media/music/A/Alb/01 - One.flac'),
+                ('x2', '/media/music/A/Alb/02 - Two.flac'),
+            ])
+            _seed_chromaprint(cur, 'x1', _fp_blob(base))
+            _seed_chromaprint(cur, 'x2', _fp_blob(flipped))
+        db.commit()
+
+        assert dr.split_chromaprint_false_merges(conn=db)['split'] == 1
+        db.commit()
+        # The group is now unmapped, so it is no longer a duplicate group to check.
+        assert dr.split_chromaprint_false_merges(conn=db) == {'split': 0, 'removed': 0}

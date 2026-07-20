@@ -435,3 +435,25 @@ def test_another_replica_holding_the_lock_skips(harness):
     assert result == {'skipped': 'locked'}
     assert _deletes(harness['conn']) == []
     assert harness['stamped'] == []
+
+
+class TestChromaprintDisagreement:
+    def test_only_a_definitive_disagreeing_pair_marks_a_group(self, monkeypatch):
+        # chromaprints_agree stubbed: equal blobs agree, different blobs disagree.
+        monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: a == b)
+
+        assert dr._group_chromaprints_disagree([b'a', b'b']) is True
+        assert dr._group_chromaprints_disagree([b'a', b'a']) is False
+        # any one disagreeing pair inside a larger group is enough
+        assert dr._group_chromaprints_disagree([b'a', b'a', b'b']) is True
+
+    def test_missing_fingerprints_are_skipped_never_split(self, monkeypatch):
+        # A blob that is present but undecodable makes chromaprints_agree abstain
+        # (None); a None entry is filtered out before comparison. Neither may split.
+        monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: None)
+        assert dr._group_chromaprints_disagree([b'x', b'y']) is False
+
+        monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: a == b)
+        assert dr._group_chromaprints_disagree([b'a', None]) is False
+        assert dr._group_chromaprints_disagree([None, None]) is False
+        assert dr._group_chromaprints_disagree([b'a']) is False

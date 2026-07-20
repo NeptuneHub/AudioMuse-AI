@@ -51,6 +51,9 @@ Main Features:
 * Duplicate consensus: real groups keep + stamp their length, false groups lose
   only their track_server_map rows; single-file rows are never unmapped.
 * Concurrent per-server fetch, progress logs at every ~10%, final summary.
+* split_chromaprint_false_merges: cleaning-time Path B - splits a same-server
+  duplicate group whose stored Chromaprints prove its files are different
+  recordings (skip-if-missing); unmaps only, never deletes a catalogue row.
 """
 
 import logging
@@ -62,6 +65,7 @@ import config
 from database import connect_raw
 from tasks import provider_probe
 from tasks import simhash
+from tasks.chromaprint import chromaprints_agree
 from tasks.mediaserver import context as ms_context
 from tasks.mediaserver import registry
 
@@ -81,6 +85,7 @@ _NO_SERVER_DURATION = 0.0
 # pulling each server's catalogue at once.
 _REPAIR_ADVISORY_LOCK = 726354823
 _SAME_FOLDER_ADVISORY_LOCK = 726354824
+_CHROMAPRINT_ADVISORY_LOCK = 726354825
 
 
 def _empty_totals():
@@ -520,3 +525,80 @@ def split_same_folder_merges(conn=None):
         return {'error': 'failed'}
     finally:
         _release(cur, db, acquired, own_conn, _SAME_FOLDER_ADVISORY_LOCK)
+
+
+def _group_chromaprints_disagree(fingerprints):
+    # True only when TWO stored fingerprints in the group definitively DISAGREE
+    # (chromaprints_agree returns False). Missing/undecodable ones return None and
+    # are ignored, so a group we cannot fully judge is left merged (skip-if-missing).
+    present = [fp for fp in fingerprints if fp is not None]
+    for i in range(len(present)):
+        for j in range(i + 1, len(present)):
+            if chromaprints_agree(present[i], present[j]) is False:
+                return True
+    return False
+
+
+def _chromaprint_false_merges(cur):
+    # Merges to split: a group of TWO OR MORE files on ONE server sharing an item_id
+    # whose stored Chromaprints prove at least one pair is a different recording.
+    # Only same-server duplicate groups are considered - the same song legitimately
+    # maps across servers, which count(*) > 1 per (server_id, item_id) never sees.
+    cur.execute(
+        "SELECT tsm.server_id, tsm.item_id, cp.fingerprint "
+        "FROM track_server_map tsm "
+        "JOIN ( "
+        "  SELECT server_id, item_id FROM track_server_map "
+        "  GROUP BY server_id, item_id HAVING count(*) > 1 "
+        ") dup ON dup.server_id = tsm.server_id AND dup.item_id = tsm.item_id "
+        "LEFT JOIN chromaprint cp "
+        "  ON cp.server_id = tsm.server_id AND cp.provider_track_id = tsm.provider_track_id"
+    )
+    groups = {}
+    for server_id, item_id, fingerprint in cur.fetchall():
+        groups.setdefault((str(server_id), str(item_id)), []).append(fingerprint)
+    by_server = {}
+    for (server_id, item_id), fingerprints in groups.items():
+        if _group_chromaprints_disagree(fingerprints):
+            by_server.setdefault(server_id, []).append(item_id)
+    return by_server
+
+
+def split_chromaprint_false_merges(conn=None):
+    own_conn = conn is None
+    db = conn or connect_raw()
+    acquired = False
+    cur = None
+    try:
+        _force_no_autocommit(db)
+        cur = db.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_CHROMAPRINT_ADVISORY_LOCK,))
+        acquired = bool(cur.fetchone()[0])
+        if not acquired:
+            return {'skipped': 'locked'}
+        by_server = _chromaprint_false_merges(cur)
+        if not by_server:
+            return {'split': 0, 'removed': 0}
+        split = 0
+        removed = 0
+        for server_id, item_ids in by_server.items():
+            removed += _unmap_false_groups(cur, server_id, item_ids)
+            split += len(item_ids)
+            cur.execute(
+                "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
+                (server_id,),
+            )
+        db.commit()
+        logger.info(
+            "Chromaprint dedup: thanks to Chromaprint, %d false merge(s) were split - "
+            "merged groups whose files Chromaprint proved are different recordings "
+            "(%d mapping(s) unmapped; each re-analyzes under its own id).",
+            split, removed,
+        )
+        return {'split': split, 'removed': removed}
+    except Exception:
+        _rollback(db)
+        logger.exception("Chromaprint dedup failed; it retries on the next run")
+        return {'error': 'failed'}
+    finally:
+        _release(cur, db, acquired, own_conn, _CHROMAPRINT_ADVISORY_LOCK)

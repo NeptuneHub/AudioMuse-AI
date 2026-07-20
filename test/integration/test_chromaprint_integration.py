@@ -13,6 +13,13 @@ blob and the NULL retry-stop sentinel, the _fetch_row_fingerprint JOIN maps a
 canonical id back to any file's fingerprint via track_server_map, and the
 backfill target query picks whole albums that still lack a fingerprint while
 skipping both already-fingerprinted tracks and the failed-once sentinel rows.
+
+Main Features:
+* persist_chromaprint / get_chromaprint round-trip and the NULL retry-stop
+  sentinel reading back as abstain.
+* _fetch_row_fingerprint JOIN from a canonical id to any mapped file's blob.
+* Backfill target query picks whole missing albums and skips present and
+  sentinel rows, bounded by the album limit.
 """
 
 import os

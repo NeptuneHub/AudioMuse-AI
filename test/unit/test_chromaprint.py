@@ -15,6 +15,13 @@ verdict. Also checks fpcalc parse/encode/decode round-trips and that the
 CatalogResolver gate only ever ADDS splits - a disagreeing fingerprint splits a
 pair the cosine+duration would have merged, an agreeing one confirms it, and a
 missing one leaves today's behaviour byte-for-byte unchanged.
+
+Main Features:
+* chromaprints_agree three-state (agree / disagree / abstain), symmetric, and
+  abstaining on missing, empty, undecodable or bad-length blobs without raising.
+* fpcalc compute fail-soft and the raw-int parse / encode / decode round-trip.
+* CatalogResolver + confirm_pairs gate: disagree splits, agree merges, a missing
+  fingerprint abstains (byte-identical to the pre-Chromaprint decision).
 """
 
 import zlib
@@ -96,7 +103,7 @@ class TestParseEncodeDecode:
 class TestComputeFailSoft:
     def test_compute_returns_none_without_fpcalc(self, monkeypatch):
         monkeypatch.setattr(chromaprint, "is_available", lambda: False)
-        assert chromaprint.compute("/tmp/whatever.flac") is None
+        assert chromaprint.compute("nonexistent-track.flac") is None
 
     def test_compute_returns_none_on_empty_path(self):
         assert chromaprint.compute(None) is None
@@ -109,12 +116,12 @@ class TestComputeFailSoft:
             stdout = "DURATION=180\nFINGERPRINT=4,5,6\n"
 
         monkeypatch.setattr(chromaprint.subprocess, "run", lambda *a, **k: _Result())
-        blob = chromaprint.compute("/tmp/song.flac")
+        blob = chromaprint.compute("some-track.flac")
         assert list(chromaprint._decode(blob)) == [4, 5, 6]
 
 
 def _embedding(seed):
-    rng = np.random.RandomState(seed)
+    rng = np.random.default_rng(seed)
     return rng.standard_normal(simhash.SIGNATURE_BITS).astype(np.float32)
 
 

@@ -35,6 +35,9 @@ Main Features:
   denominator current on every cleaning run.
 * Deletes catalogue tracks bound to no server, but only when every server was
   read completely; otherwise it just reports them and deletes nothing.
+* Runs the Chromaprint dedup (Path B) each time: splits merged duplicate groups
+  whose stored fingerprints prove they are different recordings, so a false merge
+  is corrected once its files have Chromaprints (skip-if-missing, unmap-only).
 * Runs the shared _run_all_index_builds inline at the end of every run, the same
   final rebuild analysis performs, so the task completes only once the similarity
   indexes are consistent with the catalogue on every music server and Flask has
@@ -48,7 +51,7 @@ from collections import defaultdict
 
 from rq import get_current_job
 
-from config import CLEANING_SAFETY_LIMIT, CLEANING_CATALOGUE
+from config import CLEANING_SAFETY_LIMIT, CLEANING_CATALOGUE, CHROMAPRINT_GATE_ENABLED
 
 from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION, ERR_INDEX_BUILD
@@ -258,6 +261,25 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                     90,
                 )
 
+            # Chromaprint dedup (Path B): retroactively split merges that Chromaprint
+            # now disproves. Skip-if-missing - it splits a duplicate group only when a
+            # stored fingerprint DEFINITIVELY disagrees, so a legacy library still
+            # backfilling fingerprints is a safe no-op. Runs on every cleaning
+            # regardless of the catalogue-deletion flag; it only unmaps (never deletes a
+            # catalogue row), so each split file re-analyzes under its own correct id.
+            chromaprint_splits = 0
+            if CHROMAPRINT_GATE_ENABLED:
+                log_and_update_main("Re-checking merged duplicates against Chromaprint...", 91)
+                from .duplicate_repair import split_chromaprint_false_merges
+                cp_result = split_chromaprint_false_merges() or {}
+                chromaprint_splits = cp_result.get('split', 0)
+                if chromaprint_splits:
+                    log_and_update_main(
+                        f"Thanks to Chromaprint, {chromaprint_splits} false merge(s) were "
+                        "split into separate songs; each re-analyzes under its own id.",
+                        91,
+                    )
+
             # Rebuild the similarity indexes INLINE, the SAME final rebuild analysis
             # runs, and only then report the cleanup complete. Cleaning has just
             # changed what each server maps (unbind) and possibly removed catalogue
@@ -295,6 +317,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                 "prune_refused_servers": refused_servers,
                 "deleted_count": deleted_count,
                 "catalogue_deletion": clean_catalogue,
+                "chromaprint_splits": chromaprint_splits,
             }
 
             state = TASK_STATUS_FAILURE if failed_servers else TASK_STATUS_SUCCESS

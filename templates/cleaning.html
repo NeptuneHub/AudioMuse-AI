@@ -449,7 +449,8 @@
         function displayCleaningResults(data) {
             const summaryDiv = document.getElementById('cleaning-summary');
 
-            if ((data.unbound_mappings || 0) > 0 || (data.orphaned_tracks_count || 0) > 0) {
+            const chromaprintSplits = data.chromaprint_splits || 0;
+            if ((data.unbound_mappings || 0) > 0 || (data.orphaned_tracks_count || 0) > 0 || chromaprintSplits > 0) {
                 const orphans = data.orphaned_tracks_count || 0;
                 const deleted = data.deleted_count || 0;
                 let orphanMsg;
@@ -459,9 +460,14 @@
                     orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server and were KEPT - catalogue cleaning is off for this run. Tick "Also delete orphans from the catalogue" to remove them.`;
                 } else if (orphans > 0) {
                     orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server but were NOT deleted this run (a server could not be read completely, or an implausibly large share looked orphaned); re-run when every server is reachable.`;
+                } else if (chromaprintSplits > 0 && (data.unbound_mappings || 0) === 0) {
+                    orphanMsg = `Cleanup finished. Thanks to Chromaprint, ${chromaprintSplits} false merge(s) were split into separate songs.`;
                 } else {
                     orphanMsg = `Cleanup finished. ${data.unbound_mappings} stale server mapping(s) unbound.`;
                 }
+                const chromaprintLine = chromaprintSplits > 0
+                    ? `<p><strong>False merges split by Chromaprint:</strong> ${chromaprintSplits}</p>`
+                    : '';
                 summaryDiv.innerHTML = `
                     <h3>✅ Library Cleanup Completed</h3>
                     <p><strong>Total tracks on media server(s):</strong> ${data.total_media_server_tracks}</p>
@@ -470,6 +476,7 @@
                     <p><strong>Stale server mappings unbound:</strong> ${data.unbound_mappings}</p>
                     <p><strong>Catalogue tracks on no server:</strong> ${orphans}</p>
                     <p><strong>Orphaned tracks deleted:</strong> ${deleted}</p>
+                    ${chromaprintLine}
                     <p style="color: var(--color-success); font-weight: bold;">${orphanMsg}</p>
                 `;
             } else {

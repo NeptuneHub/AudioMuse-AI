@@ -131,6 +131,34 @@ def _chromaprint_backfill_targets(server_id, album_limit):
         return cur.fetchall()
 
 
+def _backfill_one_track(server_id, provider_track_id, file_path):
+    item = {'Id': provider_track_id, 'id': provider_track_id, 'FilePath': file_path}
+    name = os.path.basename(file_path) if file_path else provider_track_id
+    path = None
+    try:
+        path = download_track(TEMP_DIR, item)
+        if not path:
+            return False
+        blob = chromaprint.compute(path)
+        persist_chromaprint(server_id, provider_track_id, blob)
+        if blob:
+            logger.info("Calculated Chromaprint for '%s' (backfill)", name)
+            return True
+        logger.warning("Could not calculate Chromaprint for '%s' (backfill)", name)
+        return False
+    except Exception:
+        logger.exception(
+            "Chromaprint backfill failed for %s/%s", server_id, provider_track_id
+        )
+        return False
+    finally:
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def _backfill_server_chromaprints(server_id, log_fn=None):
     from ..mediaserver import context as server_context
 
@@ -145,30 +173,8 @@ def _backfill_server_chromaprints(server_id, log_fn=None):
     filled = 0
     with server_context.use_server(_bind_server_context(server_id)):
         for provider_track_id, file_path in targets:
-            item = {'Id': provider_track_id, 'id': provider_track_id, 'FilePath': file_path}
-            path = None
-            try:
-                path = download_track(TEMP_DIR, item)
-                if not path:
-                    continue
-                blob = chromaprint.compute(path)
-                persist_chromaprint(server_id, provider_track_id, blob)
-                name = os.path.basename(file_path) if file_path else provider_track_id
-                if blob:
-                    filled += 1
-                    logger.info("Calculated Chromaprint for '%s' (backfill)", name)
-                else:
-                    logger.warning("Could not calculate Chromaprint for '%s' (backfill)", name)
-            except Exception:
-                logger.exception(
-                    "Chromaprint backfill failed for %s/%s", server_id, provider_track_id
-                )
-            finally:
-                if path and os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
+            if _backfill_one_track(server_id, provider_track_id, file_path):
+                filled += 1
     logger.info(
         "Chromaprint backfill filled %d of %d track(s) on server %s",
         filled, len(targets), server_id,
