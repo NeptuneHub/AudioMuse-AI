@@ -875,12 +875,14 @@ CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "4"))
 FPCALC_BINARY = os.getenv("FPCALC", "fpcalc")
 # Compute and store a fingerprint for every newly analyzed track.
 CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "True").lower() == "true"
-# Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis run.
-CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "10"))
+# Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
+# run. Editable in the setup wizard (advanced section) and applied on the next analysis.
+CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "500"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
 # Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.
-CHROMAPRINT_MATCH_THRESHOLD = float(os.getenv("CHROMAPRINT_MATCH_THRESHOLD", "0.70"))
+# High (0.95) = split aggressively: only near-identical audio merges, minimizing false "duplicate".
+CHROMAPRINT_MATCH_THRESHOLD = float(os.getenv("CHROMAPRINT_MATCH_THRESHOLD", "0.95"))
 # Max +/- frame offset searched when aligning two fingerprints of slightly different length.
 CHROMAPRINT_MAX_ALIGN_OFFSET = int(os.getenv("CHROMAPRINT_MAX_ALIGN_OFFSET", "12"))
 # Minimum overlapping frames required to trust a comparison; below this the check abstains.

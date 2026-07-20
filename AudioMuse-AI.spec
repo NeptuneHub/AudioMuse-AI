@@ -55,6 +55,16 @@ binaries = [
 for _pkg in ("av", "psycopg2"):
     binaries += collect_dynamic_libs(_pkg)
 
+# Chromaprint's fpcalc: bundled only if vendored. Absent, the standalone build still
+# runs; it just ships without acoustic-fingerprint collection (dedup falls back to the
+# MusiCNN embedding + duration exactly as before). See native-build/<os>/vendor/README.
+_fpcalc = os.path.join(
+    ROOT, cfg["vendor_dir"], "fpcalc", arch,
+    "fpcalc.exe" if target == "windows" else "fpcalc",
+)
+if os.path.exists(_fpcalc):
+    binaries.append((_fpcalc, "."))
+
 # numkong's Windows wheel links LLVM's libomp but, unlike its mac/linux wheels, does not bundle it.
 if target == "windows":
     _omp = os.path.join(ROOT, cfg["vendor_dir"], "numkong", arch, _cfg.windows_omp_dll(arch))

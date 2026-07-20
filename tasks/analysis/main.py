@@ -41,14 +41,18 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     REBUILD_INDEX_BATCH_SIZE,
+    CHROMAPRINT_COLLECTION_ENABLED,
+    CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN,
 )
 
 from ..mediaserver import (
     get_recent_albums,
     get_tracks_from_album,
+    download_track,
     registry,
     test_connection as mediaserver_test_connection,
 )
+from .. import chromaprint
 
 from flask_app import app
 from app_helper import (
@@ -62,7 +66,12 @@ from app_helper import (
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
-from database import count_terminal_children, get_failed_child_summary
+from database import (
+    count_terminal_children,
+    get_failed_child_summary,
+    persist_chromaprint,
+    get_db,
+)
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from psycopg2 import OperationalError
 
@@ -99,6 +108,83 @@ def clean_temp(temp_dir):
             (shutil.rmtree if os.path.isdir(path) and not os.path.islink(path) else os.unlink)(path)
         except Exception as e:
             logger.warning(f"Could not remove {path} from {temp_dir}: {e}")
+
+
+def _chromaprint_backfill_targets(server_id, album_limit):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "WITH missing AS ("
+            "  SELECT m.provider_track_id, m.file_path, s.album "
+            "  FROM track_server_map m "
+            "  JOIN score s ON s.item_id = m.item_id "
+            "  LEFT JOIN chromaprint c "
+            "    ON c.server_id = m.server_id AND c.provider_track_id = m.provider_track_id "
+            "  WHERE m.server_id = %s AND c.provider_track_id IS NULL "
+            "    AND s.album IS NOT NULL AND s.album <> ''"
+            "), picked AS ("
+            "  SELECT album FROM missing GROUP BY album ORDER BY album LIMIT %s"
+            ") "
+            "SELECT missing.provider_track_id, missing.file_path "
+            "FROM missing JOIN picked ON picked.album = missing.album",
+            (str(server_id), album_limit),
+        )
+        return cur.fetchall()
+
+
+def _backfill_server_chromaprints(server_id, log_fn=None):
+    from ..mediaserver import context as server_context
+
+    targets = _chromaprint_backfill_targets(server_id, CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN)
+    if not targets:
+        return
+    if log_fn:
+        log_fn(
+            f"Calculating Chromaprint fingerprints for {len(targets)} track(s) "
+            f"on server {server_id}...", 99,
+        )
+    filled = 0
+    with server_context.use_server(_bind_server_context(server_id)):
+        for provider_track_id, file_path in targets:
+            item = {'Id': provider_track_id, 'id': provider_track_id, 'FilePath': file_path}
+            path = None
+            try:
+                path = download_track(TEMP_DIR, item)
+                if not path:
+                    continue
+                blob = chromaprint.compute(path)
+                persist_chromaprint(server_id, provider_track_id, blob)
+                name = os.path.basename(file_path) if file_path else provider_track_id
+                if blob:
+                    filled += 1
+                    logger.info("Calculated Chromaprint for '%s' (backfill)", name)
+                else:
+                    logger.warning("Could not calculate Chromaprint for '%s' (backfill)", name)
+            except Exception:
+                logger.exception(
+                    "Chromaprint backfill failed for %s/%s", server_id, provider_track_id
+                )
+            finally:
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+    logger.info(
+        "Chromaprint backfill filled %d of %d track(s) on server %s",
+        filled, len(targets), server_id,
+    )
+
+
+def _run_chromaprint_backfill(server_ids, log_fn=None):
+    if not CHROMAPRINT_COLLECTION_ENABLED or not chromaprint.is_available():
+        return
+    for server_id in server_ids:
+        if not server_id:
+            continue
+        try:
+            _backfill_server_chromaprints(server_id, log_fn=log_fn)
+        except Exception:
+            logger.exception("Chromaprint backfill failed for server %s", server_id)
 
 
 def _rq_job_still_pending(job_id):
@@ -493,6 +579,7 @@ def _run_analysis_server_task_impl(
                     raise error_manager.AudioMuseError(
                         error_manager.classify(e, ERR_INDEX_BUILD), str(e), cause=e
                     ) from e
+                _run_chromaprint_backfill([server_id], log_fn=log_and_update_main)
             total_failed_count, failed_errors = get_failed_child_summary(current_task_id)
             failed_count = max(0, total_failed_count - baseline_failed_count)
             if not failed_count:
@@ -669,6 +756,17 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 },
             )
             raise
+
+        def _chromaprint_progress(message, _progress=99):
+            save_task_status(
+                parent_id, "main_analysis", TASK_STATUS_PROGRESS,
+                progress=99, details={"message": message},
+            )
+
+        _run_chromaprint_backfill(
+            [server['server_id'] for server in servers if server['name'] not in failed],
+            log_fn=_chromaprint_progress,
+        )
 
         analyzed_servers = len(servers) - len(failed)
         run_failed = analyzed_servers == 0

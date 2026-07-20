@@ -251,6 +251,7 @@ def _confirm_candidates(cur, ids, left, right, duration_of):
             rows = np.unique(np.concatenate((left_slice, right_slice)))
             vectors = np.zeros((rows.size, simhash.SIGNATURE_BITS), dtype=np.float32)
             slot_of = {ids[int(row)]: slot for slot, row in enumerate(rows)}
+            fingerprint_of = {}
             for chunk in range(0, rows.size, _CHUNK_ROWS):
                 wanted = [ids[int(row)] for row in rows[chunk:chunk + _CHUNK_ROWS]]
                 fetch.execute(
@@ -261,11 +262,31 @@ def _confirm_candidates(cur, ids, left, right, duration_of):
                     vector = np.frombuffer(blob, dtype=np.float32)
                     if vector.size == simhash.SIGNATURE_BITS:
                         vectors[slot_of[str(item_id)]] = vector
+                if config.CHROMAPRINT_GATE_ENABLED:
+                    fetch.execute(
+                        "SELECT DISTINCT ON (m.item_id) m.item_id, c.fingerprint "
+                        "FROM track_server_map m JOIN chromaprint c "
+                        "ON c.server_id = m.server_id "
+                        "AND c.provider_track_id = m.provider_track_id "
+                        "WHERE m.item_id = ANY(%s) AND c.fingerprint IS NOT NULL",
+                        (wanted,),
+                    )
+                    for item_id, blob in fetch.fetchall():
+                        if blob is not None:
+                            fingerprint_of[str(item_id)] = bytes(blob)
             confirmed = simhash.confirm_pairs(
                 vectors[np.searchsorted(rows, left_slice)],
                 vectors[np.searchsorted(rows, right_slice)],
                 left_durations=[duration_of.get(ids[int(row)]) for row in left_slice],
                 right_durations=[duration_of.get(ids[int(row)]) for row in right_slice],
+                left_fingerprints=(
+                    [fingerprint_of.get(ids[int(row)]) for row in left_slice]
+                    if fingerprint_of else None
+                ),
+                right_fingerprints=(
+                    [fingerprint_of.get(ids[int(row)]) for row in right_slice]
+                    if fingerprint_of else None
+                ),
             )
             if confirmed.any():
                 kept_left.append(left_slice[confirmed])

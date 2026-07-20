@@ -49,8 +49,10 @@ from config import (
     CATALOGUE_ID_SCHEME_VERSION,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE,
     DURATION_TOLERANCE_SECONDS,
+    CHROMAPRINT_GATE_ENABLED,
 )
 from tasks.provider_migration_matcher import normalize_path
+from tasks.chromaprint import chromaprints_agree
 
 logger = logging.getLogger(__name__)
 
@@ -272,15 +274,8 @@ def _duration_mask(left_durations, right_durations, size):
         )
 
 
-def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durations=None):
-    """Which candidate pairs the EXACT raw-embedding cosine AND duration confirm.
-
-    Row-wise, so a caller can feed it one batch of embeddings at a time instead
-    of holding the catalogue's. A zero/absent vector never confirms, and neither
-    does a pair whose track lengths are unknown or disagree beyond
-    ``DURATION_TOLERANCE_SECONDS`` - the embedding says "sounds the same", only
-    the duration can say "is the same recording".
-    """
+def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durations=None,
+                  left_fingerprints=None, right_fingerprints=None):
     left_vectors = np.asarray(left_vectors, dtype=np.float32)
     right_vectors = np.asarray(right_vectors, dtype=np.float32)
     left_norms = np.linalg.norm(left_vectors, axis=1)
@@ -293,12 +288,20 @@ def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durati
         right_vectors / safe_right[:, None],
     )
     distance = np.clip(1.0 - similarity, 0.0, 2.0)
-    return (
+    base = (
         (distance <= DUPLICATE_DISTANCE_THRESHOLD_COSINE)
         & (left_norms > 0)
         & (right_norms > 0)
         & _duration_mask(left_durations, right_durations, left_vectors.shape[0])
     )
+    if (not CHROMAPRINT_GATE_ENABLED
+            or left_fingerprints is None or right_fingerprints is None):
+        return base
+    result = base.copy()
+    for i in np.flatnonzero(base):
+        if chromaprints_agree(left_fingerprints[i], right_fingerprints[i]) is False:
+            result[i] = False
+    return result
 
 
 def merge_pairs(count, packed, left, right, folders=None):
@@ -724,21 +727,26 @@ class CatalogResolver:
     registered with them (for example rows predating this run).
     """
 
-    def __init__(self, embedding_fetcher=None, duration_fetcher=None, path_fetcher=None):
+    def __init__(self, embedding_fetcher=None, duration_fetcher=None, path_fetcher=None,
+                 fingerprint_fetcher=None):
         self._index = SignatureIndex()
         self._taken = set()
         self._embeddings = {}
         self._durations = {}
         self._paths = {}
+        self._fingerprints = {}
         self._fetcher = embedding_fetcher
         self._duration_fetcher = duration_fetcher
         self._path_fetcher = path_fetcher
+        self._fingerprint_fetcher = fingerprint_fetcher
 
     def drop_cached_embeddings(self):
         self._embeddings.clear()
         self._paths.clear()
+        self._fingerprints.clear()
 
-    def register(self, item_id, embedding=None, signature=None, duration=None, path=None):
+    def register(self, item_id, embedding=None, signature=None, duration=None, path=None,
+                 fingerprint=None):
         item_id = str(item_id)
         self._taken.add(item_id)
         if embedding is not None:
@@ -746,6 +754,8 @@ class CatalogResolver:
             self._embeddings[item_id] = row
         if duration is not None:
             self._durations[item_id] = duration
+        if fingerprint:
+            self._fingerprints[item_id] = fingerprint
         self._record_path(item_id, path)
         if signature is None:
             signature = signature_from_canonical_id(item_id)
@@ -789,6 +799,21 @@ class CatalogResolver:
         self._durations[item_id] = fetched
         return fetched
 
+    def _fingerprint_for(self, item_id):
+        cached = self._fingerprints.get(item_id)
+        if cached is not None:
+            return cached
+        if self._fingerprint_fetcher is None:
+            return None
+        try:
+            fetched = self._fingerprint_fetcher(item_id)
+        except Exception:
+            logger.exception("Fingerprint fetch failed for %s", item_id)
+            return None
+        if fetched:
+            self._fingerprints[item_id] = fetched
+        return fetched or None
+
     def _paths_for(self, item_id):
         cached = self._paths.get(item_id)
         if cached is not None:
@@ -815,7 +840,7 @@ class CatalogResolver:
                 return True
         return False
 
-    def confirms(self, embedding, candidate_id, duration=None, path=None):
+    def confirms(self, embedding, candidate_id, duration=None, path=None, fingerprint=None):
         """Is ``candidate_id`` the same recording as ``embedding``?
 
         The signature only ever PROPOSES; the exact cosine plus the duration
@@ -839,14 +864,16 @@ class CatalogResolver:
         candidate_embedding = self._embedding_for(candidate_id)
         if candidate_embedding is None:
             return False
-        return (
-            cosine_distance(embedding, candidate_embedding)
-            <= DUPLICATE_DISTANCE_THRESHOLD_COSINE
-        )
+        if cosine_distance(embedding, candidate_embedding) > DUPLICATE_DISTANCE_THRESHOLD_COSINE:
+            return False
+        if CHROMAPRINT_GATE_ENABLED and fingerprint:
+            if chromaprints_agree(fingerprint, self._fingerprint_for(candidate_id)) is False:
+                return False
+        return True
 
     _confirms = confirms
 
-    def resolve(self, embedding, signature=None, duration=None, path=None):
+    def resolve(self, embedding, signature=None, duration=None, path=None, fingerprint=None):
         """('existing', id) when the audio is already catalogued, else ('new', id).
 
         A 'new' resolution registers the returned id (with this embedding and
@@ -860,7 +887,8 @@ class CatalogResolver:
         if signature is None:
             return ('new', None)
         for candidate_id in self._index.find_candidates(signature, duration=duration):
-            if self._confirms(embedding, candidate_id, duration=duration, path=path):
+            if self._confirms(embedding, candidate_id, duration=duration, path=path,
+                              fingerprint=fingerprint):
                 self._record_path(candidate_id, path)
                 return ('existing', candidate_id)
         new_id = mint_canonical_id(signature, self._taken)
@@ -870,5 +898,6 @@ class CatalogResolver:
             signature=signature_from_canonical_id(new_id),
             duration=duration,
             path=path,
+            fingerprint=fingerprint,
         )
         return ('new', new_id)

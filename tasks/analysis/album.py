@@ -41,6 +41,7 @@ from config import (
     PER_SONG_MODEL_RELOAD,
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
+    CHROMAPRINT_COLLECTION_ENABLED,
 )
 
 from flask_app import app
@@ -67,6 +68,8 @@ from ..memory_utils import (
     SessionRecycler,
     comprehensive_memory_cleanup,
 )
+from .. import chromaprint
+from database import persist_chromaprint, get_chromaprint
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
 from .song import (
@@ -93,6 +96,27 @@ def _stage_download(item, track_name_full):
     if not path:
         raise TrackSourceUnavailable(f"source audio unavailable for {track_name_full}")
     return path
+
+
+def _stage_collect_chromaprint(item, path, track_name_full):
+    if not (path and CHROMAPRINT_COLLECTION_ENABLED and chromaprint.is_available()):
+        return
+    from ..mediaserver import context as server_context
+
+    server_id = server_context.active_server_id() or registry.get_default_server_id()
+    provider_id = _ah.provider_item_id(item)
+    existing = get_chromaprint(server_id, provider_id) if server_id else None
+    if existing is not None:
+        item['_chromaprint'] = existing
+        return
+    blob = chromaprint.compute(path)
+    item['_chromaprint'] = blob
+    if blob:
+        logger.info("Calculated Chromaprint for '%s'", track_name_full)
+    else:
+        logger.warning("Could not calculate Chromaprint for '%s'", track_name_full)
+    if server_id:
+        persist_chromaprint(server_id, provider_id, blob)
 
 
 def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
@@ -212,6 +236,9 @@ def _analyze_single_track(
     try:
         if plan.needs_audio:
             path = _stage_download(item, track_name_full)
+
+        if plan.musicnn:
+            _stage_collect_chromaprint(item, path, track_name_full)
 
         def ensure_download():
             nonlocal path
