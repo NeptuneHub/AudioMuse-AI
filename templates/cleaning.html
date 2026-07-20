@@ -465,7 +465,8 @@
                 summaryDiv.innerHTML = `
                     <h3>✅ Library Cleanup Completed</h3>
                     <p><strong>Total tracks on media server(s):</strong> ${data.total_media_server_tracks}</p>
-                    <p><strong>Total tracks in database:</strong> ${data.total_database_tracks}</p>
+                    <p><strong>Unique tracks in the catalogue:</strong> ${data.total_database_tracks}</p>
+                    <p style="color: var(--text-muted); font-size: 0.9em;">The catalogue counts each song once. A song on more than one server, or duplicate files of the same song, is a single catalogue entry, so this is normally lower than the media-server total (which sums the files on every server).</p>
                     <p><strong>Stale server mappings unbound:</strong> ${data.unbound_mappings}</p>
                     <p><strong>Catalogue tracks on no server:</strong> ${orphans}</p>
                     <p><strong>Orphaned tracks deleted:</strong> ${deleted}</p>
@@ -475,7 +476,8 @@
                 summaryDiv.innerHTML = `
                     <h3>✅ Library is Clean</h3>
                     <p><strong>Total tracks on media server(s):</strong> ${data.total_media_server_tracks}</p>
-                    <p><strong>Total tracks in database:</strong> ${data.total_database_tracks}</p>
+                    <p><strong>Unique tracks in the catalogue:</strong> ${data.total_database_tracks}</p>
+                    <p style="color: var(--text-muted); font-size: 0.9em;">The catalogue counts each song once. A song on more than one server, or duplicate files of the same song, is a single catalogue entry, so this is normally lower than the media-server total (which sums the files on every server).</p>
                     <p style="color: var(--color-success); font-weight: bold;">Every server mapping is current and every catalogue track is on at least one server.</p>
                 `;
             }
