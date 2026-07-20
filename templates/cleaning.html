@@ -26,6 +26,20 @@
         <h2>Database Cleaning</h2>
         <p>Run a scan to identify and automatically remove albums that exist in the database but are no longer present on your media server.</p>
 
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem;">
+            <label for="clean-catalogue-toggle" class="label-with-tooltip">
+                Also delete orphans from the catalogue:
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">When ON, tracks that are on NO music server (orphans) are DELETED from the centralized catalogue, along with their analysis - it is re-created for free if the files ever return. When OFF (default), cleaning only unbinds each server's stale mappings and leaves the catalogue untouched. Applies to this run only.</span>
+                </span>
+            </label>
+            <label class="toggle-switch">
+                <input type="checkbox" id="clean-catalogue-toggle" {% if cleaning_catalogue_default %}checked{% endif %}>
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+
         <div class="task-buttons">
             <button id="start-clean-btn" class="btn btn-primary btn-block">Start Database Cleaning</button>
             <button id="cancel-clean-btn" class="btn btn-danger btn-block" style="display: none;" disabled>Cancel Cleaning</button>
@@ -226,9 +240,11 @@
         // Start cleaning function
         async function startCleaning() {
             try {
+                const cleanCatalogue = document.getElementById('clean-catalogue-toggle').checked;
                 const response = await fetch("{{ url_for('analysis_bp.start_cleaning_endpoint') }}", {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clean_catalogue: cleanCatalogue })
                 });
 
                 if (!response.ok) {
@@ -439,6 +455,8 @@
                 let orphanMsg;
                 if (deleted > 0) {
                     orphanMsg = `Cleanup finished. Deleted ${deleted} track(s) that were on no server; their analysis is re-created if the files return.`;
+                } else if (orphans > 0 && data.catalogue_deletion === false) {
+                    orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server and were KEPT - catalogue cleaning is off for this run. Tick "Also delete orphans from the catalogue" to remove them.`;
                 } else if (orphans > 0) {
                     orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server but were NOT deleted this run (a server could not be read completely, or an implausibly large share looked orphaned); re-run when every server is reachable.`;
                 } else {

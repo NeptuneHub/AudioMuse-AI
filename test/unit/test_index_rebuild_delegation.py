@@ -6,15 +6,19 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Static check that cleaning never rebuilds indexes or deletes catalogue rows.
+"""Static check that cleaning runs the shared final rebuild INLINE, like analysis.
 
-Parses tasks/cleaning.py with AST to confirm the cleanup task only unbinds
-server mappings: it must not rebuild any index (the catalogue never changes,
-so a rebuild is wasted work) and must not call any partial builder.
+Cleaning changes what each server maps (unbind) and can remove catalogue rows
+(orphan delete), so it must refresh the similarity indexes before it reports
+complete. It does this the same way analysis finalizes: by calling the shared
+_run_all_index_builds inline (which also publishes the 'reload' Flask listens
+for), NOT by re-implementing the eight build_and_store_* builders itself. Parses
+tasks/cleaning.py with AST to confirm both: it calls _run_all_index_builds, and
+it never calls a partial builder directly.
 
 Main Features:
-* The cleaning task calls neither _run_all_index_builds nor any
-  build_and_store_* builder: unbinding mappings never invalidates an index
+* The cleaning task calls _run_all_index_builds inline (shared with analysis)
+* It calls no build_and_store_* builder directly: cleaning owns no rebuild logic
 """
 
 import ast
@@ -58,18 +62,21 @@ def _called_names(func_node):
     return names
 
 
-class TestCleaningNeverRebuildsOrDeletes:
-    def test_unbind_only_cleanup_never_rebuilds_indexes(self):
+class TestCleaningRebuildsIndexesInlineLikeAnalysis:
+    def test_cleaning_calls_the_shared_rebuild_inline(self):
         funcs = _function_defs("tasks/cleaning.py")
         assert "identify_and_clean_orphaned_albums_task" in funcs
         called = _called_names(funcs["identify_and_clean_orphaned_albums_task"])
-        assert "_run_all_index_builds" not in called
+        assert "_run_all_index_builds" in called, (
+            "cleaning must run the shared final rebuild inline so it completes only "
+            "once every server's similarity results reflect the cleaned catalogue"
+        )
 
-    def test_does_not_call_any_partial_builder(self):
+    def test_cleaning_never_calls_a_partial_builder_inline(self):
         funcs = _function_defs("tasks/cleaning.py")
         called = _called_names(funcs["identify_and_clean_orphaned_albums_task"])
         leaked = sorted(b for b in _PARTIAL_BUILDERS if b in called)
         assert not leaked, (
-            f"these builders are called directly: {leaked}. Cleanup unbinds "
-            "mappings only; it must never rebuild indexes."
+            f"these builders are called directly: {leaked}. Cleaning must reuse "
+            "_run_all_index_builds, not re-implement the builders in its own job."
         )

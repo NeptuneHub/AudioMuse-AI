@@ -19,8 +19,10 @@ mappings on every other server. A song bound to NO server (an orphan) is
 DELETED from the catalogue - it is gone from every library, so its analysis is
 removed and simply re-created if the file ever returns. That delete happens
 ONLY when every server was read completely (none failed, empty or partial), so
-an incomplete view can never delete a track still on a server; the similarity
-indexes keep working and drop the removed ids until their next rebuild.
+an incomplete view can never delete a track still on a server. Every cleaning
+run then runs the SAME full similarity-index rebuild analysis runs, INLINE, and
+is not reported complete until the indexes reflect the cleaned catalogue and the
+'reload' has been published so a running Flask swaps the new indexes in.
 
 Main Features:
 * identify_and_clean_orphaned_albums_task: the RQ entry point that fetches each
@@ -33,6 +35,10 @@ Main Features:
   denominator current on every cleaning run.
 * Deletes catalogue tracks bound to no server, but only when every server was
   read completely; otherwise it just reports them and deletes nothing.
+* Runs the shared _run_all_index_builds inline at the end of every run, the same
+  final rebuild analysis performs, so the task completes only once the similarity
+  indexes are consistent with the catalogue on every music server and Flask has
+  been told to reload them.
 """
 
 import time
@@ -42,10 +48,10 @@ from collections import defaultdict
 
 from rq import get_current_job
 
-from config import CLEANING_SAFETY_LIMIT
+from config import CLEANING_SAFETY_LIMIT, CLEANING_CATALOGUE
 
 from error import error_manager
-from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
+from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION, ERR_INDEX_BUILD
 
 from .mediaserver import registry
 
@@ -54,7 +60,12 @@ from psycopg2 import OperationalError
 logger = logging.getLogger(__name__)
 
 
-def identify_and_clean_orphaned_albums_task():
+def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
+    # Per-run override from the cleaning page's checkbox; None falls back to the
+    # CLEANING_CATALOGUE env default. When false, orphans are only reported, not
+    # deleted (the catalogue is left untouched, exactly the old behaviour).
+    clean_catalogue = CLEANING_CATALOGUE if clean_catalogue is None else bool(clean_catalogue)
+
     from flask_app import app
     from app_helper import redis_conn, get_db, save_task_status
     from config import (
@@ -216,10 +227,14 @@ def identify_and_clean_orphaned_albums_task():
             # any server failed, and it is refused here if a server returned a
             # partial listing OR if orphans are an implausibly large share of the
             # catalogue - either signals a bad view that must never delete a track
-            # still on a server. The indexes drop the removed ids on their next
-            # rebuild; until then a stale hit is simply dropped from translation.
+            # still on a server. A full index rebuild runs inline after this pass
+            # (below) so the removed ids leave the similarity indexes before the task
+            # reports complete.
             deleted_count = 0
-            deletable = bool(fully_unbound) and not failed_servers and not refused_servers
+            deletable = (
+                clean_catalogue and bool(fully_unbound)
+                and not failed_servers and not refused_servers
+            )
             if deletable and len(fully_unbound) > len(database_track_ids) // 2:
                 logger.warning(
                     "Cleaning: %d of %d catalogue tracks look orphaned - too large a "
@@ -243,6 +258,30 @@ def identify_and_clean_orphaned_albums_task():
                     90,
                 )
 
+            # Rebuild the similarity indexes INLINE, the SAME final rebuild analysis
+            # runs, and only then report the cleanup complete. Cleaning has just
+            # changed what each server maps (unbind) and possibly removed catalogue
+            # rows (orphan delete); running the rebuild here - not as a detached job -
+            # means the task is not marked done until every index reflects the cleaned
+            # catalogue AND _run_all_index_builds has published the 'reload' that makes
+            # a running Flask swap the new indexes in. The unbinds and the orphan
+            # delete above are already committed (their get_db() blocks closed), so the
+            # rebuild reads the cleaned catalogue; if the audio index fails the whole
+            # run fails and retries rather than reporting a cleanup that never
+            # refreshed the indexes.
+            from .analysis.index import _run_all_index_builds
+            log_and_update_main("Performing final index rebuild...", 92)
+            try:
+                _run_all_index_builds(
+                    log_fn=log_and_update_main, progress_start=92, progress_end=99
+                )
+            except error_manager.AudioMuseError:
+                raise
+            except Exception as e:
+                raise error_manager.AudioMuseError(
+                    error_manager.classify(e, ERR_INDEX_BUILD), str(e), cause=e
+                ) from e
+
             summary = {
                 "total_media_server_tracks": total_tracks_on_servers,
                 "total_catalogue_tracks_present": len(present_canonical_ids),
@@ -255,6 +294,7 @@ def identify_and_clean_orphaned_albums_task():
                 "failed_servers": failed_servers,
                 "prune_refused_servers": refused_servers,
                 "deleted_count": deleted_count,
+                "catalogue_deletion": clean_catalogue,
             }
 
             state = TASK_STATUS_FAILURE if failed_servers else TASK_STATUS_SUCCESS
@@ -271,11 +311,17 @@ def identify_and_clean_orphaned_albums_task():
                     "tracks they still have mapped, so their stale mappings were NOT pruned. "
                     "Re-run the cleanup if the library really did shrink that much."
                 )
-            else:
+            elif clean_catalogue:
                 message = (
                     f"Cleanup complete: {unbound_total} stale server mappings unbound; "
                     f"{deleted_count} of {len(fully_unbound)} orphaned catalogue tracks "
                     "(on no server) deleted."
+                )
+            else:
+                message = (
+                    f"Cleanup complete: {unbound_total} stale server mappings unbound; "
+                    f"{len(fully_unbound)} catalogue tracks are on no server and were "
+                    "kept (catalogue cleaning is off - enable it to delete them)."
                 )
             log_and_update_main(message, 100, task_state=state, final_summary_details=summary)
             return {"status": "SUCCESS" if not failed_servers else "FAILURE",

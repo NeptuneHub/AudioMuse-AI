@@ -42,7 +42,8 @@ def _server(server_id, name, default=False):
 
 def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   reverse_by_server, db_track_ids, author_by_id=None,
-                  prune_results=None, stored_counts=None, mark_refused=None):
+                  prune_results=None, stored_counts=None, mark_refused=None,
+                  clean_catalogue=True, rebuild_calls=None):
     from tasks import cleaning
     from tasks import multiserver_sync
 
@@ -78,6 +79,20 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     get_db_cm = MagicMock()
     get_db_cm.__enter__.return_value = conn
     get_db_cm.__exit__.return_value = False
+
+    # Cleaning finishes by running the shared final rebuild inline (the same one
+    # analysis runs). Stub it with a fake tasks.analysis.index module so the unit
+    # test records the call without touching the real builders or a live index.
+    rebuilds = rebuild_calls if rebuild_calls is not None else []
+
+    def _fake_run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
+        rebuilds.append((progress_start, progress_end))
+        if log_fn:
+            log_fn("Similarity indexes rebuilt.", progress_end)
+
+    fake_index = types.ModuleType('tasks.analysis.index')
+    fake_index._run_all_index_builds = _fake_run_all_index_builds
+    monkeypatch.setitem(sys.modules, 'tasks.analysis.index', fake_index)
 
     fake_app_helper = types.ModuleType('app_helper')
     fake_app_helper.redis_conn = object()
@@ -131,7 +146,7 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
         lambda db, server_id, count: counts.append((server_id, count)),
     )
 
-    result = cleaning.identify_and_clean_orphaned_albums_task()
+    result = cleaning.identify_and_clean_orphaned_albums_task(clean_catalogue)
     return result, statuses, pruned_calls
 
 
@@ -256,6 +271,46 @@ class TestCleaningOrphanHandling:
         }
         assert reported == {'fp_3', 'fp_4'}
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+
+    def test_index_rebuild_runs_inline_before_a_cleaning_run_completes(self, monkeypatch):
+        # Cleaning changes what each server maps and can remove catalogue rows, so it
+        # runs the SAME final rebuild analysis runs INLINE - the task is not reported
+        # complete until every server's similarity results reflect the cleaned
+        # catalogue and the reload has been published.
+        rebuilds = []
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True)],
+            tracks_by_server={'s1': [{'id': 'j1'}]},
+            reverse_by_server={'s1': {'j1': 'fp_1'}},
+            db_track_ids={'fp_1'},
+            rebuild_calls=rebuilds,
+        )
+        assert result['status'] == 'SUCCESS'
+        assert len(rebuilds) == 1
+
+    def test_orphans_are_kept_when_catalogue_cleaning_is_disabled(self, monkeypatch):
+        # Same complete view as above, but the per-run flag is off (the default): the
+        # orphans are reported, never deleted, and the catalogue is left untouched.
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
+            tracks_by_server={
+                's1': [{'id': 'j1'}, {'id': 'j9'}],
+                's2': [{'id': 'n1'}],
+            },
+            reverse_by_server={
+                's1': {'j1': 'fp_1', 'j9': 'fp_5'},
+                's2': {'n1': 'fp_2'},
+            },
+            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4', 'fp_5'},
+            prune_results={'s1': 1, 's2': 2},
+            clean_catalogue=False,
+        )
+        assert result['status'] == 'SUCCESS'
+        assert result['orphaned_tracks_count'] == 2
+        assert result['deleted_count'] == 0
+        assert result['catalogue_deletion'] is False
 
     def test_refused_partial_listing_reports_orphans_but_deletes_nothing(self, monkeypatch):
         # A server that returned a partial listing (prune refused) means the view is

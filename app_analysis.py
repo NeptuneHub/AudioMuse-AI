@@ -24,7 +24,7 @@ import uuid
 import logging
 
 # Import configuration from the main config.py
-from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING
+from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING, CLEANING_CATALOGUE
 
 # RQ import
 from rq import Retry
@@ -55,7 +55,8 @@ def cleaning_page():
               type: string
     """
     return render_template(
-        'cleaning.html', title='AudioMuse-AI - Database Cleaning', active='cleaning'
+        'cleaning.html', title='AudioMuse-AI - Database Cleaning', active='cleaning',
+        cleaning_catalogue_default=CLEANING_CATALOGUE,
     )
 
 
@@ -194,6 +195,12 @@ def start_cleaning_endpoint():
             }
         ), 409
 
+    # Per-run opt-in: when the cleaning page's checkbox is ticked (or CLEANING_CATALOGUE
+    # is the env default) the task also DELETES catalogue rows bound to no server;
+    # otherwise it only unbinds each server's stale mappings.
+    data = request.get_json(silent=True) or {}
+    clean_catalogue = bool(data.get('clean_catalogue', CLEANING_CATALOGUE))
+
     # Clean up any previous cleaning tasks
     clean_up_previous_main_tasks()
 
@@ -208,6 +215,7 @@ def start_cleaning_endpoint():
     # Enqueue combined cleaning task
     job = rq_queue_high.enqueue(
         'tasks.cleaning.identify_and_clean_orphaned_albums_task',
+        clean_catalogue,
         job_id=job_id,
         description="Database Cleaning (Identify and Delete Orphaned Albums)",
         retry=Retry(max=2),
