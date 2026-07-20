@@ -277,17 +277,17 @@ class TestRealDuplicateRepair:
         # Every row now carries a length and is on the current scheme: instant skip.
         assert _run(db, monkeypatch, {}) == {'skipped': 'up_to_date'}
 
-    def test_survivor_with_duration_is_relabelled_but_never_re_fetched(self, db, monkeypatch):
-        # A legacy-migrated survivor already has a duration; the backfill must not
-        # look at it (no second duration fetch after a legacy upgrade), but the
-        # scheme relabel still bumps it up to the current id.
+    def test_single_file_survivor_with_duration_is_relabelled_not_re_fetched(self, db, monkeypatch):
+        # A single-file row that already has a duration cannot be a wrong merge, so
+        # the check must not look at it (no second duration fetch after a legacy
+        # upgrade), but the scheme relabel still bumps it up to the current id.
         already = _fp_id('c')
         with db.cursor() as cur:
-            _seed_group(cur, already, ['p1', 'p2'], duration=200.0)
+            _seed_group(cur, already, ['p1'], duration=200.0)
         db.commit()
 
         def explode(server):
-            raise AssertionError("a duration-bearing survivor must not be re-fetched")
+            raise AssertionError("a single-file duration-bearing row must not be re-fetched")
 
         from tasks import duplicate_repair as dr
         monkeypatch.setattr(dr, '_server_durations', explode)
@@ -295,8 +295,39 @@ class TestRealDuplicateRepair:
 
         assert result['checked'] == 0
         assert result['relabelled'] == 1
-        assert _maps(db, _current(already)) == ['p1', 'p2']
+        assert _maps(db, _current(already)) == ['p1']
         assert _duration(db, _current(already)) == pytest.approx(200.0)
+
+    def test_existing_stamped_merge_is_re_split_when_lengths_now_disagree(self, db, monkeypatch):
+        # A scheme bump (e.g. fp_3 -> fp_4 tightening 7s to 1s) re-verifies EXISTING
+        # merges: a stamped group whose files actually differ in length by more than
+        # the current tolerance is unmapped so each re-analyzes under its own id.
+        merged = _fp_id('r')
+        with db.cursor() as cur:
+            _seed_group(cur, merged, ['p1', 'p2'], duration=200.0)
+        db.commit()
+
+        result = _run(db, monkeypatch, {'p1': 200.0, 'p2': 260.0})
+        db.commit()
+
+        assert result['false'] == 1
+        assert result['removed'] == 2
+        assert _maps(db, _current(merged)) == []
+
+    def test_existing_stamped_merge_within_tolerance_survives_re_verify(self, db, monkeypatch):
+        # The same re-verify keeps a genuine merge whose files agree within tolerance,
+        # without dropping its stored length.
+        merged = _fp_id('s')
+        with db.cursor() as cur:
+            _seed_group(cur, merged, ['p1', 'p2'], duration=200.0)
+        db.commit()
+
+        result = _run(db, monkeypatch, {'p1': 200.0, 'p2': 200.5})
+        db.commit()
+
+        assert result['false'] == 0
+        assert _maps(db, _current(merged)) == ['p1', 'p2']
+        assert _duration(db, _current(merged)) == pytest.approx(200.0)
 
     def test_prefetched_durations_avoid_a_second_server_listing(self, db, monkeypatch):
         # The legacy migration already listed this server earlier in the same boot

@@ -15,16 +15,21 @@ same audio re-added, or the same song on another server (the whole point of the
 N:1 track_server_map design), would fail the check and mint a duplicate id. So
 this gives EVERY fp_2 row a duration, not only the duplicates.
 
-Two upgrade paths, told apart by the shape of score.item_id, both converge here
+Upgrade paths, told apart by the shape of score.item_id, all converge here
 (no stored flag - a flag in app_config is purged as an unknown key on the next
 boot, which made an earlier version run on every restart):
 
 * From < 3.0.0 (item_id are provider ids): the legacy migration
-  (fingerprint_canonicalize) relabels to fp_2 AND backfills score.duration for
-  every relabelled row in one shot. This step then finds nothing NULL and no-ops.
+  (fingerprint_canonicalize) relabels to the current scheme AND backfills
+  score.duration for every relabelled row in one shot. This step then no-ops.
 * From an early 3.0.0 (item_id are ALREADY fp_2): the legacy migration no-ops,
   and THIS step does the work - it backfills the length of every fp_2 row and
   fixes the embedding-only false merges.
+* From a later scheme bump (e.g. fp_3 -> fp_4, which tightened the duration
+  tolerance): every EXISTING merge is re-confirmed in place at the current
+  tolerance and the ones whose files now differ in length by more than it are
+  unmapped; the stored length is kept, never dropped. Then the scheme relabel
+  bumps every row up (minting the next id on a collision), so it runs once.
 
 The signal is score.duration: a row WITH a duration was already confirmed, a row
 with a NULL duration was not. Every fp_2 NULL-duration row is looked at exactly
@@ -108,12 +113,14 @@ def _old_scheme_rows_exist(cur):
 
 
 def _groups_needing_check(cur):
-    """Older-version rows with NO duration yet, grouped (server, item_id) -> files.
+    """Older-version groups to look at, grouped (server, item_id) -> files.
 
-    The duration backfill only needs the rows still missing a length; the version
-    relabel afterwards handles the rest. Both single-file rows (stamp the length)
-    and multi-file rows (duplicates to confirm) come back; the file-list size tells
-    them apart.
+    Two kinds come back: single-file rows with NO length yet (backfill), and EVERY
+    multi-file group (a merge to re-confirm at the CURRENT DURATION_TOLERANCE_SECONDS,
+    whether or not its length is already stamped). The second kind is what lets a
+    scheme bump re-verify existing merges in place - the survivor keeps its stored
+    length untouched (the stamp only fills NULLs), and a group whose files now differ
+    by more than the tolerance is unmapped. The file-list size tells the two apart.
     """
     where, params = _old_scheme_where('s')
     cur.execute(
@@ -121,8 +128,9 @@ def _groups_needing_check(cur):
         "array_agg(tsm.file_path) "
         "FROM track_server_map tsm "
         "JOIN score s ON s.item_id = tsm.item_id "
-        "WHERE " + where + " AND s.duration IS NULL "
-        "GROUP BY tsm.server_id, s.item_id",
+        "WHERE " + where + " "
+        "GROUP BY tsm.server_id, s.item_id "
+        "HAVING count(*) > 1 OR bool_or(s.duration IS NULL)",
         params,
     )
     groups = {}
@@ -226,38 +234,39 @@ def _release(cur, db, acquired, own_conn, lock=_REPAIR_ADVISORY_LOCK):
 def _log_start_banner(total_groups, server_count):
     logger.info("=" * 64)
     logger.info(
-        "START OF CATALOGUE DURATION BACKFILL ON %d SONGS missing a track length "
-        "(%d server(s) involved). Every content id needs its length for future "
-        "cross-server dedup; some are also embedding-only false merges to fix.",
+        "START OF CATALOGUE DUPLICATE RE-VERIFY ON %d group(s) across %d server(s): "
+        "existing merges are re-confirmed at the current duration tolerance (a group "
+        "whose files now differ in length by more than it is split), and any row "
+        "still without a length gets one. Stored durations are kept, not dropped.",
         total_groups, server_count,
     )
     logger.info(
-        "One-time step: lengths come from the music server's metadata listing, "
-        "no audio is downloaded. Single songs get their length; real duplicates "
-        "keep theirs; false duplicates are unmapped so the next analysis "
-        "re-analyzes them under their own correct ids."
+        "One-time step per scheme version: lengths come from the music server's "
+        "metadata listing, no audio is downloaded. A real duplicate keeps its "
+        "mappings; a false one is unmapped so the next analysis re-analyzes each "
+        "file under its own correct id."
     )
     logger.info("=" * 64)
 
 
 def _log_progress(totals, total_groups):
     logger.info(
-        "Catalogue duration backfill: %d%% (%d/%d rows; %d lengths written, "
-        "%d real duplicates, %d false so far)",
+        "Catalogue duplicate re-verify: %d%% (%d/%d groups; %d confirmed, "
+        "%d split so far)",
         int(round(100.0 * totals['checked'] / total_groups)),
         totals['checked'], total_groups,
-        totals['backfilled'] + totals['real'], totals['real'], totals['false'],
+        totals['backfilled'] + totals['real'], totals['false'],
     )
 
 
 def _log_complete(total_groups, totals):
     logger.info("=" * 64)
     logger.info(
-        "CATALOGUE DURATION BACKFILL COMPLETE: of %d rows missing a length, "
-        "%d single songs and %d real duplicates got their length; %d false "
-        "duplicates were unmapped (%d mapping(s) removed) and %d had no length "
-        "on the server. The next analysis re-analyzes the unmapped files under "
-        "their own correct ids.",
+        "CATALOGUE DUPLICATE RE-VERIFY COMPLETE: of %d group(s) checked, %d single "
+        "songs and %d real duplicates were confirmed (lengths kept or stamped); %d "
+        "were split as false merges (%d mapping(s) unmapped) and %d had no length on "
+        "the server. The next analysis re-analyzes the unmapped files under their "
+        "own correct ids.",
         total_groups, totals['backfilled'], totals['real'], totals['false'],
         totals['removed'], totals['no_length'],
     )

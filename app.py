@@ -295,33 +295,37 @@ if not _is_worker:
         # table-derived (score.duration), so it is an instant no-op after the
         # legacy migration and after its own first pass - no stored flag that a
         # config cleanup could wipe, no second duration fetch on a legacy upgrade.
+        _repair = {}
         try:
             from tasks.duplicate_repair import repair_duplicate_track_maps
             # Reuse the whole-server listing the legacy migration just did so a
             # mixed upgrade (provider ids plus leftover older-scheme rows) does not
             # list the same server twice on one boot - its only slow step.
-            repair_duplicate_track_maps(
+            _repair = repair_duplicate_track_maps(
                 prefetched_durations=_relabel.get('server_durations'),
-            )
+            ) or {}
         except Exception as _repair_exc:
             app.logger.warning(
                 "Startup catalogue duplicate check failed (will retry next boot): %s",
                 _repair_exc,
             )
 
-        # Version-agnostic and marker-free: split any catalogue id that merged two
-        # distinct files sitting in the SAME folder (an album never holds one
-        # recording twice, so they are different songs). One indexed GROUP BY that
-        # returns only the conflicts, so it is an instant no-op once clean - the
-        # conflict itself is the "already done" signal, no scheme bump, no table.
-        try:
-            from tasks.duplicate_repair import split_same_folder_merges
-            split_same_folder_merges()
-        except Exception as _folder_exc:
-            app.logger.warning(
-                "Startup same-folder cleanup failed (will retry next boot): %s",
-                _folder_exc,
-            )
+        # Split any merge that grouped two distinct files from the SAME folder (an
+        # album never holds one recording twice). The migration paths already reject
+        # same-folder pairs as they resolve; this group-level pass catches the few
+        # transitive leftovers. It is GATED on a scheme migration having actually run
+        # this boot (older-scheme rows existed) - so once everything is on the current
+        # scheme it never runs and never scans track_server_map on a steady-state boot.
+        _migration_happened = bool(_relabel.get('relabelled')) or 'skipped' not in _repair
+        if _migration_happened:
+            try:
+                from tasks.duplicate_repair import split_same_folder_merges
+                split_same_folder_merges()
+            except Exception as _folder_exc:
+                app.logger.warning(
+                    "Startup same-folder cleanup failed (will retry next boot): %s",
+                    _folder_exc,
+                )
 
         # Finalize JWT_SECRET - must happen after DB init so the value can be
         # persisted and shared across all gunicorn workers.

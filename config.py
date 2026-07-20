@@ -857,8 +857,10 @@ DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOK
 DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "1.0"))
 # Version of the fp_<n> content-id scheme. New ids are minted as fp_<this>, and the startup
 # migration relabels every older-version fp_ id up to it exactly once (fp_2 -> fp_3 added track
-# duration). To force a one-time catalogue re-migration in the future, bump ONLY this number.
-CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "3"))
+# duration; fp_3 -> fp_4 re-verifies existing merges at the tightened DURATION_TOLERANCE_SECONDS,
+# splitting any group whose files now differ in length by more than it). To force a one-time
+# catalogue re-migration in the future, bump ONLY this number.
+CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "4"))
 
 # --- Dashboard "Browse" listing view ---
 # Rows per page in the Song/Artist/Album browse view opened from the dashboard.
