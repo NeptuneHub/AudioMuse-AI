@@ -877,7 +877,7 @@ FPCALC_BINARY = os.getenv("FPCALC", "fpcalc")
 CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "True").lower() == "true"
 # Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
 # run. Editable in the setup wizard (advanced section) and applied on the next analysis.
-CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "500"))
+CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "1000"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
 # Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.
