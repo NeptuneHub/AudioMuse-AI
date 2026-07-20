@@ -2,6 +2,7 @@
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
 ![Media Server Support: Navidrome 0.62.0, Jellyfin 12.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80, Plex 1.43.2](https://img.shields.io/badge/Media%20Server-Navidrome%200.62.0%2C%20Jellyfin%2012.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80%2C%20Plex%201.43.2-blue?style=flat-square&logo=server&logoColor=white)
 <a href="https://www.bestpractices.dev/projects/13329"><img src="https://www.bestpractices.dev/projects/13329/badge"></a>
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/NeptuneHub/AudioMuse-AI?utm_source=badge)
 
 <p align="center">
 <strong>⭐ Leave a star on this project:</strong> One shines alone; together, they make it visible and keep it alive.

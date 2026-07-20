@@ -1,0 +1,8 @@
+# Dependencies for running the CodSpeed performance benchmarks in test/benchmarks/.
+# These benchmarks target self-contained, dependency-light hot paths, so they
+# only need numpy (for the sanitization helpers) plus the CodSpeed pytest plugin.
+# numpy is pinned to match test/requirements.txt and requirements/common.txt.
+
+numpy==1.26.4
+pytest>=7.0.0
+pytest-codspeed
