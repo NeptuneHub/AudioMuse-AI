@@ -6,25 +6,27 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""The centralized catalogue is append-only: songs are unbound, never deleted.
+"""The catalogue never deletes a song that is still on a server.
 
-`score` holds one row per distinct recording, keyed by the fp_2 hash of its own
-audio. That id is a property of the AUDIO, not of any server, and the row carries
-the song's analysis - MusiCNN, CLAP and lyrics embeddings that cost real compute to
-produce and cannot be recovered once dropped.
+`score` holds one row per distinct recording, keyed by the fp hash of its own
+audio, and the row carries the analysis - MusiCNN, CLAP and lyrics embeddings that
+cost real compute to produce. So losing ONE server never deletes the row: it is
+only unbound from that server (its track_server_map row goes), stays in the
+catalogue, and is hidden from that server's results by the availability filter; a
+later sweep re-binds it with no re-analysis. Removing a server or migrating
+providers change only `track_server_map`.
 
-So nothing that reasons about SERVERS may delete from it. Removing a server, running
-a cleaning pass, or migrating to a new provider all change only `track_server_map`:
-the song stops being reachable on that server and is hidden from its results by the
-availability filter, while its analysis stays put. If the file ever comes back, a
-sweep re-binds it with no re-analysis.
-
-The one sanctioned deleter is the fingerprint canonicalizer, and only because it
-MERGES: it folds duplicate rows into the canonical row that already holds the same
-audio's analysis, so nothing is lost.
+Two deleters are sanctioned, and both only remove a row whose audio is gone from
+every library or already preserved elsewhere:
+* the fingerprint canonicalizer's duplicate MERGE, which folds a row into the
+  canonical row that already holds the same audio's analysis (nothing lost);
+* the cleaning pass, which deletes a row bound to NO server (an orphan) - the file
+  is gone from every library, so the analysis is re-created if it ever returns -
+  and only when every server was read completely, so an incomplete view can never
+  delete a track still on a server.
 
 Main Features:
-* No module may DELETE FROM score except the canonicalizer's duplicate merge
+* Only the canonicalizer merge and the cleaning orphan-delete may DELETE FROM score
 * embedding / clap_embedding / lyrics_embedding cascade from score, so they are
   covered by the same rule
 """
@@ -41,10 +43,12 @@ _SKIP_DIRS = {
     'node_modules', '__pycache__',
 }
 
-# The ONLY sanctioned deleter: the canonicalizer's duplicate merge, which deletes a
-# row only after folding it into the canonical row for the same audio.
+# The sanctioned deleters: the canonicalizer's duplicate merge (deletes a row only
+# after folding it into the canonical row for the same audio), and the cleaning pass
+# (deletes only orphans bound to no server, and only on a complete server view).
 _SANCTIONED = {
     'tasks/fingerprint_canonicalize.py': 'duplicate merge into the canonical row',
+    'tasks/cleaning.py': 'orphan delete: tracks bound to no server, complete view only',
 }
 
 _DELETE_SCORE = re.compile(r'DELETE\s+FROM\s+score\b', re.IGNORECASE)
@@ -60,7 +64,7 @@ def _tracked_python_files():
             yield path.relative_to(REPO_ROOT).as_posix(), path
 
 
-def test_nothing_but_the_canonicalizer_merge_may_delete_from_score():
+def test_only_sanctioned_deleters_may_delete_from_score():
     offenders = []
     for rel, path in _tracked_python_files():
         if rel in _SANCTIONED:

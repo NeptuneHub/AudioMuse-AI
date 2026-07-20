@@ -14,23 +14,25 @@ server through the sweep's OWN enumeration and pruning
 filter applied), so the prune baseline can never disagree with the enumeration
 that created the mappings, and removes ONLY that server's rows from
 track_server_map for tracks it no longer has. The
-centralized catalogue is NEVER touched: a song that disappeared from one
-server keeps its analysis, embeddings and mappings on every other server, and
-a song present on no server at all stays in the catalogue as unbound (it
-simply stops appearing in server-scoped results via the availability mask).
-Because no catalogue row changes, no index rebuild is needed. A server whose
-fetch fails, returns nothing, or looks partial is skipped, so an incomplete
-library view can never unbind valid mappings.
+A song that disappeared from ONE server keeps its analysis, embeddings and
+mappings on every other server. A song bound to NO server (an orphan) is
+DELETED from the catalogue - it is gone from every library, so its analysis is
+removed and simply re-created if the file ever returns. That delete happens
+ONLY when every server was read completely (none failed, empty or partial), so
+an incomplete view can never delete a track still on a server; the similarity
+indexes keep working and drop the removed ids until their next rebuild.
 
 Main Features:
 * identify_and_clean_orphaned_albums_task: the RQ entry point that fetches each
-  server's tracks and prunes that server's stale mappings only.
+  server's tracks, prunes that server's stale mappings, and deletes the tracks
+  left bound to no server.
 * Reuses the sweep's public helpers rather than re-implementing the fetch and
   the prune, so cleaning and the sweep can never drift apart.
 * Refreshes each server's stored library size (``music_servers.track_count``)
   from the fetch it already performs, keeping the dashboard's coverage
   denominator current on every cleaning run.
-* Reports (never deletes) the catalogue tracks currently bound to no server.
+* Deletes catalogue tracks bound to no server, but only when every server was
+  read completely; otherwise it just reports them and deletes nothing.
 """
 
 import time
@@ -208,6 +210,39 @@ def identify_and_clean_orphaned_albums_task():
             orphaned_albums_list.sort(key=lambda x: x["track_count"], reverse=True)
             orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
 
+            # A track bound to NO server is gone from every library, so its
+            # catalogue row is deleted (embeddings cascade); it is re-analyzed if
+            # the file returns. Guarded twice: fully_unbound is already empty when
+            # any server failed, and it is refused here if a server returned a
+            # partial listing OR if orphans are an implausibly large share of the
+            # catalogue - either signals a bad view that must never delete a track
+            # still on a server. The indexes drop the removed ids on their next
+            # rebuild; until then a stale hit is simply dropped from translation.
+            deleted_count = 0
+            deletable = bool(fully_unbound) and not failed_servers and not refused_servers
+            if deletable and len(fully_unbound) > len(database_track_ids) // 2:
+                logger.warning(
+                    "Cleaning: %d of %d catalogue tracks look orphaned - too large a "
+                    "share for a healthy library; deleting nothing this run.",
+                    len(fully_unbound), len(database_track_ids),
+                )
+                deletable = False
+            if deletable:
+                orphan_ids = list(fully_unbound)
+                with get_db() as conn, conn.cursor() as cur:
+                    for start in range(0, len(orphan_ids), 5000):
+                        cancel()
+                        chunk = orphan_ids[start:start + 5000]
+                        cur.execute(
+                            "DELETE FROM score WHERE item_id = ANY(%s)", (chunk,)
+                        )
+                        deleted_count += len(chunk)
+                log_and_update_main(
+                    f"Deleted {deleted_count} orphaned catalogue tracks (on no "
+                    "server); their analysis is re-created if the files return.",
+                    90,
+                )
+
             summary = {
                 "total_media_server_tracks": total_tracks_on_servers,
                 "total_catalogue_tracks_present": len(present_canonical_ids),
@@ -219,7 +254,7 @@ def identify_and_clean_orphaned_albums_task():
                 "unbound_by_server": unbound_by_server,
                 "failed_servers": failed_servers,
                 "prune_refused_servers": refused_servers,
-                "deleted_count": 0,
+                "deleted_count": deleted_count,
             }
 
             state = TASK_STATUS_FAILURE if failed_servers else TASK_STATUS_SUCCESS
@@ -239,8 +274,8 @@ def identify_and_clean_orphaned_albums_task():
             else:
                 message = (
                     f"Cleanup complete: {unbound_total} stale server mappings unbound; "
-                    f"{len(fully_unbound)} catalogue tracks are now on no server and are "
-                    "hidden from results by the per-server availability filter."
+                    f"{deleted_count} of {len(fully_unbound)} orphaned catalogue tracks "
+                    "(on no server) deleted."
                 )
             log_and_update_main(message, 100, task_state=state, final_summary_details=summary)
             return {"status": "SUCCESS" if not failed_servers else "FAILURE",

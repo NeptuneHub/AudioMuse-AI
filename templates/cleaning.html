@@ -434,13 +434,24 @@
             const summaryDiv = document.getElementById('cleaning-summary');
 
             if ((data.unbound_mappings || 0) > 0 || (data.orphaned_tracks_count || 0) > 0) {
+                const orphans = data.orphaned_tracks_count || 0;
+                const deleted = data.deleted_count || 0;
+                let orphanMsg;
+                if (deleted > 0) {
+                    orphanMsg = `Cleanup finished. Deleted ${deleted} track(s) that were on no server; their analysis is re-created if the files return.`;
+                } else if (orphans > 0) {
+                    orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server but were NOT deleted this run (a server could not be read completely, or an implausibly large share looked orphaned); re-run when every server is reachable.`;
+                } else {
+                    orphanMsg = `Cleanup finished. ${data.unbound_mappings} stale server mapping(s) unbound.`;
+                }
                 summaryDiv.innerHTML = `
                     <h3>✅ Library Cleanup Completed</h3>
                     <p><strong>Total tracks on media server(s):</strong> ${data.total_media_server_tracks}</p>
                     <p><strong>Total tracks in database:</strong> ${data.total_database_tracks}</p>
                     <p><strong>Stale server mappings unbound:</strong> ${data.unbound_mappings}</p>
-                    <p><strong>Catalogue tracks currently on no server:</strong> ${data.orphaned_tracks_count}</p>
-                    <p style="color: var(--color-success); font-weight: bold;">Cleanup finished. The catalogue itself was not modified; tracks on no server are hidden by the per-server availability filter.</p>
+                    <p><strong>Catalogue tracks on no server:</strong> ${orphans}</p>
+                    <p><strong>Orphaned tracks deleted:</strong> ${deleted}</p>
+                    <p style="color: var(--color-success); font-weight: bold;">${orphanMsg}</p>
                 `;
             } else {
                 summaryDiv.innerHTML = `

@@ -6,13 +6,13 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Multi-server library cleanup: unbind-only semantics.
+"""Multi-server library cleanup: per-server unbind plus orphan delete.
 
 Drives identify_and_clean_orphaned_albums_task with the media-server registry,
-provider fetches and DB helpers faked, asserting that cleanup NEVER deletes
-catalogue rows: it only prunes each healthy server's own track_server_map rows,
-skips servers whose library fetch fails or returns nothing, and reports
-(without touching) the tracks currently bound to no server.
+provider fetches and DB helpers faked, asserting that it prunes each healthy
+server's own track_server_map rows, skips servers whose fetch fails, returns
+nothing or looks partial, and DELETES the tracks bound to no server only when
+every server was read completely.
 
 Main Features:
 * Uses the same full-catalogue fetch the alignment sweeps use (fetch_all_tracks)
@@ -20,7 +20,7 @@ Main Features:
 * Per-server pruning receives exactly that server's present provider ids
 * Full coverage across servers unbinds nothing and reports zero orphans
 * The legacy [None] registry fallback still counts its tracks as present
-* Tracks on no server are reported as kept, never deleted
+* Tracks on no server are deleted on a complete view, kept on an incomplete one
 """
 
 import sys
@@ -42,7 +42,7 @@ def _server(server_id, name, default=False):
 
 def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   reverse_by_server, db_track_ids, author_by_id=None,
-                  prune_results=None, stored_counts=None):
+                  prune_results=None, stored_counts=None, mark_refused=None):
     from tasks import cleaning
     from tasks import multiserver_sync
 
@@ -115,8 +115,12 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     monkeypatch.setattr(multiserver_sync.provider_probe, 'fetch_all_tracks', fake_fetch)
 
+    refused_ids = set(mark_refused or ())
+
     def fake_prune(db, server_id, present_ids, refused=None):
         pruned_calls.append((server_id, sorted(present_ids)))
+        if refused is not None and server_id in refused_ids:
+            refused.append(server_id)
         return (prune_results or {}).get(server_id, 0)
 
     monkeypatch.setattr(multiserver_sync, 'prune_stale_mappings', fake_prune)
@@ -201,7 +205,7 @@ class TestCleaningSkipsUnreadableServers:
         assert result['orphaned_tracks_count'] == 0
 
 
-class TestCleaningUnbindOnly:
+class TestCleaningOrphanHandling:
     def test_full_coverage_unbinds_nothing_and_reports_clean(self, monkeypatch):
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
@@ -223,7 +227,9 @@ class TestCleaningUnbindOnly:
         assert pruned == [('s1', ['j1', 'j2']), ('s2', ['n1'])]
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
 
-    def test_tracks_on_no_server_are_reported_kept_never_deleted(self, monkeypatch):
+    def test_tracks_on_no_server_are_deleted_when_view_is_complete(self, monkeypatch):
+        # Both servers were read completely, so the tracks bound to no server
+        # (fp_3, fp_4) are gone from every library and get deleted from the catalogue.
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
@@ -232,15 +238,15 @@ class TestCleaningUnbindOnly:
                 's2': [{'id': 'n1'}],
             },
             reverse_by_server={
-                's1': {'j1': 'fp_1'},
+                's1': {'j1': 'fp_1', 'j9': 'fp_5'},
                 's2': {'n1': 'fp_2'},
             },
-            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4'},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4', 'fp_5'},
             prune_results={'s1': 1, 's2': 2},
         )
         assert result['status'] == 'SUCCESS'
         assert result['orphaned_tracks_count'] == 2
-        assert result['deleted_count'] == 0
+        assert result['deleted_count'] == 2
         assert result['unbound_mappings'] == 3
         assert result['unbound_by_server'] == {'One': 1, 'Two': 2}
         reported = {
@@ -250,6 +256,36 @@ class TestCleaningUnbindOnly:
         }
         assert reported == {'fp_3', 'fp_4'}
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+
+    def test_refused_partial_listing_reports_orphans_but_deletes_nothing(self, monkeypatch):
+        # A server that returned a partial listing (prune refused) means the view is
+        # unreliable, so orphans are reported but NOT deleted - an unbound-but-present
+        # track must never be dropped on incomplete data.
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
+            tracks_by_server={'s1': [{'id': 'j1'}], 's2': [{'id': 'n1'}]},
+            reverse_by_server={'s1': {'j1': 'fp_1'}, 's2': {'n1': 'fp_2'}},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3'},
+            mark_refused={'s2'},
+        )
+        assert 'Two' in result['prune_refused_servers']
+        assert result['orphaned_tracks_count'] == 1
+        assert result['deleted_count'] == 0
+
+    def test_implausibly_many_orphans_are_not_deleted(self, monkeypatch):
+        # More than half the catalogue looking orphaned on a complete view is a bogus
+        # listing, so the guard reports them and deletes nothing.
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True)],
+            tracks_by_server={'s1': [{'id': 'j1'}]},
+            reverse_by_server={'s1': {'j1': 'fp_1'}},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4', 'fp_5'},
+        )
+        assert result['status'] == 'SUCCESS'
+        assert result['orphaned_tracks_count'] == 4
+        assert result['deleted_count'] == 0
 
 
 class TestCleaningLegacyFallback:
