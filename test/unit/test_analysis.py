@@ -215,7 +215,8 @@ _FAKE_EMBEDDING = np.sin(np.arange(1, 201, dtype=np.float32))
 
 def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map_upserts,
                     analyzed_embedding=None, existing_ids_fn=None, persist_calls=None,
-                    tracks=None, job=None, clap_broken=False, lyrics_enabled=False):
+                    tracks=None, job=None, clap_broken=False, lyrics_enabled=False,
+                    download_fn=None):
     import importlib
     import tasks.analysis.album as analysis
     import tasks.analysis.helper as helper
@@ -230,7 +231,8 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
     monkeypatch.setattr(helper, 'save_task_status', lambda *args, **kwargs: None)
     monkeypatch.setattr(analysis, 'get_tracks_from_album', lambda album_id: album_tracks)
     monkeypatch.setattr(
-        analysis, 'download_track', lambda temp_dir, track: str(tmp_path / 'gone.flac')
+        analysis, 'download_track',
+        download_fn or (lambda temp_dir, track: str(tmp_path / 'gone.flac')),
     )
     monkeypatch.setattr(song, 'load_musicnn_sessions', lambda model_paths: {})
     monkeypatch.setattr(analysis, 'cleanup_musicnn_sessions', lambda *args, **kwargs: None)
@@ -335,6 +337,39 @@ def test_new_track_persists_under_signature_id_and_maps_it(monkeypatch, tmp_path
     assert persisted_ids == [expected_id]
     assert item['_catalog_item_id'] == expected_id
     assert map_upserts == [('srv-def', {'prov1': (expected_id, 'fingerprint', None)})]
+
+
+def test_missing_source_file_is_skipped_and_album_still_succeeds(monkeypatch, tmp_path):
+    from tasks import simhash
+
+    ok = {'Id': 'prov_ok', 'Name': 'Present', 'AlbumArtist': 'Artist'}
+    gone = {'Id': 'prov_gone', 'Name': 'Deleted', 'AlbumArtist': 'Artist'}
+
+    def _download(temp_dir, track):
+        return None if track['Id'] == 'prov_gone' else str(tmp_path / 'present.flac')
+
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch, tmp_path, ok, simhash.CatalogResolver(), persisted_ids, map_upserts,
+        tracks=[ok, gone], download_fn=_download,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert result['tracks_analyzed'] == 1
+    assert result['tracks_unavailable'] == 1
+
+
+def test_album_fails_when_every_track_source_is_unavailable(monkeypatch, tmp_path):
+    import pytest
+    from tasks import simhash
+
+    gone = {'Id': 'prov_gone', 'Name': 'Deleted', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    with pytest.raises(RuntimeError):
+        _run_album_impl(
+            monkeypatch, tmp_path, gone, simhash.CatalogResolver(), persisted_ids,
+            map_upserts, tracks=[gone], download_fn=lambda temp_dir, track: None,
+        )
 
 
 def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path):

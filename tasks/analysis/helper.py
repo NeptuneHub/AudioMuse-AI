@@ -283,10 +283,14 @@ def resolve_track_identity(fingerprint_index, embedding, item, source_server_id,
 
     provider_id = provider_item_id(item)
     refresh_fingerprint_index(fingerprint_index)
-    kind, resolved_id = fingerprint_index.resolve(embedding, duration=duration)
+    kind, resolved_id = fingerprint_index.resolve(
+        embedding, duration=duration, path=item.get('FilePath'),
+        fingerprint=item.get('_chromaprint'),
+    )
     if kind == 'new' and resolved_id is not None:
         kind, resolved_id = claim_new_canonical_id(
-            fingerprint_index, resolved_id, embedding, duration=duration
+            fingerprint_index, resolved_id, embedding, duration=duration,
+            fingerprint=item.get('_chromaprint'),
         )
     if resolved_id is None:
         resolved_id = simhash.unsignable_canonical_id(source_server_id, provider_id)
@@ -563,6 +567,30 @@ def _fetch_row_duration(item_id):
     return float(row[0]) if row and row[0] is not None else None
 
 
+def _fetch_row_fingerprint(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT c.fingerprint FROM chromaprint c "
+            "JOIN track_server_map m "
+            "ON m.server_id = c.server_id AND m.provider_track_id = c.provider_track_id "
+            "WHERE m.item_id = %s AND c.fingerprint IS NOT NULL "
+            "LIMIT 1",
+            (str(item_id),),
+        )
+        row = cur.fetchone()
+    return bytes(row[0]) if row and row[0] is not None else None
+
+
+def _fetch_row_paths(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT file_path FROM track_server_map "
+            "WHERE item_id = %s AND file_path IS NOT NULL",
+            (str(item_id),),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 _FINGERPRINT_INDEX_TTL_SECONDS = 300.0
 
 
@@ -624,6 +652,8 @@ def load_fingerprint_index():
     resolver = CatalogResolver(
         embedding_fetcher=_fetch_embedding_blob,
         duration_fetcher=_fetch_row_duration,
+        path_fetcher=_fetch_row_paths,
+        fingerprint_fetcher=_fetch_row_fingerprint,
     )
     with get_db() as conn, conn.cursor() as cur:
         cur.execute("SELECT now()")
@@ -650,19 +680,27 @@ def catalogue_embedding(item_id):
     return vector if vector.size else None
 
 
-def _is_same_recording(embedding, other, duration=None, other_duration_fn=None):
+def _is_same_recording(embedding, other, duration=None, other_duration_fn=None,
+                       fingerprint=None, other_fingerprint_fn=None):
     from tasks.simhash import cosine_distance, durations_compatible
-    from config import DUPLICATE_DISTANCE_THRESHOLD_COSINE
+    from tasks.chromaprint import chromaprints_agree
+    from config import DUPLICATE_DISTANCE_THRESHOLD_COSINE, CHROMAPRINT_GATE_ENABLED
 
     if other is None:
         return False
     if cosine_distance(embedding, other) > DUPLICATE_DISTANCE_THRESHOLD_COSINE:
         return False
     other_duration = other_duration_fn() if other_duration_fn is not None else None
-    return durations_compatible(duration, other_duration)
+    if not durations_compatible(duration, other_duration):
+        return False
+    if CHROMAPRINT_GATE_ENABLED and fingerprint:
+        other_fp = other_fingerprint_fn() if other_fingerprint_fn is not None else None
+        if chromaprints_agree(fingerprint, other_fp) is False:
+            return False
+    return True
 
 
-def claim_new_canonical_id(resolver, minted_id, embedding, duration=None):
+def claim_new_canonical_id(resolver, minted_id, embedding, duration=None, fingerprint=None):
     from tasks.simhash import mint_canonical_id, signature_from_canonical_id
 
     if not minted_id:
@@ -678,6 +716,7 @@ def claim_new_canonical_id(resolver, minted_id, embedding, duration=None):
                     embedding=embedding,
                     signature=signature_from_canonical_id(candidate),
                     duration=duration,
+                    fingerprint=fingerprint,
                 )
             return ('new', candidate)
 
@@ -685,6 +724,8 @@ def claim_new_canonical_id(resolver, minted_id, embedding, duration=None):
         if _is_same_recording(
             embedding, stored, duration=duration,
             other_duration_fn=lambda candidate=candidate: _fetch_row_duration(candidate),
+            fingerprint=fingerprint,
+            other_fingerprint_fn=lambda candidate=candidate: _fetch_row_fingerprint(candidate),
         ):
             logger.info(
                 "Canonical id %s was minted concurrently by another worker for the "

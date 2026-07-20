@@ -251,6 +251,7 @@ def _confirm_candidates(cur, ids, left, right, duration_of):
             rows = np.unique(np.concatenate((left_slice, right_slice)))
             vectors = np.zeros((rows.size, simhash.SIGNATURE_BITS), dtype=np.float32)
             slot_of = {ids[int(row)]: slot for slot, row in enumerate(rows)}
+            fingerprint_of = {}
             for chunk in range(0, rows.size, _CHUNK_ROWS):
                 wanted = [ids[int(row)] for row in rows[chunk:chunk + _CHUNK_ROWS]]
                 fetch.execute(
@@ -261,11 +262,31 @@ def _confirm_candidates(cur, ids, left, right, duration_of):
                     vector = np.frombuffer(blob, dtype=np.float32)
                     if vector.size == simhash.SIGNATURE_BITS:
                         vectors[slot_of[str(item_id)]] = vector
+                if config.CHROMAPRINT_GATE_ENABLED:
+                    fetch.execute(
+                        "SELECT DISTINCT ON (m.item_id) m.item_id, c.fingerprint "
+                        "FROM track_server_map m JOIN chromaprint c "
+                        "ON c.server_id = m.server_id "
+                        "AND c.provider_track_id = m.provider_track_id "
+                        "WHERE m.item_id = ANY(%s) AND c.fingerprint IS NOT NULL",
+                        (wanted,),
+                    )
+                    for item_id, blob in fetch.fetchall():
+                        if blob is not None:
+                            fingerprint_of[str(item_id)] = bytes(blob)
             confirmed = simhash.confirm_pairs(
                 vectors[np.searchsorted(rows, left_slice)],
                 vectors[np.searchsorted(rows, right_slice)],
                 left_durations=[duration_of.get(ids[int(row)]) for row in left_slice],
                 right_durations=[duration_of.get(ids[int(row)]) for row in right_slice],
+                left_fingerprints=(
+                    [fingerprint_of.get(ids[int(row)]) for row in left_slice]
+                    if fingerprint_of else None
+                ),
+                right_fingerprints=(
+                    [fingerprint_of.get(ids[int(row)]) for row in right_slice]
+                    if fingerprint_of else None
+                ),
             )
             if confirmed.any():
                 kept_left.append(left_slice[confirmed])
@@ -277,6 +298,35 @@ def _confirm_candidates(cur, ids, left, right, duration_of):
         empty = np.empty(0, dtype=np.int64)
         return empty, empty
     return np.concatenate(kept_left), np.concatenate(kept_right)
+
+
+def _folders_for_rows(cur, ids, left, right, count):
+    """Folder key per row for the rows that appear in a candidate pair, else None.
+
+    Feeds merge_pairs so the folder rule is applied WHILE the groups are built:
+    two distinct files in one folder never land in the same group, so no
+    same-folder merge is ever formed (no wrong id to unmap later). Legacy rows
+    carry score.file_path; a row without one (e.g. an already-canonical target)
+    is left unconstrained.
+    """
+    folders = [None] * count
+    if left.size == 0:
+        return folders
+    involved = sorted({int(row) for row in np.concatenate((left, right))})
+    path_of = {}
+    wanted = list({ids[row] for row in involved})
+    for begin in range(0, len(wanted), _CHUNK_ROWS):
+        chunk = wanted[begin:begin + _CHUNK_ROWS]
+        cur.execute(
+            "SELECT item_id, file_path FROM score "
+            "WHERE file_path IS NOT NULL AND item_id = ANY(%s)",
+            (chunk,),
+        )
+        for item_id, file_path in cur.fetchall():
+            path_of[str(item_id)] = file_path
+    for row in involved:
+        folders[row] = simhash.folder_key(path_of.get(ids[row]))
+    return folders
 
 
 def _build_mapping(cur, source_id):
@@ -399,7 +449,11 @@ def _build_mapping(cur, source_id):
     # would then mint a THIRD id for the same audio.
     keep = right >= canonical_loaded
     left, right = left[keep], right[keep]
-    parent = simhash.merge_pairs(loaded, packed, left, right)
+    # Fold the folder rule INTO the id calculation: merge_pairs will not put two
+    # distinct files from one folder in the same group, so a same-folder merge is
+    # never formed here (no wrong id to unmap in a second pass).
+    folders = _folders_for_rows(cur, ids, left, right, loaded)
+    parent = simhash.merge_pairs(loaded, packed, left, right, folders=folders)
 
     mapping = {}
     duplicate_mapping = {}
@@ -699,8 +753,11 @@ def relabel_scheme_to_current(cur, only_with_duration=True):
     """Bump every older-version content id (fp_2) up to the current scheme (fp_3).
 
     A pure key rewrite - the signature body is unchanged, only the version digit -
-    so there is no re-hashing, no re-clustering and no id collision (fp_3 can never
-    equal an fp_2). Reuses the same drop-FK / single UPDATE / repoint-index path the
+    so there is no re-hashing and no re-clustering. A bumped fp_2 can still land on
+    an fp_3 that already exists (the duration veto keeps two same-signature rows
+    apart), so each target is minted through mint_canonical_id and steps to the next
+    free id instead of colliding on score_pkey. Reuses the same drop-FK / single
+    UPDATE / repoint-index path the
     provider relabel uses. ``only_with_duration`` bumps rows that already carry a
     length PLUS orphaned old-scheme rows no server maps: a server the backfill merely
     skipped keeps its old id and retries next boot, but an orphan (no track_server_map
@@ -721,7 +778,14 @@ def relabel_scheme_to_current(cur, only_with_duration=True):
     old_ids = [row[0] for row in cur.fetchall()]
     if not old_ids:
         return 0
-    mapping = {old: simhash.to_current_scheme_id(old) for old in old_ids}
+    cur.execute("SELECT item_id FROM score")
+    taken = {row[0] for row in cur.fetchall()}
+    taken.difference_update(old_ids)
+    mapping = {}
+    for old in old_ids:
+        new = simhash.mint_canonical_id(simhash.signature_from_canonical_id(old), taken)
+        taken.add(new)
+        mapping[old] = new
 
     fk_embedding = find_fk(cur, 'embedding', 'item_id') or 'embedding_item_id_fkey'
     fk_clap = find_fk(cur, 'clap_embedding', 'item_id') or 'clap_embedding_item_id_fkey'

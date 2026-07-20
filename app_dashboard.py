@@ -34,11 +34,13 @@ import json
 import logging
 import time
 import psycopg2
-from flask import Blueprint, render_template, jsonify
+from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 
+import config
 from database import get_db
 from taskqueue import redis_conn
+from tasks.mediaserver import registry
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,263 @@ def dashboard_page():
         description: HTML page rendered.
     """
     return render_template('dashboard.html', title='AudioMuse-AI - Dashboard', active='dashboard')
+
+
+# --- Browse view: paginated Song / Artist / Album listing --------------------
+# A generic listing the dashboard numbers link into. Every query is LIMIT-bounded
+# (page_size + 1, to derive has_more) so NO request can ever return the whole
+# catalogue, and the response carries METADATA ONLY (title/author/album, plus the
+# per-copy file PATHS for the duplicates view) - never the internal fp_ item_id -
+# so there is nothing to leak. Deep pages are clamped by DASHBOARD_BROWSE_MAX_OFFSET
+# so a 1M-row table can never be walked end to end.
+
+_BROWSE_KINDS = ('songs', 'artists', 'albums')
+_BROWSE_FILTERS = ('all', 'unique', 'duplicates', 'orphan')
+_BROWSE_MIN_QUERY = 2
+
+
+@dashboard_bp.route('/browse', methods=['GET'])
+def browse_page():
+    try:
+        servers = [
+            {'name': s['name'], 'is_default': bool(s['is_default'])}
+            for s in registry.list_servers()
+        ]
+    except Exception:
+        logger.debug("browse: could not list servers", exc_info=True)
+        servers = []
+    return render_template(
+        'browse.html', title='AudioMuse-AI - Browse', active='browse',
+        browse_servers=servers, page_size=config.DASHBOARD_BROWSE_PAGE_SIZE,
+        max_offset=config.DASHBOARD_BROWSE_MAX_OFFSET,
+    )
+
+
+def _browse_like(value):
+    # ILIKE contains-pattern with the user's own % / _ / \ escaped, so a search for
+    # "50%" matches a literal percent instead of acting as a wildcard.
+    escaped = value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return '%' + escaped + '%'
+
+
+def _browse_songs_sql(server_id, filt, q):
+    params = []
+    select = ("SELECT s.title, s.author, s.album, s.album_artist, s.year, "
+              "NULL::bigint AS copies")
+    frm = " FROM score s"
+    where = []
+    if filt == 'orphan':
+        where.append("NOT EXISTS (SELECT 1 FROM track_server_map t "
+                     "WHERE t.item_id = s.item_id)")
+    elif filt == 'duplicates':
+        # Songs with more than one provider FILE on this server (same
+        # duplicate_copies definition the dashboard uses). The per-copy FILE PATHS
+        # are returned so the user can see WHAT each copy is and judge whether the
+        # merge is a real duplicate or a wrong one - never a provider/fp id, only
+        # the on-disk path. Most-duplicated on top. Server is required.
+        select = ("SELECT s.title, s.author, s.album, s.album_artist, s.year, "
+                  "d.copies, d.files")
+        frm = (" FROM (SELECT item_id, COUNT(*) AS copies, "
+               "array_agg(COALESCE(NULLIF(file_path, ''), '(no file path)') "
+               "ORDER BY file_path NULLS LAST) AS files "
+               "FROM track_server_map WHERE server_id = %s "
+               "GROUP BY item_id HAVING COUNT(*) > 1) d "
+               "JOIN score s ON s.item_id = d.item_id")
+        params.append(server_id)
+    elif server_id:
+        where.append("EXISTS (SELECT 1 FROM track_server_map t "
+                     "WHERE t.item_id = s.item_id AND t.server_id = %s)")
+        params.append(server_id)
+    if q:
+        where.append("s.search_u ILIKE %s")
+        params.append(_browse_like(q))
+    sql = select + frm
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    # item_id is only a stable tiebreaker for deterministic paging; it is never
+    # selected, so it cannot appear in the response.
+    if filt == 'duplicates':
+        sql += " ORDER BY d.copies DESC, s.author ASC, s.title ASC, s.item_id ASC"
+    else:
+        sql += " ORDER BY s.author ASC, s.title ASC, s.item_id ASC"
+    return sql, params
+
+
+def _browse_artists_sql(server_id, q):
+    params = []
+    if server_id:
+        author_col = "s.author"
+        sql = ("SELECT s.author FROM track_server_map m "
+               "JOIN score s ON s.item_id = m.item_id "
+               "WHERE m.server_id = %s AND s.author IS NOT NULL AND s.author <> ''")
+        params.append(server_id)
+    else:
+        author_col = "author"
+        sql = "SELECT author FROM score WHERE author IS NOT NULL AND author <> ''"
+    if q:
+        sql += " AND " + author_col + " ILIKE %s"
+        params.append(_browse_like(q))
+    sql += " GROUP BY 1 ORDER BY 1 ASC"
+    return sql, params
+
+
+def _browse_albums_sql(server_id, q):
+    params = []
+    aa = "COALESCE(NULLIF(s.album_artist, ''), s.author)"
+    if server_id:
+        frm = ("FROM track_server_map m JOIN score s ON s.item_id = m.item_id "
+               "WHERE m.server_id = %s AND s.album IS NOT NULL AND s.album <> ''")
+        params.append(server_id)
+    else:
+        frm = "FROM score s WHERE s.album IS NOT NULL AND s.album <> ''"
+    sql = "SELECT " + aa + " AS aa, s.album " + frm
+    if q:
+        sql += " AND (s.album ILIKE %s OR " + aa + " ILIKE %s)"
+        params.append(_browse_like(q))
+        params.append(_browse_like(q))
+    sql += " GROUP BY 1, 2 ORDER BY 1 ASC, 2 ASC"
+    return sql, params
+
+
+def _browse_serialize(kind, rows):
+    out = []
+    if kind == 'artists':
+        for r in rows:
+            out.append({'artist': r[0]})
+    elif kind == 'albums':
+        for r in rows:
+            out.append({'album_artist': r[0], 'album': r[1]})
+    else:
+        for r in rows:
+            item = {
+                'title': r[0], 'author': r[1], 'album': r[2],
+                'album_artist': r[3], 'year': r[4],
+                'copies': int(r[5]) if r[5] is not None else None,
+            }
+            # The duplicates query adds a 7th column: the per-copy file paths.
+            if len(r) > 6:
+                item['files'] = list(r[6]) if r[6] is not None else []
+            out.append(item)
+    return out
+
+
+def _browse_total(content, kind, server_id, server_name, filt, has_q):
+    # Cheap pager total from the 60s snapshot (the exact number the user clicked);
+    # None means "unknown, use has_more" - the case for search and for the few
+    # filters whose live count would need its own scan.
+    if has_q:
+        return None
+    servers = content.get('music_servers') or []
+
+    def _server_row():
+        for s in servers:
+            if s.get('name') == server_name and not s.get('is_orphan') \
+                    and not s.get('is_overlap'):
+                return s
+        return None
+
+    if kind == 'songs':
+        if filt == 'orphan':
+            for s in servers:
+                if s.get('is_orphan'):
+                    return s.get('unique_songs')
+            return None
+        if filt == 'duplicates':
+            return None
+        if server_id is None:
+            return content.get('total_songs')
+        row = _server_row()
+        return row.get('unique_songs') if row else None
+    if kind == 'artists' and server_id is None:
+        return content.get('distinct_artists')
+    if kind == 'albums' and server_id is None:
+        return content.get('distinct_albums')
+    return None
+
+
+@dashboard_bp.route('/api/dashboard/browse', methods=['GET'])
+def browse_api():
+    kind = (request.args.get('kind') or 'songs').strip().lower()
+    if kind not in _BROWSE_KINDS:
+        kind = 'songs'
+    filt = (request.args.get('filter') or 'all').strip().lower()
+    if filt not in _BROWSE_FILTERS:
+        filt = 'all'
+    q = (request.args.get('q') or '').strip()
+    if len(q) < _BROWSE_MIN_QUERY:
+        q = ''
+    page = request.args.get('page', 1, type=int) or 1
+    if page < 1:
+        page = 1
+
+    # Resolve an explicit server (id OR display name); empty / 'all' = catalogue.
+    # This endpoint reads the server from its OWN control, not the global selector
+    # (server_selector.js deliberately does not scope /api/dashboard/).
+    raw_server = (request.args.get('server') or '').strip()
+    server_id = None
+    server_name = None
+    if raw_server and raw_server.lower() != 'all':
+        server = registry.get_server(raw_server) or registry.get_server_by_name(raw_server)
+        if not server:
+            return jsonify({'error': 'Invalid server selection.'}), 400
+        server_id = server['server_id']
+        server_name = server['name']
+
+    if kind == 'songs' and filt == 'duplicates' and not server_id:
+        return jsonify({'error': 'The duplicates filter needs a server.'}), 400
+    if kind != 'songs' and filt in ('duplicates', 'orphan'):
+        filt = 'all'
+    if filt == 'orphan':
+        server_id = None
+        server_name = None
+
+    page_size = config.DASHBOARD_BROWSE_PAGE_SIZE
+    offset = (page - 1) * page_size
+    if offset > config.DASHBOARD_BROWSE_MAX_OFFSET:
+        return jsonify({
+            'kind': kind, 'filter': filt, 'server': server_name, 'page': page,
+            'page_size': page_size, 'results': [], 'has_more': False,
+            'total': None, 'capped': True,
+        })
+
+    if kind == 'artists':
+        sql, params = _browse_artists_sql(server_id, q)
+    elif kind == 'albums':
+        sql, params = _browse_albums_sql(server_id, q)
+    else:
+        sql, params = _browse_songs_sql(server_id, filt, q)
+
+    try:
+        with get_db() as conn, conn.cursor(cursor_factory=DictCursor) as cur:
+            content = _load_dashboard_stats(cur)[0]
+            # Listing orphans is a score anti-join; when the snapshot already knows
+            # the count is 0, skip it rather than scan the whole table to confirm
+            # an empty set.
+            if (kind == 'songs' and filt == 'orphan'
+                    and content.get('orphan_songs') == 0):
+                rows, has_more = [], False
+            else:
+                cur.execute(sql + " LIMIT %s OFFSET %s",
+                            params + [page_size + 1, offset])
+                rows = cur.fetchall()
+                has_more = len(rows) > page_size
+                rows = rows[:page_size]
+            # The NEXT page would exceed the offset cap, so there is nothing more to
+            # page to even if this page filled: never advertise an unreachable page.
+            if offset + page_size > config.DASHBOARD_BROWSE_MAX_OFFSET:
+                has_more = False
+    except Exception:
+        logger.exception("dashboard browse query failed")
+        return jsonify({'error': 'Browse query failed; check the container logs.'}), 500
+
+    return jsonify({
+        'kind': kind, 'filter': filt, 'server': server_name, 'page': page,
+        'page_size': page_size, 'results': _browse_serialize(kind, rows),
+        'has_more': has_more,
+        'total': _browse_total(content or {}, kind, server_id, server_name, filt, bool(q)),
+        'capped': False,
+    })
+# --- end Browse view ---------------------------------------------------------
 
 
 def _safe_rollback(cur):
@@ -286,6 +545,19 @@ def _collect_fast_metrics(cur):
     metrics['music_servers'] = _collect_music_server_metrics(
         cur, total_songs=metrics['total_songs']
     )
+    # The exact orphan tally (songs bound to no server), published so the Browse
+    # view can skip its score anti-join entirely when there are none. A synthetic
+    # orphan row exists only when the count is > 0, so its absence in a populated
+    # server list means zero; an empty list (no snapshot / no servers) is unknown.
+    _orphan_row = next(
+        (s for s in metrics['music_servers'] if s.get('is_orphan')), None
+    )
+    if _orphan_row:
+        metrics['orphan_songs'] = _orphan_row['unique_songs']
+    elif metrics['music_servers']:
+        metrics['orphan_songs'] = 0
+    else:
+        metrics['orphan_songs'] = None
     # Cleared on any query failure so the caller can refuse to publish a partial
     # snapshot. Popped before serialization.
     metrics['_complete'] = not any(

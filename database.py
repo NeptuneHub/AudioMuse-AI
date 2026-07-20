@@ -730,6 +730,59 @@ def get_clap_embedding(item_id):
         cur.close()
 
 
+def persist_chromaprint(server_id, provider_track_id, fingerprint):
+    if not server_id or not provider_track_id:
+        return
+    conn = None
+    cur = None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        blob = psycopg2.Binary(fingerprint) if fingerprint else None
+        cur.execute(
+            "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
+            "VALUES (%s, %s, %s, now()) "
+            "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
+            "fingerprint = EXCLUDED.fingerprint, updated_at = now()",
+            (str(server_id), str(provider_track_id), blob),
+        )
+        conn.commit()
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.exception("Rollback failed after chromaprint write error")
+        logger.exception(
+            "Error saving chromaprint for %s/%s", server_id, provider_track_id
+        )
+    finally:
+        if cur is not None:
+            cur.close()
+
+
+def get_chromaprint(server_id, provider_track_id):
+    if not server_id or not provider_track_id:
+        return None
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT fingerprint FROM chromaprint "
+            "WHERE server_id = %s AND provider_track_id = %s",
+            (str(server_id), str(provider_track_id)),
+        )
+        row = cur.fetchone()
+        return bytes(row[0]) if row and row[0] is not None else None
+    except Exception:
+        logger.exception(
+            "Error loading chromaprint for %s/%s", server_id, provider_track_id
+        )
+        return None
+    finally:
+        cur.close()
+
+
 def get_lyrics_axis_vectors(item_ids):
     """Return raw lyric-axis vectors for the requested tracks."""
     if not item_ids:
@@ -1121,6 +1174,15 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)"
             )
+            # The Browse "Albums" view groups/orders by the album identity
+            # COALESCE(NULLIF(album_artist,''), author) (album_artist, falling back
+            # to author), which the raw (album_artist, album) index above cannot
+            # serve. This functional index lets that list stream in order and stop
+            # at the page's LIMIT instead of seq-scanning + sorting the whole score.
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_album_browse ON score "
+                "((COALESCE(NULLIF(album_artist, ''), author)), album)"
+            )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
@@ -1460,6 +1522,15 @@ def init_db():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (artist_name, server_id),
                     UNIQUE (server_id, provider_artist_id)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS chromaprint (
+                    server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE,
+                    provider_track_id TEXT NOT NULL,
+                    fingerprint BYTEA,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (server_id, provider_track_id)
                 )
             """)
             _seed_registry_from_legacy_config(cur)

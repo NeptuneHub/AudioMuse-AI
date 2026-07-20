@@ -86,7 +86,16 @@ class FakeConn:
 def harness(monkeypatch):
     state = {'groups': {}, 'durations': {}, 'servers': {}, 'stamped': [],
              'mapped': {}, 'old_scheme': True, 'relabelled': 0}
-    monkeypatch.setattr(dr, '_groups_needing_check', lambda cur: state['groups'])
+    def _grouped(cur):
+        shaped = {}
+        for server_id, items in state['groups'].items():
+            shaped[server_id] = {
+                item_id: value if isinstance(value, tuple) else (value, [])
+                for item_id, value in items.items()
+            }
+        return shaped
+
+    monkeypatch.setattr(dr, '_groups_needing_check', _grouped)
     monkeypatch.setattr(dr, '_old_scheme_rows_exist', lambda cur: state['old_scheme'])
     from tasks import fingerprint_canonicalize as fc
     monkeypatch.setattr(
@@ -219,9 +228,11 @@ def test_single_file_with_no_server_length_gets_the_sentinel(harness):
 
 
 def test_real_duplicates_are_kept_and_stamped(harness):
+    tol = dr.config.DURATION_TOLERANCE_SECONDS
     harness['servers']['srv'] = _server_row('srv')
     harness['groups'] = {'srv': {'fp_2aaa': ['p1', 'p2', 'p3']}}
-    harness['durations']['srv'] = {'p1': 200.0, 'p2': 201.0, 'p3': 206.9}
+    # Spans exactly the tolerance, so it stays a REAL group whatever the tolerance is.
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0, 'p3': 200.0 + tol}
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
 
@@ -266,6 +277,48 @@ def test_missing_member_duration_makes_a_multi_file_group_false(harness):
     assert result['false'] == 1
     assert _deletes(harness['conn'])[0] == ('srv', ['fp_2aaa'])
     assert harness['stamped'] == [{}]
+
+
+def test_same_folder_distinct_files_are_split_even_when_durations_agree(harness):
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': (['p1', 'p2'], [
+        '/media/music/Artist/Album/01 - One.flac',
+        '/media/music/Artist/Album/02 - Two.flac',
+    ])}}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result['false'] == 1
+    assert _deletes(harness['conn'])[0] == ('srv', ['fp_2aaa'])
+
+
+def test_same_recording_across_folders_survives_the_folder_rule(harness):
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': (['p1', 'p2'], [
+        '/media/music/Artist/Album A/01 - Song.flac',
+        '/media/music/Artist/Album B/05 - Song.flac',
+    ])}}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result == _totals(checked=1, real=1)
+    assert _deletes(harness['conn']) == []
+
+
+def test_same_file_mapped_twice_is_not_a_folder_conflict(harness):
+    harness['servers']['srv'] = _server_row('srv')
+    harness['groups'] = {'srv': {'fp_2aaa': (['p1', 'p2'], [
+        '/media/music/Artist/Album/01 - Song.flac',
+        '/media/music/Artist/Album/01 - Song.flac',
+    ])}}
+    harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0}
+
+    result = dr.repair_duplicate_track_maps(conn=harness['conn'])
+
+    assert result == _totals(checked=1, real=1)
+    assert _deletes(harness['conn']) == []
 
 
 def test_unreachable_server_leaves_its_groups_for_next_start(harness):
@@ -382,3 +435,25 @@ def test_another_replica_holding_the_lock_skips(harness):
     assert result == {'skipped': 'locked'}
     assert _deletes(harness['conn']) == []
     assert harness['stamped'] == []
+
+
+class TestChromaprintDisagreement:
+    def test_only_a_definitive_disagreeing_pair_marks_a_group(self, monkeypatch):
+        # chromaprints_agree stubbed: equal blobs agree, different blobs disagree.
+        monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: a == b)
+
+        assert dr._group_chromaprints_disagree([b'a', b'b']) is True
+        assert dr._group_chromaprints_disagree([b'a', b'a']) is False
+        # any one disagreeing pair inside a larger group is enough
+        assert dr._group_chromaprints_disagree([b'a', b'a', b'b']) is True
+
+    def test_missing_fingerprints_are_skipped_never_split(self, monkeypatch):
+        # A blob that is present but undecodable makes chromaprints_agree abstain
+        # (None); a None entry is filtered out before comparison. Neither may split.
+        monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: None)
+        assert dr._group_chromaprints_disagree([b'x', b'y']) is False
+
+        monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: a == b)
+        assert dr._group_chromaprints_disagree([b'a', None]) is False
+        assert dr._group_chromaprints_disagree([None, None]) is False
+        assert dr._group_chromaprints_disagree([b'a']) is False

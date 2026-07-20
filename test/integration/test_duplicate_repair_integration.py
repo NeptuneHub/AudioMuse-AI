@@ -58,12 +58,16 @@ _SCHEMA = [
     "CREATE TABLE track_server_map ("
     "item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE, "
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
-    "provider_track_id TEXT NOT NULL, match_tier TEXT, "
+    "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
     "PRIMARY KEY (server_id, provider_track_id))",
     "CREATE TABLE map_projection_data (index_name VARCHAR(255) PRIMARY KEY, "
     "projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
     "embedding_dimension INTEGER NOT NULL)",
     "CREATE TABLE ivf_dir (name TEXT PRIMARY KEY, blob_data BYTEA NOT NULL)",
+    "CREATE TABLE chromaprint (server_id TEXT NOT NULL REFERENCES music_servers "
+    "(server_id) ON DELETE CASCADE, provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "PRIMARY KEY (server_id, provider_track_id))",
 ]
 
 
@@ -96,7 +100,7 @@ def pg_dsn():
 def _fp_id(suffix):
     from tasks.simhash import CANONICAL_ID_LEN
 
-    body = suffix * CANONICAL_ID_LEN
+    body = (suffix.encode('utf-8').hex() or '0') * CANONICAL_ID_LEN
     return ('fp_2' + body)[:CANONICAL_ID_LEN]
 
 
@@ -112,9 +116,9 @@ def db(pg_dsn):
     conn = psycopg2.connect(pg_dsn)
     with conn.cursor() as cur:
         cur.execute(
-            "DROP TABLE IF EXISTS track_server_map, music_servers, embedding, "
-            "clap_embedding, lyrics_embedding, playlist, map_projection_data, "
-            "ivf_dir, score CASCADE"
+            "DROP TABLE IF EXISTS track_server_map, chromaprint, music_servers, "
+            "embedding, clap_embedding, lyrics_embedding, playlist, "
+            "map_projection_data, ivf_dir, score CASCADE"
         )
         for ddl in _SCHEMA:
             cur.execute(ddl)
@@ -139,8 +143,8 @@ def _seed_group(cur, item_id, provider_ids, duration=None):
     for provider_id in provider_ids:
         cur.execute(
             "INSERT INTO track_server_map (item_id, server_id, provider_track_id, "
-            "match_tier) VALUES (%s, 'srv', %s, 'default')",
-            (item_id, provider_id),
+            "match_tier, file_path) VALUES (%s, 'srv', %s, 'default', %s)",
+            (item_id, provider_id, "/music/%s/song.flac" % provider_id),
         )
 
 
@@ -277,17 +281,17 @@ class TestRealDuplicateRepair:
         # Every row now carries a length and is on the current scheme: instant skip.
         assert _run(db, monkeypatch, {}) == {'skipped': 'up_to_date'}
 
-    def test_survivor_with_duration_is_relabelled_but_never_re_fetched(self, db, monkeypatch):
-        # A legacy-migrated survivor already has a duration; the backfill must not
-        # look at it (no second duration fetch after a legacy upgrade), but the
-        # scheme relabel still bumps it up to the current id.
+    def test_single_file_survivor_with_duration_is_relabelled_not_re_fetched(self, db, monkeypatch):
+        # A single-file row that already has a duration cannot be a wrong merge, so
+        # the check must not look at it (no second duration fetch after a legacy
+        # upgrade), but the scheme relabel still bumps it up to the current id.
         already = _fp_id('c')
         with db.cursor() as cur:
-            _seed_group(cur, already, ['p1', 'p2'], duration=200.0)
+            _seed_group(cur, already, ['p1'], duration=200.0)
         db.commit()
 
         def explode(server):
-            raise AssertionError("a duration-bearing survivor must not be re-fetched")
+            raise AssertionError("a single-file duration-bearing row must not be re-fetched")
 
         from tasks import duplicate_repair as dr
         monkeypatch.setattr(dr, '_server_durations', explode)
@@ -295,8 +299,39 @@ class TestRealDuplicateRepair:
 
         assert result['checked'] == 0
         assert result['relabelled'] == 1
-        assert _maps(db, _current(already)) == ['p1', 'p2']
+        assert _maps(db, _current(already)) == ['p1']
         assert _duration(db, _current(already)) == pytest.approx(200.0)
+
+    def test_existing_stamped_merge_is_re_split_when_lengths_now_disagree(self, db, monkeypatch):
+        # A scheme bump (e.g. fp_3 -> fp_4 tightening 7s to 1s) re-verifies EXISTING
+        # merges: a stamped group whose files actually differ in length by more than
+        # the current tolerance is unmapped so each re-analyzes under its own id.
+        merged = _fp_id('r')
+        with db.cursor() as cur:
+            _seed_group(cur, merged, ['p1', 'p2'], duration=200.0)
+        db.commit()
+
+        result = _run(db, monkeypatch, {'p1': 200.0, 'p2': 260.0})
+        db.commit()
+
+        assert result['false'] == 1
+        assert result['removed'] == 2
+        assert _maps(db, _current(merged)) == []
+
+    def test_existing_stamped_merge_within_tolerance_survives_re_verify(self, db, monkeypatch):
+        # The same re-verify keeps a genuine merge whose files agree within tolerance,
+        # without dropping its stored length.
+        merged = _fp_id('s')
+        with db.cursor() as cur:
+            _seed_group(cur, merged, ['p1', 'p2'], duration=200.0)
+        db.commit()
+
+        result = _run(db, monkeypatch, {'p1': 200.0, 'p2': 200.5})
+        db.commit()
+
+        assert result['false'] == 0
+        assert _maps(db, _current(merged)) == ['p1', 'p2']
+        assert _duration(db, _current(merged)) == pytest.approx(200.0)
 
     def test_prefetched_durations_avoid_a_second_server_listing(self, db, monkeypatch):
         # The legacy migration already listed this server earlier in the same boot
@@ -320,4 +355,149 @@ class TestRealDuplicateRepair:
 
         assert result['backfilled'] == 1
         assert _duration(db, _current(a)) == pytest.approx(200.0)
-        assert _maps(db, _current(a)) == ['pa']
+
+
+def _seed_paths(cur, item_id, mappings):
+    cur.execute(
+        "INSERT INTO score (item_id, title, duration) VALUES (%s, %s, 200.0)",
+        (item_id, item_id),
+    )
+    cur.execute(
+        "INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)",
+        (item_id, b'\x00\x00'),
+    )
+    for provider_id, file_path in mappings:
+        cur.execute(
+            "INSERT INTO track_server_map (item_id, server_id, provider_track_id, "
+            "match_tier, file_path) VALUES (%s, 'srv', %s, 'default', %s)",
+            (item_id, provider_id, file_path),
+        )
+
+
+class TestSameFolderCleanup:
+    def test_splits_same_folder_keeps_cross_folder_and_same_file(self, db):
+        from tasks import duplicate_repair as dr
+
+        same_folder = _fp_id('sf')
+        cross_folder = _fp_id('cf')
+        same_file = _fp_id('sx')
+        with db.cursor() as cur:
+            _seed_paths(cur, same_folder, [
+                ('p1', '/media/music/Artist/Album/01 - One.flac'),
+                ('p2', '/media/music/Artist/Album/02 - Two.flac'),
+            ])
+            _seed_paths(cur, cross_folder, [
+                ('p3', '/media/music/Artist/Album A/01 - Song.flac'),
+                ('p4', '/media/music/Artist/Album B/05 - Song.flac'),
+            ])
+            _seed_paths(cur, same_file, [
+                ('p5', '/media/music/Artist/Album/07 - Same.flac'),
+                ('p6', '/media/music/Artist/Album/07 - Same.flac'),
+            ])
+        db.commit()
+
+        result = dr.split_same_folder_merges(conn=db)
+        db.commit()
+
+        assert result == {'split': 1, 'removed': 2}
+        assert _maps(db, same_folder) == [], "same-folder files are unmapped"
+        assert _maps(db, cross_folder) == ['p3', 'p4'], "cross-folder dup survives"
+        assert _maps(db, same_file) == ['p5', 'p6'], "same physical file survives"
+        # A split never deletes the catalogue row itself.
+        assert _duration(db, same_folder) == pytest.approx(200.0)
+
+    def test_second_run_is_an_instant_noop(self, db):
+        from tasks import duplicate_repair as dr
+
+        same_folder = _fp_id('sf2')
+        with db.cursor() as cur:
+            _seed_paths(cur, same_folder, [
+                ('q1', '/media/music/A/Alb/01 - One.flac'),
+                ('q2', '/media/music/A/Alb/02 - Two.flac'),
+            ])
+        db.commit()
+
+        assert dr.split_same_folder_merges(conn=db)['split'] == 1
+        db.commit()
+        assert dr.split_same_folder_merges(conn=db) == {'split': 0, 'removed': 0}
+
+
+def _fp_blob(values):
+    import zlib
+
+    import numpy as np
+
+    arr = np.asarray(values, dtype=np.int64).astype(np.uint32)
+    return zlib.compress(arr.tobytes())
+
+
+def _seed_chromaprint(cur, provider_id, blob):
+    cur.execute(
+        "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint) "
+        "VALUES ('srv', %s, %s)",
+        (provider_id, psycopg2.Binary(blob) if blob is not None else None),
+    )
+
+
+class TestChromaprintCleanup:
+    def test_splits_disagreeing_keeps_agreeing_and_skips_missing(self, db):
+        from tasks import duplicate_repair as dr
+
+        base = list(range(1, 121))
+        flipped = [v ^ 0xFFFFFFFF for v in base]  # every bit inverted -> disagree
+        disagree = _fp_id('cpd')
+        agree = _fp_id('cpa')
+        missing = _fp_id('cpm')
+        with db.cursor() as cur:
+            _seed_paths(cur, disagree, [
+                ('d1', '/media/music/Artist/Album/01 - A.flac'),
+                ('d2', '/media/music/Artist/Album/02 - B.flac'),
+            ])
+            _seed_paths(cur, agree, [
+                ('a1', '/media/music/Artist/AlbumX/01 - C.flac'),
+                ('a2', '/media/music/Artist/AlbumY/03 - C.flac'),
+            ])
+            _seed_paths(cur, missing, [
+                ('m1', '/media/music/Artist/AlbumZ/01 - D.flac'),
+                ('m2', '/media/music/Artist/AlbumZ/02 - E.flac'),
+            ])
+            _seed_chromaprint(cur, 'd1', _fp_blob(base))
+            _seed_chromaprint(cur, 'd2', _fp_blob(flipped))
+            _seed_chromaprint(cur, 'a1', _fp_blob(base))
+            _seed_chromaprint(cur, 'a2', _fp_blob(base))
+            # missing group: only one file has a fingerprint -> no definitive pair
+            _seed_chromaprint(cur, 'm1', _fp_blob(base))
+        db.commit()
+
+        result = dr.split_chromaprint_false_merges(conn=db)
+        db.commit()
+
+        assert result == {'split': 1, 'removed': 2}
+        assert _maps(db, disagree) == [], "Chromaprint disagreement unmaps the false merge"
+        assert _maps(db, agree) == ['a1', 'a2'], "matching fingerprints keep the merge"
+        assert _maps(db, missing) == ['m1', 'm2'], "a group we cannot fully judge is left alone"
+        # A split never deletes the catalogue row itself.
+        assert _duration(db, disagree) == pytest.approx(200.0)
+        with db.cursor() as cur:
+            cur.execute("SELECT count(*) FROM score")
+            assert cur.fetchone()[0] == 3
+
+    def test_second_run_is_an_instant_noop(self, db):
+        from tasks import duplicate_repair as dr
+
+        base = list(range(1, 121))
+        flipped = [v ^ 0xFFFFFFFF for v in base]
+        merged = _fp_id('cp2')
+        with db.cursor() as cur:
+            _seed_paths(cur, merged, [
+                ('x1', '/media/music/A/Alb/01 - One.flac'),
+                ('x2', '/media/music/A/Alb/02 - Two.flac'),
+            ])
+            _seed_chromaprint(cur, 'x1', _fp_blob(base))
+            _seed_chromaprint(cur, 'x2', _fp_blob(flipped))
+        db.commit()
+
+        assert dr.split_chromaprint_false_merges(conn=db)['split'] == 1
+        db.commit()
+        # The group is now unmapped, so it is no longer a duplicate group to check.
+        assert dr.split_chromaprint_false_merges(conn=db) == {'split': 0, 'removed': 0}

@@ -159,6 +159,18 @@ def redis_binary():
     )
 
 
+def fpcalc_binary():
+    if getattr(sys, "frozen", False):
+        return os.path.join(resource_root(), "fpcalc.exe")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "vendor",
+        "fpcalc",
+        platform.machine().lower(),
+        "fpcalc.exe",
+    )
+
+
 def _pgserver_pginstall():
     if getattr(sys, "frozen", False):
         cand = os.path.join(resource_root(), "pgserver", "pginstall")

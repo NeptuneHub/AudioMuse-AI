@@ -94,6 +94,9 @@ def build_child_env(role, database_url, redis_url):
             "PATH": os.pathsep.join(filter(None, [paths.pg_bin_dir(), os.environ.get("PATH")])),
         }
     )
+    fpcalc = paths.fpcalc_binary()
+    if os.path.exists(fpcalc):
+        env["FPCALC"] = fpcalc
     if role in _WORKER_ROLES:
         env["AUDIOMUSE_ROLE"] = "worker"
         env["SERVICE_TYPE"] = "worker"

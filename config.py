@@ -182,10 +182,15 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # corrupt the value on reload (cast_value can't reverse str(ndarray)).
     'LYRICS_INSTRUMENTAL_EMBEDDING',
     'LYRICS_INSTRUMENTAL_AXIS_FILL',
+    # Catalogue-identity correctness constant, NOT a user preference: it must
+    # always track the code default so a tightened rule reaches every install.
+    # Excluded so it is never written to app_config, never overrides from the DB,
+    # and any stale row from an older version is pruned on the next boot.
+    'DURATION_TOLERANCE_SECONDS',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.0.2"
+APP_VERSION = "v3.0.3"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -815,7 +820,11 @@ SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
 )
 
 # --- Database Cleaning Safety ---
-CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report (nothing is ever deleted from the catalogue)
+CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report
+# When true, cleaning also DELETES catalogue rows bound to no server (orphans); when false it only
+# unbinds each server's stale mappings and leaves the catalogue untouched. Default false; the cleaning
+# page has a per-run checkbox to enable it for a single run without changing this default.
+CLEANING_CATALOGUE = os.environ.get("CLEANING_CATALOGUE", "False").lower() == "true"
 SWEEP_PRUNE_MIN_FETCH_RATIO = float(os.environ.get("SWEEP_PRUNE_MIN_FETCH_RATIO", "0.5"))  # A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much
 
 # --- Stratified Sampling Constants (New) ---
@@ -847,12 +856,45 @@ DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS = float(os.getenv("DUPLICATE_DISTANCE
 DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN", "0.15"))
 DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOKBACK", "1"))
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
-# recording for catalogue identity. Same rule AcoustID uses (7s). Unknown duration = not the same.
-DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "7.0"))
+# recording for catalogue identity. Tightened to 1s: two songs that merely sound alike but
+# differ in length by more than this are kept separate. Unknown duration = not the same.
+DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "1.0"))
 # Version of the fp_<n> content-id scheme. New ids are minted as fp_<this>, and the startup
 # migration relabels every older-version fp_ id up to it exactly once (fp_2 -> fp_3 added track
-# duration). To force a one-time catalogue re-migration in the future, bump ONLY this number.
-CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "3"))
+# duration; fp_3 -> fp_4 re-verifies existing merges at the tightened DURATION_TOLERANCE_SECONDS,
+# splitting any group whose files now differ in length by more than it). To force a one-time
+# catalogue re-migration in the future, bump ONLY this number.
+CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "4"))
+
+# --- Chromaprint acoustic fingerprint (optional dedup confirmation) ---
+# Real Chromaprint (computed by the fpcalc binary) stored per file in the chromaprint table and
+# used as an EXTRA agreement check on top of the MusiCNN embedding + duration when deciding two
+# files are the same recording. If either file lacks a fingerprint the check is skipped and the
+# behaviour is identical to before, so legacy libraries roll in gradually as fingerprints backfill.
+# Path to the fpcalc binary: found on PATH inside Docker, set by the standalone launcher when bundled.
+FPCALC_BINARY = os.getenv("FPCALC", "fpcalc")
+# Compute and store a fingerprint for every newly analyzed track.
+CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "True").lower() == "true"
+# Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
+# run. Editable in the setup wizard (advanced section) and applied on the next analysis.
+CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "500"))
+# Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
+CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
+# Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.
+# High (0.95) = split aggressively: only near-identical audio merges, minimizing false "duplicate".
+CHROMAPRINT_MATCH_THRESHOLD = float(os.getenv("CHROMAPRINT_MATCH_THRESHOLD", "0.95"))
+# Max +/- frame offset searched when aligning two fingerprints of slightly different length.
+CHROMAPRINT_MAX_ALIGN_OFFSET = int(os.getenv("CHROMAPRINT_MAX_ALIGN_OFFSET", "12"))
+# Minimum overlapping frames required to trust a comparison; below this the check abstains.
+CHROMAPRINT_MIN_OVERLAP = int(os.getenv("CHROMAPRINT_MIN_OVERLAP", "40"))
+
+# --- Dashboard "Browse" listing view ---
+# Rows per page in the Song/Artist/Album browse view opened from the dashboard.
+DASHBOARD_BROWSE_PAGE_SIZE = int(os.environ.get("DASHBOARD_BROWSE_PAGE_SIZE", "100"))
+# The deepest OFFSET a browse query may reach. Guards a 1M-row catalogue from a
+# pathological deep-page scan: past this the API stops paging and asks the user to
+# refine with search/filters (every query is always LIMIT-bounded regardless).
+DASHBOARD_BROWSE_MAX_OFFSET = int(os.environ.get("DASHBOARD_BROWSE_MAX_OFFSET", "50000"))
 
 # --- Mood Similarity Filtering ---
 # Threshold for mood similarity filtering. Lower values = stricter filtering (more similar moods required).

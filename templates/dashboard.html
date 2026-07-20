@@ -121,6 +121,12 @@
     /* The Orphan and "on multiple servers" rows are accounting lines, not real
        servers: mute them so they read as adjustments under the configured ones. */
     .dash-note-row td { color: var(--text-muted); font-style: italic; }
+    /* Clickable dashboard numbers open the paginated Browse view pre-filtered.
+       Coloured + dashed underline + pointer so it is obvious they are links. */
+    .dash-stat-link { color: inherit; text-decoration: none; cursor: pointer; }
+    .dash-stat-link:hover, .dash-stat-link:focus-visible { text-decoration: underline; }
+    /* A one-line hint so users know the counts open a list. */
+    .dash-clickhint { color: var(--text-muted); font-size: 0.78rem; margin: 0.15rem 0 0; }
     /* Music Server Status: shrink a little, then scroll the wrapper horizontally
        rather than squish every column. The min-width keeps ~170px for the
        Server name (the one flexible column) after the fixed columns take
@@ -218,6 +224,7 @@
         </div>
         <p class="muted dash-updated" id="keynumbers-updated">Loading…</p>
         <div class="dash-grid" id="key-numbers"></div>
+        <p class="dash-clickhint">Click any underlined number to open the full list.</p>
     </section>
 
     <!-- Music Server Status (shown when at least one server is configured) -->
@@ -230,6 +237,7 @@
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
+        <p class="dash-clickhint">Click any underlined count to open the full list of those songs.</p>
         <div class="dash-table-wrap">
             <table class="dash-table" id="music-servers-status-table">
                 <thead><tr>
@@ -538,18 +546,21 @@
         const totalSongs = c.total_songs || 0;
         const totalArtists = c.distinct_artists || 0;
 
-        // "(unique)" in the title: the counts exclude duplicate files.
+        // "(unique)" in the title; the number links into the Browse view for that
+        // kind (catalogue-wide, all servers).
         const cards = [
-            { title: 'Songs (unique)', value: totalSongs.toLocaleString() },
-            { title: 'Artists (unique)', value: totalArtists.toLocaleString() },
-            { title: 'Albums (unique)', value: (c.distinct_albums || 0).toLocaleString() },
+            { title: 'Songs (unique)', value: totalSongs.toLocaleString(), kind: 'songs' },
+            { title: 'Artists (unique)', value: totalArtists.toLocaleString(), kind: 'artists' },
+            { title: 'Albums (unique)', value: (c.distinct_albums || 0).toLocaleString(), kind: 'albums' },
         ];
 
         cards.forEach(card => {
             const div = document.createElement('div');
             div.className = 'dash-stat-card';
+            const href = BROWSE_URL + '?kind=' + card.kind;
+            const tip = 'Click to open the full list of ' + card.kind;
             div.innerHTML = `<h3>${card.title}</h3>
-                             <div class="dash-stat">${card.value}</div>`;
+                             <div class="dash-stat"><a class="dash-stat-link" href="${href}" title="${tip}">${card.value}</a></div>`;
             host.appendChild(div);
         });
     }
@@ -566,6 +577,19 @@
     function textCell(text) {
         const td = document.createElement('td');
         td.textContent = text;
+        return td;
+    }
+
+    const BROWSE_URL = "{{ url_for('dashboard_bp.browse_page') }}";
+
+    function linkCell(text, href, tip) {
+        const td = document.createElement('td');
+        const a = document.createElement('a');
+        a.className = 'dash-stat-link';
+        a.href = href;
+        a.textContent = text;
+        if (tip) a.title = tip;
+        td.appendChild(a);
         return td;
     }
 
@@ -739,14 +763,34 @@
         servers.forEach(s => {
             const tr = document.createElement('tr');
             if (s.is_orphan || s.is_overlap) tr.className = 'dash-note-row';
-            const duplicateCopies = s.duplicate_copies || 0;
-            const dupTd = document.createElement('td');
-            dupTd.textContent = duplicateCopies ? duplicateCopies.toLocaleString() : '-';
             tr.appendChild(textCell(s.name || '-'));
             tr.appendChild(textCell(s.server_type || '-'));
             tr.appendChild(textCell(s.is_default ? 'yes' : ''));
-            tr.appendChild(textCell((s.unique_songs || 0).toLocaleString()));
-            tr.appendChild(dupTd);
+
+            // Unique-in-catalogue links to the matching Browse view. The "on
+            // multiple servers" adjustment row is a negative tally with no list
+            // behind it, so it stays plain text.
+            const uniqueVal = (s.unique_songs || 0).toLocaleString();
+            if (s.is_overlap) {
+                tr.appendChild(textCell(uniqueVal));
+            } else if (s.is_orphan) {
+                tr.appendChild(linkCell(uniqueVal, BROWSE_URL + '?kind=songs&filter=orphan',
+                    'Click to list the orphan songs (on no server)'));
+            } else {
+                tr.appendChild(linkCell(uniqueVal,
+                    BROWSE_URL + '?kind=songs&server=' + encodeURIComponent(s.name || ''),
+                    'Click to list the songs on ' + (s.name || 'this server')));
+            }
+
+            // Duplicate files links to that server's duplicates view; '-' when none.
+            const dup = s.duplicate_copies || 0;
+            if (!s.is_orphan && !s.is_overlap && dup) {
+                tr.appendChild(linkCell(dup.toLocaleString(),
+                    BROWSE_URL + '?kind=songs&filter=duplicates&server=' + encodeURIComponent(s.name || ''),
+                    'Click to list the duplicated files on ' + (s.name || 'this server')));
+            } else {
+                tr.appendChild(textCell(dup ? dup.toLocaleString() : '-'));
+            }
             tbody.appendChild(tr);
         });
     }

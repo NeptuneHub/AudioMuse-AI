@@ -1,0 +1,435 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+  .browse-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: flex-end;
+    margin-top: 1rem;
+  }
+  .browse-field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .browse-field > label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .browse-field select,
+  .browse-field input {
+    padding: 0.5rem 0.6rem;
+    border-radius: 0.375rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color-darker);
+    color: var(--text-title);
+    font-size: 0.9rem;
+    box-shadow: var(--shadow-input);
+  }
+  .browse-tabs { display: inline-flex; gap: 0.4rem; }
+  .browse-search { flex: 1 1 220px; min-width: 180px; }
+  .browse-title-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  .browse-chip {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 12px;
+    white-space: nowrap;
+  }
+  .browse-chip.cat { background: #EDE9FE; color: #5B21B6; }
+  .browse-chip.srv { background: #DBEAFE; color: #1E40AF; }
+  body.dark-mode .browse-chip.cat, html.dark-mode body .browse-chip.cat { background: #4C1D95; color: #DDD6FE; }
+  body.dark-mode .browse-chip.srv, html.dark-mode body .browse-chip.srv { background: #1E3A8A; color: #BFDBFE; }
+  .browse-meta { color: var(--text-muted); font-size: 0.85rem; margin: 0.5rem 0 0.75rem; }
+  .browse-table-wrap { width: 100%; overflow-x: auto; }
+  table.browse-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  table.browse-table th, table.browse-table td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+  }
+  table.browse-table th {
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  table.browse-table tbody tr:hover { background: var(--bg-table-hover); }
+  .browse-idx { color: var(--text-muted); width: 72px; }
+  .browse-copies {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: #FEF3C7;
+    color: #92400E;
+  }
+  body.dark-mode .browse-copies, html.dark-mode body .browse-copies { background: #78350F; color: #FDE68A; }
+  /* A duplicates row is clickable; a caret shows it expands to its file paths. */
+  .browse-dup-row { cursor: pointer; }
+  .browse-dup-row:hover { background: var(--bg-table-hover); }
+  .browse-caret { display: inline-block; color: var(--text-muted); font-size: 0.8rem; transition: transform 0.12s ease; }
+  .browse-dup-row.expanded .browse-caret { transform: rotate(90deg); }
+  .browse-dup-detail > td { background: var(--bg-body); }
+  .browse-files { font-size: 0.8rem; color: var(--text-muted); }
+  .browse-file { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    word-break: break-all; padding: 1px 0; }
+  .browse-pager { display: flex; justify-content: center; align-items: center; gap: 0.75rem; margin-top: 1rem; }
+  .browse-pager .pageinfo { min-width: 10rem; text-align: center; color: var(--text-muted); font-size: 0.9rem; }
+
+  /* Small screens (e.g. iPhone): keep the table at a readable minimum width and
+     scroll the wrapper horizontally - like the dashboard tables. Only the TITLE
+     column wraps (capped), so a long title drops to a second line instead of
+     stretching the whole table even wider; every other column stays on one line. */
+  @media (max-width: 600px) {
+    table.browse-table { min-width: 520px; font-size: 0.85rem; }
+    table.browse-table th, table.browse-table td { white-space: nowrap; padding: 7px 8px; }
+    /* These two MUST out-specify the blanket nowrap above, or they never wrap.
+       The title keeps at least ~15 characters before wrapping so it does not get
+       squeezed down to a few letters per line. */
+    table.browse-table td.browse-title-cell {
+      white-space: normal;
+      word-break: break-word;
+      min-width: 15ch;
+      max-width: 45vw;
+    }
+    table.browse-table .browse-dup-detail td { white-space: normal; }
+    .browse-idx { width: 1%; }
+    .browse-controls { gap: 0.5rem; }
+    .browse-search { flex-basis: 100%; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+  <div class="browse-title-row">
+    <h1 id="browse-title" style="margin: 0;">Browse</h1>
+    <span class="browse-chip cat" id="browse-scope-chip">Catalogue</span>
+  </div>
+  <p class="browse-meta" style="margin-top: 0.4rem;">
+    Browse the catalogue. Every list is paginated ({{ '{:,}'.format(page_size) }} per page) and searchable.
+  </p>
+  <div class="browse-controls">
+    <div class="browse-field">
+      <label>View</label>
+      <div class="browse-tabs">
+        <button type="button" class="btn btn-ghost btn-sm" data-kind="songs">Songs</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-kind="artists">Artists</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-kind="albums">Albums</button>
+      </div>
+    </div>
+    <div class="browse-field">
+      <label for="browse-server">Server</label>
+      <select id="browse-server">
+        <option value="all">All servers (catalogue)</option>
+        {% for s in browse_servers %}
+        <option value="{{ s.name }}">{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="browse-field" id="browse-filter-field">
+      <label for="browse-filter">Filter</label>
+      <select id="browse-filter">
+        <option value="all">All</option>
+        <option value="duplicates">Duplicated files</option>
+        <option value="orphan">Orphan (no server)</option>
+      </select>
+    </div>
+    <div class="browse-field browse-search">
+      <label for="browse-q">Search</label>
+      <input type="text" id="browse-q" placeholder="Title, artist or album..." autocomplete="off">
+    </div>
+  </div>
+</section>
+
+<section id="browse-results">
+  <div id="browse-status" role="status" aria-live="polite" class="browse-meta"></div>
+  <div class="browse-table-wrap">
+    <table class="browse-table">
+      <thead id="browse-thead"></thead>
+      <tbody id="browse-tbody"></tbody>
+    </table>
+  </div>
+  <div class="browse-pager" id="browse-pager" style="display: none;">
+    <button id="browse-prev" class="btn btn-ghost btn-sm">&laquo; Prev</button>
+    <span class="pageinfo" id="browse-pageinfo"></span>
+    <button id="browse-next" class="btn btn-ghost btn-sm">Next &raquo;</button>
+  </div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
+(() => {
+  const API = "{{ url_for('dashboard_bp.browse_api') }}";
+  const KINDS = ['songs', 'artists', 'albums'];
+  const FILTERS = ['all', 'unique', 'duplicates', 'orphan'];
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+  const fmt = n => (n == null ? '' : Number(n).toLocaleString());
+
+  const state = { kind: 'songs', filter: 'all', server: 'all', q: '', page: 1 };
+  let hasMore = false, total = null, pageSize = {{ page_size }}, searchTimer = null, reqToken = 0;
+  const MAX_OFFSET = {{ max_offset }};
+  const MAX_PAGE = Math.floor(MAX_OFFSET / pageSize) + 1;  // deepest reachable page
+  const MIN_Q = 2;
+
+  function readUrl() {
+    const p = new URLSearchParams(location.search);
+    const kind = (p.get('kind') || '').toLowerCase();
+    if (KINDS.includes(kind)) state.kind = kind;
+    let filter = (p.get('filter') || '').toLowerCase();
+    if (filter === 'unique') filter = 'all';
+    if (FILTERS.includes(filter)) state.filter = filter;
+    const server = p.get('server');
+    if (server) state.server = server;
+    state.q = p.get('q') || '';
+    const page = parseInt(p.get('page'), 10);
+    if (page > 0) state.page = page;
+  }
+
+  function writeUrl() {
+    const p = new URLSearchParams();
+    p.set('kind', state.kind);
+    if (state.filter !== 'all') p.set('filter', state.filter);
+    if (state.server && state.server !== 'all') p.set('server', state.server);
+    if (state.q) p.set('q', state.q);
+    if (state.page > 1) p.set('page', String(state.page));
+    const qs = p.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+  }
+
+  function syncControls() {
+    document.querySelectorAll('.browse-tabs button').forEach(b => {
+      const on = b.dataset.kind === state.kind;
+      b.classList.toggle('btn-primary', on);
+      b.classList.toggle('btn-ghost', !on);
+    });
+    $('browse-filter-field').style.display = state.kind === 'songs' ? '' : 'none';
+    if (state.kind !== 'songs') state.filter = 'all';
+    const orphan = state.kind === 'songs' && state.filter === 'orphan';
+    if (orphan) state.server = 'all';
+    $('browse-filter').value = state.filter;
+    $('browse-server').value = state.server;
+    // A deep-link to a renamed/removed server has no matching <option>; fall back
+    // to the catalogue so the control, chip and request all agree (no 400 loop).
+    if (!orphan && state.server !== 'all' && $('browse-server').selectedIndex === -1) {
+      state.server = 'all';
+      $('browse-server').value = 'all';
+      if (state.filter === 'duplicates') { state.filter = 'all'; $('browse-filter').value = 'all'; }
+    }
+    $('browse-server').disabled = orphan;
+    // Duplicates needs a specific server: if none is chosen (e.g. arriving from the
+    // all-songs list) adopt the first real server, so the view is reachable from
+    // ANY entry point rather than the option being greyed out.
+    if (state.kind === 'songs' && state.filter === 'duplicates' && state.server === 'all') {
+      const opts = $('browse-server').options;
+      if (opts.length > 1) { state.server = opts[1].value; $('browse-server').value = state.server; }
+    }
+    $('browse-q').value = state.q;
+
+    const label = state.kind.charAt(0).toUpperCase() + state.kind.slice(1);
+    $('browse-title').textContent = 'Browse ' + label;
+    const perServer = !!(state.server && state.server !== 'all');
+    const chip = $('browse-scope-chip');
+    chip.textContent = perServer ? state.server : (orphan ? 'Orphan' : 'Catalogue');
+    chip.classList.toggle('srv', perServer);
+    chip.classList.toggle('cat', !perServer);
+  }
+
+  function colCount() {
+    if (state.kind === 'artists') return 2;
+    if (state.kind === 'albums') return 3;
+    return 5;  // songs (incl. duplicates): #, Copies/Year, Title, Artist, Album
+  }
+
+  const isDup = () => state.kind === 'songs' && state.filter === 'duplicates';
+
+  function renderHead() {
+    let cols;
+    if (state.kind === 'artists') cols = ['#', 'Artist'];
+    else if (state.kind === 'albums') cols = ['#', 'Album Artist', 'Album'];
+    else if (isDup()) cols = ['#', 'Copies', 'Title', 'Artist', 'Album'];
+    else cols = ['#', 'Title', 'Artist', 'Album', 'Year'];
+    $('browse-thead').innerHTML = '<tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr>';
+  }
+
+  function renderRows(items) {
+    const tbody = $('browse-tbody');
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="' + colCount() + '" class="browse-meta">No results.</td></tr>';
+      return;
+    }
+    const base = (state.page - 1) * pageSize;
+    let html = '';
+    items.forEach((r, i) => {
+      const n = fmt(base + i + 1);
+      if (state.kind === 'artists') {
+        html += '<tr><td class="browse-idx">' + n + '</td><td>' + esc(r.artist) + '</td></tr>';
+      } else if (state.kind === 'albums') {
+        html += '<tr><td class="browse-idx">' + n + '</td><td>' + esc(r.album_artist)
+              + '</td><td>' + esc(r.album) + '</td></tr>';
+      } else if (isDup()) {
+        // The row stays narrow (fits any screen); its duplicate FILE paths live in
+        // a hidden detail row revealed by clicking the row.
+        const files = (r.files || []).map(f => '<div class="browse-file">' + esc(f) + '</div>').join('');
+        html += '<tr class="browse-dup-row">'
+              + '<td class="browse-idx"><span class="browse-caret">&#9656;</span> ' + n + '</td>'
+              + '<td><span class="browse-copies">' + esc(r.copies) + '</span></td>'
+              + '<td class="browse-title-cell">' + esc(r.title) + '</td><td>' + esc(r.author) + '</td>'
+              + '<td>' + esc(r.album) + '</td></tr>'
+              + '<tr class="browse-dup-detail" hidden><td colspan="' + colCount() + '">'
+              + '<div class="browse-files">' + files + '</div></td></tr>';
+      } else {
+        html += '<tr><td class="browse-idx">' + n + '</td><td class="browse-title-cell">' + esc(r.title)
+              + '</td><td>' + esc(r.author) + '</td><td>' + esc(r.album)
+              + '</td><td>' + esc(r.year) + '</td></tr>';
+      }
+    });
+    tbody.innerHTML = html;
+  }
+
+  function updateMeta(count) {
+    const st = $('browse-status');
+    st.className = 'browse-meta';
+    if (isDup()) {
+      const where = (state.server && state.server !== 'all') ? (' on ' + esc(state.server)) : '';
+      st.innerHTML = 'Songs present as several files' + where + ', most-duplicated first. '
+        + 'Click a row to see its duplicate files - they share one audio fingerprint, '
+        + 'so if they read like different songs that match was wrong.';
+      return;
+    }
+    if (total != null) {
+      let noun = state.kind;
+      if (state.kind === 'songs' && state.filter === 'orphan') noun = 'orphan songs';
+      st.textContent = fmt(total) + ' ' + noun;
+    } else {
+      st.textContent = count ? ('Showing ' + fmt(count) + ' result' + (count === 1 ? '' : 's')) : '';
+    }
+  }
+
+  function updatePager() {
+    const info = $('browse-pageinfo');
+    // Only pages up to MAX_PAGE are reachable, so never advertise more than that.
+    const totalPages = (total != null)
+      ? Math.min(Math.max(1, Math.ceil(total / pageSize)), MAX_PAGE) : null;
+    $('browse-pager').style.display = (state.page > 1 || hasMore) ? 'flex' : 'none';
+    info.textContent = totalPages
+      ? ('Page ' + fmt(state.page) + ' of ' + fmt(totalPages))
+      : ('Page ' + fmt(state.page));
+    $('browse-prev').disabled = state.page <= 1;
+    $('browse-next').disabled = !hasMore;
+  }
+
+  async function load() {
+    syncControls();
+    writeUrl();
+    renderHead();
+    const token = ++reqToken;
+    $('browse-status').className = 'browse-meta';
+    $('browse-status').textContent = 'Loading...';
+    $('browse-tbody').innerHTML = '';
+    $('browse-pager').style.display = 'none';
+    try {
+      const p = new URLSearchParams({ kind: state.kind, filter: state.filter, page: String(state.page) });
+      if (state.server && state.server !== 'all') p.set('server', state.server);
+      if (state.q) p.set('q', state.q);
+      // No ?server= is added by server_selector.js here (/api/dashboard/ is excluded),
+      // so this endpoint sees exactly the server this page chose.
+      const resp = await fetch(API + '?' + p.toString());
+      const data = await resp.json();
+      if (token !== reqToken) return;
+      if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+      if (data.capped) {
+        $('browse-status').textContent =
+          'Too many results to page this deep - refine with search or a filter to narrow them.';
+        renderRows([]);
+        // Keep the pager visible with Prev enabled so a deep-linked/over-paged
+        // user can step back instead of being stranded.
+        total = null;
+        hasMore = false;
+        updatePager();
+        return;
+      }
+      pageSize = data.page_size || pageSize;
+      total = (typeof data.total === 'number') ? data.total : null;
+      hasMore = !!data.has_more;
+      const items = data.results || [];
+      renderRows(items);
+      updateMeta(items.length);
+      updatePager();
+    } catch (err) {
+      if (token !== reqToken) return;
+      $('browse-status').className = 'browse-meta status-error';
+      $('browse-status').textContent = 'Error: ' + err.message;
+      renderRows([]);
+      console.error('Browse error:', err);
+    }
+  }
+
+  document.querySelectorAll('.browse-tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      if (state.kind === b.dataset.kind) return;
+      state.kind = b.dataset.kind;
+      if (state.kind !== 'songs') state.filter = 'all';
+      state.page = 1;
+      load();
+    });
+  });
+  $('browse-server').addEventListener('change', () => {
+    state.server = $('browse-server').value;
+    if (state.server === 'all' && state.filter === 'duplicates') state.filter = 'all';
+    state.page = 1;
+    load();
+  });
+  $('browse-filter').addEventListener('change', () => {
+    // syncControls() (called first thing in load) adopts a server for duplicates.
+    state.filter = $('browse-filter').value;
+    state.page = 1;
+    load();
+  });
+  $('browse-q').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      const v = $('browse-q').value.trim();
+      // Mirror the server's minimum: a single character is not a search, so a
+      // 1-char box never renders the whole catalogue as if it had matched.
+      if (v.length === 1) {
+        $('browse-status').className = 'browse-meta';
+        $('browse-status').textContent = 'Type at least ' + MIN_Q + ' characters to search.';
+        return;
+      }
+      state.q = v;
+      state.page = 1;
+      load();
+    }, 300);
+  });
+  $('browse-prev').addEventListener('click', () => { if (state.page > 1) { state.page--; load(); } });
+  $('browse-next').addEventListener('click', () => { if (hasMore) { state.page++; load(); } });
+
+  // Click a duplicate row to expand/collapse its list of duplicate files. Delegated
+  // on the tbody so it survives every re-render.
+  $('browse-tbody').addEventListener('click', (e) => {
+    const row = e.target.closest('.browse-dup-row');
+    if (!row) return;
+    const detail = row.nextElementSibling;
+    if (!detail || !detail.classList.contains('browse-dup-detail')) return;
+    const show = detail.hasAttribute('hidden');
+    if (show) detail.removeAttribute('hidden'); else detail.setAttribute('hidden', '');
+    row.classList.toggle('expanded', show);
+  });
+
+  readUrl();
+  load();
+})();
+</script>
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

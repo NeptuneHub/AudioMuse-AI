@@ -63,6 +63,11 @@ _SCHEMA = [
     "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
     "PRIMARY KEY (server_id, provider_track_id))",
+    "CREATE TABLE chromaprint ("
+    "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
+    "provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "PRIMARY KEY (server_id, provider_track_id))",
     "CREATE TABLE map_projection_data (index_name VARCHAR(255) PRIMARY KEY, "
     "projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
     "embedding_dimension INTEGER NOT NULL)",
@@ -113,7 +118,7 @@ def _build(conn, tracks, embedding_ddl=_EMBEDDING_FK):
     startup migration has ever run."""
     with conn.cursor() as cur:
         cur.execute(
-            "DROP TABLE IF EXISTS track_server_map, music_servers, embedding, "
+            "DROP TABLE IF EXISTS chromaprint, track_server_map, music_servers, embedding, "
             "clap_embedding, lyrics_embedding, playlist, map_projection_data, "
             "ivf_dir, score CASCADE"
         )
@@ -242,10 +247,12 @@ class TestRealCanonicalization:
     ):
         from tasks import fingerprint_canonicalize as fc
 
+        # jf-2 sits within the length tolerance of jf-1, whatever the tolerance is.
+        tol = fc.config.DURATION_TOLERANCE_SECONDS
         monkeypatch.setattr(
             fc,
             '_fetch_provider_durations',
-            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 201.5, 'jf-3': 300.0},
+            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 200.0 + tol, 'jf-3': 300.0},
         )
         same = _distinct_embedding(7)
         tracks = [
@@ -281,6 +288,39 @@ class TestRealCanonicalization:
             assert cur.fetchone()[0] == pytest.approx(300.0), (
                 "the migration must backfill score.duration from the server metadata"
             )
+
+    def test_same_folder_files_never_share_an_id_during_canonicalize(self, db, monkeypatch):
+        from tasks import fingerprint_canonicalize as fc
+
+        # jf-1 and jf-3 are DIFFERENT songs that happen to sit in the SAME folder;
+        # both are near-identical to jf-2 in another folder. Folding the folder rule
+        # into the id calculation must keep jf-1 and jf-3 on separate ids in this
+        # one pass - never form the merge and then unmap it (which would orphan a row).
+        monkeypatch.setattr(
+            fc, '_fetch_provider_durations',
+            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 200.0, 'jf-3': 200.0},
+        )
+        same = _distinct_embedding(11)
+        tracks = [
+            ('jf-1', '/music/Album/01.flac', same),
+            ('jf-2', '/music/Other/02.flac', same.copy()),
+            ('jf-3', '/music/Album/03.flac', same.copy()),
+        ]
+        _build(db, tracks)
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['duplicates'] == 1, "only the cross-folder file may merge"
+        assert len(_score(db)) == 2
+        maps = {p: item for p, item, _path in _maps(db)}
+        assert set(maps) == {'jf-1', 'jf-2', 'jf-3'}, "every file stays mapped (no orphan)"
+        assert maps['jf-1'] != maps['jf-3'], "same-folder files must not share an id"
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM score s WHERE NOT EXISTS "
+                "(SELECT 1 FROM track_server_map t WHERE t.item_id = s.item_id)"
+            )
+            assert cur.fetchone()[0] == 0, "no catalogue row is left orphaned"
 
     def test_same_sounding_audio_with_different_length_stays_two_songs(
         self, db, monkeypatch

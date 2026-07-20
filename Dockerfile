@@ -357,7 +357,7 @@ RUN set -ux; \
             liblapack3=3.12.0-3build1.1 \
             libgomp1 \
             libpq5 \
-            ffmpeg wget curl \
+            ffmpeg libchromaprint-tools wget curl \
             supervisor procps \
             git vim redis-tools strace iputils-ping \
             postgresql-common ca-certificates \

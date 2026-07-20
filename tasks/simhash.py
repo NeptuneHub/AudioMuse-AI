@@ -49,7 +49,10 @@ from config import (
     CATALOGUE_ID_SCHEME_VERSION,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE,
     DURATION_TOLERANCE_SECONDS,
+    CHROMAPRINT_GATE_ENABLED,
 )
+from tasks.provider_migration_matcher import normalize_path
+from tasks.chromaprint import chromaprints_agree
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +226,37 @@ def durations_compatible(duration_a, duration_b):
     return abs(a - b) <= DURATION_TOLERANCE_SECONDS
 
 
+def folder_key(file_path):
+    normalized = normalize_path(file_path)
+    if not normalized:
+        return None
+    if '/' not in normalized:
+        return ''
+    return normalized.rsplit('/', 1)[0]
+
+
+def same_folder_conflict(path_a, path_b):
+    normalized_a = normalize_path(path_a)
+    normalized_b = normalize_path(path_b)
+    if not normalized_a or not normalized_b or normalized_a == normalized_b:
+        return False
+    key_a = folder_key(path_a)
+    return key_a is not None and key_a == folder_key(path_b)
+
+
+def folder_conflict_in_group(paths):
+    by_folder = {}
+    for path in paths:
+        normalized = normalize_path(path)
+        if not normalized:
+            continue
+        key = folder_key(path)
+        if key in by_folder and normalized not in by_folder[key]:
+            return True
+        by_folder.setdefault(key, set()).add(normalized)
+    return False
+
+
 def _duration_mask(left_durations, right_durations, size):
     left = np.full(size, np.nan) if left_durations is None else np.asarray(
         [np.nan if d is None else d for d in left_durations], dtype=np.float64
@@ -240,15 +274,8 @@ def _duration_mask(left_durations, right_durations, size):
         )
 
 
-def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durations=None):
-    """Which candidate pairs the EXACT raw-embedding cosine AND duration confirm.
-
-    Row-wise, so a caller can feed it one batch of embeddings at a time instead
-    of holding the catalogue's. A zero/absent vector never confirms, and neither
-    does a pair whose track lengths are unknown or disagree beyond
-    ``DURATION_TOLERANCE_SECONDS`` - the embedding says "sounds the same", only
-    the duration can say "is the same recording".
-    """
+def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durations=None,
+                  left_fingerprints=None, right_fingerprints=None):
     left_vectors = np.asarray(left_vectors, dtype=np.float32)
     right_vectors = np.asarray(right_vectors, dtype=np.float32)
     left_norms = np.linalg.norm(left_vectors, axis=1)
@@ -261,32 +288,60 @@ def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durati
         right_vectors / safe_right[:, None],
     )
     distance = np.clip(1.0 - similarity, 0.0, 2.0)
-    return (
+    base = (
         (distance <= DUPLICATE_DISTANCE_THRESHOLD_COSINE)
         & (left_norms > 0)
         & (right_norms > 0)
         & _duration_mask(left_durations, right_durations, left_vectors.shape[0])
     )
+    if (not CHROMAPRINT_GATE_ENABLED
+            or left_fingerprints is None or right_fingerprints is None):
+        return base
+    result = base.copy()
+    for i in np.flatnonzero(base):
+        if chromaprints_agree(left_fingerprints[i], right_fingerprints[i]) is False:
+            result[i] = False
+    return result
 
 
-def merge_pairs(count, packed, left, right):
+def merge_pairs(count, packed, left, right, folders=None):
     """``parent[i]``: the row whose identity row i takes, from CONFIRMED pairs.
 
     Each row settles against its NEAREST earlier match, oldest row first - the
     order the streaming resolver saw them in - and a row that merged is never
     itself a merge target, so chains cannot form. ``parent[i] == i`` means "its
     own track"; anything else means "the same audio as row parent[i]".
+
+    ``folders`` (folder key per row, or None) enforces the folder rule at the
+    GROUP level as the merge is built: a row is never added to a group that
+    already holds a file from the same folder, so two distinct files in one
+    folder can never share an id even when they both matched a third file in
+    another folder. This is what a pairwise reject cannot do.
     """
     parent = np.arange(count, dtype=np.int64)
     if left.size == 0:
         return parent
     hamming = _POPCOUNT[packed[left] ^ packed[right]].sum(axis=1, dtype=np.int16)
+    group_folders = {} if folders is not None else None
     for index in np.lexsort((left, hamming, right)):
         child = int(right[index])
         target = int(left[index])
         if parent[child] != child or parent[target] != target:
             continue
-        parent[child] = target
+        if group_folders is not None:
+            occupied = group_folders.get(target)
+            if occupied is None:
+                target_folder = folders[target]
+                occupied = set() if target_folder is None else {target_folder}
+                group_folders[target] = occupied
+            child_folder = folders[child]
+            if child_folder is not None and child_folder in occupied:
+                continue
+            parent[child] = target
+            if child_folder is not None:
+                occupied.add(child_folder)
+        else:
+            parent[child] = target
     return parent
 
 
@@ -672,18 +727,26 @@ class CatalogResolver:
     registered with them (for example rows predating this run).
     """
 
-    def __init__(self, embedding_fetcher=None, duration_fetcher=None):
+    def __init__(self, embedding_fetcher=None, duration_fetcher=None, path_fetcher=None,
+                 fingerprint_fetcher=None):
         self._index = SignatureIndex()
         self._taken = set()
         self._embeddings = {}
         self._durations = {}
+        self._paths = {}
+        self._fingerprints = {}
         self._fetcher = embedding_fetcher
         self._duration_fetcher = duration_fetcher
+        self._path_fetcher = path_fetcher
+        self._fingerprint_fetcher = fingerprint_fetcher
 
     def drop_cached_embeddings(self):
         self._embeddings.clear()
+        self._paths.clear()
+        self._fingerprints.clear()
 
-    def register(self, item_id, embedding=None, signature=None, duration=None):
+    def register(self, item_id, embedding=None, signature=None, duration=None, path=None,
+                 fingerprint=None):
         item_id = str(item_id)
         self._taken.add(item_id)
         if embedding is not None:
@@ -691,10 +754,20 @@ class CatalogResolver:
             self._embeddings[item_id] = row
         if duration is not None:
             self._durations[item_id] = duration
+        if fingerprint:
+            self._fingerprints[item_id] = fingerprint
+        self._record_path(item_id, path)
         if signature is None:
             signature = signature_from_canonical_id(item_id)
         if signature is not None:
             self._index.add(item_id, signature, duration=duration)
+
+    def _record_path(self, item_id, path):
+        if not path:
+            return
+        normalized = normalize_path(path)
+        if normalized:
+            self._paths.setdefault(str(item_id), set()).add(normalized)
 
     def _embedding_for(self, item_id):
         cached = self._embeddings.get(item_id)
@@ -726,7 +799,48 @@ class CatalogResolver:
         self._durations[item_id] = fetched
         return fetched
 
-    def confirms(self, embedding, candidate_id, duration=None):
+    def _fingerprint_for(self, item_id):
+        cached = self._fingerprints.get(item_id)
+        if cached is not None:
+            return cached
+        if self._fingerprint_fetcher is None:
+            return None
+        try:
+            fetched = self._fingerprint_fetcher(item_id)
+        except Exception:
+            logger.exception("Fingerprint fetch failed for %s", item_id)
+            return None
+        if fetched:
+            self._fingerprints[item_id] = fetched
+        return fetched or None
+
+    def _paths_for(self, item_id):
+        cached = self._paths.get(item_id)
+        if cached is not None:
+            return cached
+        found = set()
+        if self._path_fetcher is not None:
+            try:
+                for path in (self._path_fetcher(item_id) or []):
+                    normalized = normalize_path(path)
+                    if normalized:
+                        found.add(normalized)
+            except Exception:
+                logger.exception("Path fetch failed for %s", item_id)
+        self._paths[item_id] = found
+        return found
+
+    def _same_folder_as(self, path, candidate_id):
+        new_path = normalize_path(path)
+        if not new_path:
+            return False
+        new_folder = folder_key(path)
+        for existing in self._paths_for(candidate_id):
+            if existing != new_path and folder_key(existing) == new_folder:
+                return True
+        return False
+
+    def confirms(self, embedding, candidate_id, duration=None, path=None, fingerprint=None):
         """Is ``candidate_id`` the same recording as ``embedding``?
 
         The signature only ever PROPOSES; the exact cosine plus the duration
@@ -745,17 +859,21 @@ class CatalogResolver:
         """
         if not durations_compatible(duration, self._duration_for(candidate_id)):
             return False
+        if path is not None and self._same_folder_as(path, candidate_id):
+            return False
         candidate_embedding = self._embedding_for(candidate_id)
         if candidate_embedding is None:
             return False
-        return (
-            cosine_distance(embedding, candidate_embedding)
-            <= DUPLICATE_DISTANCE_THRESHOLD_COSINE
-        )
+        if cosine_distance(embedding, candidate_embedding) > DUPLICATE_DISTANCE_THRESHOLD_COSINE:
+            return False
+        if CHROMAPRINT_GATE_ENABLED and fingerprint:
+            if chromaprints_agree(fingerprint, self._fingerprint_for(candidate_id)) is False:
+                return False
+        return True
 
     _confirms = confirms
 
-    def resolve(self, embedding, signature=None, duration=None):
+    def resolve(self, embedding, signature=None, duration=None, path=None, fingerprint=None):
         """('existing', id) when the audio is already catalogued, else ('new', id).
 
         A 'new' resolution registers the returned id (with this embedding and
@@ -769,7 +887,9 @@ class CatalogResolver:
         if signature is None:
             return ('new', None)
         for candidate_id in self._index.find_candidates(signature, duration=duration):
-            if self._confirms(embedding, candidate_id, duration=duration):
+            if self._confirms(embedding, candidate_id, duration=duration, path=path,
+                              fingerprint=fingerprint):
+                self._record_path(candidate_id, path)
                 return ('existing', candidate_id)
         new_id = mint_canonical_id(signature, self._taken)
         self.register(
@@ -777,5 +897,7 @@ class CatalogResolver:
             embedding=embedding,
             signature=signature_from_canonical_id(new_id),
             duration=duration,
+            path=path,
+            fingerprint=fingerprint,
         )
         return ('new', new_id)

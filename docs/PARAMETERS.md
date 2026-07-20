@@ -80,6 +80,10 @@ These are the default parameters used when launching analysis or clustering task
 | `TOP_N_MOODS`                               | Number of top moods per track for feature vector.                                                                         | `5`             |
 | `CLAP_ENABLED`                              | Enable or disable CLAP model for text-to-audio search capabilities.                                                       | `true`          |
 | `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
+| `CHROMAPRINT_COLLECTION_ENABLED`            | Compute and store a Chromaprint acoustic fingerprint per analyzed track (needs the fpcalc binary; off if it is missing).    | `true`          |
+| `CHROMAPRINT_GATE_ENABLED`                  | Use stored fingerprints as an extra same-recording check in duplicate detection; skipped for any pair missing a print.      | `true`          |
+| `CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN`       | Albums per server whose already-analyzed tracks get a fingerprint back-filled at the end of each analysis run.              | `500`           |
+| `CHROMAPRINT_MATCH_THRESHOLD`               | Fraction of matching fingerprint bits at/above which two tracks are the same recording. Higher = split more aggressively.   | `0.95`          |
 | **Clustering General**                      |                                                                                                                            |                 |
 | `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |
 | `CLUSTER_ALGORITHM`                         | Default clustering: `kmeans`, `dbscan`, `gmm`, `spectral`.                                                                | `kmeans`        |

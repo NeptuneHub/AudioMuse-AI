@@ -143,13 +143,15 @@ class TestSignatureIndex:
 
 class TestDurationsCompatible:
     def test_within_tolerance_is_compatible(self):
+        tol = simhash.DURATION_TOLERANCE_SECONDS
         assert simhash.durations_compatible(200.0, 200.0)
-        assert simhash.durations_compatible(200.0, 207.0)
-        assert simhash.durations_compatible(207.0, 200.0)
+        assert simhash.durations_compatible(200.0, 200.0 + tol)   # exactly at the tolerance
+        assert simhash.durations_compatible(200.0 + tol, 200.0)
 
     def test_beyond_tolerance_is_not_compatible(self):
-        assert not simhash.durations_compatible(200.0, 207.1)
-        assert not simhash.durations_compatible(200.0, 210.0)
+        tol = simhash.DURATION_TOLERANCE_SECONDS
+        assert not simhash.durations_compatible(200.0, 200.0 + tol + 0.1)
+        assert not simhash.durations_compatible(200.0, 200.0 + tol + 3.0)
 
     def test_unknown_or_invalid_duration_never_compatible(self):
         assert not simhash.durations_compatible(None, 200.0)
@@ -168,7 +170,9 @@ class TestCatalogResolver:
         kind, first = resolver.resolve(emb, duration=200.0)
         assert kind == 'new' and first.startswith(simhash.CURRENT_ID_HEAD)
         reencoded = emb + np.float32(1e-4) * _embedding(14)
-        kind2, second = resolver.resolve(reencoded, duration=201.5)
+        # A re-encode within the length tolerance is the same recording.
+        kind2, second = resolver.resolve(
+            reencoded, duration=200.0 + simhash.DURATION_TOLERANCE_SECONDS)
         assert (kind2, second) == ('existing', first)
 
     def test_same_audio_unknown_duration_mints_new_id(self):
@@ -278,6 +282,102 @@ class TestCatalogResolver:
         resolver = simhash.CatalogResolver()
         assert resolver.resolve(None) == ('new', None)
         assert resolver.resolve(np.zeros(simhash.SIGNATURE_BITS)) == ('new', None)
+
+
+class TestFolderRule:
+    def test_folder_key_strips_mount_and_filename(self):
+        assert simhash.folder_key(
+            '/media/music/Artist/Album/01 - Song.flac'
+        ) == 'artist/album'
+        assert simhash.folder_key(
+            '/mnt/music/Artist/Album/02 - Other.flac'
+        ) == 'artist/album'
+
+    def test_same_folder_distinct_files_conflict(self):
+        assert simhash.same_folder_conflict(
+            '/media/music/A/Alb/01 - One.flac',
+            '/media/music/A/Alb/02 - Two.flac',
+        ) is True
+
+    def test_same_file_is_not_a_conflict(self):
+        path = '/media/music/A/Alb/01 - One.flac'
+        assert simhash.same_folder_conflict(path, path) is False
+
+    def test_different_folders_do_not_conflict(self):
+        assert simhash.same_folder_conflict(
+            '/media/music/A/Album A/01 - Song.flac',
+            '/media/music/A/Album B/05 - Song.flac',
+        ) is False
+
+    def test_unknown_path_never_conflicts(self):
+        assert simhash.same_folder_conflict(None, '/media/music/A/Alb/x.flac') is False
+
+    def test_group_conflict_detects_two_files_in_one_folder(self):
+        assert simhash.folder_conflict_in_group([
+            '/media/music/A/Alb/01 - x.flac',
+            '/media/music/A/Alb/02 - y.flac',
+        ]) is True
+
+    def test_group_across_folders_has_no_conflict(self):
+        assert simhash.folder_conflict_in_group([
+            '/media/music/A/Alb1/01 - x.flac',
+            '/media/music/A/Alb2/01 - x.flac',
+        ]) is False
+
+    def test_same_audio_same_duration_same_folder_mints_new_id(self):
+        emb = _embedding(21)
+        resolver = simhash.CatalogResolver()
+        _kind, first = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb/01 - One.flac'
+        )
+        kind, second = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb/02 - Two.flac'
+        )
+        assert kind == 'new'
+        assert second != first
+
+    def test_same_audio_same_duration_different_folder_merges(self):
+        emb = _embedding(21)
+        resolver = simhash.CatalogResolver()
+        _kind, first = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb1/01 - One.flac'
+        )
+        kind, second = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb2/01 - One.flac'
+        )
+        assert (kind, second) == ('existing', first)
+
+    def test_folder_veto_uses_the_path_fetcher_for_persisted_rows(self):
+        emb = _embedding(22)
+        cid = simhash.canonical_id_str(simhash.embedding_signature(emb))
+        resolver = simhash.CatalogResolver(
+            embedding_fetcher=lambda _id: emb.tobytes(),
+            duration_fetcher=lambda _id: 200.0,
+            path_fetcher=lambda _id: ['/media/music/A/Alb/01 - One.flac'],
+        )
+        resolver.register(cid)
+        kind, resolved = resolver.resolve(
+            emb, duration=200.0, path='/media/music/A/Alb/02 - Two.flac'
+        )
+        assert kind == 'new'
+        assert resolved != cid
+
+    def test_merge_pairs_folder_rule_is_group_level_not_pairwise(self):
+        # Three near-identical rows; 0 and 2 share a folder. Both match row 1 (a
+        # different folder), so a pairwise reject of the 0-2 pair would still let
+        # them co-merge via row 1. The group-level rule must keep 2 out of 0's
+        # group, so a same-folder merge is never formed in the first place.
+        packed = np.stack([simhash._pack_signature(0)] * 3)
+        left = np.array([0, 0, 1], dtype=np.int64)
+        right = np.array([1, 2, 2], dtype=np.int64)
+        folders = ['a/alb', 'b/alb', 'a/alb']
+
+        parent = simhash.merge_pairs(3, packed, left, right, folders=folders)
+        assert parent[1] == 0, "different-folder file still merges"
+        assert parent[2] == 2, "same-folder file gets its own id, not 0's group"
+
+        plain = simhash.merge_pairs(3, packed, left, right)
+        assert plain[2] == 0, "without folders they would all collapse into one id"
 
 
 class TestBatchResolveMatchesStreaming:

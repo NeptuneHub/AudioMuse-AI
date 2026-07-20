@@ -472,9 +472,10 @@ def translate_ids(item_ids, server_id=None, conn=None):
         from tasks.simhash import is_fingerprint_id
         dropped = sum(1 for i in ids if is_fingerprint_id(i) and i not in mapped)
         if dropped:
-            logger.warning(
-                "%d canonical ids have no mapping on the default server (unswept "
-                "default?); dropped from translation", dropped,
+            logger.info(
+                "%d canonical ids have no mapping on the default server (not on it, "
+                "or awaiting a re-analysis after a split); dropped from translation",
+                dropped,
             )
         return {
             i: mapped.get(i, i)

@@ -20,6 +20,7 @@ Main Features:
 import pytest
 from unittest.mock import Mock, patch
 from flask import Flask
+import config
 from app_analysis import analysis_bp
 
 
@@ -45,7 +46,8 @@ class TestCleaningPage:
 
             assert response.status_code == 200
             mock_render.assert_called_once_with(
-                'cleaning.html', title='AudioMuse-AI - Database Cleaning', active='cleaning'
+                'cleaning.html', title='AudioMuse-AI - Database Cleaning', active='cleaning',
+                cleaning_catalogue_default=config.CLEANING_CATALOGUE,
             )
 
 
@@ -226,10 +228,30 @@ class TestStartCleaningEndpoint:
         mock_queue.enqueue.assert_called_once()
         call_args = mock_queue.enqueue.call_args
         assert call_args[0][0] == 'tasks.cleaning.identify_and_clean_orphaned_albums_task'
+        # The catalogue-deletion opt-in is passed positionally; with no request body it
+        # falls back to the CLEANING_CATALOGUE env default (off).
+        assert call_args[0][1] == config.CLEANING_CATALOGUE
         assert (
             call_args[1]['description'] == "Database Cleaning (Identify and Delete Orphaned Albums)"
         )
         assert call_args[1]['job_timeout'] == -1
+
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
+    def test_cleaning_forwards_clean_catalogue_flag_from_body(
+        self, mock_save_status, mock_cleanup, mock_queue, client
+    ):
+        mock_job = Mock()
+        mock_job.id = "clean-job-789"
+        mock_job.get_status.return_value = "queued"
+        mock_queue.enqueue.return_value = mock_job
+
+        response = client.post('/api/cleaning/start', json={'clean_catalogue': True})
+
+        assert response.status_code == 202
+        call_args = mock_queue.enqueue.call_args
+        assert call_args[0][1] is True
 
     @patch('app_analysis.rq_queue_high')
     @patch('app_analysis.clean_up_previous_main_tasks')

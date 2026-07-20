@@ -14,23 +14,34 @@ server through the sweep's OWN enumeration and pruning
 filter applied), so the prune baseline can never disagree with the enumeration
 that created the mappings, and removes ONLY that server's rows from
 track_server_map for tracks it no longer has. The
-centralized catalogue is NEVER touched: a song that disappeared from one
-server keeps its analysis, embeddings and mappings on every other server, and
-a song present on no server at all stays in the catalogue as unbound (it
-simply stops appearing in server-scoped results via the availability mask).
-Because no catalogue row changes, no index rebuild is needed. A server whose
-fetch fails, returns nothing, or looks partial is skipped, so an incomplete
-library view can never unbind valid mappings.
+A song that disappeared from ONE server keeps its analysis, embeddings and
+mappings on every other server. A song bound to NO server (an orphan) is
+DELETED from the catalogue - it is gone from every library, so its analysis is
+removed and simply re-created if the file ever returns. That delete happens
+ONLY when every server was read completely (none failed, empty or partial), so
+an incomplete view can never delete a track still on a server. Every cleaning
+run then runs the SAME full similarity-index rebuild analysis runs, INLINE, and
+is not reported complete until the indexes reflect the cleaned catalogue and the
+'reload' has been published so a running Flask swaps the new indexes in.
 
 Main Features:
 * identify_and_clean_orphaned_albums_task: the RQ entry point that fetches each
-  server's tracks and prunes that server's stale mappings only.
+  server's tracks, prunes that server's stale mappings, and deletes the tracks
+  left bound to no server.
 * Reuses the sweep's public helpers rather than re-implementing the fetch and
   the prune, so cleaning and the sweep can never drift apart.
 * Refreshes each server's stored library size (``music_servers.track_count``)
   from the fetch it already performs, keeping the dashboard's coverage
   denominator current on every cleaning run.
-* Reports (never deletes) the catalogue tracks currently bound to no server.
+* Deletes catalogue tracks bound to no server, but only when every server was
+  read completely; otherwise it just reports them and deletes nothing.
+* Runs the Chromaprint dedup (Path B) each time: splits merged duplicate groups
+  whose stored fingerprints prove they are different recordings, so a false merge
+  is corrected once its files have Chromaprints (skip-if-missing, unmap-only).
+* Runs the shared _run_all_index_builds inline at the end of every run, the same
+  final rebuild analysis performs, so the task completes only once the similarity
+  indexes are consistent with the catalogue on every music server and Flask has
+  been told to reload them.
 """
 
 import time
@@ -40,10 +51,10 @@ from collections import defaultdict
 
 from rq import get_current_job
 
-from config import CLEANING_SAFETY_LIMIT
+from config import CLEANING_SAFETY_LIMIT, CLEANING_CATALOGUE, CHROMAPRINT_GATE_ENABLED
 
 from error import error_manager
-from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
+from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION, ERR_INDEX_BUILD
 
 from .mediaserver import registry
 
@@ -52,7 +63,12 @@ from psycopg2 import OperationalError
 logger = logging.getLogger(__name__)
 
 
-def identify_and_clean_orphaned_albums_task():
+def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
+    # Per-run override from the cleaning page's checkbox; None falls back to the
+    # CLEANING_CATALOGUE env default. When false, orphans are only reported, not
+    # deleted (the catalogue is left untouched, exactly the old behaviour).
+    clean_catalogue = CLEANING_CATALOGUE if clean_catalogue is None else bool(clean_catalogue)
+
     from flask_app import app
     from app_helper import redis_conn, get_db, save_task_status
     from config import (
@@ -208,6 +224,86 @@ def identify_and_clean_orphaned_albums_task():
             orphaned_albums_list.sort(key=lambda x: x["track_count"], reverse=True)
             orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
 
+            # A track bound to NO server is gone from every library, so its
+            # catalogue row is deleted (embeddings cascade); it is re-analyzed if
+            # the file returns. Guarded twice: fully_unbound is already empty when
+            # any server failed, and it is refused here if a server returned a
+            # partial listing OR if orphans are an implausibly large share of the
+            # catalogue - either signals a bad view that must never delete a track
+            # still on a server. A full index rebuild runs inline after this pass
+            # (below) so the removed ids leave the similarity indexes before the task
+            # reports complete.
+            deleted_count = 0
+            deletable = (
+                clean_catalogue and bool(fully_unbound)
+                and not failed_servers and not refused_servers
+            )
+            if deletable and len(fully_unbound) > len(database_track_ids) // 2:
+                logger.warning(
+                    "Cleaning: %d of %d catalogue tracks look orphaned - too large a "
+                    "share for a healthy library; deleting nothing this run.",
+                    len(fully_unbound), len(database_track_ids),
+                )
+                deletable = False
+            if deletable:
+                orphan_ids = list(fully_unbound)
+                with get_db() as conn, conn.cursor() as cur:
+                    for start in range(0, len(orphan_ids), 5000):
+                        cancel()
+                        chunk = orphan_ids[start:start + 5000]
+                        cur.execute(
+                            "DELETE FROM score WHERE item_id = ANY(%s)", (chunk,)
+                        )
+                        deleted_count += len(chunk)
+                log_and_update_main(
+                    f"Deleted {deleted_count} orphaned catalogue tracks (on no "
+                    "server); their analysis is re-created if the files return.",
+                    90,
+                )
+
+            # Chromaprint dedup (Path B): retroactively split merges that Chromaprint
+            # now disproves. Skip-if-missing - it splits a duplicate group only when a
+            # stored fingerprint DEFINITIVELY disagrees, so a legacy library still
+            # backfilling fingerprints is a safe no-op. Runs on every cleaning
+            # regardless of the catalogue-deletion flag; it only unmaps (never deletes a
+            # catalogue row), so each split file re-analyzes under its own correct id.
+            chromaprint_splits = 0
+            if CHROMAPRINT_GATE_ENABLED:
+                log_and_update_main("Re-checking merged duplicates against Chromaprint...", 91)
+                from .duplicate_repair import split_chromaprint_false_merges
+                cp_result = split_chromaprint_false_merges() or {}
+                chromaprint_splits = cp_result.get('split', 0)
+                if chromaprint_splits:
+                    log_and_update_main(
+                        f"Thanks to Chromaprint, {chromaprint_splits} false merge(s) were "
+                        "split into separate songs; each re-analyzes under its own id.",
+                        91,
+                    )
+
+            # Rebuild the similarity indexes INLINE, the SAME final rebuild analysis
+            # runs, and only then report the cleanup complete. Cleaning has just
+            # changed what each server maps (unbind) and possibly removed catalogue
+            # rows (orphan delete); running the rebuild here - not as a detached job -
+            # means the task is not marked done until every index reflects the cleaned
+            # catalogue AND _run_all_index_builds has published the 'reload' that makes
+            # a running Flask swap the new indexes in. The unbinds and the orphan
+            # delete above are already committed (their get_db() blocks closed), so the
+            # rebuild reads the cleaned catalogue; if the audio index fails the whole
+            # run fails and retries rather than reporting a cleanup that never
+            # refreshed the indexes.
+            from .analysis.index import _run_all_index_builds
+            log_and_update_main("Performing final index rebuild...", 92)
+            try:
+                _run_all_index_builds(
+                    log_fn=log_and_update_main, progress_start=92, progress_end=99
+                )
+            except error_manager.AudioMuseError:
+                raise
+            except Exception as e:
+                raise error_manager.AudioMuseError(
+                    error_manager.classify(e, ERR_INDEX_BUILD), str(e), cause=e
+                ) from e
+
             summary = {
                 "total_media_server_tracks": total_tracks_on_servers,
                 "total_catalogue_tracks_present": len(present_canonical_ids),
@@ -219,7 +315,9 @@ def identify_and_clean_orphaned_albums_task():
                 "unbound_by_server": unbound_by_server,
                 "failed_servers": failed_servers,
                 "prune_refused_servers": refused_servers,
-                "deleted_count": 0,
+                "deleted_count": deleted_count,
+                "catalogue_deletion": clean_catalogue,
+                "chromaprint_splits": chromaprint_splits,
             }
 
             state = TASK_STATUS_FAILURE if failed_servers else TASK_STATUS_SUCCESS
@@ -236,11 +334,17 @@ def identify_and_clean_orphaned_albums_task():
                     "tracks they still have mapped, so their stale mappings were NOT pruned. "
                     "Re-run the cleanup if the library really did shrink that much."
                 )
+            elif clean_catalogue:
+                message = (
+                    f"Cleanup complete: {unbound_total} stale server mappings unbound; "
+                    f"{deleted_count} of {len(fully_unbound)} orphaned catalogue tracks "
+                    "(on no server) deleted."
+                )
             else:
                 message = (
                     f"Cleanup complete: {unbound_total} stale server mappings unbound; "
-                    f"{len(fully_unbound)} catalogue tracks are now on no server and are "
-                    "hidden from results by the per-server availability filter."
+                    f"{len(fully_unbound)} catalogue tracks are on no server and were "
+                    "kept (catalogue cleaning is off - enable it to delete them)."
                 )
             log_and_update_main(message, 100, task_state=state, final_summary_details=summary)
             return {"status": "SUCCESS" if not failed_servers else "FAILURE",
