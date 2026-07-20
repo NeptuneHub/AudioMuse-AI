@@ -279,13 +279,23 @@ def _confirm_candidates(cur, ids, left, right, duration_of):
     return np.concatenate(kept_left), np.concatenate(kept_right)
 
 
-def _reject_same_folder_pairs(cur, ids, left, right):
+def _folders_for_rows(cur, ids, left, right, count):
+    """Folder key per row for the rows that appear in a candidate pair, else None.
+
+    Feeds merge_pairs so the folder rule is applied WHILE the groups are built:
+    two distinct files in one folder never land in the same group, so no
+    same-folder merge is ever formed (no wrong id to unmap later). Legacy rows
+    carry score.file_path; a row without one (e.g. an already-canonical target)
+    is left unconstrained.
+    """
+    folders = [None] * count
     if left.size == 0:
-        return left, right
-    involved = list({ids[int(row)] for row in np.concatenate((left, right))})
+        return folders
+    involved = sorted({int(row) for row in np.concatenate((left, right))})
     path_of = {}
-    for begin in range(0, len(involved), _CHUNK_ROWS):
-        chunk = involved[begin:begin + _CHUNK_ROWS]
+    wanted = list({ids[row] for row in involved})
+    for begin in range(0, len(wanted), _CHUNK_ROWS):
+        chunk = wanted[begin:begin + _CHUNK_ROWS]
         cur.execute(
             "SELECT item_id, file_path FROM score "
             "WHERE file_path IS NOT NULL AND item_id = ANY(%s)",
@@ -293,16 +303,9 @@ def _reject_same_folder_pairs(cur, ids, left, right):
         )
         for item_id, file_path in cur.fetchall():
             path_of[str(item_id)] = file_path
-    keep = np.array(
-        [
-            not simhash.same_folder_conflict(
-                path_of.get(ids[int(left_row)]), path_of.get(ids[int(right_row)])
-            )
-            for left_row, right_row in zip(left, right)
-        ],
-        dtype=bool,
-    )
-    return left[keep], right[keep]
+    for row in involved:
+        folders[row] = simhash.folder_key(path_of.get(ids[row]))
+    return folders
 
 
 def _build_mapping(cur, source_id):
@@ -417,7 +420,6 @@ def _build_mapping(cur, source_id):
             cur, ids, np.concatenate((left, right)), provider_durations, source_id
         )
     left, right = _confirm_candidates(cur, ids, left, right, duration_of)
-    left, right = _reject_same_folder_pairs(cur, ids, left, right)
     # A canonical row may only ever be a merge TARGET, never a child. merge_pairs
     # refuses a merge whose target has itself already merged, so a confirmed
     # canonical-vs-canonical pair (which the emit loop below discards anyway, since
@@ -426,7 +428,11 @@ def _build_mapping(cur, source_id):
     # would then mint a THIRD id for the same audio.
     keep = right >= canonical_loaded
     left, right = left[keep], right[keep]
-    parent = simhash.merge_pairs(loaded, packed, left, right)
+    # Fold the folder rule INTO the id calculation: merge_pairs will not put two
+    # distinct files from one folder in the same group, so a same-folder merge is
+    # never formed here (no wrong id to unmap in a second pass).
+    folders = _folders_for_rows(cur, ids, left, right, loaded)
+    parent = simhash.merge_pairs(loaded, packed, left, right, folders=folders)
 
     mapping = {}
     duplicate_mapping = {}

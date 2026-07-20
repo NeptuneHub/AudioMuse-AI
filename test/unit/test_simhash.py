@@ -362,6 +362,23 @@ class TestFolderRule:
         assert kind == 'new'
         assert resolved != cid
 
+    def test_merge_pairs_folder_rule_is_group_level_not_pairwise(self):
+        # Three near-identical rows; 0 and 2 share a folder. Both match row 1 (a
+        # different folder), so a pairwise reject of the 0-2 pair would still let
+        # them co-merge via row 1. The group-level rule must keep 2 out of 0's
+        # group, so a same-folder merge is never formed in the first place.
+        packed = np.stack([simhash._pack_signature(0)] * 3)
+        left = np.array([0, 0, 1], dtype=np.int64)
+        right = np.array([1, 2, 2], dtype=np.int64)
+        folders = ['a/alb', 'b/alb', 'a/alb']
+
+        parent = simhash.merge_pairs(3, packed, left, right, folders=folders)
+        assert parent[1] == 0, "different-folder file still merges"
+        assert parent[2] == 2, "same-folder file gets its own id, not 0's group"
+
+        plain = simhash.merge_pairs(3, packed, left, right)
+        assert plain[2] == 0, "without folders they would all collapse into one id"
+
 
 class TestBatchResolveMatchesStreaming:
     """The whole-catalogue resolver must decide identity exactly like the

@@ -301,24 +301,44 @@ def confirm_pairs(left_vectors, right_vectors, left_durations=None, right_durati
     )
 
 
-def merge_pairs(count, packed, left, right):
+def merge_pairs(count, packed, left, right, folders=None):
     """``parent[i]``: the row whose identity row i takes, from CONFIRMED pairs.
 
     Each row settles against its NEAREST earlier match, oldest row first - the
     order the streaming resolver saw them in - and a row that merged is never
     itself a merge target, so chains cannot form. ``parent[i] == i`` means "its
     own track"; anything else means "the same audio as row parent[i]".
+
+    ``folders`` (folder key per row, or None) enforces the folder rule at the
+    GROUP level as the merge is built: a row is never added to a group that
+    already holds a file from the same folder, so two distinct files in one
+    folder can never share an id even when they both matched a third file in
+    another folder. This is what a pairwise reject cannot do.
     """
     parent = np.arange(count, dtype=np.int64)
     if left.size == 0:
         return parent
     hamming = _POPCOUNT[packed[left] ^ packed[right]].sum(axis=1, dtype=np.int16)
+    group_folders = {} if folders is not None else None
     for index in np.lexsort((left, hamming, right)):
         child = int(right[index])
         target = int(left[index])
         if parent[child] != child or parent[target] != target:
             continue
-        parent[child] = target
+        if group_folders is not None:
+            occupied = group_folders.get(target)
+            if occupied is None:
+                target_folder = folders[target]
+                occupied = set() if target_folder is None else {target_folder}
+                group_folders[target] = occupied
+            child_folder = folders[child]
+            if child_folder is not None and child_folder in occupied:
+                continue
+            parent[child] = target
+            if child_folder is not None:
+                occupied.add(child_folder)
+        else:
+            parent[child] = target
     return parent
 
 

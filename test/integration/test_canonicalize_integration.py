@@ -284,6 +284,39 @@ class TestRealCanonicalization:
                 "the migration must backfill score.duration from the server metadata"
             )
 
+    def test_same_folder_files_never_share_an_id_during_canonicalize(self, db, monkeypatch):
+        from tasks import fingerprint_canonicalize as fc
+
+        # jf-1 and jf-3 are DIFFERENT songs that happen to sit in the SAME folder;
+        # both are near-identical to jf-2 in another folder. Folding the folder rule
+        # into the id calculation must keep jf-1 and jf-3 on separate ids in this
+        # one pass - never form the merge and then unmap it (which would orphan a row).
+        monkeypatch.setattr(
+            fc, '_fetch_provider_durations',
+            lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 200.0, 'jf-3': 200.0},
+        )
+        same = _distinct_embedding(11)
+        tracks = [
+            ('jf-1', '/music/Album/01.flac', same),
+            ('jf-2', '/music/Other/02.flac', same.copy()),
+            ('jf-3', '/music/Album/03.flac', same.copy()),
+        ]
+        _build(db, tracks)
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['duplicates'] == 1, "only the cross-folder file may merge"
+        assert len(_score(db)) == 2
+        maps = {p: item for p, item, _path in _maps(db)}
+        assert set(maps) == {'jf-1', 'jf-2', 'jf-3'}, "every file stays mapped (no orphan)"
+        assert maps['jf-1'] != maps['jf-3'], "same-folder files must not share an id"
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM score s WHERE NOT EXISTS "
+                "(SELECT 1 FROM track_server_map t WHERE t.item_id = s.item_id)"
+            )
+            assert cur.fetchone()[0] == 0, "no catalogue row is left orphaned"
+
     def test_same_sounding_audio_with_different_length_stays_two_songs(
         self, db, monkeypatch
     ):

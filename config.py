@@ -862,6 +862,26 @@ DURATION_TOLERANCE_SECONDS = float(os.getenv("DURATION_TOLERANCE_SECONDS", "1.0"
 # catalogue re-migration in the future, bump ONLY this number.
 CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "4"))
 
+# --- Chromaprint acoustic fingerprint (optional dedup confirmation) ---
+# Real Chromaprint (computed by the fpcalc binary) stored per file in the chromaprint table and
+# used as an EXTRA agreement check on top of the MusiCNN embedding + duration when deciding two
+# files are the same recording. If either file lacks a fingerprint the check is skipped and the
+# behaviour is identical to before, so legacy libraries roll in gradually as fingerprints backfill.
+# Path to the fpcalc binary: found on PATH inside Docker, set by the standalone launcher when bundled.
+FPCALC_BINARY = os.getenv("FPCALC", "fpcalc")
+# Compute and store a fingerprint for every newly analyzed track.
+CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "True").lower() == "true"
+# Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis run.
+CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "10"))
+# Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
+CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
+# Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.
+CHROMAPRINT_MATCH_THRESHOLD = float(os.getenv("CHROMAPRINT_MATCH_THRESHOLD", "0.70"))
+# Max +/- frame offset searched when aligning two fingerprints of slightly different length.
+CHROMAPRINT_MAX_ALIGN_OFFSET = int(os.getenv("CHROMAPRINT_MAX_ALIGN_OFFSET", "12"))
+# Minimum overlapping frames required to trust a comparison; below this the check abstains.
+CHROMAPRINT_MIN_OVERLAP = int(os.getenv("CHROMAPRINT_MIN_OVERLAP", "40"))
+
 # --- Dashboard "Browse" listing view ---
 # Rows per page in the Song/Artist/Album browse view opened from the dashboard.
 DASHBOARD_BROWSE_PAGE_SIZE = int(os.environ.get("DASHBOARD_BROWSE_PAGE_SIZE", "100"))
