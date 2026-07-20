@@ -8,8 +8,10 @@
       "Bash(MSYS_NO_PATHCONV=1 wsl bash -c \"cd /mnt/c/Users/gcola/Music/AudioMuse-AI && source .venv/bin/activate && python -m pytest test/unit/test_chromaprint.py test/unit/test_simhash.py test/unit/test_analysis.py test/integration/test_chromaprint_integration.py -q -p no:cacheprovider 2>&1 | tail -8\")",
       "Bash(MSYS_NO_PATHCONV=1 wsl bash -c \"cd /mnt/c/Users/gcola/Music/AudioMuse-AI && source .venv/bin/activate && python -m py_compile database.py tasks/analysis/album.py && flake8 database.py tasks/analysis/album.py --select=E9,F,W605,E711,E712,E713,E714,E722,E401 && echo FLAKE8_OK && python -m pytest test/unit/test_analysis.py test/integration/test_chromaprint_integration.py -q -p no:cacheprovider 2>&1 | tail -6\")",
       "Bash(MSYS_NO_PATHCONV=1 wsl bash -c \"cd /mnt/c/Users/gcola/Music/AudioMuse-AI && source .venv/bin/activate && python -m pytest test/unit/test_file_header_convention.py -q -p no:cacheprovider 2>&1 | tail -4\")",
-      "Bash(MSYS_NO_PATHCONV=1 wsl bash -c 'export SONAR_TOKEN=138d269babd2844f33276e817d7e1f0b74fc39e1 && python3 /mnt/c/Users/gcola/AppData/Local/Temp/claude/c--Users-gcola-Music-AudioMuse-AI/938e492b-c8fa-4d55-ab6d-2ba383adfe24/scratchpad/sonar.py accept AZ9-cglhujEgENk1Iffm')",
       "PowerShell(git add tasks/duplicate_repair.py tasks/cleaning.py templates/cleaning.html test/unit/test_duplicate_repair.py test/unit/test_cleaning_multiserver.py test/integration/test_duplicate_repair_integration.py)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\gcola\\.claude"
     ]
   }
 }
