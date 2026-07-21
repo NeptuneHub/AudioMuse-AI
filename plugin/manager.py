@@ -324,6 +324,7 @@ class PluginManager:
                 record['settings_endpoint'] = None
                 record['cron_tasks'] = {}
                 record['onnx_providers'] = []
+                record['analysis_providers'] = {}
                 record['song_analyzed_hooks'] = []
                 record['error'] = None
                 records[row['id']] = record
@@ -600,6 +601,7 @@ class PluginManager:
                     record['settings_endpoint'] = ctx.settings_endpoint
                     record['cron_tasks'] = {**(ctx.tasks or {}), **(ctx.cron_tasks or {})}
                     record['onnx_providers'] = ctx.onnx_providers
+                    record['analysis_providers'] = ctx.analysis_providers
                     record['song_analyzed_hooks'] = ctx.song_analyzed_hooks
                     if role == 'web' and flask_app is not None and ctx.blueprint is not None:
                         if ctx.blueprint.name != plugin_id:
@@ -853,6 +855,25 @@ class PluginManager:
             if record.get('load_status') in _LOADED_STATUSES:
                 providers.extend(record.get('onnx_providers', []))
         return providers
+
+    def get_analysis_provider(self, component):
+        """Return the first loaded plugin's replacement for ``component``, or None.
+
+        Resolves ``factory`` to the actual implementation (calling it when it is a
+        zero-arg callable). Used by core to let a plugin swap out a whole analysis
+        step such as the ASR/Whisper backend.
+        """
+        for record in self.records.values():
+            if record.get('load_status') not in _LOADED_STATUSES:
+                continue
+            factory = record.get('analysis_providers', {}).get(component)
+            if factory is None:
+                continue
+            try:
+                return factory() if callable(factory) else factory
+            except Exception:
+                logger.exception('Plugin analysis provider for %r failed to resolve', component)
+        return None
 
     def song_analyzed_hooks(self):
         hooks = []

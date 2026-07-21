@@ -218,9 +218,9 @@ _axis_embeddings: Optional[Dict] = None
 def load_asr_model(num_threads: Optional[int] = None):
     threads = num_threads or get_lyrics_threads()
     _apply_thread_env(threads)
-    from .whisper_onnx import load_whisper_model as _load
+    from ._asr_backend import get_asr_backend
 
-    return _load()
+    return get_asr_backend().load_whisper_model()
 
 
 def load_topic_embedding_model(model_name: Optional[str] = None):
@@ -704,9 +704,9 @@ def _transcribe(
 ) -> Dict[str, object]:
     if audio is None or len(audio) == 0:
         return {'text': '', 'language': language or '', 'duration': 0.0}
-    from .whisper_onnx import transcribe as _whisper_transcribe
+    from ._asr_backend import get_asr_backend
 
-    return _whisper_transcribe(audio, sr, language=language)
+    return get_asr_backend().transcribe(audio, sr, language=language)
 
 
 def _embed_text(text: str, tokenizer, model) -> Optional[np.ndarray]:
