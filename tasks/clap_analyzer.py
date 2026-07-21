@@ -49,8 +49,15 @@ _label_text_embeddings_cache = None
 
 _SEGMENT_LENGTH_SAMPLES = 480000
 
+# Providers whose graph compiler needs the CLAP audio model's symbolic
+# time-frame axis pinned to a fixed value before it can compile the graph
+# (neither compiles a dynamic dim).
+_PREPARED_MODEL_PROVIDERS = {'CoreMLExecutionProvider', 'MIGraphXExecutionProvider'}
 
-def _static_shape_model_bytes(model_path):
+
+def _prepared_model_bytes(model_path):
+    """Return the audio model with its symbolic time axis pinned to a static
+    shape, or None when the model has no symbolic dims. See _PREPARED_MODEL_PROVIDERS."""
     import onnx
     from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
 
@@ -115,6 +122,7 @@ def _load_audio_model():
             'arena_extend_strategy': 'kSameAsRequested',
             'cudnn_conv_algo_search': 'DEFAULT',
         },
+        label='clap',
     )
 
     def _create_session(model_input, providers, provider_opts):
@@ -131,14 +139,14 @@ def _load_audio_model():
     cpu_opts = [{}]
 
     preferred_model_input = model_path
-    if 'CoreMLExecutionProvider' in preferred_providers:
+    if _PREPARED_MODEL_PROVIDERS.intersection(preferred_providers):
         try:
-            static_bytes = _static_shape_model_bytes(model_path)
-            if static_bytes is not None:
-                preferred_model_input = static_bytes
-                logger.info("CoreML: pinned CLAP audio time axis to a static shape for compilation")
+            prepared_bytes = _prepared_model_bytes(model_path)
+            if prepared_bytes is not None:
+                preferred_model_input = prepared_bytes
+                logger.info("Pinned CLAP audio time axis to a static shape for graph compilation")
         except Exception as e:
-            logger.warning(f"CoreML: could not build static-shape model ({e}); using dynamic model")
+            logger.warning(f"Could not build static-shape model ({e}); using dynamic model")
 
     try:
         session = _create_session(preferred_model_input, preferred_providers, preferred_opts)

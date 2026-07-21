@@ -24,7 +24,8 @@ Everything a plugin can do, at a glance. The last column tells you where to find
 | 12 | Named worker tasks | `add_task` | No - see "API reference" |
 | 13 | Startup hooks | `on_flask_start` / `on_worker_start` | No - see "The plugin lifecycle" |
 | 14 | Create media-server playlists | `tasks.mediaserver` | No - see "Create a playlist on your media server" |
-| 15 | Extra ONNX execution provider | `register_onnx_provider` | No - see "API reference" (advanced) |
+| 15 | Extra ONNX execution provider (optionally scoped per model) | `register_onnx_provider` | No - see "API reference" (advanced) |
+| 16 | Replace an analysis component (e.g. the ASR/Whisper backend) | `register_analysis_provider` | No - see "API reference" (advanced) |
 
 ## Installing and managing plugins
 
@@ -468,7 +469,8 @@ And the methods on the `ctx` object in `register(ctx)`:
 | `add_task(name, func, queue='default')` | Register a named worker task. It appears on the Scheduled Tasks page like a cron task, so the admin can schedule it or run it now. |
 | `on_install(func)` | Run once at install and on every update. Gets the database connection. |
 | `on_flask_start(func)` / `on_worker_start(func)` | Run at every start of that container, after the plugin loads. |
-| `register_onnx_provider(name, options, position)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. |
+| `register_onnx_provider(name, options, position, only_models=None, exclude_models=None)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. Scope it to specific models with `only_models`/`exclude_models` (lists of the session `label`: `musicnn`, `clap`, `whisper_encoder`, ...) when the provider can only parse some graphs. |
+| `register_analysis_provider(component, factory)` | Advanced: replace a whole analysis component with a plugin-supplied implementation. `component` is currently `asr` (the Whisper backend); `factory` is the replacement module/object (or a zero-arg callable returning one) matching the built-in surface `load_whisper_model`/`transcribe`/`is_loaded`/`unload`. Consulted before the built-in. |
 
 ## Who can see and manage plugins
 

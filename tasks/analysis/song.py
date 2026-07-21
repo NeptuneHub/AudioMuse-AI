@@ -103,7 +103,7 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
-def resolve_providers(allow_coreml=False, cuda_options=None):
+def resolve_providers(allow_coreml=False, cuda_options=None, label=None):
     available = ort.get_available_providers()
     chain = []
 
@@ -134,8 +134,17 @@ def resolve_providers(allow_coreml=False, cuda_options=None):
 
     for provider in _plugin_onnx_providers():
         name = provider.get('name')
-        if name and name in available and name not in [p[0] for p in chain]:
-            chain.append((name, provider.get('options') or {}))
+        if not name or name not in available or name in [p[0] for p in chain]:
+            continue
+        # Providers can be scoped to specific models by their session label, so a
+        # plugin can offer an accelerator for the graphs it handles
+        only = provider.get('only_models')
+        exclude = provider.get('exclude_models')
+        if only and label not in only:
+            continue
+        if exclude and label in exclude:
+            continue
+        chain.append((name, provider.get('options') or {}))
 
     chain.append(('CPUExecutionProvider', {}))
     logger.info("ONNX provider chain: %s", [p[0] for p in chain])
@@ -208,8 +217,10 @@ def _default_sess_options():
     return opts
 
 
-def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
-    opts = provider_options or resolve_providers()
+def create_onnx_session(
+    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False
+):
+    opts = provider_options or resolve_providers(allow_coreml=allow_coreml, label=label)
     if sess_options is None:
         sess_options = _default_sess_options()
     try:
@@ -229,7 +240,7 @@ def create_onnx_session(model_path, provider_options=None, label="", sess_option
 
 
 def load_musicnn_sessions(model_paths):
-    opts = resolve_providers(allow_coreml=False)
+    opts = resolve_providers(allow_coreml=False, label='musicnn')
     try:
         sessions = {n: create_onnx_session(p, opts, label=n) for n, p in model_paths.items()}
         logger.info(f"OK Loaded {len(sessions)} MusiCNN models for album reuse")
