@@ -249,7 +249,7 @@ def _verify_media_server_reachable():
 
 def _phase_outcome(final_done, reported_total, albums_launched, failed_count,
                    failed_errors, albums_work_check_failed):
-    final_message = f"Albums {final_done}/{reported_total}"
+    final_message = f"Albums {min(final_done, reported_total)}/{reported_total}"
     if failed_count:
         final_message += f" ({failed_count} could not be analyzed)"
     if albums_work_check_failed:
@@ -374,9 +374,14 @@ def _run_analysis_server_task_impl(
             last_revocation_poll = float('-inf')
             try:
                 completed_baseline = count_terminal_children(current_task_id)
+                reconcile_from_db = True
             except Exception:
-                logger.exception("Could not read the completed-children baseline")
+                logger.exception(
+                    "Could not read the completed-children baseline; disabling DB "
+                    "reconcile for this phase so a retry's prior work is not counted twice"
+                )
                 completed_baseline = 0
+                reconcile_from_db = False
 
             def revoked_now():
                 nonlocal last_revocation_poll
@@ -430,11 +435,13 @@ def _run_analysis_server_task_impl(
                                     and not _rq_job_still_pending(job_id)
                                 ):
                                     active_jobs.discard(job_id)
-                        if db_done != albums_completed:
-                            logger.info(
-                                f"Reconciling albums_completed: RQ={albums_completed} DB={db_done} (of {albums_launched} launched)"
-                            )
-                            albums_completed = max(0, db_done)
+                        if reconcile_from_db:
+                            reconciled = min(max(0, db_done), albums_launched)
+                            if reconciled != albums_completed:
+                                logger.info(
+                                    f"Reconciling albums_completed: RQ={albums_completed} DB={db_done} clamped={reconciled} (of {albums_launched} launched)"
+                                )
+                                albums_completed = reconciled
                     except Exception:
                         logger.exception("Failed to reconcile child tasks from DB")
 
@@ -461,10 +468,13 @@ def _run_analysis_server_task_impl(
                 if not force and now - last_status_report < 5:
                     return
                 last_status_report = now
-                done = albums_skipped + albums_completed + albums_work_check_failed
+                done = min(
+                    albums_skipped + albums_completed + albums_work_check_failed,
+                    total_albums_to_check,
+                )
                 progress = 5 + int(85 * (done / float(total_albums_to_check)))
                 log_and_update_main(
-                    f"Albums {albums_offset + done}/{reported_total}",
+                    f"Albums {min(albums_offset + done, reported_total)}/{reported_total}",
                     progress,
                     albums_completed=albums_completed,
                 )
