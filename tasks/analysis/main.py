@@ -68,6 +68,7 @@ from app_helper import (
 )
 from database import (
     count_terminal_children,
+    get_child_tasks_from_db,
     get_failed_child_summary,
     persist_chromaprint,
     get_db,
@@ -383,6 +384,38 @@ def _run_analysis_server_task_impl(
                 completed_baseline = 0
                 reconcile_from_db = False
 
+            adopted_albums = set()
+            try:
+                stale_children = [
+                    c for c in get_child_tasks_from_db(current_task_id)
+                    if c['status'] not in (
+                        TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+                    )
+                ]
+                if stale_children:
+                    fetched = Job.fetch_many(
+                        [c['task_id'] for c in stale_children], connection=redis_conn
+                    )
+                    for child, job in zip(stale_children, fetched):
+                        if job is not None and (
+                            job.is_queued or job.is_scheduled or job.is_started
+                        ):
+                            active_jobs.add(child['task_id'])
+                            adopted_albums.add(str(child['sub_type_identifier']))
+                    if active_jobs:
+                        albums_launched += len(active_jobs)
+                        logger.info(
+                            "Adopted %d still-running album job(s) from a previous "
+                            "attempt of this task; their albums will not be enqueued "
+                            "again.",
+                            len(active_jobs),
+                        )
+            except Exception:
+                logger.exception(
+                    "Could not check for a previous attempt's in-flight album jobs; "
+                    "any still running will be re-enqueued and deduplicated per track"
+                )
+
             def revoked_now():
                 nonlocal last_revocation_poll
                 now = time.monotonic()
@@ -414,7 +447,10 @@ def _run_analysis_server_task_impl(
                     for job_id, job in zip(ids, fetched):
                         if job is None:
                             logger.debug(f"Job {job_id} not in RQ; will reconcile via DB.")
-                        elif job.is_finished or job.is_failed or job.is_canceled:
+                        elif (
+                            job.is_finished or job.is_failed
+                            or job.is_canceled or job.is_stopped
+                        ):
                             active_jobs.discard(job_id)
                             removed += 1
                     if removed:
@@ -425,7 +461,6 @@ def _run_analysis_server_task_impl(
                     last_monitor_db_check = now
                     try:
                         terminal = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
-                        db_done = count_terminal_children(current_task_id) - completed_baseline
                         in_flight = list(active_jobs)
                         if in_flight:
                             statuses = get_task_statuses(in_flight)
@@ -435,7 +470,10 @@ def _run_analysis_server_task_impl(
                                     and not _rq_job_still_pending(job_id)
                                 ):
                                     active_jobs.discard(job_id)
+                                    if not reconcile_from_db:
+                                        albums_completed += 1
                         if reconcile_from_db:
+                            db_done = count_terminal_children(current_task_id) - completed_baseline
                             reconciled = min(max(0, db_done), albums_launched)
                             if reconciled != albums_completed:
                                 logger.info(
@@ -485,6 +523,9 @@ def _run_analysis_server_task_impl(
                     logger.info("Analysis revoked; stopping album dispatch.")
                     return {'status': TASK_STATUS_REVOKED}
                 monitor_and_clear_jobs()
+                if str(album['Id']) in adopted_albums:
+                    report_progress()
+                    continue
                 while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
                     if revoked_now():
                         logger.info("Analysis revoked; stopping album dispatch.")
