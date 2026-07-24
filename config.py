@@ -223,6 +223,11 @@ USE_GPU_CLUSTERING = os.environ.get("USE_GPU_CLUSTERING", "False").lower() == "t
 # Set to False to preserve old automatic playlists when running clustering.
 CLUSTERING_CLEANING = os.environ.get("CLUSTERING_CLEANING", "True").lower() == "true"
 
+# When True, AI playlist naming also avoids names used in previous clustering runs
+# (playlist_name_history + existing playlists on the server).
+# Default False: only names created within the current run are avoided.
+CLUSTER_NAMING_AI_HISTORY = os.environ.get("CLUSTER_NAMING_AI_HISTORY", "False").lower() == "true"
+
 # --- DBSCAN Only Constants (Ranges for Evolutionary Approach) ---
 # Default ranges for DBSCAN parameters
 DBSCAN_EPS_MIN = float(os.getenv("DBSCAN_EPS_MIN", "0.1"))

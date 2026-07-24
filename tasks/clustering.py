@@ -84,6 +84,7 @@ from config import (
     CLUSTERING_BATCH_TIMEOUT_MINUTES,
     CLUSTERING_MAX_FAILED_BATCHES,
     CLUSTERING_CLEANING,
+    CLUSTER_NAMING_AI_HISTORY,
     CLUSTERING_MAX_PLAYLIST_SONGS,
     CLUSTERING_CALIBRATION_MAX_TRIES,
     CLUSTERING_EARLY_STOP_BATCHES,
@@ -1291,9 +1292,8 @@ def _cluster_one_server(
         90,
     )
 
-    previous_playlist_names = get_recent_playlist_names(
-        target_server['server_id'] if target_server else None,
-        limit=60,
+    previous_playlist_names = _previous_names_for_naming(
+        target_server['server_id'] if target_server else None
     )
     final_playlists_with_details = _name_and_prepare_playlists(
         best_result,
@@ -1673,6 +1673,12 @@ def _launch_batch_job(
     logger.info(
         f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}."
     )
+
+
+def _previous_names_for_naming(server_id):
+    if not CLUSTER_NAMING_AI_HISTORY:
+        return []
+    return get_recent_playlist_names(server_id, limit=60)
 
 
 def _name_and_prepare_playlists(
