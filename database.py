@@ -1355,6 +1355,7 @@ def init_db():
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
+            cur.execute("ALTER TABLE alchemy_anchors ADD COLUMN IF NOT EXISTS exclusions JSONB")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS alchemy_radios (id SERIAL PRIMARY KEY, anchor_id INTEGER UNIQUE NOT NULL REFERENCES alchemy_anchors(id) ON DELETE CASCADE, temperature DOUBLE PRECISION NOT NULL, n_results INTEGER NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
@@ -2291,18 +2292,20 @@ def get_failed_child_summary(parent_task_id, sample_limit=5):
     return failed_count, errors
 
 
-def save_alchemy_anchor(name, centroid):
+def save_alchemy_anchor(name, centroid, exclusions=None):
     if not name or not centroid or not isinstance(centroid, list):
         raise ValueError('Anchor name and centroid list are required.')
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
         centroid_json = json.dumps(centroid)
+        exclusions_json = json.dumps(exclusions) if exclusions else None
         cur.execute(
-            "INSERT INTO alchemy_anchors (name, centroid) VALUES (%s, %s) "
-            "ON CONFLICT (name) DO UPDATE SET centroid = EXCLUDED.centroid, created_at = NOW() "
+            "INSERT INTO alchemy_anchors (name, centroid, exclusions) VALUES (%s, %s, %s) "
+            "ON CONFLICT (name) DO UPDATE SET centroid = EXCLUDED.centroid, "
+            "exclusions = EXCLUDED.exclusions, created_at = NOW() "
             "RETURNING id, name, created_at",
-            (name, centroid_json),
+            (name, centroid_json, exclusions_json),
         )
         row = cur.fetchone()
         conn.commit()
@@ -2349,17 +2352,19 @@ def get_alchemy_anchor_by_id(anchor_id):
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
         cur.execute(
-            "SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,)
+            "SELECT id, name, centroid, exclusions, created_at FROM alchemy_anchors WHERE id = %s",
+            (anchor_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
         anchor = dict(row)
-        if isinstance(anchor.get('centroid'), str):
-            try:
-                anchor['centroid'] = json.loads(anchor['centroid'])
-            except Exception:
-                anchor['centroid'] = None
+        for field in ('centroid', 'exclusions'):
+            if isinstance(anchor.get(field), str):
+                try:
+                    anchor[field] = json.loads(anchor[field])
+                except Exception:
+                    anchor[field] = None
         return anchor
     except Exception:
         logger.exception(f"Failed to fetch alchemy anchor id={anchor_id}")

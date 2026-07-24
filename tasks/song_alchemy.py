@@ -19,6 +19,9 @@ Main Features:
 * Temperature controls exploration, with a zero-temperature single-song shortcut
   to plain nearest-neighbours; subtracted regions are filtered by distance and a
   2D projection of the centroid is returned for the UI.
+* Returns the subtract vectors with their exclusion radius as `exclusions` so a
+  saved anchor can persist them; ADD-ed anchors re-apply their stored exclusions
+  (each at its saved radius), which keeps anchor re-runs and radios reproducible.
 * Governed by config: ALCHEMY_DEFAULT_N_RESULTS (100) capped by ALCHEMY_MAX_N_RESULTS
   (200), ALCHEMY_TEMPERATURE (1.0), and the metric-dependent subtract cutoffs
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0).
@@ -299,6 +302,31 @@ def _playlist_anchor_points(item_id) -> List[dict]:
     ]
 
 
+def _anchor_exclusion_points(items: List[dict]) -> List[dict]:
+    from database import get_alchemy_anchor_by_id
+
+    points = []
+    for item in items or []:
+        if (item.get('type') or '').lower() != 'anchor' or not item.get('id'):
+            continue
+        anchor = get_alchemy_anchor_by_id(item['id'])
+        for entry in (anchor or {}).get('exclusions') or []:
+            if not isinstance(entry, dict):
+                continue
+            vector = entry.get('vector')
+            if not isinstance(vector, list) or not vector:
+                continue
+            try:
+                parsed_vector = np.array(vector, dtype=float)
+                distance = entry.get('distance')
+                if distance is not None:
+                    distance = float(distance)
+            except (TypeError, ValueError):
+                continue
+            points.append({'vector': parsed_vector, 'distance': distance})
+    return points
+
+
 _ANCHOR_POINT_HANDLERS = {
     'song': _song_anchor_points,
     'artist': _artist_anchor_points,
@@ -443,29 +471,34 @@ def song_alchemy(
         sub_set = set(subtract_song_ids)
         candidate_ids = [cid for cid in candidate_ids if cid not in sub_set]
 
+    if subtract_distance is None:
+        if config.PATH_DISTANCE_METRIC == 'angular':
+            threshold = config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
+        else:
+            threshold = config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
+    else:
+        threshold = subtract_distance
+
+    anchor_exclusions = _anchor_exclusion_points(add_items)
+    exclusion_checks = [(p['vector'], threshold) for p in sub_anchor_points]
+    exclusion_checks.extend(
+        (p['vector'], threshold if p['distance'] is None else p['distance'])
+        for p in anchor_exclusions
+    )
+
     filtered_out = []
     filtered = candidate_ids
-    if sub_anchor_points:
+    if exclusion_checks:
         filtered = []
-        if subtract_distance is None:
-            if config.PATH_DISTANCE_METRIC == 'angular':
-                threshold = config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
-            else:
-                threshold = config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
-        else:
-            threshold = subtract_distance
-
-        sub_vecs = [p['vector'] for p in sub_anchor_points]
         for cid in candidate_ids:
             vec = _vec(cid)
             if vec is None:
                 continue
             v_sub = np.array(vec, dtype=float)
-            min_sub = min(_metric_distance(s, v_sub) for s in sub_vecs)
-            if min_sub >= threshold:
-                filtered.append(cid)
-            else:
+            if any(_metric_distance(s, v_sub) < limit for s, limit in exclusion_checks):
                 filtered_out.append(cid)
+            else:
+                filtered.append(cid)
 
     candidate_ids = filtered
 
@@ -1175,5 +1208,9 @@ def song_alchemy(
         else None,
         'add_points': add_points,
         'sub_points': sub_points,
+        'exclusions': [
+            {'vector': np.asarray(vec, dtype=float).tolist(), 'distance': float(limit)}
+            for vec, limit in exclusion_checks
+        ],
         'projection': projection_used,
     }
