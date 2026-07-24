@@ -377,6 +377,31 @@ def list_anchors():
         return jsonify({'anchors': [], 'error': 'Unable to retrieve anchors at this time.'}), 500
 
 
+def _parse_anchor_exclusions(payload):
+    exclusions = payload.get('exclusions')
+    if not exclusions:
+        return None, None
+    if not isinstance(exclusions, list):
+        return None, 'Anchor exclusions must be a list'
+    parsed = []
+    for entry in exclusions:
+        if not isinstance(entry, dict):
+            return None, 'Each anchor exclusion must be an object'
+        vector = entry.get('vector')
+        if not isinstance(vector, list) or not vector:
+            return None, 'Each anchor exclusion needs a non-empty vector list'
+        distance = entry.get('distance')
+        if distance is not None:
+            try:
+                distance = float(distance)
+            except (TypeError, ValueError):
+                return None, 'Anchor exclusion distance must be a number'
+            if not math.isfinite(distance):
+                return None, 'Anchor exclusion distance must be a finite number'
+        parsed.append({'vector': vector, 'distance': distance})
+    return parsed, None
+
+
 @alchemy_bp.route('/api/anchors', methods=['POST'])
 def create_anchor():
     """
@@ -384,7 +409,7 @@ def create_anchor():
     ---
     tags:
       - Alchemy
-    summary: Persist an anchor (named centroid) for later reuse in path-finding or alchemy.
+    summary: Persist an anchor (named centroid plus exclusions) for later reuse in path-finding or alchemy.
     requestBody:
       required: true
       content:
@@ -401,11 +426,30 @@ def create_anchor():
                   type: number
                   format: float
                 description: Embedding vector representing the anchor.
+              exclusions:
+                type: array
+                description: |
+                  Subtracted regions of the run being saved (from the alchemy
+                  response `exclusions` field). Each entry is re-applied when
+                  the anchor is used, making the anchor reproducible.
+                items:
+                  type: object
+                  required: [vector]
+                  properties:
+                    vector:
+                      type: array
+                      items:
+                        type: number
+                        format: float
+                    distance:
+                      type: number
+                      format: float
+                      description: Exclusion radius around the vector.
     responses:
       200:
         description: Anchor saved.
       400:
-        description: Missing or invalid name/centroid.
+        description: Missing or invalid name/centroid/exclusions.
       500:
         description: Database failure.
     """
@@ -419,7 +463,10 @@ def create_anchor():
         return jsonify({'error': 'Anchor name is required'}), 400
     if not centroid or not isinstance(centroid, list):
         return jsonify({'error': 'Anchor centroid is required and must be a list'}), 400
-    anchor = save_alchemy_anchor(name, centroid)
+    exclusions, exclusions_error = _parse_anchor_exclusions(payload)
+    if exclusions_error:
+        return jsonify({'error': exclusions_error}), 400
+    anchor = save_alchemy_anchor(name, centroid, exclusions)
     if not anchor:
         return jsonify({'error': 'Failed to save anchor'}), 500
     return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
