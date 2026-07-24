@@ -1085,6 +1085,37 @@ class TestSelectTopNDiversePlaylists:
         assert received_avoid_names == ['Pop Heartbreak_automatic']
         assert 'Happy Pop_automatic' in result
 
+    def test_history_avoidance_is_off_by_default_so_recent_names_are_never_fetched(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        def fail_fetch(*args, **kwargs):
+            raise AssertionError('history must not be queried when disabled')
+
+        monkeypatch.setattr(clustering, 'get_recent_playlist_names', fail_fetch)
+
+        assert clustering._previous_names_for_naming('server-1') == []
+
+    def test_cluster_naming_ai_history_true_fetches_the_last_60_names(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        calls = []
+
+        def fake_fetch(server_id, limit):
+            calls.append((server_id, limit))
+            return ['Pop Heartbreak_automatic']
+
+        monkeypatch.setattr(clustering, 'CLUSTER_NAMING_AI_HISTORY', True)
+        monkeypatch.setattr(clustering, 'get_recent_playlist_names', fake_fetch)
+
+        assert clustering._previous_names_for_naming('server-1') == [
+            'Pop Heartbreak_automatic'
+        ]
+        assert calls == [('server-1', 60)]
+
     def test_newest_first_history_is_reversed_so_the_prompt_window_stays_fresh(
         self, monkeypatch
     ):
