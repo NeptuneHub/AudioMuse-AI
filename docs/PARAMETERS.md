@@ -26,6 +26,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | Parameter            | Description                                                             | Default Value                     |
 |----------------------|-------------------------------------------------------------------------|-----------------------------------|
 | **Mediaserver General**                        |                                                                 |                 |
+| `MEDIASERVER_TYPE`   | (Required) Which media server to use: `jellyfin`, `navidrome`, `emby`, `lyrion` or `plex`. | `jellyfin` |
 | `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_NAVIDROME_IP:4533`   |
 | `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
 | `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
@@ -46,7 +47,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | `REDIS_URL`          | (Required) URL for Redis.                                               | `redis://localhost:6379/0`        |
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
-| `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
+| `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. Leave the default when pointing at a local Ollama instance. | `no-key-needed` |
 | **AudioMuse-AI Authentication**                        |                                                                 |                 |
 | `AUTH_ENABLED`     | Enable the AudioMuse-AI authentication layer | `true`|
 | `AUDIOMUSE_USER`    | Username for web UI login     | *(N/A - from Secret)* |
@@ -60,11 +61,12 @@ These parameters can be left as-is:
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
 | `CLEANING_SAFETY_LIMIT` | Max unbound-on-every-server albums listed in the cleaning report (cleaning never deletes catalogue rows) | `100`             |
+| `CLEANING_CATALOGUE`    | When `true`, cleaning also DELETES catalogue rows bound to no server (orphans). When `false` it only unbinds each server's stale mappings and leaves the catalogue untouched. The cleaning page has a per-run checkbox to enable it for a single run without changing this default. | `false` |
+| `SWEEP_PRUNE_MIN_FETCH_RATIO` | A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much. | `0.5` |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Navidrome/Jellyfin: Use library/folder names. | `""` (empty - scan all) |
-| `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
-| `WORKER_URL` | This is the Url your worker instance runs on. The server instance uses this parameter to call the worker. Make sure to include /worker at the end of the url (e.g. http://worker.example.com:8029/worker) | `false` |
-| `WORKER_POSTGRES_HOST` | This is the Url of your the postgres service on your server. The worker uses this to connect the postgres service the flask app uses too. Make sure to not include a protocol (like "http") (e.g. 100.000.00.00) | `false` |
-| `WORKER_REDIS_URL` | This is the Url of your the redis service on your server. The worker uses this to connect to the redis service the flask app uses too. Make sure to include the protocol "redis://" and the dbindex "/0" (e.g. redis://100.000.00.00:6379/0)   | `false` |
+| `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L918) | `false` |
+| `DASHBOARD_BROWSE_PAGE_SIZE` | Rows per page in the Song/Artist/Album browse view opened from the dashboard.                | `100` |
+| `DASHBOARD_BROWSE_MAX_OFFSET` | Deepest OFFSET a browse query may reach. Past this the API stops paging and asks you to refine with search/filters, so a 1M-row catalogue cannot be hit with a pathological deep-page scan. | `50000` |
 | `TZ`     | Set the time zone of all containers (Flask, worker, Redis and PostgreSQL) | `UTC` |
 
 These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
@@ -79,11 +81,12 @@ These are the default parameters used when launching analysis or clustering task
 | **Analysis General**                        |                                                                                                                            |                 |
 | `NUM_RECENT_ALBUMS`                         | Number of recent albums to scan (0 for all).                                                                              | `0`             |
 | `TOP_N_MOODS`                               | Number of top moods per track for feature vector.                                                                         | `5`             |
-| `CLAP_ENABLED`                              | Enable or disable CLAP model for text-to-audio search capabilities.                                                       | `true`          |
-| `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
+| `ANALYSIS_MONITOR_DB_INTERVAL`              | Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs still drain via the queue on every poll). | `10` |
+| `INDEX_BUILD_WORKERS`                       | Worker processes for the CPU-bound parts of a similarity index rebuild (the per-artist GMM fits). `0` = auto (half the cores, capped at 8); `1` = fit in-process. | `0` |
+| `CATALOGUE_ID_SCHEME_VERSION`               | Version of the `fp_<n>` content-id scheme. New ids are minted at this version and the startup migration relabels every older-version id up to it exactly once. Bump it only to force a one-time catalogue re-migration. | `4` |
 | `CHROMAPRINT_COLLECTION_ENABLED`            | Compute and store a Chromaprint acoustic fingerprint per analyzed track (needs the fpcalc binary; off if it is missing).    | `true`          |
 | `CHROMAPRINT_GATE_ENABLED`                  | Use stored fingerprints as an extra same-recording check in duplicate detection; skipped for any pair missing a print.      | `true`          |
-| `CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN`       | Albums per server whose already-analyzed tracks get a fingerprint back-filled at the end of each analysis run.              | `500`           |
+| `CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN`       | Albums per server whose already-analyzed tracks get a fingerprint back-filled at the end of each analysis run.              | `1000`          |
 | `CHROMAPRINT_MATCH_THRESHOLD`               | Fraction of matching fingerprint bits at/above which two tracks are the same recording. Higher = split more aggressively.   | `0.95`          |
 | **Clustering General**                      |                                                                                                                            |                 |
 | `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |
@@ -93,6 +96,8 @@ These are the default parameters used when launching analysis or clustering task
 | `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `1000`          |
 | `TOP_N_CLUSTERING_PLAYLIST`                 | Exact final playlist cap. With the default 10, select two centroid-distant playlists for each of the three most represented genres, then four centroid-distant playlists with distinct non-top genres. | `10`            |
+| `MIN_PLAYLIST_SIZE_FOR_TOP_N`               | Min songs a playlist must have to be considered in the first pass of the Top-N selection.                                 | `20`            |
+| `CLUSTERING_CLEANING`                       | When true, existing `_automatic` playlists are deleted before the new clusters are created. Set false to preserve old automatic playlists when running clustering. | `true`          |
 | `USE_GPU_CLUSTERING`                        | When true enable the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
 | `CLUSTERING_AUTO_CALIBRATION`               | Automatic parameter discovery: per server, quick probe runs tune cluster count/eps and sampling percentile before the real run. False = always use the configured defaults as-is. | `true`          |
 | `CLUSTERING_MAX_PLAYLIST_SONGS`             | Auto-calibration soft target: try to keep generated playlists at or under this many songs (big still beats empty).        | `200`           |
@@ -100,6 +105,10 @@ These are the default parameters used when launching analysis or clustering task
 | `CLUSTERING_SUBSET_SONGS`                   | Exact number of songs sampled per clustering iteration: stratified by genre, topped up with random songs. Smaller only when the library has fewer songs. | `10000`         |
 | `CLUSTERING_EARLY_STOP_BATCHES`             | Finish clustering early after this many consecutive batches without a better result (running batches still complete; no new ones are enqueued). | `3`             |
 | `CLUSTER_NAMING_AI_HISTORY`                 | When true, AI playlist naming also avoids names used in previous clustering runs (name history and existing playlists). False only avoids duplicates within the current run. | `false`         |
+| `PLAYLIST_NAME_HISTORY_ROUNDS`              | How many previous clustering rounds (per server) of playlist names AI naming avoids when `CLUSTER_NAMING_AI_HISTORY` is on. | `2`             |
+| **Instant Playlist General**                |                                                                                                                           |                 |
+| `MAX_SONGS_PER_ARTIST_PLAYLIST`             | Max songs from a single artist in the instant playlist (diversity enforcement).                                           | `5`             |
+| `PLAYLIST_ENERGY_ARC`                       | Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down).                                       | `false`         |
 | **Similarity General**                      |                                                                                                                           |                 |
 | `IVF_METRIC`                                | Distance metric used by the similarity index: `angular` (cosine), `euclidean`, or `dot` (inner product). Changing it requires an index rebuild.                                                                                            | `angular`       |
 | **Disk-Paged IVF Similarity Index**         |                                                                                                                            |                 |
@@ -123,6 +132,7 @@ These are the default parameters used when launching analysis or clustering task
 | `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
 | `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |
+| `SONIC_FINGERPRINT_TOP_N_SONGS`             | Number of most-played/most-recent tracks used as the fingerprint seed pool.                                               | `20`            |
 | `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |
 | `SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM`     | **Navidrome only.** Max tracks a single album may contribute to the fingerprint seed pool, so one large album (e.g. a 100+ track DJ mix) cannot dominate. Other media servers fetch top songs directly and ignore this. | `3`             |
 | **Song Alchemy General**                     |                                                                                                                            |                 |
@@ -134,6 +144,7 @@ These are the default parameters used when launching analysis or clustering task
 | `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`    | Less than this euclidean distance the track is a duplicate.                                                               | `0.15`          |
 | `DUPLICATE_DISTANCE_CHECK_LOOKBACK`         | How many previous song need to be checked for duplicate.                                                                  | `1`             |
 | `MOOD_SIMILARITY_THRESHOLD`                 | Maximum normalized distance for mood similarity filtering. Lower value will give more importance to mood                  | `0.15`          |
+| `MOOD_SIMILARITY_ENABLE`                    | Enable or disable mood similarity filtering globally.                                                                     | `false`         |
 | **Song Path General**                       |                                                                                                                            |                 |
 | `PATH_DISTANCE_METRIC`                      | The distance metric to use for pathfinding. Options: 'angular', 'euclidean'                                               | `angular`       |
 | `PATH_DEFAULT_LENGTH`                       | Default number of songs in the path if not specified in the API request                                                   | `25`            |
@@ -167,16 +178,18 @@ These are the default parameters used when launching analysis or clustering task
 | **AI Naming (*)**                           |                                                                                            |                                        |
 | `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OpenAI` or `NONE`.                           | `NONE`                                 |
 | `AI_REQUEST_TIMEOUT_SECONDS`                | Timeout (in seconds) for AI API requests. Increase for slower hardware or larger models.  | `300`                                  |
+| `MAX_SONGS_IN_AI_PROMPT`                    | Max songs included in an AI naming prompt; larger playlists use only the first N songs.   | `25`                                   |
+| `AI_TOOLCALL_TEMPERATURE`                   | Sampling temperature for the tool-calling (playlist planning) LLM request. Qwen3-family models warn against greedy decoding, so do not set this to `0`. | `0.7`             |
 | `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
 | `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample on every run, including the first run of a batch (0.0 to 1.0; limited when a genre has no unsampled alternatives). | `0.2`                                  |
 | `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`    | Minimum number of songs to target per stratified genre during sampling.                   | `100`                                  |
 | `STRATIFIED_SAMPLING_TARGET_PERCENTILE`     | Percentile of genre song counts to use for target songs per stratified genre.             | `50`                                   |
-| `OLLAMA_SERVER_URL`                         | URL for your Ollama instance (if `AI_MODEL_PROVIDER` is OLLAMA).                          | `http://<your-ip>:11434/api/generate` |
+| `OLLAMA_SERVER_URL`                         | URL for your Ollama instance (if `AI_MODEL_PROVIDER` is OLLAMA).                          | `http://localhost:11434/api/generate` |
 | `OLLAMA_MODEL_NAME`                         | Ollama model to use (if `AI_MODEL_PROVIDER` is OLLAMA).                                   | `qwen3.5:9b`                          |
 | `GEMINI_MODEL_NAME`                         | Gemini model to use (if `AI_MODEL_PROVIDER` is GEMINI).                                   | `gemini-2.5-pro`                      |
 | `MISTRAL_MODEL_NAME`                        | Mistral model to use (if `AI_MODEL_PROVIDER` is MISTRAL).                                 | `ministral-3b-latest`                  |
 | `OPENAI_MODEL_NAME`                         | OpenAI or OpenRouter model to use (if `AI_MODEL_PROVIDER` is OPENAI). Falls back to `OLLAMA_MODEL_NAME` if unset. | `llama3.1:8b` |
-| `OPENAI_SERVER_URL`                         | URL for OpenAI / OpenRouter (if `AI_MODEL_PROVIDER` is OPENAI). Falls back to `OLLAMA_SERVER_URL` if unset. | `http://<your-ip>:11434/api/generate` |
+| `OPENAI_SERVER_URL`                         | URL for OpenAI / OpenRouter (if `AI_MODEL_PROVIDER` is OPENAI). Falls back to `OLLAMA_SERVER_URL` if unset. | `http://localhost:11434/api/generate` |
 | **Scoring Weights**                         |                                                                                            |                                        |
 | `SCORE_WEIGHT_DIVERSITY`                    | Weight for inter-playlist mood diversity.                                                 | `2.0`                                  |
 | `SCORE_WEIGHT_PURITY`                       | Weight for playlist purity (intra-playlist mood consistency).                             | `1.0`                                  |
@@ -216,6 +229,22 @@ These are the default parameters used when launching analysis or clustering task
 | `LYRICS_GTE_WARMUP_DURATION`                | Duration (seconds) to keep the gte-multilingual-base lyrics-search model loaded after last use. Auto-unloads after this idle period to free RAM. | `300` |
 | `SEM_GROVE_WEIGHT_LYRICS`                   | Contribution of the lyrics embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.75` |
 | `SEM_GROVE_WEIGHT_AUDIO`                    | Contribution of the MusicNN audio embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.25` |
+| **Plugin System**                           |                                                                                            |                                        |
+| `PLUGINS_ENABLED`                           | Master switch for the plugin subsystem (discovery, loading, admin UI).                    | `true`                                 |
+| `PLUGINS_DIR`                               | Where installed plugin code and its pip dependencies live. Mount it on a persistent volume to keep plugins across restarts; if it is empty at boot the app re-downloads each plugin from its source URL. | `<APP_DATA_DIR>/plugins`, else `<repo>/plugin/installed` |
+| `PLUGIN_DEFAULT_REPO_URL`                   | Default community catalog (a static Jellyfin-style `manifest.json`).                      | `https://raw.githubusercontent.com/NeptuneHub/AudioMuse-AI-plugins/main/manifest.json` |
+| `PLUGIN_MAX_DOWNLOAD_MB`                    | Hard cap (MB) on a downloaded plugin package, to bound the DB blob and the extraction.    | `50`                                   |
+| `PLUGIN_ALLOW_PIP`                          | Allow pip-installing plugin requirements into `PLUGINS_DIR/_lib`. Auto-disabled on frozen standalone builds, which cannot pip into the bundle. | `true`             |
+| `PLUGIN_HTTP_CONNECT_TIMEOUT`               | Connect timeout (seconds) for plugin catalog/manifest/download HTTP calls.                | `10`                                   |
+| `PLUGIN_HTTP_READ_TIMEOUT`                  | Read timeout (seconds) for plugin catalog/manifest/download HTTP calls.                   | `20`                                   |
+| `PLUGIN_HTTP_RETRIES`                       | Retries for a failed plugin download before giving up (exponential backoff).              | `4`                                    |
+| `PLUGIN_HTTP_BACKOFF`                       | Backoff factor between plugin download retries. `0.5` with 4 retries waits ~0, 0.5, 1, 2, 4s. | `0.5`                              |
+| `PLUGIN_HTTP_FORCE_IPV4`                    | Pin all plugin HTTP traffic to IPv4. Default true because GitHub raw is often unreachable over IPv6 from a container with no IPv6 egress. Set false only on an IPv6-only host. | `true` |
+| `PLUGIN_CATALOG_FETCH_WORKERS`              | Concurrency for resolving per-plugin manifests when building the catalog.                 | `8`                                    |
+| `PLUGIN_CATALOG_CACHE_TTL`                  | Seconds the catalog's latest-version map is reused to flag "update available" on the Installed tab before a background refresh re-checks the repos. | `900`             |
+| `PLUGIN_CATALOG_REFRESH_INTERVAL`           | Seconds between the web process's own background catalog refreshes, so update buttons appear even when nobody opens the Catalog tab. | `3600`               |
+| `PLUGIN_BOOT_DB_WAIT_SECONDS`               | How long plugin boot waits for the database to accept connections before giving up.       | `60`                                   |
+| `PLUGIN_BOOT_DB_WAIT_INTERVAL`              | Seconds between those database-readiness retries at plugin boot.                          | `2`                                    |
 
 
 > ⚠️ **The only officially supported model is `qwen3.5:9b` or `qwen3.5:4b` for faster one**. Compatibility testing is done exclusively against it. Other models below were tested and may work, but **use them at your own risk** - issues opened for untested or arbitrary models could be closed. Different models behave differently and outputs vary between runs.
