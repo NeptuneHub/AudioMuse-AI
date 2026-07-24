@@ -267,6 +267,30 @@ class TestRealCanonicalization:
             "the Windows path round-trips intact"
         )
 
+    def test_carriage_return_tab_and_newline_round_trip_the_copy_streams(self, db):
+        from tasks import fingerprint_canonicalize as fc
+
+        tracks = [
+            ('jf\rodd', '/music/Weird\rAlbum/01\tSong\nTake.flac', _distinct_embedding(1)),
+            ('jf-2', '/music/B/02.flac', _distinct_embedding(2)),
+        ]
+        _build(db, tracks)
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['relabelled'] == 2
+        rows = _score(db)
+        assert all(item_id.startswith(simhash.CURRENT_ID_HEAD) for item_id, _ in rows), (
+            "the carriage-return id must still relabel, not crash the COPY stream"
+        )
+        by_provider = {p: path for p, _item, path in _maps(db)}
+        assert 'jf\rodd' in by_provider, (
+            "a provider id holding a literal CR survives the COPY byte-for-byte"
+        )
+        assert by_provider['jf\rodd'] == '/music/Weird\rAlbum/01\tSong\nTake.flac', (
+            "CR, tab and newline in the path round-trip intact, not mangled to spaces"
+        )
+
     def test_identical_audio_with_matching_duration_merges_to_one_row(
         self, db, monkeypatch
     ):

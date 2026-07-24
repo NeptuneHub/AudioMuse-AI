@@ -73,8 +73,6 @@ student_clap/models/FMA_SONGS_2247_LICENSE.md
 # Testing suite
 testing_suite/
 analysis.md
-.claude/settings.local.json
-.claude/settings.local.json
+.claude/
 lyrics_model_gte_vnni.tar.gz
 native-build/windows/vendor/redis/amd64/redis-server.exe
-.claude/settings.json

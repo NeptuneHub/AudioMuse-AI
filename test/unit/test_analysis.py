@@ -755,7 +755,10 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     assert status_calls[0] == ['job-1', 'parent1']
 
 
-def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
+def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
+                      terminal_children=None, status_calls=None,
+                      expired_but_db_terminal=False, child_rows=None,
+                      extra_jobs=None):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -765,8 +768,12 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
 
     monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
     monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
-    monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
-    monkeypatch.setattr(helper, 'save_task_status', lambda *args, **kwargs: None)
+    def _record_status(*args, **kwargs):
+        if status_calls is not None:
+            status_calls.append(kwargs.get('details') or {})
+
+    monkeypatch.setattr(analysis, 'save_task_status', _record_status)
+    monkeypatch.setattr(helper, 'save_task_status', _record_status)
     monkeypatch.setattr(analysis, 'clean_temp', lambda *args, **kwargs: None)
     monkeypatch.setattr(analysis, 'get_recent_albums', lambda limit: albums)
     monkeypatch.setattr(
@@ -791,7 +798,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
         monkeypatch.setattr(helper, name, forbidden)
 
     enqueued = []
-    jobs = {}
+    jobs = dict(extra_jobs or {})
 
     def _finished_job(job_id):
         job = Mock()
@@ -799,6 +806,10 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
         job.is_finished = True
         job.is_failed = False
         job.is_canceled = False
+        job.is_stopped = False
+        job.is_queued = False
+        job.is_scheduled = False
+        job.is_started = False
         return job
 
     class FakeQueue:
@@ -816,17 +827,37 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map):
 
         @staticmethod
         def fetch_many(job_ids, connection=None):
+            if expired_but_db_terminal:
+                return [None for _ in job_ids]
             return [jobs.get(job_id) for job_id in job_ids]
 
     monkeypatch.setattr(analysis, 'rq_queue_default', FakeQueue)
     monkeypatch.setattr(analysis, 'Job', FakeJob)
     # The monitor reconciles with ONE count now, not by fetching every child row.
-    monkeypatch.setattr(analysis, 'count_terminal_children', lambda task_id: 0)
+    monkeypatch.setattr(
+        analysis, 'count_terminal_children',
+        terminal_children or (lambda task_id: 0),
+    )
+    monkeypatch.setattr(
+        analysis, 'get_child_tasks_from_db', lambda task_id: list(child_rows or [])
+    )
+    if child_rows:
+        monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
+
+    def _statuses(ids):
+        return {
+            i: ('SUCCESS' if expired_but_db_terminal and str(i).startswith('job-')
+                else 'STARTED')
+            for i in ids if i
+        }
+
     # The run's own row exists and is live. An empty answer would mean the cancel
     # wiped task_status, which the dispatch loop correctly reads as revoked.
-    monkeypatch.setattr(
-        analysis, 'get_task_statuses', lambda ids: {i: 'STARTED' for i in ids if i}
-    )
+    monkeypatch.setattr(analysis, 'get_task_statuses', _statuses)
+    if expired_but_db_terminal:
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
+        monkeypatch.setattr(analysis, '_rq_job_still_pending', lambda job_id: False)
 
     result = analysis._run_analysis_server_task_impl(
         0, 5, server_id='srv-def', task_id='parent-1'
@@ -912,6 +943,145 @@ def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
     assert result['status'] == 'SUCCESS'
     assert [args[0] for args in enqueued] == ['al1']
     assert result['message'] == 'Albums 2/2'
+
+
+def test_phase_outcome_never_reports_more_albums_than_the_total():
+    import tasks.analysis.main as analysis
+
+    message, status, _ = analysis._phase_outcome(
+        7523, 6949, albums_launched=10, failed_count=0,
+        failed_errors=[], albums_work_check_failed=0,
+    )
+
+    assert message == 'Albums 6949/6949'
+    assert status == 'SUCCESS'
+
+
+def test_retry_with_stale_child_rows_counts_each_album_once(monkeypatch):
+    albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+    tracks_by_album = {f'al{i}': [{'Id': f'p{i}', 'Name': 't'}] for i in range(3)}
+    work_map = {}
+
+    counts = iter([0])
+
+    def terminal_children(task_id):
+        return next(counts, 999)
+
+    status_calls = []
+    result, enqueued = _run_parent_phase(
+        monkeypatch, albums, tracks_by_album, work_map,
+        terminal_children=terminal_children, status_calls=status_calls,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert result['message'] == 'Albums 3/3'
+    reported = [d['albums_completed'] for d in status_calls if 'albums_completed' in d]
+    assert reported
+    assert max(reported) <= 3
+
+
+def test_baseline_read_failure_does_not_double_count_on_retry(monkeypatch):
+    albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+    tracks_by_album = {f'al{i}': [{'Id': f'p{i}', 'Name': 't'}] for i in range(3)}
+    work_map = {}
+
+    calls = {'n': 0}
+
+    def terminal_children(task_id):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise RuntimeError('db blip while reading the baseline')
+        return 999
+
+    status_calls = []
+    result, _ = _run_parent_phase(
+        monkeypatch, albums, tracks_by_album, work_map,
+        terminal_children=terminal_children, status_calls=status_calls,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert result['message'] == 'Albums 3/3'
+    reported = [d['albums_completed'] for d in status_calls if 'albums_completed' in d]
+    assert reported
+    assert max(reported) <= 3
+
+
+def test_baseline_failure_still_counts_a_child_confirmed_done_after_redis_expiry(monkeypatch):
+    albums = [{'Id': 'al0', 'Name': 'Album 0'}]
+    tracks_by_album = {'al0': [{'Id': 'p0', 'Name': 't'}]}
+    work_map = {}
+
+    calls = {'n': 0}
+
+    def terminal_children(task_id):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise RuntimeError('db blip while reading the baseline')
+        return 999
+
+    result, _ = _run_parent_phase(
+        monkeypatch, albums, tracks_by_album, work_map,
+        terminal_children=terminal_children, expired_but_db_terminal=True,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert result['message'] == 'Albums 1/1'
+
+
+class _StillRunningStaleJob:
+    is_failed = False
+    is_canceled = False
+    is_stopped = False
+    is_queued = False
+    is_scheduled = False
+    is_started = True
+
+    def __init__(self, job_id):
+        self.id = job_id
+        self.finished_reads = 0
+
+    @property
+    def is_finished(self):
+        self.finished_reads += 1
+        return self.finished_reads > 1
+
+
+def test_retry_adopts_previous_attempts_running_album_instead_of_duplicating(monkeypatch):
+    albums = [{'Id': 'al0', 'Name': 'Album 0'}]
+    tracks_by_album = {'al0': [{'Id': 'p0', 'Name': 't'}]}
+    work_map = {}
+    child_rows = [
+        {'task_id': 'stale-1', 'status': 'STARTED', 'sub_type_identifier': 'al0'}
+    ]
+    counts = iter([0, 0])
+
+    result, enqueued = _run_parent_phase(
+        monkeypatch, albums, tracks_by_album, work_map,
+        terminal_children=lambda task_id: next(counts, 1),
+        child_rows=child_rows,
+        extra_jobs={'stale-1': _StillRunningStaleJob('stale-1')},
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert enqueued == []
+    assert result['message'] == 'Albums 1/1'
+
+
+def test_retry_reenqueues_album_whose_previous_job_died_with_the_container(monkeypatch):
+    albums = [{'Id': 'al0', 'Name': 'Album 0'}]
+    tracks_by_album = {'al0': [{'Id': 'p0', 'Name': 't'}]}
+    work_map = {}
+    child_rows = [
+        {'task_id': 'stale-dead', 'status': 'PROGRESS', 'sub_type_identifier': 'al0'}
+    ]
+
+    result, enqueued = _run_parent_phase(
+        monkeypatch, albums, tracks_by_album, work_map, child_rows=child_rows,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert [args[0] for args in enqueued] == ['al0']
+    assert result['message'] == 'Albums 1/1'
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():

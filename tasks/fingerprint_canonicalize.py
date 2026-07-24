@@ -622,8 +622,11 @@ def _default_provider_ids(cur, default_id, item_ids):
     return {str(item_id): str(provider_id) for item_id, provider_id in cur.fetchall()}
 
 
+_COPY_ESCAPES = {0x5C: '\\\\', 0x09: '\\t', 0x0A: '\\n', 0x0D: '\\r'}
+
+
 def _copy_escape(value):
-    return str(value).replace('\\', '\\\\').replace('\t', ' ').replace('\n', ' ')
+    return str(value).translate(_COPY_ESCAPES)
 
 
 def _copy_pairs(cur, table, mapping):
@@ -710,8 +713,8 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids,
         buffer.write(
             "%s\t%s\t%s\t%s\t%s\t%s\n"
             % (
-                canonical.replace('\t', ' '),
-                source_id,
+                _copy_escape(canonical),
+                _copy_escape(source_id),
                 _copy_escape(provider_id),
                 tier,
                 r'\N' if not path else _copy_escape(path),
