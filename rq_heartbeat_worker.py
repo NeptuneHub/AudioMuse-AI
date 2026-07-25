@@ -26,36 +26,26 @@ heartbeat (HSET last_heartbeat + EXPIRE) recreates the key - register() ran once
 birth, so the live worker keeps taking jobs while invisible to the dashboard. The
 mixin re-runs register() on every heartbeat (idempotent SADD) and rebuilds the
 identity hash if the key came back as a partial, so a recovered worker rejoins.
-The re-registration always runs on the worker's OWN connection, never on the
-pipeline a heartbeat was given: rq 2.7.0's maintain_heartbeats reads its pipeline
-results by FIXED position (``results[7]`` is job.heartbeat's HSET), so any command
-injected into that pipeline shifts the slot onto an EXPIRE - which returns 1 for a
-live key - and RQ would delete the RUNNING job's key on every monitor beat. The
-identity mapping is built here (the same fields register_birth writes) because
-Worker.serialize does not exist on rq 2.7.0. rq 2.7.0 assigns worker.last_heartbeat
-only in refresh(), never in __init__ or heartbeat(), so the mapping reads it via
-getattr (issue #799). The repair HSET and EXPIRE run in one pipeline so a failure
-between them can never leave the key without a TTL, and the recovery handler
-re-raises StopRequested: it subclasses Exception and carries rq's warm-shutdown
-request out of the signal handler, so a blanket except would cancel shutdown.
+The re-registration always runs on the worker's OWN pipeline, never on the pipeline
+passed to heartbeat: rq 2.7.0's maintain_heartbeats reads its results by FIXED position
+(``results[7]`` is job.heartbeat's HSET), so injecting a command would make RQ inspect
+the wrong result and potentially delete a RUNNING job's key. This override keeps the
+same two heartbeat commands but writes HSET before EXPIRE. RQ 2.7.0 does the reverse,
+so an expired key can otherwise be recreated without a TTL. It also records
+last_heartbeat on the instance; rq 2.7.0 only creates that attribute in refresh(),
+which caused issue #799.
 
-Everything above is written to the rq 2.7.0 floor that requirements/common.txt pins,
-because the container and the native Windows/macOS/Linux bundles do not all resolve
-the same rq build. Newer rq (2.9.0) relaxes two of these: maintain_heartbeats indexes
-its pipeline dynamically (``job_heartbeat_index = len(pipeline)``) and Worker.serialize
-exists, and it also assigns last_heartbeat in __init__. The conservative form here is
-correct on both, so do not "modernize" it against whatever rq happens to be installed.
-ShutDownImminentException needs no handling: it subclasses BaseException, so a blanket
-except never catches it.
+The recovery transaction restores a missing identity before atomically registering
+the worker and setting its TTL. The handler re-raises StopRequested because it carries
+RQ's warm-shutdown request out of the signal handler and must not be swallowed by a
+blanket except.
 
-The beat thread skips a refresh whenever worker.execution is None and exits quietly if
-execution was cleared while it was already inside maintain_heartbeats. rq derefs
-self.execution there without a None guard (it is marked ``# type: ignore``), and
-cleanup_execution clears it during job teardown, so a beat landing in that window would
-otherwise log an alarming AttributeError traceback on a perfectly healthy job. The guard
-must skip the beat rather than return, because execution is also None between the thread
-starting and prepare_execution running: returning there would kill the heartbeat for the
-whole job and let the janitor reap anything over the TTL.
+The Windows beat thread shares a lock with execution preparation and cleanup. Without
+it, a beat can see an execution before its creation transaction commits, cleanup can
+delete an execution before an already-started heartbeat recreates it, or an old job's
+blocked beat thread can resume after the next job replaces self.execution. The stop
+event is set before cleanup takes the lock, and execute_job does not return until the
+thread exits, so heartbeat work cannot cross an execution boundary.
 
 Main Features:
 * ReregisterOnHeartbeatMixin: SADDs the worker back into rq:workers on each heartbeat
@@ -63,8 +53,7 @@ Main Features:
 * HeartbeatSimpleWorker: runs perform_job on the main thread while a daemon thread
   calls maintain_heartbeats, giving SimpleWorker the liveness signal the forking
   worker gets for free; also carries the re-registration mixin.
-* The beat thread stays silent through the execution-teardown race but still logs a
-  genuine heartbeat failure such as a Redis outage.
+* The beat thread is serialized with execution cleanup and logs genuine Redis failures.
 * WorkerClass: HeartbeatSimpleWorker on win32, a re-registering forking Worker elsewhere.
 """
 
@@ -81,14 +70,36 @@ logger = logging.getLogger(__name__)
 
 class ReregisterOnHeartbeatMixin:
     def heartbeat(self, timeout=None, pipeline=None):
-        super().heartbeat(timeout=timeout, pipeline=pipeline)
+        timeout = timeout or self.worker_ttl + 60
+        heartbeat_at = now()
+        self.last_heartbeat = heartbeat_at
+
+        if pipeline is None:
+            with self.connection.pipeline() as heartbeat_pipeline:
+                heartbeat_pipeline.hset(self.key, 'last_heartbeat', utcformat(heartbeat_at))
+                heartbeat_pipeline.expire(self.key, timeout)
+                heartbeat_pipeline.execute()
+        else:
+            pipeline.hset(self.key, 'last_heartbeat', utcformat(heartbeat_at))
+            pipeline.expire(self.key, timeout)
+
+        self.log.debug(
+            'Worker %s: sent heartbeat to prevent worker timeout. '
+            'Next one should arrive in %s seconds.',
+            self.name,
+            timeout,
+        )
+
         try:
-            worker_registration.register(self)
-            if not self.connection.hexists(self.key, 'birth'):
-                with self.connection.pipeline() as repair:
+            if self.connection.hexists(self.key, 'death'):
+                return
+            identity_missing = not self.connection.hexists(self.key, 'birth')
+            with self.connection.pipeline() as repair:
+                if identity_missing:
                     repair.hset(self.key, mapping=self._identity_mapping())
-                    repair.expire(self.key, self.worker_ttl + 60)
-                    repair.execute()
+                worker_registration.register(self, repair)
+                repair.expire(self.key, timeout)
+                repair.execute()
         except StopRequested:
             raise
         except Exception:
@@ -97,7 +108,7 @@ class ReregisterOnHeartbeatMixin:
     def _identity_mapping(self):
         stamp = utcformat(getattr(self, 'last_heartbeat', None) or now())
         birth_date = getattr(self, 'birth_date', None)
-        return {
+        mapping = {
             'birth': utcformat(birth_date) if birth_date else stamp,
             'last_heartbeat': stamp,
             'queues': ','.join(self.queue_names()),
@@ -107,6 +118,10 @@ class ReregisterOnHeartbeatMixin:
             'version': getattr(self, 'version', None) or '',
             'python_version': getattr(self, 'python_version', None) or '',
         }
+        state = self.get_state()
+        if state:
+            mapping['state'] = state
+        return mapping
 
 
 class ReregisteringWorker(ReregisterOnHeartbeatMixin, Worker):
@@ -114,30 +129,64 @@ class ReregisteringWorker(ReregisterOnHeartbeatMixin, Worker):
 
 
 class HeartbeatSimpleWorker(ReregisterOnHeartbeatMixin, SimpleWorker):
+    def _refresh_job_heartbeat(self, job, stop, heartbeat_lock):
+        with heartbeat_lock:
+            if stop.is_set() or self.execution is None:
+                return
+            try:
+                self.maintain_heartbeats(job)
+            except StopRequested:
+                raise
+            except Exception:
+                logger.exception("Heartbeat refresh failed for job %s", job.id)
+
+    def _heartbeat_loop(self, job, stop, heartbeat_lock):
+        interval = max(1, int(self.job_monitoring_interval))
+        while not stop.wait(interval):
+            self._refresh_job_heartbeat(job, stop, heartbeat_lock)
+
+    def prepare_execution(self, job):
+        heartbeat_lock = getattr(self, '_execution_heartbeat_lock', None)
+        if heartbeat_lock is None:
+            return super().prepare_execution(job)
+
+        with heartbeat_lock:
+            return super().prepare_execution(job)
+
+    def cleanup_execution(self, job, pipeline):
+        stop = getattr(self, '_execution_heartbeat_stop', None)
+        if stop is not None:
+            stop.set()
+
+        heartbeat_lock = getattr(self, '_execution_heartbeat_lock', None)
+        if heartbeat_lock is None:
+            return super().cleanup_execution(job, pipeline)
+
+        with heartbeat_lock:
+            return super().cleanup_execution(job, pipeline)
+
     def execute_job(self, job, queue):
         stop = threading.Event()
-
-        def beat():
-            interval = max(1, int(self.job_monitoring_interval))
-            while not stop.wait(interval):
-                if self.execution is None:
-                    continue
-                try:
-                    self.maintain_heartbeats(job)
-                except Exception:
-                    if stop.is_set() or self.execution is None:
-                        return
-                    logger.exception("Heartbeat refresh failed for job %s", job.id)
+        heartbeat_lock = threading.Lock()
+        self._execution_heartbeat_stop = stop
+        self._execution_heartbeat_lock = heartbeat_lock
 
         beater = threading.Thread(
-            target=beat, name=f"rq-heartbeat-{job.id}", daemon=True
+            target=self._heartbeat_loop,
+            args=(job, stop, heartbeat_lock),
+            name=f"rq-heartbeat-{job.id}",
+            daemon=True,
         )
         beater.start()
         try:
             return super().execute_job(job, queue)
         finally:
             stop.set()
-            beater.join(timeout=5)
+            beater.join()
+            if getattr(self, '_execution_heartbeat_stop', None) is stop:
+                self._execution_heartbeat_stop = None
+            if getattr(self, '_execution_heartbeat_lock', None) is heartbeat_lock:
+                self._execution_heartbeat_lock = None
 
 
 WorkerClass = HeartbeatSimpleWorker if sys.platform == 'win32' else ReregisteringWorker
