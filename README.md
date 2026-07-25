@@ -21,17 +21,10 @@ AudioMuse-AI is an opensource and self-hosted tool that uses sonic analysis to r
 
 You can run it locally with Docker Compose or Podman, deploy it at scale in a Kubernetes cluster (**AMD64** and **ARM64** supported), or use native applications available for **macOS, Windows, and Linux**. It integrates with major self-hosted music servers including [Navidrome](https://www.navidrome.org/), [Jellyfin](https://jellyfin.org), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), [Emby](https://emby.media), and [Plex](https://www.plex.tv/), with more integrations planned.
 
-> **Prefer not to self-host?** We're proud that [Elestio](https://elest.io/open-source/audiomuse-ai) picked AudioMuse-AI as a managed cloud service. Take a look at their [YouTube video](https://www.youtube.com/watch?v=Ow89q6gQ1mM). It shows how easy it is to get started and gives a good introduction to AudioMuse-AI, its features, and what you can do with it.
-
-<p align="center">
-  <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=AudioMuse-AI">
-    <img src="screenshot/atlas-cloud.png?raw=true" alt="Atlas Cloud Logo" width="180">
-  </a>
-</p>
-
-> **Need a hosted LLM provider?** AudioMuse-AI supports OpenAI-compatible APIs through the existing `OPENAI` provider. [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=AudioMuse-AI) is one hosted option you can configure this way; see the [configuration parameters](docs/PARAMETERS.md#openai-compatible-hosted-providers) for details.
+> **Prefer not to self-host?** [Elestio](https://elest.io/open-source/audiomuse-ai) offers AudioMuse-AI as a managed cloud service, and their [YouTube video](https://www.youtube.com/watch?v=Ow89q6gQ1mM) is a good introduction to the project and its features.
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
+* **Multiple Music Servers** (from `v3.0.0`): connect several media servers - any mix of Navidrome, Jellyfin, LMS, Lyrion, Emby and Plex - to a **single AudioMuse-AI deployment**. Built-in duplicate detection recognizes the same song across servers, so each track is **analyzed only once** and every server shares the result.
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
 * **Instant Playlists**: Simply tell the AI what you want to hear-like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
 * **Music Map**: Discover your music collection visually with a vibrant, genre-based 2D map.
@@ -51,9 +44,9 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 >
 > </details>
 
-More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) [AUTHENTICATION](docs/AUTH.md) and can be found in the [docs folder](docs).
+More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) and [AUTHENTICATION](docs/AUTH.md).
 
-**The full list or AudioMuse-AI related repository are:** 
+**The full list of AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
   > * [AudioMuse-AI Helm Chart](https://github.com/NeptuneHub/AudioMuse-AI-helm): helm chart for easy installation on Kubernetes;
   > * [AudioMuse-AI Plugin for Navidrome](https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin): Navidrome Plugin;
@@ -62,10 +55,9 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 2.6.0** add support for third party plugin. Give a look to [plugin documentation](docs/PLUGIN.md) to how to develop it and to the [official 3rd party catalog](https://github.com/NeptuneHub/AudioMuse-AI-plugins). The new plugin system requires a persistent volume to be mounted on both the Flask and worker containers. Otherwise, installed plugins will be lost whenever the containers restart. The deployment example has been updated accordingly.
+> * **Version 3.0.0** added multiple music server support on a single deployment, with duplicate detection so a song shared by more servers is analyzed only once.
+> * **Version 2.6.0** added support for third party plugin. Give a look to the [plugin documentation](docs/PLUGIN.md) to know how to develop one and to the [official 3rd party catalog](https://github.com/NeptuneHub/AudioMuse-AI-plugins). The plugin system requires a persistent volume mounted on both the Flask and worker containers, otherwise installed plugins are lost whenever the containers restart; the deployment example has been updated accordingly.
 > * **Version 2.5.0** added Plex Music Server support.
-> * **Version 2.3.3** added the support to Jellyfin 12.0 authentication method.
-> * **Version 2.3.0** added [donate button](https://liberapay.com/NeptuneHub/donate) to support the project. Added new index technology to save ram when in idle, rebuild the index analyzing one new album. Added Playlist as input of alchemy.
 
 ## Disclaimer
 
@@ -81,19 +73,14 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [How To Contribute](#how-to-contribute)
+- [Code Mirror](#code-mirror)
 - [Star History](#star-history)
 
 ## Quick Start Deployment (Containerized)
 
-Get AudioMuse-AI running in minutes with Docker Compose.
+Get AudioMuse-AI running in minutes with Docker Compose. For more deployment examples see the [DEPLOYMENT](docs/DEPLOYMENT.md) page.
 
-If you need more deployment example take a look at [DEPLOYMENT](docs/DEPLOYMENT.md) page.
-
-For a full list of configuration parameter take a look at [PARAMETERS](docs/PARAMETERS.md) page.
-
-For the architecture design of AudioMuse-AI, take a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page.
-
-From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
+From `v1.0.0`, only PostgreSQL, Redis and `TZ` are configured via environment variables. Everything else is managed through the browser Setup Wizard and persisted in the database (legacy environment variables are imported automatically on first startup). The Setup Wizard is the landing page of a clean installation and stays available under Administration > Setup Wizard.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
@@ -203,12 +190,12 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
   Last released image.
   **Use it for automatic update.**
 
-  * **`:X.Y.Z`** (e.g. `:1.0.0`, `:0.1.4-alpha`)
+* **`:X.Y.Z`** (e.g. `:1.0.0`, `:0.1.4-alpha`)
   Immutable images built from **Git release tags**.
-  **Reccommanded for most user. Pinned deployments. You decide when to update by changing the version manually**
+  **Recommended for most users. Pinned deployments: you decide when to update by changing the version manually.**
 
 * **`:devel`**
-  Build from main on each commit/pr merged. It's a less stable build 
+  Build from main on each commit/pr merged. It's a less stable build.
   **Recommended only for testing and early adopters.**
 
 * **`:pr-<NUMBER>`** (e.g. `:pr-661`)

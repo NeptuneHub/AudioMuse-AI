@@ -827,8 +827,9 @@
                 if(data.results && data.results.length > 0) {
                     window.currentResultIds = data.results.map(r => r.item_id).filter(Boolean);
                     wrapper.innerHTML = renderSongList(data.results, { metric: songDistanceBadge });
-                    // Save centroid from alchemy for potential anchor actions (not returned in anchors list)
+                    // Save centroid + exclusions from alchemy for potential anchor actions (not returned in anchors list)
                     window.lastAddCentroidVector = data.add_centroid_vector || null;
+                    window.lastAlchemyExclusions = data.exclusions || [];
                     // Show results, playlist creator, and save-anchor control for this run
                     alchemyHasRun = true;
                     resultsSection.classList.remove('hidden');
@@ -1439,7 +1440,7 @@
                 const resp = await fetch('/api/anchors', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, centroid: window.lastAddCentroidVector }),
+                    body: JSON.stringify({ name, centroid: window.lastAddCentroidVector, exclusions: window.lastAlchemyExclusions || [] }),
                 });
                 const resData = await resp.json();
                 if (!resp.ok || resData.error) throw new Error(resData.error || 'Failed to save anchor');

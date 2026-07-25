@@ -430,7 +430,6 @@ def get_ai_playlist_name(
             current_prompt,
             ai_config,
             temperature=0.7,
-            max_tokens=20,
         )
 
         if not isinstance(raw_concept, str):

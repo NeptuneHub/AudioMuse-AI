@@ -944,7 +944,9 @@ class TestGetAIPlaylistName:
         return cfg
 
     @patch('tasks.ai.api.generate_text')
-    def test_returns_a_valid_grounded_title(self, mock_generate):
+    def test_naming_call_sends_no_token_cap_so_gemini_thinking_models_can_answer(
+        self, mock_generate
+    ):
         mock_generate.return_value = "Bittersweet"
 
         result = get_ai_playlist_name(
@@ -957,7 +959,7 @@ class TestGetAIPlaylistName:
         assert result == "Bittersweet Indie"
         _prompt, config = mock_generate.call_args.args
         assert config["provider"] == "OLLAMA"
-        assert mock_generate.call_args.kwargs == {"temperature": 0.7, "max_tokens": 20}
+        assert mock_generate.call_args.kwargs == {"temperature": 0.7}
 
     @patch('tasks.ai.api.generate_text')
     def test_contrast_rejects_rhetorical_terms_until_it_gets_an_emotion(

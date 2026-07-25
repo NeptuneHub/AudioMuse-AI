@@ -16,6 +16,8 @@ Main Features:
 * Temperature sampling and euclidean/angular metric distance behavior
 * get_playlist_components uses cell groups, caps clusters and samples large playlists
 * Full alchemy flow dedups songs and applies the distance filter
+* ADD-ed anchors re-apply their stored exclusions at the saved per-point radius
+  and the run exports subtract regions as `exclusions` for anchor saving
 """
 
 import pytest
@@ -337,6 +339,178 @@ class TestSongAlchemy:
         assert ids.count('dupe_a') + ids.count('dupe_b') == 1
         assert 'unique' in ids
         assert 'seed_clone' not in ids
+
+    def test_song_alchemy_exports_subtract_run_as_exclusions(self, mock_dependencies):
+        def get_vec(id):
+            vectors = {'s1': [1.0, 0.0], 'sub1': [0.0, 1.0], 'r1': [0.9, 0.1]}
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
+                'sub1': {'item_id': 'sub1', 'title': 'Sub', 'author': 'A0'},
+                'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        result = song_alchemy.song_alchemy(
+            add_items=[{'type': 'song', 'id': 's1'}],
+            subtract_items=[{'type': 'song', 'id': 'sub1'}],
+            subtract_distance=0.5,
+        )
+
+        assert result['exclusions'] == [{'vector': [0.0, 1.0], 'distance': 0.5}]
+
+    def test_song_alchemy_no_subtract_returns_empty_exclusions(self, mock_dependencies):
+        mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
+                'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        result = song_alchemy.song_alchemy(add_items=[{'type': 'song', 'id': 's1'}])
+
+        assert result['exclusions'] == []
+
+    def test_song_alchemy_added_anchor_reapplies_stored_exclusions(self, mock_dependencies):
+        anchor = {
+            'id': 7,
+            'name': 'Anchor',
+            'centroid': [1.0, 0.0],
+            'exclusions': [{'vector': [0.0, 1.0], 'distance': 0.5}],
+        }
+
+        def get_vec(id):
+            vectors = {'near_ex': [0.1, 0.9], 'far': [0.9, 0.1]}
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['near_ex', 'far']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'near_ex': {'item_id': 'near_ex', 'title': 'Near', 'author': 'A1'},
+                'far': {'item_id': 'far', 'title': 'Far', 'author': 'A2'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0
+            )
+
+        result_ids = [r['item_id'] for r in result['results']]
+        filtered_ids = [r['item_id'] for r in result['filtered_out']]
+        assert 'far' in result_ids
+        assert 'near_ex' in filtered_ids
+
+    def test_song_alchemy_stored_exclusion_radius_beats_request_distance(
+        self, mock_dependencies
+    ):
+        anchor = {
+            'id': 7,
+            'name': 'Anchor',
+            'centroid': [1.0, 0.0],
+            'exclusions': [{'vector': [0.0, 1.0], 'distance': 0.05}],
+        }
+
+        def get_vec(id):
+            vectors = {'edge': [0.1, 0.9], 'inside': [0.0, 0.99]}
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['edge', 'inside']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'edge': {'item_id': 'edge', 'title': 'Edge', 'author': 'A1'},
+                'inside': {'item_id': 'inside', 'title': 'Inside', 'author': 'A2'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}],
+                subtract_distance=1.0,
+                temperature=0.0,
+            )
+
+        result_ids = [r['item_id'] for r in result['results']]
+        filtered_ids = [r['item_id'] for r in result['filtered_out']]
+        assert 'edge' in result_ids
+        assert 'inside' in filtered_ids
+
+    def test_song_alchemy_exclusions_merge_anchor_and_explicit_subtract(
+        self, mock_dependencies
+    ):
+        anchor = {
+            'id': 7,
+            'name': 'Anchor',
+            'centroid': [1.0, 0.0],
+            'exclusions': [{'vector': [0.0, 1.0], 'distance': 0.25}],
+        }
+
+        def get_vec(id):
+            vectors = {'sub1': [1.0, 1.0], 'r1': [0.9, 0.1]}
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'sub1': {'item_id': 'sub1', 'title': 'Sub', 'author': 'A0'},
+                'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}],
+                subtract_items=[{'type': 'song', 'id': 'sub1'}],
+                subtract_distance=0.4,
+                temperature=0.0,
+            )
+
+        assert result['exclusions'] == [
+            {'vector': [1.0, 1.0], 'distance': 0.4},
+            {'vector': [0.0, 1.0], 'distance': 0.25},
+        ]
+
+    def test_song_alchemy_skips_malformed_stored_exclusions(self, mock_dependencies):
+        anchor = {
+            'id': 7,
+            'name': 'Anchor',
+            'centroid': [1.0, 0.0],
+            'exclusions': [
+                {'vector': 'bad'},
+                {'vector': []},
+                'not-a-dict',
+                {'vector': [0.0, 1.0], 'distance': 'bad'},
+            ],
+        }
+
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {'r1': [0.1, 0.9]}.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'}}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0
+            )
+
+        assert [r['item_id'] for r in result['results']] == ['r1']
+        assert result['exclusions'] == []
 
     def test_song_alchemy_applies_distance_filter(self, mock_dependencies):
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
