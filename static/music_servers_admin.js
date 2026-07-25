@@ -236,11 +236,21 @@
         return b;
     }
 
+    function syncAlignButton(serverCount) {
+        var btn = el('ms-align-btn');
+        if (!btn) { return; }
+        btn.disabled = serverCount < 2;
+        btn.title = btn.disabled
+            ? 'Alignment maps shared tracks between servers, so it needs at least two configured music servers.'
+            : '';
+    }
+
     function renderTable(data) {
         var tbody = el('music-servers-tbody');
         tbody.innerHTML = '';
         var servers = data.servers || [];
         el('music-servers-empty').style.display = servers.length ? 'none' : 'block';
+        syncAlignButton(servers.length);
         servers.forEach(function (s) {
             var tr = document.createElement('tr');
             tr.style.borderTop = '1px solid rgba(128,128,128,0.3)';

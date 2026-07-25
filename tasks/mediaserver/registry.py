@@ -28,6 +28,12 @@ Main Features:
   caller-supplied provider ids into canonical ids (fail-open pass-through).
 * ``servers_for_scope`` / ``has_secondary_servers`` resolve which servers a
   multi-server operation should touch (None = legacy config default).
+* Self-heals the default server: the config globals are projected once, when the
+  config module is imported, so a worker that boots before the database is
+  reachable (or before the 3.0 migration filled the registry) keeps EMPTY
+  media-server settings for the life of the process and every default-server call
+  builds a URL like '/Items'. ``context_for`` detects that lost projection and
+  binds the registry row instead of returning None.
 """
 
 import logging
@@ -208,17 +214,46 @@ def has_secondary_servers(conn=None):
     return result
 
 
+_projection_warned = False
+
+
+def _config_projection_lost(default):
+    if not default:
+        return False
+    server_type = (default.get("server_type") or "").strip().lower()
+    if (config.MEDIASERVER_TYPE or "").strip().lower() != server_type:
+        return True
+    return bool(missing_required_creds(server_type, creds_from_config(server_type)))
+
+
 def context_for(server_id, conn=None):
     """Return the context dict for ``server_id``, or None to mean 'use config default'.
 
     Returning None for the default server keeps its code path byte-identical to
-    the historical single-server behaviour (provider backends fall back to config).
+    the historical single-server behaviour (provider backends fall back to config)
+    - but ONLY while those config globals still hold the default row's settings.
+    When the projection was never loaded (a worker that imported config before the
+    database was reachable), the row itself is bound so the call reaches the right
+    server instead of an empty URL.
     """
+    global _projection_warned
+
     db = conn or get_db()
     default = get_default_server(db if conn is not None else None)
     default_id = default["server_id"] if default else None
     if not server_id or server_id == default_id:
-        return None
+        if not _config_projection_lost(default):
+            return None
+        if not _projection_warned:
+            _projection_warned = True
+            logger.warning(
+                "The media-server settings of default server '%s' are missing from "
+                "this process's config (it started before the database had them); "
+                "binding the registry row directly. Restart this process to reload "
+                "the config module.",
+                default["name"],
+            )
+        return default
     server = get_server(server_id, db)
     if server is not None:
         # Providers read a missing credential from the config globals, which are

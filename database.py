@@ -13,7 +13,10 @@ lifecycle, the ``init_db`` schema bootstrap, and every read/write helper for
 tasks, track analysis and embeddings, projections, and alchemy anchors/radios.
 
 Main Features:
-* Connection management plus ``init_db`` table/index creation and migrations.
+* Connection management plus ``init_db`` table/index creation and migrations. A
+  worker job holds ONE app context for its whole run, so ``get_db`` drops a
+  cached connection the server closed under it (a database restart, an idle
+  timeout) and reconnects instead of handing back a dead handle for hours.
 * Task-status and history persistence with sanitized fields and capped history rows.
 * Embedding, projection, and alchemy CRUD helpers shared by workers and the web app.
 """
@@ -75,6 +78,10 @@ _CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gath
 
 
 def get_db():
+    cached = g.get('db')
+    if cached is not None and cached.closed:
+        logger.warning("Cached database connection was closed; reconnecting.")
+        g.pop('db', None)
     if 'db' not in g:
         try:
             g.db = psycopg2.connect(
