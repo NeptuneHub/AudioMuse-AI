@@ -20,6 +20,11 @@ Main Features:
 * Zombie worker hashes reaped: a job-count increment landing after the worker
   key expired recreates it without a TTL, leaving a permanent ghost row with no
   heartbeat - any registration without a last_heartbeat is deregistered.
+* TTL-less worker keys expired: any rq:worker:* hash left without a TTL (a
+  heartbeat or increment raced the key's expiry, including keys accumulated by
+  releases before the re-registration mixin) gets the standard worker TTL, so a
+  live worker re-asserts its own TTL on the next beat while a dead one
+  evaporates and clean_worker_registry then drops its registration.
 * Interrupted server-alignment sweeps recovered: a sweep whose RQ job died (e.g.
   killed by a worker restart) or vanished from Redis entirely is revoked and
   replaced with a fresh alignment covering every server.
@@ -27,7 +32,8 @@ Main Features:
   enqueued, so a Redis outage can leave a PENDING row with nothing behind it -
   and get_active_main_task counts that as a live task, so every later Start would
   answer 409 forever. Rows past a grace period whose RQ job does not exist are
-  marked FAILURE.
+  marked FAILURE; tasks that run inside the Flask process have no RQ job by
+  design, so those are judged by how long ago they last reported progress.
 * Logs only when something is actually reaped, and survives per-iteration errors.
 """
 
@@ -40,6 +46,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from rq import Worker
+    from rq.defaults import DEFAULT_WORKER_TTL
     from rq.worker_registration import clean_worker_registry
     from app_helper import rq_queue_high, rq_queue_default, redis_conn
     from app_logging import configure_logging
@@ -127,6 +134,25 @@ if __name__ == '__main__':
                 logger.info(
                     "Janitor removed %d zombie worker entries (hash without heartbeat).",
                     zombies_removed,
+                )
+
+            ghost_ttls_fixed = 0
+            cursor = 0
+            while True:
+                cursor, worker_keys = redis_conn.scan(
+                    cursor, match=Worker.redis_worker_namespace_prefix + '*', count=100
+                )
+                for worker_key in worker_keys:
+                    if redis_conn.ttl(worker_key) == -1:
+                        redis_conn.expire(worker_key, DEFAULT_WORKER_TTL + 60)
+                        ghost_ttls_fixed += 1
+                if cursor == 0:
+                    break
+            if ghost_ttls_fixed > 0:
+                logger.info(
+                    "Janitor gave %d TTL-less worker keys a %ds expiry.",
+                    ghost_ttls_fixed,
+                    DEFAULT_WORKER_TTL + 60,
                 )
         except Exception:
             logger.exception("Error in RQ Janitor loop")

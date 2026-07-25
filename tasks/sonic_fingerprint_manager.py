@@ -36,7 +36,9 @@ def run_sonic_fingerprint_task(server_scope="all"):
     Cron used to run this inline on the Flask poll thread, so one unreachable
     media server blocked every other scheduled job for the length of its timeout
     and the run had no task_status row: invisible in the task list and impossible
-    to cancel. It runs on a worker now, like every other cron task.
+    to cancel. It runs on a worker now. The alchemy radio is the one cron task
+    that still runs inline, because it needs the index only Flask loads; it pays
+    for that with a heartbeat and a startup reap so it can never wedge a Start.
 
     The playlist name is stable across runs so client-side "online first" sync
     keeps tracking the same server playlist (issue #336).

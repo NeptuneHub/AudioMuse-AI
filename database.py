@@ -50,7 +50,9 @@ from config import (
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
-SELF_MANAGED_TASK_TYPES = ('server_sweep',)
+SELF_MANAGED_TASK_TYPES = ('server_sweep', 'alchemy_radio')
+
+INLINE_FLASK_TASK_TYPES = ('alchemy_radio',)
 
 USERS_PASSWORD_CHANGED_AT_DDL = (
     "ALTER TABLE IF EXISTS audiomuse_users "

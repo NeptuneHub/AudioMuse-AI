@@ -60,7 +60,7 @@ Open `http://<your-host>:8000`. On first start the Setup Wizard appears:
 
 1. Pick **Navidrome** as the media server and enter your Navidrome URL, user and
    password.
-2. Under the AudioMuse-AI authentication section, set usern, password and **API token**. The API token will be needed for the plugin.
+2. Under the AudioMuse-AI authentication section, set the username, the password and the **API token**. The API token is the one the plugin will use.
 3. Save and finish the wizard.
 
 **Run a first analysis (do this before anything else).** AudioMuse-AI can only

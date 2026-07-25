@@ -179,20 +179,33 @@ All under `/api/servers`. Listing is available to any authenticated user
 The canonical `score.item_id` IS the content signature (`tasks/simhash.py`, a
 home-made similarity hash): one bit per embedding dimension - "is this
 dimension above the song's own average" - giving a 200-bit code encoded as the
-scheme-versioned `fp_2<50hex>`. No random projections, no external binary, no
-extra column, no metadata: the id is the shape of the song's MusiCNN profile.
+scheme-versioned `fp_<version><50hex>` id. No random projections, no external
+binary, no extra column, no metadata: the id is the shape of the song's MusiCNN
+profile.
 
 The signature is similarity-preserving and only PROPOSES identity. The same
 song analyzed from two servers (different file, encoder, bitrate) lands within
-a few bits, so candidates are found with a Hamming-tolerant lookup - and the
-final same/different decision is the EXACT cosine distance between the raw
-embeddings, using the same `DUPLICATE_DISTANCE_THRESHOLD_COSINE` the Similar
-Songs duplicate filter has always trusted. Everything deciding identity is
-derived from the audio itself. Copies of one song become ONE `score` row, and
-every provider file that carries it - across servers OR duplicated on a single
-server - is recorded as its own `track_server_map` row; two similar-sounding
-DIFFERENT songs never merge, even on a signature collision (the second simply
-gets the next free id).
+a few bits, so candidates are found with a Hamming-tolerant lookup. The final
+same/different decision needs three checks to agree:
+
+1. the EXACT cosine distance between the raw embeddings, using the same
+   `DUPLICATE_DISTANCE_THRESHOLD_COSINE` the Similar Songs duplicate filter has
+   always trusted;
+2. the two track DURATIONS agreeing within `DURATION_TOLERANCE_SECONDS` (the
+   AcoustID rule) - a homogeneous library puts genuinely different recordings
+   inside the cosine threshold, and only the length tells them apart. An unknown
+   duration on either side means "cannot prove same recording", so it splits;
+3. the stored CHROMAPRINT fingerprints agreeing, when both files have one and
+   `CHROMAPRINT_GATE_ENABLED` is on. A missing fingerprint makes the check
+   abstain, so legacy libraries roll in gradually as fingerprints back-fill.
+
+Everything deciding identity is derived from the audio itself. Copies of one
+song become ONE `score` row, and every provider file that carries it - across
+servers OR duplicated on a single server - is recorded as its own
+`track_server_map` row; two similar-sounding DIFFERENT songs never merge, even
+on a signature collision (the second simply gets the next free id). The bias is
+deliberate: a false split is a harmless duplicate row, a false merge deletes a
+song, so when in doubt it splits.
 
 Legacy installs migrate ONCE, at Flask container startup, directly on the
 Flask container (never through the job queue): item_ids are relabelled from
@@ -205,6 +218,13 @@ repointed is left for the next analysis to rebuild, as before. Every later boot 
 an instant no-op. The media server's real id is preserved in `track_server_map` and
 translated back whenever a playlist is sent to a server.
 
+`CATALOGUE_ID_SCHEME_VERSION` records which rules minted the current ids, and a
+bump relabels every older row exactly once: `fp_2` was signature plus cosine,
+`fp_3` added the track duration, `fp_4` re-verifies existing merges at the
+tightened duration tolerance and splits the groups whose files turn out to differ
+in length. The duration itself is back-filled from ONE whole-catalogue metadata
+listing per server - never per-id fetches, never audio downloads.
+
 Tracks unavailable on the selected server are filtered from results and are
 never sent to that provider as canonical ids.
 
@@ -212,13 +232,24 @@ never sent to that provider as canonical ids.
 
 The cleaning task fetches each server's current tracks with the same
 full-catalogue enumeration the alignment sweeps use (library filter applied)
-and removes
-ONLY that server's stale `track_server_map` rows. Analysis rows, embeddings
-and other servers' mappings are NEVER deleted: a song that disappeared from
-one server keeps playing from the others, and a song on no server at all stays
-in the catalogue as unbound (hidden by the per-server availability filter, and
-re-bound automatically if it ever comes back). A server whose library cannot
-be fully read is skipped, so a partial view can never unbind valid mappings.
+and removes ONLY that server's stale `track_server_map` rows. Analysis rows,
+embeddings and other servers' mappings are NEVER touched by that pass: a song
+that disappeared from one server keeps playing from the others. A server whose
+library cannot be fully read is skipped, so a partial view can never unbind
+valid mappings.
+
+A song left on NO server is an orphan. By default it is only REPORTED and stays
+in the catalogue as unbound - hidden by the per-server availability filter, and
+re-bound automatically if it ever comes back. Deleting orphans is opt-in
+(`CLEANING_CATALOGUE`, or the per-run checkbox on the cleaning page), and even
+then it is refused unless every server was read completely and the orphans are
+fewer than half the catalogue, because "half the library vanished" is far more
+likely to be a bad view than a real deletion. A deleted orphan is simply
+re-analyzed if its file ever returns.
+
+Every cleaning run finishes with the same full similarity-index rebuild an
+analysis run does, INLINE, so the task is not reported complete until the
+indexes match the cleaned catalogue.
 
 ## One shared index, bounded build memory
 
