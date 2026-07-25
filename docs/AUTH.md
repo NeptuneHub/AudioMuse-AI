@@ -1,14 +1,14 @@
 # Authentication
 
-From v1.0.0, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
+From v1.0.0, only PostgreSQL, Redis, and `TZ` must still be configured via environment variables. All other configuration values are managed through the browser Setup Wizard and stored in the database. For compatibility with older installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is the landing page on a clean installation and is also available later from the menu under Administration > Setup Wizard.
 
-Authentication is enabled by default from v0.9.6 thanks to the parameters `AUTH_ENABLED`; it use this mandatory parameters  `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD` and this optional `API_TOKEN`, `JWT_SECRET`.
+Authentication is enabled by default since v0.9.6 through the `AUTH_ENABLED` parameter. It uses the mandatory `AUDIOMUSE_USER` and `AUDIOMUSE_PASSWORD`, plus the optional `API_TOKEN` and `JWT_SECRET`.
 
-The `API_TOKEN` is need only for external plugin use. The `JWT_SECRET` is if you want to keep the session when you restart the container.
+The `API_TOKEN` is only needed by external plugins. Set `JWT_SECRET` if you want sessions to survive a container restart; without it a new secret is generated at every start and everybody has to log in again.
 
 The web UI provides a `/login` page where the user posts the username/password and receives a JWT cookie on success.  Subsequent browser requests are authenticated via that cookie.
 
-Machine‑to‑machine callers may bypass the login page by supplying the `API_TOKEN` in an `Authorization: Bearer …` header. For example:
+Machine-to-machine callers may skip the login page by sending the `API_TOKEN` in an `Authorization: Bearer ...` header. For example:
 
 ```bash
 curl -v \
@@ -86,8 +86,10 @@ spec:
     certResolver: letsencrypt-production
 ```
 
-## Plugin 
+## Media server plugins
 
-> Navidrome plugin support it from release v7
-> 
-> Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support
+The media server plugins authenticate with the `API_TOKEN`, so make sure the plugin and AudioMuse-AI are set to the same value.
+
+> The Navidrome plugin supports it from release v7. See [NAVIDROME](NAVIDROME.md) for the full setup.
+>
+> The Jellyfin plugin supports it from `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for Jellyfin 10.11).

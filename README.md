@@ -44,7 +44,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 >
 > </details>
 
-More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) and [AUTHENTICATION](docs/AUTH.md).
+More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [MULTIPLE MUSIC SERVERS](docs/MULTI_SERVER.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [NAVIDROME SETUP](docs/NAVIDROME.md), [GPU DEPLOYMENT](docs/GPU.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md), [AUTHENTICATION](docs/AUTH.md), [PLUGINS](docs/PLUGIN.md), [ERROR CODES](docs/ERROR_CODES.md) and [FAQ](docs/FAQ.md).
 
 **The full list of AudioMuse-AI related repository are:** 
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;

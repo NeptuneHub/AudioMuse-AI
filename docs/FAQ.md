@@ -26,9 +26,11 @@ Find answers to common questions about setting up, configuring, and deploying Au
 <details>
 <summary>Can AudioMuse-AI support multiple music libraries?</summary>
 
-> Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Navidrome and one Jellyfin server) at the same time.
+> Yes, in two different ways.
 >
-> The parameters `MUSIC_LIBRARIES` can be used for matching multiple music libraries on the same music server. It is a comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Navidrome/Jellyfin: Use library/folder names.
+> **Several libraries inside one server.** Each server has a library filter. It is a comma-separated list of libraries or folders to analyze; if it is empty, everything is scanned. For Lyrion use folder paths like "/music/myfolder". For Navidrome, Jellyfin, Emby and Plex use the library or folder names.
+>
+> **Several servers at the same time.** A single AudioMuse-AI instance can be connected to several media servers at once, including several servers of the same type, for example one Navidrome plus two Jellyfins plus a Plex. Add them under Setup > Music Servers. The same song present on two servers is analyzed only once and mapped to both. See [MULTI_SERVER](MULTI_SERVER.md) for the full model.
 
 </details>
 
@@ -94,28 +96,31 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 </details>
 
 <details>
-<summary>Clustering returns empty playlist or with only a few songs. How can I fix this?</summary>
+<summary>Clustering returns empty playlists, or playlists with only a few songs. How can I fix this?</summary>
 
-> The default clustering parameters are tuned for collections of around **50,000–100,000 songs**.
+> First check that **Automatic Parameter Discovery** is enabled. It is the recommended setting: a few quick probe runs tune the cluster count and the sampling percentile for each of your servers before the real run, which is what usually fixes empty or tiny playlists on its own.
 >
-> If clusters are too small or empty, adjust these Advanced Parameters:
+> If you prefer to tune by hand, turn it off and adjust these Advanced Parameters:
 >
-> - **Stratified Sampling Target Percentile**: increases number of songs included in clustering (set up to 100 for more coverage)
-> - **min clusters / max clusters**: reduce or increase number of clusters and adjust cluster size
+> - **Stratified Sampling Target Percentile**: raises the number of songs included in the clustering sample (set it up to 100 for maximum coverage)
+> - **min clusters / max clusters**: fewer clusters means bigger playlists, more clusters means smaller ones
+> - **Minimum playlist size**: playlists below this size are dropped at the end, so a high value can leave you with very few playlists
 
 </details>
 
 <details>
-<summary>Clustering returns clusters with big number of songs. How can I fix this?</summary>
+<summary>Clustering returns playlists with too many songs. How can I fix this?</summary>
 
-> Increase the `Stratified Sampling Target Percentile`, `min clusters`, and `max clusters` values in the advanced parameter view.
+> Raise `min clusters` and `max clusters`, and lower the `Stratified Sampling Target Percentile`, in the advanced parameter view. With Automatic Parameter Discovery on, you can instead lower the maximum playlist size target so the calibration aims for smaller playlists.
 
 </details>
 
 <details>
 <summary>Clustering takes a lot of time, how can I run it faster?</summary>
 
-> By default, clustering runs 5000 iterations. You can reduce the **Clustering Runs** value (e.g., 1000) to speed up execution while keeping acceptable quality.
+> Reduce the **Clustering Runs** value. The default is 1000 iterations; a few hundred already gives usable results on a small library.
+>
+> The run also stops enqueuing new batches once several consecutive batches fail to improve the best result, so raising the run count is not always as expensive as it looks.
 
 </details>
 
@@ -132,9 +137,9 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 > Backup and restore are available under `Administration > Backup and Restore`.
 >
 > Important notes:
-> * Ensure the PostgreSQL version matches the deployment example (e.g., up to v2.1.5 uses `postgres:15-alpine`). Version mismatches may break backup/restore compatibility.
-> * Backups may not be interchangeable across different OS/container setups (Linux, Windows, macOS) due to PostgreSQL version differences.
-> * If issues occur, check logs in the Flask container under `/app/backup`.
+> * Restore into the same PostgreSQL major version the backup came from. The published Docker Compose examples use `postgres:15-alpine`; the native builds bundle their own PostgreSQL, whose version can differ.
+> * For the same reason, a backup is not always interchangeable between a container deployment and a native Linux, Windows or macOS build.
+> * If something fails, check the Flask container logs and the files under `/app/backup`.
 
 </details>
 
