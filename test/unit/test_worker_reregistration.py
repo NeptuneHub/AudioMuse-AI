@@ -22,8 +22,14 @@ Main Features:
 * Nothing is ever queued into rq's own heartbeat pipeline: rq 2.7.0 reads that
   pipeline's results by fixed index, and an injected command would make it delete
   the running job's key.
+* The identity rebuild works when worker.last_heartbeat was never set: rq 2.7.0
+  assigns that attribute only in refresh() (issue #799).
+* The repair HSET and EXPIRE run through one pipeline on the raw connection and
+  the recreated key always carries a TTL.
 """
 
+import logging
+import time
 import types
 
 import pytest
@@ -93,6 +99,32 @@ class FakeRedis:
                 removed += 1
         return removed
 
+    def pipeline(self):
+        return FakePipeline(self)
+
+
+class FakePipeline:
+    def __init__(self, parent):
+        self.parent = parent
+        self.commands = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def hset(self, *args, **kwargs):
+        self.commands.append(('hset', args, kwargs))
+
+    def expire(self, *args, **kwargs):
+        self.commands.append(('expire', args, kwargs))
+
+    def execute(self):
+        results = [getattr(self.parent, name)(*args, **kwargs) for name, args, kwargs in self.commands]
+        self.commands = []
+        return results
+
 
 def _make_worker(worker_cls):
     fake = FakeRedis()
@@ -105,7 +137,6 @@ def _make_worker(worker_cls):
         name='w784',
     )
     worker.birth_date = now()
-    worker.last_heartbeat = now()
     worker.hostname = 'testhost'
     worker.pid = 4321
     worker.ip_address = '10.0.0.9'
@@ -184,4 +215,109 @@ def test_pipelined_heartbeat_still_restores_identity_on_the_raw_connection(worke
     assert fake.ttls.get(worker.key), (
         "the recreated key must carry a TTL so a dead worker cannot leave a "
         "zombie key behind"
+    )
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_heartbeat_rebuilds_identity_when_last_heartbeat_attribute_never_set(worker_cls, caplog):
+    worker, fake = _make_worker(worker_cls)
+    if hasattr(worker, 'last_heartbeat'):
+        del worker.last_heartbeat
+    fake.hashes[worker.key] = {'last_heartbeat': 'stale', 'successful_job_count': '400'}
+    fake.sets['rq:workers'] = set()
+
+    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
+        worker.heartbeat()
+
+    restored = fake.hashes[worker.key]
+    assert restored.get('birth')
+    assert restored.get('queues') == 'default'
+    assert fake.ttls.get(worker.key)
+    assert worker.key in fake.smembers('rq:workers')
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_repair_hset_and_expire_run_through_one_pipeline(worker_cls):
+    worker, fake = _make_worker(worker_cls)
+    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
+    fake.sets['rq:workers'] = set()
+    seen = []
+    original_pipeline = fake.pipeline
+
+    def tracking_pipeline():
+        pipe = original_pipeline()
+        original_execute = pipe.execute
+
+        def tracking_execute():
+            seen.append([name for name, args, kwargs in pipe.commands])
+            return original_execute()
+
+        pipe.execute = tracking_execute
+        return pipe
+
+    fake.pipeline = tracking_pipeline
+
+    worker.heartbeat()
+
+    assert ['hset', 'expire'] in seen
+    assert fake.ttls.get(worker.key)
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_heartbeat_reraises_stop_requested_for_warm_shutdown(worker_cls):
+    worker, fake = _make_worker(worker_cls)
+    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
+    fake.sets['rq:workers'] = set()
+
+    def raise_stop(*args, **kwargs):
+        raise rhw.StopRequested()
+
+    fake.hexists = raise_stop
+
+    with pytest.raises(rhw.StopRequested):
+        worker.heartbeat()
+
+
+def _drive_one_beat(worker, job, monkeypatch, maintain):
+    worker.job_monitoring_interval = 1
+    worker.maintain_heartbeats = maintain
+    monkeypatch.setattr(
+        rhw.SimpleWorker, 'execute_job', lambda self, j, q: time.sleep(1.6)
+    )
+    worker.execute_job(job, None)
+
+
+def test_beat_thread_stays_silent_when_execution_is_cleared_mid_refresh(caplog, monkeypatch):
+    worker, _ = _make_worker(rhw.HeartbeatSimpleWorker)
+    worker.execution = object()
+    job = types.SimpleNamespace(id='job-teardown')
+
+    def clear_then_fail(_job):
+        worker.execution = None
+        raise AttributeError("'NoneType' object has no attribute 'heartbeat'")
+
+    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
+        _drive_one_beat(worker, job, monkeypatch, clear_then_fail)
+
+    assert not caplog.records, (
+        "cleanup_execution nulls worker.execution while the beat thread is already "
+        "inside maintain_heartbeats, so the teardown race must exit quietly instead "
+        "of logging an ERROR traceback on every finished job"
+    )
+
+
+def test_beat_thread_still_logs_a_genuine_heartbeat_failure(caplog, monkeypatch):
+    worker, _ = _make_worker(rhw.HeartbeatSimpleWorker)
+    worker.execution = object()
+    job = types.SimpleNamespace(id='job-real-failure')
+
+    def fail(_job):
+        raise OSError('redis is down')
+
+    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
+        _drive_one_beat(worker, job, monkeypatch, fail)
+
+    assert any('Heartbeat refresh failed' in r.message for r in caplog.records), (
+        "silencing the teardown race must not silence a real Redis outage"
     )
