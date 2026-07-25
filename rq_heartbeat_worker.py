@@ -18,20 +18,17 @@ minutes. The Windows heartbeat must NOT be replaced by returning -1 from
 get_heartbeat_ttl: Execution.save would then EXPIRE the key with a negative TTL,
 deleting it the instant the job starts.
 
-Issue #784: when Redis is unreachable longer than the worker-key TTL the key expires,
-clean_worker_registry SREMs the worker from ``rq:workers``, and only the heartbeat
-recreates it - register() ran once at birth, so the live worker keeps taking jobs while
-invisible to the dashboard. The mixin re-runs register() on every heartbeat and rebuilds
-the identity hash when the key came back partial, clearing any ``death`` the janitor
-stamped on a worker that had not actually gone away.
-
-Four rq 2.7.0 details this override depends on, each anchored by a test: the repair runs
-on its own pipeline, never the one heartbeat was handed, because maintain_heartbeats
-reads its results by FIXED position (``results[7]`` is job.heartbeat's HSET); the two
-heartbeat commands are HSET then EXPIRE, the reverse of rq's order, so an expired key
-cannot be recreated without a TTL; last_heartbeat is recorded on the instance, which rq
-only does in refresh() (issue #799); and StopRequested is re-raised because it carries
-the warm-shutdown request out of the signal handler.
+Issue #784: when Redis is unreachable longer than the worker-key TTL the key expires and
+clean_worker_registry SREMs the worker from ``rq:workers``; register() runs once at
+birth, so the live worker keeps taking jobs while invisible to the dashboard - no rq
+release through 2.10 re-adds it. The mixin re-runs register() after every heartbeat,
+clears any ``death`` a janitor stamped on a worker that had not actually gone away, and
+re-EXPIREs the key so it regains a TTL even on rq 2.7, whose heartbeat recreates an
+expired key without one (the noavx2 image stays on that pin). The repair runs on the
+worker's own pipeline only: rq's maintain_heartbeats reads the pipeline it hands to
+heartbeat positionally, so queueing extra commands there would make rq inspect the
+wrong result. Since rq 2.9 maintain_heartbeats itself rebuilds a recreated key's hash
+content; on rq 2.7 the hash stays partial until restart, which is accepted.
 
 The Windows beat thread shares a lock with execution preparation and cleanup, so a beat
 can neither see an execution before its transaction commits nor outlive the cleanup that
@@ -41,8 +38,8 @@ alone rather than returning empty-handed; there is no execution to beat, but the
 key is the worker's own and is always safe to renew.
 
 Main Features:
-* ReregisterOnHeartbeatMixin: SADDs the worker back into rq:workers on each heartbeat
-  and restores identity/state/current job if the key expired and came back partial.
+* ReregisterOnHeartbeatMixin: SADDs the worker back into rq:workers after every
+  heartbeat, clears false death stamps, and re-EXPIREs the worker key.
 * HeartbeatSimpleWorker: runs perform_job on the main thread while a daemon thread
   calls maintain_heartbeats, giving SimpleWorker the liveness signal the forking
   worker gets for free; also carries the re-registration mixin.
@@ -57,7 +54,6 @@ import threading
 
 from rq import SimpleWorker, Worker, worker_registration
 from rq.exceptions import StopRequested
-from rq.utils import now, utcformat
 
 logger = logging.getLogger(__name__)
 
@@ -65,57 +61,17 @@ logger = logging.getLogger(__name__)
 class ReregisterOnHeartbeatMixin:
     def heartbeat(self, timeout=None, pipeline=None):
         timeout = timeout or self.worker_ttl + 60
-        heartbeat_at = now()
-        self.last_heartbeat = heartbeat_at
-
-        if pipeline is None:
-            with self.connection.pipeline() as heartbeat_pipeline:
-                heartbeat_pipeline.hset(self.key, 'last_heartbeat', utcformat(heartbeat_at))
-                heartbeat_pipeline.expire(self.key, timeout)
-                heartbeat_pipeline.execute()
-        else:
-            pipeline.hset(self.key, 'last_heartbeat', utcformat(heartbeat_at))
-            pipeline.expire(self.key, timeout)
-
-        self.log.debug(
-            'Worker %s: sent heartbeat to prevent worker timeout. '
-            'Next one should arrive in %s seconds.',
-            self.name,
-            timeout,
-        )
-
+        super().heartbeat(timeout, pipeline)
         try:
-            identity_missing = not self.connection.hexists(self.key, 'birth')
             with self.connection.pipeline() as repair:
-                if identity_missing:
-                    repair.hset(self.key, mapping=self._identity_mapping())
-                    repair.hdel(self.key, 'death')
                 worker_registration.register(self, repair)
+                repair.hdel(self.key, 'death')
                 repair.expire(self.key, timeout)
                 repair.execute()
         except StopRequested:
             raise
         except Exception:
             logger.exception("Worker %s: re-registration on heartbeat failed", self.name)
-
-    def _identity_mapping(self):
-        stamp = utcformat(getattr(self, 'last_heartbeat', None) or now())
-        birth_date = getattr(self, 'birth_date', None)
-        mapping = {
-            'birth': utcformat(birth_date) if birth_date else stamp,
-            'last_heartbeat': stamp,
-            'queues': ','.join(self.queue_names()),
-            'pid': getattr(self, 'pid', None) or 0,
-            'hostname': getattr(self, 'hostname', None) or '',
-            'ip_address': getattr(self, 'ip_address', None) or '',
-            'version': getattr(self, 'version', None) or '',
-            'python_version': getattr(self, 'python_version', None) or '',
-            'state': self.get_state(),
-        }
-        job_id = getattr(getattr(self, 'execution', None), 'job_id', None)
-        if job_id:
-            mapping['current_job'] = job_id
-        return mapping
 
 
 class ReregisteringWorker(ReregisterOnHeartbeatMixin, Worker):

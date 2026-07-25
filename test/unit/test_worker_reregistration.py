@@ -9,23 +9,22 @@
 """Issue #784: a worker deregistered by a transient Redis outage rejoins on heartbeat.
 
 When Redis is unreachable longer than the worker-key TTL, the key expires,
-clean_worker_registry SREMs the worker from rq:workers, and on reconnect the
-heartbeat recreates only a partial hash - historically the live worker kept taking
-jobs while invisible to the dashboard. These tests drive the real worker classes
-against an in-memory Redis stand-in and assert the heartbeat re-registers.
+clean_worker_registry SREMs the worker from rq:workers, and no rq release through
+2.10 ever re-adds it - historically the live worker kept taking jobs while invisible
+to the dashboard. These tests drive the real worker classes against an in-memory
+Redis stand-in and assert the heartbeat re-registers. They are written to pass on
+both rq pins the project ships: 2.10 (docker, native builds) and 2.7 (noavx2 image),
+whose heartbeats queue the same commands in different orders.
 
 Main Features:
 * Both the forking Worker and the Windows SimpleWorker carry the mixin and rejoin.
-* A heartbeat re-adds the worker to rq:workers and rq:workers:<queue> and restores
-  the identity hash (birth/hostname/queues) when the key came back partial.
-* Re-registration is idempotent and does not rewrite the hash during normal beats.
-* Nothing is ever queued into rq's own heartbeat pipeline: rq 2.7.0 reads that
-  pipeline's results by fixed index, and an injected command would make it delete
-  the running job's key.
-* The identity rebuild works when worker.last_heartbeat was never set: rq 2.7.0
-  assigns that attribute only in refresh() (issue #799).
-* The repair HSET and EXPIRE run through one pipeline on the raw connection and
-  the recreated key always carries a TTL.
+* A heartbeat re-adds the worker to rq:workers and rq:workers:<queue>, clears a
+  false death stamp, and re-EXPIREs the key so it always regains a TTL.
+* Nothing is ever queued into rq's own heartbeat pipeline: rq reads that pipeline's
+  results positionally, and an injected command would make it inspect the wrong
+  result and delete the running job's key.
+* The beat thread is serialized with execution preparation and cleanup, refreshes
+  the worker key when no execution exists, and execute_job joins it before returning.
 """
 
 import logging
@@ -33,7 +32,6 @@ import threading
 import types
 
 import pytest
-from rq.utils import now, utcformat
 
 import rq_heartbeat_worker as rhw
 
@@ -156,10 +154,6 @@ def _make_worker(worker_cls):
         job_monitoring_interval=30,
         name='w784',
     )
-    worker.birth_date = now()
-    worker.hostname = 'testhost'
-    worker.pid = 4321
-    worker.ip_address = '10.0.0.9'
     return worker, fake
 
 
@@ -176,20 +170,6 @@ def test_partial_key_after_outage_rejoins_registry_on_heartbeat(worker_cls):
 
 
 @pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_partial_key_identity_hash_is_restored_on_heartbeat(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale', 'successful_job_count': '400'}
-    fake.sets['rq:workers'] = set()
-
-    worker.heartbeat()
-
-    restored = fake.hashes[worker.key]
-    assert restored.get('birth')
-    assert restored.get('hostname') == 'testhost'
-    assert restored.get('queues') == 'default'
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
 def test_heartbeat_reregistration_is_idempotent_when_already_registered(worker_cls):
     worker, fake = _make_worker(worker_cls)
     fake.hashes[worker.key] = {'birth': 'ORIGINAL', 'last_heartbeat': 'stale'}
@@ -202,7 +182,7 @@ def test_heartbeat_reregistration_is_idempotent_when_already_registered(worker_c
 
 
 @pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_pipelined_heartbeat_never_queues_into_rqs_pipeline(worker_cls):
+def test_heartbeat_never_queues_repair_commands_into_rqs_pipeline(worker_cls):
     worker, fake = _make_worker(worker_cls)
     fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
     fake.sets['rq:workers'] = set()
@@ -210,110 +190,33 @@ def test_pipelined_heartbeat_never_queues_into_rqs_pipeline(worker_cls):
 
     worker.heartbeat(pipeline=pipe)
 
-    assert [name for name, _args, _kwargs in pipe.commands] == ['hset', 'expire'], (
-        "rq 2.7.0 reads maintain_heartbeats pipeline results by FIXED index "
-        "(results[7] = job.heartbeat); the override must retain exactly two commands "
-        "or RQ can inspect the wrong result and delete the running job's key"
+    assert len(pipe.commands) == 2, (
+        "rq's maintain_heartbeats reads the pipeline it hands to heartbeat "
+        "positionally (results[7] on 2.7, the results[0] recreation check on 2.10); "
+        "an extra command shifts those positions and rq can delete a RUNNING job's key"
     )
+    assert not [name for name, _args, _kwargs in pipe.commands if name in ('sadd', 'hdel')]
     assert worker.key in fake.smembers('rq:workers')
     assert worker.key in fake.smembers('rq:workers:default')
 
 
 @pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_pipelined_heartbeat_still_restores_identity_on_the_raw_connection(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
-    pipe = FakeRedis()
-
-    worker.heartbeat(pipeline=pipe)
-
-    restored = fake.hashes[worker.key]
-    assert restored.get('birth')
-    assert restored.get('queues') == 'default'
-    assert fake.ttls.get(worker.key), (
-        "the recreated key must carry a TTL so a dead worker cannot leave a zombie key behind"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_heartbeat_rebuilds_identity_when_last_heartbeat_attribute_never_set(worker_cls, caplog):
-    worker, fake = _make_worker(worker_cls)
-    if hasattr(worker, 'last_heartbeat'):
-        del worker.last_heartbeat
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale', 'successful_job_count': '400'}
-    fake.sets['rq:workers'] = set()
-
-    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
-        worker.heartbeat()
-
-    restored = fake.hashes[worker.key]
-    assert restored.get('birth')
-    assert restored.get('queues') == 'default'
-    assert restored.get('last_heartbeat') == utcformat(worker.last_heartbeat)
-    assert fake.ttls.get(worker.key)
-    assert worker.key in fake.smembers('rq:workers')
-    assert not caplog.records
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_fully_expired_worker_key_is_rebuilt_with_identity_registry_and_ttl(worker_cls):
+def test_unpipelined_heartbeat_recreates_expired_key_with_ttl_and_registration(worker_cls):
     worker, fake = _make_worker(worker_cls)
 
     worker.heartbeat()
-
-    restored = fake.hashes[worker.key]
-    assert restored.get('birth')
-    assert restored.get('last_heartbeat')
-    assert restored.get('queues') == 'default'
-    assert fake.ttls.get(worker.key) == worker.worker_ttl + 60
-    assert worker.key in fake.smembers('rq:workers')
-    assert worker.key in fake.smembers('rq:workers:default')
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_identity_repair_is_all_or_nothing_when_a_field_cannot_be_built(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
-
-    def unavailable():
-        raise RuntimeError('queue lookup failed')
-
-    worker.queue_names = unavailable
-
-    worker.heartbeat()
-
-    assert 'birth' not in fake.hashes[worker.key], (
-        "swallowing a field failure and writing a placeholder would satisfy the birth "
-        "gate, and since the gate never repairs a key that already has birth, the bad "
-        "value would persist until the key expires; the repair must fail whole so the "
-        "next heartbeat retries"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_failed_reregistration_cannot_leave_an_expired_key_without_ttl(
-    worker_cls, monkeypatch, caplog
-):
-    worker, fake = _make_worker(worker_cls)
-
-    def fail_registration(*args, **kwargs):
-        raise RuntimeError('registration failed')
-
-    monkeypatch.setattr(rhw.worker_registration, 'register', fail_registration)
-
-    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
-        worker.heartbeat()
 
     assert fake.hashes[worker.key].get('last_heartbeat')
-    assert fake.ttls.get(worker.key) == worker.worker_ttl + 60
-    assert worker.key not in fake.smembers('rq:workers')
-    assert any('re-registration on heartbeat failed' in r.message for r in caplog.records)
+    assert fake.ttls.get(worker.key) == worker.worker_ttl + 60, (
+        "rq 2.7's own heartbeat EXPIREs before it HSETs, so an expired key would be "
+        "recreated without a TTL and live forever; the repair EXPIRE must land after"
+    )
+    assert worker.key in fake.smembers('rq:workers')
+    assert worker.key in fake.smembers('rq:workers:default')
 
 
 @pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_repair_identity_registration_and_expire_run_through_one_pipeline(worker_cls):
+def test_repair_registration_death_clear_and_expire_run_through_one_pipeline(worker_cls):
     worker, fake = _make_worker(worker_cls)
     fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
     fake.sets['rq:workers'] = set()
@@ -335,23 +238,92 @@ def test_repair_identity_registration_and_expire_run_through_one_pipeline(worker
 
     worker.heartbeat()
 
-    assert ['hset', 'hdel', 'sadd', 'sadd', 'expire'] in seen
+    assert ['sadd', 'sadd', 'hdel', 'expire'] in seen
     assert fake.ttls.get(worker.key)
 
 
 @pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_heartbeat_reraises_stop_requested_for_warm_shutdown(worker_cls):
+def test_failed_reregistration_is_logged_and_leaves_the_heartbeat_intact(
+    worker_cls, monkeypatch, caplog
+):
     worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
+
+    def fail_registration(*args, **kwargs):
+        raise RuntimeError('registration failed')
+
+    monkeypatch.setattr(rhw.worker_registration, 'register', fail_registration)
+
+    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
+        worker.heartbeat()
+
+    assert fake.hashes[worker.key].get('last_heartbeat')
+    assert worker.key not in fake.smembers('rq:workers')
+    assert any('re-registration on heartbeat failed' in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_heartbeat_reraises_stop_requested_for_warm_shutdown(worker_cls, monkeypatch):
+    worker, _fake = _make_worker(worker_cls)
 
     def raise_stop(*args, **kwargs):
         raise rhw.StopRequested()
 
-    fake.hexists = raise_stop
+    monkeypatch.setattr(rhw.worker_registration, 'register', raise_stop)
 
     with pytest.raises(rhw.StopRequested):
         worker.heartbeat()
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_repair_expire_honours_the_ttl_rq_asked_for(worker_cls):
+    worker, fake = _make_worker(worker_cls)
+    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
+    fake.sets['rq:workers'] = set()
+
+    worker.heartbeat(timeout=90)
+
+    assert fake.ttls[worker.key] == 90, (
+        "the mixin must not override the caller's timeout with worker_ttl + 60"
+    )
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_live_worker_falsely_marked_dead_by_the_janitor_rejoins_on_the_next_beat(worker_cls):
+    worker, fake = _make_worker(worker_cls)
+    fake.hashes[worker.key] = {'death': 'STAMPED_BY_JANITOR'}
+    fake.sets['rq:workers'] = set()
+
+    worker.heartbeat()
+
+    assert worker.key in fake.smembers('rq:workers'), (
+        "rq_janitor calls register_death on any worker whose last_heartbeat reads "
+        "None, which can falsely hit a live worker whose hash was recreated by a "
+        "job-count increment; skipping re-registration on death would be permanent "
+        "because nothing clears death outside register_birth at process start"
+    )
+    assert 'death' not in fake.hashes[worker.key], (
+        "only a live worker can reach this code, since a genuinely dead one has "
+        "exited and stopped beating, so a death stamp here is false and must be "
+        "cleared rather than left to contradict the heartbeat we just wrote"
+    )
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_heartbeat_survives_when_last_heartbeat_attribute_was_never_set(worker_cls, caplog):
+    worker, fake = _make_worker(worker_cls)
+    if hasattr(worker, 'last_heartbeat'):
+        del worker.last_heartbeat
+    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
+    fake.sets['rq:workers'] = set()
+
+    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
+        worker.heartbeat()
+
+    assert worker.key in fake.smembers('rq:workers'), (
+        "issue #799: rq 2.7 assigns last_heartbeat only in refresh(), so any repair "
+        "code reading the attribute directly crashes a worker that never refreshed"
+    )
+    assert not caplog.records
 
 
 def test_heartbeat_waits_until_execution_preparation_commits(monkeypatch):
@@ -567,173 +539,3 @@ def test_execute_job_waits_until_its_heartbeat_thread_has_exited(monkeypatch):
     assert result == ['finished']
     assert worker._execution_heartbeat_stop is None
     assert worker._execution_heartbeat_lock is None
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_override_queues_the_same_command_count_as_rqs_own_heartbeat(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'birth': 'ORIGINAL'}
-    fake.sets['rq:workers'] = {worker.key}
-
-    ours = FakePipeline(fake)
-    worker.heartbeat(timeout=90, pipeline=ours)
-    theirs = FakePipeline(fake)
-    super(rhw.ReregisterOnHeartbeatMixin, worker).heartbeat(timeout=90, pipeline=theirs)
-
-    assert len(ours.commands) == len(theirs.commands), (
-        "the override replaces rq's heartbeat rather than calling it, and rq 2.7.0 reads "
-        "maintain_heartbeats results by FIXED index (results[7] = job.heartbeat); if an rq "
-        "bump changes how many commands the real heartbeat queues, that index shifts onto "
-        "an EXPIRE and rq deletes a RUNNING job's key on every monitor beat"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_heartbeat_writes_last_heartbeat_before_expire_on_its_own_pipeline(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    seen = []
-    original_pipeline = fake.pipeline
-
-    def tracking_pipeline():
-        pipe = original_pipeline()
-        original_execute = pipe.execute
-
-        def tracking_execute():
-            seen.append([name for name, args, kwargs in pipe.commands])
-            return original_execute()
-
-        pipe.execute = tracking_execute
-        return pipe
-
-    fake.pipeline = tracking_pipeline
-
-    worker.heartbeat()
-
-    assert seen[0] == ['hset', 'expire'], (
-        "rq 2.7.0 queues EXPIRE before HSET, so on an already-expired key the EXPIRE is a "
-        "no-op returning 0 and the HSET recreates the hash with no TTL at all, leaving a "
-        "permanent ghost worker; the repair EXPIRE that runs afterwards hides a reordering "
-        "here from every other test in this file"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_heartbeat_writes_last_heartbeat_before_expire_on_rqs_pipeline(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'birth': 'ORIGINAL'}
-    fake.sets['rq:workers'] = {worker.key}
-    pipe = FakePipeline(fake)
-
-    worker.heartbeat(timeout=90, pipeline=pipe)
-
-    assert [name for name, args, kwargs in pipe.commands] == ['hset', 'expire'], (
-        "maintain_heartbeats runs this branch every monitor beat, and it is the branch that "
-        "recreates the key after an outage, so the ordering matters here too"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_live_worker_falsely_marked_dead_by_the_janitor_rejoins_on_the_next_beat(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'death': 'STAMPED_BY_JANITOR'}
-    fake.sets['rq:workers'] = set()
-
-    worker.heartbeat()
-
-    assert worker.key in fake.smembers('rq:workers'), (
-        "rq_janitor calls register_death on any worker whose last_heartbeat reads None, "
-        "and rq 2.7.0 refresh() leaves it unset when the hash expired, so a live worker "
-        "gets falsely stamped; skipping re-registration on death would make that "
-        "permanent because nothing clears death outside register_birth at process start"
-    )
-    assert 'death' not in fake.hashes[worker.key], (
-        "only a live worker can reach this code, since a genuinely dead one has exited "
-        "and stopped beating, so a death stamp here is false and must be cleared rather "
-        "than left to contradict the birth we just wrote"
-    )
-    assert fake.hashes[worker.key].get('birth')
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_repair_expire_honours_the_ttl_rq_asked_for(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
-
-    worker.heartbeat(timeout=90)
-
-    assert fake.ttls[worker.key] == 90, (
-        "the mixin must not override the caller's timeout with worker_ttl + 60"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_restored_identity_keeps_the_worker_busy_instead_of_reporting_idle(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    worker._state = 'busy'
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
-
-    worker.heartbeat()
-
-    assert fake.hashes[worker.key].get('state') == 'busy', (
-        "register_birth does not write state, so a rebuilt hash that omits it makes a "
-        "worker mid-job advertise as idle on the dashboard"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_restored_identity_keeps_the_running_job_not_a_blank_current_job(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    worker._state = 'busy'
-    worker.execution = types.SimpleNamespace(job_id='job-mid-outage')
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
-
-    worker.heartbeat()
-
-    assert fake.hashes[worker.key].get('current_job') == 'job-mid-outage', (
-        "refresh() reads current_job off the hash, so a key rebuilt mid-job without it "
-        "advertises a busy worker with no job attached"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_restored_identity_omits_current_job_when_no_job_is_running(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
-
-    worker.heartbeat()
-
-    assert 'current_job' not in fake.hashes[worker.key], (
-        "redis-py rejects a None hash value, and an empty string would make an idle "
-        "worker look like it is running a job with a blank id"
-    )
-
-
-@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
-def test_worker_is_advertised_only_after_its_identity_hash_is_rebuilt(worker_cls):
-    worker, fake = _make_worker(worker_cls)
-    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
-    fake.sets['rq:workers'] = set()
-    order = []
-    real_sadd, real_hset = fake.sadd, fake.hset
-
-    def track_sadd(name, *members):
-        order.append('sadd')
-        return real_sadd(name, *members)
-
-    def track_hset(name, key=None, value=None, mapping=None):
-        if mapping:
-            order.append('hset')
-        return real_hset(name, key, value, mapping)
-
-    fake.sadd, fake.hset = track_sadd, track_hset
-
-    worker.heartbeat()
-
-    assert order.index('hset') < order.index('sadd'), (
-        "advertising the key in rq:workers before the hash exists lets a concurrent "
-        "Worker.all() see a member whose hash has no birth and drop it again"
-    )
