@@ -27,8 +27,11 @@ re-EXPIREs the key so it regains a TTL even on rq 2.7, whose heartbeat recreates
 expired key without one (the noavx2 image stays on that pin). The repair runs on the
 worker's own pipeline only: rq's maintain_heartbeats reads the pipeline it hands to
 heartbeat positionally, so queueing extra commands there would make rq inspect the
-wrong result. Since rq 2.9 maintain_heartbeats itself rebuilds a recreated key's hash
-content; on rq 2.7 the hash stays partial until restart, which is accepted.
+wrong result. rq itself rebuilds a recreated key's hash content only on the mid-job
+path (maintain_heartbeats, since 2.9), so when the key lost its identity while the
+worker sat idle the repair rewrites it from rq's own serialize(); rq 2.7 has no
+Worker.serialize(), so on the noavx2 pin the hash stays partial until restart, which
+is accepted.
 
 The Windows beat thread shares a lock with execution preparation and cleanup, so a beat
 can neither see an execution before its transaction commits nor outlive the cleanup that
@@ -39,7 +42,8 @@ key is the worker's own and is always safe to renew.
 
 Main Features:
 * ReregisterOnHeartbeatMixin: SADDs the worker back into rq:workers after every
-  heartbeat, clears false death stamps, and re-EXPIREs the worker key.
+  heartbeat, clears false death stamps, re-EXPIREs the worker key, and restores
+  identity lost to an idle-time outage from rq's own serialize().
 * HeartbeatSimpleWorker: runs perform_job on the main thread while a daemon thread
   calls maintain_heartbeats, giving SimpleWorker the liveness signal the forking
   worker gets for free; also carries the re-registration mixin.
@@ -63,7 +67,10 @@ class ReregisterOnHeartbeatMixin:
         timeout = timeout or self.worker_ttl + 60
         super().heartbeat(timeout, pipeline)
         try:
+            identity_missing = not self.connection.hexists(self.key, 'birth')
             with self.connection.pipeline() as repair:
+                if identity_missing and hasattr(self, 'serialize') and self.birth_date:
+                    repair.hset(self.key, mapping=self.serialize())
                 worker_registration.register(self, repair)
                 repair.hdel(self.key, 'death')
                 repair.expire(self.key, timeout)

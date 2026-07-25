@@ -19,7 +19,8 @@ whose heartbeats queue the same commands in different orders.
 Main Features:
 * Both the forking Worker and the Windows SimpleWorker carry the mixin and rejoin.
 * A heartbeat re-adds the worker to rq:workers and rq:workers:<queue>, clears a
-  false death stamp, and re-EXPIREs the key so it always regains a TTL.
+  false death stamp, re-EXPIREs the key so it always regains a TTL, and restores
+  identity fields lost to an idle-time outage wherever rq offers serialize().
 * Nothing is ever queued into rq's own heartbeat pipeline: rq reads that pipeline's
   results positionally, and an injected command would make it inspect the wrong
   result and delete the running job's key.
@@ -32,6 +33,7 @@ import threading
 import types
 
 import pytest
+from rq.utils import now
 
 import rq_heartbeat_worker as rhw
 
@@ -154,6 +156,7 @@ def _make_worker(worker_cls):
         job_monitoring_interval=30,
         name='w784',
     )
+    worker.birth_date = now()
     return worker, fake
 
 
@@ -238,7 +241,10 @@ def test_repair_registration_death_clear_and_expire_run_through_one_pipeline(wor
 
     worker.heartbeat()
 
-    assert ['sadd', 'sadd', 'hdel', 'expire'] in seen
+    if hasattr(worker, 'serialize'):
+        assert ['hset', 'sadd', 'sadd', 'hdel', 'expire'] in seen
+    else:
+        assert ['sadd', 'sadd', 'hdel', 'expire'] in seen
     assert fake.ttls.get(worker.key)
 
 
@@ -272,6 +278,46 @@ def test_heartbeat_reraises_stop_requested_for_warm_shutdown(worker_cls, monkeyp
 
     with pytest.raises(rhw.StopRequested):
         worker.heartbeat()
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_idle_reconnect_restores_identity_fields_from_rqs_own_serializer(worker_cls):
+    worker, fake = _make_worker(worker_cls)
+    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
+    fake.sets['rq:workers'] = set()
+
+    worker.heartbeat()
+
+    if hasattr(worker, 'serialize'):
+        assert fake.hashes[worker.key].get('birth'), (
+            "rq rebuilds a recreated key only from maintain_heartbeats (mid-job), so "
+            "an outage that expires the key while the worker is idle leaves blank "
+            "identity fields forever; the repair must reuse rq's own serialize()"
+        )
+        assert fake.hashes[worker.key].get('queues') == 'default'
+    else:
+        assert 'birth' not in fake.hashes[worker.key], (
+            "rq 2.7 (noavx2) has no Worker.serialize(); the accepted degradation is a "
+            "partial hash until restart, never a hand-rolled identity mapping (#799)"
+        )
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_identity_rebuild_is_skipped_before_birth_registration(worker_cls, caplog):
+    worker, fake = _make_worker(worker_cls)
+    worker.birth_date = None
+    fake.hashes[worker.key] = {'last_heartbeat': 'stale'}
+    fake.sets['rq:workers'] = set()
+
+    with caplog.at_level(logging.ERROR, logger='rq_heartbeat_worker'):
+        worker.heartbeat()
+
+    assert 'birth' not in fake.hashes[worker.key], (
+        "serialize() asserts birth_date is set, so a heartbeat that fires before "
+        "register_birth must skip the rebuild instead of failing the whole repair"
+    )
+    assert not caplog.records
+    assert worker.key in fake.smembers('rq:workers')
 
 
 @pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
