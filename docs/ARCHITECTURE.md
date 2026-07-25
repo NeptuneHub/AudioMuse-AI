@@ -2,7 +2,9 @@
 
 AudioMuse-AI follows a distributed architecture with separate containers for web interface, task processing, and data storage.
 
-An easy choice is to deploy everything on a single machine. Anyway, for performance reason, deploy multiple worker on multiple machine is also possible to speedup batch task like analysis and clustering. Worker can be then shutdown when not needed for this tasks.
+The easiest choice is to deploy everything on a single machine. For better performance you can also deploy several workers on several machines, to speed up batch tasks like analysis and clustering. Those extra workers can be shut down when the batch tasks are done.
+
+For the algorithms running inside these components, see [ALGORITHM](ALGORITHM.md). For the multi-server model, see [MULTI_SERVER](MULTI_SERVER.md).
 
 ## System Architecture
 
@@ -16,7 +18,7 @@ graph TB
     Redis ---|Dequeue Tasks| Worker[Worker Container<br/>Analysis + Clustering]
     PostgreSQL ---|Read/Write| Worker
     
-    MediaServer[Media Server<br/>Navidrome/Jellyfin<br/>Lyrion/Emby] -.-|Fetch Music| Flask
+    MediaServer[Media Servers<br/>Navidrome/Jellyfin<br/>Emby/Lyrion/Plex] -.-|Fetch Music| Flask
     MediaServer -.-|Fetch Audio Files| Worker
     
     style User fill:#607D8B
@@ -32,54 +34,60 @@ graph TB
 ### Flask Container
 - **Web Interface**: Serves the front-end UI accessible at port 8000
 - **REST API**: Provides endpoints for all AudioMuse-AI features
-- **Task Orchestration**: Enqueues analysis and clustering jobs to Redis
+- **Task Orchestration**: Enqueues analysis, clustering, cleaning and sweep jobs to Redis
+- **Similarity Queries**: Loads the similarity indexes and answers similar song, path, alchemy, map and search requests
 - **Data Access**: Reads track information, playlists, and results from PostgreSQL
-- **Media Server Integration**: Create playlist on mediaserver
+- **Media Server Integration**: Creates playlists on the media servers
 
 ### Worker Container
 - **Job Processing**: Dequeues tasks from Redis queue
-- **Audio Analysis**: Performs sonic analysis using Librosa and ONNX models
+- **Audio Analysis**: Performs sonic analysis using Librosa and ONNX models (MusiCNN, DCLAP, Whisper, Silero, GTE)
 - **Clustering**: Executes playlist generation algorithms (KMeans, DBSCAN, GMM, Spectral)
+- **Index Building**: Rebuilds the similarity indexes and the 2D projections, then publishes a reload message
 - **Data Persistence**: Writes analysis results and embeddings to PostgreSQL
 - **Audio Fetching**: Downloads audio files from media server for processing
 
 ### Redis Queue
 - **Task Queue**: Stores pending analysis and clustering jobs
 - **Job Status**: Tracks running and completed tasks
-- **High Priority Queue**: Separate queue for priority tasks
+- **High Priority Queue**: Separate queue for coordinator tasks, so a flood of child jobs cannot starve them
+- **Pub/Sub**: The `index-updates` channel tells the Flask process to reload the similarity indexes
 
 ### PostgreSQL Database
 - **Track Metadata**: Stores song information, paths, and library data
-- **Analysis Results**: Mood scores, embeddings, feature vectors
+- **Analysis Results**: Mood scores, embeddings, feature vectors, lyrics and CLAP embeddings
+- **Server Mapping**: The `music_servers` registry plus the per-server track and artist mapping tables
 - **Playlists**: Generated clusters and user playlists
-- **Voyager Index**: Vector similarity search index
+- **Similarity Indexes**: The disk-paged IVF indexes used for vector similarity search
 
 ### Media Server
 - **Music Source**: Provides access to audio library
-- **API Integration**: Navidrome, Jellyfin, Lyrion, or Emby APIs
+- **API Integration**: Navidrome, Jellyfin, Emby, Lyrion or Plex APIs
 - **Audio Streaming**: Streams audio files for analysis
 - **Playlist Sync**: Target for generated playlists
+- **Multiple Servers**: Several servers of any type can be configured at the same time
 
 ## Data Flow
 
 ### Analysis Workflow
 1. User triggers analysis via Flask UI
-2. Flask enqueues analysis job to Redis
-3. Worker dequeues job from Redis
-4. Worker fetches audio from Media Server
-5. Worker performs sonic analysis
-6. Worker writes results to PostgreSQL
-7. Flask reads results and displays to user
+2. Flask enqueues the analysis job to Redis
+3. A worker dequeues the job and processes each configured server in turn
+4. The worker fetches audio from the Media Server
+5. The worker performs the sonic analysis
+6. The worker writes results to PostgreSQL under the canonical catalogue id
+7. The worker rebuilds the similarity indexes and publishes a reload message
+8. Flask reloads the indexes and displays the results to the user
 
 ### Clustering Workflow
 1. User starts clustering via Flask UI
-2. Flask enqueues clustering job to Redis
-3. Worker dequeues job from Redis
-4. Worker reads track embeddings from PostgreSQL
-5. Worker executes clustering algorithm
-6. Worker writes generated playlists to PostgreSQL
-7. Worker optionally syncs playlists to Media Server
-8. Flask displays results to user
+2. Flask enqueues the clustering job to Redis
+3. A worker dequeues the job and processes each configured server in turn
+4. The worker reads track features and embeddings from PostgreSQL
+5. The worker runs the evolutionary search across batch child jobs
+6. The worker writes the generated playlists to PostgreSQL
+7. The worker creates the playlists on the Media Server
+8. Flask displays the results to the user
 
 ## Network Ports
 
@@ -92,11 +100,12 @@ graph TB
 | Jellyfin | 8096 | HTTP |
 | Lyrion | 9000 | HTTP |
 | Emby | 8096 | HTTP |
+| Plex | 32400 | HTTP |
 
 ## Deployment Modes
 
 ### Docker Compose
-All containers run on one host, communicating via Docker network. With docker is also be possible to do deployment on multiple machine.
+All containers run on one host, communicating via the Docker network. Docker can also be used to deploy across several machines.
 
 ### Kubernetes
 - Flask, Worker, Redis, PostgreSQL deployed as separate pods
@@ -104,14 +113,17 @@ All containers run on one host, communicating via Docker network. With docker is
 - Persistent volumes for database storage
 
 ### Remote Worker
-- Flask + Redis + PostgreSQL on main server
-- Worker on remote machine (closer to media server or with GPU)
-- Worker connects using `POSTGRES_HOST` and `REDIS_URL` pointing to main server
-- Copy `.env` to remote worker and update these values to reach main server
+- Flask, Redis and PostgreSQL on the main server
+- One or more workers on other machines (closer to the media server, or with a GPU)
+- A remote worker is the same image started with `SERVICE_TYPE=worker`. It needs
+  `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`,
+  `POSTGRES_DB` and `REDIS_URL` pointing at the main server instead of at the
+  local container names
+- Worker-only compose examples are available under `deployment/deprecated/`
 
 ## Scalability
 
 - **Multiple Workers**: Deploy additional worker containers for parallel processing
 - **Redis Queue**: Handles job distribution across workers
 - **PostgreSQL**: Single source of truth for all data
-- **Stateless Flask**: Can run multiple Flask instances behind load balancer
+- **Multiple Flask Instances**: Possible behind a load balancer. Each scheduled task row is claimed atomically for its minute, so a schedule cannot fire twice

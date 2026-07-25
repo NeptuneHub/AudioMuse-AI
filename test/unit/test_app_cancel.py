@@ -145,6 +145,39 @@ def test_a_sweep_whose_row_was_wiped_treats_that_as_cancelled():
         close()
 
 
+def test_cancelling_an_in_process_task_revokes_its_row_and_spares_the_queues(cancel_env):
+    """The alchemy radio runs inside the web process with no RQ job, so the global
+    cancel would stop nothing while still emptying both queues and deleting every
+    task_status row - destroying an unrelated queued analysis to cancel something it
+    cannot reach."""
+    from app_helper import revoke_inline_task_row
+
+    cur, save, _hist = cancel_env
+    with patch(
+        'app_helper.get_task_info_from_db',
+        return_value={'task_id': 'radio-1', 'task_type': 'alchemy_radio'},
+    ):
+        message = revoke_inline_task_row('radio-1')
+
+    assert message
+    assert save.call_args[0][:3] == ('radio-1', 'alchemy_radio', 'REVOKED')
+    statements = [sql for sql, _ in cur.executed]
+    assert not any(s.startswith("DELETE FROM task_status") for s in statements)
+
+
+def test_cancelling_a_queued_task_is_not_diverted_to_the_in_process_path(cancel_env):
+    from app_helper import revoke_inline_task_row
+
+    _cur, save, _hist = cancel_env
+    with patch(
+        'app_helper.get_task_info_from_db',
+        return_value={'task_id': 'analysis-1', 'task_type': 'main_analysis'},
+    ):
+        assert revoke_inline_task_row('analysis-1') is None
+
+    save.assert_not_called()
+
+
 def test_a_failed_status_query_is_not_an_empty_answer_and_leaves_the_sweep_running():
     """Absence means cancelled; an unreachable DB does not."""
     from tasks.multiserver_sync import make_cancel_check

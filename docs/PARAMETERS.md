@@ -1,6 +1,6 @@
 # Configuration Parameters
 
-These are the parameters accepted for this script. From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
+These are the parameters accepted for this script. From `v1.0.0`, only PostgreSQL, Redis, and `TZ` must still be configured via environment variables. All other configuration values are managed through the browser Setup Wizard and stored in the database. For compatibility with older installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is the landing page on a clean installation and is also available later from the menu under Administration > Setup Wizard.
 
 How to find jellyfin **userid**:
 * Log into Jellyfin from your browser as an admin
@@ -60,7 +60,7 @@ These parameters can be left as-is:
 
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
-| `CLEANING_SAFETY_LIMIT` | Max unbound-on-every-server albums listed in the cleaning report (cleaning never deletes catalogue rows) | `100`             |
+| `CLEANING_SAFETY_LIMIT` | Max unbound-on-every-server albums listed in the cleaning report. It caps the report only; whether orphan catalogue rows are actually deleted is decided by `CLEANING_CATALOGUE` | `100`             |
 | `CLEANING_CATALOGUE`    | When `true`, cleaning also DELETES catalogue rows bound to no server (orphans). When `false` it only unbinds each server's stale mappings and leaves the catalogue untouched. The cleaning page has a per-run checkbox to enable it for a single run without changing this default. | `false` |
 | `SWEEP_PRUNE_MIN_FETCH_RATIO` | A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much. | `0.5` |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Navidrome/Jellyfin: Use library/folder names. | `""` (empty - scan all) |

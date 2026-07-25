@@ -1,6 +1,6 @@
 # Deployment strategy
 
-From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
+From `v1.0.0`, only PostgreSQL, Redis, and `TZ` must still be configured via environment variables. All other configuration values are managed through the browser Setup Wizard and stored in the database. For compatibility with older installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is the landing page on a clean installation and is also available later from the menu under Administration > Setup Wizard.
 
 ## Contents
 
@@ -20,7 +20,7 @@ The easiest way to install AudioMuse-AI on K3S is with the [AudioMuse-AI Helm Ch
   * A running K3S cluster
   * `kubectl` configured for your cluster
   * `helm` installed
-  * A media server already installed: Navidrome, Jellyfin, Emby, or Lyrion
+  * A media server already installed: Navidrome, Jellyfin, Emby, Lyrion or Plex
   * See the hardware requirements in the documentation
 
 Use the Helm chart for the simplest, most production-ready K3S deploy.
@@ -32,7 +32,7 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
 * **Prerequisites:**
   * A running K3S cluster
   * `kubectl` configured for your cluster
-  * A media server already installed: Navidrome, Jellyfin, Emby, or Lyrion
+  * A media server already installed: Navidrome, Jellyfin, Emby, Lyrion or Plex
   * See the hardware requirements in the documentation
 
 * **Get manifest example:**
@@ -58,14 +58,16 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
 
 ## Local Deployment with Docker Compose
 
-AudioMuse-AI provides Docker Compose files example:
+AudioMuse-AI provides two Docker Compose examples:
 
-- `deployment/docker-compose.yaml` - all music server, cpu only.
-- `deployment/docker-compose-nvidia.yaml` - all music server, GPU with fallback to CPU.
+- `deployment/docker-compose.yaml` - any music server, CPU only.
+- `deployment/docker-compose-nvidia.yaml` - any music server, GPU with fallback to CPU.
+
+Both files start the whole stack: Flask, one worker, Redis and PostgreSQL.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
-* A media server already installed: Navidrome, Jellyfin, Lyrion, or Emby
+* A media server already installed: Navidrome, Jellyfin, Emby, Lyrion or Plex
 * See the [hardware requirements](../README.md#hardware-requirements)
 
 **Steps:**
@@ -114,7 +116,7 @@ AudioMuse-AI provides Docker Compose files example:
 > If you use LMS, create and use the Subsonic API token instead of a password. Other Subsonic-compatible servers may require the same token-based auth.
 
 **Remote worker tip:**
-If you deploy a worker on separate hardware, copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
+A worker on separate hardware runs the same image with `SERVICE_TYPE=worker`. It only needs to reach the main server, so set `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` and `REDIS_URL` to the main server values instead of the local container names. Worker-only compose examples are kept in `deployment/deprecated/`.
 
 ## Local Deployment MacOS
 

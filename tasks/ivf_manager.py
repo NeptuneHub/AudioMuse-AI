@@ -17,6 +17,10 @@ API the playlist, similarity and path features call.
 Main Features:
 * build_and_store_ivf_index / load_ivf_index_for_querying: build the disk-paged
   IVF index from pgvector embeddings and hold one process-wide instance.
+* ensure_ivf_index_loaded: every query entry point loads that instance on first
+  use, so the one queued task that still queries this index (the sonic
+  fingerprint cron, which runs on an RQ worker) finds it instead of finding none.
+  Online features query it from Flask, which preloads it at startup.
 * find_nearest_neighbors_by_id / _by_vector, search_tracks_unified, radius walk:
   neighbor queries with f32 re-rank overfetch, artist capping, content
   de-duplication and optional mood-similarity filtering.
@@ -49,6 +53,7 @@ from config import (
     IVF_RESULT_CACHE_MAX,
     RADIUS_INSTRUMENTATION,
     IVF_RERANK_OVERFETCH,
+    IVF_LAZY_LOAD_RETRY_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -308,6 +313,29 @@ def load_ivf_index_for_querying(force_reload=False):
     logger.info("Audio IVF index with %d items loaded successfully into memory.", len(id_map))
 
 
+_lazy_load_lock = threading.Lock()
+_lazy_load_retry_after = 0.0
+
+
+def ensure_ivf_index_loaded():
+    global _lazy_load_retry_after
+
+    if ivf_index is not None:
+        return True
+    with _lazy_load_lock:
+        if ivf_index is not None:
+            return True
+        now = time.monotonic()
+        if now < _lazy_load_retry_after:
+            return False
+        _lazy_load_retry_after = now + max(0, IVF_LAZY_LOAD_RETRY_SECONDS)
+        try:
+            load_ivf_index_for_querying()
+        except Exception:
+            logger.exception("On-demand audio IVF index load failed")
+    return ivf_index is not None
+
+
 def build_and_store_ivf_index(db_conn=None):
     if db_conn is None:
         try:
@@ -347,10 +375,12 @@ def build_and_store_ivf_index(db_conn=None):
 
 
 def get_vector_by_id(item_id: str) -> np.ndarray | None:
+    ensure_ivf_index_loaded()
     return _get_cached_vector(item_id)
 
 
 def get_cell_groups_for_items(item_ids):
+    ensure_ivf_index_loaded()
     if ivf_index is None or reverse_id_map is None:
         return []
     vec_ids = [vid for vid in (reverse_id_map.get(iid) for iid in item_ids) if vid is not None]
@@ -360,6 +390,7 @@ def get_cell_groups_for_items(item_ids):
 
 
 def multi_query_ids(query_vectors, per_vector_n):
+    ensure_ivf_index_loaded()
     if ivf_index is None or id_map is None:
         return []
     try:
@@ -1030,6 +1061,7 @@ def find_nearest_neighbors_by_id(
     mood_similarity: bool | None = None,
     radius_similarity: bool | None = None,
 ):
+    ensure_ivf_index_loaded()
     try:
         return _find_nearest_neighbors_by_id_impl(
             target_item_id, n, eliminate_duplicates, mood_similarity, radius_similarity
@@ -1132,6 +1164,7 @@ def _find_nearest_neighbors_by_id_impl(
 def find_nearest_neighbors_by_vector(
     query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None
 ):
+    ensure_ivf_index_loaded()
     try:
         return _find_nearest_neighbors_by_vector_impl(query_vector, n, eliminate_duplicates)
     finally:
@@ -1205,6 +1238,7 @@ def _find_nearest_neighbors_by_vector_impl(
 
 
 def get_max_distance_for_id(target_item_id: str):
+    ensure_ivf_index_loaded()
     if ivf_index is None or id_map is None or reverse_id_map is None:
         raise RuntimeError(
             "IVF index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup."

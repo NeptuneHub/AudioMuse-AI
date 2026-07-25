@@ -60,6 +60,7 @@ from app_helper import (
     close_db,
     redis_conn,
     get_task_info_from_db,
+    revoke_inline_task_row,
     cancel_job_and_children_recursive,
     coerce_db_details,
     sanitize_task_details,
@@ -532,6 +533,14 @@ def cancel_task_endpoint(task_id):
       404:
         description: Task ID not found in the database.
     """
+    # An in-process task has no RQ job to stop, and the global cancel below is
+    # destructive by design, so it gets a surgical revoke of its own row instead.
+    inline_message = revoke_inline_task_row(task_id)
+    if inline_message:
+        return jsonify(
+            {"message": inline_message, "task_id": task_id, "cancelled_jobs_count": 0}
+        ), 200
+
     # Always perform cancel when the endpoint is invoked. No early returns.
     cancelled_count = cancel_job_and_children_recursive(
         task_id, reason=f"Cancellation requested for task {task_id} via API."
@@ -1193,7 +1202,17 @@ if not _is_worker:
     def _cron_manager_loop():
         try:
             import time as _time
-            from app_cron import run_due_cron_jobs
+            from app_cron import run_due_cron_jobs, reap_interrupted_inline_runs
+
+            # Inline cron runs (the alchemy radio) live in THIS process and nothing
+            # else writes their final status, so a restart mid-run leaves a row that
+            # no later code path resolves. This process is starting, so no inline run
+            # can be live: whatever is still non-terminal died with the old process.
+            try:
+                with app.app_context():
+                    reap_interrupted_inline_runs()
+            except Exception:
+                app.logger.exception('cron manager startup reap failed')
 
             while True:
                 try:

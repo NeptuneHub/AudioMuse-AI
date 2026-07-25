@@ -70,7 +70,7 @@ from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
 from config import SWEEP_PRUNE_MIN_FETCH_RATIO
-from database import connect_raw
+from database import connect_raw, INLINE_FLASK_TASK_TYPES
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
 from tasks.provider_migration_matcher import CandidateIndex
@@ -204,6 +204,25 @@ def recover_abandoned_sweeps():
 
 _ORPHAN_GRACE_SECONDS = 120
 
+_INLINE_STALE_SECONDS = 1800
+
+
+def _fail_task_rows(db, task_ids, message):
+    import config
+
+    details = json.dumps({'message': message, 'status_message': message,
+                          'error': message})
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE task_status SET status = %s, progress = 100, details = %s, "
+            "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
+            "WHERE task_id = ANY(%s)",
+            (config.TASK_STATUS_FAILURE, details, time.time(), task_ids),
+        )
+    finally:
+        cur.close()
+
 
 def reap_orphaned_tasks():
     """Fail non-terminal top-level tasks whose RQ job no longer exists.
@@ -216,10 +235,17 @@ def reap_orphaned_tasks():
     the batch-start cleanup cannot run because the 409 fires first.
 
     Sweeps are excluded: recover_abandoned_sweeps re-enqueues those rather than
-    failing them. Rows younger than the grace period are left alone, so a job that
-    was enqueued microseconds after its row is never reaped out from under itself.
-    Returns the number of rows failed. Uses its own raw connection, so it needs no
-    Flask app context.
+    failing them. Inline task types are excluded from the RQ probe too, because
+    they NEVER have a job to find: they run inside the Flask process, so probing
+    RQ declared a perfectly healthy run dead two minutes in, and the row then
+    flipped back to SUCCESS when it finished. They are judged by their heartbeat
+    instead - stale for longer than the inline window means the process that owned
+    the run is gone without having written a final status.
+
+    Rows younger than the grace period are left alone, so a job that was enqueued
+    microseconds after its row is never reaped out from under itself. Returns the
+    number of rows failed. Uses its own raw connection, so it needs no Flask app
+    context.
     """
     import config
     from rq.job import Job
@@ -229,18 +255,30 @@ def reap_orphaned_tasks():
     db = connect_raw()
     db.autocommit = True
     reaped = []
+    stalled_inline = []
     try:
         cur = db.cursor()
         try:
             cur.execute(
                 "SELECT task_id FROM task_status "
-                "WHERE parent_task_id IS NULL AND task_type <> %s "
+                "WHERE parent_task_id IS NULL AND task_type <> ALL(%s) "
                 "AND status NOT IN (%s, %s, %s) "
                 "AND timestamp < NOW() - make_interval(secs => %s)",
-                (SWEEP_TASK_TYPE, config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
+                (list((SWEEP_TASK_TYPE,) + tuple(INLINE_FLASK_TASK_TYPES)),
+                 config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
                  config.TASK_STATUS_REVOKED, _ORPHAN_GRACE_SECONDS),
             )
             candidates = [r[0] for r in cur.fetchall()]
+            cur.execute(
+                "SELECT task_id FROM task_status "
+                "WHERE parent_task_id IS NULL AND task_type = ANY(%s) "
+                "AND status NOT IN (%s, %s, %s) "
+                "AND timestamp < NOW() - make_interval(secs => %s)",
+                (list(INLINE_FLASK_TASK_TYPES),
+                 config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
+                 config.TASK_STATUS_REVOKED, _INLINE_STALE_SECONDS),
+            )
+            stalled_inline = [r[0] for r in cur.fetchall()]
         finally:
             cur.close()
 
@@ -252,30 +290,27 @@ def reap_orphaned_tasks():
             except Exception:
                 logger.debug("Could not probe job %s; leaving it alone.", task_id)
 
-        if not reaped:
-            return 0
-
-        message = (
-            "The task disappeared from the queue (the worker or Redis restarted). "
-            "It was not run; start it again."
-        )
-        details = json.dumps({'message': message, 'status_message': message,
-                              'error': message})
-        cur = db.cursor()
-        try:
-            cur.execute(
-                "UPDATE task_status SET status = %s, progress = 100, details = %s, "
-                "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
-                "WHERE task_id = ANY(%s)",
-                (config.TASK_STATUS_FAILURE, details, time.time(), reaped),
+        if reaped:
+            _fail_task_rows(
+                db, reaped,
+                "The task disappeared from the queue (the worker or Redis restarted). "
+                "It was not run; start it again.",
             )
-        finally:
-            cur.close()
-        logger.warning(
-            "Janitor failed %d orphaned task row(s) with no RQ job behind them: %s",
-            len(reaped), ', '.join(reaped),
-        )
-        return len(reaped)
+            logger.warning(
+                "Janitor failed %d orphaned task row(s) with no RQ job behind them: %s",
+                len(reaped), ', '.join(reaped),
+            )
+        if stalled_inline:
+            _fail_task_rows(
+                db, stalled_inline,
+                "The task stopped reporting progress, so the web process running it "
+                "is gone. It was not completed; start it again.",
+            )
+            logger.warning(
+                "Janitor failed %d stalled in-process task row(s): %s",
+                len(stalled_inline), ', '.join(stalled_inline),
+            )
+        return len(reaped) + len(stalled_inline)
     finally:
         try:
             db.close()
