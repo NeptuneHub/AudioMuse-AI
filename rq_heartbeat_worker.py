@@ -58,23 +58,30 @@ class ReregisterOnHeartbeatMixin:
         super().heartbeat(timeout=timeout, pipeline=pipeline)
         try:
             worker_registration.register(self)
-            if not self.connection.hexists(self.key, 'birth'):
-                self.connection.hset(self.key, mapping=self._identity_mapping())
-                self.connection.expire(self.key, self.worker_ttl + 60)
+            if self.connection and self.key:
+                if not self.connection.hexists(self.key, 'birth'):
+                    self.connection.hset(self.key, mapping=self._identity_mapping())
+                    worker_ttl = getattr(self, 'worker_ttl', 420)
+                    self.connection.expire(self.key, worker_ttl + 60)
         except Exception:
             logger.exception("Worker %s: re-registration on heartbeat failed", self.name)
 
     def _identity_mapping(self):
-        stamp = utcformat(self.last_heartbeat or now())
+        stamp = utcformat(getattr(self, 'last_heartbeat', None) or now())
+        birth_date = getattr(self, 'birth_date', None)
+        try:
+            queue_str = ','.join(self.queue_names())
+        except Exception:
+            queue_str = ''
         return {
-            'birth': utcformat(self.birth_date) if self.birth_date else stamp,
+            'birth': utcformat(birth_date) if birth_date else stamp,
             'last_heartbeat': stamp,
-            'queues': ','.join(self.queue_names()),
-            'pid': self.pid or 0,
-            'hostname': self.hostname or '',
-            'ip_address': self.ip_address or '',
-            'version': self.version or '',
-            'python_version': self.python_version or '',
+            'queues': queue_str,
+            'pid': getattr(self, 'pid', None) or 0,
+            'hostname': getattr(self, 'hostname', None) or '',
+            'ip_address': getattr(self, 'ip_address', None) or '',
+            'version': getattr(self, 'version', None) or '',
+            'python_version': getattr(self, 'python_version', None) or '',
         }
 
 
