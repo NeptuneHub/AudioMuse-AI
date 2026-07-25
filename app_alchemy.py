@@ -14,7 +14,9 @@ blending to `tasks.song_alchemy.song_alchemy`. Also manages the persisted
 
 Main Features:
 * Routes: `/alchemy` page, artist/playlist autocomplete, `/api/alchemy`, plus
-  CRUD for `/api/anchors` and `/api/radios` (with `/api/radios/run`).
+  CRUD for `/api/anchors` and `/api/radios` (with `/api/radios/run`). Every one
+  of them acts on the server selected in the sidebar - the radio run included,
+  since only the cron row is the all-servers batch path.
 * Serves and builds the 2D artist projection; wraps the playlist list in a
   short-TTL in-process cache guarded by a lock.
 """
@@ -767,11 +769,22 @@ def remove_radio(radio_id):
 @alchemy_bp.route('/api/radios/run', methods=['POST'])
 def run_radio_playlists_endpoint():
     """
-    Create playlists for all enabled radios.
+    Create playlists for all enabled radios on the selected server.
     ---
     tags:
       - Alchemy
     summary: Upsert one playlist per enabled radio (reuses existing playlist by name, preserving its server-side ID).
+    description: |
+      Runs only against the server selected in the sidebar (the default server
+      when none is selected), because Alchemy is a per-server page. The
+      alchemy_radio cron row is the batch path and always covers every server.
+    parameters:
+      - name: server
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Target music server name or id. Defaults to the default server.
     responses:
       200:
         description: Run summary.
@@ -790,13 +803,21 @@ def run_radio_playlists_endpoint():
                   type: array
                   items:
                     type: string
+      400:
+        description: Invalid server selection.
       500:
         description: Run failed.
     """
     from tasks.radio_manager import run_radio_playlists
 
     try:
-        summary = run_radio_playlists()
+        server_id = app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning('Invalid server selection.', exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+
+    try:
+        summary = run_radio_playlists(server_scope=server_id or 'default')
         return jsonify(summary)
     except Exception:
         logger.exception('Radio playlist creation failed')

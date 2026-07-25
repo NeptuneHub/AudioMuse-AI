@@ -9,11 +9,13 @@
 """Cron scheduler dispatch and the sonic-fingerprint task it enqueues.
 
 Exercises run_due_cron_jobs and the RQ task behind the sonic-fingerprint row.
-Every cron branch enqueues: nothing runs inline on the poll thread, so a slow
-media server cannot swallow a scheduling window.
+Batch rows enqueue so a slow media server cannot swallow a scheduling window; the
+alchemy radio runs inline in Flask, the only process holding the similarity index.
 
 Main Features:
 * The sonic-fingerprint row enqueues its task rather than running it inline
+* The alchemy-radio row runs inline in Flask, never on a worker, and records
+  STARTED then SUCCESS (or FAILURE, without leaving the row STARTED forever)
 * Empty fingerprint results skip both playlist upsert and the legacy fallback
 * Non-empty results upsert under the constant cron playlist name via item_ids
 * NotImplementedError from the backend falls back to a timestamped legacy playlist
@@ -129,6 +131,58 @@ def test_sonic_fingerprint_task_falls_back_for_unsupported_backend():
     legacy_name = legacy.call_args[0][0]
     assert legacy_name.startswith('Sonic Fingerprint (Cron ')
     assert legacy.call_args[0][1] == ['a']
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_alchemy_radio_row_runs_inline_in_flask_never_on_a_worker(mock_get_db, _matches):
+    from app_cron import run_due_cron_jobs
+    from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
+
+    db, _cur = _setup_db_mock(task_type='alchemy_radio')
+    mock_get_db.return_value = db
+
+    summary = {'playlists_created': 2, 'failed': []}
+    with (
+        patch('app_cron.save_task_status') as save,
+        patch('app_cron.rq_queue_default') as queue,
+        patch('app_cron.rq_queue_high') as queue_high,
+        patch('tasks.radio_manager.run_radio_playlists', return_value=summary) as run,
+    ):
+        run_due_cron_jobs()
+
+    queue.enqueue.assert_not_called()
+    queue_high.enqueue.assert_not_called()
+    run.assert_called_once_with(server_scope='all')
+    statuses = [c[0][2] for c in save.call_args_list]
+    assert statuses == [TASK_STATUS_STARTED, TASK_STATUS_SUCCESS]
+    assert save.call_args_list[-1][1]['details'] == summary
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_failed_inline_radio_run_is_recorded_as_failure_without_a_traceback(
+    mock_get_db, _matches
+):
+    from app_cron import run_due_cron_jobs
+    from config import TASK_STATUS_FAILURE
+
+    db, _cur = _setup_db_mock(task_type='alchemy_radio')
+    mock_get_db.return_value = db
+
+    with (
+        patch('app_cron.save_task_status') as save,
+        patch(
+            'tasks.radio_manager.run_radio_playlists',
+            side_effect=RuntimeError('internal detail that must stay in logs'),
+        ),
+    ):
+        run_due_cron_jobs()
+
+    last_call = save.call_args_list[-1]
+    assert last_call[0][2] == TASK_STATUS_FAILURE
+    assert 'internal detail' not in last_call[1]['details']['error']
+    db.rollback.assert_called_once()
 
 
 @patch('app_cron.cron_matches_now', return_value=True)

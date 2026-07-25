@@ -15,9 +15,10 @@ sonic fingerprint, or alchemy radio) when its cron expression matches now.
 Main Features:
 * Routes: `/cron` page and `/api/cron` (GET list, POST create/update), rejecting a
   cron expression that could never fire before it is stored as enabled.
-* Cron evaluation that ENQUEUES every task type (analysis, clustering, sonic
-  fingerprint, alchemy radio, plugin tasks): nothing runs inline on the poll
-  thread, so a slow media server cannot swallow a scheduling window.
+* Cron evaluation that ENQUEUES the batch task types (analysis, clustering, sonic
+  fingerprint, plugin tasks) and runs the alchemy radio INLINE here in Flask,
+  because a radio is an online feature: it queries the in-memory similarity index,
+  which only this process holds.
 * Each row is claimed atomically for its wall-clock minute, so a restart or a
   second web process cannot double-fire it.
 """
@@ -26,7 +27,12 @@ from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor, Json
 from database import get_db, save_task_status, get_active_main_task
 from taskqueue import rq_queue_high, rq_queue_default
-from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
+from config import (
+    TASK_STATUS_PENDING,
+    TASK_STATUS_FAILURE,
+    TASK_STATUS_STARTED,
+    TASK_STATUS_SUCCESS,
+)
 import uuid
 import time
 import logging
@@ -75,6 +81,7 @@ cron_bp = Blueprint('cron_bp', __name__)
 logger = logging.getLogger(__name__)
 
 _ENQUEUED_BY_CRON = "Enqueued by cron."
+_STARTED_BY_CRON = "Started by cron."
 
 
 @cron_bp.route('/cron')
@@ -434,10 +441,11 @@ def _claim_cron_minute(db, row_id, minute_start):
 
 
 def run_due_cron_jobs():
-    """Enqueue every enabled cron row whose expression matches this minute.
+    """Start every enabled cron row whose expression matches this minute.
 
-    Every branch enqueues: nothing runs inline on the poll thread, so a slow media
-    server can never swallow a scheduling window.
+    Batch rows are enqueued so a slow media server cannot swallow a scheduling
+    window; the alchemy radio runs inline in this process, which is the only one
+    holding the in-memory similarity index it needs.
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -576,15 +584,43 @@ def run_due_cron_jobs():
                             job_id, f"main_{task_type}", TASK_STATUS_FAILURE,
                             details={"error": "Could not enqueue the task (is Redis reachable?)"},
                         )
-                elif task_type in ('sonic_fingerprint', 'alchemy_radio'):
-                    # Enqueued, never run inline: these call the media server once per
-                    # server in scope, and doing that on the 60s poll thread let one
-                    # unreachable provider swallow whole scheduling windows.
-                    dotted = (
-                        'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task'
-                        if task_type == 'sonic_fingerprint'
-                        else 'tasks.radio_manager.run_radio_playlists_task'
+                elif task_type == 'alchemy_radio':
+                    # Radios run INLINE, here in the Flask process, because they are an
+                    # online feature: every radio queries the in-memory similarity index,
+                    # and only this process loads it (app.py skips the load when
+                    # AUDIOMUSE_ROLE=worker). Enqueued on a worker the index is absent, so
+                    # every radio failed with "no tracks available on this server". This
+                    # blocks the poll thread for the length of the run, which is the
+                    # accepted trade for a schedule that fires once a day.
+                    from tasks.radio_manager import run_radio_playlists
+
+                    save_task_status(
+                        job_id, task_type, TASK_STATUS_STARTED, progress=0,
+                        details={"message": _STARTED_BY_CRON},
                     )
+                    try:
+                        summary = run_radio_playlists(server_scope=server_scope)
+                        save_task_status(
+                            job_id, task_type, TASK_STATUS_SUCCESS, progress=100,
+                            details=summary,
+                        )
+                        logger.info(
+                            "Cron: ran radio playlists inline (job_id=%s, summary=%s)",
+                            job_id, summary,
+                        )
+                    except Exception:
+                        logger.exception("Cron: radio playlist run failed")
+                        db.rollback()
+                        save_task_status(
+                            job_id, task_type, TASK_STATUS_FAILURE, progress=100,
+                            details={
+                                "error": "Radio playlist run failed; check the container logs."
+                            },
+                        )
+                elif task_type == 'sonic_fingerprint':
+                    # Enqueued, not run inline: this one walks the media server's play
+                    # history per user, and doing that on the 60s poll thread let one
+                    # unreachable provider swallow whole scheduling windows.
                     save_task_status(
                         job_id,
                         task_type,
@@ -593,7 +629,7 @@ def run_due_cron_jobs():
                     )
                     try:
                         rq_queue_default.enqueue(
-                            dotted,
+                            'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
                             kwargs={'server_scope': server_scope},
                             job_id=job_id,
                             description=f'Cron {task_type}',

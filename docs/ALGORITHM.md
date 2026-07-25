@@ -1484,10 +1484,16 @@ syncs "online first" keeps following the same playlist.
    with their radius so an anchor can persist them.
 
 **Radios** (`tasks/radio_manager.py`) run the same function from a stored anchor
-for every enabled server, then upsert the playlist with
+once per server in scope, then upsert the playlist with
 `create_or_replace_playlist`, falling back to a plain create when the provider
 does not support replacing. A radio that returns nothing is skipped so the
-previous playlist is preserved rather than emptied.
+previous playlist is preserved rather than emptied. A radio is an **online**
+feature: it queries the in-memory similarity index, which only the Flask process
+loads, so both callers run it there directly rather than queueing it to a worker
+that has no index. The scope depends on who starts the run: the `alchemy_radio`
+cron tick covers every configured server (scheduled work always does), while the
+*Create Radio Playlists* button on the Alchemy page targets only the server
+selected in the sidebar, because that page is per server.
 
 ### 8.3. Environment Variable Configuration
 
@@ -2121,8 +2127,8 @@ Scheduled Tasks run the long jobs automatically.
 3. The user enters an expression, for example `0 2 * * 0-5` for weeknights at 2
    am, enables it and saves. An expression that could never fire is rejected
    before it is stored as enabled.
-4. A scheduled job is enqueued exactly like a manual one and appears in the same
-   task panel, so it can be monitored, cancelled and inspected.
+4. A scheduled job starts exactly like a manual one and appears in the same task
+   panel, so it can be monitored and inspected.
 
 Scheduled batch tasks always run against **all** configured music servers, the
 same as when they are started from the page.
@@ -2139,11 +2145,14 @@ same as when they are started from the page.
 3. **Atomic claim.** A row that matches is claimed atomically for its wall-clock
    minute. This is what makes a restart, or a second web process, unable to
    double-fire the same schedule.
-4. **Enqueue, never run inline.** Every task type is **enqueued** as an RQ job:
-   analysis and clustering with the configured defaults, sonic fingerprint and
-   alchemy radio as their own worker tasks, and plugin tasks through the plugin
-   manager. Nothing runs on the poll thread, so a slow media server cannot
-   swallow a scheduling window or block the other schedules.
+4. **Enqueue the batch work.** Analysis, clustering, sonic fingerprint and plugin
+   tasks are **enqueued** as RQ jobs, so a slow media server cannot swallow a
+   scheduling window or block the other schedules. The **alchemy radio** is the
+   exception: it is an online feature that queries the in-memory similarity index,
+   which only the Flask process loads, so the tick runs it inline right there. It
+   still gets a task row (STARTED, then SUCCESS or FAILURE) and so stays visible
+   in the task panel; the cost is that the poll thread waits for the run, which is
+   the accepted trade for a schedule that fires once a day.
 5. **Conflict check.** For analysis and clustering, a row is skipped when a task
    of that type is already active, so a schedule cannot pile runs on top of each
    other.

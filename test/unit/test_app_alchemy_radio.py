@@ -15,6 +15,8 @@ Main Features:
 * Create validation for required fields, temperature, n_results, and duplicates.
 * Update, delete, and unknown-radio 404 handling.
 * Run generates playlists for enabled radios only, upserts, and isolates failures.
+* Run scope: the endpoint targets the selected server, and the similarity index
+  is loaded on demand so a run on an RQ worker still finds tracks.
 """
 
 import pytest
@@ -240,7 +242,24 @@ class TestRunRadioPlaylistsEndpoint:
         response = client.post('/api/radios/run')
         assert response.status_code == 200
         assert response.get_json()['playlists_created'] == 2
-        mock_run.assert_called_once_with()
+        mock_run.assert_called_once_with(server_scope='default')
+
+    @patch('app_server_context.resolve_request_server_id')
+    @patch('tasks.radio_manager.run_radio_playlists')
+    def test_runs_only_on_the_selected_server(self, mock_run, mock_resolve, client):
+        mock_resolve.return_value = 'srv-navidrome'
+        mock_run.return_value = {'playlists_created': 1, 'failed': []}
+        response = client.post('/api/radios/run?server=Navidrome')
+        assert response.status_code == 200
+        mock_run.assert_called_once_with(server_scope='srv-navidrome')
+
+    @patch('app_server_context.resolve_request_server_id')
+    @patch('tasks.radio_manager.run_radio_playlists')
+    def test_unknown_server_returns_400(self, mock_run, mock_resolve, client):
+        mock_resolve.side_effect = ValueError("Unknown server 'ghost'")
+        response = client.post('/api/radios/run?server=ghost')
+        assert response.status_code == 400
+        mock_run.assert_not_called()
 
     @patch('tasks.radio_manager.run_radio_playlists')
     def test_failure_returns_generic_error(self, mock_run, client):
@@ -252,6 +271,11 @@ class TestRunRadioPlaylistsEndpoint:
 
 
 class TestRunRadioPlaylists:
+    @pytest.fixture(autouse=True)
+    def loaded_index(self):
+        with patch('tasks.ivf_manager.ensure_ivf_index_loaded', return_value=True) as mock_ensure:
+            yield mock_ensure
+
     def _radio(self, radio_id, anchor_id, name, temperature=1.0, n_results=100, enabled=True):
         return {
             'id': radio_id,
@@ -338,6 +362,35 @@ class TestRunRadioPlaylists:
         mock_upsert.assert_not_called()
         assert summary['playlists_created'] == 0
         assert summary['failed'] == ['Empty']
+
+    @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_loads_the_similarity_index_before_picking_tracks(
+        self, mock_alchemy, mock_get_radios, loaded_index
+    ):
+        from tasks.radio_manager import run_radio_playlists
+
+        mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
+        mock_alchemy.return_value = {'results': []}
+
+        run_radio_playlists()
+
+        loaded_index.assert_called_once_with()
+
+    @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_unavailable_index_fails_the_run_instead_of_every_radio(
+        self, mock_alchemy, mock_get_radios, loaded_index
+    ):
+        from tasks.radio_manager import run_radio_playlists
+
+        loaded_index.return_value = False
+        mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
+
+        with pytest.raises(RuntimeError, match='similarity index is not available'):
+            run_radio_playlists()
+
+        mock_alchemy.assert_not_called()
 
 
 class TestDeletePlaylistsBySuffix:

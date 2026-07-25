@@ -8,14 +8,20 @@
 
 """Build and refresh the user's "radio" playlists on the media server.
 
-Batch job that regenerates every enabled alchemy radio by running song_alchemy
-against each radio's anchor and pushing the result to the media server.
+Regenerates every enabled alchemy radio by running song_alchemy against each
+radio's anchor and pushing the result to the media server.
 
 Main Features:
+* Runs ONLINE, inside the Flask process: every radio queries the in-memory
+  similarity index, which only Flask loads, so both callers (the Alchemy page
+  button and the alchemy_radio cron tick) call this directly instead of queueing
+  it to a worker that has no index.
 * Generates tracks per radio from its stored anchor, result count, and
   temperature, skipping radios that yield no results.
-* Runs against every enabled media server in the requested scope (all or
-  default), isolating failures so one server cannot abort the others.
+* Runs against every enabled media server in the requested scope, isolating
+  failures so one server cannot abort the others: the cron row passes "all"
+  (scheduled work always covers every server) while the Alchemy page passes the
+  server picked in the sidebar, since that page is per server.
 * Upserts each playlist, falling back to create_playlist when the provider does
   not support create_or_replace_playlist, and returns a created/failed summary.
 """
@@ -30,7 +36,14 @@ logger = logging.getLogger(__name__)
 
 def run_radio_playlists(server_scope="all"):
     from database import get_alchemy_radios
+    from .ivf_manager import ensure_ivf_index_loaded
     from .mediaserver import registry
+
+    if not ensure_ivf_index_loaded():
+        raise RuntimeError(
+            "The audio similarity index is not available, so no radio can pick tracks. "
+            "Run an analysis to build it."
+        )
 
     radios = [r for r in get_alchemy_radios() if r.get('enabled')]
     servers = registry.servers_for_scope(server_scope)
@@ -91,42 +104,3 @@ def run_radio_playlists(server_scope="all"):
     }
     logger.info(f"Radio playlist run finished: {summary}")
     return summary
-
-
-def run_radio_playlists_task(server_scope="all"):
-    """RQ entrypoint for the alchemy_radio cron row.
-
-    Cron used to call run_radio_playlists inline on the Flask poll thread, so a
-    slow provider blocked every other scheduled job for the length of its timeout
-    and the run had no task_status row at all: invisible in the task list and
-    impossible to cancel. It runs on a worker now, like every other cron task.
-    """
-    from flask_app import app
-    from database import save_task_status
-    from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
-    from rq import get_current_job
-
-    job = get_current_job()
-    task_id = job.id if job else None
-    with app.app_context():
-        if task_id:
-            save_task_status(
-                task_id, 'alchemy_radio', TASK_STATUS_STARTED, progress=0,
-                details={"message": "Building radio playlists..."},
-            )
-        try:
-            summary = run_radio_playlists(server_scope=server_scope)
-        except Exception:
-            logger.exception("Radio playlist cron run failed")
-            if task_id:
-                save_task_status(
-                    task_id, 'alchemy_radio', TASK_STATUS_FAILURE, progress=100,
-                    details={"error": "Radio playlist run failed; check the container logs."},
-                )
-            raise
-        if task_id:
-            save_task_status(
-                task_id, 'alchemy_radio', TASK_STATUS_SUCCESS, progress=100,
-                details=summary,
-            )
-        return summary

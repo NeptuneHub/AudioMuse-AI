@@ -16,6 +16,8 @@ Main Features:
 * String normalization, same-song matching, and mood-feature parsing
 * Vector lookup prefers primed f32 over the index; load and neighbor queries raise
   when the index or id maps are unloaded
+* On-demand loading for processes that never preload (RQ workers), including the
+  retry cooldown that keeps a missing index from being re-read per call
 * create_playlist_from_ids error paths and the LRU/TTL _ResultCache behavior
 """
 
@@ -341,6 +343,69 @@ class TestLoadIVFIndex:
             from tasks.ivf_manager import load_ivf_index_for_querying
 
             load_ivf_index_for_querying(force_reload=True)
+
+
+class TestEnsureIvfIndexLoaded:
+    def test_multi_query_loads_the_index_when_the_process_never_preloaded_it(self):
+        import tasks.ivf_manager as im
+
+        mock_index = Mock()
+        mock_index.query.return_value = ([0], [0.1])
+
+        def _fake_load(force_reload=False):
+            im.ivf_index = mock_index
+            im.id_map = {0: 'item-1'}
+            im.reverse_id_map = {'item-1': 0}
+
+        with (
+            patch.object(im, 'ivf_index', None),
+            patch.object(im, 'id_map', None),
+            patch.object(im, 'reverse_id_map', None),
+            patch.object(im, '_lazy_load_retry_after', 0.0),
+            patch.object(im, 'load_ivf_index_for_querying', side_effect=_fake_load) as mock_load,
+        ):
+            found = im.multi_query_ids([np.zeros(3, dtype=np.float32)], 5)
+
+            mock_load.assert_called_once()
+            assert found == ['item-1']
+
+    def test_already_loaded_index_is_not_reloaded(self):
+        import tasks.ivf_manager as im
+
+        with (
+            patch.object(im, 'ivf_index', Mock()),
+            patch.object(im, '_lazy_load_retry_after', 0.0),
+            patch.object(im, 'load_ivf_index_for_querying') as mock_load,
+        ):
+            assert im.ensure_ivf_index_loaded() is True
+            mock_load.assert_not_called()
+
+    def test_missing_index_is_not_reloaded_until_the_cooldown_elapses(self):
+        import tasks.ivf_manager as im
+
+        with (
+            patch.object(im, 'ivf_index', None),
+            patch.object(im, 'id_map', None),
+            patch.object(im, '_lazy_load_retry_after', 0.0),
+            patch.object(im, 'load_ivf_index_for_querying') as mock_load,
+        ):
+            assert im.ensure_ivf_index_loaded() is False
+            assert im.ensure_ivf_index_loaded() is False
+
+            mock_load.assert_called_once()
+
+    def test_load_failure_leaves_the_caller_with_an_empty_result(self):
+        import tasks.ivf_manager as im
+
+        with (
+            patch.object(im, 'ivf_index', None),
+            patch.object(im, 'id_map', None),
+            patch.object(im, '_lazy_load_retry_after', 0.0),
+            patch.object(
+                im, 'load_ivf_index_for_querying', side_effect=RuntimeError('no database')
+            ),
+        ):
+            assert im.multi_query_ids([np.zeros(3, dtype=np.float32)], 5) == []
 
 
 class TestFindNearestNeighborsById:
