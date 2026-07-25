@@ -21,17 +21,28 @@ Main Features:
   which only this process holds.
 * Each row is claimed atomically for its wall-clock minute, so a restart or a
   second web process cannot double-fire it.
+* An inline run can never wedge the app: its task type is self-managed (no Start
+  ever 409s behind it), it heartbeats progress so the RQ janitor does not mistake
+  it for an orphan, and `reap_interrupted_inline_runs` fails at cron-thread startup
+  whatever a restart left non-terminal.
 """
 
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor, Json
-from database import get_db, save_task_status, get_active_main_task
+from database import (
+    get_db,
+    save_task_status,
+    get_active_main_task,
+    INLINE_FLASK_TASK_TYPES,
+)
 from taskqueue import rq_queue_high, rq_queue_default
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_FAILURE,
     TASK_STATUS_STARTED,
+    TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
+    TASK_STATUS_REVOKED,
 )
 import uuid
 import time
@@ -440,6 +451,77 @@ def _claim_cron_minute(db, row_id, minute_start):
         cur.close()
 
 
+def reap_interrupted_inline_runs():
+    """Fail every inline cron row left non-terminal by a web-process restart.
+
+    An inline run lives in the Flask process and nothing else writes its final
+    status, so a restart mid-run used to leave a STARTED row that no code path
+    ever resolved. Called once as the cron thread starts, where a live inline run
+    cannot exist: this process is the only one that runs them, and it is starting.
+    Skipping the interrupted occurrence is the accepted outcome - the row must not
+    outlive the process that owned it.
+    """
+    db = get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT task_id, task_type FROM task_status "
+            "WHERE task_type = ANY(%s) AND parent_task_id IS NULL "
+            "AND status NOT IN (%s, %s, %s)",
+            (
+                list(INLINE_FLASK_TASK_TYPES),
+                TASK_STATUS_SUCCESS,
+                TASK_STATUS_FAILURE,
+                TASK_STATUS_REVOKED,
+            ),
+        )
+        rows = cur.fetchall()
+    except Exception:
+        logger.exception("Cron: could not look up interrupted inline runs")
+        db.rollback()
+        return 0
+    finally:
+        cur.close()
+
+    message = (
+        "Interrupted by a restart of the web process, which is where this task "
+        "runs. It was not completed; it runs again at its next scheduled time."
+    )
+    reaped = 0
+    for row in rows:
+        try:
+            save_task_status(
+                row['task_id'], row['task_type'], TASK_STATUS_FAILURE, progress=100,
+                details={'message': message, 'status_message': message, 'error': message},
+            )
+            reaped += 1
+        except Exception:
+            logger.exception("Cron: could not fail interrupted run %s", row['task_id'])
+    if reaped:
+        logger.warning(
+            "Cron: failed %d inline run(s) interrupted by a restart.", reaped
+        )
+    return reaped
+
+
+def _inline_progress_reporter(job_id, task_type):
+    def report(message, progress):
+        pct = max(1, min(99, int(progress)))
+        try:
+            save_task_status(
+                job_id, task_type, TASK_STATUS_PROGRESS, progress=pct,
+                details={
+                    'message': message,
+                    'status_message': message,
+                    'log': [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"],
+                },
+            )
+        except Exception:
+            logger.debug("Cron: inline progress update failed (ignored)", exc_info=True)
+
+    return report
+
+
 def run_due_cron_jobs():
     """Start every enabled cron row whose expression matches this minute.
 
@@ -592,6 +674,11 @@ def run_due_cron_jobs():
                     # every radio failed with "no tracks available on this server". This
                     # blocks the poll thread for the length of the run, which is the
                     # accepted trade for a schedule that fires once a day.
+                    #
+                    # Nothing else can write this row's final status, so it must never
+                    # gate other work: alchemy_radio is in SELF_MANAGED_TASK_TYPES (so no
+                    # Start ever 409s behind it), the run heartbeats its progress, and
+                    # reap_interrupted_inline_runs fails whatever a restart left behind.
                     from tasks.radio_manager import run_radio_playlists
 
                     save_task_status(
@@ -599,7 +686,10 @@ def run_due_cron_jobs():
                         details={"message": _STARTED_BY_CRON},
                     )
                     try:
-                        summary = run_radio_playlists(server_scope=server_scope)
+                        summary = run_radio_playlists(
+                            server_scope=server_scope,
+                            report=_inline_progress_reporter(job_id, task_type),
+                        )
                         save_task_status(
                             job_id, task_type, TASK_STATUS_SUCCESS, progress=100,
                             details=summary,

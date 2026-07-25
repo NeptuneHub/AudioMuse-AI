@@ -24,6 +24,9 @@ Main Features:
   server picked in the sidebar, since that page is per server.
 * Upserts each playlist, falling back to create_playlist when the provider does
   not support create_or_replace_playlist, and returns a created/failed summary.
+* Reports progress through an optional ``report`` callback: the cron tick passes
+  one that heartbeats its task_status row, so a run that outlives the RQ janitor's
+  orphan grace period is not mistaken for a row with nothing behind it.
 """
 
 import logging
@@ -34,11 +37,20 @@ from .mediaserver import create_or_replace_playlist, create_playlist
 logger = logging.getLogger(__name__)
 
 
-def run_radio_playlists(server_scope="all"):
+def run_radio_playlists(server_scope="all", report=None):
     from database import get_alchemy_radios
     from .ivf_manager import ensure_ivf_index_loaded
     from .mediaserver import registry
 
+    def beat(message, progress):
+        if report is None:
+            return
+        try:
+            report(message, progress)
+        except Exception:
+            logger.debug("Radio progress report failed (ignored)", exc_info=True)
+
+    beat("Loading the audio similarity index...", 1)
     if not ensure_ivf_index_loaded():
         raise RuntimeError(
             "The audio similarity index is not available, so no radio can pick tracks. "
@@ -54,12 +66,19 @@ def run_radio_playlists(server_scope="all"):
 
     failed = []
     created = 0
+    total = max(1, len(servers) * len(radios))
+    done = 0
     for server in servers:
         server_name = server['name'] if server else 'default server'
         try:
             with registry.bind(server):
                 for radio in radios:
                     playlist_name = radio['name']
+                    done += 1
+                    beat(
+                        f"Radio '{playlist_name}' on {server_name} ({done}/{total})",
+                        done * 100.0 / total,
+                    )
                     try:
                         outcome = song_alchemy(
                             add_items=[{'type': 'anchor', 'id': radio['anchor_id']}],

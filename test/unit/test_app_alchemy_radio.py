@@ -392,6 +392,53 @@ class TestRunRadioPlaylists:
 
         mock_alchemy.assert_not_called()
 
+    @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_reports_progress_before_the_index_load_and_per_radio(
+        self, mock_alchemy, _mock_upsert, mock_get_radios
+    ):
+        """The cron run has no RQ job behind it, so its only proof of life is this
+        callback: the janitor fails an in-process row that stops reporting. The first
+        beat lands BEFORE the index load, the slowest step of the whole run."""
+        from tasks.radio_manager import run_radio_playlists
+
+        mock_get_radios.return_value = [
+            self._radio(1, 10, 'Chill'),
+            self._radio(2, 11, 'Rock'),
+        ]
+        mock_alchemy.return_value = {'results': [{'item_id': 'a'}]}
+
+        beats = []
+        run_radio_playlists(report=lambda message, progress: beats.append((message, progress)))
+
+        assert len(beats) == 3
+        assert 'index' in beats[0][0].lower()
+        assert [b[1] for b in beats] == [1, 50.0, 100.0]
+        assert "Chill" in beats[1][0] and "Rock" in beats[2][0]
+
+    @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_a_raising_report_callback_cannot_fail_the_run(
+        self, mock_alchemy, mock_upsert, mock_get_radios
+    ):
+        """Progress reporting writes to the database; losing that connection must not
+        cost the user their playlists."""
+        from tasks.radio_manager import run_radio_playlists
+
+        mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
+        mock_alchemy.return_value = {'results': [{'item_id': 'a'}]}
+
+        def _broken(message, progress):
+            raise RuntimeError('database is gone')
+
+        summary = run_radio_playlists(report=_broken)
+
+        mock_upsert.assert_called_once_with('Chill', ['a'])
+        assert summary['playlists_created'] == 1
+        assert summary['failed'] == []
+
 
 class TestDeletePlaylistsBySuffix:
     @patch('tasks.mediaserver.config')

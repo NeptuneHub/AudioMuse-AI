@@ -153,7 +153,9 @@ def test_alchemy_radio_row_runs_inline_in_flask_never_on_a_worker(mock_get_db, _
 
     queue.enqueue.assert_not_called()
     queue_high.enqueue.assert_not_called()
-    run.assert_called_once_with(server_scope='all')
+    run.assert_called_once()
+    assert run.call_args.kwargs['server_scope'] == 'all'
+    assert callable(run.call_args.kwargs['report'])
     statuses = [c[0][2] for c in save.call_args_list]
     assert statuses == [TASK_STATUS_STARTED, TASK_STATUS_SUCCESS]
     assert save.call_args_list[-1][1]['details'] == summary
@@ -183,6 +185,97 @@ def test_failed_inline_radio_run_is_recorded_as_failure_without_a_traceback(
     assert last_call[0][2] == TASK_STATUS_FAILURE
     assert 'internal detail' not in last_call[1]['details']['error']
     db.rollback.assert_called_once()
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_the_inline_radio_row_heartbeats_progress_into_its_own_task_row(mock_get_db, _matches):
+    """The row has no RQ job behind it, so a heartbeat is the only thing separating a
+    long run from a dead one. Without it the janitor fails a perfectly healthy run
+    after its 120s orphan grace, and the row then flips back to SUCCESS."""
+    from app_cron import run_due_cron_jobs
+    from config import TASK_STATUS_PROGRESS
+
+    db, _cur = _setup_db_mock(task_type='alchemy_radio')
+    mock_get_db.return_value = db
+
+    def _fake_run(server_scope='all', report=None):
+        report('Radio 1 of 2', 50.0)
+        return {'playlists_created': 1, 'failed': []}
+
+    with (
+        patch('app_cron.save_task_status') as save,
+        patch('tasks.radio_manager.run_radio_playlists', side_effect=_fake_run),
+    ):
+        run_due_cron_jobs()
+
+    progress_calls = [c for c in save.call_args_list if c[0][2] == TASK_STATUS_PROGRESS]
+    assert len(progress_calls) == 1
+    assert progress_calls[0][1]['progress'] == 50
+    assert progress_calls[0][1]['details']['status_message'] == 'Radio 1 of 2'
+
+
+@patch('app_cron.get_db')
+def test_an_inline_run_interrupted_by_a_restart_is_failed_when_the_cron_thread_starts(
+    mock_get_db,
+):
+    """Only this process writes an inline run's final status, so a restart mid-run left
+    a STARTED row nothing ever resolved. It is failed at startup, where no inline run
+    can be live: skipping that occurrence is fine, outliving the process is not."""
+    from app_cron import reap_interrupted_inline_runs
+    from config import TASK_STATUS_FAILURE, TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED
+
+    cur = MagicMock()
+    cur.fetchall.return_value = [{'task_id': 'radio-1', 'task_type': 'alchemy_radio'}]
+    db = MagicMock()
+    db.cursor.return_value = cur
+    mock_get_db.return_value = db
+
+    with patch('app_cron.save_task_status') as save:
+        assert reap_interrupted_inline_runs() == 1
+
+    select_params = cur.execute.call_args[0][1]
+    assert select_params[0] == ['alchemy_radio']
+    assert set(select_params[1:]) == {
+        TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
+    }
+    assert save.call_args[0][:3] == ('radio-1', 'alchemy_radio', TASK_STATUS_FAILURE)
+    assert 'restart' in save.call_args[1]['details']['error']
+
+
+@patch('app_cron.get_db')
+def test_startup_reap_writes_nothing_when_no_inline_run_was_interrupted(mock_get_db):
+    from app_cron import reap_interrupted_inline_runs
+
+    cur = MagicMock()
+    cur.fetchall.return_value = []
+    db = MagicMock()
+    db.cursor.return_value = cur
+    mock_get_db.return_value = db
+
+    with patch('app_cron.save_task_status') as save:
+        assert reap_interrupted_inline_runs() == 0
+
+    save.assert_not_called()
+
+
+def test_a_radio_row_can_never_gate_a_start_because_only_flask_can_finish_it():
+    """The radio shares nothing with a batch run - it reads the index and upserts a
+    playlist - so it never needed the main-task mutex, and holding it meant one
+    interrupted run 409'd every Start Analysis/Clustering until a human intervened."""
+    import database
+
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+    db = MagicMock()
+    db.cursor.return_value = cur
+
+    with patch('database.get_db', return_value=db):
+        assert database.get_active_main_task() is None
+
+    excluded = cur.execute.call_args[0][1][-1]
+    assert 'alchemy_radio' in excluded
+    assert 'alchemy_radio' in database.SELF_MANAGED_TASK_TYPES
 
 
 @patch('app_cron.cron_matches_now', return_value=True)

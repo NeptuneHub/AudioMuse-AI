@@ -1710,7 +1710,8 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         cur = MagicMock()
-        cur.fetchall.return_value = [('ghost-analysis',)]
+        # First SELECT: RQ-backed rows. Second: in-process rows, judged by heartbeat.
+        cur.fetchall.side_effect = [[('ghost-analysis',)], []]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -1732,7 +1733,47 @@ class TestSweepAlignment:
 
         # Sweeps are excluded: recover_abandoned_sweeps re-enqueues those instead.
         select = executed[0]
-        assert sync.SWEEP_TASK_TYPE in select[1]
+        assert sync.SWEEP_TASK_TYPE in select[1][0]
+
+    def test_reap_orphaned_tasks_never_probes_rq_for_a_task_that_runs_in_flask(
+        self, monkeypatch
+    ):
+        """The alchemy radio runs in the web process and is never enqueued, so RQ has
+        no job for it: probing declared a healthy run dead after the 120s grace and
+        the row then flipped back to SUCCESS. It is excluded from the RQ query and
+        only reaped once its heartbeat has been stale for the longer inline window."""
+        from tasks import multiserver_sync as sync
+        from database import INLINE_FLASK_TASK_TYPES
+
+        cur = MagicMock()
+        cur.fetchall.side_effect = [[], [('stalled-radio',)]]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+
+        import rq.job
+
+        probed = []
+        monkeypatch.setattr(
+            rq.job.Job, 'fetch',
+            staticmethod(lambda task_id, connection=None: probed.append(task_id)),
+        )
+
+        assert sync.reap_orphaned_tasks() == 1
+        assert probed == []
+
+        rq_select, inline_select = executed[0], executed[1]
+        assert 'alchemy_radio' in rq_select[1][0]
+        assert list(INLINE_FLASK_TASK_TYPES) == inline_select[1][0]
+        assert inline_select[1][-1] == sync._INLINE_STALE_SECONDS
+        assert sync._INLINE_STALE_SECONDS > sync._ORPHAN_GRACE_SECONDS
+
+        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
+        assert len(updates) == 1
+        assert ['stalled-radio'] in updates[0][1]
+        assert 'stopped reporting progress' in updates[0][1][1]
 
     def test_recover_abandoned_sweeps_backs_off_after_enqueue(self, monkeypatch):
         from tasks import multiserver_sync as sync
