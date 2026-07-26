@@ -1735,6 +1735,88 @@ class TestSweepAlignment:
         select = executed[0]
         assert sync.SWEEP_TASK_TYPE in select[1][0]
 
+    def test_reap_orphaned_tasks_reconciles_terminal_jobs_but_keeps_live_jobs(
+        self, monkeypatch
+    ):
+        """A failed RQ job still exists in Redis, so Job.fetch alone is not a
+        liveness check. Terminal jobs must retire their non-terminal DB rows."""
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchall.side_effect = [
+            [
+                ('failed-analysis',),
+                ('stopped-analysis',),
+                ('finished-analysis',),
+                ('live-analysis',),
+            ],
+            [],
+        ]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+
+        jobs = {}
+        for task_id, status in (
+            ('failed-analysis', 'failed'),
+            ('stopped-analysis', 'stopped'),
+            ('finished-analysis', 'finished'),
+            ('live-analysis', 'started'),
+        ):
+            job = MagicMock()
+            job.get_status.return_value = status
+            jobs[task_id] = job
+
+        import rq.job
+
+        monkeypatch.setattr(
+            rq.job.Job, 'fetch',
+            staticmethod(lambda task_id, connection=None: jobs[task_id]),
+        )
+
+        assert sync.reap_orphaned_tasks() == 3
+        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
+        assert len(updates) == 3
+        status_by_task = {
+            params[3][0]: params[0]
+            for _, params in updates
+        }
+        assert status_by_task == {
+            'failed-analysis': 'FAILURE',
+            'stopped-analysis': 'REVOKED',
+            'finished-analysis': 'FAILURE',
+        }
+        assert 'live-analysis' not in status_by_task
+
+    def test_reap_orphaned_tasks_revokes_an_existing_canceled_job(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchall.side_effect = [[('canceled-analysis',)], []]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+
+        canceled_job = MagicMock()
+        canceled_job.get_status.return_value = 'canceled'
+
+        import rq.job
+
+        monkeypatch.setattr(
+            rq.job.Job, 'fetch',
+            staticmethod(lambda task_id, connection=None: canceled_job),
+        )
+
+        assert sync.reap_orphaned_tasks() == 1
+        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
+        assert len(updates) == 1
+        assert 'REVOKED' in updates[0][1]
+        assert ['canceled-analysis'] in updates[0][1]
+
     def test_reap_orphaned_tasks_never_probes_rq_for_a_task_that_runs_in_flask(
         self, monkeypatch
     ):

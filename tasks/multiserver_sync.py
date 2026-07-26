@@ -79,6 +79,7 @@ logger = logging.getLogger(__name__)
 
 SWEEP_TASK_TYPE = 'server_sweep'
 _RQ_ALIVE_STATUSES = ('queued', 'started', 'deferred', 'scheduled')
+_RQ_TERMINAL_STATUSES = ('finished', 'failed', 'stopped', 'canceled')
 
 
 class SweepCancelled(Exception):
@@ -99,8 +100,14 @@ def _sweep_job_state(task_id):
         status = job.get_status(refresh=True)
     except Exception:
         return 'missing'
-    value = getattr(status, 'value', None) or str(status)
+    value = _rq_status_value(status)
     return 'alive' if value in _RQ_ALIVE_STATUSES else 'dead'
+
+
+def _rq_status_value(status):
+    """Return a stable lowercase value for string and enum RQ statuses."""
+    value = getattr(status, 'value', None) or str(status)
+    return str(value).lower().rsplit('.', 1)[-1]
 
 
 _recovery_state = {'last': None}
@@ -207,7 +214,7 @@ _ORPHAN_GRACE_SECONDS = 120
 _INLINE_STALE_SECONDS = 1800
 
 
-def _fail_task_rows(db, task_ids, message):
+def _finalize_task_rows(db, task_ids, status, message):
     import config
 
     details = json.dumps({'message': message, 'status_message': message,
@@ -217,15 +224,24 @@ def _fail_task_rows(db, task_ids, message):
         cur.execute(
             "UPDATE task_status SET status = %s, progress = 100, details = %s, "
             "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
-            "WHERE task_id = ANY(%s)",
-            (config.TASK_STATUS_FAILURE, details, time.time(), task_ids),
+            "WHERE task_id = ANY(%s) "
+            "AND status NOT IN (%s, %s, %s)",
+            (status, details, time.time(), task_ids,
+             config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
+             config.TASK_STATUS_REVOKED),
         )
     finally:
         cur.close()
 
 
+def _fail_task_rows(db, task_ids, message):
+    import config
+
+    _finalize_task_rows(db, task_ids, config.TASK_STATUS_FAILURE, message)
+
+
 def reap_orphaned_tasks():
-    """Fail non-terminal top-level tasks whose RQ job no longer exists.
+    """Finalize non-terminal top-level tasks whose RQ job is missing or terminal.
 
     A main row is written and committed BEFORE its job is enqueued, so a Redis
     outage (or a worker cold-shutdown, or a job TTL expiring) can leave a PENDING
@@ -233,6 +249,11 @@ def reap_orphaned_tasks():
     task, so every later Start Analysis / Clustering / Cleaning answers 409, forever
     - and nothing retired those rows: the sweep recovery only handles sweeps, and
     the batch-start cleanup cannot run because the 409 fires first.
+
+    RQ retains failed, stopped, canceled, and finished jobs in terminal registries.
+    Fetching such a job therefore proves only that its record still exists, not that
+    it is alive. A terminal RQ job whose database row is still non-terminal is
+    reconciled to FAILURE, or REVOKED when it was intentionally stopped/canceled.
 
     Sweeps are excluded: recover_abandoned_sweeps re-enqueues those rather than
     failing them. Inline task types are excluded from the RQ probe too, because
@@ -244,8 +265,8 @@ def reap_orphaned_tasks():
 
     Rows younger than the grace period are left alone, so a job that was enqueued
     microseconds after its row is never reaped out from under itself. Returns the
-    number of rows failed. Uses its own raw connection, so it needs no Flask app
-    context.
+    number of rows finalized. Uses its own raw connection, so it needs no Flask
+    app context.
     """
     import config
     from rq.job import Job
@@ -254,7 +275,8 @@ def reap_orphaned_tasks():
 
     db = connect_raw()
     db.autocommit = True
-    reaped = []
+    missing = []
+    terminal = {}
     stalled_inline = []
     try:
         cur = db.cursor()
@@ -284,21 +306,61 @@ def reap_orphaned_tasks():
 
         for task_id in candidates:
             try:
-                Job.fetch(task_id, connection=redis_conn)
+                job = Job.fetch(task_id, connection=redis_conn)
+                rq_status = _rq_status_value(job.get_status(refresh=True))
             except NoSuchJobError:
-                reaped.append(task_id)
+                missing.append(task_id)
             except Exception:
                 logger.debug("Could not probe job %s; leaving it alone.", task_id)
+            else:
+                if rq_status in _RQ_ALIVE_STATUSES:
+                    continue
+                if rq_status in _RQ_TERMINAL_STATUSES:
+                    terminal.setdefault(rq_status, []).append(task_id)
+                else:
+                    logger.warning(
+                        "Job %s has unknown RQ status %r; leaving its task row alone.",
+                        task_id, rq_status,
+                    )
 
-        if reaped:
+        reconciled = 0
+        if missing:
             _fail_task_rows(
-                db, reaped,
+                db, missing,
                 "The task disappeared from the queue (the worker or Redis restarted). "
                 "It was not run; start it again.",
             )
+            reconciled += len(missing)
             logger.warning(
                 "Janitor failed %d orphaned task row(s) with no RQ job behind them: %s",
-                len(reaped), ', '.join(reaped),
+                len(missing), ', '.join(missing),
+            )
+        for rq_status, task_ids in terminal.items():
+            if rq_status in ('stopped', 'canceled'):
+                db_status = config.TASK_STATUS_REVOKED
+                message = (
+                    f"The queue job was {rq_status} before the task recorded a "
+                    "final status."
+                )
+            elif rq_status == 'finished':
+                db_status = config.TASK_STATUS_FAILURE
+                message = (
+                    "The queue job finished without recording a final task status. "
+                    "Its result cannot be confirmed; start it again."
+                )
+            else:
+                db_status = config.TASK_STATUS_FAILURE
+                message = (
+                    f"The queue job ended with status '{rq_status}' before the task "
+                    "recorded a final status. The worker may have restarted; start "
+                    "the task again."
+                )
+            _finalize_task_rows(db, task_ids, db_status, message)
+            reconciled += len(task_ids)
+            logger.warning(
+                "Janitor reconciled %d stale task row(s) from terminal RQ status "
+                "%s to %s: %s",
+                len(task_ids), rq_status, db_status, ', '.join(task_ids),
             )
         if stalled_inline:
             _fail_task_rows(
@@ -310,7 +372,7 @@ def reap_orphaned_tasks():
                 "Janitor failed %d stalled in-process task row(s): %s",
                 len(stalled_inline), ', '.join(stalled_inline),
             )
-        return len(reaped) + len(stalled_inline)
+        return reconciled + len(stalled_inline)
     finally:
         try:
             db.close()
