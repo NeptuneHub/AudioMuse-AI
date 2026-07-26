@@ -16,7 +16,8 @@ Main Features:
   globals in a worker process (a worker often boots before Postgres is
   reachable and would otherwise run on env-only values); a boot whose
   import-time pass already projected the default music server row skips the
-  reload in one flag read.
+  reload in two flag reads, and the no-default-server warning fires once per
+  process, not once per job.
 * Reads and writes typed config overrides (casting stored strings back to the
   default's type) and can bootstrap the table from valid environment config
   when it is empty.
@@ -53,8 +54,11 @@ BASIC_SERVER_FIELDS = {
 }
 AUTH_FIELDS = {'AUTH_ENABLED', 'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN'}
 
+_WARNED_NO_DEFAULT_SERVER = False
+
 
 def hydrate_worker_config():
+    global _WARNED_NO_DEFAULT_SERVER
     import config
 
     if config.DB_OVERRIDES_LOADED and config.DB_DEFAULT_SERVER_PROJECTED:
@@ -66,11 +70,13 @@ def hydrate_worker_config():
         logger.exception("Could not reload the config from the database at worker start")
         return False
     if not config.DB_DEFAULT_SERVER_PROJECTED:
-        logger.warning(
-            "This worker has no default music server after reloading from the "
-            "database. Any job that does not carry a server id will fall back to "
-            "the env-only settings until the setup wizard is completed."
-        )
+        if not _WARNED_NO_DEFAULT_SERVER:
+            _WARNED_NO_DEFAULT_SERVER = True
+            logger.warning(
+                "This worker has no default music server after reloading from the "
+                "database. Any job that does not carry a server id will fall back to "
+                "the env-only settings until the setup wizard is completed."
+            )
         return False
     return True
 

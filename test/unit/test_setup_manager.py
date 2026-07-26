@@ -826,6 +826,40 @@ class TestImportOrderIndependence:
 
 
 class TestWorkerConfigHydration:
+    def test_a_raising_projection_pass_leaves_both_flags_false(self, monkeypatch):
+        import config
+
+        broken = types.ModuleType('tasks.setup_manager')
+
+        def unreachable(*args, **kwargs):
+            raise RuntimeError('database is not up yet')
+
+        broken.SetupManager = unreachable
+        monkeypatch.setitem(sys.modules, 'tasks.setup_manager', broken)
+        monkeypatch.setattr(config, 'DB_OVERRIDES_LOADED', config.DB_OVERRIDES_LOADED)
+        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', config.DB_DEFAULT_SERVER_PROJECTED)
+        config._apply_db_overrides()
+
+        assert config.DB_OVERRIDES_LOADED is False
+        assert config.DB_DEFAULT_SERVER_PROJECTED is False
+
+    def test_the_no_default_server_warning_fires_once_per_process_not_per_job(self, monkeypatch, caplog):
+        import logging
+
+        import config
+        import tasks.setup_manager as sm
+
+        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', False)
+        monkeypatch.setattr(config, 'refresh_config', lambda: None)
+        monkeypatch.setattr(sm, '_WARNED_NO_DEFAULT_SERVER', False)
+
+        with caplog.at_level(logging.WARNING, logger='tasks.setup_manager'):
+            assert sm.hydrate_worker_config() is False
+            assert sm.hydrate_worker_config() is False
+
+        warnings = [r for r in caplog.records if 'no default music server' in r.message]
+        assert len(warnings) == 1
+
     def test_refresh_config_is_always_a_real_reload_never_a_stub(self, monkeypatch):
         import importlib
 
