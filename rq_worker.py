@@ -14,8 +14,8 @@ of ``rq_worker_high_priority`` for the ``high`` queue.
 
 Main Features:
 * Caps math-library threads (cpu_count // 2) and pins passive OpenMP waiting.
-* Re-projects the database settings onto the config globals before the first job,
-  so a process that imported config before Postgres was up is not left blind.
+* Heals the config projection before the first job when the process imported config
+  before Postgres was up; a boot that already projected the default server skips it.
 * Takes its worker class from ``rq_heartbeat_worker`` (a heartbeating SimpleWorker on
   Windows, the forking Worker elsewhere) and restarts after ``RQ_MAX_JOBS`` to limit leaks.
 """

@@ -967,7 +967,16 @@ AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 
 # True once the database overrides and the default music server were projected
 # onto these globals. False means this process is running on env values only.
+# NOTE: every SetupManager read swallows connection failures (table check ->
+# False, overrides -> {}, default row -> None), so this flag is True even when
+# Postgres was unreachable and nothing actually arrived.
 DB_OVERRIDES_LOADED = False
+
+# True only when the music_servers default row was found and projected, which
+# proves the database was actually reached. This is the only reliable "the
+# projection is real" signal; MEDIASERVER_TYPE cannot serve because its env
+# default ('jellyfin') makes it non-empty on a blind env-only boot too.
+DB_DEFAULT_SERVER_PROJECTED = False
 
 
 def refresh_config():
@@ -978,8 +987,9 @@ def refresh_config():
 
 
 def _apply_db_overrides():
-    global HEADERS, DB_OVERRIDES_LOADED
+    global HEADERS, DB_OVERRIDES_LOADED, DB_DEFAULT_SERVER_PROJECTED
     DB_OVERRIDES_LOADED = False
+    DB_DEFAULT_SERVER_PROJECTED = False
     try:
         from tasks.setup_manager import SetupManager
         _setup_manager = SetupManager()
@@ -1015,6 +1025,7 @@ def _apply_db_overrides():
                 _cred_key = MEDIASERVER_CRED_KEY_BY_FIELD.get(_field)
                 if _cred_key:
                     globals()[_field] = _ms_creds.get(_cred_key, '') or ''
+            DB_DEFAULT_SERVER_PROJECTED = True
 
         HEADERS = _compute_headers()
         DB_OVERRIDES_LOADED = True

@@ -838,8 +838,10 @@ class TestWorkerConfigHydration:
         broken.SetupManager = unreachable
         monkeypatch.setitem(sys.modules, 'tasks.setup_manager', broken)
         monkeypatch.setattr(config, 'DB_OVERRIDES_LOADED', config.DB_OVERRIDES_LOADED)
+        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', config.DB_DEFAULT_SERVER_PROJECTED)
         config._apply_db_overrides()
         assert config.DB_OVERRIDES_LOADED is False
+        assert config.DB_DEFAULT_SERVER_PROJECTED is False
 
     def test_a_boot_without_a_database_still_leaves_a_reloading_refresh_config(self, monkeypatch):
         import importlib
@@ -853,9 +855,91 @@ class TestWorkerConfigHydration:
 
         assert reloaded == [config]
 
+    def test_projecting_the_default_row_marks_the_database_as_reached(self, monkeypatch):
+        import config
+
+        class Reachable:
+            def config_table_exists(self):
+                return False
+
+            def get_default_music_server(self):
+                return {
+                    'server_type': 'jellyfin',
+                    'creds': {'url': 'http://jf:8096', 'user_id': 'uid', 'token': 'tok'},
+                    'music_libraries': '',
+                }
+
+        fake = types.ModuleType('tasks.setup_manager')
+        fake.SetupManager = Reachable
+        monkeypatch.setitem(sys.modules, 'tasks.setup_manager', fake)
+        monkeypatch.setenv('AUDIOMUSE_ROLE', 'worker')
+        for name in ('MEDIASERVER_TYPE', 'MUSIC_LIBRARIES', 'JELLYFIN_URL',
+                     'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'HEADERS',
+                     'DB_OVERRIDES_LOADED', 'DB_DEFAULT_SERVER_PROJECTED'):
+            monkeypatch.setattr(config, name, getattr(config, name), raising=False)
+        config._apply_db_overrides()
+
+        assert config.DB_DEFAULT_SERVER_PROJECTED is True
+        assert config.DB_OVERRIDES_LOADED is True
+        assert config.JELLYFIN_URL == 'http://jf:8096'
+
+    def test_a_swallowed_database_failure_does_not_mark_the_database_as_reached(self, monkeypatch):
+        import config
+
+        class Unreachable:
+            def config_table_exists(self):
+                return False
+
+            def get_default_music_server(self):
+                return None
+
+        fake = types.ModuleType('tasks.setup_manager')
+        fake.SetupManager = Unreachable
+        monkeypatch.setitem(sys.modules, 'tasks.setup_manager', fake)
+        monkeypatch.setenv('AUDIOMUSE_ROLE', 'worker')
+        for name in ('HEADERS', 'DB_OVERRIDES_LOADED', 'DB_DEFAULT_SERVER_PROJECTED'):
+            monkeypatch.setattr(config, name, getattr(config, name), raising=False)
+        config._apply_db_overrides()
+
+        assert config.DB_DEFAULT_SERVER_PROJECTED is False
+        assert config.DB_OVERRIDES_LOADED is True
+
+    def test_hydrate_skips_the_reload_when_the_import_already_projected_the_default_server(
+        self, monkeypatch
+    ):
+        import config
+        from tasks.setup_manager import hydrate_worker_config
+
+        monkeypatch.setattr(config, 'DB_OVERRIDES_LOADED', True)
+        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', True)
+        reloads = []
+        monkeypatch.setattr(config, 'refresh_config', lambda: reloads.append(True))
+
+        assert hydrate_worker_config() is True
+        assert reloads == []
+
+    def test_hydrate_reloads_when_the_import_time_pass_never_reached_the_database(self, monkeypatch):
+        import config
+        from tasks.setup_manager import hydrate_worker_config
+
+        monkeypatch.setattr(config, 'DB_OVERRIDES_LOADED', True)
+        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', False)
+        reloads = []
+
+        def arrives():
+            reloads.append(True)
+            monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', True)
+
+        monkeypatch.setattr(config, 'refresh_config', arrives)
+
+        assert hydrate_worker_config() is True
+        assert reloads == [True]
+
     def test_hydrate_reports_false_when_the_reload_still_cannot_reach_the_database(self, monkeypatch):
         import config
         from tasks.setup_manager import hydrate_worker_config
+
+        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', False)
 
         def still_down():
             raise RuntimeError('database is not up yet')
@@ -864,24 +948,11 @@ class TestWorkerConfigHydration:
 
         assert hydrate_worker_config() is False
 
-    def test_hydrate_reports_true_once_the_media_server_projection_is_populated(self, monkeypatch):
+    def test_hydrate_reports_false_when_the_reload_finds_no_default_server(self, monkeypatch):
         import config
         from tasks.setup_manager import hydrate_worker_config
 
-        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', '', raising=False)
-
-        def arrives():
-            monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'jellyfin', raising=False)
-
-        monkeypatch.setattr(config, 'refresh_config', arrives)
-
-        assert hydrate_worker_config() is True
-
-    def test_hydrate_reports_false_when_the_reload_finds_no_media_server(self, monkeypatch):
-        import config
-        from tasks.setup_manager import hydrate_worker_config
-
-        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', '', raising=False)
+        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', False)
         monkeypatch.setattr(config, 'refresh_config', lambda: None)
 
         assert hydrate_worker_config() is False

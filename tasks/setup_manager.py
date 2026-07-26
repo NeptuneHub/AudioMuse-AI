@@ -57,21 +57,27 @@ def hydrate_worker_config():
     registry) was not ready yet, every media-server global stays EMPTY for the
     life of the process and provider calls build a URL like '/Items'. Reloading
     once here, before the first job is picked up, heals the whole process instead
-    of one resolver at a time. Returns True when the projection is populated.
+    of one resolver at a time. A boot whose import-time pass verifiably reached
+    the database (the default music server row was projected) skips the reload:
+    every SetupManager read opens its own connection, so repeating the pass on a
+    healthy boot doubles the startup connections for nothing. Returns True when
+    the default-server projection is in place.
     """
     import config
 
+    if config.DB_OVERRIDES_LOADED and config.DB_DEFAULT_SERVER_PROJECTED:
+        return True
     logger = logging.getLogger(__name__)
     try:
         config.refresh_config()
     except Exception:
         logger.exception("Could not reload the config from the database at worker start")
         return False
-    if not (config.MEDIASERVER_TYPE or '').strip():
+    if not config.DB_DEFAULT_SERVER_PROJECTED:
         logger.warning(
-            "This worker has no media-server settings after reloading from the "
-            "database. Any job that does not carry a server id will build an empty "
-            "provider URL until the setup wizard is completed."
+            "This worker has no default music server after reloading from the "
+            "database. Any job that does not carry a server id will fall back to "
+            "the env-only settings until the setup wizard is completed."
         )
         return False
     return True
