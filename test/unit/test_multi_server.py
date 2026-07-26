@@ -1768,13 +1768,14 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
+        cur.rowcount = 1
         cur.fetchall.return_value = [('dead-sweep',)]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'dead')
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
         enqueued = {}
 
         def fake_enqueue(func, **kwargs):
@@ -1789,7 +1790,7 @@ class TestSweepAlignment:
         assert enqueued['job_id'] == new_task_id
         assert enqueued['kwargs'] == {'task_id': new_task_id, 'full_refresh': False}
         revoke_calls = [e for e in executed if e[0].startswith('UPDATE task_status')]
-        assert revoke_calls and revoke_calls[0][1][-1] == ['dead-sweep']
+        assert revoke_calls and ['dead-sweep'] in revoke_calls[0][1]
 
     def test_recover_abandoned_sweeps_leaves_healthy_sweeps_alone(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -1820,6 +1821,7 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
+        cur.rowcount = 1
         cur.fetchall.return_value = [('never-enqueued-sweep',)]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
@@ -1846,6 +1848,7 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         cur = MagicMock()
+        cur.rowcount = 1
         # First SELECT: RQ-backed rows. Second: in-process rows, judged by heartbeat.
         cur.fetchall.side_effect = [[('ghost-analysis',)], []]
         executed = []
@@ -1860,6 +1863,7 @@ class TestSweepAlignment:
             raise NoSuchJobError(task_id)
 
         monkeypatch.setattr(rq.job.Job, 'fetch', staticmethod(_no_job))
+        self._mirror_fetch_many(monkeypatch)
 
         assert sync.reap_orphaned_tasks() == 1
         updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
@@ -1874,11 +1878,10 @@ class TestSweepAlignment:
     def test_reap_orphaned_tasks_reconciles_terminal_jobs_but_keeps_live_jobs(
         self, monkeypatch
     ):
-        """A failed RQ job still exists in Redis, so Job.fetch alone is not a
-        liveness check. Terminal jobs must retire their non-terminal DB rows."""
         from tasks import multiserver_sync as sync
 
         cur = MagicMock()
+        cur.rowcount = 1
         cur.fetchall.side_effect = [
             [
                 ('failed-analysis',),
@@ -1911,6 +1914,7 @@ class TestSweepAlignment:
             rq.job.Job, 'fetch',
             staticmethod(lambda task_id, connection=None: jobs[task_id]),
         )
+        self._mirror_fetch_many(monkeypatch)
 
         assert sync.reap_orphaned_tasks() == 3
         updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
@@ -1930,6 +1934,7 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         cur = MagicMock()
+        cur.rowcount = 1
         cur.fetchall.side_effect = [[('canceled-analysis',)], []]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
@@ -1946,12 +1951,150 @@ class TestSweepAlignment:
             rq.job.Job, 'fetch',
             staticmethod(lambda task_id, connection=None: canceled_job),
         )
+        self._mirror_fetch_many(monkeypatch)
 
         assert sync.reap_orphaned_tasks() == 1
         updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
         assert len(updates) == 1
         assert 'REVOKED' in updates[0][1]
         assert ['canceled-analysis'] in updates[0][1]
+
+    def _mirror_fetch_many(self, monkeypatch):
+        import rq.exceptions
+        import rq.job
+
+        def batch_fetch(job_ids, connection=None):
+            fetched = []
+            for job_id in job_ids:
+                try:
+                    fetched.append(rq.job.Job.fetch(job_id, connection=connection))
+                except rq.exceptions.NoSuchJobError:
+                    fetched.append(None)
+            return fetched
+
+        monkeypatch.setattr(rq.job.Job, 'fetch_many', staticmethod(batch_fetch))
+
+    def _reap_harness(self, monkeypatch, candidates, abandoned_confirmed=True):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.rowcount = 1
+        cur.fetchall.side_effect = [[(t,) for t in candidates], []]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
+        monkeypatch.setattr(
+            sync, '_confirm_abandoned', lambda task_id: abandoned_confirmed
+        )
+        self._mirror_fetch_many(monkeypatch)
+        return sync, executed
+
+    def test_reap_orphaned_tasks_updates_nothing_when_the_redis_probe_itself_fails(
+        self, monkeypatch
+    ):
+        import redis.exceptions
+        import rq.job
+
+        sync, executed = self._reap_harness(monkeypatch, ['live-analysis'])
+
+        def boom(task_id, connection=None):
+            raise redis.exceptions.ConnectionError('redis is down')
+
+        monkeypatch.setattr(rq.job.Job, 'fetch', staticmethod(boom))
+
+        assert sync.reap_orphaned_tasks() == 0
+        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
+
+    def test_reap_orphaned_tasks_updates_nothing_when_the_redis_probe_times_out(
+        self, monkeypatch
+    ):
+        import redis.exceptions
+        import rq.job
+
+        sync, executed = self._reap_harness(monkeypatch, ['a-task', 'b-task'])
+
+        def boom(task_id, connection=None):
+            raise redis.exceptions.TimeoutError('redis timed out')
+
+        monkeypatch.setattr(rq.job.Job, 'fetch', staticmethod(boom))
+
+        assert sync.reap_orphaned_tasks() == 0
+        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
+
+    def _force_probe(self, monkeypatch, states):
+        import rq_job_state
+
+        monkeypatch.setattr(
+            rq_job_state, 'probe_jobs_many', lambda task_ids, connection: states
+        )
+
+    def test_reap_orphaned_tasks_requeues_a_started_job_whose_worker_heartbeat_died(
+        self, monkeypatch
+    ):
+        import rq_job_state
+
+        sync, executed = self._reap_harness(monkeypatch, ['abandoned-analysis'])
+        self._force_probe(
+            monkeypatch, {'abandoned-analysis': ('abandoned', 'started')}
+        )
+        retried = []
+        monkeypatch.setattr(
+            rq_job_state, 'retry_abandoned_job',
+            lambda task_id, connection: retried.append(task_id)
+            or rq_job_state.RETRY_REQUEUED,
+        )
+
+        assert sync.reap_orphaned_tasks() == 0
+        assert retried == ['abandoned-analysis']
+        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
+
+    def test_reap_orphaned_tasks_fails_an_abandoned_job_that_is_out_of_retries(
+        self, monkeypatch
+    ):
+        import rq_job_state
+
+        sync, executed = self._reap_harness(monkeypatch, ['exhausted-analysis'])
+        self._force_probe(
+            monkeypatch, {'exhausted-analysis': ('abandoned', 'started')}
+        )
+        monkeypatch.setattr(
+            rq_job_state, 'retry_abandoned_job',
+            lambda task_id, connection: rq_job_state.RETRY_NO_BUDGET,
+        )
+
+        assert sync.reap_orphaned_tasks() == 1
+        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
+        assert len(updates) == 1
+        assert 'FAILURE' in updates[0][1]
+
+    def test_reap_orphaned_tasks_leaves_an_abandoned_job_alone_on_a_transient_error(
+        self, monkeypatch
+    ):
+        import rq_job_state
+
+        sync, executed = self._reap_harness(monkeypatch, ['blip-analysis'])
+        self._force_probe(monkeypatch, {'blip-analysis': ('abandoned', 'started')})
+        monkeypatch.setattr(
+            rq_job_state, 'retry_abandoned_job',
+            lambda task_id, connection: rq_job_state.RETRY_ERROR,
+        )
+
+        assert sync.reap_orphaned_tasks() == 0
+        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
+
+    def test_reap_orphaned_tasks_leaves_a_started_job_with_a_fresh_heartbeat_alone(
+        self, monkeypatch
+    ):
+        sync, executed = self._reap_harness(monkeypatch, ['long-chromaprint-run'])
+        self._force_probe(
+            monkeypatch, {'long-chromaprint-run': ('alive', 'started')}
+        )
+
+        assert sync.reap_orphaned_tasks() == 0
+        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
 
     def test_reap_orphaned_tasks_never_probes_rq_for_a_task_that_runs_in_flask(
         self, monkeypatch
@@ -1964,6 +2107,7 @@ class TestSweepAlignment:
         from database import INLINE_FLASK_TASK_TYPES
 
         cur = MagicMock()
+        cur.rowcount = 1
         cur.fetchall.side_effect = [[], [('stalled-radio',)]]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
@@ -1998,12 +2142,13 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
+        cur.rowcount = 1
         cur.fetchall.return_value = [('dead-sweep',)]
         db = MagicMock()
         db.cursor.return_value = cur
         connections = []
         monkeypatch.setattr(sync, 'connect_raw', lambda: connections.append(1) or db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'dead')
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
         import app_helper
         enqueued = []
         monkeypatch.setattr(
@@ -2014,6 +2159,96 @@ class TestSweepAlignment:
         assert sync.recover_abandoned_sweeps() is None
         assert enqueued == [1]
         assert connections == [1]
+
+    def test_recover_abandoned_sweeps_skips_the_replacement_when_every_stale_row_finished_mid_pass(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
+        cur = MagicMock()
+        cur.rowcount = 0
+        cur.fetchall.return_value = [('just-finished-sweep',)]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
+        import app_helper
+        enqueued = []
+        monkeypatch.setattr(
+            app_helper.rq_queue_high, 'enqueue',
+            lambda *a, **k: enqueued.append(1),
+        )
+        assert sync.recover_abandoned_sweeps() is None
+        assert enqueued == []
+        assert [e for e in executed if e[0].startswith('INSERT')] == []
+
+    def test_recover_abandoned_sweeps_waits_for_a_second_sighting_of_an_abandoned_sweep(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_recovery_state', {'last': None})
+        monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
+        cur = MagicMock()
+        cur.rowcount = 1
+        cur.fetchall.return_value = [('suspended-sweep',)]
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'abandoned')
+        import app_helper
+        enqueued = []
+        monkeypatch.setattr(
+            app_helper.rq_queue_high, 'enqueue',
+            lambda *a, **k: enqueued.append(1),
+        )
+        assert sync.recover_abandoned_sweeps() is None
+        assert enqueued == []
+        monkeypatch.setattr(sync, '_ABANDONED_CONFIRM_SECONDS', 0)
+        assert sync.recover_abandoned_sweeps() is not None
+        assert enqueued == [1]
+
+    def test_an_abandoned_job_needs_a_second_sighting_before_the_janitor_acts(
+        self, monkeypatch
+    ):
+        import rq_job_state
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.rowcount = 1
+        cur.fetchall.side_effect = [
+            [('abandoned-analysis',)], [],
+            [('abandoned-analysis',)], [],
+        ]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
+        monkeypatch.setattr(
+            rq_job_state, 'probe_jobs_many',
+            lambda task_ids, connection: {
+                'abandoned-analysis': ('abandoned', 'started')
+            },
+        )
+        retried = []
+        monkeypatch.setattr(
+            rq_job_state, 'retry_abandoned_job',
+            lambda task_id, connection: retried.append(task_id)
+            or rq_job_state.RETRY_REQUEUED,
+        )
+
+        assert sync.reap_orphaned_tasks() == 0
+        assert retried == []
+
+        monkeypatch.setattr(sync, '_ABANDONED_CONFIRM_SECONDS', 0)
+        assert sync.reap_orphaned_tasks() == 0
+        assert retried == ['abandoned-analysis']
+        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
 
     def test_dashboard_metrics_count_each_servers_analyzed_songs_locally(self, monkeypatch):
         import app_dashboard as dash

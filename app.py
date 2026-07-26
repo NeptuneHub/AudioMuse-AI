@@ -30,8 +30,9 @@ import time
 import config
 
 # RQ imports
-from rq.job import Job, JobStatus
+from rq.job import Job
 from rq.exceptions import NoSuchJobError
+import rq_job_state
 from tasks.setup_manager import setup_manager
 
 # Redis client
@@ -446,18 +447,18 @@ def get_task_status_endpoint(task_id):
     }
     try:
         job = Job.fetch(task_id, connection=redis_conn)
-        response['state'] = job.get_status()  # e.g., queued, started, finished, failed
-        response['status_message'] = job.meta.get('status_message', response['state'])
+        rq_status = rq_job_state.status_value(job.get_status(refresh=False))
+        response['state'] = rq_status  # e.g., queued, started, finished, failed
+        response['status_message'] = job.meta.get('status_message', rq_status)
         response['progress'] = job.meta.get('progress', 0)
         response['details'] = job.meta.get('details', {})
-        if job.is_failed:
-            response['status_message'] = "FAILED"
-        elif job.is_finished:
-            response['status_message'] = "SUCCESS"  # RQ uses 'finished' for success
-            response['progress'] = 100
-        elif job.is_canceled:
-            response['status_message'] = "CANCELED"
-            response['progress'] = 100
+        if rq_job_state.is_terminal_status(rq_status):
+            # RQ uses 'finished' for success; canceled/stopped read as cancellations.
+            response['status_message'] = {
+                'failed': "FAILED", 'finished': "SUCCESS",
+            }.get(rq_status, rq_status.upper())
+            if rq_status != 'failed':
+                response['progress'] = 100
 
     except NoSuchJobError:
         # If not in RQ, it might have been cleared or never existed. Check DB.
@@ -468,8 +469,8 @@ def get_task_status_endpoint(task_id):
     if db_task_info:
         response['task_type_from_db'] = db_task_info.get('task_type')
         response['running_time_seconds'] = db_task_info.get('running_time_seconds', 0)
-        # If RQ state is more final (e.g. failed/finished), prefer that, else use DB
-        if response['state'] not in [JobStatus.FINISHED, JobStatus.FAILED, JobStatus.CANCELED]:
+        # If RQ state is more final (e.g. failed/finished/stopped), prefer that, else use DB
+        if not rq_job_state.is_terminal_status(response['state']):
             response['state'] = db_task_info.get(
                 'status', response['state']
             )  # Use DB status if RQ is still active

@@ -31,6 +31,7 @@ from flask import Blueprint, g, jsonify, request
 from rq.job import Job
 
 import config
+import rq_job_state
 from app_helper import redis_conn, rq_queue_high, save_task_status, send_stop_job_command
 from database import get_db, missing_required_creds, get_active_main_task
 from app_server_context import (
@@ -140,13 +141,11 @@ def _cancel_active_sweeps():
             continue
         try:
             job = Job.fetch(stale_task_id, connection=redis_conn)
-            status = job.get_status(refresh=True)
-            # str(JobStatus.QUEUED) is 'JobStatus.QUEUED'; .value is 'queued'.
-            status_value = getattr(status, 'value', None) or str(status)
-            if status_value in ('queued', 'deferred', 'scheduled'):
-                job.cancel()
-            elif status_value == 'started':
+            status = job.get_status(refresh=False)
+            if rq_job_state.is_running_status(status):
                 send_stop_job_command(redis_conn, stale_task_id)
+            elif rq_job_state.is_alive_status(status):
+                job.cancel()
         except Exception:
             logger.exception("RQ cleanup failed for superseded sweep %s", stale_task_id)
     return cancelled

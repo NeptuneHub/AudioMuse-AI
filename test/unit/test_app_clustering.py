@@ -170,3 +170,53 @@ class TestStartClusteringEndpoint:
         assert data['status'] == 'STARTED'
         mock_cleanup.assert_not_called()
         mock_queue.enqueue.assert_not_called()
+
+
+class TestFailureHandlerRetryAwareness:
+    def test_handler_leaves_the_row_live_when_rq_still_has_retries(self, monkeypatch):
+        import app_clustering
+        from rq.exceptions import AbandonedJobError
+
+        writes = []
+        monkeypatch.setattr(
+            app_clustering, 'save_task_status',
+            lambda *a, **k: writes.append((a, k)),
+        )
+        job = Mock()
+        job.id = 'clustering-main-1'
+        job.retries_left = 2
+
+        err = AbandonedJobError('worker died')
+        app_clustering.clustering_task_failure_handler(
+            job, object(), AbandonedJobError, err, None
+        )
+
+        assert writes == []
+
+    def test_handler_fails_the_row_only_once_retries_are_exhausted(self, monkeypatch):
+        import sys
+        import types
+
+        import app_clustering
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('failure-handler-test')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        writes = []
+        monkeypatch.setattr(
+            app_clustering, 'save_task_status',
+            lambda task_id, task_type, status, **k: writes.append(
+                (task_id, task_type, status)
+            ),
+        )
+        job = Mock()
+        job.id = 'clustering-main-1'
+        job.retries_left = 0
+
+        err = RuntimeError('boom')
+        app_clustering.clustering_task_failure_handler(
+            job, object(), RuntimeError, err, None
+        )
+
+        assert writes == [('clustering-main-1', 'main_clustering', 'FAILURE')]

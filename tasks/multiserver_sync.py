@@ -69,6 +69,7 @@ import uuid
 from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
+import rq_job_state
 from config import SWEEP_PRUNE_MIN_FETCH_RATIO
 from database import connect_raw, INLINE_FLASK_TASK_TYPES
 from tasks import provider_probe
@@ -78,8 +79,6 @@ from tasks.provider_migration_matcher import CandidateIndex
 logger = logging.getLogger(__name__)
 
 SWEEP_TASK_TYPE = 'server_sweep'
-_RQ_ALIVE_STATUSES = ('queued', 'started', 'deferred', 'scheduled')
-_RQ_TERMINAL_STATUSES = ('finished', 'failed', 'stopped', 'canceled')
 
 
 class SweepCancelled(Exception):
@@ -87,30 +86,30 @@ class SweepCancelled(Exception):
 
 
 def _sweep_job_state(task_id):
-    """Classify a sweep's RQ job as 'alive', 'dead', or 'missing'.
-
-    'missing' means no RQ job exists under that id at all (a row whose enqueue
-    failed); 'dead' means the job exists but is no longer queued or running.
-    """
-    from rq.job import Job
     from app_helper import redis_conn
 
-    try:
-        job = Job.fetch(task_id, connection=redis_conn)
-        status = job.get_status(refresh=True)
-    except Exception:
-        return 'missing'
-    value = _rq_status_value(status)
-    return 'alive' if value in _RQ_ALIVE_STATUSES else 'dead'
-
-
-def _rq_status_value(status):
-    """Return a stable lowercase value for string and enum RQ statuses."""
-    value = getattr(status, 'value', None) or str(status)
-    return str(value).lower().rsplit('.', 1)[-1]
+    state, _status = rq_job_state.probe_job(task_id, redis_conn)
+    return state
 
 
 _recovery_state = {'last': None}
+
+_ABANDONED_FIRST_SEEN = {}
+
+_ABANDONED_CONFIRM_SECONDS = 60
+
+
+def _confirm_abandoned(task_id):
+    now = time.monotonic()
+    first = _ABANDONED_FIRST_SEEN.get(task_id)
+    if first is None:
+        _ABANDONED_FIRST_SEEN[task_id] = now
+        return False
+    return now - first >= _ABANDONED_CONFIRM_SECONDS
+
+
+def _clear_abandoned_sighting(task_id):
+    _ABANDONED_FIRST_SEEN.pop(task_id, None)
 
 
 def recover_abandoned_sweeps():
@@ -156,10 +155,16 @@ def recover_abandoned_sweeps():
             candidates = [r[0] for r in cur.fetchall()]
         finally:
             cur.close()
-        stale = [
-            task_id for task_id in candidates
-            if _sweep_job_state(task_id) in ('dead', 'missing')
-        ]
+        stale = []
+        for task_id in candidates:
+            state = _sweep_job_state(task_id)
+            if rq_job_state.is_alive(state) or rq_job_state.is_unknown(state):
+                _clear_abandoned_sighting(task_id)
+                continue
+            if rq_job_state.is_abandoned(state) and not _confirm_abandoned(task_id):
+                continue
+            _clear_abandoned_sighting(task_id)
+            stale.append(task_id)
         if not stale:
             return None
 
@@ -174,9 +179,15 @@ def recover_abandoned_sweeps():
             cur.execute(
                 "UPDATE task_status SET status = %s, progress = 100, details = %s, "
                 "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
-                "WHERE task_id = ANY(%s)",
-                (config.TASK_STATUS_REVOKED, details, now, stale),
+                "WHERE task_id = ANY(%s) "
+                "AND status NOT IN (%s, %s, %s)",
+                (config.TASK_STATUS_REVOKED, details, now, stale,
+                 config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
+                 config.TASK_STATUS_REVOKED),
             )
+            revoked_count = cur.rowcount
+            if not revoked_count:
+                return None
             new_task_id = str(uuid.uuid4())
             queued = json.dumps({
                 'message': 'Server alignment queued for all servers.',
@@ -199,7 +210,7 @@ def recover_abandoned_sweeps():
         _recovery_state['last'] = time.monotonic()
         logger.warning(
             "Recovered %d interrupted alignment sweep(s); enqueued replacement %s",
-            len(stale), new_task_id,
+            revoked_count, new_task_id,
         )
         return new_task_id
     finally:
@@ -212,6 +223,8 @@ def recover_abandoned_sweeps():
 _ORPHAN_GRACE_SECONDS = 120
 
 _INLINE_STALE_SECONDS = 1800
+
+_ABANDONED_KEY = 'abandoned'
 
 
 def _finalize_task_rows(db, task_ids, status, message):
@@ -230,6 +243,7 @@ def _finalize_task_rows(db, task_ids, status, message):
              config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
              config.TASK_STATUS_REVOKED),
         )
+        return cur.rowcount
     finally:
         cur.close()
 
@@ -237,7 +251,7 @@ def _finalize_task_rows(db, task_ids, status, message):
 def _fail_task_rows(db, task_ids, message):
     import config
 
-    _finalize_task_rows(db, task_ids, config.TASK_STATUS_FAILURE, message)
+    return _finalize_task_rows(db, task_ids, config.TASK_STATUS_FAILURE, message)
 
 
 def reap_orphaned_tasks():
@@ -269,14 +283,13 @@ def reap_orphaned_tasks():
     app context.
     """
     import config
-    from rq.job import Job
-    from rq.exceptions import NoSuchJobError
     from app_helper import redis_conn
 
     db = connect_raw()
     db.autocommit = True
     missing = []
     terminal = {}
+    restarted = []
     stalled_inline = []
     try:
         cur = db.cursor()
@@ -304,39 +317,73 @@ def reap_orphaned_tasks():
         finally:
             cur.close()
 
+        probed = rq_job_state.probe_jobs_many(candidates, redis_conn)
         for task_id in candidates:
-            try:
-                job = Job.fetch(task_id, connection=redis_conn)
-                rq_status = _rq_status_value(job.get_status(refresh=True))
-            except NoSuchJobError:
+            state, rq_status = probed.get(task_id, ('', ''))
+            if rq_job_state.is_alive(state):
+                _clear_abandoned_sighting(task_id)
+                continue
+            if rq_job_state.is_missing(state):
+                _clear_abandoned_sighting(task_id)
                 missing.append(task_id)
-            except Exception:
-                logger.debug("Could not probe job %s; leaving it alone.", task_id)
-            else:
-                if rq_status in _RQ_ALIVE_STATUSES:
+            elif rq_job_state.is_abandoned(state):
+                if not _confirm_abandoned(task_id):
                     continue
-                if rq_status in _RQ_TERMINAL_STATUSES:
-                    terminal.setdefault(rq_status, []).append(task_id)
+                verdict = rq_job_state.retry_abandoned_job(task_id, redis_conn)
+                if verdict == rq_job_state.RETRY_REQUEUED:
+                    _clear_abandoned_sighting(task_id)
+                    restarted.append(task_id)
+                elif verdict == rq_job_state.RETRY_NO_BUDGET:
+                    _clear_abandoned_sighting(task_id)
+                    terminal.setdefault(_ABANDONED_KEY, []).append(task_id)
+                elif verdict == rq_job_state.RETRY_MISSING:
+                    _clear_abandoned_sighting(task_id)
+                    missing.append(task_id)
+                elif verdict == rq_job_state.RETRY_RECOVERED:
+                    _clear_abandoned_sighting(task_id)
                 else:
-                    logger.warning(
-                        "Job %s has unknown RQ status %r; leaving its task row alone.",
-                        task_id, rq_status,
+                    logger.debug(
+                        "Could not requeue abandoned job %s this pass; will retry.",
+                        task_id,
                     )
+            elif rq_job_state.is_terminal(state):
+                _clear_abandoned_sighting(task_id)
+                terminal.setdefault(rq_status, []).append(task_id)
+            else:
+                logger.debug(
+                    "Could not classify job %s (RQ status %r); leaving its row alone.",
+                    task_id, rq_status,
+                )
+
+        if restarted:
+            logger.warning(
+                "Janitor requeued %d abandoned task(s) whose worker died; their rows "
+                "stay live because the job restarts: %s",
+                len(restarted), ', '.join(restarted),
+            )
 
         reconciled = 0
         if missing:
-            _fail_task_rows(
+            changed = _fail_task_rows(
                 db, missing,
                 "The task disappeared from the queue (the worker or Redis restarted). "
                 "It was not run; start it again.",
             )
-            reconciled += len(missing)
-            logger.warning(
-                "Janitor failed %d orphaned task row(s) with no RQ job behind them: %s",
-                len(missing), ', '.join(missing),
-            )
+            reconciled += changed
+            if changed:
+                logger.warning(
+                    "Janitor failed %d orphaned task row(s) with no RQ job behind "
+                    "them: %s",
+                    changed, ', '.join(missing),
+                )
         for rq_status, task_ids in terminal.items():
-            if rq_status in ('stopped', 'canceled'):
+            if rq_status == _ABANDONED_KEY:
+                db_status = config.TASK_STATUS_FAILURE
+                message = (
+                    "The worker running this task died and it had no restart "
+                    "attempts left. It was not completed; start it again."
+                )
+            elif rq_job_state.is_cancelled_status(rq_status):
                 db_status = config.TASK_STATUS_REVOKED
                 message = (
                     f"The queue job was {rq_status} before the task recorded a "
@@ -355,24 +402,35 @@ def reap_orphaned_tasks():
                     "recorded a final status. The worker may have restarted; start "
                     "the task again."
                 )
-            _finalize_task_rows(db, task_ids, db_status, message)
-            reconciled += len(task_ids)
-            logger.warning(
-                "Janitor reconciled %d stale task row(s) from terminal RQ status "
-                "%s to %s: %s",
-                len(task_ids), rq_status, db_status, ', '.join(task_ids),
-            )
+            changed = _finalize_task_rows(db, task_ids, db_status, message)
+            reconciled += changed
+            if not changed:
+                continue
+            if rq_status == _ABANDONED_KEY:
+                logger.warning(
+                    "Janitor failed %d task row(s) whose worker died with no "
+                    "restart attempts left: %s",
+                    changed, ', '.join(task_ids),
+                )
+            else:
+                logger.warning(
+                    "Janitor reconciled %d stale task row(s) from terminal RQ "
+                    "status %s to %s: %s",
+                    changed, rq_status, db_status, ', '.join(task_ids),
+                )
+        inline_changed = 0
         if stalled_inline:
-            _fail_task_rows(
+            inline_changed = _fail_task_rows(
                 db, stalled_inline,
                 "The task stopped reporting progress, so the web process running it "
                 "is gone. It was not completed; start it again.",
             )
-            logger.warning(
-                "Janitor failed %d stalled in-process task row(s): %s",
-                len(stalled_inline), ', '.join(stalled_inline),
-            )
-        return reconciled + len(stalled_inline)
+            if inline_changed:
+                logger.warning(
+                    "Janitor failed %d stalled in-process task row(s): %s",
+                    inline_changed, ', '.join(stalled_inline),
+                )
+        return reconciled + inline_changed
     finally:
         try:
             db.close()
