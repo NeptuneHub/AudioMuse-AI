@@ -14,6 +14,8 @@ of ``rq_worker_high_priority`` for the ``high`` queue.
 
 Main Features:
 * Caps math-library threads (cpu_count // 2) and pins passive OpenMP waiting.
+* Re-projects the database settings onto the config globals before the first job,
+  so a process that imported config before Postgres was up is not left blind.
 * Takes its worker class from ``rq_heartbeat_worker`` (a heartbeating SimpleWorker on
   Windows, the forking Worker elsewhere) and restarts after ``RQ_MAX_JOBS`` to limit leaks.
 """
@@ -69,6 +71,13 @@ if __name__ == '__main__':
         f"DEFAULT RQ Worker starting. Version: {APP_VERSION}. Listening on queues: {queues_to_listen}"
     )
     logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
+
+    try:
+        from tasks.setup_manager import hydrate_worker_config
+
+        hydrate_worker_config()
+    except Exception:
+        logger.exception('Could not reload the config from the database at worker start')
 
     try:
         from plugin.manager import boot as plugin_boot

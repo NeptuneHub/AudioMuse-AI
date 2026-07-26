@@ -2221,6 +2221,56 @@ class TestSonicFingerprintDefaultsPerServer:
         assert payload['default_user_id'] == 'cfg-user'
 
 
+class TestUseRequestServerBinding:
+    DEFAULT_ROW = {
+        'server_id': 'def', 'name': 'Main', 'server_type': 'jellyfin',
+        'creds': {'url': 'http://jf:8096', 'user_id': 'uid', 'token': 'tok'},
+        'music_libraries': '', 'is_default': True,
+    }
+    SECONDARY_ROW = {
+        'server_id': 's2', 'name': 'Nav', 'server_type': 'navidrome',
+        'creds': {'url': 'http://nd', 'user': 'bob', 'password': 'p'},
+        'music_libraries': '', 'is_default': False,
+    }
+
+    @classmethod
+    def _bound_id(cls, monkeypatch, selected):
+        import app_server_context
+        import config
+        from flask import Flask
+        from tasks.mediaserver import context, registry
+
+        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'jellyfin', raising=False)
+        monkeypatch.setattr(config, 'MUSIC_LIBRARIES', '', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_URL', 'http://jf:8096', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_USER_ID', 'uid', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_TOKEN', 'tok', raising=False)
+        monkeypatch.setattr(
+            app_server_context, 'resolve_request_server_id', lambda data=None: selected
+        )
+        monkeypatch.setattr(registry, 'get_db', lambda: MagicMock(), raising=False)
+        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: dict(cls.DEFAULT_ROW))
+        monkeypatch.setattr(
+            registry, 'get_server',
+            lambda sid, conn=None: dict(cls.SECONDARY_ROW) if sid == 's2' else None,
+        )
+        registry.invalidate_server_cache()
+
+        app = Flask('use-request-server-test')
+        with app.test_request_context('/api/whatever'):
+            with app_server_context.use_request_server() as yielded:
+                return yielded, context.active_server_id()
+
+    def test_explicitly_selecting_the_default_server_still_scopes_to_its_id(self, monkeypatch):
+        assert self._bound_id(monkeypatch, 'def') == ('def', 'def')
+
+    def test_selecting_a_secondary_server_scopes_to_that_server(self, monkeypatch):
+        assert self._bound_id(monkeypatch, 's2') == ('s2', 's2')
+
+    def test_no_selection_leaves_the_union_catalogue_unscoped(self, monkeypatch):
+        assert self._bound_id(monkeypatch, None) == (None, None)
+
+
 class TestRegistrySeeding:
     """A fresh install starts with a BLANK server table.
 

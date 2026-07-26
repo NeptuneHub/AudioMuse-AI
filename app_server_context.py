@@ -176,12 +176,22 @@ def scope_artist_results(rows, requested_n=None):
 
 @contextmanager
 def use_request_server(data=None):
-    """Bind provider calls to the request's selected server for one block."""
+    """Bind provider calls to the request's selected server for one block.
+
+    Goes through ``registry.bind`` so an explicitly selected DEFAULT server still
+    binds its id: ``context_for`` returns None for the default (provider calls
+    fall back to config) and binding that None would leave ``active_server_id()``
+    None, so every availability-scoped reader would search the WHOLE union
+    catalogue and drop the foreign hits only at playlist time. No selection at all
+    keeps the historical unscoped behaviour.
+    """
     from tasks.mediaserver import context, registry
 
-    server_id = resolve_request_server_id(data)
-    server_ctx = registry.context_for(server_id) if server_id else None
-    with context.use_server(server_ctx):
+    if not (server_id := resolve_request_server_id(data)):
+        with context.use_server(None):
+            yield None
+        return
+    with registry.bind({'server_id': server_id}):
         yield server_id
 
 

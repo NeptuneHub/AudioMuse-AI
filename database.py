@@ -80,8 +80,20 @@ _CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gath
 def get_db():
     cached = g.get('db')
     if cached is not None and cached.closed:
-        logger.warning("Cached database connection was closed; reconnecting.")
         g.pop('db', None)
+        # psycopg2 sets closed to 2 only when the SERVER dropped the connection, so
+        # whatever this app context had not committed is already gone. Finishing the
+        # unit of work on a second connection would let a helper called with
+        # conn=None commit its half while the caller's statements stayed lost, so
+        # fail here instead; the next call opens a clean connection.
+        if cached.closed == 2:
+            logger.error(
+                "The database connection was dropped by the server while this app "
+                "context held it; failing this unit of work rather than finishing "
+                "it on a second connection."
+            )
+            raise psycopg2.InterfaceError("database connection lost, retry the operation")
+        logger.warning("Cached database connection was closed; reconnecting.")
     if 'db' not in g:
         try:
             g.db = psycopg2.connect(

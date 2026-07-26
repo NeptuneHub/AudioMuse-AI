@@ -806,7 +806,7 @@ class TestImportOrderIndependence:
             "assert 'config' not in sys.modules, "
             "'tasks.setup_manager must not import config at module level'\n"
             "import config\n"
-            "assert config.refresh_config.__doc__, "
+            "assert config.DB_OVERRIDES_LOADED, "
             "'DB-override init was skipped: circular import regression'\n"
         )
         repo_root = os.path.normpath(
@@ -823,3 +823,65 @@ class TestImportOrderIndependence:
             timeout=120,
         )
         assert proc.returncode == 0, proc.stderr
+
+
+class TestWorkerConfigHydration:
+    @staticmethod
+    def _break_the_projection(monkeypatch):
+        import config
+
+        broken = types.ModuleType('tasks.setup_manager')
+
+        def unreachable(*args, **kwargs):
+            raise RuntimeError('database is not up yet')
+
+        broken.SetupManager = unreachable
+        monkeypatch.setitem(sys.modules, 'tasks.setup_manager', broken)
+        monkeypatch.setattr(config, 'DB_OVERRIDES_LOADED', config.DB_OVERRIDES_LOADED)
+        config._apply_db_overrides()
+        assert config.DB_OVERRIDES_LOADED is False
+
+    def test_a_boot_without_a_database_still_leaves_a_reloading_refresh_config(self, monkeypatch):
+        import importlib
+
+        import config
+
+        self._break_the_projection(monkeypatch)
+        reloaded = []
+        monkeypatch.setattr(importlib, 'reload', reloaded.append)
+        config.refresh_config()
+
+        assert reloaded == [config]
+
+    def test_hydrate_reports_false_when_the_reload_still_cannot_reach_the_database(self, monkeypatch):
+        import config
+        from tasks.setup_manager import hydrate_worker_config
+
+        def still_down():
+            raise RuntimeError('database is not up yet')
+
+        monkeypatch.setattr(config, 'refresh_config', still_down)
+
+        assert hydrate_worker_config() is False
+
+    def test_hydrate_reports_true_once_the_media_server_projection_is_populated(self, monkeypatch):
+        import config
+        from tasks.setup_manager import hydrate_worker_config
+
+        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', '', raising=False)
+
+        def arrives():
+            monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'jellyfin', raising=False)
+
+        monkeypatch.setattr(config, 'refresh_config', arrives)
+
+        assert hydrate_worker_config() is True
+
+    def test_hydrate_reports_false_when_the_reload_finds_no_media_server(self, monkeypatch):
+        import config
+        from tasks.setup_manager import hydrate_worker_config
+
+        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', '', raising=False)
+        monkeypatch.setattr(config, 'refresh_config', lambda: None)
+
+        assert hydrate_worker_config() is False

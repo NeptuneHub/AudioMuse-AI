@@ -965,8 +965,21 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 
+# True once the database overrides and the default music server were projected
+# onto these globals. False means this process is running on env values only.
+DB_OVERRIDES_LOADED = False
+
+
+def refresh_config():
+    """Reload the config module from the current database and environment."""
+    import importlib
+    import sys
+    importlib.reload(sys.modules[__name__])
+
+
 def _apply_db_overrides():
-    global HEADERS, refresh_config
+    global HEADERS, DB_OVERRIDES_LOADED
+    DB_OVERRIDES_LOADED = False
     try:
         from tasks.setup_manager import SetupManager
         _setup_manager = SetupManager()
@@ -1004,17 +1017,14 @@ def _apply_db_overrides():
                     globals()[_field] = _ms_creds.get(_cred_key, '') or ''
 
         HEADERS = _compute_headers()
-
-        def refresh_config():
-            """Reload the config module from the current database and environment."""
-            import importlib
-            import sys
-            importlib.reload(sys.modules[__name__])
+        DB_OVERRIDES_LOADED = True
     except Exception as _exc:
+        # Importing config must never fail because the database is unreachable: a
+        # worker started before Postgres keeps the env-only values. refresh_config
+        # stays a real reload (NOT a no-op stub) so that process can pick the
+        # settings up later instead of running blind for its whole life.
         import logging
         logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
-        def refresh_config():
-            pass
 
 
 _apply_db_overrides()

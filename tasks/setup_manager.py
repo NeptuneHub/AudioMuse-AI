@@ -49,6 +49,34 @@ BASIC_SERVER_FIELDS = {
 AUTH_FIELDS = {'AUTH_ENABLED', 'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN'}
 
 
+def hydrate_worker_config():
+    """Re-project the database settings onto the config globals at worker start.
+
+    A worker imports config at process start, and Redis is reachable before
+    Postgres often enough to matter: when the database (or the music_servers
+    registry) was not ready yet, every media-server global stays EMPTY for the
+    life of the process and provider calls build a URL like '/Items'. Reloading
+    once here, before the first job is picked up, heals the whole process instead
+    of one resolver at a time. Returns True when the projection is populated.
+    """
+    import config
+
+    logger = logging.getLogger(__name__)
+    try:
+        config.refresh_config()
+    except Exception:
+        logger.exception("Could not reload the config from the database at worker start")
+        return False
+    if not (config.MEDIASERVER_TYPE or '').strip():
+        logger.warning(
+            "This worker has no media-server settings after reloading from the "
+            "database. Any job that does not carry a server id will build an empty "
+            "provider URL until the setup wizard is completed."
+        )
+        return False
+    return True
+
+
 class SetupManager:
     def __init__(self, database_url=None):
         self.database_url = database_url or self._get_database_url()
