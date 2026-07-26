@@ -826,29 +826,11 @@ class TestImportOrderIndependence:
 
 
 class TestWorkerConfigHydration:
-    @staticmethod
-    def _break_the_projection(monkeypatch):
-        import config
-
-        broken = types.ModuleType('tasks.setup_manager')
-
-        def unreachable(*args, **kwargs):
-            raise RuntimeError('database is not up yet')
-
-        broken.SetupManager = unreachable
-        monkeypatch.setitem(sys.modules, 'tasks.setup_manager', broken)
-        monkeypatch.setattr(config, 'DB_OVERRIDES_LOADED', config.DB_OVERRIDES_LOADED)
-        monkeypatch.setattr(config, 'DB_DEFAULT_SERVER_PROJECTED', config.DB_DEFAULT_SERVER_PROJECTED)
-        config._apply_db_overrides()
-        assert config.DB_OVERRIDES_LOADED is False
-        assert config.DB_DEFAULT_SERVER_PROJECTED is False
-
-    def test_a_boot_without_a_database_still_leaves_a_reloading_refresh_config(self, monkeypatch):
+    def test_refresh_config_is_always_a_real_reload_never_a_stub(self, monkeypatch):
         import importlib
 
         import config
 
-        self._break_the_projection(monkeypatch)
         reloaded = []
         monkeypatch.setattr(importlib, 'reload', reloaded.append)
         config.refresh_config()

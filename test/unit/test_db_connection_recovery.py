@@ -20,6 +20,10 @@ next call free to open a clean connection.
 Main Features:
 * An open cached connection is still reused (no reconnect per call)
 * A server-side drop (closed == 2) fails loudly once, then the context recovers
+* The drop raises ``ConnectionLostError``, an ``OperationalError`` subclass, so
+  every task-level ``except OperationalError`` carve-out catches it
+* ``save_task_status`` absorbs the one-shot drop and lands the row on a fresh
+  connection, so a terminal FAILURE write is never lost to the poisoned context
 * A locally closed connection is a deliberate boundary and is just replaced
 * Any other truthy ``closed`` (a test double, say) is replaced, never raised on
 * ``close_db`` keeps closing and clearing the cached connection
@@ -39,6 +43,15 @@ class FakeConnection:
     def close(self):
         self.close_calls += 1
         self.closed = 1
+
+    def cursor(self, *args, **kwargs):
+        return MagicMock()
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
 
 
 def _patch_connect(monkeypatch):
@@ -65,7 +78,15 @@ def test_open_cached_connection_is_reused(monkeypatch):
     assert len(created) == 1
 
 
-def test_connection_dropped_by_the_server_fails_the_unit_of_work_that_held_it(monkeypatch):
+def test_the_drop_error_is_caught_by_every_operational_error_carveout():
+    import database
+    import psycopg2
+
+    assert issubclass(database.ConnectionLostError, psycopg2.OperationalError)
+    assert not issubclass(database.ConnectionLostError, psycopg2.InterfaceError)
+
+
+def test_a_server_drop_fails_the_unit_of_work_once_then_the_context_recovers(monkeypatch):
     import database
     import psycopg2
 
@@ -73,21 +94,9 @@ def test_connection_dropped_by_the_server_fails_the_unit_of_work_that_held_it(mo
     with Flask(__name__).app_context():
         first = database.get_db()
         first.closed = 2
-        with pytest.raises(psycopg2.InterfaceError):
+        with pytest.raises(psycopg2.OperationalError):
             database.get_db()
-    assert len(created) == 1
-
-
-def test_the_app_context_recovers_on_the_call_after_the_drop_was_reported(monkeypatch):
-    import database
-    import psycopg2
-
-    created = _patch_connect(monkeypatch)
-    with Flask(__name__).app_context():
-        first = database.get_db()
-        first.closed = 2
-        with pytest.raises(psycopg2.InterfaceError):
-            database.get_db()
+        assert len(created) == 1
         second = database.get_db()
         assert second is not first
         assert second is created[-1]
@@ -115,6 +124,30 @@ def test_only_the_server_drop_code_fails_the_unit_of_work(monkeypatch):
         second = database.get_db()
         assert second is not first
     assert len(created) == 2
+
+
+def test_save_task_status_lands_on_a_fresh_connection_after_a_server_side_drop(monkeypatch):
+    import database
+
+    created = _patch_connect(monkeypatch)
+    with Flask(__name__).app_context():
+        first = database.get_db()
+        first.closed = 2
+        database.save_task_status('task-1', 'test_task')
+    assert len(created) == 2
+
+
+def test_save_task_status_still_fails_when_the_database_is_really_down(monkeypatch):
+    import database
+    import psycopg2
+
+    def refuse(*args, **kwargs):
+        raise psycopg2.OperationalError('connection refused')
+
+    monkeypatch.setattr(database.psycopg2, 'connect', refuse)
+    with Flask(__name__).app_context():
+        with pytest.raises(psycopg2.OperationalError):
+            database.save_task_status('task-1', 'test_task')
 
 
 def test_close_db_closes_and_clears_the_cached_connection(monkeypatch):

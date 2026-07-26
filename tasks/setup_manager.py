@@ -12,6 +12,11 @@ Backs the setup wizard by storing config values in the app_config table so they
 survive restarts and take precedence over environment defaults from config.py.
 
 Main Features:
+* ``hydrate_worker_config`` re-projects the database settings onto the config
+  globals in a worker process (a worker often boots before Postgres is
+  reachable and would otherwise run on env-only values); a boot whose
+  import-time pass already projected the default music server row skips the
+  reload in one flag read.
 * Reads and writes typed config overrides (casting stored strings back to the
   default's type) and can bootstrap the table from valid environment config
   when it is empty.
@@ -50,19 +55,6 @@ AUTH_FIELDS = {'AUTH_ENABLED', 'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKE
 
 
 def hydrate_worker_config():
-    """Re-project the database settings onto the config globals at worker start.
-
-    A worker imports config at process start, and Redis is reachable before
-    Postgres often enough to matter: when the database (or the music_servers
-    registry) was not ready yet, every media-server global stays EMPTY for the
-    life of the process and provider calls build a URL like '/Items'. Reloading
-    once here, before the first job is picked up, heals the whole process instead
-    of one resolver at a time. A boot whose import-time pass verifiably reached
-    the database (the default music server row was projected) skips the reload:
-    every SetupManager read opens its own connection, so repeating the pass on a
-    healthy boot doubles the startup connections for nothing. Returns True when
-    the default-server projection is in place.
-    """
     import config
 
     if config.DB_OVERRIDES_LOADED and config.DB_DEFAULT_SERVER_PROJECTED:
@@ -423,10 +415,9 @@ class SetupManager:
         try:
             import config
 
-            if hasattr(config, 'refresh_config'):
-                config.refresh_config()
-        except Exception as exc:
-            self.logger.warning(f'Failed to refresh config after saving values: {exc}')
+            config.refresh_config()
+        except Exception:
+            self.logger.warning('Failed to refresh config after saving values', exc_info=True)
 
     def delete_config_values(self, keys):
         if not keys:

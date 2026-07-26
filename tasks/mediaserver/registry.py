@@ -177,7 +177,9 @@ def servers_for_scope(scope, conn=None):
 
     Returns a list of normalized server dicts; a ``None`` element means 'legacy
     config default, bind no context'. An empty/unreadable registry yields
-    ``[None]`` so single-server installs behave exactly as before.
+    ``[None]`` so single-server installs behave exactly as before - but a lost
+    database connection propagates, so a batch run fails (and is retried)
+    instead of silently shrinking to a default-only run that reports SUCCESS.
     ``scope == 'default'`` returns only the default server; ``'all'`` (or any
     falsy scope) returns every configured server; anything else is treated as
     one specific server's id or display name and returns just that server
@@ -185,6 +187,8 @@ def servers_for_scope(scope, conn=None):
     """
     try:
         servers = list_servers(conn)
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        raise
     except Exception:
         logger.exception("Server registry unavailable; using the legacy config default")
         return [None]
@@ -317,12 +321,8 @@ def bind(server, conn=None):
         return ms_context.use_server(None)
     ctx = context_for(server_id, conn)
     if ctx is None:
-        # The DEFAULT server: context_for returns None so provider calls fall back
-        # to the config globals. Bind the id alone anyway, or active_server_id() is
-        # None and every availability-scoped reader (the IVF mask, song alchemy,
-        # sonic fingerprint, radio) silently searches the WHOLE union catalogue and
-        # then drops the foreign hits at playlist time. With only server_id set,
-        # type/creds/libraries still resolve from config exactly as before.
+        if not server.get('is_default') and server_id != get_default_server_id(conn):
+            raise ValueError(f"Unknown music server '{server_id}'")
         ctx = {'server_id': server_id}
     return ms_context.use_server(ctx)
 

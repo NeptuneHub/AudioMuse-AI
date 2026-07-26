@@ -45,9 +45,11 @@ print(f"High-priority worker CPU thread cap = {_max_threads} (cpu_count // 3, mi
 from rq_heartbeat_worker import WorkerClass
 
 try:
+    import config
     from app_helper import redis_conn
     from app_logging import configure_logging
-    from config import APP_VERSION, RQ_MAX_JOBS_HIGH, RQ_LOGGING_LEVEL
+    from config import APP_VERSION
+    from tasks.setup_manager import hydrate_worker_config
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")
@@ -64,12 +66,7 @@ if __name__ == '__main__':
     )
     logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
-    try:
-        from tasks.setup_manager import hydrate_worker_config
-
-        hydrate_worker_config()
-    except Exception:
-        logger.exception('Could not reload the config from the database at worker start')
+    hydrate_worker_config()
 
     try:
         from plugin.manager import boot as plugin_boot
@@ -82,9 +79,9 @@ if __name__ == '__main__':
         queues_to_listen, connection=redis_conn, worker_ttl=30, job_monitoring_interval=10
     )
 
-    max_jobs_before_restart = RQ_MAX_JOBS_HIGH
+    max_jobs_before_restart = config.RQ_MAX_JOBS_HIGH
 
-    logging_level = RQ_LOGGING_LEVEL
+    logging_level = config.RQ_LOGGING_LEVEL
     logger.info(f"RQ Worker logging level set to: {logging_level}")
     logger.info(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 

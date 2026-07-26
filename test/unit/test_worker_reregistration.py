@@ -560,6 +560,7 @@ def test_execute_job_waits_until_its_heartbeat_thread_has_exited(monkeypatch):
         release_heartbeat.wait(2)
         heartbeat_exited.set()
 
+    monkeypatch.setattr(rhw, 'hydrate_worker_config', lambda: True)
     monkeypatch.setattr(rhw.HeartbeatSimpleWorker, '_heartbeat_loop', blocked_loop)
     monkeypatch.setattr(rhw.SimpleWorker, 'execute_job', lambda self, _job, _queue: 'finished')
 
@@ -585,3 +586,20 @@ def test_execute_job_waits_until_its_heartbeat_thread_has_exited(monkeypatch):
     assert result == ['finished']
     assert worker._execution_heartbeat_stop is None
     assert worker._execution_heartbeat_lock is None
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_every_job_rechecks_the_config_hydration_before_running(worker_cls, monkeypatch):
+    worker, _ = _make_worker(worker_cls)
+    job = types.SimpleNamespace(id='job-rehydrate')
+    calls = []
+
+    monkeypatch.setattr(rhw, 'hydrate_worker_config', lambda: calls.append('hydrated'))
+    monkeypatch.setattr(
+        rhw.HeartbeatSimpleWorker, '_heartbeat_loop', lambda self, *args: None
+    )
+    monkeypatch.setattr(rhw.SimpleWorker, 'execute_job', lambda self, _job, _queue: 'ran')
+    monkeypatch.setattr(rhw.Worker, 'execute_job', lambda self, _job, _queue: 'ran')
+
+    assert worker.execute_job(job, None) == 'ran'
+    assert calls == ['hydrated']

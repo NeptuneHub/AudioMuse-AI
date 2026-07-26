@@ -44,6 +44,10 @@ Main Features:
 * ReregisterOnHeartbeatMixin: SADDs the worker back into rq:workers after every
   heartbeat, clears false death stamps, re-EXPIREs the worker key, and restores
   identity lost to an idle-time outage from rq's own serialize().
+* Both worker classes re-check the config hydration before each job, so a worker
+  that booted before Postgres was reachable heals at the first job boundary (the
+  database is provably up then: Flask just enqueued the job) instead of running
+  on env-only values for its whole life; a healthy boot skips it in one flag read.
 * HeartbeatSimpleWorker: runs perform_job on the main thread while a daemon thread
   calls maintain_heartbeats, giving SimpleWorker the liveness signal the forking
   worker gets for free; also carries the re-registration mixin.
@@ -59,10 +63,16 @@ import threading
 from rq import SimpleWorker, Worker, worker_registration
 from rq.exceptions import StopRequested
 
+from tasks.setup_manager import hydrate_worker_config
+
 logger = logging.getLogger(__name__)
 
 
 class ReregisterOnHeartbeatMixin:
+    def execute_job(self, job, queue):
+        hydrate_worker_config()
+        return super().execute_job(job, queue)
+
     def heartbeat(self, timeout=None, pipeline=None):
         timeout = timeout or self.worker_ttl + 60
         super().heartbeat(timeout, pipeline)

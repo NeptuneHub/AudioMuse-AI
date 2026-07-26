@@ -979,8 +979,8 @@ DB_OVERRIDES_LOADED = False
 DB_DEFAULT_SERVER_PROJECTED = False
 
 
+# Reload this module from the current database and environment.
 def refresh_config():
-    """Reload the config module from the current database and environment."""
     import importlib
     import sys
     importlib.reload(sys.modules[__name__])
@@ -1029,13 +1029,11 @@ def _apply_db_overrides():
 
         HEADERS = _compute_headers()
         DB_OVERRIDES_LOADED = True
-    except Exception as _exc:
-        # Importing config must never fail because the database is unreachable: a
-        # worker started before Postgres keeps the env-only values. refresh_config
-        # stays a real reload (NOT a no-op stub) so that process can pick the
-        # settings up later instead of running blind for its whole life.
+    except Exception:
+        # A dead database must never fail config import: the process keeps its
+        # env-only values and a later refresh_config() can still heal it.
         import logging
-        logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
+        logging.getLogger(__name__).warning("Could not load config overrides from DB", exc_info=True)
 
 
 _apply_db_overrides()

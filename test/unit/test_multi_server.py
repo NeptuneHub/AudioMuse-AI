@@ -378,6 +378,18 @@ class TestServerScopes:
         monkeypatch.setattr(registry, 'list_servers', boom)
         assert registry.servers_for_scope('all') == [None]
 
+    def test_a_lost_connection_fails_the_batch_instead_of_shrinking_it_to_default(self, monkeypatch):
+        import psycopg2
+
+        from tasks.mediaserver import registry
+
+        def dropped(conn=None):
+            raise psycopg2.OperationalError('connection lost')
+
+        monkeypatch.setattr(registry, 'list_servers', dropped)
+        with pytest.raises(psycopg2.OperationalError):
+            registry.servers_for_scope('all')
+
     def test_default_scope_returns_only_default(self, monkeypatch):
         from tasks.mediaserver import registry
 
@@ -2222,11 +2234,7 @@ class TestSonicFingerprintDefaultsPerServer:
 
 
 class TestUseRequestServerBinding:
-    DEFAULT_ROW = {
-        'server_id': 'def', 'name': 'Main', 'server_type': 'jellyfin',
-        'creds': {'url': 'http://jf:8096', 'user_id': 'uid', 'token': 'tok'},
-        'music_libraries': '', 'is_default': True,
-    }
+    DEFAULT_ROW = TestDefaultServerContextSelfHeal.DEFAULT_ROW
     SECONDARY_ROW = {
         'server_id': 's2', 'name': 'Nav', 'server_type': 'navidrome',
         'creds': {'url': 'http://nd', 'user': 'bob', 'password': 'p'},
@@ -2234,20 +2242,10 @@ class TestUseRequestServerBinding:
     }
 
     @classmethod
-    def _bound_id(cls, monkeypatch, selected):
-        import app_server_context
-        import config
-        from flask import Flask
-        from tasks.mediaserver import context, registry
+    def _patch_binding(cls, monkeypatch):
+        from tasks.mediaserver import registry
 
-        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'jellyfin', raising=False)
-        monkeypatch.setattr(config, 'MUSIC_LIBRARIES', '', raising=False)
-        monkeypatch.setattr(config, 'JELLYFIN_URL', 'http://jf:8096', raising=False)
-        monkeypatch.setattr(config, 'JELLYFIN_USER_ID', 'uid', raising=False)
-        monkeypatch.setattr(config, 'JELLYFIN_TOKEN', 'tok', raising=False)
-        monkeypatch.setattr(
-            app_server_context, 'resolve_request_server_id', lambda data=None: selected
-        )
+        TestDefaultServerContextSelfHeal._patch_config(monkeypatch)
         monkeypatch.setattr(registry, 'get_db', lambda: MagicMock(), raising=False)
         monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: dict(cls.DEFAULT_ROW))
         monkeypatch.setattr(
@@ -2255,6 +2253,17 @@ class TestUseRequestServerBinding:
             lambda sid, conn=None: dict(cls.SECONDARY_ROW) if sid == 's2' else None,
         )
         registry.invalidate_server_cache()
+
+    @classmethod
+    def _bound_id(cls, monkeypatch, selected):
+        import app_server_context
+        from flask import Flask
+        from tasks.mediaserver import context
+
+        cls._patch_binding(monkeypatch)
+        monkeypatch.setattr(
+            app_server_context, 'resolve_request_server_id', lambda data=None: selected
+        )
 
         app = Flask('use-request-server-test')
         with app.test_request_context('/api/whatever'):
@@ -2269,6 +2278,34 @@ class TestUseRequestServerBinding:
 
     def test_no_selection_leaves_the_union_catalogue_unscoped(self, monkeypatch):
         assert self._bound_id(monkeypatch, None) == (None, None)
+
+    def test_binding_a_vanished_server_id_raises_instead_of_scoping_to_default(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        self._patch_binding(monkeypatch)
+        with pytest.raises(ValueError):
+            registry.bind({'server_id': 'ghost'})
+
+
+class TestPluginApiUseServerBinding:
+    @classmethod
+    def _bound_id(cls, monkeypatch, selected):
+        from plugin import api as plugin_api
+        from tasks.mediaserver import context
+
+        TestUseRequestServerBinding._patch_binding(monkeypatch)
+
+        with plugin_api.use_server(selected):
+            return context.active_server_id()
+
+    def test_explicitly_passing_the_default_server_id_still_scopes_to_it(self, monkeypatch):
+        assert self._bound_id(monkeypatch, 'def') == 'def'
+
+    def test_passing_a_secondary_server_scopes_to_that_server(self, monkeypatch):
+        assert self._bound_id(monkeypatch, 's2') == 's2'
+
+    def test_none_keeps_the_legacy_unscoped_default(self, monkeypatch):
+        assert self._bound_id(monkeypatch, None) is None
 
 
 class TestRegistrySeeding:

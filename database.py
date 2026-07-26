@@ -16,7 +16,8 @@ Main Features:
 * Connection management plus ``init_db`` table/index creation and migrations. A
   worker job holds ONE app context for its whole run, so ``get_db`` drops a
   cached connection the server closed under it (a database restart, an idle
-  timeout) and reconnects instead of handing back a dead handle for hours.
+  timeout), fails that unit of work once with ``ConnectionLostError`` (an
+  ``OperationalError`` subclass), and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped history rows.
 * Embedding, projection, and alchemy CRUD helpers shared by workers and the web app.
 """
@@ -77,33 +78,25 @@ _embedded_server = None
 _CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gather=0'
 
 
+class ConnectionLostError(psycopg2.OperationalError):
+    pass
+
+
 def get_db():
     cached = g.get('db')
     if cached is not None and cached.closed:
         g.pop('db', None)
-        # psycopg2 sets closed to 2 only when the SERVER dropped the connection, so
-        # whatever this app context had not committed is already gone. Finishing the
-        # unit of work on a second connection would let a helper called with
-        # conn=None commit its half while the caller's statements stayed lost, so
-        # fail here instead; the next call opens a clean connection.
         if cached.closed == 2:
             logger.error(
                 "The database connection was dropped by the server while this app "
                 "context held it; failing this unit of work rather than finishing "
                 "it on a second connection."
             )
-            raise psycopg2.InterfaceError("database connection lost, retry the operation")
+            raise ConnectionLostError("database connection lost, retry the operation")
         logger.warning("Cached database connection was closed; reconnecting.")
     if 'db' not in g:
         try:
-            g.db = psycopg2.connect(
-                config.DATABASE_URL,
-                connect_timeout=30,
-                keepalives_idle=600,
-                keepalives_interval=30,
-                keepalives_count=3,
-                options=_CONNECT_OPTIONS,
-            )
+            g.db = connect_raw()
         except psycopg2.OperationalError:
             logger.exception("Failed to connect to database")
             raise
@@ -317,7 +310,10 @@ def save_task_status(
     progress=0,
     details=None,
 ):
-    db = get_db()
+    try:
+        db = get_db()
+    except ConnectionLostError:
+        db = get_db()
     current_unix_time = time.time()
 
     if details is not None:
