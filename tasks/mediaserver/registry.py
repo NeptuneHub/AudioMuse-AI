@@ -28,6 +28,14 @@ Main Features:
   caller-supplied provider ids into canonical ids (fail-open pass-through).
 * ``servers_for_scope`` / ``has_secondary_servers`` resolve which servers a
   multi-server operation should touch (None = legacy config default).
+* Self-heals the default server: the config globals are projected once, when the
+  config module is imported, so a worker that boots before the database is
+  reachable (or before the 3.0 migration filled the registry) keeps EMPTY
+  media-server settings for the life of the process and every default-server call
+  builds a URL like '/Items'; a worker that was never restarted after a wizard
+  change keeps the OLD ones and talks to the wrong machine. ``context_for``
+  compares the projection field by field against the default row and binds the row
+  itself whenever they disagree, instead of returning None.
 """
 
 import logging
@@ -50,6 +58,7 @@ _COLUMNS = (
 _DEFAULT_CACHE_TTL = 10.0
 _default_cache = {'expires': 0.0, 'row': None, 'secondary_expires': 0.0, 'secondary': None}
 _default_cache_lock = threading.Lock()
+_warned_once = {'projection': False, 'row': False}
 
 
 def invalidate_server_cache():
@@ -58,6 +67,16 @@ def invalidate_server_cache():
         _default_cache['row'] = None
         _default_cache['secondary_expires'] = 0.0
         _default_cache['secondary'] = None
+        _warned_once['projection'] = False
+        _warned_once['row'] = False
+
+
+def _warn_once(key):
+    with _default_cache_lock:
+        if _warned_once[key]:
+            return False
+        _warned_once[key] = True
+        return True
 
 
 def _rollback(db):
@@ -158,7 +177,9 @@ def servers_for_scope(scope, conn=None):
 
     Returns a list of normalized server dicts; a ``None`` element means 'legacy
     config default, bind no context'. An empty/unreadable registry yields
-    ``[None]`` so single-server installs behave exactly as before.
+    ``[None]`` so single-server installs behave exactly as before - but a lost
+    database connection propagates, so a batch run fails (and is retried)
+    instead of silently shrinking to a default-only run that reports SUCCESS.
     ``scope == 'default'`` returns only the default server; ``'all'`` (or any
     falsy scope) returns every configured server; anything else is treated as
     one specific server's id or display name and returns just that server
@@ -166,6 +187,8 @@ def servers_for_scope(scope, conn=None):
     """
     try:
         servers = list_servers(conn)
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        raise
     except Exception:
         logger.exception("Server registry unavailable; using the legacy config default")
         return [None]
@@ -208,17 +231,61 @@ def has_secondary_servers(conn=None):
     return result
 
 
+def _config_projection_lost(default):
+    server_type = (default.get('server_type') or '').strip().lower()
+    if (config.MEDIASERVER_TYPE or '').strip().lower() != server_type:
+        return True
+    if (config.MUSIC_LIBRARIES or '') != (default.get('music_libraries') or ''):
+        return True
+    row_creds = default.get('creds') or {}
+    projected = creds_from_config(server_type)
+    return any(
+        value != (row_creds.get(key) or '') for key, value in projected.items()
+    )
+
+
+def _default_context(default):
+    if default is None:
+        return None
+    missing = missing_required_creds(default['server_type'], default['creds'])
+    if missing:
+        if _warn_once('row'):
+            logger.error(
+                "Default server '%s' has no %s stored in the registry, so nothing can "
+                "reach it. Fix it in the setup wizard.",
+                default['name'], ', '.join(missing),
+            )
+        return None
+    if not _config_projection_lost(default):
+        return None
+    if _warn_once('projection'):
+        logger.warning(
+            "This process's config does not match default server '%s' (it started "
+            "before the database had those settings, or they changed since); binding "
+            "the registry row directly. Restart the process to reload the config "
+            "module.",
+            default['name'],
+        )
+    return default
+
+
 def context_for(server_id, conn=None):
     """Return the context dict for ``server_id``, or None to mean 'use config default'.
 
     Returning None for the default server keeps its code path byte-identical to
-    the historical single-server behaviour (provider backends fall back to config).
+    the historical single-server behaviour (provider backends fall back to config)
+    - but ONLY while those config globals still agree with the default row. When
+    they do not (a worker that imported config before the database was reachable,
+    or that never saw a later wizard change), the row itself is bound so the call
+    reaches the right server instead of an empty URL or a stale one. A default row
+    with no usable credentials is never bound: the config fallback is left in place
+    and the operator is told to fix the row.
     """
     db = conn or get_db()
     default = get_default_server(db if conn is not None else None)
     default_id = default["server_id"] if default else None
     if not server_id or server_id == default_id:
-        return None
+        return _default_context(default)
     server = get_server(server_id, db)
     if server is not None:
         # Providers read a missing credential from the config globals, which are
@@ -254,12 +321,8 @@ def bind(server, conn=None):
         return ms_context.use_server(None)
     ctx = context_for(server_id, conn)
     if ctx is None:
-        # The DEFAULT server: context_for returns None so provider calls fall back
-        # to the config globals. Bind the id alone anyway, or active_server_id() is
-        # None and every availability-scoped reader (the IVF mask, song alchemy,
-        # sonic fingerprint, radio) silently searches the WHOLE union catalogue and
-        # then drops the foreign hits at playlist time. With only server_id set,
-        # type/creds/libraries still resolve from config exactly as before.
+        if not server.get('is_default') and server_id != get_default_server_id(conn):
+            raise ValueError(f"Unknown music server '{server_id}'")
         ctx = {'server_id': server_id}
     return ms_context.use_server(ctx)
 

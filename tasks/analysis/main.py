@@ -74,7 +74,7 @@ from database import (
     get_db,
 )
 from redis.exceptions import TimeoutError as RedisTimeoutError
-from psycopg2 import OperationalError
+from psycopg2 import InterfaceError, OperationalError
 
 from error import error_manager
 from error.error_dictionary import (
@@ -706,6 +706,8 @@ def _enabled_analysis_servers(server_scope):
     with app.app_context():
         try:
             return registry.servers_for_scope(server_scope)
+        except (OperationalError, InterfaceError):
+            raise
         except Exception:
             logger.exception("Server registry unavailable; analyzing the config default only")
             return [None]

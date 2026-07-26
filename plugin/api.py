@@ -178,7 +178,9 @@ def use_server(server_id):
     """
     from tasks.mediaserver import context as ms_context, registry as ms_registry
 
-    return ms_context.use_server(ms_registry.context_for(server_id) if server_id else None)
+    if not server_id:
+        return ms_context.use_server(None)
+    return ms_registry.bind({'server_id': server_id})
 
 
 class PluginContext:
