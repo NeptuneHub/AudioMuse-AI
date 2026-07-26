@@ -469,8 +469,37 @@ And the methods on the `ctx` object in `register(ctx)`:
 | `add_task(name, func, queue='default')` | Register a named worker task. It appears on the Scheduled Tasks page like a cron task, so the admin can schedule it or run it now. |
 | `on_install(func)` | Run once at install and on every update. Gets the database connection. |
 | `on_flask_start(func)` / `on_worker_start(func)` | Run at every start of that container, after the plugin loads. |
-| `register_onnx_provider(name, options, position, only_models=None, exclude_models=None)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. Scope it to specific models with `only_models`/`exclude_models` (lists of the session `label`: `musicnn`, `clap`, `whisper_encoder`, ...) when the provider can only parse some graphs. |
-| `register_analysis_provider(component, factory)` | Advanced: replace a whole analysis component with a plugin-supplied implementation. `component` is currently `asr` (the Whisper backend); `factory` is the replacement module/object (or a zero-arg callable returning one) matching the built-in surface `load_whisper_model`/`transcribe`/`is_loaded`/`unload`. Consulted before the built-in. |
+| `register_onnx_provider(name, options, position, only_models=None, exclude_models=None, needs_static_shapes=False)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. See "Offer an ONNX execution provider" below. |
+| `register_analysis_provider(component, factory, cache=True)` | Advanced: replace a whole analysis component with a plugin-supplied implementation. `component` is currently `asr` (the Whisper backend); `factory` is the replacement module/object (or a zero-arg callable returning one) matching the built-in surface `load_whisper_model`/`transcribe`/`is_loaded`/`unload`. Consulted before the built-in; an unknown `component` or a backend missing part of that surface is ignored with a warning in the logs, and the built-in is used. `cache=True` (the default) resolves a callable `factory` once and reuses the result, like the built-in modules, which stay loaded for a whole album; pass `cache=False` to be called for every use, and then unload what you hand out yourself. |
+
+### Offer an ONNX execution provider
+
+`register_onnx_provider` adds your provider to the chain AudioMuse-AI builds for every analysis model. `position` is `before_cpu` (the default) or `before_cuda` when your provider should win over CUDA. Set `needs_static_shapes=True` if your graph compiler cannot handle symbolic dimensions, so core pins them before it builds the session (the CLAP audio model needs this).
+
+Scope the provider to the models it can actually compile with `only_models`/`exclude_models`. Both take a session label or a list of them; an unknown label is logged as a warning. The labels are:
+
+| Label | Model | Default without a plugin |
+|---|---|---|
+| `musicnn` | MusiCNN embedding + prediction | CUDA, else CPU |
+| `clap` | CLAP audio model | CUDA / CoreML, else CPU |
+| `clap_text` | CLAP text model, on the worker | CUDA, else CPU |
+| `whisper_encoder` | Whisper encoder (lyrics) | CUDA, else CPU |
+| `whisper_decoder` | Whisper decoder (lyrics) | CUDA, else CPU |
+| `gte` | GTE lyrics text embedding | CPU only |
+| `silero_vad` | Silero voice activity detection | CPU only |
+
+The last two are CPU by default and stay that way unless a plugin names them in `only_models`, so nothing changes for a normal user. The CLAP text model runs on CPU in the Flask process for thread safety and is not offered to plugins there; `clap_text` applies on the worker only.
+
+```python
+def register(ctx):
+    # A provider that handles MusiCNN and the Whisper encoder, but not the
+    # decoder and not CLAP.
+    ctx.register_onnx_provider(
+        'MyExecutionProvider',
+        {'device_id': 0},
+        only_models=['musicnn', 'whisper_encoder'],
+    )
+```
 
 ## Who can see and manage plugins
 

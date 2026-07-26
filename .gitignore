@@ -29,6 +29,8 @@ env/
 # IDE and editor configuration
 .vscode/
 .idea/
+.tokensave
+.claude/.headroom_wrap_marker.json
 
 # macOS Finder / metadata files
 .DS_Store
@@ -76,3 +78,4 @@ analysis.md
 .claude/
 lyrics_model_gte_vnni.tar.gz
 native-build/windows/vendor/redis/amd64/redis-server.exe
+.venv-test

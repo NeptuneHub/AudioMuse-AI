@@ -190,6 +190,13 @@ _PLUGIN_ROLES = ('flask', 'worker')
 _LOADED_STATUSES = ('ok', 'deps_failed')
 
 
+def _analysis_provider_entry(value):
+    """Normalize a stored analysis provider to ``{'factory': ..., 'cache': bool}``."""
+    if isinstance(value, dict) and 'factory' in value:
+        return {'factory': value['factory'], 'cache': bool(value.get('cache', True))}
+    return {'factory': value, 'cache': True}
+
+
 def _plugin_targets(manifest):
     raw = (manifest or {}).get('targets')
     if not raw:
@@ -272,6 +279,7 @@ class PluginManager:
         self._boot_snapshot = None
         self._runtime_dirty = False
         self.last_pip_error = None
+        self._analysis_provider_cache = {}
 
     def enabled(self):
         return bool(config.PLUGINS_ENABLED)
@@ -309,6 +317,7 @@ class PluginManager:
         return _role_target(role) in _plugin_targets(record.get('manifest'))
 
     def sync(self, conn=None, role=None):
+        self._analysis_provider_cache = {}
         if not self.enabled():
             self.records = {}
             return
@@ -860,19 +869,35 @@ class PluginManager:
         """Return the first loaded plugin's replacement for ``component``, or None.
 
         Resolves ``factory`` to the actual implementation (calling it when it is a
-        zero-arg callable). Used by core to let a plugin swap out a whole analysis
-        step such as the ASR/Whisper backend.
+        zero-arg callable) and reuses that result unless the plugin registered with
+        ``cache=False``, so a model is not rebuilt on every call. Used by core to
+        let a plugin swap out a whole analysis step such as the ASR/Whisper backend.
         """
-        for record in self.records.values():
-            if record.get('load_status') not in _LOADED_STATUSES:
-                continue
-            factory = record.get('analysis_providers', {}).get(component)
-            if factory is None:
-                continue
+        if component in self._analysis_provider_cache:
+            return self._analysis_provider_cache[component]
+        owners = [
+            plugin_id for plugin_id, record in self.records.items()
+            if record.get('load_status') in _LOADED_STATUSES
+            and record.get('analysis_providers', {}).get(component) is not None
+        ]
+        if len(owners) > 1:
+            logger.warning(
+                'Plugins %s all provide the analysis component %r; using %s',
+                ', '.join(owners), component, owners[0],
+            )
+        for plugin_id in owners:
+            entry = _analysis_provider_entry(
+                self.records[plugin_id]['analysis_providers'][component]
+            )
             try:
-                return factory() if callable(factory) else factory
+                factory = entry['factory']
+                provider = factory() if callable(factory) else factory
             except Exception:
                 logger.exception('Plugin analysis provider for %r failed to resolve', component)
+                continue
+            if entry['cache']:
+                self._analysis_provider_cache[component] = provider
+            return provider
         return None
 
     def song_analyzed_hooks(self):

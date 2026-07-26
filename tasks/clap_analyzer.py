@@ -51,8 +51,22 @@ _SEGMENT_LENGTH_SAMPLES = 480000
 
 # Providers whose graph compiler needs the CLAP audio model's symbolic
 # time-frame axis pinned to a fixed value before it can compile the graph
-# (neither compiles a dynamic dim).
-_PREPARED_MODEL_PROVIDERS = {'CoreMLExecutionProvider', 'MIGraphXExecutionProvider'}
+# (none of them compiles a dynamic dim). Plugin providers join this set by
+# registering with needs_static_shapes=True, so core never has to know their names.
+_PREPARED_MODEL_PROVIDERS = {'CoreMLExecutionProvider'}
+
+
+def _static_shape_providers():
+    providers = set(_PREPARED_MODEL_PROVIDERS)
+    try:
+        from plugin.manager import plugin_manager
+
+        for provider in plugin_manager.get_onnx_providers():
+            if provider.get('needs_static_shapes') and provider.get('name'):
+                providers.add(provider['name'])
+    except Exception:
+        logger.debug('Could not read plugin ONNX providers', exc_info=True)
+    return providers
 
 
 def _prepared_model_bytes(model_path):
@@ -139,7 +153,7 @@ def _load_audio_model():
     cpu_opts = [{}]
 
     preferred_model_input = model_path
-    if _PREPARED_MODEL_PROVIDERS.intersection(preferred_providers):
+    if _static_shape_providers().intersection(preferred_providers):
         try:
             prepared_bytes = _prepared_model_bytes(model_path)
             if prepared_bytes is not None:
@@ -198,7 +212,6 @@ def _load_text_model():
     sess_options = _clap_session_options("Text")
 
     session = None
-    available_providers = ort.get_available_providers()
     _is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
 
     if not _is_worker:
@@ -206,24 +219,17 @@ def _load_text_model():
         logger.info(
             "CLAP text model: CPU only (Flask process) - thread-safe across request threads"
         )
-    elif 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(
-            f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})"
-        )
     else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+        from tasks.analysis.song import resolve_providers
+
+        provider_options = resolve_providers(
+            cuda_options={
+                'device_id': 0,
+                'arena_extend_strategy': 'kSameAsRequested',
+                'cudnn_conv_algo_search': 'DEFAULT',
+            },
+            label='clap_text',
+        )
 
     try:
         session = ort.InferenceSession(
