@@ -521,9 +521,9 @@ Keep in mind that `admin_only` hides the menu link only. The page URL under `/pl
 
 ## What works on each build
 
-Nearly everything a plugin can do works the same on Docker, Kubernetes and the Windows and macOS standalone builds. The only real difference is extra pip packages.
+Nearly everything a plugin can do works the same on Docker, Kubernetes and the Windows, macOS and Linux standalone builds. The only real difference is extra pip packages.
 
-| Capability | Docker / Kubernetes | Windows / macOS standalone |
+| Capability | Docker / Kubernetes | Windows / macOS / Linux standalone |
 |---|---|---|
 | Pages, menu items, settings page | Yes | Yes |
 | Read and write the database, own tables | Yes | Yes |
@@ -545,6 +545,8 @@ The plugin system works out of the box. These environment variables let an admin
 | `PLUGIN_DEFAULT_REPO_URL` | community catalog | The catalog that is always present. Point it at your own `manifest.json` to replace the community one. |
 | `PLUGIN_MAX_DOWNLOAD_MB` | `50` | Maximum size of one plugin download. |
 | `PLUGIN_CATALOG_REFRESH_INTERVAL` | `3600` | How often (seconds) the catalog is checked for new versions in the background. |
+| `PLUGIN_CATALOG_CACHE_TTL` | `900` | How long (seconds) an already fetched catalog is reused before it is fetched again when you open the Catalog tab. |
+| `PLUGIN_CATALOG_FETCH_WORKERS` | `8` | How many plugin manifests are fetched in parallel when the catalog is refreshed. |
 | `PLUGIN_HTTP_FORCE_IPV4` | `true` | Use IPv4 for plugin downloads. Set `false` only on an IPv6-only host. |
 | `PLUGIN_HTTP_CONNECT_TIMEOUT` / `PLUGIN_HTTP_READ_TIMEOUT` | `10` / `20` | Seconds to wait when connecting to and reading from a plugin repository. Raise them on a very slow network. |
 | `PLUGIN_HTTP_RETRIES` / `PLUGIN_HTTP_BACKOFF` | `4` / `0.5` | How many times a failed download is retried and how fast the wait between tries grows. |

@@ -14,7 +14,9 @@ re-exports the most-used ``database`` / ``taskqueue`` handles so the many
 modules doing ``from app_helper import get_db, redis_conn, ...`` stay untouched.
 
 Main Features:
-* ``cancel_job_and_children_recursive`` recursively cancels an RQ job tree.
+* ``cancel_job_and_children_recursive`` recursively cancels an RQ job tree;
+  ``revoke_inline_task_row`` handles the tasks that run in the web process with no
+  RQ job, revoking only their row instead of wiping the queues to reach nothing.
 * ``build_and_store_map_projection`` / ``build_and_store_artist_projection``
   compute a 2D projection and persist it; ``attach_song_features`` /
   ``top_stratified_genre`` enrich API result rows.
@@ -31,6 +33,7 @@ import database
 from database import (  # noqa: F401
     get_db,
     close_db,
+    INLINE_FLASK_TASK_TYPES,
     save_task_status,
     record_task_history,
     _build_task_note,
@@ -410,6 +413,38 @@ def build_and_store_artist_projection(index_name='artist_map'):
     except Exception:
         logger.exception("Failed to build and store artist projection")
         return False
+
+
+_INLINE_CANCEL_MESSAGE = (
+    "Cancelled. This task runs inside the web process and cannot be interrupted "
+    "mid-step, so a step already in flight still finishes."
+)
+
+
+def revoke_inline_task_row(task_id):
+    """Revoke ONLY this row when task_id is an in-process task, else return None.
+
+    An inline task (the alchemy radio) is never enqueued, so the global cancel
+    below would stop nothing while still emptying both RQ queues and deleting every
+    task_status row - destroying unrelated queued work to cancel something it cannot
+    reach. Revoking the one row clears it from the UI, which is what Stop is for.
+    """
+    try:
+        task_info = get_task_info_from_db(task_id)
+    except Exception:
+        logger.exception("Could not read task %s before cancelling", task_id)
+        return None
+    if not task_info or task_info.get('task_type') not in INLINE_FLASK_TASK_TYPES:
+        return None
+    save_task_status(
+        task_id, task_info['task_type'], TASK_STATUS_REVOKED, progress=100,
+        details={
+            'message': _INLINE_CANCEL_MESSAGE,
+            'status_message': _INLINE_CANCEL_MESSAGE,
+        },
+    )
+    logger.info("Revoked in-process task row %s without touching the queues.", task_id)
+    return _INLINE_CANCEL_MESSAGE
 
 
 def cancel_job_and_children_recursive(

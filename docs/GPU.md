@@ -5,25 +5,25 @@ NVidia GPU **EXPERIMENTAL** support is available for analysis task in the worker
 We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING OutOFMemory error (that are handled by switching to CPU). The `PER_SONG_MODEL_RELOAD` env variable, that by default is TRUE, help cleaning the memory by entirely reloading the model each time, on the other side it slow the analysis process.
 
 
-**NEW:** GPU-accelerated clustering is now available using RAPIDS cuML. This can provide **10-30x speedup** for clustering tasks.
+GPU-accelerated clustering is also available through RAPIDS cuML. It can give a **10-30x speedup** on clustering tasks.
 
 **Features:**
 - GPU-accelerated KMeans, DBSCAN, and PCA using RAPIDS cuML
-- Automatic fallback to CPU if GPU is unavailable or encounters errors
-- Supports all existing clustering configurations and parameters
-- Compatible with NVIDIA GPUs with CUDA 12.8.1+ (*)
+- Automatic fallback to CPU if the GPU is unavailable or hits an error
+- Works with all existing clustering configurations and parameters
+- Compatible with NVIDIA GPUs on CUDA 12.8.1 or later (*)
 
-(*) Old driver are NOT supported from the actual build but you can try on your own to build your image like in https://github.com/NeptuneHub/AudioMuse-AI/issues/265
+(*) Older drivers are NOT supported by the published build, but you can try to build your own image as described in https://github.com/NeptuneHub/AudioMuse-AI/issues/265
 
 **To enable GPU clustering:**
 
-1. Use the NVIDIA Docker image (e.g., `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`)
-2. Set environment variable in your `.env` file:
+1. Use the NVIDIA image (for example `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`)
+2. Set the value in your `.env` file, or in the Setup Wizard:
    ```
    USE_GPU_CLUSTERING=true
    ```
-3. Ensure NVIDIA Container Toolkit is installed on your host
-4. Use docker-compose files with GPU support (e.g., `docker-compose-nvidia.yaml` or `docker-compose-worker-nvidia.yaml`)
+3. Make sure the NVIDIA Container Toolkit is installed on the host
+4. Use the GPU compose file `deployment/docker-compose-nvidia.yaml`. Worker-only GPU examples are kept in `deployment/deprecated/`
 
 **Performance Impact:**
 - **KMeans**: 10-50x faster than CPU
@@ -31,9 +31,10 @@ We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING Ou
 - **PCA**: 10-40x faster than CPU
 - **Overall clustering task**: 10-30x speedup for typical workloads (5000 iterations)
 
-**Example:** A clustering task that takes 2-4 hours on CPU may complete in 5-15 minutes on GPU.
+**Example:** A clustering task that takes 2-4 hours on CPU may finish in 5-15 minutes on GPU.
 
 **Notes:**
-- GaussianMixture and SpectralClustering use CPU (no GPU implementation available)
+- GMM and Spectral clustering stay on CPU, there is no cuML implementation for them in this build
 - GPU clustering is disabled by default (`USE_GPU_CLUSTERING=false`)
-- GPU is already used for audio analysis models (ONNX inference)
+- The GPU is also used by the audio analysis models (ONNX inference)
+- The index build and the similarity queries are not GPU accelerated; they are IO bound rather than compute bound, see [ALGORITHM](ALGORITHM.md#4-similarity-indexes-disk-paged-ivf)

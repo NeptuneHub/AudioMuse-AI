@@ -9,10 +9,14 @@ nav:
   - Home: index.md
   - Algorithm: ALGORITHM.md
   - Architecture: ARCHITECTURE.md
+  - Multiple Music Servers: MULTI_SERVER.md
   - Deployment: DEPLOYMENT.md
-  - FAQ: FAQ.md
+  - Navidrome Setup: NAVIDROME.md
   - GPU: GPU.md
   - Parameters: PARAMETERS.md
   - Authentication: AUTH.md
+  - Plugins: PLUGIN.md
+  - Error Codes: ERROR_CODES.md
+  - FAQ: FAQ.md
 
 theme: readthedocs
