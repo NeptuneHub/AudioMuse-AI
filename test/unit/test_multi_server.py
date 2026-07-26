@@ -242,18 +242,20 @@ class TestDefaultServerContextSelfHeal:
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: dict(row))
-        monkeypatch.setattr(registry, '_projection_warned', False, raising=False)
+        registry.invalidate_server_cache()
 
     @staticmethod
-    def _patch_config(monkeypatch, server_type='jellyfin', url='http://jf:8096'):
+    def _patch_config(monkeypatch, server_type='jellyfin', url='http://jf:8096',
+                      user_id='uid', token='tok', libraries=''):
         import config
 
         monkeypatch.setattr(config, 'MEDIASERVER_TYPE', server_type, raising=False)
+        monkeypatch.setattr(config, 'MUSIC_LIBRARIES', libraries, raising=False)
         monkeypatch.setattr(config, 'JELLYFIN_URL', url, raising=False)
-        monkeypatch.setattr(config, 'JELLYFIN_USER_ID', 'uid' if url else '', raising=False)
-        monkeypatch.setattr(config, 'JELLYFIN_TOKEN', 'tok' if url else '', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_USER_ID', user_id, raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_TOKEN', token, raising=False)
 
-    def test_projected_config_keeps_the_default_server_on_the_config_path(self, monkeypatch):
+    def test_projection_matching_the_default_row_keeps_it_on_the_config_path(self, monkeypatch):
         from tasks.mediaserver import registry
 
         self._patch_registry(monkeypatch, self.DEFAULT_ROW)
@@ -266,37 +268,90 @@ class TestDefaultServerContextSelfHeal:
         from tasks.mediaserver import registry
 
         self._patch_registry(monkeypatch, self.DEFAULT_ROW)
-        self._patch_config(monkeypatch, url='')
+        self._patch_config(monkeypatch, url='', user_id='', token='')
 
         ctx = registry.context_for('def', conn=MagicMock())
         assert ctx['creds']['url'] == 'http://jf:8096'
         assert ctx['server_id'] == 'def'
 
-    def test_config_type_disagreeing_with_the_default_row_binds_the_registry_row(self, monkeypatch):
+    def test_config_naming_another_provider_binds_the_registry_row(self, monkeypatch):
         from tasks.mediaserver import registry
 
         self._patch_registry(monkeypatch, self.DEFAULT_ROW)
-        self._patch_config(monkeypatch, server_type='')
+        self._patch_config(monkeypatch, server_type='navidrome')
 
         assert registry.context_for('def', conn=MagicMock())['server_type'] == 'jellyfin'
+
+    def test_stale_url_left_by_a_wizard_change_binds_the_registry_row(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        self._patch_registry(monkeypatch, self.DEFAULT_ROW)
+        self._patch_config(monkeypatch, url='http://old-jf:8096')
+
+        assert registry.context_for('def', conn=MagicMock())['creds']['url'] == 'http://jf:8096'
+
+    def test_stale_token_left_by_a_wizard_change_binds_the_registry_row(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        self._patch_registry(monkeypatch, self.DEFAULT_ROW)
+        self._patch_config(monkeypatch, token='revoked')
+
+        assert registry.context_for('def', conn=MagicMock())['creds']['token'] == 'tok'
+
+    def test_library_filter_disagreeing_with_the_default_row_binds_the_registry_row(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        row = dict(self.DEFAULT_ROW, music_libraries='Music')
+        self._patch_registry(monkeypatch, row)
+        self._patch_config(monkeypatch, libraries='')
+
+        assert registry.context_for('def', conn=MagicMock())['music_libraries'] == 'Music'
 
     def test_worker_that_never_hydrated_config_still_builds_a_real_provider_url(self, monkeypatch):
         from tasks.mediaserver import context, jellyfin, registry
 
         self._patch_registry(monkeypatch, self.DEFAULT_ROW)
-        self._patch_config(monkeypatch, url='')
+        self._patch_config(monkeypatch, url='', user_id='', token='')
 
         with context.use_server(registry.context_for('def', conn=MagicMock())):
             assert jellyfin._jellyfin_base_url() == 'http://jf:8096'
             assert context.active_type('none') == 'jellyfin'
 
+    def test_default_row_without_credentials_is_never_bound_over_a_usable_config(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        self._patch_registry(monkeypatch, dict(self.DEFAULT_ROW, creds={}))
+        self._patch_config(monkeypatch)
+
+        assert registry.context_for('def', conn=MagicMock()) is None
+
     def test_no_default_server_configured_still_means_the_config_path(self, monkeypatch):
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: None)
-        monkeypatch.setattr(registry, '_projection_warned', False, raising=False)
 
         assert registry.context_for(None, conn=MagicMock()) is None
+
+    def test_warning_latch_is_rearmed_when_the_server_cache_is_invalidated(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        self._patch_registry(monkeypatch, self.DEFAULT_ROW)
+        self._patch_config(monkeypatch, url='', user_id='', token='')
+
+        registry.context_for('def', conn=MagicMock())
+        assert registry._warned_once['projection'] is True
+        registry.invalidate_server_cache()
+        assert registry._warned_once['projection'] is False
+
+    def test_analysis_binds_the_default_row_even_when_the_job_carries_no_server_id(self, monkeypatch):
+        from tasks.analysis import helper
+        from tasks.mediaserver import registry
+
+        self._patch_registry(monkeypatch, self.DEFAULT_ROW)
+        self._patch_config(monkeypatch, url='', user_id='', token='')
+        monkeypatch.setattr(registry, 'get_db', lambda: MagicMock(), raising=False)
+
+        assert helper._bind_server_context(None)['creds']['url'] == 'http://jf:8096'
 
 
 class TestServerScopes:

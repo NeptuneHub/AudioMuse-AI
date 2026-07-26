@@ -65,7 +65,8 @@ def test_connection_closed_by_the_server_is_replaced(monkeypatch):
         first.closed = 2
         second = database.get_db()
         assert second is not first
-        assert second.closed == 0
+        assert second is created[-1]
+        assert database.get_db() is second
     assert len(created) == 2
 
 

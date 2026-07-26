@@ -32,8 +32,10 @@ Main Features:
   config module is imported, so a worker that boots before the database is
   reachable (or before the 3.0 migration filled the registry) keeps EMPTY
   media-server settings for the life of the process and every default-server call
-  builds a URL like '/Items'. ``context_for`` detects that lost projection and
-  binds the registry row instead of returning None.
+  builds a URL like '/Items'; a worker that was never restarted after a wizard
+  change keeps the OLD ones and talks to the wrong machine. ``context_for``
+  compares the projection field by field against the default row and binds the row
+  itself whenever they disagree, instead of returning None.
 """
 
 import logging
@@ -56,6 +58,7 @@ _COLUMNS = (
 _DEFAULT_CACHE_TTL = 10.0
 _default_cache = {'expires': 0.0, 'row': None, 'secondary_expires': 0.0, 'secondary': None}
 _default_cache_lock = threading.Lock()
+_warned_once = {'projection': False, 'row': False}
 
 
 def invalidate_server_cache():
@@ -64,6 +67,16 @@ def invalidate_server_cache():
         _default_cache['row'] = None
         _default_cache['secondary_expires'] = 0.0
         _default_cache['secondary'] = None
+        _warned_once['projection'] = False
+        _warned_once['row'] = False
+
+
+def _warn_once(key):
+    with _default_cache_lock:
+        if _warned_once[key]:
+            return False
+        _warned_once[key] = True
+        return True
 
 
 def _rollback(db):
@@ -214,16 +227,42 @@ def has_secondary_servers(conn=None):
     return result
 
 
-_projection_warned = False
-
-
 def _config_projection_lost(default):
-    if not default:
-        return False
-    server_type = (default.get("server_type") or "").strip().lower()
-    if (config.MEDIASERVER_TYPE or "").strip().lower() != server_type:
+    server_type = (default.get('server_type') or '').strip().lower()
+    if (config.MEDIASERVER_TYPE or '').strip().lower() != server_type:
         return True
-    return bool(missing_required_creds(server_type, creds_from_config(server_type)))
+    if (config.MUSIC_LIBRARIES or '') != (default.get('music_libraries') or ''):
+        return True
+    row_creds = default.get('creds') or {}
+    projected = creds_from_config(server_type)
+    return any(
+        value != (row_creds.get(key) or '') for key, value in projected.items()
+    )
+
+
+def _default_context(default):
+    if default is None:
+        return None
+    missing = missing_required_creds(default['server_type'], default['creds'])
+    if missing:
+        if _warn_once('row'):
+            logger.error(
+                "Default server '%s' has no %s stored in the registry, so nothing can "
+                "reach it. Fix it in the setup wizard.",
+                default['name'], ', '.join(missing),
+            )
+        return None
+    if not _config_projection_lost(default):
+        return None
+    if _warn_once('projection'):
+        logger.warning(
+            "This process's config does not match default server '%s' (it started "
+            "before the database had those settings, or they changed since); binding "
+            "the registry row directly. Restart the process to reload the config "
+            "module.",
+            default['name'],
+        )
+    return default
 
 
 def context_for(server_id, conn=None):
@@ -231,29 +270,18 @@ def context_for(server_id, conn=None):
 
     Returning None for the default server keeps its code path byte-identical to
     the historical single-server behaviour (provider backends fall back to config)
-    - but ONLY while those config globals still hold the default row's settings.
-    When the projection was never loaded (a worker that imported config before the
-    database was reachable), the row itself is bound so the call reaches the right
-    server instead of an empty URL.
+    - but ONLY while those config globals still agree with the default row. When
+    they do not (a worker that imported config before the database was reachable,
+    or that never saw a later wizard change), the row itself is bound so the call
+    reaches the right server instead of an empty URL or a stale one. A default row
+    with no usable credentials is never bound: the config fallback is left in place
+    and the operator is told to fix the row.
     """
-    global _projection_warned
-
     db = conn or get_db()
     default = get_default_server(db if conn is not None else None)
     default_id = default["server_id"] if default else None
     if not server_id or server_id == default_id:
-        if not _config_projection_lost(default):
-            return None
-        if not _projection_warned:
-            _projection_warned = True
-            logger.warning(
-                "The media-server settings of default server '%s' are missing from "
-                "this process's config (it started before the database had them); "
-                "binding the registry row directly. Restart this process to reload "
-                "the config module.",
-                default["name"],
-            )
-        return default
+        return _default_context(default)
     server = get_server(server_id, db)
     if server is not None:
         # Providers read a missing credential from the config globals, which are
