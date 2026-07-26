@@ -560,6 +560,7 @@ def test_execute_job_waits_until_its_heartbeat_thread_has_exited(monkeypatch):
         release_heartbeat.wait(2)
         heartbeat_exited.set()
 
+    monkeypatch.setattr(rhw, 'hydrate_worker_config', lambda: True)
     monkeypatch.setattr(rhw.HeartbeatSimpleWorker, '_heartbeat_loop', blocked_loop)
     monkeypatch.setattr(rhw.SimpleWorker, 'execute_job', lambda self, _job, _queue: 'finished')
 
@@ -585,3 +586,60 @@ def test_execute_job_waits_until_its_heartbeat_thread_has_exited(monkeypatch):
     assert result == ['finished']
     assert worker._execution_heartbeat_stop is None
     assert worker._execution_heartbeat_lock is None
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_every_job_rechecks_the_config_hydration_before_running(worker_cls, monkeypatch):
+    worker, _ = _make_worker(worker_cls)
+    job = types.SimpleNamespace(id='job-rehydrate')
+    calls = []
+
+    monkeypatch.setattr(rhw, 'hydrate_worker_config', lambda: calls.append('hydrated'))
+    monkeypatch.setattr(
+        rhw.HeartbeatSimpleWorker, '_heartbeat_loop', lambda self, *args: None
+    )
+    monkeypatch.setattr(rhw.SimpleWorker, 'execute_job', lambda self, _job, _queue: 'ran')
+    monkeypatch.setattr(rhw.Worker, 'execute_job', lambda self, _job, _queue: 'ran')
+
+    assert worker.execute_job(job, None) == 'ran'
+    assert calls == ['hydrated']
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_the_worker_is_marked_busy_before_the_config_recheck(worker_cls, monkeypatch):
+    worker, _ = _make_worker(worker_cls)
+    job = types.SimpleNamespace(id='job-busy-first')
+    seen = []
+
+    monkeypatch.setattr(
+        rhw, 'hydrate_worker_config', lambda: seen.append(worker.get_state())
+    )
+    monkeypatch.setattr(
+        rhw.HeartbeatSimpleWorker, '_heartbeat_loop', lambda self, *args: None
+    )
+    monkeypatch.setattr(rhw.SimpleWorker, 'execute_job', lambda self, _job, _queue: 'ran')
+    monkeypatch.setattr(rhw.Worker, 'execute_job', lambda self, _job, _queue: 'ran')
+
+    assert worker.execute_job(job, None) == 'ran'
+    assert seen == [rhw.WorkerStatus.BUSY]
+
+
+@pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])
+def test_a_warm_shutdown_during_the_config_recheck_defers_instead_of_vanishing(worker_cls, monkeypatch):
+    worker, _ = _make_worker(worker_cls)
+    worker.scheduler = None
+    job = types.SimpleNamespace(id='job-sigterm-mid-recheck')
+
+    def sigterm_mid_recheck():
+        worker._shutdown_requested_date = now()
+        worker._shutdown()
+
+    monkeypatch.setattr(rhw, 'hydrate_worker_config', sigterm_mid_recheck)
+    monkeypatch.setattr(
+        rhw.HeartbeatSimpleWorker, '_heartbeat_loop', lambda self, *args: None
+    )
+    monkeypatch.setattr(rhw.SimpleWorker, 'execute_job', lambda self, _job, _queue: 'ran')
+    monkeypatch.setattr(rhw.Worker, 'execute_job', lambda self, _job, _queue: 'ran')
+
+    assert worker.execute_job(job, None) == 'ran'
+    assert worker._stop_requested is True

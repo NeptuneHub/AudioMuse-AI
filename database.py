@@ -13,7 +13,11 @@ lifecycle, the ``init_db`` schema bootstrap, and every read/write helper for
 tasks, track analysis and embeddings, projections, and alchemy anchors/radios.
 
 Main Features:
-* Connection management plus ``init_db`` table/index creation and migrations.
+* Connection management plus ``init_db`` table/index creation and migrations. A
+  worker job holds ONE app context for its whole run, so ``get_db`` drops a
+  cached connection the server closed under it (a database restart, an idle
+  timeout), fails that unit of work once with ``ConnectionLostError`` (an
+  ``OperationalError`` subclass), and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped history rows.
 * Embedding, projection, and alchemy CRUD helpers shared by workers and the web app.
 """
@@ -74,17 +78,25 @@ _embedded_server = None
 _CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gather=0'
 
 
+class ConnectionLostError(psycopg2.OperationalError):
+    pass
+
+
 def get_db():
+    cached = g.get('db')
+    if cached is not None and cached.closed:
+        g.pop('db', None)
+        if cached.closed == 2:
+            logger.error(
+                "The database connection was dropped by the server while this app "
+                "context held it; failing this unit of work rather than finishing "
+                "it on a second connection."
+            )
+            raise ConnectionLostError("database connection lost, retry the operation")
+        logger.warning("Cached database connection was closed; reconnecting.")
     if 'db' not in g:
         try:
-            g.db = psycopg2.connect(
-                config.DATABASE_URL,
-                connect_timeout=30,
-                keepalives_idle=600,
-                keepalives_interval=30,
-                keepalives_count=3,
-                options=_CONNECT_OPTIONS,
-            )
+            g.db = connect_raw()
         except psycopg2.OperationalError:
             logger.exception("Failed to connect to database")
             raise
@@ -298,7 +310,10 @@ def save_task_status(
     progress=0,
     details=None,
 ):
-    db = get_db()
+    try:
+        db = get_db()
+    except ConnectionLostError:
+        db = get_db()
     current_unix_time = time.time()
 
     if details is not None:

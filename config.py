@@ -190,7 +190,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.0.5"
+APP_VERSION = "v3.0.6"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -965,8 +965,31 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 
+# True once the database overrides and the default music server were projected
+# onto these globals. False means this process is running on env values only.
+# NOTE: every SetupManager read swallows connection failures (table check ->
+# False, overrides -> {}, default row -> None), so this flag is True even when
+# Postgres was unreachable and nothing actually arrived.
+DB_OVERRIDES_LOADED = False
+
+# True only when the music_servers default row was found and projected, which
+# proves the database was actually reached. This is the only reliable "the
+# projection is real" signal; MEDIASERVER_TYPE cannot serve because its env
+# default ('jellyfin') makes it non-empty on a blind env-only boot too.
+DB_DEFAULT_SERVER_PROJECTED = False
+
+
+# Reload this module from the current database and environment.
+def refresh_config():
+    import importlib
+    import sys
+    importlib.reload(sys.modules[__name__])
+
+
 def _apply_db_overrides():
-    global HEADERS, refresh_config
+    global HEADERS, DB_OVERRIDES_LOADED, DB_DEFAULT_SERVER_PROJECTED
+    DB_OVERRIDES_LOADED = False
+    DB_DEFAULT_SERVER_PROJECTED = False
     try:
         from tasks.setup_manager import SetupManager
         _setup_manager = SetupManager()
@@ -1002,19 +1025,15 @@ def _apply_db_overrides():
                 _cred_key = MEDIASERVER_CRED_KEY_BY_FIELD.get(_field)
                 if _cred_key:
                     globals()[_field] = _ms_creds.get(_cred_key, '') or ''
+            DB_DEFAULT_SERVER_PROJECTED = True
 
         HEADERS = _compute_headers()
-
-        def refresh_config():
-            """Reload the config module from the current database and environment."""
-            import importlib
-            import sys
-            importlib.reload(sys.modules[__name__])
-    except Exception as _exc:
+        DB_OVERRIDES_LOADED = True
+    except Exception:
+        # A dead database must never fail config import: the process keeps its
+        # env-only values and a later refresh_config() can still heal it.
         import logging
-        logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
-        def refresh_config():
-            pass
+        logging.getLogger(__name__).warning("Could not load config overrides from DB", exc_info=True)
 
 
 _apply_db_overrides()

@@ -210,6 +210,23 @@ def test_enabled_analysis_servers_registry_failure_keeps_config_default(monkeypa
     assert analysis._enabled_analysis_servers('all') == [None]
 
 
+def test_enabled_analysis_servers_lost_connection_fails_the_batch_not_shrinks_it(monkeypatch):
+    import importlib
+    import pytest
+    import tasks.analysis.main as analysis
+    from psycopg2 import OperationalError
+
+    registry = importlib.import_module('tasks.mediaserver.registry')
+
+    def dropped(scope):
+        raise OperationalError('connection lost')
+
+    monkeypatch.setattr(registry, 'servers_for_scope', dropped)
+
+    with pytest.raises(OperationalError):
+        analysis._enabled_analysis_servers('all')
+
+
 _FAKE_EMBEDDING = np.sin(np.arange(1, 201, dtype=np.float32))
 
 

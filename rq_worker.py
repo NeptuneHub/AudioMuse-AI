@@ -14,6 +14,8 @@ of ``rq_worker_high_priority`` for the ``high`` queue.
 
 Main Features:
 * Caps math-library threads (cpu_count // 2) and pins passive OpenMP waiting.
+* Heals the config projection before the first job when the process imported config
+  before Postgres was up; a boot that already projected the default server skips it.
 * Takes its worker class from ``rq_heartbeat_worker`` (a heartbeating SimpleWorker on
   Windows, the forking Worker elsewhere) and restarts after ``RQ_MAX_JOBS`` to limit leaks.
 """
@@ -43,9 +45,11 @@ print(f"Default worker CPU thread cap = {_max_lyrics_threads} (cpu_count // 2, m
 from rq_heartbeat_worker import WorkerClass
 
 try:
+    import config
     from app_helper import redis_conn
     from app_logging import configure_logging
-    from config import APP_VERSION, TEMP_DIR, RQ_MAX_JOBS, RQ_LOGGING_LEVEL
+    from config import APP_VERSION, TEMP_DIR
+    from tasks.setup_manager import hydrate_worker_config
 except ImportError as e:
     print(f"Error importing worker dependencies: {e}")
     sys.exit(1)
@@ -70,6 +74,8 @@ if __name__ == '__main__':
     )
     logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
+    hydrate_worker_config()
+
     try:
         from plugin.manager import boot as plugin_boot
 
@@ -81,9 +87,9 @@ if __name__ == '__main__':
         queues_to_listen, connection=redis_conn, worker_ttl=120, job_monitoring_interval=30
     )
 
-    max_jobs_before_restart = RQ_MAX_JOBS
+    max_jobs_before_restart = config.RQ_MAX_JOBS
 
-    logging_level = RQ_LOGGING_LEVEL
+    logging_level = config.RQ_LOGGING_LEVEL
     logger.info(f"RQ Worker logging level set to: {logging_level}")
     logger.info(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 
