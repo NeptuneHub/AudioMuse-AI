@@ -66,13 +66,17 @@ def __getattr__(name):
 
 
 def _bind_server_context(server_id):
-    if not server_id:
-        return None
     from flask_app import app
     from ..mediaserver import registry
 
     with app.app_context():
-        return registry.context_for(server_id)
+        if server_id:
+            return registry.context_for(server_id)
+        try:
+            return registry.context_for(None)
+        except Exception:
+            logger.exception("Could not resolve the default media-server context")
+            return None
 
 
 logger = logging.getLogger(__name__)

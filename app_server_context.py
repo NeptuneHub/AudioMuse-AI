@@ -15,6 +15,11 @@ preserved byte-for-byte.
 
 Main Features:
 * ``resolve_request_server_id`` reads the optional ``server`` parameter.
+* ``use_request_server`` binds provider calls to the request's selected server
+  for one block via ``registry.bind``, so an explicitly selected DEFAULT server
+  still binds its id and availability-scoped readers stay scoped instead of
+  searching the whole union catalogue; no selection keeps the historical
+  unscoped behaviour.
 * ``resolve_input_item_id(s)`` canonicalize caller-supplied seed/track ids
   (provider ids in, canonical ids out) before they reach the shared indexes.
 * ``create_instant_playlist_for_server`` translates canonical track ids to the
@@ -176,12 +181,13 @@ def scope_artist_results(rows, requested_n=None):
 
 @contextmanager
 def use_request_server(data=None):
-    """Bind provider calls to the request's selected server for one block."""
     from tasks.mediaserver import context, registry
 
-    server_id = resolve_request_server_id(data)
-    server_ctx = registry.context_for(server_id) if server_id else None
-    with context.use_server(server_ctx):
+    if not (server_id := resolve_request_server_id(data)):
+        with context.use_server(None):
+            yield None
+        return
+    with registry.bind({'server_id': server_id}):
         yield server_id
 
 
