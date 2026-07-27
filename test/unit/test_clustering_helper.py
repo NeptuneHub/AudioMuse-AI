@@ -345,7 +345,14 @@ class TestGetTrackPrimaryGenre:
 
 class TestAIPlaylistNaming:
     @staticmethod
-    def _call(monkeypatch, ai_result, naming_evidence=None, avoid=None):
+    def _call(
+        monkeypatch,
+        ai_result,
+        naming_evidence=None,
+        avoid=None,
+        ideas=None,
+        cluster_name='Old_Cluster_Name',
+    ):
         from tasks import clustering_helper
 
         monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
@@ -368,7 +375,7 @@ class TestAIPlaylistNaming:
             'build_naming_context',
             lambda *args, **kwargs: {
                 'genre': 'Indie',
-                'ideas': ['bittersweet', 'solitude'],
+                'ideas': ['bittersweet', 'solitude'] if ideas is None else ideas,
                 'naming_brief': 'melancholic lyrics over upbeat music',
                 'naming_dimension': 'contrast',
                 'naming_evidence': naming_evidence or (
@@ -400,9 +407,9 @@ class TestAIPlaylistNaming:
 
         monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', fake_ai)
         result = clustering_helper._try_ai_name_playlist(
-            'Old_Cluster_Name',
+            cluster_name,
             [('i1', 'Song', 'Artist')],
-            {'Old_Cluster_Name': {'party': 0.8}},
+            {cluster_name: {'party': 0.8}},
             'OLLAMA',
             'http://localhost:11434/api/generate',
             'qwen3.5:9b',
@@ -439,20 +446,48 @@ class TestAIPlaylistNaming:
 
         assert received['avoid_names'] == ['Bubbly Pop_automatic']
 
-    def test_failed_ai_naming_keeps_the_tag_based_cluster_name(self, monkeypatch):
+    def test_failed_ai_naming_composes_a_name_from_the_cluster_ideas(self, monkeypatch):
         result, _received = self._call(monkeypatch, None)
+
+        assert result == 'Bittersweet Indie'
+
+    def test_composed_fallback_skips_an_idea_already_used_by_another_playlist(
+        self, monkeypatch
+    ):
+        result, _received = self._call(monkeypatch, None, avoid=['Bittersweet Indie'])
+
+        assert result == 'Solitude Indie'
+
+    def test_failed_ai_naming_without_ideas_keeps_the_tag_based_cluster_name(
+        self, monkeypatch
+    ):
+        result, _received = self._call(monkeypatch, None, ideas=[])
 
         assert result == 'Old_Cluster_Name'
 
-    def test_general_context_skips_ai_and_keeps_the_tag_based_cluster_name(self, monkeypatch):
+    def test_general_purpose_cluster_still_reaches_the_ai(self, monkeypatch):
         result, received = self._call(
             monkeypatch,
             'Invented Indie Mood',
             naming_evidence='general-purpose listening',
         )
 
-        assert result == 'Old_Cluster_Name'
-        assert received == {}
+        assert result == 'Invented Indie Mood'
+        assert received['naming_evidence'] == 'general-purpose listening'
+
+    def test_general_purpose_cluster_recovers_evidence_from_the_tag_name(
+        self, monkeypatch
+    ):
+        result, received = self._call(
+            monkeypatch,
+            'Chill Indie',
+            naming_evidence='general-purpose listening',
+            cluster_name='Indie_Rock_Medium_Danceable_Relaxed_automatic',
+        )
+
+        assert result == 'Chill Indie'
+        assert received['naming_dimension'] == 'mood'
+        assert received['naming_evidence'] == 'mid-tempo, danceable, relaxed music'
 
     def test_disabled_ai_keeps_the_tag_based_cluster_name_without_db_or_ai_calls(
         self, monkeypatch

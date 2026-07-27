@@ -393,6 +393,18 @@ AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "3
 # Qwen3-family models officially warn against greedy decoding (temperature 0 causes
 # repetition loops); 0.7 is the vendor-recommended non-thinking value.
 AI_TOOLCALL_TEMPERATURE = float(os.environ.get("AI_TOOLCALL_TEMPERATURE", "0.7"))
+
+# Playlist naming asks the model for several one-word candidates in a single call and
+# keeps the first one that passes validation. Resolving a rejected concept inside one
+# response is far cheaper than a second round trip, and it defuses the name-collision
+# rule that otherwise burns every retry once many playlists are already named.
+AI_NAMING_CANDIDATES = int(os.environ.get("AI_NAMING_CANDIDATES", "10"))
+# Number of multi-candidate rounds before naming gives up on the AI and composes a name
+# locally. Each extra round re-prompts with every concept rejected so far.
+# Naming deliberately sends no output-token cap: thinking models spend tokens on thought
+# parts first, and a low cap makes them return nothing at all.
+AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
+
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
 # RQ worker tuning: restart-after-N-jobs (memory-leak guard) and log level.

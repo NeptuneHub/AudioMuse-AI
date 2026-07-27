@@ -143,6 +143,7 @@ import json
 import tasks.ai.providers.openai as ai_openai
 from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
 from tasks.ai.providers.openai import generate_text as get_openai_compatible_playlist_name
+from tasks.ai.providers.gemini import EMPTY_RESPONSE_RETRIES
 from tasks.ai.providers.gemini import generate_text as get_gemini_playlist_name
 from tasks.ai.providers.mistral import generate_text as get_mistral_playlist_name
 from tasks.ai.prompts import playlist_concept_prompt_template
@@ -885,6 +886,73 @@ class TestGetGeminiPlaylistName:
         assert "Error" in result
         assert "unavailable" in result
 
+    @patch('google.genai.Client')
+    @patch('tasks.ai.providers.gemini.time.sleep')
+    def test_strips_the_trailing_newline_the_naming_validator_rejects(
+        self, mock_sleep, mock_client_class
+    ):
+        mock_response = Mock()
+        mock_response.text = "Serene\n"
+
+        mock_models = Mock()
+        mock_models.generate_content.return_value = mock_response
+
+        mock_client = Mock()
+        mock_client.models = mock_models
+        mock_client_class.return_value = mock_client
+
+        result = get_gemini_playlist_name(
+            api_key="valid-key", model_name="gemini-2.5-pro", full_prompt="test"
+        )
+
+        assert result == "Serene"
+
+    @patch('google.genai.Client')
+    @patch('tasks.ai.providers.gemini.time.sleep')
+    def test_retries_when_a_thinking_model_returns_no_text(
+        self, mock_sleep, mock_client_class
+    ):
+        empty_response = Mock()
+        empty_response.text = ""
+        good_response = Mock()
+        good_response.text = "Serene"
+
+        mock_models = Mock()
+        mock_models.generate_content.side_effect = [empty_response, good_response]
+
+        mock_client = Mock()
+        mock_client.models = mock_models
+        mock_client_class.return_value = mock_client
+
+        result = get_gemini_playlist_name(
+            api_key="valid-key", model_name="gemini-2.5-pro", full_prompt="test"
+        )
+
+        assert result == "Serene"
+        assert mock_models.generate_content.call_count == 2
+
+    @patch('google.genai.Client')
+    @patch('tasks.ai.providers.gemini.time.sleep')
+    def test_reports_no_content_only_after_every_retry_is_spent(
+        self, mock_sleep, mock_client_class
+    ):
+        empty_response = Mock()
+        empty_response.text = None
+
+        mock_models = Mock()
+        mock_models.generate_content.return_value = empty_response
+
+        mock_client = Mock()
+        mock_client.models = mock_models
+        mock_client_class.return_value = mock_client
+
+        result = get_gemini_playlist_name(
+            api_key="valid-key", model_name="gemini-2.5-pro", full_prompt="test"
+        )
+
+        assert "Error" in result
+        assert mock_models.generate_content.call_count == EMPTY_RESPONSE_RETRIES
+
 
 class TestGetMistralPlaylistName:
     @patch('mistralai.Mistral')
@@ -929,6 +997,33 @@ class TestGetMistralPlaylistName:
         )
 
         assert "Error" in result
+
+    @patch('mistralai.Mistral')
+    @patch('tasks.ai.providers.mistral.time.sleep')
+    def test_strips_the_trailing_newline_the_naming_validator_rejects(
+        self, mock_sleep, mock_mistral_class
+    ):
+        mock_message = Mock()
+        mock_message.content = "Serene\n"
+
+        mock_choice = Mock()
+        mock_choice.message = mock_message
+
+        mock_response = Mock()
+        mock_response.choices = [mock_choice]
+
+        mock_chat = Mock()
+        mock_chat.complete.return_value = mock_response
+
+        mock_client = Mock()
+        mock_client.chat = mock_chat
+        mock_mistral_class.return_value = mock_client
+
+        result = get_mistral_playlist_name(
+            api_key="valid-key", model_name="ministral-3b-latest", full_prompt="test"
+        )
+
+        assert result == "Serene"
 
 
 class TestGetAIPlaylistName:
@@ -1128,14 +1223,15 @@ class TestGetAIPlaylistName:
         ) == "Soul Heartbreak"
 
     @patch('tasks.ai.api.generate_text')
-    def test_rejects_multiple_alternatives(self, mock_generate):
+    def test_multiline_alternatives_yield_the_first_valid_concept(self, mock_generate):
         mock_generate.return_value = "Melancholy Folk\nCalm Folk"
 
         result = get_ai_playlist_name(
             "Folk", "mood", "melancholic peaceful lyrics", self._ai_config()
         )
 
-        assert result is None
+        assert result == "Melancholy Folk"
+        assert mock_generate.call_count == 1
 
     @patch('tasks.ai.api.generate_text')
     def test_function_retries_gerunds_until_it_gets_a_category_noun(self, mock_generate):
@@ -1152,7 +1248,7 @@ class TestGetAIPlaylistName:
         assert result == "Electronic Dance"
         assert mock_generate.call_count == 3
         retry_prompt = mock_generate.call_args.args[0]
-        assert "Previous concept" in retry_prompt
+        assert "Already rejected: Dancing, Clubbing" in retry_prompt
 
     @patch('tasks.ai.api.generate_text')
     def test_function_rejects_a_redundant_descriptive_phrase(self, mock_generate):
@@ -1337,3 +1433,112 @@ class TestGetAIPlaylistName:
         assert "song_list_sample" not in playlist_concept_prompt_template
         assert "Examples:" not in playlist_concept_prompt_template
         assert "Use one ordinary word" in playlist_concept_prompt_template
+
+    @patch('tasks.ai.api.generate_text')
+    def test_trailing_newline_from_the_provider_still_names_the_playlist(
+        self, mock_generate
+    ):
+        mock_generate.return_value = "Serene\n"
+
+        result = get_ai_playlist_name(
+            "Ambient", "mood", "peaceful, emotionally still lyrics", self._ai_config()
+        )
+
+        assert result == "Serene Ambient"
+        assert mock_generate.call_count == 1
+
+    @patch('tasks.ai.api.generate_text')
+    def test_carriage_return_from_the_provider_still_names_the_playlist(
+        self, mock_generate
+    ):
+        mock_generate.return_value = "Serene\r\n"
+
+        assert get_ai_playlist_name(
+            "Ambient", "mood", "peaceful, emotionally still lyrics", self._ai_config()
+        ) == "Serene Ambient"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_candidate_list_keeps_the_first_word_that_passes(self, mock_generate):
+        mock_generate.return_value = "vibes, mix, Serene, Calm"
+
+        result = get_ai_playlist_name(
+            "Ambient", "mood", "peaceful, emotionally still lyrics", self._ai_config()
+        )
+
+        assert result == "Serene Ambient"
+        assert mock_generate.call_count == 1
+
+    @patch('tasks.ai.api.generate_text')
+    def test_candidate_list_survives_numbering_and_a_lead_in(self, mock_generate):
+        mock_generate.return_value = "Here are 10 words: 1. mix, 2. Serene, 3. Calm"
+
+        assert get_ai_playlist_name(
+            "Ambient", "mood", "peaceful, emotionally still lyrics", self._ai_config()
+        ) == "Serene Ambient"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_provider_error_is_retried_instead_of_aborting_naming(self, mock_generate):
+        mock_generate.side_effect = [
+            "Error: Gemini returned no content.",
+            "Serene",
+        ]
+
+        result = get_ai_playlist_name(
+            "Ambient", "mood", "peaceful, emotionally still lyrics", self._ai_config()
+        )
+
+        assert result == "Serene Ambient"
+        assert mock_generate.call_count == 2
+
+    @patch('tasks.ai.api.generate_text')
+    def test_disabled_provider_stops_naming_without_retrying(self, mock_generate):
+        mock_generate.return_value = "AI Naming Skipped"
+
+        result = get_ai_playlist_name(
+            "Ambient", "mood", "peaceful, emotionally still lyrics", self._ai_config()
+        )
+
+        assert result is None
+        assert mock_generate.call_count == 1
+
+    @patch('tasks.ai.api.generate_text')
+    def test_stem_collision_is_dropped_only_after_every_attempt_is_spent(
+        self, mock_generate
+    ):
+        mock_generate.return_value = "Memories"
+
+        result = get_ai_playlist_name(
+            "Classic Rock",
+            "theme",
+            "lyrics looking back on memories",
+            self._ai_config(),
+            avoid_names=["Folk Memory"],
+        )
+
+        assert result == "Classic Rock Memories"
+
+    @patch('tasks.ai.api.generate_text')
+    def test_banned_words_are_never_resurrected_by_the_relaxed_pass(
+        self, mock_generate
+    ):
+        mock_generate.return_value = "Work"
+
+        result = get_ai_playlist_name(
+            "House", "function", "energetic danceable music", self._ai_config()
+        )
+
+        assert result is None
+
+    @patch('tasks.ai.api.generate_text')
+    def test_naming_sends_no_output_token_cap_on_any_attempt(self, mock_generate):
+        mock_generate.side_effect = ["Juxtaposition", "Irony", "Bittersweet"]
+
+        get_ai_playlist_name(
+            "Rock",
+            "contrast",
+            "melancholic lyrics contrasted with upbeat music",
+            self._ai_config(),
+        )
+
+        for call in mock_generate.call_args_list:
+            assert "max_tokens" not in call.kwargs

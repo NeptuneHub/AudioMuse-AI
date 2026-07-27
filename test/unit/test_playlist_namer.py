@@ -19,7 +19,11 @@ Main Features:
 import numpy as np
 
 from config import LYRICS_INSTRUMENTAL_AXIS_FILL
-from tasks.ai.playlist_namer import build_naming_context, confident_axis_labels
+from tasks.ai.playlist_namer import (
+    build_naming_context,
+    confident_axis_labels,
+    evidence_from_cluster_name,
+)
 
 
 COLUMNS = [
@@ -411,3 +415,29 @@ def test_ambient_score_does_not_override_full_lyrics_coverage():
     context = build_naming_context(rows, {}, [_axis_blob()] * 10, 10, COLUMNS)
 
     assert 'instrumental' not in context['ideas']
+
+
+def test_tag_name_evidence_keeps_tempo_and_sound_descriptors():
+    assert evidence_from_cluster_name(
+        'Electronic_Indie_Rock_Medium_Danceable_Relaxed_automatic'
+    ) == 'mid-tempo, danceable, relaxed music'
+
+
+def test_tag_name_evidence_translates_every_tempo_label():
+    assert evidence_from_cluster_name('Folk_Acoustic_Slow_Sad_automatic') == (
+        'slow-tempo, somber music'
+    )
+    assert evidence_from_cluster_name('Rock_Alternative_Fast_Aggressive_automatic') == (
+        'fast-tempo, forceful music'
+    )
+
+
+def test_tag_name_evidence_ignores_the_numbered_chunk_suffix():
+    assert evidence_from_cluster_name(
+        'Pop_Dance_Medium_Happy_automatic (2)'
+    ) == 'mid-tempo, upbeat music'
+
+
+def test_tag_name_evidence_is_empty_when_nothing_is_recognisable():
+    assert evidence_from_cluster_name('Old_Cluster_Name') == ''
+    assert evidence_from_cluster_name(None) == ''
