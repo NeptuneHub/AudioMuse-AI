@@ -29,6 +29,7 @@ Main Features:
 
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor, Json
+from rq import Retry
 from database import (
     get_db,
     save_task_status,
@@ -584,6 +585,7 @@ def run_due_cron_jobs():
                             job_id=job_id,
                             description='Cron Analysis',
                             job_timeout=-1,
+                            retry=Retry(max=3),
                         )
                         logger.info(f"Cron: enqueued analysis job {job_id}")
                     except Exception:
@@ -658,6 +660,7 @@ def run_due_cron_jobs():
                             job_id=job_id,
                             description='Cron Clustering',
                             job_timeout=-1,
+                            retry=Retry(max=3),
                         )
                         logger.info(f"Cron: enqueued clustering job {job_id}")
                     except Exception:
@@ -724,6 +727,7 @@ def run_due_cron_jobs():
                             job_id=job_id,
                             description=f'Cron {task_type}',
                             job_timeout=-1,
+                            retry=Retry(max=3),
                         )
                         logger.info(f"Cron: enqueued {task_type} job {job_id}")
                     except Exception:
@@ -756,6 +760,7 @@ def run_due_cron_jobs():
                                 job_id=job_id,
                                 description=f'Cron {task_type}',
                                 job_timeout=-1,
+                                retry=Retry(max=3),
                             )
                             logger.info(f"Cron: enqueued plugin task {task_type} job {job_id}")
                         except Exception:

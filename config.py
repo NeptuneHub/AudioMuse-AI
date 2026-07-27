@@ -428,6 +428,9 @@ REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 RQ_MAX_JOBS = int(os.getenv('RQ_MAX_JOBS', '50'))
 RQ_MAX_JOBS_HIGH = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
 RQ_LOGGING_LEVEL = os.getenv('RQ_LOGGING_LEVEL', 'INFO').upper()
+# Seconds a 'started' RQ job's heartbeat may go stale before the janitor treats the
+# job as abandoned (worker died mid-run) and requeues it within its retry budget.
+RQ_JOB_ABANDONED_SECONDS = int(os.getenv('RQ_JOB_ABANDONED_SECONDS', '300'))
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
@@ -920,6 +923,11 @@ CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "Tr
 # Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
 # run. Editable in the setup wizard (advanced section) and applied on the next analysis.
 CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "1000"))
+# Seconds between progress writes (and cancellation polls) inside the backfill loop. The loop
+# downloads and fingerprints one track at a time, so a 1000-album run is hours of work: without
+# a periodic write the task row's timestamp freezes, the UI looks hung at 99%, Cancel is ignored,
+# and the janitor sees a stale row it must not reap.
+CHROMAPRINT_BACKFILL_REPORT_SECONDS = int(os.getenv("CHROMAPRINT_BACKFILL_REPORT_SECONDS", "15"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
 # Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.

@@ -28,12 +28,12 @@ Main Features:
 * Interrupted server-alignment sweeps recovered: a sweep whose RQ job died (e.g.
   killed by a worker restart) or vanished from Redis entirely is revoked and
   replaced with a fresh alignment covering every server.
-* Orphaned main tasks failed: a task_status row is committed BEFORE its job is
-  enqueued, so a Redis outage can leave a PENDING row with nothing behind it -
-  and get_active_main_task counts that as a live task, so every later Start would
-  answer 409 forever. Rows past a grace period whose RQ job does not exist are
-  marked FAILURE; tasks that run inside the Flask process have no RQ job by
-  design, so those are judged by how long ago they last reported progress.
+* Orphaned main tasks reconciled: a task_status row is committed BEFORE its job
+  is enqueued, so a Redis outage can leave a PENDING row with nothing behind it;
+  a worker crash can instead leave the job parked in a terminal RQ registry while
+  the row stays in PROGRESS. Rows past a grace period whose RQ job is missing or
+  terminal are finalized; tasks that run inside the Flask process have no RQ job
+  by design, so those are judged by how long ago they last reported progress.
 * Logs only when something is actually reaped, and survives per-iteration errors.
 """
 

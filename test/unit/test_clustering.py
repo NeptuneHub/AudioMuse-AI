@@ -1279,3 +1279,63 @@ class TestClusterNaming:
         name, details = result
         assert isinstance(name, str)
         assert isinstance(details, dict)
+
+
+class TestBatchFailureHandlerRetryAwareness:
+    def test_batch_handler_leaves_the_row_live_when_rq_still_has_retries(
+        self, monkeypatch
+    ):
+        import tasks.clustering as clustering
+        from rq.exceptions import AbandonedJobError
+
+        writes = []
+        monkeypatch.setattr(
+            clustering, 'save_task_status',
+            lambda *a, **k: writes.append((a, k)),
+        )
+        job = Mock()
+        job.id = 'parent-1_s0_batch_0'
+        job.retries_left = 2
+        job.kwargs = {'parent_task_id': 'parent-1', 'batch_id_str': 'Batch_0'}
+
+        err = AbandonedJobError('worker died')
+        clustering.batch_task_failure_handler(
+            job, object(), AbandonedJobError, err, None
+        )
+
+        assert writes == []
+
+    def test_batch_handler_fails_the_row_only_once_retries_are_exhausted(
+        self, monkeypatch
+    ):
+        import sys
+        import types
+
+        from flask import Flask
+
+        import tasks.clustering as clustering
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('batch-failure-handler-test')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        writes = []
+        monkeypatch.setattr(
+            clustering, 'save_task_status',
+            lambda task_id, task_type, status, **k: writes.append(
+                (task_id, task_type, status, k.get('parent_task_id'))
+            ),
+        )
+        job = Mock()
+        job.id = 'parent-1_s0_batch_0'
+        job.retries_left = None
+        job.kwargs = {'parent_task_id': 'parent-1', 'batch_id_str': 'Batch_0'}
+
+        err = RuntimeError('boom')
+        clustering.batch_task_failure_handler(
+            job, object(), RuntimeError, err, None
+        )
+
+        assert writes == [
+            ('parent-1_s0_batch_0', 'clustering_batch', 'FAILURE', 'parent-1')
+        ]

@@ -35,6 +35,8 @@ from rq import get_current_job, Retry
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
+import rq_job_state
+
 from config import (
     TEMP_DIR,
     MAX_QUEUED_ANALYSIS_JOBS,
@@ -43,6 +45,7 @@ from config import (
     REBUILD_INDEX_BATCH_SIZE,
     CHROMAPRINT_COLLECTION_ENABLED,
     CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN,
+    CHROMAPRINT_BACKFILL_REPORT_SECONDS,
 )
 
 from ..mediaserver import (
@@ -160,38 +163,64 @@ def _backfill_one_track(server_id, provider_track_id, file_path):
                 pass
 
 
-def _backfill_server_chromaprints(server_id, log_fn=None):
+def _noop_progress(message, progress):
+    return None
+
+
+def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
     from ..mediaserver import context as server_context
 
     targets = _chromaprint_backfill_targets(server_id, CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN)
     if not targets:
-        return
-    if log_fn:
-        log_fn(
-            f"Calculating Chromaprint fingerprints for {len(targets)} track(s) "
-            f"on server {server_id}...", 99,
-        )
+        return False
+    log_fn = log_fn or _noop_progress
+    total = len(targets)
+    log_fn(
+        f"Calculating Chromaprint fingerprints for {total} track(s) "
+        f"on server {server_id}...", 99,
+    )
     filled = 0
+    stopped = False
+    last_tick = time.monotonic()
     with server_context.use_server(_bind_server_context(server_id)):
-        for provider_track_id, file_path in targets:
+        for done, (provider_track_id, file_path) in enumerate(targets, 1):
             if _backfill_one_track(server_id, provider_track_id, file_path):
                 filled += 1
+            now = time.monotonic()
+            if now - last_tick < CHROMAPRINT_BACKFILL_REPORT_SECONDS:
+                continue
+            last_tick = now
+            if should_stop and should_stop():
+                stopped = True
+                break
+            log_fn(
+                f"Calculating Chromaprint fingerprints on server {server_id}: "
+                f"{done}/{total} track(s)...", 99,
+            )
     logger.info(
-        "Chromaprint backfill filled %d of %d track(s) on server %s",
-        filled, len(targets), server_id,
+        "Chromaprint backfill filled %d of %d track(s) on server %s%s",
+        filled, total, server_id, " (cancelled early)" if stopped else "",
     )
+    return stopped
 
 
-def _run_chromaprint_backfill(server_ids, log_fn=None):
+def _run_chromaprint_backfill(server_ids, log_fn=None, should_stop=None):
     if not CHROMAPRINT_COLLECTION_ENABLED or not chromaprint.is_available():
-        return
+        return False
     for server_id in server_ids:
         if not server_id:
             continue
+        if should_stop and should_stop():
+            logger.info("Chromaprint backfill cancelled before server %s.", server_id)
+            return True
         try:
-            _backfill_server_chromaprints(server_id, log_fn=log_fn)
+            if _backfill_server_chromaprints(
+                server_id, log_fn=log_fn, should_stop=should_stop
+            ):
+                return True
         except Exception:
             logger.exception("Chromaprint backfill failed for server %s", server_id)
+    return False
 
 
 def _rq_job_still_pending(job_id):
@@ -202,7 +231,16 @@ def _rq_job_still_pending(job_id):
     except Exception:
         logger.debug("Could not fetch job %s while reconciling; assuming done.", job_id)
         return False
-    return job.is_queued or job.is_scheduled or job.is_started
+    return rq_job_state.is_alive_status(job.get_status(refresh=False))
+
+
+def _task_revoked_in_db(task_id):
+    try:
+        statuses = get_task_statuses([task_id])
+    except Exception:
+        logger.exception("Revocation poll failed; assuming the run is live")
+        return False
+    return statuses.get(task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED
 
 
 _AUTH_FAILURE_HINTS = (
@@ -397,8 +435,8 @@ def _run_analysis_server_task_impl(
                         [c['task_id'] for c in stale_children], connection=redis_conn
                     )
                     for child, job in zip(stale_children, fetched):
-                        if job is not None and (
-                            job.is_queued or job.is_scheduled or job.is_started
+                        if job is not None and rq_job_state.is_alive_status(
+                            job.get_status(refresh=False)
                         ):
                             active_jobs.add(child['task_id'])
                             adopted_albums.add(str(child['sub_type_identifier']))
@@ -422,12 +460,7 @@ def _run_analysis_server_task_impl(
                 if now - last_revocation_poll < ANALYSIS_MONITOR_DB_INTERVAL:
                     return False
                 last_revocation_poll = now
-                try:
-                    statuses = get_task_statuses([current_task_id])
-                except Exception:
-                    logger.exception("Revocation poll failed; assuming the run is live")
-                    return False
-                return statuses.get(current_task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED
+                return _task_revoked_in_db(current_task_id)
 
             def monitor_and_clear_jobs():
                 nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
@@ -447,10 +480,7 @@ def _run_analysis_server_task_impl(
                     for job_id, job in zip(ids, fetched):
                         if job is None:
                             logger.debug(f"Job {job_id} not in RQ; will reconcile via DB.")
-                        elif (
-                            job.is_finished or job.is_failed
-                            or job.is_canceled or job.is_stopped
-                        ):
+                        elif rq_job_state.is_terminal_status(job.get_status(refresh=False)):
                             active_jobs.discard(job_id)
                             removed += 1
                     if removed:
@@ -636,7 +666,11 @@ def _run_analysis_server_task_impl(
                     raise error_manager.AudioMuseError(
                         error_manager.classify(e, ERR_INDEX_BUILD), str(e), cause=e
                     ) from e
-                _run_chromaprint_backfill([server_id], log_fn=log_and_update_main)
+                if _run_chromaprint_backfill(
+                    [server_id], log_fn=log_and_update_main, should_stop=revoked_now
+                ):
+                    logger.info("Analysis revoked during the Chromaprint backfill.")
+                    return {'status': TASK_STATUS_REVOKED}
             total_failed_count, failed_errors = get_failed_child_summary(current_task_id)
             failed_count = max(0, total_failed_count - baseline_failed_count)
             if not failed_count:
@@ -713,9 +747,30 @@ def _enabled_analysis_servers(server_scope):
             return [None]
 
 
+def _run_already_finished(task_id):
+    with app.app_context():
+        try:
+            status = get_task_statuses([task_id]).get(task_id)
+        except Exception:
+            logger.exception("Could not read the run's own status; assuming it is live")
+            return None
+    if status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
+        logger.info(
+            "Analysis %s is already %s; refusing to run. A cancelled, failed or "
+            "completed task must never restart, even if something requeued its job.",
+            task_id, status,
+        )
+        return status
+    return None
+
+
 def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     current_job = get_current_job(redis_conn)
     parent_id = current_job.id if current_job else str(uuid.uuid4())
+
+    already = _run_already_finished(parent_id)
+    if already:
+        return {'status': already, 'message': 'Task already in terminal state.'}
 
     servers = _enabled_analysis_servers(server_scope)
     if not servers:
@@ -747,12 +802,7 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     albums_offset = 0
     for index, server in enumerate(servers):
         with app.app_context():
-            try:
-                statuses = get_task_statuses([parent_id])
-            except Exception:
-                logger.exception("Union revocation poll failed; assuming the run is live")
-                statuses = {parent_id: TASK_STATUS_PROGRESS}
-            if statuses.get(parent_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED:
+            if _task_revoked_in_db(parent_id):
                 logger.info("Union analysis revoked; stopping before phase %d.", index + 1)
                 return {'status': 'REVOKED', 'servers_completed': len(summaries)}
         logger.info(
@@ -785,6 +835,10 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 f"{server['name']}: {e}", exc=e, logger=logger, level=logging.WARNING,
             )
         albums_offset += len(albums_by_server[index] or [])
+
+    already = _run_already_finished(parent_id)
+    if already:
+        return {'status': already, 'servers_completed': len(summaries)}
 
     with app.app_context():
         save_task_status(
@@ -822,10 +876,14 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 progress=99, details={"message": message},
             )
 
-        _run_chromaprint_backfill(
+        backfill_cancelled = _run_chromaprint_backfill(
             [server['server_id'] for server in servers if server['name'] not in failed],
             log_fn=_chromaprint_progress,
+            should_stop=lambda: _task_revoked_in_db(parent_id),
         )
+        if backfill_cancelled:
+            logger.info("Union analysis revoked during the Chromaprint backfill.")
+            return {'status': 'REVOKED', 'servers_completed': len(summaries)}
 
         analyzed_servers = len(servers) - len(failed)
         run_failed = analyzed_servers == 0

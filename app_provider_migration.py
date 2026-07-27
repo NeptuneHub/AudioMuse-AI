@@ -32,6 +32,7 @@ import uuid
 
 from flask import Blueprint, jsonify, render_template, request
 from psycopg2 import sql as pgsql
+from rq import Retry
 
 # App-level singletons (DB connection, Redis, RQ queues). Importing here keeps
 # the blueprint file self-contained - the rest of the app doesn't need to hand
@@ -1461,6 +1462,7 @@ def execute():
             session_id,
             job_id=job_id,
             job_timeout=-1,
+            retry=Retry(max=3),
         )
     except Exception:
         logger.exception("Could not enqueue the provider migration")
