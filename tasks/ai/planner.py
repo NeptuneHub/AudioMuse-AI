@@ -15,8 +15,10 @@ validated, deduplicated, merged into a normalized plan, run, and composed.
 
 Main Features:
 * Regex pre-extraction of years/decades/BPM/tempo/energy/genre (and negated-genre) hints; hints the model omitted are deterministically merged back into the filter (hint backstop), while hallucinated year/instrumental/exclusion args absent from the request are stripped (exclusions survive only when the request carries a negation cue); unsupported constraints (duration) surface as plan notes.
-* Soft categorical-priority re-rank (matching songs first, continuous dims order within tiers) that blends the primary tool's similarity rank as an extra dimension and down-ranks intro/skit/interlude titles; exclude_artists/exclude_genres are the one HARD cut; multiple finder tools get an intersection boost (songs returned by several tools rank first).
-* knowledge_lookup (AI brainstorm) results are returned as-is: any parsed filter is dropped (and reported as ignored) so brainstorm output is not re-ranked; score_threshold relax loop backfills when a filter pool is short, and a filter-only query that still underfills the target re-runs without its soft dims (tempo/energy/moods/key/scale/rating) and applies them as the soft re-rank over the broader pool. Duplicate tool calls are dropped, plans cap at 4 calls, and a zero-result run triggers ONE replan with failure feedback.
+* Deterministic repair of what small models get wrong, because the output grammar cannot express it: repeated array values are collapsed (Ollama ignores uniqueItems, so a model pads a list to maxItems), and exclusions that contradict the request itself are dropped - an excluded artist that is also a seed or the filter's own artist, an excluded genre the request asks for positively, and exclusions naming something absent from the request (fuzzy-matched, so a misspelling still counts).
+* Soft categorical-priority re-rank (matching songs first, continuous dims order within tiers) that blends the primary tool's similarity rank as an extra dimension and down-ranks intro/skit/interlude titles; exclude_artists/exclude_genres are the one HARD cut, reverted only when they would empty the whole pool; multiple finder tools get an intersection boost (songs returned by several tools rank first).
+* knowledge_lookup (AI brainstorm) output is never post-filtered: the parsed filter is instead injected INTO the tool call, so the recipe is grounded and the channels are gated inside the brainstorm itself. The planner filter is still cleared, keeping brainstorm results out of the composition re-rank.
+* A request always yields a plan that can find songs: an empty or fully-dropped plan replans ONCE with failure feedback and then falls back to a deterministic match of the user's own words (text_match, or the hint-derived filter alone for a year-only request), and the same fallback covers a zero-result run and an unreachable provider. score_threshold relax loop backfills when a filter pool is short, and a filter-only query that still underfills the target re-runs without its soft dims (tempo/energy/moods/key/scale/rating) and applies them as the soft re-rank over the broader pool.
 """
 
 import json
@@ -521,7 +523,13 @@ def _song_is_excluded(s: Dict, feats: Dict, ex_artist_norms: set, ex_genre_lows:
     return False
 
 
-def _apply_exclusions(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: List[str]):
+def _apply_exclusions(
+    pool_songs: List[Dict],
+    filt: Dict,
+    feats: Dict,
+    log_messages: List[str],
+    notes: Optional[List[str]] = None,
+):
     ex_artists = [a for a in (filt.get('exclude_artists') or []) if isinstance(a, str) and a.strip()]
     ex_genres = [g for g in (filt.get('exclude_genres') or []) if isinstance(g, str) and g.strip()]
     if not ex_artists and not ex_genres:
@@ -534,6 +542,20 @@ def _apply_exclusions(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messa
 
     kept = [s for s in pool_songs if not _song_is_excluded(s, feats, ex_artist_norms, ex_genre_lows)]
     removed = len(pool_songs) - len(kept)
+
+    if pool_songs and not kept:
+        log_messages.append(
+            f"   exclusions removed every one of the {len(pool_songs)} candidates; "
+            "kept the pool and recorded the conflict instead"
+        )
+        if notes is not None:
+            notes.append(
+                f"exclusions (exclude_artists={ex_artists or '-'}, "
+                f"exclude_genres={ex_genres or '-'}) matched the whole pool and were "
+                "not applied; they most likely did not mean what the request said"
+            )
+        return pool_songs
+
     if removed:
         log_messages.append(
             f"   exclusions (hard cut): removed {removed}/{len(pool_songs)} songs "
@@ -567,7 +589,8 @@ _DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 _NEGATION_TAIL_RE = re.compile(
-    r"\b(?:no|not|without|except|excluding|avoid|nothing|never|zero)\b[^,.;!?]*$",
+    r"\b(?:no|not|without|except|excluding|exclude|avoid|nothing|never|zero|skip|"
+    r"hates?|dislikes?)\b[^,.;!?]*$",
     re.IGNORECASE,
 )
 _NEGATION_CUE_RE = re.compile(
@@ -850,6 +873,39 @@ def _apply_hint_backstop(plan: 'ToolPlan', hints: Dict, log_messages: List[str])
         )
 
 
+def _synthesize_rescue_plan(
+    raw_request: str,
+    hints: Dict,
+    log_messages: List[str],
+) -> 'ToolPlan':
+    from tasks.ai.tools import _YEAR_ONLY_RE
+
+    plan = ToolPlan()
+    _apply_hint_backstop(plan, hints, log_messages)
+
+    query = (raw_request or '').strip()
+    year_only = bool(query) and bool(_YEAR_ONLY_RE.match(query))
+
+    if query and not year_only:
+        if config.CLAP_ENABLED:
+            plan.primaries.append(
+                {'name': 'text_match', 'arguments': {'query': query, 'mode': 'audio'}}
+            )
+        elif config.LYRICS_ENABLED:
+            plan.primaries.append(
+                {'name': 'text_match', 'arguments': {'query': query, 'mode': 'lyrics'}}
+            )
+        else:
+            plan.primaries.append(
+                {'name': 'knowledge_lookup', 'arguments': {'user_request': query}}
+            )
+
+    if plan.primaries or plan.filter is not None:
+        kinds = ', '.join(p.get('name', '') for p in plan.primaries) or 'filter only'
+        log_messages.append(f"   rescue: matching your words directly ({kinds})")
+    return plan
+
+
 def _has_filter_content(args: Dict) -> bool:
     if not isinstance(args, dict):
         return False
@@ -1002,6 +1058,187 @@ def _seed_identity(seed: Dict) -> tuple:
         (seed.get('title') or '').strip().lower(),
         (seed.get('artist') or '').strip().lower(),
     )
+
+
+_DEDUPE_LIST_KEYS = ('genres', 'voices', 'moods', 'exclude_artists', 'exclude_genres')
+
+
+def _dedupe_strings(values) -> tuple:
+    out: List = []
+    seen: set = set()
+    for v in values or []:
+        if not isinstance(v, str):
+            continue
+        key = v.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(v)
+    return out, len(out) != len(values or [])
+
+
+def _dedupe_seed_list(values) -> tuple:
+    out: List = []
+    seen: set = set()
+    for s in values or []:
+        if not isinstance(s, dict):
+            continue
+        key = _seed_identity(s)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out, len(out) != len(values or [])
+
+
+def _dedupe_call_lists(
+    tool_calls: List[Dict],
+    log_messages: Optional[List[str]] = None,
+) -> List[Dict]:
+    if log_messages is None:
+        log_messages = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name = tc.get('name')
+        args = tc.get('arguments')
+        if not isinstance(args, dict):
+            continue
+        if name == FILTER_NAME:
+            for key in _DEDUPE_LIST_KEYS:
+                if not isinstance(args.get(key), list):
+                    continue
+                before = len(args[key])
+                cleaned, changed = _dedupe_strings(args[key])
+                if changed:
+                    args[key] = cleaned
+                    log_messages.append(
+                        f"   dedupe: {name}.{key} {before} -> {len(cleaned)} value(s) "
+                        "(the model repeated a value to fill the array)"
+                    )
+        elif name == 'seed_search':
+            for key in ('seeds', 'subtract'):
+                if not isinstance(args.get(key), list):
+                    continue
+                before = len(args[key])
+                cleaned, changed = _dedupe_seed_list(args[key])
+                if changed:
+                    args[key] = cleaned
+                    log_messages.append(
+                        f"   dedupe: {name}.{key} {before} -> {len(cleaned)} item(s) "
+                        "(the model repeated a seed)"
+                    )
+    return tool_calls or []
+
+
+def _positive_subjects(plan: 'ToolPlan') -> set:
+    from tasks.ai.tool_impl import _normalize_for_match
+
+    subjects: set = set()
+    filt = plan.filter or {}
+    for key in ('artist', 'album'):
+        v = filt.get(key)
+        if isinstance(v, str) and v.strip():
+            subjects.add(_normalize_for_match(v))
+    for p in plan.primaries:
+        if not isinstance(p, dict) or p.get('name') != 'seed_search':
+            continue
+        for s in (p.get('arguments') or {}).get('seeds') or []:
+            if not isinstance(s, dict):
+                continue
+            for key in ('name', 'artist'):
+                v = s.get(key)
+                if isinstance(v, str) and v.strip():
+                    subjects.add(_normalize_for_match(v))
+    return {s for s in subjects if s}
+
+
+def _named_in_request(value: str, message: str) -> bool:
+    from rapidfuzz import fuzz
+
+    v = (value or '').strip().lower()
+    if not v:
+        return False
+    if v in (message or '').lower():
+        return True
+    return fuzz.partial_ratio(v, (message or '').lower()) >= 85
+
+
+def _strip_contradictory_exclusions(
+    plan: 'ToolPlan',
+    hints: Dict,
+    original_message: str,
+    log_messages: List[str],
+) -> None:
+    from tasks.ai.tool_impl import _normalize_for_match
+
+    if plan.filter is None:
+        return
+    filt = plan.filter
+
+    subjects = _positive_subjects(plan)
+    hint_genres = {g.lower() for g in (hints.get('genres') or [])}
+    hint_excluded = {g.lower() for g in (hints.get('exclude_genres') or [])}
+
+    if filt.get('exclude_artists'):
+        kept = []
+        for a in filt['exclude_artists']:
+            if not isinstance(a, str):
+                continue
+            if _normalize_for_match(a) in subjects:
+                log_messages.append(
+                    f"   contradiction: dropped exclude_artists '{a}' "
+                    "(the request asks for that same artist)"
+                )
+                plan.notes.append(
+                    f"'{a}' was both requested and excluded; kept it as the subject"
+                )
+                continue
+            if not _named_in_request(a, original_message):
+                log_messages.append(
+                    f"   contradiction: dropped exclude_artists '{a}' "
+                    "(not named anywhere in the request)"
+                )
+                plan.notes.append(f"invented exclusion of '{a}' was dropped")
+                continue
+            kept.append(a)
+        if kept:
+            filt['exclude_artists'] = kept
+        else:
+            filt.pop('exclude_artists', None)
+
+    if filt.get('exclude_genres'):
+        kept = []
+        for g in filt['exclude_genres']:
+            if not isinstance(g, str):
+                continue
+            low = g.lower()
+            if low in hint_genres and low not in hint_excluded:
+                log_messages.append(
+                    f"   contradiction: dropped exclude_genres '{g}' "
+                    "(the request asks for that same genre)"
+                )
+                plan.notes.append(
+                    f"'{g}' was both requested and excluded; kept it as a positive filter"
+                )
+                continue
+            named = low in (original_message or '').lower()
+            if hint_excluded and low not in hint_excluded and not named:
+                log_messages.append(
+                    f"   contradiction: dropped exclude_genres '{g}' "
+                    "(not one of the genres the request rejects)"
+                )
+                plan.notes.append(f"invented exclusion of '{g}' was dropped")
+                continue
+            kept.append(g)
+        if kept:
+            filt['exclude_genres'] = kept
+        else:
+            filt.pop('exclude_genres', None)
+
+    if not _has_filter_content(filt):
+        plan.notes.append('filter emptied after dropping contradictory exclusions')
+        plan.filter = None
 
 
 def validate_plan_args(
@@ -1182,7 +1419,7 @@ def plan_from_tool_calls(tool_calls: List[Dict]) -> ToolPlan:
     return validate_and_normalize_plan(tool_calls or [])
 
 
-MAX_TOOL_CALLS = 4
+MAX_TOOL_CALLS = config.AI_MAX_TOOL_CALLS
 
 
 def dedupe_and_cap_calls(
@@ -1316,6 +1553,126 @@ def call_ai_for_plan(
     )
 
 
+_GROUNDING_FILTER_KEYS = (
+    'genres', 'moods', 'voices',
+    'year_min', 'year_max',
+    'energy_min', 'energy_max',
+    'tempo_min', 'tempo_max',
+)
+_GATE_FILTER_KEYS = (
+    'key', 'scale', 'min_rating', 'instrumental', 'album',
+    'exclude_artists', 'exclude_genres',
+)
+
+
+def _ground_knowledge_lookup(plan: 'ToolPlan', log_messages: List[str]) -> None:
+    filt = plan.filter or {}
+    grounding = {
+        k: v for k in _GROUNDING_FILTER_KEYS
+        if (v := filt.get(k)) not in (None, '', [], {})
+    }
+    gate = {
+        k: v for k in _GATE_FILTER_KEYS
+        if (v := filt.get(k)) not in (None, '', [], {})
+    }
+
+    for p in plan.primaries:
+        if not isinstance(p, dict) or p.get('name') != 'knowledge_lookup':
+            continue
+        args = p.setdefault('arguments', {})
+        if grounding:
+            args['grounding_filter'] = dict(grounding)
+        if gate:
+            args['gate_filter'] = dict(gate)
+
+    if grounding or gate:
+        log_messages.append(
+            f"   AI brainstorming: filter grounding={grounding or '-'} gate={gate or '-'} "
+            "merged INTO the recipe (applied inside the tool, not as a post-filter)"
+        )
+        plan.notes.append(
+            f"constraints {dict(grounding, **gate)} were applied inside the brainstorm "
+            "search itself, so the suggestions are never re-filtered afterwards"
+        )
+
+    if filt.get('artist'):
+        plan.notes.append(
+            f"artist '{filt['artist']}' was not applied to the brainstorm: a popularity "
+            "request narrowed to one artist would return only that artist"
+        )
+
+    plan.filter = None
+
+
+_EMPTY_PLAN_FEEDBACK = (
+    "PREVIOUS ATTEMPT FAILED: the plan was empty. search_database was emitted with no "
+    "arguments, or every call was dropped in validation.\n"
+    "Emit at least one finder tool (seed_search for a named artist or song, text_match "
+    "for a described sound or lyric topic, knowledge_lookup for a popularity or cultural "
+    "ask), or fill search_database with the constraints the request actually states. "
+    "Never emit search_database with no fields."
+)
+
+
+def _finish_plan(
+    plan: 'ToolPlan',
+    hints: Dict,
+    ai_config: Dict,
+    log_messages: List[str],
+    *,
+    library_context: Optional[Dict] = None,
+    collection_cap: int = 1000,
+    target_song_count: int = 100,
+    raw_request: str = '',
+    allow_rescue: bool = True,
+):
+    for u in hints.get('unsupported', []):
+        if u not in plan.notes:
+            plan.notes.append(u)
+
+    has_knowledge = any(
+        isinstance(p, dict) and p.get('name') == 'knowledge_lookup' for p in plan.primaries
+    )
+
+    exec_result = yield from _execute_plan(
+        plan,
+        ai_config,
+        log_messages,
+        library_context=library_context,
+        collection_cap=collection_cap,
+        target_song_count=target_song_count,
+        has_knowledge=has_knowledge,
+    )
+
+    if not exec_result['songs'] and allow_rescue:
+        rescue = _synthesize_rescue_plan(raw_request, hints, log_messages)
+        if rescue.primaries or rescue.filter is not None:
+            rescue.notes = list(plan.notes) + rescue.notes
+            return (
+                yield from _finish_plan(
+                    rescue, hints, ai_config, log_messages,
+                    library_context=library_context,
+                    collection_cap=collection_cap,
+                    target_song_count=target_song_count,
+                    raw_request=raw_request,
+                    allow_rescue=False,
+                )
+            )
+
+    history = exec_result['tools_used_history']
+    summary = exec_result['tool_execution_summary']
+    return {
+        "songs": exec_result['songs'],
+        "song_sources": exec_result['song_sources'],
+        "tools_used_history": history,
+        "tool_execution_summary": summary,
+        "detected_min_rating": exec_result['detected_min_rating'],
+        "plan_notes": plan.notes,
+        "executed_query_str": f"MCP single-pass ({len(history)} tools): {' -> '.join(summary)}",
+        "filter_applied": plan.filter is not None,
+    }
+
+
 def plan_and_execute_once(
     user_message: str,
     tools: List[Dict],
@@ -1327,13 +1684,12 @@ def plan_and_execute_once(
     collection_cap: int = 1000,
     target_song_count: int = 100,
     replan_feedback: Optional[str] = None,
+    raw_user_request: Optional[str] = None,
 ):
-    from tasks.ai.tools import execute_mcp_tool
-    from tasks.ai.tool_impl import _fetch_pool_features
-
     log_messages.append("\n--- AI Decision ---")
 
     original_user_message = user_message
+    raw_request = raw_user_request or original_user_message
     log_messages.append(
         f"   tools offered: {', '.join(t.get('name', '') for t in tools)}"
     )
@@ -1351,7 +1707,24 @@ def plan_and_execute_once(
 
     raw = call_ai_for_plan(user_message, tools, ai_config, log_messages, library_context)
     if 'error' in raw:
-        return {"error": raw['error']}
+        log_messages.append(
+            "   the AI planner did not answer; matching your words directly instead"
+        )
+        plan = _synthesize_rescue_plan(raw_request, hints, log_messages)
+        plan.notes.append(
+            "the AI planner was unreachable, so this playlist comes from a direct "
+            "match of your request instead of a tool plan"
+        )
+        return (
+            yield from _finish_plan(
+                plan, hints, ai_config, log_messages,
+                library_context=library_context,
+                collection_cap=collection_cap,
+                target_song_count=target_song_count,
+                raw_request=raw_request,
+                allow_rescue=False,
+            )
+        )
 
     reasoning = raw.get('reasoning')
     if isinstance(reasoning, str) and reasoning.strip():
@@ -1362,19 +1735,47 @@ def plan_and_execute_once(
 
     yield
 
+    raw_calls = _dedupe_call_lists(raw_calls, log_messages=log_messages)
     raw_calls = dedupe_and_cap_calls(raw_calls, log_messages=log_messages)
     raw_calls = validate_plan_args(
         raw_calls, user_wants_rating=user_wants_rating, log_messages=log_messages
     )
 
-    if not raw_calls:
-        return {"error": "No valid tool calls after validation"}
-
     plan = validate_and_normalize_plan(raw_calls)
     for note in plan.notes:
         log_messages.append(f"   plan: {note}")
+
     if not plan.primaries and plan.filter is None:
-        return {"error": "Plan was empty after normalization"}
+        if replan_feedback is None:
+            log_messages.append("\nEMPTY PLAN -> replanning once with feedback")
+            replan = yield from plan_and_execute_once(
+                original_user_message,
+                tools,
+                ai_config,
+                log_messages,
+                library_context=library_context,
+                user_wants_rating=user_wants_rating,
+                collection_cap=collection_cap,
+                target_song_count=target_song_count,
+                replan_feedback=_EMPTY_PLAN_FEEDBACK,
+                raw_user_request=raw_request,
+            )
+            if isinstance(replan, dict) and replan.get('songs'):
+                return replan
+            log_messages.append(
+                "   replan produced no usable plan either; matching your words directly"
+            )
+        plan = _synthesize_rescue_plan(raw_request, hints, log_messages)
+        return (
+            yield from _finish_plan(
+                plan, hints, ai_config, log_messages,
+                library_context=library_context,
+                collection_cap=collection_cap,
+                target_song_count=target_song_count,
+                raw_request=raw_request,
+                allow_rescue=False,
+            )
+        )
 
     for p in plan.primaries:
         if not isinstance(p, dict) or p.get('name') != 'text_match':
@@ -1406,25 +1807,99 @@ def plan_and_execute_once(
     )
 
     _strip_unrequested_filter_args(plan, hints, original_user_message, log_messages)
-    if not has_knowledge:
-        _apply_hint_backstop(plan, hints, log_messages)
+    _strip_contradictory_exclusions(plan, hints, original_user_message, log_messages)
+    _apply_hint_backstop(plan, hints, log_messages)
 
     for u in hints.get('unsupported', []):
         plan.notes.append(u)
 
     if plan.filter is not None and has_knowledge:
-        dropped_filter = {
-            k: v for k, v in plan.filter.items() if k not in ('candidate_item_ids', 'get_songs')
-        }
-        log_messages.append(
-            f"   AI brainstorming: filter {dropped_filter} NOT applied - "
-            "knowledge results returned as-is"
+        _ground_knowledge_lookup(plan, log_messages)
+
+    exec_result = yield from _execute_plan(
+        plan,
+        ai_config,
+        log_messages,
+        library_context=library_context,
+        collection_cap=collection_cap,
+        target_song_count=target_song_count,
+        has_knowledge=has_knowledge,
+    )
+    all_songs = exec_result['songs']
+    tools_used_history = exec_result['tools_used_history']
+    tool_execution_summary = exec_result['tool_execution_summary']
+
+    if not all_songs and replan_feedback is None:
+        detail_lines: List[str] = []
+        for h in tools_used_history[-4:]:
+            msg_lines = [ln for ln in (h.get('result_message') or '').splitlines() if ln.strip()]
+            if msg_lines:
+                detail_lines.append(f"- {h.get('name')}: {msg_lines[-1][:160]}")
+        feedback = (
+            "PREVIOUS ATTEMPT FAILED: every tool call returned 0 songs.\n"
+            f"Calls tried: {' -> '.join(tool_execution_summary) or 'none'}\n"
+            + ("\n".join(detail_lines) + "\n" if detail_lines else "")
+            + "Make a DIFFERENT plan for the same request: relax or drop the least "
+            "essential constraint, fix likely misspellings, or switch tool "
+            "(seed_search for similar-artist requests, text_match for sound "
+            "descriptions). Do not repeat the same calls."
         )
-        plan.notes.append(
-            f"constraints {dropped_filter} were IGNORED: brainstorm (knowledge_lookup) "
-            "results are always returned as-is"
+        log_messages.append("\nZERO RESULTS -> replanning once with failure feedback")
+        replan = yield from plan_and_execute_once(
+            original_user_message,
+            tools,
+            ai_config,
+            log_messages,
+            library_context=library_context,
+            user_wants_rating=user_wants_rating,
+            collection_cap=collection_cap,
+            target_song_count=target_song_count,
+            replan_feedback=feedback,
+            raw_user_request=raw_request,
         )
-        plan.filter = None
+        if isinstance(replan, dict) and replan.get('songs'):
+            return replan
+        log_messages.append("   replan attempt failed; matching your words directly")
+
+    if not all_songs:
+        rescue = _synthesize_rescue_plan(raw_request, hints, log_messages)
+        if rescue.primaries or rescue.filter is not None:
+            rescue.notes = list(plan.notes) + rescue.notes
+            return (
+                yield from _finish_plan(
+                    rescue, hints, ai_config, log_messages,
+                    library_context=library_context,
+                    collection_cap=collection_cap,
+                    target_song_count=target_song_count,
+                    raw_request=raw_request,
+                    allow_rescue=False,
+                )
+            )
+
+    return {
+        "songs": all_songs,
+        "song_sources": exec_result['song_sources'],
+        "tools_used_history": tools_used_history,
+        "tool_execution_summary": tool_execution_summary,
+        "detected_min_rating": exec_result['detected_min_rating'],
+        "plan_notes": plan.notes,
+        "executed_query_str": f"MCP single-pass ({len(tools_used_history)} tools): {' -> '.join(tool_execution_summary)}",
+        "filter_applied": plan.filter is not None,
+    }
+
+
+def _execute_plan(
+    plan: 'ToolPlan',
+    ai_config: Dict,
+    log_messages: List[str],
+    *,
+    library_context: Optional[Dict] = None,
+    collection_cap: int = 1000,
+    target_song_count: int = 100,
+    has_knowledge: bool = False,
+):
+    from tasks.ai.tools import execute_mcp_tool
+    from tasks.ai.tool_impl import _fetch_pool_features
 
     detected_min_rating: Optional[int] = None
     if plan.filter and plan.filter.get('min_rating'):
@@ -1558,7 +2033,9 @@ def plan_and_execute_once(
             yield
 
         feats = _fetch_pool_features([s['item_id'] for s in pool_songs])
-        pool_songs = _apply_exclusions(pool_songs, plan.filter, feats, log_messages)
+        pool_songs = _apply_exclusions(
+            pool_songs, plan.filter, feats, log_messages, notes=plan.notes
+        )
         yield
 
         for tn, ta, pooled, errored, msg in primary_logs:
@@ -1688,44 +2165,10 @@ def plan_and_execute_once(
                     "tools moved to the front (likely what the user meant by combining them)"
                 )
 
-    if not all_songs and replan_feedback is None:
-        detail_lines: List[str] = []
-        for h in tools_used_history[-4:]:
-            msg_lines = [ln for ln in (h.get('result_message') or '').splitlines() if ln.strip()]
-            if msg_lines:
-                detail_lines.append(f"- {h.get('name')}: {msg_lines[-1][:160]}")
-        feedback = (
-            "PREVIOUS ATTEMPT FAILED: every tool call returned 0 songs.\n"
-            f"Calls tried: {' -> '.join(tool_execution_summary) or 'none'}\n"
-            + ("\n".join(detail_lines) + "\n" if detail_lines else "")
-            + "Make a DIFFERENT plan for the same request: relax or drop the least "
-            "essential constraint, fix likely misspellings, or switch tool "
-            "(seed_search for similar-artist requests, text_match for sound "
-            "descriptions). Do not repeat the same calls."
-        )
-        log_messages.append("\nZERO RESULTS -> replanning once with failure feedback")
-        replan = yield from plan_and_execute_once(
-            original_user_message,
-            tools,
-            ai_config,
-            log_messages,
-            library_context=library_context,
-            user_wants_rating=user_wants_rating,
-            collection_cap=collection_cap,
-            target_song_count=target_song_count,
-            replan_feedback=feedback,
-        )
-        if isinstance(replan, dict) and 'error' not in replan:
-            return replan
-        log_messages.append("   replan attempt failed; returning the original empty result")
-
     return {
         "songs": all_songs,
         "song_sources": song_sources,
         "tools_used_history": tools_used_history,
         "tool_execution_summary": tool_execution_summary,
         "detected_min_rating": detected_min_rating,
-        "plan_notes": plan.notes,
-        "executed_query_str": f"MCP single-pass ({len(tools_used_history)} tools): {' -> '.join(tool_execution_summary)}",
-        "filter_applied": plan.filter is not None,
     }

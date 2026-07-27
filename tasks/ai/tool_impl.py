@@ -15,12 +15,14 @@ brainstorm recipe runner. This is where every AI tool actually touches data.
 
 Main Features:
 * Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M', so 'Nas' never matches 'Jonas Brothers'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
-* search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded); brainstorm fuses audio/artist/lyrics/filter channels round-robin, year-gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
-* Artist-seed similarity scales its similar-artist fanout to the indexed library size (total//10, min 5) and returns songs ordered by artist rank (seed artist first, then closest neighbors) so downstream rank blending stays meaningful.
+* search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded); brainstorm fuses audio/artist/lyrics/filter channels round-robin, gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
+* The brainstorm accepts a planner-supplied grounding_filter merged into the recipe (grounding wins over the model's guess for ranges, unions for lists) and a gate_filter applied per channel, so a metadata constraint next to knowledge_lookup shapes the search from inside the tool rather than filtering its output. The gate is asymmetric on purpose: exclusions are hard and never fall back, while a positive gate that empties a channel keeps that channel ungated so the request still returns songs.
+* Artist-seed similarity scales its similar-artist fanout to the indexed library size (total//10, min 5) and returns songs round-robin across the seed artist and its neighbors (one song each per round, seed first within a round), so the seed still leads the list but a prolific seed artist can never consume the whole LIMIT and shut every similar artist out.
 """
 
 import json
 import logging
+import random
 import re
 from typing import Dict, List, Optional
 
@@ -313,7 +315,11 @@ def _resolve_song_row(
 
 
 def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict:
-    from tasks.artist_gmm_manager import find_similar_artists, reverse_artist_map
+    from tasks.artist_gmm_manager import (
+        find_similar_artists,
+        get_artist_tracks,
+        reverse_artist_map,
+    )
 
     db_conn = get_db_connection()
     log_messages = []
@@ -432,31 +438,44 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
             f"Searching songs from {len(all_artist_names)} artists (original + similar)"
         )
 
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            placeholders = ','.join(['%s'] * len(all_artist_names))
-            query = f"""
-                SELECT item_id, title, author, album
-                FROM (
-                    SELECT DISTINCT item_id, title, author, album
-                    FROM public.score
-                    WHERE author IN ({placeholders})
-                ) AS distinct_songs
-                ORDER BY array_position(%s::text[], author), RANDOM()
-                LIMIT %s
-            """
-            cur.execute(query, all_artist_names + [all_artist_names, get_songs])
-            results = cur.fetchall()
+        per_artist = []
+        for name in all_artist_names:
+            tracks = get_artist_tracks(name)
+            if tracks:
+                random.shuffle(tracks)
+                per_artist.append(
+                    [
+                        {
+                            "item_id": t.get('item_id'),
+                            "title": t.get('title', ''),
+                            "artist": t.get('author', name),
+                            "album": t.get('album', ''),
+                        }
+                        for t in tracks
+                        if t.get('item_id')
+                    ]
+                )
 
-        songs = [
-            {
-                "item_id": r['item_id'],
-                "title": r['title'],
-                "artist": r['author'],
-                "album": r.get('album', ''),
-            }
-            for r in results
-        ]
-        log_messages.append(f"Retrieved {len(songs)} songs from original + similar artists")
+        songs = []
+        seen_ids = set()
+        for round_index in range(max((len(t) for t in per_artist), default=0)):
+            if len(songs) >= get_songs:
+                break
+            for tracks in per_artist:
+                if round_index >= len(tracks):
+                    continue
+                s = tracks[round_index]
+                if s['item_id'] in seen_ids:
+                    continue
+                songs.append(s)
+                seen_ids.add(s['item_id'])
+                if len(songs) >= get_songs:
+                    break
+
+        log_messages.append(
+            f"Retrieved {len(songs)} songs interleaved across {len(per_artist)} artist(s) "
+            "(one per artist per round, seed artist first)"
+        )
 
         component_matches = []
         for artist_name in all_artist_names:
@@ -1186,8 +1205,9 @@ def _extract_json_object(raw: str) -> Optional[Dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _clamp_recipe(recipe: Dict) -> Dict:
+def _clamp_recipe(recipe: Dict, grounding_filter: Optional[Dict] = None) -> Dict:
     import config
+    from tasks.ai.vocab import GENRE_VOCAB
 
     def _norm(s):
         return re.sub(r"[^a-z0-9]", "", str(s).lower())
@@ -1229,21 +1249,30 @@ def _clamp_recipe(recipe: Dict) -> Dict:
         return out
 
     raw_filters = recipe.get("filters") if isinstance(recipe.get("filters"), dict) else {}
+    ground = grounding_filter if isinstance(grounding_filter, dict) else {}
 
-    year_min = _num(raw_filters.get("year_min"), 1900, 2100)
-    year_max = _num(raw_filters.get("year_max"), 1900, 2100)
+    def _ground_first(key):
+        merged = list(_as_list(ground.get(key))) + list(_as_list(raw_filters.get(key)))
+        return merged
+
+    def _ground_wins(key):
+        v = ground.get(key)
+        return v if v is not None and v != '' else raw_filters.get(key)
+
+    year_min = _num(_ground_wins("year_min"), 1900, 2100)
+    year_max = _num(_ground_wins("year_max"), 1900, 2100)
     year_min = int(year_min) if year_min is not None else None
     year_max = int(year_max) if year_max is not None else None
     if year_min is not None and year_max is not None and year_min > year_max:
         year_min, year_max = year_max, year_min
 
-    energy_min = _num(raw_filters.get("energy_min"), 0.0, 1.0)
-    energy_max = _num(raw_filters.get("energy_max"), 0.0, 1.0)
+    energy_min = _num(_ground_wins("energy_min"), 0.0, 1.0)
+    energy_max = _num(_ground_wins("energy_max"), 0.0, 1.0)
     if energy_min is not None and energy_max is not None and energy_min > energy_max:
         energy_min, energy_max = energy_max, energy_min
 
-    tempo_min = _num(raw_filters.get("tempo_min"), config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM)
-    tempo_max = _num(raw_filters.get("tempo_max"), config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM)
+    tempo_min = _num(_ground_wins("tempo_min"), config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM)
+    tempo_max = _num(_ground_wins("tempo_max"), config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM)
     if tempo_min is not None and tempo_max is not None and tempo_min > tempo_max:
         tempo_min, tempo_max = tempo_max, tempo_min
 
@@ -1255,13 +1284,9 @@ def _clamp_recipe(recipe: Dict) -> Dict:
 
     return {
         "filters": {
-            "genres": _clamp_to_vocab(
-                _as_list(raw_filters.get("genres")), config.STRATIFIED_GENRES
-            ),
-            "moods": _clamp_to_vocab(
-                _as_list(raw_filters.get("moods")), config.OTHER_FEATURE_LABELS
-            ),
-            "voices": _clamp_to_vocab(_as_list(raw_filters.get("voices")), config.VOICE_VOCAB),
+            "genres": _clamp_to_vocab(_ground_first("genres"), GENRE_VOCAB),
+            "moods": _clamp_to_vocab(_ground_first("moods"), config.OTHER_FEATURE_LABELS),
+            "voices": _clamp_to_vocab(_ground_first("voices"), config.VOICE_VOCAB),
             "year_min": year_min,
             "year_max": year_max,
             "energy_min": energy_min,
@@ -1279,13 +1304,24 @@ def _clamp_recipe(recipe: Dict) -> Dict:
     }
 
 
-def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> Dict:
+def _ai_brainstorm_sync(
+    user_request: str,
+    ai_config: Dict,
+    get_songs: int,
+    grounding_filter: Optional[Dict] = None,
+    gate_filter: Optional[Dict] = None,
+) -> Dict:
     import config
     from tasks.ai.api import generate_text as _ai_generate_text
     from tasks.ai.prompts import build_ai_brainstorm_prompt
 
     get_songs = int(get_songs) if get_songs is not None else 200
     log_messages = [f"Brainstorming a grounded search recipe for: {user_request}"]
+    gate = gate_filter if isinstance(gate_filter, dict) else {}
+    if grounding_filter:
+        log_messages.append(f"   grounding: recipe constrained by {grounding_filter}")
+    if gate:
+        log_messages.append(f"   gate: every channel constrained by {gate}")
 
     prompt = build_ai_brainstorm_prompt(user_request)
     raw_response = _ai_generate_text(prompt, ai_config, skip_delay=True, max_tokens=1500)
@@ -1305,7 +1341,7 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
             "message": "AI brainstorm could not produce a recipe; check the container logs.",
         }
 
-    recipe = _clamp_recipe(parsed)
+    recipe = _clamp_recipe(parsed, grounding_filter)
     filt = recipe["filters"]
 
     log_messages.append(
@@ -1361,19 +1397,46 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
     def _energy_to_raw(value):
         return config.ENERGY_MIN + float(value) * (config.ENERGY_MAX - config.ENERGY_MIN)
 
-    def _year_gate(songs, year_min, year_max):
-        if year_min is None and year_max is None:
-            return songs or []
+    _POSITIVE_GATE_KEYS = ('key', 'scale', 'min_rating', 'instrumental', 'album')
+    _EXCLUDE_GATE_KEYS = ('exclude_artists', 'exclude_genres')
+
+    def _gate_subset(keys):
+        return {k: gate[k] for k in keys if gate.get(k) not in (None, '', [], {})}
+
+    def _requery(songs, **kwargs):
         ids = [s.get("item_id") for s in (songs or []) if s.get("item_id")]
         if not ids:
             return []
-        gated = _database_genre_query_sync(
-            get_songs=len(ids),
-            year_min=year_min,
-            year_max=year_max,
-            candidate_item_ids=ids,
+        return (
+            _database_genre_query_sync(
+                get_songs=len(ids), candidate_item_ids=ids, **kwargs
+            ).get("songs")
+            or []
         )
-        return gated.get("songs") or []
+
+    def _channel_gate(songs, year_min, year_max, label="channel"):
+        songs = songs or []
+        excludes = _gate_subset(_EXCLUDE_GATE_KEYS)
+        if excludes:
+            songs = _requery(songs, **excludes)
+            if not songs:
+                return []
+
+        positive = _gate_subset(_POSITIVE_GATE_KEYS)
+        if year_min is not None:
+            positive['year_min'] = year_min
+        if year_max is not None:
+            positive['year_max'] = year_max
+        if not positive:
+            return songs
+
+        gated = _requery(songs, **positive)
+        if not gated and songs:
+            log_messages.append(
+                f"   gate: {label} emptied by the grounding filter; kept it ungated"
+            )
+            return songs
+        return gated
 
     def _run_filter(year_min, year_max, use_scored):
         return (
@@ -1393,6 +1456,8 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
                 year_max=year_max,
                 voices=filt["voices"] or None,
                 score_threshold=config.AI_BRAINSTORM_GENRE_SCORE_THRESHOLD,
+                exclude_artists=gate.get("exclude_artists") or None,
+                exclude_genres=gate.get("exclude_genres") or None,
             ).get("songs")
             or []
         )
@@ -1416,22 +1481,28 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
     try:
         channels = []
         for i, desc in enumerate(recipe["sound_descriptions"]):
-            songs = _year_gate(
-                _text_search_sync(desc, None, None, get_songs).get("songs"), ymin, ymax
+            label = f"audio#{i + 1}"
+            songs = _channel_gate(
+                _text_search_sync(desc, None, None, get_songs).get("songs"),
+                ymin, ymax, label,
             )
             if songs:
-                channels.append((f"audio#{i + 1}", songs))
+                channels.append((label, songs))
         for art in recipe["seed_artists"]:
             raw = _artist_similarity_api_sync(
                 art, config.AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED, get_songs
             )
-            songs = _year_gate(raw.get("songs"), ymin, ymax)
+            label = f"artist:{art}"
+            songs = _channel_gate(raw.get("songs"), ymin, ymax, label)
             if songs:
-                channels.append((f"artist:{art}", songs))
+                channels.append((label, songs))
         for i, theme in enumerate(recipe["lyric_themes"]):
-            songs = _year_gate(_lyrics_search_sync(theme, get_songs).get("songs"), ymin, ymax)
+            label = f"lyrics#{i + 1}"
+            songs = _channel_gate(
+                _lyrics_search_sync(theme, get_songs).get("songs"), ymin, ymax, label
+            )
             if songs:
-                channels.append((f"lyrics#{i + 1}", songs))
+                channels.append((label, songs))
         if has_filter:
             fsongs = _run_filter(ymin, ymax, use_scored=True)
             if fsongs:
@@ -1467,7 +1538,7 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
                 relaxed = _text_search_sync(
                     ", ".join(filt["genres"]) + " music", None, None, get_songs
                 ).get("songs")
-                _add_batch(_year_gate(relaxed, rmin, rmax), "relax:audio")
+                _add_batch(_channel_gate(relaxed, rmin, rmax, "relax:audio"), "relax:audio")
     except Exception:
         logger.exception("Brainstorm channel execution failed")
 
