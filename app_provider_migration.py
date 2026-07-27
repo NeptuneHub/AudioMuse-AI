@@ -81,7 +81,7 @@ provider_probe = _LazyProbe()
 # Supported target providers (what the tool knows how to talk to)
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex'})
+_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex', 'ampache'})
 
 
 # ---------------------------------------------------------------------------

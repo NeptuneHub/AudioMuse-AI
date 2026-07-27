@@ -30,7 +30,7 @@ from .context import use_server
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby', 'plex')
+_PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby', 'plex', 'ampache')
 _warned_unsupported = set()
 
 _PLAYLIST_NAME_REQUIRED = "Playlist name is required."

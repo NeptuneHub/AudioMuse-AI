@@ -90,6 +90,13 @@ NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "")
 NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "")
 NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password directly
 
+# --- Ampache Constants ---
+# These are used only if MEDIASERVER_TYPE is "ampache". AMPACHE_PASSWORD takes either the
+# account password or an API key; the handshake tries both, so no separate key field exists.
+AMPACHE_URL = os.environ.get("AMPACHE_URL", "")  # e.g. http://your-ampache-server
+AMPACHE_USER = os.environ.get("AMPACHE_USER", "")
+AMPACHE_PASSWORD = os.environ.get("AMPACHE_PASSWORD", "")
+
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "")
@@ -105,6 +112,7 @@ MEDIASERVER_FIELDS_BY_TYPE = {
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
     'plex': ['PLEX_URL', 'PLEX_TOKEN'],
+    'ampache': ['AMPACHE_URL', 'AMPACHE_USER', 'AMPACHE_PASSWORD'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
@@ -128,6 +136,7 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
     'NAVIDROME_URL': 'url', 'NAVIDROME_USER': 'user', 'NAVIDROME_PASSWORD': 'password',
     'LYRION_URL': 'url',
     'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
+    'AMPACHE_URL': 'url', 'AMPACHE_USER': 'user', 'AMPACHE_PASSWORD': 'password',
 }
 
 # The ONLY persistent home of these settings is the music_servers registry
