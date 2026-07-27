@@ -390,9 +390,26 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
 
 # Sampling temperature for the tool-calling (playlist planning) LLM request.
-# Qwen3-family models officially warn against greedy decoding (temperature 0 causes
-# repetition loops); 0.7 is the vendor-recommended non-thinking value.
-AI_TOOLCALL_TEMPERATURE = float(os.environ.get("AI_TOOLCALL_TEMPERATURE", "0.7"))
+# Qwen3-family models officially warn against greedy decoding, so this stays above 0.
+# It is well below the vendor's general-chat 0.7 because tool selection has to be
+# reproducible: measured on qwen3.5:9b over a 40-query benchmark, the same prompt run
+# twice picked a different tool set 7 times out of 40 at 0.7 and once out of 40 at 0.2,
+# with the same plan quality and no repetition loops (the structured-output grammar
+# bounds every array, so a loop cannot run away).
+AI_TOOLCALL_TEMPERATURE = float(os.environ.get("AI_TOOLCALL_TEMPERATURE", "0.2"))
+
+# Remaining sampling knobs for the tool-calling request, shared by both Ollama paths
+# (native /api/chat and structured format=schema) so a plan does not depend on which
+# path served it.
+AI_TOOLCALL_TOP_P = float(os.environ.get("AI_TOOLCALL_TOP_P", "0.8"))
+AI_TOOLCALL_TOP_K = int(os.environ.get("AI_TOOLCALL_TOP_K", "20"))
+AI_TOOLCALL_MIN_P = float(os.environ.get("AI_TOOLCALL_MIN_P", "0.0"))
+AI_TOOLCALL_NUM_PREDICT = int(os.environ.get("AI_TOOLCALL_NUM_PREDICT", "1536"))
+
+# Maximum tool calls kept from one plan. Bounds both the planner cap and the
+# structured-output grammar, which must agree or the grammar allows a call the
+# planner would silently drop.
+AI_MAX_TOOL_CALLS = int(os.environ.get("AI_MAX_TOOL_CALLS", "4"))
 
 # Playlist naming asks the model for several one-word candidates in a single call and
 # keeps the first one that passes validation. Resolving a rejected concept inside one

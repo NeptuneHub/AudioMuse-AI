@@ -607,20 +607,26 @@ class TestExecuteMcpToolEnergyConversion:
 
 
 class TestToolSurface:
-    def test_shared_schemas_omit_ollama_only_unique_items(self):
+    def test_tool_schemas_cap_arrays_with_max_items_and_carry_no_unique_items(self):
         ai_mod = _import_ai_mcp_client()
 
-        def contains_unique_items(value):
+        def array_schemas(value):
             if isinstance(value, dict):
-                return 'uniqueItems' in value or any(
-                    contains_unique_items(child) for child in value.values()
-                )
-            if isinstance(value, list):
-                return any(contains_unique_items(child) for child in value)
-            return False
+                if value.get('type') == 'array':
+                    yield value
+                for child in value.values():
+                    yield from array_schemas(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from array_schemas(child)
 
+        seen = 0
         for tool in ai_mod.get_mcp_tools():
-            assert not contains_unique_items(tool['inputSchema'])
+            for array_schema in array_schemas(tool['inputSchema']):
+                seen += 1
+                assert 'uniqueItems' not in array_schema
+                assert 'maxItems' in array_schema
+        assert seen
 
     def test_no_llm_facing_get_songs_or_dead_params(self):
         ai_mod = _import_ai_mcp_client()
@@ -724,10 +730,15 @@ class TestArtistSimilarityApiSync:
         cur.__exit__ = Mock(return_value=False)
         return cur
 
-    def _setup_gmm_module(self, find_return=None, reverse_map=None):
+    def _setup_gmm_module(self, find_return=None, reverse_map=None, tracks_per_artist=None):
         mock_mod = MagicMock()
         mock_mod.find_similar_artists = Mock(return_value=find_return or [])
         mock_mod.reverse_artist_map = reverse_map if reverse_map is not None else {}
+        counts = tracks_per_artist if tracks_per_artist is not None else {}
+        mock_mod.get_artist_tracks = Mock(side_effect=lambda name: [
+            {'item_id': f'{name}-{i}', 'title': f'{name} {i}', 'author': name}
+            for i in range(counts.get(name, 1))
+        ])
         return mock_mod
 
     def test_exact_match_returns_songs(self):
@@ -933,20 +944,78 @@ class TestArtistSimilarityApiSync:
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "U2", "distance": 0.2}])
+        gmm_mod = self._setup_gmm_module(
+            find_return=[{"artist": "U2", "distance": 0.2}],
+            tracks_per_artist={"Coldplay": 50, "U2": 50},
+        )
 
         with (
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            mod._artist_similarity_api_sync("Coldplay", count=5, get_songs=5)
+            result = mod._artist_similarity_api_sync("Coldplay", count=5, get_songs=5)
 
-        execute_calls = cur.execute.call_args_list
-        for c in execute_calls:
-            args = c[0]
-            if len(args) >= 2 and isinstance(args[1], list):
-                assert args[1][-1] == 5
-                break
+        assert len(result["songs"]) == 5
+
+    def _run_with_track_source(self, mod, seed, similar, tracks_per_artist, get_songs):
+        cur = self._setup_cursor()
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": seed}))
+        cur.fetchall = Mock(return_value=[])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
+
+        gmm_mod = self._setup_gmm_module(
+            find_return=[{"artist": a, "distance": 0.1 * i} for i, a in enumerate(similar, 1)]
+        )
+        gmm_mod.get_artist_tracks = Mock(side_effect=lambda name: [
+            {'item_id': f'{name}-{i}', 'title': f'{name} {i}', 'author': name}
+            for i in range(tracks_per_artist.get(name, 0))
+        ])
+
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
+            return mod._artist_similarity_api_sync(seed, count=len(similar), get_songs=get_songs)
+
+    def test_songs_come_from_get_artist_tracks_not_a_hand_rolled_query(self):
+        mod = _import_mcp_impl()
+        similar = [f"Similar {i}" for i in range(1, 16)]
+        tracks = {"Madonna": 300}
+        tracks.update({a: 40 for a in similar})
+        result = self._run_with_track_source(mod, "Madonna", similar, tracks, 200)
+
+        assert len(result["songs"]) == 200
+        assert len({s["artist"] for s in result["songs"]}) == 16
+
+    def test_a_prolific_seed_artist_cannot_consume_the_whole_limit(self):
+        mod = _import_mcp_impl()
+        similar = [f"Similar {i}" for i in range(1, 16)]
+        tracks = {"Madonna": 300}
+        tracks.update({a: 40 for a in similar})
+        result = self._run_with_track_source(mod, "Madonna", similar, tracks, 200)
+
+        madonna = [s for s in result["songs"] if s["artist"] == "Madonna"]
+        assert len(madonna) <= 20
+        assert len(result["songs"]) - len(madonna) >= 150
+
+    def test_the_seed_artist_still_leads_the_returned_list(self):
+        mod = _import_mcp_impl()
+        result = self._run_with_track_source(
+            mod, "Madonna", ["Kylie", "Cher"],
+            {"Madonna": 10, "Kylie": 10, "Cher": 10}, 9,
+        )
+        assert result["songs"][0]["artist"] == "Madonna"
+        assert [s["artist"] for s in result["songs"][:3]] == ["Madonna", "Kylie", "Cher"]
+
+    def test_an_artist_with_no_tracks_does_not_stall_the_interleave(self):
+        mod = _import_mcp_impl()
+        result = self._run_with_track_source(
+            mod, "Madonna", ["Kylie", "Cher"],
+            {"Madonna": 2, "Kylie": 0, "Cher": 5}, 10,
+        )
+        assert {s["artist"] for s in result["songs"]} == {"Madonna", "Cher"}
+        assert len(result["songs"]) == 7
 
 
 @pytest.mark.unit
@@ -1483,3 +1552,116 @@ class TestTextSearchSync:
 
         assert result["songs"] == []
         assert "error" in result["message"].lower()
+
+
+class TestClampRecipeGrounding:
+    def _fn(self):
+        return _import_mcp_impl()._clamp_recipe
+
+    def _recipe(self, **filters):
+        base = {"genres": [], "moods": [], "voices": [], "year_min": None,
+                "year_max": None, "energy_min": None, "energy_max": None,
+                "tempo_min": None, "tempo_max": None}
+        base.update(filters)
+        return {"filters": base, "sound_descriptions": ["warm"],
+                "seed_artists": [], "lyric_themes": []}
+
+    def test_absent_grounding_filter_leaves_the_recipe_unchanged(self):
+        clamp = self._fn()
+        recipe = self._recipe(genres=["jazz"], year_min=1990)
+        assert clamp(recipe) == clamp(recipe, None)
+
+    def test_grounding_genres_union_with_the_recipe_genres(self):
+        clamp = self._fn()
+        out = clamp(self._recipe(genres=["jazz"]), {"genres": ["rock"]})
+        assert set(out["filters"]["genres"]) == {"rock", "jazz"}
+
+    def test_grounding_genres_are_not_duplicated_when_the_recipe_repeats_them(self):
+        clamp = self._fn()
+        out = clamp(self._recipe(genres=["rock"]), {"genres": ["rock"]})
+        assert out["filters"]["genres"] == ["rock"]
+
+    def test_grounding_year_range_overrides_the_recipe_guess(self):
+        clamp = self._fn()
+        out = clamp(
+            self._recipe(year_min=1970, year_max=1979),
+            {"year_min": 2010, "year_max": 2019},
+        )
+        assert out["filters"]["year_min"] == 2010
+        assert out["filters"]["year_max"] == 2019
+
+    def test_grounding_energy_and_tempo_override_the_recipe_guess(self):
+        clamp = self._fn()
+        out = clamp(
+            self._recipe(energy_min=0.1, tempo_min=60),
+            {"energy_min": 0.7, "tempo_min": 120},
+        )
+        assert out["filters"]["energy_min"] == 0.7
+        assert out["filters"]["tempo_min"] == 120
+
+    def test_grounding_genre_outside_stratified_genres_survives_the_clamp(self):
+        clamp = self._fn()
+        out = clamp(self._recipe(), {"genres": ["dance"]})
+        assert out["filters"]["genres"] == ["dance"]
+
+    def test_grounding_moods_and_voices_union_without_duplicates(self):
+        clamp = self._fn()
+        out = clamp(
+            self._recipe(moods=["happy"], voices=["female vocalists"]),
+            {"moods": ["happy", "party"], "voices": ["female vocalists"]},
+        )
+        assert set(out["filters"]["moods"]) == {"happy", "party"}
+        assert out["filters"]["voices"].count("female vocalists") == 1
+
+
+class TestKnowledgeLookupDispatch:
+    def test_grounding_and_gate_filters_are_absent_from_the_llm_facing_schema(self):
+        ai_mod = _import_ai_mcp_client()
+        tool = next(t for t in ai_mod.get_mcp_tools() if t['name'] == 'knowledge_lookup')
+        props = tool['inputSchema']['properties']
+        assert 'grounding_filter' not in props
+        assert 'gate_filter' not in props
+
+    def test_execute_mcp_tool_forwards_grounding_and_gate_to_the_brainstorm(self):
+        ai_mod = _import_ai_mcp_client()
+        captured = {}
+
+        def fake_brainstorm(request, cfg, get_songs, grounding_filter=None, gate_filter=None):
+            captured['grounding'] = grounding_filter
+            captured['gate'] = gate_filter
+            return {"songs": [], "message": "ok"}
+
+        orig = ai_mod._ai_brainstorm_sync
+        ai_mod._ai_brainstorm_sync = fake_brainstorm
+        try:
+            ai_mod.execute_mcp_tool(
+                'knowledge_lookup',
+                {
+                    'user_request': 'best of the 90s',
+                    'grounding_filter': {'genres': ['rock']},
+                    'gate_filter': {'exclude_artists': ['Oasis']},
+                },
+                {},
+            )
+        finally:
+            ai_mod._ai_brainstorm_sync = orig
+
+        assert captured['grounding'] == {'genres': ['rock']}
+        assert captured['gate'] == {'exclude_artists': ['Oasis']}
+
+
+class TestGenreVocabCoverage:
+    def test_brainstorm_prompt_and_recipe_clamp_use_the_same_genre_vocabulary(self):
+        _import_mcp_impl()
+        from tasks.ai.prompts import build_ai_brainstorm_prompt
+        from tasks.ai.vocab import GENRE_VOCAB
+
+        prompt = build_ai_brainstorm_prompt('best of the 90s')
+        for genre in GENRE_VOCAB:
+            assert genre in prompt
+
+    def test_genre_enum_is_a_superset_of_stratified_genres(self):
+        import config
+        from tasks.ai.vocab import GENRE_VOCAB
+
+        assert set(config.STRATIFIED_GENRES) <= set(GENRE_VOCAB)

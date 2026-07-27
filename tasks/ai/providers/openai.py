@@ -612,9 +612,10 @@ def _try_native_ollama_tool_call(
         "stream": False,
         "options": {
             "temperature": config.AI_TOOLCALL_TEMPERATURE,
-            "top_p": 0.8,
-            "top_k": 20,
-            "num_predict": 1536,
+            "top_p": config.AI_TOOLCALL_TOP_P,
+            "top_k": config.AI_TOOLCALL_TOP_K,
+            "min_p": config.AI_TOOLCALL_MIN_P,
+            "num_predict": config.AI_TOOLCALL_NUM_PREDICT,
         },
     }
     if "qwen" in (model_name or "").lower():
@@ -678,10 +679,10 @@ def _try_structured_ollama_call(
         "think": False,
         "options": {
             "temperature": config.AI_TOOLCALL_TEMPERATURE,
-            "top_p": 0.8,
-            "top_k": 20,
-            "min_p": 0.0,
-            "num_predict": 1536,
+            "top_p": config.AI_TOOLCALL_TOP_P,
+            "top_k": config.AI_TOOLCALL_TOP_K,
+            "min_p": config.AI_TOOLCALL_MIN_P,
+            "num_predict": config.AI_TOOLCALL_NUM_PREDICT,
         },
     }
     with httpx.Client(timeout=timeout) as client:
