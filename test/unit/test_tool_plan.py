@@ -21,6 +21,7 @@ Main Features:
 """
 
 import importlib
+import re
 import sys
 import types
 
@@ -593,7 +594,7 @@ class TestToolCallsSchema:
         pr.build_tool_calls_schema(tools)
         assert 'additionalProperties' not in tools[0]['inputSchema']
 
-    def test_unique_items_are_added_only_to_derived_argument_arrays(self):
+    def test_derived_schema_carries_no_unique_items_and_relies_on_max_items(self):
         pr = _prompts()
         tools = _tools_fixture()
 
@@ -616,15 +617,29 @@ class TestToolCallsSchema:
             for argument_schema in argument_schemas
             for array_schema in array_schemas(argument_schema)
         ]
-        source_arrays = [
-            array_schema
-            for tool in tools
-            for array_schema in array_schemas(tool['inputSchema'])
-        ]
 
         assert derived_arrays
-        assert all(array_schema['uniqueItems'] is True for array_schema in derived_arrays)
-        assert all('uniqueItems' not in array_schema for array_schema in source_arrays)
+        assert all('uniqueItems' not in array_schema for array_schema in derived_arrays)
+
+    def test_derived_argument_arrays_preserve_the_source_max_items_cap(self):
+        pr = _prompts()
+        tools = _tools_fixture()
+        for tool in tools:
+            if tool['name'] == 'search_database':
+                tool['inputSchema']['properties']['genres']['maxItems'] = 5
+
+        schema = pr.build_tool_calls_schema(tools)
+        branch = next(
+            b for b in schema['properties']['tool_calls']['items']['oneOf']
+            if b['properties']['name']['enum'] == ['search_database']
+        )
+        assert branch['properties']['arguments']['properties']['genres']['maxItems'] == 5
+
+    def test_tool_calls_schema_max_items_matches_the_planner_cap(self):
+        pr = _prompts()
+        planner = _plan()
+        schema = pr.build_tool_calls_schema(_tools_fixture())
+        assert schema['properties']['tool_calls']['maxItems'] == planner.MAX_TOOL_CALLS
 
 
 class TestPromptRendering:
@@ -1052,3 +1067,396 @@ class TestZeroResultReplan:
         assert result['songs']
         assert len(calls) == 2
         assert 'PREVIOUS ATTEMPT FAILED' in calls[1]
+
+
+def _drive(gen):
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
+def _example_calls(example_text):
+    import json
+
+    return json.loads(example_text.split('\n', 1)[1])['tool_calls']
+
+
+def _run_plan(p, monkeypatch, request, tool_calls, raw_request=None):
+    import tasks.ai.tools as tools_mod
+    import tasks.ai.tool_impl as impl_mod
+
+    seen = []
+
+    def fake_ai(user_message, tools, ai_config, log_messages, library_context=None):
+        if callable(tool_calls):
+            return tool_calls(user_message)
+        return {'tool_calls': [dict(c) for c in tool_calls]}
+
+    def fake_exec(name, args, cfg):
+        seen.append((name, {k: v for k, v in args.items() if k != 'get_songs'}))
+        return {'songs': [{'item_id': 'x1', 'title': 'T', 'artist': 'A'}], 'message': 'ok'}
+
+    monkeypatch.setattr(p, 'call_ai_for_plan', fake_ai)
+    monkeypatch.setattr(tools_mod, 'execute_mcp_tool', fake_exec)
+    monkeypatch.setattr(
+        impl_mod, '_fetch_pool_features',
+        lambda ids: {i: {'author': 'A', 'mood_vector': '', 'other_features': ''} for i in ids},
+    )
+    logs = []
+    result = _drive(p.plan_and_execute_once(
+        request, [], {'provider': 'NONE'}, logs, raw_user_request=raw_request,
+    ))
+    return result, seen, logs
+
+
+class TestListArgDedupe:
+    def test_repeated_exclude_genres_collapse_to_one_value(self):
+        p = _plan()
+        calls = [{'name': 'search_database',
+                  'arguments': {'exclude_genres': ['Hip-Hop'] * 5}}]
+        logs = []
+        p._dedupe_call_lists(calls, log_messages=logs)
+        assert calls[0]['arguments']['exclude_genres'] == ['Hip-Hop']
+        assert any('dedupe:' in line for line in logs)
+
+    def test_dedupe_is_case_insensitive_and_keeps_first_seen_order(self):
+        p = _plan()
+        calls = [{'name': 'search_database',
+                  'arguments': {'genres': ['rock', 'ROCK', 'jazz', 'Rock']}}]
+        p._dedupe_call_lists(calls, log_messages=[])
+        assert calls[0]['arguments']['genres'] == ['rock', 'jazz']
+
+    def test_repeated_seed_search_seeds_collapse_by_identity(self):
+        p = _plan()
+        calls = [{'name': 'seed_search', 'arguments': {'seeds': [
+            {'type': 'artist', 'name': 'Oasis'},
+            {'type': 'artist', 'name': 'oasis'},
+            {'type': 'artist', 'name': 'Blur'},
+        ]}}]
+        p._dedupe_call_lists(calls, log_messages=[])
+        assert calls[0]['arguments']['seeds'] == [
+            {'type': 'artist', 'name': 'Oasis'},
+            {'type': 'artist', 'name': 'Blur'},
+        ]
+
+    def test_repeated_subtract_items_collapse_by_identity(self):
+        p = _plan()
+        calls = [{'name': 'seed_search', 'arguments': {
+            'seeds': [{'type': 'artist', 'name': 'Oasis'}],
+            'subtract': [{'type': 'artist', 'name': 'Blur'}] * 3,
+        }}]
+        p._dedupe_call_lists(calls, log_messages=[])
+        assert calls[0]['arguments']['subtract'] == [{'type': 'artist', 'name': 'Blur'}]
+
+    def test_calls_differing_only_by_padding_collapse_and_free_a_cap_slot(self):
+        p = _plan()
+        calls = [
+            {'name': 'search_database', 'arguments': {'exclude_genres': ['pop', 'pop']}},
+            {'name': 'search_database', 'arguments': {'exclude_genres': ['pop']}},
+            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'artist', 'name': 'A'}]}},
+            {'name': 'text_match', 'arguments': {'query': 'warm', 'mode': 'audio'}},
+            {'name': 'knowledge_lookup', 'arguments': {'user_request': 'best of'}},
+        ]
+        deduped = p.dedupe_and_cap_calls(
+            p._dedupe_call_lists(calls, log_messages=[]), log_messages=[]
+        )
+        assert [c['name'] for c in deduped] == [
+            'search_database', 'seed_search', 'text_match', 'knowledge_lookup',
+        ]
+
+
+class TestContradictoryExclusionStrip:
+    def test_exclude_artist_matching_a_seed_is_dropped(self, monkeypatch):
+        p = _plan()
+        _result, seen, _logs = _run_plan(
+            p, monkeypatch, 'like Miles Davis, nothing after 1970', [
+                {'name': 'seed_search',
+                 'arguments': {'seeds': [{'type': 'artist', 'name': 'Miles Davis'}]}},
+                {'name': 'search_database',
+                 'arguments': {'exclude_artists': ['Miles Davis'], 'year_max': 1970}},
+            ])
+        filters = [a for n, a in seen if n == 'search_database']
+        assert all('Miles Davis' not in (a.get('exclude_artists') or []) for a in filters)
+
+    def test_exclude_artist_matching_the_filter_artist_is_dropped(self):
+        p = _plan()
+        plan = p.ToolPlan(
+            filter={'artist': 'Nas', 'exclude_artists': ['Nas'], 'album': 'Illmatic'}
+        )
+        p._strip_contradictory_exclusions(plan, {}, 'play the album Illmatic by Nas', [])
+        assert not (plan.filter or {}).get('exclude_artists')
+
+    def test_exclude_genre_the_user_asked_for_positively_is_dropped(self):
+        p = _plan()
+        plan = p.ToolPlan(filter={'genres': ['jazz'], 'exclude_genres': ['jazz']})
+        p._strip_contradictory_exclusions(
+            plan, {'genres': ['jazz'], 'exclude_genres': []},
+            'relaxing jazz, nothing loud', [],
+        )
+        assert not (plan.filter or {}).get('exclude_genres')
+        assert plan.filter['genres'] == ['jazz']
+
+    def test_exclude_genre_absent_from_message_and_negated_hints_is_dropped(self):
+        p = _plan()
+        plan = p.ToolPlan(filter={'exclude_genres': ['classic rock', 'jazz']})
+        p._strip_contradictory_exclusions(
+            plan, {'genres': [], 'exclude_genres': ['jazz']},
+            'chill music for studying, but no classical and no jazz', [],
+        )
+        assert plan.filter['exclude_genres'] == ['jazz']
+
+    def test_exclude_genre_named_in_the_message_survives_when_the_hint_regex_missed_it(self):
+        p = _plan()
+        plan = p.ToolPlan(filter={'exclude_genres': ['country']})
+        p._strip_contradictory_exclusions(
+            plan, {'genres': [], 'exclude_genres': ['pop']},
+            'no pop and no country please', [],
+        )
+        assert plan.filter['exclude_genres'] == ['country']
+
+    def test_misspelled_artist_exclusion_survives_via_fuzzy_message_match(self):
+        p = _plan()
+        plan = p.ToolPlan(filter={'exclude_artists': ['Bee Gees']})
+        p._strip_contradictory_exclusions(
+            plan, {}, 'disco hits but absolutely nothing by the Beegees', [],
+        )
+        assert plan.filter['exclude_artists'] == ['Bee Gees']
+
+    def test_exclude_artist_named_nowhere_in_the_request_is_dropped(self):
+        p = _plan()
+        plan = p.ToolPlan(filter={'genres': ['pop'], 'exclude_artists': ['Nickelback']})
+        p._strip_contradictory_exclusions(plan, {}, 'upbeat pop, nothing slow', [])
+        assert not (plan.filter or {}).get('exclude_artists')
+
+    def test_hate_cue_marks_a_genre_as_negated_not_positive(self):
+        p = _plan()
+        hints = p.extract_hints('party music, I hate country')
+        assert 'country' not in [g.lower() for g in hints.get('genres') or []]
+
+    def test_exclusions_that_would_empty_the_pool_are_reverted_with_a_note(self):
+        p = _plan()
+        pool = [{'item_id': 'a', 'title': 'T', 'artist': 'Miles Davis'}]
+        feats = {'a': {'author': 'Miles Davis', 'mood_vector': ''}}
+        notes = []
+        kept = p._apply_exclusions(
+            pool, {'exclude_artists': ['Miles Davis']}, feats, [], notes=notes
+        )
+        assert kept == pool
+        assert notes
+
+
+class TestEmptyPlanRescue:
+    def test_empty_search_database_never_returns_an_error_key(self, monkeypatch):
+        p = _plan()
+        result, seen, _logs = _run_plan(
+            p, monkeypatch, 'Build a playlist for: "music"',
+            [{'name': 'search_database', 'arguments': {}}], raw_request='music',
+        )
+        assert 'error' not in result
+        assert result['songs']
+        assert ('text_match', {'query': 'music', 'mode': 'audio'}) in seen
+
+    def test_rescue_uses_the_raw_user_words_not_the_wrapper(self, monkeypatch):
+        p = _plan()
+        _result, seen, _logs = _run_plan(
+            p, monkeypatch, 'Build a 100-song playlist for: "calm piano"',
+            [], raw_request='calm piano',
+        )
+        queries = [a.get('query') for n, a in seen if n == 'text_match']
+        assert queries == ['calm piano']
+
+    def test_rescue_attaches_extracted_hints_as_the_plan_filter(self):
+        p = _plan()
+        request = 'fast 170 bpm rock from the 90s'
+        plan = p._synthesize_rescue_plan(request, p.extract_hints(request), [])
+        assert plan.filter['year_min'] == 1990
+        assert plan.filter['year_max'] == 1999
+        assert plan.filter['genres'] == ['rock']
+
+    def test_year_only_request_rescues_to_a_filter_because_text_match_rejects_it(self):
+        p = _plan()
+        request = 'songs from 1985'
+        plan = p._synthesize_rescue_plan(request, p.extract_hints(request), [])
+        assert plan.primaries == []
+        assert plan.filter['year_min'] == 1985
+
+    def test_rescue_never_synthesizes_an_unconstrained_search_database(self):
+        p = _plan()
+        for request in ('music', 'something good', 'surprise me'):
+            plan = p._synthesize_rescue_plan(request, p.extract_hints(request), [])
+            assert all(c['name'] != 'search_database' for c in plan.primaries)
+
+    def test_unsupported_duration_note_survives_the_rescue(self, monkeypatch):
+        p = _plan()
+        result, _seen, _logs = _run_plan(
+            p, monkeypatch, 'short punchy songs under 3 minutes',
+            [{'name': 'search_database', 'arguments': {}}],
+            raw_request='short punchy songs under 3 minutes',
+        )
+        assert result['songs']
+        assert any('duration' in n for n in result['plan_notes'])
+
+    def test_at_most_one_extra_llm_call_across_the_empty_plan_path(self, monkeypatch):
+        p = _plan()
+        seen_prompts = []
+
+        def plans(user_message):
+            seen_prompts.append(user_message)
+            return {'tool_calls': [{'name': 'search_database', 'arguments': {}}]}
+
+        result, _seen, _logs = _run_plan(p, monkeypatch, 'music', plans, raw_request='music')
+        assert 'error' not in result
+        assert len(seen_prompts) == 2
+        assert 'PREVIOUS ATTEMPT FAILED' in seen_prompts[1]
+
+    def test_provider_error_still_produces_songs_with_a_plan_note(self, monkeypatch):
+        p = _plan()
+
+        def plans(_user_message):
+            return {'error': 'connection refused'}
+
+        result, seen, _logs = _run_plan(
+            p, monkeypatch, 'dark moody electronic', plans,
+            raw_request='dark moody electronic',
+        )
+        assert 'error' not in result
+        assert result['songs']
+        assert any('unreachable' in n for n in result['plan_notes'])
+        assert any(n == 'text_match' for n, _ in seen)
+
+
+class TestKnowledgeLookupGrounding:
+    def test_positive_filter_is_injected_into_the_call_not_discarded(self, monkeypatch):
+        p = _plan()
+        _result, seen, _logs = _run_plan(
+            p, monkeypatch,
+            'the most popular hip hop hits of the 2010s, only high energy ones',
+            [
+                {'name': 'knowledge_lookup',
+                 'arguments': {'user_request': 'most popular hip hop hits of the 2010s'}},
+                {'name': 'search_database',
+                 'arguments': {'genres': ['Hip-Hop'], 'energy_min': 0.7,
+                               'year_min': 2010, 'year_max': 2019}},
+            ])
+        kl = [a for n, a in seen if n == 'knowledge_lookup']
+        assert kl and kl[0]['grounding_filter']['genres'] == ['Hip-Hop']
+        assert kl[0]['grounding_filter']['year_min'] == 2010
+
+    def test_exclusions_are_forwarded_to_the_brainstorm_as_a_gate(self, monkeypatch):
+        p = _plan()
+        _result, seen, _logs = _run_plan(
+            p, monkeypatch,
+            'greatest disco hits of the 70s, but absolutely nothing by the Bee Gees',
+            [
+                {'name': 'knowledge_lookup',
+                 'arguments': {'user_request': 'greatest disco hits of the 70s'}},
+                {'name': 'search_database',
+                 'arguments': {'exclude_artists': ['Bee Gees']}},
+            ])
+        kl = [a for n, a in seen if n == 'knowledge_lookup']
+        assert kl and kl[0]['gate_filter']['exclude_artists'] == ['Bee Gees']
+
+    def test_plan_filter_cleared_so_the_rerank_never_touches_brainstorm_output(self, monkeypatch):
+        p = _plan()
+        result, seen, _logs = _run_plan(
+            p, monkeypatch, 'famous 90s hits',
+            [
+                {'name': 'knowledge_lookup', 'arguments': {'user_request': 'famous 90s hits'}},
+                {'name': 'search_database', 'arguments': {'year_min': 1990, 'year_max': 1999}},
+            ])
+        assert result['filter_applied'] is False
+        assert all(n != 'search_database' for n, _ in seen)
+
+    def test_hint_backstop_now_runs_for_knowledge_lookup_plans(self, monkeypatch):
+        p = _plan()
+        _result, seen, _logs = _run_plan(
+            p, monkeypatch, 'famous hits from the 90s',
+            [{'name': 'knowledge_lookup',
+              'arguments': {'user_request': 'famous hits from the 90s'}}])
+        kl = [a for n, a in seen if n == 'knowledge_lookup']
+        assert kl and kl[0]['grounding_filter']['year_min'] == 1990
+
+    def test_artist_is_dropped_from_the_grounding_with_a_plan_note(self, monkeypatch):
+        p = _plan()
+        result, seen, _logs = _run_plan(
+            p, monkeypatch, 'best of the 90s',
+            [
+                {'name': 'knowledge_lookup', 'arguments': {'user_request': 'best of the 90s'}},
+                {'name': 'search_database', 'arguments': {'artist': 'Oasis'}},
+            ])
+        kl = [a for n, a in seen if n == 'knowledge_lookup']
+        assert kl
+        assert 'artist' not in (kl[0].get('grounding_filter') or {})
+        assert 'artist' not in (kl[0].get('gate_filter') or {})
+        assert any('Oasis' in n for n in result['plan_notes'])
+
+
+class TestThreeToolExampleIsOffered:
+    def test_examples_include_exactly_one_three_tool_plan(self):
+        pr = _prompts()
+        examples = pr._build_examples(_tools_fixture())
+        three = [e for e in examples if len(_example_calls(e)) == 3]
+        assert len(three) == 1
+        assert [c['name'] for c in _example_calls(three[0])] == [
+            'seed_search', 'text_match', 'search_database',
+        ]
+
+    def test_three_tool_example_is_dropped_when_text_match_is_absent(self):
+        pr = _prompts()
+        tools = [t for t in _tools_fixture() if t['name'] != 'text_match']
+        examples = pr._build_examples(tools)
+        assert all(len(_example_calls(e)) <= 2 for e in examples)
+
+    def test_planning_rule_no_longer_anchors_to_a_single_finder(self):
+        pr = _prompts()
+        prompt = pr.build_mcp_system_prompt(_tools_fixture())
+        assert 'one finder plus one filter is the usual plan' not in prompt
+        assert 'one finder tool per distinct part' in prompt
+
+
+class TestPlannerLogLinesStayFrontendParsable:
+    DIMENSION_RE = re.compile(
+        r'^(genres|voices|moods|other_features|energy|tempo|year|min_rating|scale|key|'
+        r'artist|album)\s+.*->'
+    )
+
+    def _all_logs(self, monkeypatch):
+        p = _plan()
+        logs_all = []
+        cases = [
+            ('music', [{'name': 'search_database', 'arguments': {}}]),
+            ('like Miles Davis, nothing after 1970', [
+                {'name': 'seed_search',
+                 'arguments': {'seeds': [{'type': 'artist', 'name': 'Miles Davis'}]}},
+                {'name': 'search_database',
+                 'arguments': {'exclude_artists': ['Miles Davis'],
+                               'exclude_genres': ['jazz', 'jazz'], 'year_max': 1970}},
+            ]),
+            ('famous 90s hits', [
+                {'name': 'knowledge_lookup', 'arguments': {'user_request': 'famous 90s hits'}},
+                {'name': 'search_database', 'arguments': {'year_min': 1990, 'year_max': 1999}},
+            ]),
+        ]
+        for request, calls in cases:
+            _r, _s, logs = _run_plan(p, monkeypatch, request, calls, raw_request=request)
+            logs_all.extend(logs)
+        return logs_all
+
+    def test_no_new_log_line_is_mistaken_for_a_filter_dimension(self, monkeypatch):
+        for line in self._all_logs(monkeypatch):
+            trimmed = line.strip()
+            if trimmed.startswith(('dedupe:', 'contradiction:', 'rescue:', 'gate:')):
+                assert not self.DIMENSION_RE.match(trimmed)
+
+    def test_only_real_tool_executions_emit_a_tool_or_primary_prefix(self, monkeypatch):
+        prefixed = [
+            line.strip() for line in self._all_logs(monkeypatch)
+            if line.strip().startswith(('TOOL:', 'PRIMARY:'))
+        ]
+        assert prefixed
+        for line in prefixed:
+            assert line.split(':', 1)[1].strip() in {
+                'seed_search', 'text_match', 'knowledge_lookup', 'search_database',
+            }

@@ -16,7 +16,7 @@ emitted call to the grounded implementations in ``tool_impl``. Sits between
 Main Features:
 * get_mcp_tools builds the schema dynamically, exposing text_match modes only when CLAP/LYRICS are enabled; tool descriptions carry the routing rules (when to use each tool and when to use a sibling instead) so they work as the primary routing signal for small models, with genre/voice/mood enums from the canonical vocab.
 * execute_mcp_tool converts normalized energy 0..1 to raw score units before search_database, expands female/male voice spelling variants deterministically, passes exclude_artists/exclude_genres through as hard SQL cuts, and rejects year-only text_match queries (routing them to search_database); all failures return a generic error, never a traceback.
-* Array args carry maxItems caps so small-model structured output cannot loop a value forever; the Ollama structured-output path in prompts.py adds uniqueItems dynamically. Exclusion fields document that excluded names never go in seeds or positive filters.
+* Array args carry maxItems caps so small-model structured output cannot loop a value forever; Ollama does not honour uniqueItems, so repeated values are collapsed deterministically by the planner instead. Exclusion fields document that excluded names never go in seeds or positive filters.
 """
 
 import logging
@@ -309,7 +309,13 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
         if tool_name == "knowledge_lookup":
             request = tool_args.get("user_request") or tool_args.get("query") or ""
-            return _ai_brainstorm_sync(request, ai_config, tool_args.get("get_songs", 200))
+            return _ai_brainstorm_sync(
+                request,
+                ai_config,
+                tool_args.get("get_songs", 200),
+                grounding_filter=tool_args.get("grounding_filter"),
+                gate_filter=tool_args.get("gate_filter"),
+            )
 
         if tool_name == "search_database":
             return _dispatch_search_database(tool_args)
