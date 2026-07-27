@@ -90,7 +90,7 @@ def generate_text(
         response = client.chat.complete(**complete_kwargs)
 
         if response and response.choices[0].message.content:
-            extracted_text = response.choices[0].message.content
+            extracted_text = response.choices[0].message.content.strip()
             logger.info("Mistral API returned: '%s'", extracted_text)
             return extracted_text
         logger.warning("Mistral returned no content. Raw response: %s", response)

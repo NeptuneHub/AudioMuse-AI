@@ -21,13 +21,18 @@ Main Features:
   mood/other scores, detects instrumentals, and can vary the editorial focus
   among relationship, contrast, theme, function, and mood evidence actually
   supported by that cluster
-* When the AI declines or is disabled, callers keep the tag-based cluster
-  name produced by the clustering itself
+* evidence_from_cluster_name recovers tempo and sound descriptors from the
+  tag-based cluster name, so clusters whose lyric axes are inconclusive still
+  reach the AI with something grounded instead of being skipped
+* When the AI declines or is disabled, callers compose a title from the
+  already-computed ideas, and only fall back to the tag-based cluster name when
+  even those are empty
 """
 
 from collections import Counter, defaultdict
 from itertools import islice
 from math import ceil
+import re
 import secrets
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -73,6 +78,21 @@ SOUND_BRIEFS = {
     'party': 'energetic party music',
     'relaxed': 'calm, relaxed music',
     'sad': 'somber music',
+}
+
+TEMPO_WORDS = {
+    'slow': 'slow-tempo',
+    'medium': 'mid-tempo',
+    'fast': 'fast-tempo',
+}
+
+SOUND_WORDS = {
+    'danceable': 'danceable',
+    'aggressive': 'forceful',
+    'happy': 'upbeat',
+    'party': 'energetic',
+    'relaxed': 'relaxed',
+    'sad': 'somber',
 }
 
 VALENCE_BRIEFS = {
@@ -522,3 +542,16 @@ def build_naming_context(
         'instrumental': instrumental,
         'axis_labels': axis_labels,
     }
+
+
+def evidence_from_cluster_name(cluster_name: Optional[str]) -> str:
+    stem = (cluster_name or '').partition('_automatic')[0]
+    parts = []
+    for token in re.split(r"[_\s]+", stem):
+        key = token.casefold()
+        word = TEMPO_WORDS.get(key) or SOUND_WORDS.get(key)
+        if word and word not in parts:
+            parts.append(word)
+    if not parts:
+        return ''
+    return ', '.join(parts) + ' music'

@@ -29,6 +29,8 @@ playlist_concept_prompt_template = (
     "Concept extraction only. Genre: {genre}. Verified evidence: {evidence}. "
     "{dimension_rule} Use one ordinary word. Concept only: no genre, title, "
     "explanation, marketing/container word, or invented context. {avoid_rule}"
+    "Return {candidate_count} different candidate words on one line, comma "
+    "separated, best first. No numbering, no explanation."
 )
 
 
