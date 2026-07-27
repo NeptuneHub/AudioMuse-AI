@@ -1403,7 +1403,7 @@ def _ai_brainstorm_sync(
     def _gate_subset(keys):
         return {k: gate[k] for k in keys if gate.get(k) not in (None, '', [], {})}
 
-    def _requery(songs, label, **kwargs):
+    def _requery(songs, **kwargs):
         ids = [s.get("item_id") for s in (songs or []) if s.get("item_id")]
         if not ids:
             return []
@@ -1418,7 +1418,7 @@ def _ai_brainstorm_sync(
         songs = songs or []
         excludes = _gate_subset(_EXCLUDE_GATE_KEYS)
         if excludes:
-            songs = _requery(songs, label, **excludes)
+            songs = _requery(songs, **excludes)
             if not songs:
                 return []
 
@@ -1430,7 +1430,7 @@ def _ai_brainstorm_sync(
         if not positive:
             return songs
 
-        gated = _requery(songs, label, **positive)
+        gated = _requery(songs, **positive)
         if not gated and songs:
             log_messages.append(
                 f"   gate: {label} emptied by the grounding filter; kept it ungated"
