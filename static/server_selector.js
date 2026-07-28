@@ -102,7 +102,8 @@
             return;
         }
         var current = selectedId() || state.defaultId || '';
-        var html = '<select id="server-selector" class="server-selector" aria-label="Music server">';
+        var html = '<label for="server-selector" class="sr-only">Music server</label>'
+            + '<select id="server-selector" class="server-selector">';
         state.servers.forEach(function (s) {
             var label = s.name + (s.is_default ? ' (default)' : '');
             var sel = (s.server_id === current) ? ' selected' : '';
@@ -204,7 +205,7 @@
     }
 
     function inlineData() {
-        var el = document.getElementById('server-selector-data');
+        const el = document.getElementById('server-selector-data');
         if (!el) {
             return null;
         }
@@ -219,8 +220,8 @@
     // picker data is known synchronously at parse time and no /api/servers
     // request is needed. Pages without the JSON (login, errors) fall back to
     // the fetch, started immediately so it overlaps document parsing.
-    var inline = inlineData();
-    var ready;
+    const inline = inlineData();
+    let ready;
     if (inline !== null) {
         ready = Promise.resolve(setState(inline));
     } else {
