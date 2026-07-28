@@ -42,6 +42,8 @@ Find answers to common questions about setting up, configuring, and deploying Au
 > If you want faster analysis, you can disable the text search functionality by setting `CLAP_ENABLED` to false. This will run only the Musicnn model, skipping the CLAP model.
 >
 > Alternatives include running multiple worker containers in parallel (see the [ARCHITECTURE](ARCHITECTURE.md) page and deployment examples in the `deployment/` folder). GPU analysis is also supported but still experimental (see [GPU DEPLOYMENT](GPU.md)).
+>
+> Also remember that Automatic Speech Recognition (ASR) of song is the part that take longer, configure Lyrics API on AudioMuse-AI or on your Music server when supported, will speed up the analysis.
 
 </details>
 
