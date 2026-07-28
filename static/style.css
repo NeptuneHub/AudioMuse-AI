@@ -758,6 +758,20 @@ html.dark-mode button:not(.btn):disabled {
     overflow-wrap: break-word;
 }
 
+.app-version .app-version-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.app-version .app-version-link:hover {
+    text-decoration: underline;
+}
+
+.app-version .github-icon {
+    vertical-align: text-bottom;
+    margin-right: 0.35rem;
+}
+
 /* --- Utility --- */
 .hidden {
     display: none !important;

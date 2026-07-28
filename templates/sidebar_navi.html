@@ -56,5 +56,14 @@
 </li>
 {% endif %}
 {% if setup_saved %}
-<li id="server-selector-nav" class="server-selector-nav" aria-live="polite"></li>
+{% set nav_pickable = nav_music_servers and nav_music_servers.multi_server_enabled and nav_music_servers.servers|length >= 2 %}
+<li id="server-selector-nav" class="server-selector-nav{% if nav_pickable %} active{% endif %}" aria-live="polite">
+    {%- if nav_pickable -%}
+    <select id="server-selector" class="server-selector" aria-label="Music server">
+        {%- for s in nav_music_servers.servers -%}
+        <option value="{{ s.server_id }}"{% if s.is_default %} selected{% endif %}>{{ s.name }}{% if s.is_default %} (default){% endif %}</option>
+        {%- endfor -%}
+    </select>
+    {%- endif -%}
+</li>
 {% endif %}

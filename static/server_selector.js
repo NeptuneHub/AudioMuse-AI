@@ -180,30 +180,62 @@
         window.location.reload();
     }
 
-    function load() {
-        chainedFetch.call(window, '/api/servers', { headers: { 'Accept': 'application/json' } })
+    function setState(data) {
+        state.loaded = true;
+        if (!data) {
+            // Not authenticated or endpoint unavailable; leave UI untouched
+            // and stop the optimistic pre-load injection (fail-safe).
+            return false;
+        }
+        state.enabled = !!data.multi_server_enabled;
+        state.servers = data.servers || [];
+        state.defaultId = data.default_id;
+        var current = selectedId();
+        if (current && !state.servers.some(function (s) { return s.server_id === current; })) {
+            localStorage.removeItem(STORAGE_KEY);
+        }
+        return true;
+    }
+
+    function applyDom() {
+        document.body.classList.toggle('multi-server', state.servers.length >= 2);
+        render();
+        renderScopeChip();
+    }
+
+    function inlineData() {
+        var el = document.getElementById('server-selector-data');
+        if (!el) {
+            return null;
+        }
+        try {
+            return JSON.parse(el.textContent);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // The page embeds the server list as JSON right above this script, so the
+    // picker data is known synchronously at parse time and no /api/servers
+    // request is needed. Pages without the JSON (login, errors) fall back to
+    // the fetch, started immediately so it overlaps document parsing.
+    var inline = inlineData();
+    var ready;
+    if (inline !== null) {
+        ready = Promise.resolve(setState(inline));
+    } else {
+        ready = chainedFetch.call(window, '/api/servers', { headers: { 'Accept': 'application/json' } })
             .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (data) {
-                state.loaded = true;
-                if (!data) {
-                    return;
-                }
-                state.enabled = !!data.multi_server_enabled;
-                state.servers = data.servers || [];
-                state.defaultId = data.default_id;
-                var current = selectedId();
-                if (current && !state.servers.some(function (s) { return s.server_id === current; })) {
-                    localStorage.removeItem(STORAGE_KEY);
-                }
-                document.body.classList.toggle('multi-server', state.servers.length >= 2);
-                render();
-                renderScopeChip();
-            })
-            .catch(function () {
-                // Not authenticated or endpoint unavailable; leave UI untouched
-                // and stop the optimistic pre-load injection (fail-safe).
-                state.loaded = true;
-            });
+            .catch(function () { return null; })
+            .then(setState);
+    }
+
+    function load() {
+        ready.then(function (ok) {
+            if (ok) {
+                applyDom();
+            }
+        });
     }
 
     if (document.readyState === 'loading') {
