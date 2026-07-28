@@ -171,6 +171,22 @@ def inject_globals():
             plugin_menu_items.append({**item, 'url': item_url})
     except Exception:
         plugin_menu_items = []
+    # Sidebar server picker, rendered server-side so it paints with the page
+    # instead of popping in at DOMContentLoaded. Credentials are never included.
+    nav_music_servers = None
+    try:
+        payload = app_server_context.servers_for_ui()
+        nav_music_servers = {
+            'multi_server_enabled': bool(payload.get('multi_server_enabled')),
+            'default_id': payload.get('default_id'),
+            'servers': [
+                {'server_id': s['server_id'], 'name': s['name'], 'is_default': s['is_default']}
+                for s in payload.get('servers', [])
+            ],
+        }
+    except Exception:
+        logger.exception("Could not build the sidebar server picker data")
+        nav_music_servers = None
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
@@ -180,6 +196,7 @@ def inject_globals():
         is_admin=(auth_role == 'admin'),
         current_user=current_user,
         plugin_menu_items=plugin_menu_items,
+        nav_music_servers=nav_music_servers,
     )
 
 
