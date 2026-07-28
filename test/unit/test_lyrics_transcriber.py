@@ -6,10 +6,11 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Lyrics axis scoring and text sanitization in lyrics.lyrics_transcriber.
+"""Lyrics axis scoring, text sanitization and ASR gating in lyrics.lyrics_transcriber.
 
 Covers the pinned 27-label axis column order, per-axis softmax scoring of an
-embedding, and the cleanup applied to raw lyric text before embedding.
+embedding, the cleanup applied to raw lyric text before embedding, and the
+transcript quality gate that reads the ASR backend's reported confidence.
 
 Main Features:
 * axis_columns is a pure, duplicate-free 27-tuple in canonical axis/label order
@@ -17,6 +18,9 @@ Main Features:
   points at the targeted label
 * _sanitize_lyrics_text strips control/zero-width chars, HTML, and LRC timestamps
   and truncates to a word cap; _softmax sums to one and is temperature-monotonic
+* _asr_confidence reads avg_logprob as unknown (None) when a backend omits it or
+  reports it non-numerically, and _asr_should_drop then skips the confidence
+  gates instead of dropping every transcript
 """
 
 from __future__ import annotations
@@ -256,6 +260,72 @@ class TestStripLrcTimestamps:
         lrc = '[00:01.00]\n[00:02.00]only content\n[00:03.00]'
         out = lt._strip_lrc_timestamps(lrc)
         assert out == 'only content'
+
+
+class TestAsrConfidence:
+    """A plugin ASR backend may not report avg_logprob at all - see _asr_backend."""
+
+    def test_reads_the_reported_value(self, lt):
+        assert lt._asr_confidence({'avg_logprob': -0.25}) == pytest.approx(-0.25)
+
+    def test_missing_key_is_unknown(self, lt):
+        assert lt._asr_confidence({'text': 'hi', 'language': 'en'}) is None
+
+    def test_explicit_none_is_unknown(self, lt):
+        assert lt._asr_confidence({'avg_logprob': None}) is None
+
+    def test_non_numeric_is_unknown_and_warns(self, lt, caplog):
+        assert lt._asr_confidence({'avg_logprob': 'very good'}) is None
+        assert 'non-numeric avg_logprob' in caplog.text
+
+    def test_postprocess_keeps_a_transcript_without_confidence(self, lt):
+        # Long enough to clear the minimum-length quality check on its own.
+        text = (
+            'I walked alone into the pouring rain and thought about the days '
+            'we spent together, the summer light, the empty street, the sound '
+            'of your name, the songs we sang out loud until the morning came '
+            'and left us nothing but the echo of a promise we could not keep.'
+        )
+        raw_text, raw_len, lang, logprob, detected = lt._postprocess_asr(
+            {'text': text, 'language': 'en'}
+        )
+        assert raw_text == text
+        assert raw_len == len(text)
+        assert lang == 'en'
+        assert detected == 'en'
+        assert logprob is None
+
+
+class TestAsrShouldDrop:
+    GOOD_TEXT = 'a real transcript'
+
+    def _drop(self, lt, lang, logprob, text=None):
+        text = self.GOOD_TEXT if text is None else text
+        return lt._asr_should_drop(text, len(text), lang, logprob)
+
+    def test_drops_low_confidence(self, lt):
+        assert self._drop(lt, 'en', lt.ASR_MIN_AVG_LOGPROB - 0.1) is True
+
+    def test_keeps_good_confidence(self, lt):
+        assert self._drop(lt, 'en', lt.ASR_MIN_AVG_LOGPROB + 0.1) is False
+
+    def test_unknown_confidence_skips_the_gate(self, lt):
+        # The whole point: a backend that reports no confidence must not lose
+        # every transcript to the quality gate.
+        assert self._drop(lt, 'en', None) is False
+
+    def test_unknown_confidence_skips_the_non_english_gate(self, lt):
+        assert self._drop(lt, 'de', None) is False
+
+    def test_drops_low_confidence_non_english(self, lt):
+        logprob = lt.ASR_NON_ENGLISH_MIN_LOGPROB - 0.1
+        assert self._drop(lt, 'de', logprob) is True
+
+    def test_null_language_still_drops_without_confidence(self, lt):
+        assert self._drop(lt, 'nospeech', None) is True
+
+    def test_empty_text_is_never_dropped_here(self, lt):
+        assert self._drop(lt, 'en', float('-inf'), text='') is False
 
 
 class TestSoftmax:

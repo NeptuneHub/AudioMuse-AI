@@ -833,16 +833,25 @@ def _lyrics_result(
     }
 
 
+# Decides whether an ASR transcript is too poor to keep. asr_avg_logprob is None
+# when the backend reported no confidence at all (see _asr_confidence): the
+# confidence thresholds are then skipped rather than treated as the worst possible
+# score, so a plugin backend that omits the key loses no transcript. The language
+# checks still apply.
 def _asr_should_drop(
-    raw_text: str, whisper_raw_len: int, asr_lang: str, asr_avg_logprob: float
+    raw_text: str, whisper_raw_len: int, asr_lang: str, asr_avg_logprob: Optional[float]
 ) -> bool:
     if not raw_text or whisper_raw_len <= 0:
         return False
-    if asr_avg_logprob < ASR_MIN_AVG_LOGPROB:
+    if asr_avg_logprob is not None and asr_avg_logprob < ASR_MIN_AVG_LOGPROB:
         return True
     if asr_lang in _ASR_NULL_LANGS:
         return True
-    if asr_lang not in _ASR_ENGLISH_LANGS and asr_avg_logprob < ASR_NON_ENGLISH_MIN_LOGPROB:
+    if (
+        asr_lang not in _ASR_ENGLISH_LANGS
+        and asr_avg_logprob is not None
+        and asr_avg_logprob < ASR_NON_ENGLISH_MIN_LOGPROB
+    ):
         return True
     return False
 
@@ -975,17 +984,35 @@ def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dic
             signal.signal(signal.SIGALRM, _old_handler)
 
 
-def _postprocess_asr(transcription: Dict[str, object]) -> Tuple[str, int, str, float, str]:
+# Reads the backend's avg_logprob, or None when it reported none. The built-in
+# backend always returns it, but a plugin ASR backend registered with
+# register_analysis_provider may not. None means "unknown confidence" and switches
+# off the confidence gates in _asr_should_drop; assuming the worst score here would
+# silently turn a whole library into instrumentals.
+def _asr_confidence(transcription: Dict[str, object]) -> Optional[float]:
+    value = transcription.get('avg_logprob')
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning('ASR backend returned a non-numeric avg_logprob %r - ignoring it', value)
+        return None
+
+
+def _postprocess_asr(
+    transcription: Dict[str, object]
+) -> Tuple[str, int, str, Optional[float], str]:
     raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
     whisper_raw_len = len(raw_text)
     asr_lang = (transcription.get('language') or '').strip().lower()
-    asr_avg_logprob = float(transcription.get('avg_logprob', float('-inf')))
+    asr_avg_logprob = _asr_confidence(transcription)
     detected_lang = asr_lang or 'en'
     logger.info(
-        'STEP 5 end: transcript length=%s chars / asr_lang=%r / avg_logprob=%.2f',
+        'STEP 5 end: transcript length=%s chars / asr_lang=%r / avg_logprob=%s',
         len(raw_text),
         asr_lang,
-        asr_avg_logprob,
+        'n/a' if asr_avg_logprob is None else '%.2f' % asr_avg_logprob,
     )
     logger.info('STEP 5 raw ASR output: %s', raw_text or '<empty>')
     _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, asr_lang)
@@ -1152,7 +1179,9 @@ def analyze_lyrics(
 
     if _asr_should_drop(raw_text, whisper_raw_len, asr_lang, asr_avg_logprob):
         logger.info(
-            'STEP 7: dropping ASR transcript (lang=%r, logprob=%.2f)', asr_lang, asr_avg_logprob
+            'STEP 7: dropping ASR transcript (lang=%r, logprob=%s)',
+            asr_lang,
+            'n/a' if asr_avg_logprob is None else '%.2f' % asr_avg_logprob,
         )
         raw_text = ''
     logger.info('STEP 7 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))

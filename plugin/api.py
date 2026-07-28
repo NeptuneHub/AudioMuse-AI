@@ -306,9 +306,13 @@ class PluginContext:
         ``factory`` is the replacement module/object, or a zero-arg callable
         returning one. It must match the built-in module's public surface; for
         ``asr`` that is ``load_whisper_model()``, ``transcribe(wav, sr,
-        language=None)``, ``is_loaded()`` and ``unload()``. Core consults the
-        registered provider first and falls back to the built-in when no plugin
-        registered one, or when the replacement is missing part of that surface.
+        language=None)``, ``is_loaded()`` and ``unload()``, where ``transcribe``
+        returns ``{'text': ..., 'language': ..., 'avg_logprob': ...}`` - the last
+        one gates transcript quality and must be left out, not faked, when the
+        backend cannot report a confidence. Core consults the registered provider
+        first and falls back to the built-in when no plugin registered one, when
+        the factory fails or returns None, or when the replacement is missing part
+        of that surface.
 
         A callable ``factory`` is resolved once and the result reused, matching the
         built-in modules, which stay loaded for a whole album and are freed at its

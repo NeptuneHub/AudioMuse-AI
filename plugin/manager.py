@@ -872,6 +872,9 @@ class PluginManager:
         zero-arg callable) and reuses that result unless the plugin registered with
         ``cache=False``, so a model is not rebuilt on every call. Used by core to
         let a plugin swap out a whole analysis step such as the ASR/Whisper backend.
+
+        A plugin whose factory raises or returns None is logged by id and skipped,
+        so core falls back to the built-in component with a trace of why.
         """
         if component in self._analysis_provider_cache:
             return self._analysis_provider_cache[component]
@@ -893,7 +896,20 @@ class PluginManager:
                 factory = entry['factory']
                 provider = factory() if callable(factory) else factory
             except Exception:
-                logger.exception('Plugin analysis provider for %r failed to resolve', component)
+                logger.exception(
+                    'Plugin %s: its analysis provider for %r failed to resolve; '
+                    'falling back to the next provider or the built-in one',
+                    plugin_id, component,
+                )
+                continue
+            if provider is None:
+                # A factory returning None is a plugin opting out at runtime (no
+                # GPU found, say). Say so, or the built-in silently stays in use.
+                logger.warning(
+                    'Plugin %s: its analysis provider factory for %r returned None; '
+                    'falling back to the next provider or the built-in one',
+                    plugin_id, component,
+                )
                 continue
             if entry['cache']:
                 self._analysis_provider_cache[component] = provider

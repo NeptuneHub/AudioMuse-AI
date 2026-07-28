@@ -24,6 +24,8 @@ Main Features:
 * register_analysis_provider/get_analysis_provider swap a whole component (asr),
   resolving module objects and zero-arg factories once (unless cache=False),
   rejecting unknown components and swallowing broken plugins
+* a factory that raises or returns None is logged with its plugin id and skipped,
+  so the fallback to the built-in component is visible and not cached
 * lyrics.get_asr_backend prefers a registered override, and falls back to the
   built-in when there is none or the override misses part of the whisper surface
 """
@@ -420,6 +422,49 @@ class TestRegisterAnalysisProvider:
 
         mgr.records = {'p': _record('p', analysis_providers={'asr': boom})}
         assert mgr.get_analysis_provider('asr') is None
+
+    def test_broken_factory_is_logged_with_the_plugin_id(self, caplog):
+        mgr = manager.PluginManager()
+
+        def boom():
+            raise RuntimeError('backend import failed')
+
+        mgr.records = {'noisy_plugin': _record('noisy_plugin', analysis_providers={'asr': boom})}
+        mgr.get_analysis_provider('asr')
+        # Without the id the admin cannot tell which plugin to fix or remove.
+        assert 'noisy_plugin' in caplog.text
+
+    def test_factory_returning_none_is_logged(self, caplog):
+        mgr = manager.PluginManager()
+        mgr.records = {'quiet_plugin': _record(
+            'quiet_plugin', analysis_providers={'asr': lambda: None},
+        )}
+        assert mgr.get_analysis_provider('asr') is None
+        assert 'quiet_plugin' in caplog.text
+        assert 'returned None' in caplog.text
+
+    def test_factory_returning_none_lets_the_next_plugin_provide(self, caplog):
+        mgr = manager.PluginManager()
+        backend = object()
+        mgr.records = {
+            'a': _record('a', analysis_providers={'asr': lambda: None}),
+            'b': _record('b', analysis_providers={'asr': backend}),
+        }
+        assert mgr.get_analysis_provider('asr') is backend
+        assert 'returned None' in caplog.text
+
+    def test_none_result_is_not_cached(self):
+        mgr = manager.PluginManager()
+        backend = object()
+        results = [None, backend]
+
+        def factory():
+            return results.pop(0)
+
+        mgr.records = {'p': _record('p', analysis_providers={'asr': factory})}
+        assert mgr.get_analysis_provider('asr') is None
+        # None means "not this time", so a later call asks the plugin again.
+        assert mgr.get_analysis_provider('asr') is backend
 
 
 class TestGetAsrBackend:

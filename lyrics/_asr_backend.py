@@ -15,6 +15,12 @@ MIGraphX cannot run the ONNX Whisper decoder. The replacement must expose the
 same public surface: ``load_whisper_model()``, ``transcribe(wav, sr, language=None)``,
 ``is_loaded()`` and ``unload()``.
 
+``transcribe`` must return a dict with ``text`` (the transcript), ``language``
+(the detected language code) and ``avg_logprob`` (the mean per-token log
+probability, used to gate transcript quality). A backend that cannot report a
+confidence should leave ``avg_logprob`` out entirely: the quality gate is then
+skipped instead of reading a value that would drop every transcript.
+
 Main Features:
 * Consults the loaded plugins for an 'asr' analysis provider before the built-in
 * Falls back to the built-in whisper_onnx backend when no plugin registered one,
