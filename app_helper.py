@@ -30,6 +30,7 @@ from psycopg2.extras import DictCursor
 import numpy as np
 
 import database
+import rq_job_state
 from database import (  # noqa: F401
     get_db,
     close_db,
@@ -474,8 +475,7 @@ def cancel_job_and_children_recursive(
 
     # Include job ids from RQ job keys (covers started jobs)
     try:
-        raw_keys = redis_conn.keys('rq:job:*')
-        for k in raw_keys:
+        for k in redis_conn.scan_iter(match='rq:job:*', count=500):
             kstr = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
             parts = kstr.split(':')
             if len(parts) >= 3:
@@ -489,8 +489,14 @@ def cancel_job_and_children_recursive(
         try:
             try:
                 j = Job.fetch(jid, connection=redis_conn)
-                if not j.is_finished and not j.is_failed and not j.is_canceled:
-                    if j.is_started:
+                status = j.get_status(refresh=False)
+                if not rq_job_state.is_terminal_status(status):
+                    # Zero the retry budget FIRST. A stopped job keeps retries_left, and
+                    # RQ's StartedJobRegistry.cleanup() requeues any expired execution that
+                    # still has one, so a worker restart used to resurrect the very job the
+                    # user just cancelled and run it invisibly against a REVOKED row.
+                    rq_job_state.forbid_retries(jid, redis_conn)
+                    if rq_job_state.is_running_status(status):
                         send_stop_job_command(redis_conn, jid)
                     else:
                         j.cancel()

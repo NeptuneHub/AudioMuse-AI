@@ -63,6 +63,8 @@ from rq import get_current_job, Retry
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
+import rq_job_state
+
 from psycopg2.extras import DictCursor
 
 from config import (
@@ -166,6 +168,14 @@ def _viable_playlists(result, target=TOP_N_CLUSTERING_PLAYLIST):
 
 
 def batch_task_failure_handler(job, connection, type, value, tb):
+    retries_left = getattr(job, 'retries_left', None)
+    if retries_left:
+        logger.warning(
+            "Clustering batch task %s failed but RQ will requeue it (%s attempt(s) "
+            "left); leaving its task row live.",
+            getattr(job, 'id', None), retries_left,
+        )
+        return
     from flask_app import app
 
     with app.app_context():
@@ -1443,7 +1453,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
 
         try:
             job = Job.fetch(job_id, connection=redis_conn)
-            if job.is_finished or job.is_failed or job.get_status() == 'canceled':
+            if rq_job_state.is_terminal_status(job.get_status(refresh=False)):
                 jobs_ready_for_result_extraction.append(job_id)
             elif job_id not in state_dict["active_jobs"]:
                 state_dict["active_jobs"][job_id] = job

@@ -16,8 +16,13 @@ Unicode text hygiene that sibling modules rely on.
 Main Features:
 * validate_ai_config gates each provider (URL shape, key, model) before any call is made.
 * clean_playlist_name repairs mojibake with ftfy + NFKC and strips non-ASCII.
-* get_ai_playlist_name asks small local models for one grounded concept, then
-  composes and validates the final title in code.
+* get_ai_playlist_name asks small local models for several grounded candidate
+  concepts in a single call, then composes and validates the final title in
+  code, keeping the first candidate that passes.
+* Validation runs in two passes over the same candidates: the full rules first,
+  then a second pass without the stem-collision rule, which is the rule that
+  otherwise rejects most concepts once many playlists are already named. Every
+  editorial ban list stays in force in both passes.
 """
 
 import logging
@@ -27,6 +32,7 @@ from typing import Dict, List, Optional, Tuple
 
 import ftfy
 
+import config
 from tasks.ai.providers import (
     gemini as ai_api_gemini,
     mistral as ai_api_mistral,
@@ -95,6 +101,11 @@ _KNOWN_GENRE_TITLES = (
     {name.casefold() for name in GENRE_DISPLAY}
     | {name.casefold() for name in GENRE_DISPLAY.values()}
 )
+
+_CANDIDATE_SPLIT_PATTERN = re.compile(r"[,;/|\n\r]+")
+_LIST_NUMBER_PATTERN = re.compile(r"^\d+\s*[\.\)]\s*")
+_LEAD_IN_PATTERN = re.compile(r"^[^:]{0,40}:\s*")
+_CANDIDATE_TRIM_CHARS = " *_-.!?()[]'\"`"
 
 
 def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
@@ -360,7 +371,9 @@ def _stem_token(token):
     return token
 
 
-def _concept_problem_composed(concept, concept_tokens, title, naming_dimension, taken):
+def _concept_problem_composed(
+    concept, concept_tokens, title, naming_dimension, taken, stem_collision=True
+):
     if naming_dimension == 'function' and (
         concept_tokens & _FUNCTION_NON_NOUNS
         or any(token.endswith('ing') for token in concept_tokens)
@@ -373,7 +386,7 @@ def _concept_problem_composed(concept, concept_tokens, title, naming_dimension, 
     if title.removesuffix(' Instrumentals').casefold() in _KNOWN_GENRE_TITLES:
         return 'the composed title is just a genre name'
     concept_stems = {_stem_token(token) for token in concept_tokens}
-    if any(
+    if stem_collision and any(
         concept_stems
         & {_stem_token(token) for token in re.findall(r"[a-z0-9]+", used_title)}
         for used_title in taken
@@ -384,6 +397,52 @@ def _concept_problem_composed(concept, concept_tokens, title, naming_dimension, 
     if title.casefold() in taken:
         return 'the composed title is already used'
     return None
+
+
+def _concept_problem_relaxed(concept, concept_tokens, title, naming_dimension, taken):
+    return _concept_problem_basic(
+        concept, concept, concept.split(), concept_tokens, naming_dimension
+    ) or _concept_problem_composed(
+        concept, concept_tokens, title, naming_dimension, taken, stem_collision=False
+    )
+
+
+def _parse_concept_candidates(raw_text: str, limit: int) -> List[str]:
+    text = (raw_text or "").strip()
+    if not text:
+        return []
+    candidates: List[str] = []
+    seen = set()
+    for index, chunk in enumerate(_CANDIDATE_SPLIT_PATTERN.split(text)):
+        chunk = chunk.strip()
+        if index == 0:
+            chunk = _LEAD_IN_PATTERN.sub('', chunk)
+        chunk = _LIST_NUMBER_PATTERN.sub('', chunk.strip())
+        chunk = chunk.strip(_CANDIDATE_TRIM_CHARS)
+        if not chunk or chunk.casefold() in seen:
+            continue
+        seen.add(chunk.casefold())
+        candidates.append(chunk)
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def _evaluate_concept(
+    raw_concept, genre_word, genre_pattern, naming_dimension, instrumental, taken
+):
+    concept = clean_playlist_name(raw_concept)
+    concept = genre_pattern.sub('', concept)
+    concept = re.sub(r"\s+", " ", concept).strip(" -.,!?()[]")
+    words = concept.split()
+    concept_tokens = set(re.findall(r"[a-z0-9]+", concept.casefold()))
+    title = _compose_title(concept.title(), genre_word, naming_dimension, instrumental)
+    problem = _concept_problem_basic(
+        raw_concept, concept, words, concept_tokens, naming_dimension
+    ) or _concept_problem_composed(
+        concept, concept_tokens, title, naming_dimension, taken
+    )
+    return concept, title, problem
 
 
 def get_ai_playlist_name(
@@ -414,6 +473,7 @@ def get_ai_playlist_name(
         evidence=naming_evidence,
         dimension_rule=dimension_rule,
         avoid_rule=avoid_rule,
+        candidate_count=config.AI_NAMING_CANDIDATES,
     )
     provider = (ai_config.get("provider") or "NONE").upper()
     logger.info("Sending playlist concept prompt to AI (%s):\n%s", provider, full_prompt)
@@ -422,52 +482,86 @@ def get_ai_playlist_name(
         rf"(?<![a-z0-9]){re.escape(genre_word)}(?![a-z0-9])",
         re.IGNORECASE,
     )
-    max_retries = 3
+    max_attempts = max(1, config.AI_NAMING_MAX_ATTEMPTS)
+    rejected: List[str] = []
+    relaxed_pairs: List[Tuple[str, str]] = []
     current_prompt = full_prompt
 
-    for attempt in range(max_retries):
-        raw_concept = generate_text(
+    for attempt in range(max_attempts):
+        raw_response = generate_text(
             current_prompt,
             ai_config,
             temperature=0.7,
         )
 
-        if not isinstance(raw_concept, str):
+        if raw_response == "AI Naming Skipped":
             return None
-        if raw_concept == "AI Naming Skipped" or raw_concept.startswith("Error"):
-            return None
+        if not isinstance(raw_response, str) or raw_response.startswith("Error"):
+            logger.warning(
+                "AI naming got no usable text from %s on attempt %d/%d; retrying",
+                provider,
+                attempt + 1,
+                max_attempts,
+            )
+            continue
 
-        concept = clean_playlist_name(raw_concept)
-        concept = genre_pattern.sub('', concept)
-        concept = re.sub(r"\s+", " ", concept).strip(" -.,!?()[]")
-        words = concept.split()
+        for candidate in _parse_concept_candidates(
+            raw_response, config.AI_NAMING_CANDIDATES
+        ):
+            concept, title, problem = _evaluate_concept(
+                candidate,
+                genre_word,
+                genre_pattern,
+                naming_dimension,
+                instrumental,
+                taken,
+            )
+            if problem is None:
+                logger.info(
+                    "AI playlist concept '%s' composed as '%s' (%s)",
+                    concept,
+                    title,
+                    naming_dimension,
+                )
+                return title
+            if concept:
+                relaxed_pairs.append((concept, title))
+                if concept.casefold() not in {word.casefold() for word in rejected}:
+                    rejected.append(concept)
+            logger.debug(
+                "AI playlist concept '%s' rejected because %s. Attempt %d/%d",
+                concept,
+                problem,
+                attempt + 1,
+                max_attempts,
+            )
+
+        if rejected:
+            current_prompt = (
+                full_prompt
+                + " Already rejected: "
+                + ", ".join(rejected)
+                + ". Return different words."
+            )
+
+    for concept, title in relaxed_pairs:
         concept_tokens = set(re.findall(r"[a-z0-9]+", concept.casefold()))
-        title = _compose_title(concept.title(), genre_word, naming_dimension, instrumental)
-
-        problem = _concept_problem_basic(
-            raw_concept, concept, words, concept_tokens, naming_dimension
-        ) or _concept_problem_composed(
+        if _concept_problem_relaxed(
             concept, concept_tokens, title, naming_dimension, taken
-        )
-        if problem is None:
+        ) is None:
             logger.info(
-                "AI playlist concept '%s' composed as '%s' (%s)",
+                "AI playlist concept '%s' accepted without the stem-collision rule "
+                "as '%s' (%s)",
                 concept,
                 title,
                 naming_dimension,
             )
             return title
 
-        logger.warning(
-            "AI generated playlist concept '%s' rejected because %s. Attempt %d/%d",
-            concept,
-            problem,
-            attempt + 1,
-            max_retries,
-        )
-        current_prompt = (
-            full_prompt
-            + f" Previous concept '{concept}' was rejected because {problem}. "
-            "Return a different valid concept only."
-        )
+    logger.warning(
+        "No AI playlist concept passed validation for '%s' (%s). Rejected: %s",
+        genre_word,
+        naming_dimension,
+        ", ".join(rejected) or "none",
+    )
     return None

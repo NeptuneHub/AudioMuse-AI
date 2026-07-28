@@ -86,7 +86,21 @@ clustering_bp = Blueprint('clustering_bp', __name__)
 
 
 def clustering_task_failure_handler(job, connection, type, value, tb):
-    """A failure handler for the main clustering task, executed by the worker."""
+    """A failure handler for the main clustering task, executed by the worker.
+
+    Also fired by RQ's registry cleanup with AbandonedJobError for a job it is
+    about to REQUEUE (the callback runs before the retry check, so the budget is
+    still intact). Writing FAILURE then makes the requeued run see a terminal row
+    and skip itself, turning every worker-death restart into a permanent FAILURE.
+    """
+    retries_left = getattr(job, 'retries_left', None)
+    if retries_left:
+        logger.warning(
+            "Main clustering task %s failed but RQ will requeue it (%s attempt(s) "
+            "left); leaving its task row live.",
+            getattr(job, 'id', None), retries_left,
+        )
+        return
     from flask_app import app
 
     with app.app_context():
