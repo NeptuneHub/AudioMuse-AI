@@ -980,12 +980,10 @@ function testConnection() {
         testFeedback.style.display = 'block';
         var serverName = data.media_server ? data.media_server.charAt(0).toUpperCase() + data.media_server.slice(1) : 'media server';
         var count = (typeof data.probe_count === 'number') ? data.probe_count : 0;
-        if (data.probe_limit_hit) {
-            testFeedback.textContent = '✓ Connected to ' + serverName + '. At least ' + count + ' recent top-played items were returned.';
-        } else if (count === 1) {
-            testFeedback.textContent = '✓ Connected to ' + serverName + '. 1 top-played item was returned.';
+        if (count === 1) {
+            testFeedback.textContent = '✓ Connected to ' + serverName + '. 1 sample track was returned.';
         } else {
-            testFeedback.textContent = '✓ Connected to ' + serverName + '. ' + count + ' top-played items were returned.';
+            testFeedback.textContent = '✓ Connected to ' + serverName + '. ' + count + ' sample tracks were returned.';
         }
         // Populate the library checkbox list using the same config payload
         // (so secret placeholders fall back to saved values server-side).
