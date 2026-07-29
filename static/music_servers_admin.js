@@ -164,7 +164,7 @@
             var name = (lib && typeof lib === 'object') ? lib.name : lib;
             name = name ? String(name) : '';
             if (!name) { return; }
-            boxes.appendChild(row(name, { 'data-lib-name': name }, selected.indexOf(name.toLowerCase()) !== -1));
+            boxes.appendChild(row(name, { 'data-lib-name': name }, selected.includes(name.toLowerCase())));
         });
         boxes.style.display = 'flex';
         syncLibraryBoxesToInput();

@@ -182,55 +182,84 @@ def _close_quietly(response):
         logger.debug("Ampache: closing an errored stream response failed.", exc_info=True)
 
 
+def _fetch(url, action, token, params, stream, timeout):
+    all_params = {'action': action, 'auth': token, 'version': '8.0.0', **(params or {})}
+    try:
+        response = requests.get(
+            f"{url}/server/json.server.php",
+            params=all_params,
+            stream=stream,
+            timeout=timeout or _REQUEST_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+            f"Ampache request '{action}' failed: {_redact_ampache_secrets(e)}"
+        )
+        return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
+    return response, None
+
+
+def _stream_payload(action, response):
+    try:
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+            f"Ampache stream '{action}' failed: {_redact_ampache_secrets(e)}"
+        )
+        return None, None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
+
+    body = _stream_error_body(response)
+    if body is None:
+        return response, None, None
+    _close_quietly(response)
+    return None, body, None
+
+
+def _body_error(action, body, stream):
+    error, code = _error_from_body(body)
+    if error:
+        if code == _SESSION_EXPIRED_CODE:
+            return 'retry', None
+        kind = 'auth' if code in _AUTH_ERROR_CODES else 'api'
+        message = error.get('errorMessage') or error.get('message') or 'Ampache error'
+        return 'error', {'kind': kind, 'message': message}
+    if stream:
+        return 'error', {
+            'kind': 'api',
+            'message': f"Ampache returned JSON instead of audio for '{action}'",
+        }
+    return 'ok', None
+
+
 def _request_ex(action, params=None, stream=False, user_creds=None, timeout=None):
     for attempt in (0, 1):
         url, token, err = _token(user_creds, force=bool(attempt), timeout=timeout)
         if not token:
             return None, err
 
-        all_params = {'action': action, 'auth': token, 'version': '8.0.0', **(params or {})}
-        try:
-            response = requests.get(
-                f"{url}/server/json.server.php",
-                params=all_params,
-                stream=stream,
-                timeout=timeout or _REQUEST_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
-            logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
-                f"Ampache request '{action}' failed: {_redact_ampache_secrets(e)}"
-            )
-            return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
+        response, err = _fetch(url, action, token, params, stream, timeout)
+        if err:
+            return None, err
 
         if stream:
-            try:
-                response.raise_for_status()
-            except Exception as e:
-                logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
-                    f"Ampache stream '{action}' failed: {_redact_ampache_secrets(e)}"
-                )
-                return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
-            body = _stream_error_body(response)
-            if body is None:
-                return response, None
-            _close_quietly(response)
+            passthrough, body, err = _stream_payload(action, response)
+            if err:
+                return None, err
+            if passthrough is not None:
+                return passthrough, None
         else:
             try:
                 body = response.json()
             except Exception as e:
                 return None, {'kind': 'parse', 'message': str(_redact_ampache_secrets(e))}
 
-        error, code = _error_from_body(body)
-        if error:
-            if code == _SESSION_EXPIRED_CODE:
-                if attempt == 0:
-                    continue
-                break
-            kind = 'auth' if code in _AUTH_ERROR_CODES else 'api'
-            return None, {'kind': kind, 'message': error.get('errorMessage') or error.get('message') or 'Ampache error'}
-        if stream:
-            return None, {'kind': 'api', 'message': f"Ampache returned JSON instead of audio for '{action}'"}
-
+        verdict, err = _body_error(action, body, stream)
+        if verdict == 'retry':
+            if attempt == 0:
+                continue
+            break
+        if verdict == 'error':
+            return None, err
         return body, None
 
     return None, {'kind': 'auth', 'message': 'Ampache session could not be renewed'}
@@ -306,17 +335,39 @@ def _catalog_filter_params(catalog_ids):
     return params
 
 
+def _catalogue_query(catalog_ids):
+    if catalog_ids:
+        return 'advanced_search', _catalog_filter_params(catalog_ids)
+    return 'songs', {}
+
+
+def _in_catalogs(row, catalog_ids):
+    return catalog_ids is None or str(row.get('catalog')) in catalog_ids
+
+
+def _should_retry_unfiltered(action, err, offset, collected):
+    message = (err or {}).get('message') or 'unknown error'
+    if action == 'advanced_search' and not collected:
+        logger.warning(
+            "Ampache advanced_search catalog filter failed (%s); falling back to a "
+            "full song fetch filtered locally.",
+            message,
+        )
+        return True
+    logger.error(
+        "AMPACHE CATALOGUE FETCH FAILED at offset %d after %d songs (%s). The "
+        "returned catalogue is INCOMPLETE - do not treat missing tracks as deleted.",
+        offset, collected, message,
+    )
+    return False
+
+
 def get_all_songs(user_creds=None, apply_filter=True):
     catalog_ids = _target_catalog_ids(user_creds=user_creds) if apply_filter else None
     if isinstance(catalog_ids, set) and not catalog_ids:
         return []
 
-    if catalog_ids:
-        action = 'advanced_search'
-        base_params = _catalog_filter_params(catalog_ids)
-    else:
-        action = 'songs'
-        base_params = {}
+    action, base_params = _catalogue_query(catalog_ids)
 
     songs = []
     offset = 0
@@ -324,32 +375,16 @@ def get_all_songs(user_creds=None, apply_filter=True):
         params = {**base_params, 'offset': offset, 'limit': _PAGE_SIZE}
         body, err = _request_ex(action, params, user_creds=user_creds)
         if body is None:
-            message = (err or {}).get('message') or 'unknown error'
-            if action == 'advanced_search' and not songs:
-                logger.warning(
-                    "Ampache advanced_search catalog filter failed (%s); falling back to a "
-                    "full song fetch filtered locally.",
-                    message,
-                )
-                action = 'songs'
-                base_params = {}
-                continue
-            logger.error(
-                "AMPACHE CATALOGUE FETCH FAILED at offset %d after %d songs (%s). The "
-                "returned catalogue is INCOMPLETE - do not treat missing tracks as deleted.",
-                offset, len(songs), message,
-            )
-            break
+            if not _should_retry_unfiltered(action, err, offset, len(songs)):
+                break
+            action, base_params = 'songs', {}
+            continue
 
         rows = body.get('song') or []
         if not rows:
             break
 
-        for row in rows:
-            if catalog_ids is not None and str(row.get('catalog')) not in catalog_ids:
-                continue
-            songs.append(_map_catalogue_song(row))
-
+        songs.extend(_map_catalogue_song(r) for r in rows if _in_catalogs(r, catalog_ids))
         offset += len(rows)
         if len(rows) < _PAGE_SIZE:
             break
@@ -381,16 +416,11 @@ def get_recent_albums(limit):
     page = _PAGE_SIZE if catalog_ids else max(wanted, 1)
     while True:
         params = {'offset': offset, 'limit': 0 if fetch_all else page, 'sort': 'addition_time,DESC'}
-        body = _request('albums', params)
-        albums = (body or {}).get('album') or []
+        albums = (_request('albums', params) or {}).get('album') or []
         if not albums:
             break
 
-        for album in albums:
-            if catalog_ids is not None and str(album.get('catalog')) not in catalog_ids:
-                continue
-            mapped.append(_map_album(album))
-
+        mapped.extend(_map_album(a) for a in albums if _in_catalogs(a, catalog_ids))
         offset += len(albums)
         if fetch_all or len(albums) < page or len(mapped) >= wanted:
             break
