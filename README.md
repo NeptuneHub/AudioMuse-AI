@@ -24,7 +24,7 @@ You can run it locally with Docker Compose or Podman, deploy it at scale in a Ku
 > **Prefer not to self-host?** [Elestio](https://elest.io/open-source/audiomuse-ai) offers AudioMuse-AI as a managed cloud service, and their [YouTube video](https://www.youtube.com/watch?v=Ow89q6gQ1mM) is a good introduction to the project and its features.
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
-* **Multiple Music Servers** (from `v3.0.0`): connect several media servers - any mix of Navidrome, Jellyfin, LMS, Lyrion, Emby and Plex - to a **single AudioMuse-AI deployment**. Built-in duplicate detection recognizes the same song across servers, so each track is **analyzed only once** and every server shares the result.
+* **Multiple Music Servers** (from `v3.0.0`): connect several media servers - any mix of Navidrome, Jellyfin, LMS, Lyrion, Emby, Plex and Ampache - to a **single AudioMuse-AI deployment**. Built-in duplicate detection recognizes the same song across servers, so each track is **analyzed only once** and every server shares the result.
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
 * **Instant Playlists**: Simply tell the AI what you want to hear-like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
 * **Music Map**: Discover your music collection visually with a vibrant, genre-based 2D map.
@@ -84,7 +84,7 @@ From `v1.0.0`, only PostgreSQL, Redis and `TZ` are configured via environment va
 
 **Prerequisites:**
 * Docker and Docker Compose installed
-* A running media server (Navidrome, Jellyfin, Lyrion, Emby, or Plex)
+* A running media server (Navidrome, Jellyfin, Lyrion, Emby, Plex, or Ampache)
 * See [Hardware Requirements](#hardware-requirements)
 
 **Steps:**

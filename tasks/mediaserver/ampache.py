@@ -1,17 +1,10 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
 # Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
 """Ampache media-server backend, speaking Ampache's own JSON API.
 
@@ -27,6 +20,16 @@ Two things differ from the Subsonic path and both matter to callers:
   differently from the same library analysed through the other.
 * Auth is a handshake that returns a session token, rather than credentials sent
   on every request. The token is cached per server and re-issued on expiry.
+
+Main Features:
+* Trades credentials for a session token that accepts either an API key or a
+  time-salted password hash in the same field, caching it per server and
+  re-handshaking once when a session lapses mid-run.
+* Fetches catalogues, recent albums, album tracks, search results and the whole
+  song list with pagination, honouring MUSIC_LIBRARIES by resolving it to
+  Ampache catalog ids.
+* Downloads the original file rather than a transcoded stream, reads play stats
+  and lyrics, and manages playlists through the shared dispatcher contract.
 """
 
 from . import http as requests
@@ -91,7 +94,9 @@ def _handshake(url, user, password):
             response = requests.get(f"{url}/server/json.server.php", params=params, timeout=30)
             body = response.json()
         except Exception as e:
-            logger.error(f"Ampache handshake failed: {_redact_ampache_secrets(e)}")
+            logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+                f"Ampache handshake failed: {_redact_ampache_secrets(e)}"
+            )
             return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
 
         if isinstance(body, dict) and body.get('auth'):
@@ -139,10 +144,19 @@ def _request_ex(action, params=None, stream=False, user_creds=None, timeout=None
                 timeout=timeout or 60,
             )
         except Exception as e:
-            logger.error(f"Ampache request '{action}' failed: {_redact_ampache_secrets(e)}")
+            logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+                f"Ampache request '{action}' failed: {_redact_ampache_secrets(e)}"
+            )
             return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
 
         if stream:
+            try:
+                response.raise_for_status()
+            except Exception as e:
+                logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+                    f"Ampache stream '{action}' failed: {_redact_ampache_secrets(e)}"
+                )
+                return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
             return response, None
 
         try:
@@ -394,18 +408,19 @@ def create_playlist(base_name, item_ids):
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
-    return create_playlist(playlist_name, item_ids)
+    return create_playlist(f"{playlist_name.strip()}_instant", item_ids)
 
 
-def create_or_replace_playlist(playlist_name, item_ids):
-    existing = get_playlist_by_name(playlist_name)
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
+    existing = get_playlist_by_name(playlist_name, user_creds=user_creds)
     if existing:
         delete_playlist(existing['Id'])
     return create_playlist(playlist_name, item_ids)
 
 
 def get_top_played_songs(limit, user_creds):
-    body = _request('stats', {'type': 'song', 'filter': 'highest', 'limit': limit}, user_creds=user_creds)
+    body = _request('stats', {'type': 'song', 'filter': 'frequent', 'limit': limit}, user_creds=user_creds)
     return [_map_song(s) for s in ((body or {}).get('song') or [])]
 
 

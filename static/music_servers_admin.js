@@ -32,6 +32,11 @@
         plex: [
             { key: 'url', label: 'Server URL', placeholder: 'http://plex:32400' },
             { key: 'token', label: 'Plex Token', secret: true }
+        ],
+        ampache: [
+            { key: 'url', label: 'Server URL', placeholder: 'http://ampache' },
+            { key: 'user', label: 'Username' },
+            { key: 'password', label: 'Password or API key', secret: true }
         ]
     };
 

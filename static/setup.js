@@ -20,6 +20,11 @@ var serverFields = {
     plex: [
         {name: 'PLEX_URL', label: 'Plex URL', placeholder: 'http://your-plex-server:32400', tooltip: 'Base URL of your Plex Media Server, including http:// or https:// and the port (default 32400). Must be reachable from the AudioMuse-AI container.'},
         {name: 'PLEX_TOKEN', label: 'Plex API token', placeholder: 'your-plex-token', tooltip: 'Your X-Plex-Token for the server. See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ to find it.'}
+    ],
+    ampache: [
+        {name: 'AMPACHE_URL', label: 'Ampache URL', placeholder: 'http://your-ampache-server', tooltip: 'Base URL of your Ampache server, including http:// or https:// and the port if it is not the default.'},
+        {name: 'AMPACHE_USER', label: 'Ampache username', placeholder: 'your-username', tooltip: 'Username of an Ampache account that can read the music library. Leave empty if you authenticate with an API key instead of a password.'},
+        {name: 'AMPACHE_PASSWORD', label: 'Ampache password or API key', placeholder: 'your-password-or-api-key', tooltip: 'Password for the Ampache user above, or an Ampache API key. The handshake accepts either, so there is no separate API key field.'}
     ]
 };
 
@@ -276,7 +281,7 @@ function renderServerFields(serverType, values, hasValueMap) {
             value = values[field.name];
         }
         var secret = false;
-        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN'];
+        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN', 'AMPACHE_PASSWORD'];
         for (var i = 0; i < secretKeys.length; i++) {
             if (secretKeys[i] === field.name) {
                 secret = true;
@@ -625,7 +630,7 @@ function loadSetupData() {
 
 function saveCurrentServerValues() {
     var currentServerType = document.getElementById('MEDIASERVER_TYPE').value;
-    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN'];
+    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN', 'AMPACHE_URL', 'AMPACHE_USER', 'AMPACHE_PASSWORD'];
     keys.forEach(function(key) {
         var input = document.getElementById(key);
         if (input) {
