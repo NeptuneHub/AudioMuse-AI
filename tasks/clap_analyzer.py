@@ -49,8 +49,29 @@ _label_text_embeddings_cache = None
 
 _SEGMENT_LENGTH_SAMPLES = 480000
 
+# Providers whose graph compiler needs the CLAP audio model's symbolic
+# time-frame axis pinned to a fixed value before it can compile the graph
+# (none of them compiles a dynamic dim). Plugin providers join this set by
+# registering with needs_static_shapes=True, so core never has to know their names.
+_PREPARED_MODEL_PROVIDERS = {'CoreMLExecutionProvider'}
 
-def _static_shape_model_bytes(model_path):
+
+def _static_shape_providers():
+    providers = set(_PREPARED_MODEL_PROVIDERS)
+    try:
+        from plugin.manager import plugin_manager
+
+        for provider in plugin_manager.get_onnx_providers():
+            if provider.get('needs_static_shapes') and provider.get('name'):
+                providers.add(provider['name'])
+    except Exception:
+        logger.debug('Could not read plugin ONNX providers', exc_info=True)
+    return providers
+
+
+def _prepared_model_bytes(model_path):
+    """Return the audio model with its symbolic time axis pinned to a static
+    shape, or None when the model has no symbolic dims. See _PREPARED_MODEL_PROVIDERS."""
     import onnx
     from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
 
@@ -115,6 +136,7 @@ def _load_audio_model():
             'arena_extend_strategy': 'kSameAsRequested',
             'cudnn_conv_algo_search': 'DEFAULT',
         },
+        label='clap',
     )
 
     def _create_session(model_input, providers, provider_opts):
@@ -131,14 +153,14 @@ def _load_audio_model():
     cpu_opts = [{}]
 
     preferred_model_input = model_path
-    if 'CoreMLExecutionProvider' in preferred_providers:
+    if _static_shape_providers().intersection(preferred_providers):
         try:
-            static_bytes = _static_shape_model_bytes(model_path)
-            if static_bytes is not None:
-                preferred_model_input = static_bytes
-                logger.info("CoreML: pinned CLAP audio time axis to a static shape for compilation")
+            prepared_bytes = _prepared_model_bytes(model_path)
+            if prepared_bytes is not None:
+                preferred_model_input = prepared_bytes
+                logger.info("Pinned CLAP audio time axis to a static shape for graph compilation")
         except Exception as e:
-            logger.warning(f"CoreML: could not build static-shape model ({e}); using dynamic model")
+            logger.warning(f"Could not build static-shape model ({e}); using dynamic model")
 
     try:
         session = _create_session(preferred_model_input, preferred_providers, preferred_opts)
@@ -190,7 +212,6 @@ def _load_text_model():
     sess_options = _clap_session_options("Text")
 
     session = None
-    available_providers = ort.get_available_providers()
     _is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
 
     if not _is_worker:
@@ -198,24 +219,17 @@ def _load_text_model():
         logger.info(
             "CLAP text model: CPU only (Flask process) - thread-safe across request threads"
         )
-    elif 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(
-            f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})"
-        )
     else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
+        from tasks.analysis.song import resolve_providers
+
+        provider_options = resolve_providers(
+            cuda_options={
+                'device_id': 0,
+                'arena_extend_strategy': 'kSameAsRequested',
+                'cudnn_conv_algo_search': 'DEFAULT',
+            },
+            label='clap_text',
+        )
 
     try:
         session = ort.InferenceSession(

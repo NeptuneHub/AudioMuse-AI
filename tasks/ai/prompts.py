@@ -15,7 +15,7 @@ prompt, and the grounded brainstorm recipe prompt. Consumed by ``planner``,
 
 Main Features:
 * Tool prose and the Ollama structured-output grammar are both DERIVED from the get_mcp_tools schemas (names, descriptions, per-argument types and enums), so the routing knowledge lives in one place and stays in sync across providers.
-* build_tool_calls_schema emits a typed per-tool grammar (reasoning field first with a hard maxLength, name+arguments branches with enum-locked labels) used to constrain Ollama structured output; prompts stay short with a few diverse worked examples per intent class, including exclusion ('no rap') and language/scene routing rules.
+* build_tool_calls_schema emits a typed per-tool grammar (reasoning field first with a hard maxLength, name+arguments branches with enum-locked labels, array caps from the shared maxItems) used to constrain Ollama structured output; prompts stay short with a few diverse worked examples per intent class, including a three-tool plan, exclusion ('no rap') and language/scene routing rules.
 """
 
 import copy
@@ -29,6 +29,8 @@ playlist_concept_prompt_template = (
     "Concept extraction only. Genre: {genre}. Verified evidence: {evidence}. "
     "{dimension_rule} Use one ordinary word. Concept only: no genre, title, "
     "explanation, marketing/container word, or invented context. {avoid_rule}"
+    "Return {candidate_count} different candidate words on one line, comma "
+    "separated, best first. No numbering, no explanation."
 )
 
 
@@ -95,7 +97,11 @@ def build_mcp_system_prompt(
         "Fill only fields the user asked for, using the closest listed value; when no "
         "field or listed value fits a word, leave it out."
     )
-    rules.append("Emit each tool at most once; one finder plus one filter is the usual plan.")
+    rules.append(
+        "Emit each tool at most once. Use one finder tool per distinct part of the request "
+        "(a named artist to resemble, a sound or topic to match, a popularity ask), plus the "
+        "one search_database that carries every metadata constraint."
+    )
     rules_block = "\n".join(f"{i}. {r}" for i, r in enumerate(rules, start=1))
 
     return f"""You are a music playlist planner. Turn the user's request into tool calls; the app runs them against the user's own music library.
@@ -198,6 +204,38 @@ def _build_examples(tools: List[Dict]) -> List[str]:
                 ],
             )
         )
+    if (
+        {'seed_search', 'text_match', 'search_database'} <= tool_names
+        and 'audio' in modes
+    ):
+        examples.append(
+            '"chill 2000s songs like Zero 7 with a warm rhodes sound, nothing by Moby"\n'
+            + _example(
+                "Three parts: an artist to resemble, a sound to match, and the era plus "
+                "the exclusion.",
+                [
+                    {
+                        "name": "seed_search",
+                        "arguments": {"seeds": [{"type": "artist", "name": "Zero 7"}]},
+                    },
+                    {
+                        "name": "text_match",
+                        "arguments": {
+                            "query": "warm rhodes keys, mellow downtempo groove",
+                            "mode": "audio",
+                        },
+                    },
+                    {
+                        "name": "search_database",
+                        "arguments": {
+                            "year_min": 2000,
+                            "year_max": 2009,
+                            "exclude_artists": ["Moby"],
+                        },
+                    },
+                ],
+            )
+        )
     if 'seed_search' in tool_names:
         examples.append(
             '"in the style of Oasis but not Blur"\n'
@@ -277,39 +315,13 @@ Request: "{user_message}"
 Fill only fields the user asked for. Return ONLY the JSON object."""
 
 
-def _inject_unique_items(schema: Dict) -> Dict:
-    """Add ``uniqueItems: True`` to every array-typed property recursively.
-
-    Small Ollama models can loop the same value forever in structured-output
-    mode; ``uniqueItems`` prevents that.  Injected here rather than in the
-    shared ``tools.py`` schema so that only the Ollama structured-output path
-    is affected -- Gemini, Mistral, and native OpenAI tool-calling use the
-    schema as-is.
-    """
-    if not isinstance(schema, dict):
-        return schema
-    # Snapshot keys so we can safely mutate the dict while walking it.
-    for key, value in list(schema.items()):
-        if key == 'type' and value == 'array':
-            schema.setdefault('uniqueItems', True)
-        elif isinstance(value, dict):
-            _inject_unique_items(value)
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict):
-                    _inject_unique_items(item)
-    return schema
-
-
 def build_tool_calls_schema(tools: List[Dict]) -> Dict:
     branches: List[Dict] = []
     for t in tools:
         name = t.get('name')
         if not name:
             continue
-        arg_schema = _inject_unique_items(
-            copy.deepcopy(t.get('inputSchema') or {"type": "object"})
-        )
+        arg_schema = copy.deepcopy(t.get('inputSchema') or {"type": "object"})
         arg_schema['additionalProperties'] = False
         branches.append(
             {
@@ -334,7 +346,7 @@ def build_tool_calls_schema(tools: List[Dict]) -> Dict:
             "tool_calls": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 4,
+                "maxItems": config.AI_MAX_TOOL_CALLS,
                 "items": {"oneOf": branches} if branches else {"type": "object"},
             },
         },
@@ -343,7 +355,9 @@ def build_tool_calls_schema(tools: List[Dict]) -> Dict:
 
 
 def build_ai_brainstorm_prompt(user_request: str) -> str:
-    genres_line = ", ".join(config.STRATIFIED_GENRES)
+    from tasks.ai.vocab import GENRE_VOCAB
+
+    genres_line = ", ".join(GENRE_VOCAB)
     moods_line = ", ".join(config.OTHER_FEATURE_LABELS)
     voices_line = ", ".join(config.VOICE_VOCAB)
     return f"""You are a music expert. Turn the request into a RECIPE used to search a music library.

@@ -570,6 +570,7 @@ def _run_chat_pipeline(data, log_messages):
         user_wants_rating=_user_wants_rating,
         collection_cap=collection_cap,
         target_song_count=target_song_count,
+        raw_user_request=original_user_input,
     )
 
     if 'error' in plan_result:

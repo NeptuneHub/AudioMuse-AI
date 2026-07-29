@@ -125,6 +125,8 @@ HIDDEN_ADVANCED_FIELDS = {
     'AI_CHAT_DB_USER_NAME',
     'AI_CHAT_DB_USER_PASSWORD',
     'AI_FALLBACK_GENRES',
+    'AI_NAMING_CANDIDATES',
+    'AI_NAMING_MAX_ATTEMPTS',
     'AUDIOMUSE_CONTROL_HOST',
     'AUDIOMUSE_CONTROL_PORT',
     'AUDIOMUSE_CONTROL_SOCKET',
@@ -141,6 +143,7 @@ HIDDEN_ADVANCED_FIELDS = {
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
+    'CHROMAPRINT_BACKFILL_REPORT_SECONDS',
     'MOOD_LABELS',
     'APP_VERSION',
     'TEMP_DIR',
@@ -300,17 +303,18 @@ def _test_media_server_connection(filtered_values):
     original_config = _patch_config_for_test(test_config)
     try:
         media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
-        probe_limit = config.PROBE_TOP_PLAYED_LIMIT
-        items = mediaserver.get_top_played_songs(probe_limit)
-        if not items:
+        result = mediaserver.test_connection() or {}
+        if not result.get('ok'):
             raise AudioMuseError(
-                ERR_MEDIASERVER_UNREACHABLE,
-                f"No top-played songs were returned from {media_type.capitalize()}; check the URL and credentials.",
+                ERR_CONFIG_MEDIASERVER_CREDENTIALS
+                if result.get('auth_failed')
+                else ERR_MEDIASERVER_UNREACHABLE,
+                result.get('error')
+                or f"Could not reach {media_type.capitalize()}; check the URL and credentials.",
             )
         return {
             'type': media_type,
-            'probe_count': len(items),
-            'probe_limit_hit': probe_limit and len(items) >= probe_limit,
+            'probe_count': result.get('sample_count') or 0,
         }
     except AudioMuseError:
         raise
@@ -561,7 +565,6 @@ def setup_api():
                     'test_connection': True,
                     'media_server': result['type'],
                     'probe_count': result['probe_count'],
-                    'probe_limit_hit': result.get('probe_limit_hit', False),
                 }
             ), 200
 

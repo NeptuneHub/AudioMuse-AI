@@ -18,7 +18,9 @@ Main Features:
   input, falls back to current config for missing keys, lowercases the type
 * _patch_config_for_test applies values to config and _restore_config undoes it
 * The probe call observes the user-typed URL/token/type, not the saved ones
-* Config is restored after success, provider failure, and empty-result failure
+* The wizard probes with mediaserver.test_connection (a plain browse), so a
+  reachable server with no play history is never reported as unreachable
+* Config is restored after success, provider failure, and a not-ok result
 """
 
 import pytest
@@ -26,6 +28,7 @@ import pytest
 import app_setup
 import config
 from error.error_manager import AudioMuseError
+from error.error_dictionary import ERR_CONFIG_MEDIASERVER_CREDENTIALS
 
 
 BASELINE = {
@@ -82,34 +85,35 @@ class TestPatchAndRestore:
 
 
 class TestConnectionProbeSeesUserValues:
-    def _fake_probe(self, monkeypatch, captured, items):
-        def fake_get_top_played_songs(limit):
-            captured['limit'] = limit
+    def _fake_probe(self, monkeypatch, captured, outcome):
+        def fake_test_connection():
             captured['MEDIASERVER_TYPE'] = config.MEDIASERVER_TYPE
             captured['JELLYFIN_URL'] = config.JELLYFIN_URL
             captured['JELLYFIN_TOKEN'] = config.JELLYFIN_TOKEN
-            if isinstance(items, Exception):
-                raise items
-            return items
-        monkeypatch.setattr(
-            app_setup.mediaserver, 'get_top_played_songs', fake_get_top_played_songs
-        )
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        monkeypatch.setattr(app_setup.mediaserver, 'test_connection', fake_test_connection)
 
     def test_probe_call_sees_user_typed_values(self, saved_config, monkeypatch):
         captured = {}
-        self._fake_probe(monkeypatch, captured, [{'Id': '1'}, {'Id': '2'}])
+        self._fake_probe(monkeypatch, captured, {'ok': True, 'sample_count': 2})
 
         result = app_setup._test_media_server_connection(dict(USER_VALUES))
 
         assert captured['MEDIASERVER_TYPE'] == 'jellyfin'
         assert captured['JELLYFIN_URL'] == 'https://user-typed:8096'
         assert captured['JELLYFIN_TOKEN'] == 'user-token'
-        assert captured['limit'] == config.PROBE_TOP_PLAYED_LIMIT
         assert result['type'] == 'jellyfin'
         assert result['probe_count'] == 2
 
+    def test_reachable_server_with_no_play_history_still_passes(self, saved_config, monkeypatch):
+        self._fake_probe(monkeypatch, {}, {'ok': True, 'sample_count': 100})
+        result = app_setup._test_media_server_connection(dict(USER_VALUES))
+        assert result['probe_count'] == 100
+
     def test_config_restored_after_success(self, saved_config, monkeypatch):
-        self._fake_probe(monkeypatch, {}, [{'Id': '1'}])
+        self._fake_probe(monkeypatch, {}, {'ok': True, 'sample_count': 1})
         app_setup._test_media_server_connection(dict(USER_VALUES))
         _assert_config_matches(saved_config)
 
@@ -120,12 +124,20 @@ class TestConnectionProbeSeesUserValues:
             app_setup._test_media_server_connection(args)
         _assert_config_matches(saved_config)
 
-    def test_config_restored_after_empty_result(self, saved_config, monkeypatch):
-        self._fake_probe(monkeypatch, {}, [])
+    def test_config_restored_after_not_ok_result(self, saved_config, monkeypatch):
+        self._fake_probe(monkeypatch, {}, {'ok': False, 'error': 'HTTP 404'})
         args = dict(USER_VALUES)
         with pytest.raises(AudioMuseError):
             app_setup._test_media_server_connection(args)
         _assert_config_matches(saved_config)
+
+    def test_auth_failure_reports_the_credentials_error_code(self, saved_config, monkeypatch):
+        self._fake_probe(
+            monkeypatch, {}, {'ok': False, 'error': 'Wrong username or password', 'auth_failed': True}
+        )
+        with pytest.raises(AudioMuseError) as excinfo:
+            app_setup._test_media_server_connection(dict(USER_VALUES))
+        assert excinfo.value.code == ERR_CONFIG_MEDIASERVER_CREDENTIALS
 
 
 class TestListLibrariesSeesUserValues:

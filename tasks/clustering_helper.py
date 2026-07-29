@@ -76,8 +76,8 @@ from config import (
 )
 from .commons import score_vector
 
-from tasks.ai.api import get_ai_playlist_name
-from tasks.ai.playlist_namer import build_naming_context
+from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
+from tasks.ai.playlist_namer import build_naming_context, evidence_from_cluster_name
 
 from database import (
     get_tracks_by_ids,
@@ -117,6 +117,22 @@ def _assign_playlist_chunks(final_songs, max_songs, base_name, final_playlists):
             final_playlists[f"{base_name} ({idx})"] = chunk
     else:
         final_playlists[base_name] = final_songs
+
+
+def _compose_name_from_ideas(context, avoid_names):
+    taken = {clean_playlist_name(name).casefold() for name in (avoid_names or [])}
+    genre = (context.get('genre') or '').strip()
+    if not genre:
+        return ''
+    suffix = ' Instrumentals' if context.get('instrumental') else ''
+    for idea in context.get('ideas') or []:
+        concept = clean_playlist_name(idea).title()
+        if not concept or concept.casefold() in {'instrumental', genre.casefold()}:
+            continue
+        title = f'{concept} {genre}{suffix}'
+        if title.casefold() not in taken:
+            return title
+    return ''
 
 
 def _try_ai_name_playlist(
@@ -182,25 +198,45 @@ def _try_ai_name_playlist(
         context['ideas'],
         context['axis_labels'],
     )
-    ai_name = None
-    if context['naming_evidence'] != 'general-purpose listening':
-        ai_avoid_names = [
-            name
-            for name in (avoid_names or [])
-            if '_' not in name.partition('_automatic')[0]
-        ]
-        ai_name = get_ai_playlist_name(
-            context['genre'],
-            context['naming_dimension'],
-            context['naming_evidence'],
-            ai_config,
-            instrumental=context['instrumental'],
-            avoid_names=ai_avoid_names,
-        )
+    ai_avoid_names = [
+        name
+        for name in (avoid_names or [])
+        if '_' not in name.partition('_automatic')[0]
+    ]
+    naming_dimension = context['naming_dimension']
+    naming_evidence = context['naming_evidence']
+    if naming_evidence == 'general-purpose listening':
+        recovered_evidence = evidence_from_cluster_name(original_name)
+        if recovered_evidence:
+            naming_dimension = 'mood'
+            naming_evidence = recovered_evidence
+            logger.info(
+                "Cluster '%s' has no decisive lyric evidence; naming it from the "
+                "tag descriptors instead: %s",
+                original_name,
+                recovered_evidence,
+            )
+    ai_name = get_ai_playlist_name(
+        context['genre'],
+        naming_dimension,
+        naming_evidence,
+        ai_config,
+        instrumental=context['instrumental'],
+        avoid_names=ai_avoid_names,
+    )
     if ai_name:
         return ai_name.strip().replace("\n", " ")
+    composed_name = _compose_name_from_ideas(context, avoid_names)
+    if composed_name:
+        logger.warning(
+            "AI naming failed for '%s'. Composed '%s' from the cluster evidence.",
+            original_name,
+            composed_name,
+        )
+        return composed_name
     logger.warning(
-        "AI naming failed for '%s'. Keeping the tag-based cluster name.",
+        "AI naming failed for '%s' and it has no usable ideas. "
+        "Keeping the tag-based cluster name.",
         original_name,
     )
     return original_name

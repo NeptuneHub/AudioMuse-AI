@@ -68,11 +68,11 @@ def _load_session(model_path: Optional[str] = None):
         opts.enable_cpu_mem_arena = False
         opts.enable_mem_pattern = False
         try:
-            from tasks.analysis.song import create_onnx_session
+            from tasks.analysis.song import create_onnx_session, resolve_providers
 
             _session = create_onnx_session(
                 path,
-                provider_options=[('CPUExecutionProvider', {})],
+                provider_options=resolve_providers(label='silero_vad', cpu_only_default=True),
                 sess_options=opts,
                 label='silero_vad',
             )

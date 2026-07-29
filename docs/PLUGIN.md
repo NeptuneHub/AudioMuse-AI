@@ -24,7 +24,8 @@ Everything a plugin can do, at a glance. The last column tells you where to find
 | 12 | Named worker tasks | `add_task` | No - see "API reference" |
 | 13 | Startup hooks | `on_flask_start` / `on_worker_start` | No - see "The plugin lifecycle" |
 | 14 | Create media-server playlists | `tasks.mediaserver` | No - see "Create a playlist on your media server" |
-| 15 | Extra ONNX execution provider | `register_onnx_provider` | No - see "API reference" (advanced) |
+| 15 | Extra ONNX execution provider (optionally scoped per model) | `register_onnx_provider` | No - see "API reference" (advanced) |
+| 16 | Replace an analysis component (e.g. the ASR/Whisper backend) | `register_analysis_provider` | No - see "API reference" (advanced) |
 
 ## Installing and managing plugins
 
@@ -468,7 +469,66 @@ And the methods on the `ctx` object in `register(ctx)`:
 | `add_task(name, func, queue='default')` | Register a named worker task. It appears on the Scheduled Tasks page like a cron task, so the admin can schedule it or run it now. |
 | `on_install(func)` | Run once at install and on every update. Gets the database connection. |
 | `on_flask_start(func)` / `on_worker_start(func)` | Run at every start of that container, after the plugin loads. |
-| `register_onnx_provider(name, options, position)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. |
+| `register_onnx_provider(name, options, position, only_models=None, exclude_models=None, needs_static_shapes=False)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. See "Offer an ONNX execution provider" below. |
+| `register_analysis_provider(component, factory, cache=True)` | Advanced: replace a whole analysis component with a plugin-supplied implementation. `component` is currently `asr` (the Whisper backend); `factory` is the replacement module/object (or a zero-arg callable returning one) matching the built-in surface `load_whisper_model`/`transcribe`/`is_loaded`/`unload`. See "Replace an analysis component" below for what each method must return. Consulted before the built-in; an unknown `component` or a backend missing part of that surface is ignored with a warning in the logs, and the built-in is used. `cache=True` (the default) resolves a callable `factory` once and reuses the result, like the built-in modules, which stay loaded for a whole album; pass `cache=False` to be called for every use, and then unload what you hand out yourself. |
+
+### Offer an ONNX execution provider
+
+`register_onnx_provider` adds your provider to the chain AudioMuse-AI builds for every analysis model. `position` is `before_cpu` (the default) or `before_cuda` when your provider should win over CUDA. Set `needs_static_shapes=True` if your graph compiler cannot handle symbolic dimensions, so core pins them before it builds the session; today core pins them only for the CLAP audio model. Other models (the GTE embedder and the Whisper decoder, for example) also carry symbolic axes but are never pinned, so a provider that cannot compile them must be scoped away from those models with `only_models`/`exclude_models`.
+
+Your provider must already exist in the `onnxruntime` build of the image you run, because core only offers providers that `onnxruntime.get_available_providers()` reports. A plugin cannot add one by pip-installing into its own `_lib`: execution providers are compiled into `onnxruntime` itself, so a provider that needs a different build needs a different image. A provider core has already put in the chain for that session (`CUDAExecutionProvider`, or `CoreMLExecutionProvider` on macOS) wins: your entry for that same name is dropped and core's own options are kept, so use `position` to order yourself around them instead of re-registering them.
+
+Scope the provider to the models it can actually compile with `only_models`/`exclude_models`. Both take a session label or a list of them; an unknown label is logged as a warning. The labels are:
+
+| Label | Model | Default without a plugin |
+|---|---|---|
+| `musicnn` | MusiCNN embedding + prediction | CUDA, else CPU |
+| `clap` | CLAP audio model | CUDA / CoreML, else CPU |
+| `clap_text` | CLAP text model, on the worker | CUDA, else CPU |
+| `whisper_encoder` | Whisper encoder (lyrics) | CUDA, else CPU |
+| `whisper_decoder` | Whisper decoder (lyrics) | CUDA, else CPU |
+| `gte` | GTE lyrics text embedding | CPU only |
+| `silero_vad` | Silero voice activity detection | CPU only |
+
+The last two are CPU by default and stay that way unless a plugin names them in `only_models`, so nothing changes for a normal user. The CLAP text model runs on CPU in the Flask process for thread safety and is not offered to plugins there; `clap_text` applies on the worker only.
+
+```python
+def register(ctx):
+    # A provider that handles MusiCNN and the Whisper encoder, but not the
+    # decoder and not CLAP.
+    ctx.register_onnx_provider(
+        'MyExecutionProvider',
+        {'device_id': 0},
+        only_models=['musicnn', 'whisper_encoder'],
+    )
+```
+
+### Replace an analysis component
+
+Sometimes a different execution provider is not enough and the step needs a different library altogether: some execution providers cannot run the ONNX Whisper decoder at all, so a plugin can swap in faster-whisper instead. `register_analysis_provider(component, factory)` hands core a full replacement for one step. The only component today is `asr`, the Whisper backend used by the lyrics pipeline.
+
+Your replacement must expose all four methods below. Core checks for them when it resolves your plugin and falls back to the built-in backend - with a warning naming your plugin and what is missing - if any is absent.
+
+| Method | Must return                                                                                                                                                                                         |
+|---|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `load_whisper_model()` | Nothing. Load the model, or raise an exception if it cannot be loaded.                                                                                                                              |
+| `transcribe(wav, sr, language=None)` | A dict: `text` (the transcript, `''` when nothing was recognised), `language` (the detected language code, for example `en`), `avg_logprob` (the mean per-token log probability of the transcript). |
+| `is_loaded()` | `True` while your model is in memory. Core uses it to decide whether a memory cleanup is needed after an album.                                                                                     |
+| `unload()` | Nothing. Free the model and its memory.                                                                                                                                                             |
+
+`avg_logprob` is the one that quietly matters: core drops a transcript whose confidence is below `LYRICS_ASR_MIN_AVG_LOGPROB` (and below `LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB` for non-English) and treats the song as instrumental. Return the real value if your backend has one. If it does not, leave the key out entirely - core then skips the confidence check instead of reading a missing value as the worst possible score. Do not return a placeholder like `0.0`, which disables the check without saying so. An explicit `None` or a NaN is treated like a missing key. Infinities are not: they pass through as real values, so `-inf` - the built-in backend's own worst-confidence value - always drops the transcript. A value of `0.0` or above is kept but flagged in the log, because no real mean log-probability is positive.
+
+```python
+def register(ctx):
+    ctx.register_analysis_provider('asr', _load_backend)
+
+
+def _load_backend():
+    # Return None to stand down (no GPU here, say); core logs it and keeps the
+    # built-in backend. Returning the module keeps it loaded for a whole album.
+    from . import my_whisper
+    return my_whisper
+```
 
 ## Who can see and manage plugins
 

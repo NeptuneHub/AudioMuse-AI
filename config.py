@@ -399,15 +399,47 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
 
 # Sampling temperature for the tool-calling (playlist planning) LLM request.
-# Qwen3-family models officially warn against greedy decoding (temperature 0 causes
-# repetition loops); 0.7 is the vendor-recommended non-thinking value.
-AI_TOOLCALL_TEMPERATURE = float(os.environ.get("AI_TOOLCALL_TEMPERATURE", "0.7"))
+# Qwen3-family models officially warn against greedy decoding, so this stays above 0.
+# It is well below the vendor's general-chat 0.7 because tool selection has to be
+# reproducible: measured on qwen3.5:9b over a 40-query benchmark, the same prompt run
+# twice picked a different tool set 7 times out of 40 at 0.7 and once out of 40 at 0.2,
+# with the same plan quality and no repetition loops (the structured-output grammar
+# bounds every array, so a loop cannot run away).
+AI_TOOLCALL_TEMPERATURE = float(os.environ.get("AI_TOOLCALL_TEMPERATURE", "0.2"))
+
+# Remaining sampling knobs for the tool-calling request, shared by both Ollama paths
+# (native /api/chat and structured format=schema) so a plan does not depend on which
+# path served it.
+AI_TOOLCALL_TOP_P = float(os.environ.get("AI_TOOLCALL_TOP_P", "0.8"))
+AI_TOOLCALL_TOP_K = int(os.environ.get("AI_TOOLCALL_TOP_K", "20"))
+AI_TOOLCALL_MIN_P = float(os.environ.get("AI_TOOLCALL_MIN_P", "0.0"))
+AI_TOOLCALL_NUM_PREDICT = int(os.environ.get("AI_TOOLCALL_NUM_PREDICT", "1536"))
+
+# Maximum tool calls kept from one plan. Bounds both the planner cap and the
+# structured-output grammar, which must agree or the grammar allows a call the
+# planner would silently drop.
+AI_MAX_TOOL_CALLS = int(os.environ.get("AI_MAX_TOOL_CALLS", "4"))
+
+# Playlist naming asks the model for several one-word candidates in a single call and
+# keeps the first one that passes validation. Resolving a rejected concept inside one
+# response is far cheaper than a second round trip, and it defuses the name-collision
+# rule that otherwise burns every retry once many playlists are already named.
+AI_NAMING_CANDIDATES = int(os.environ.get("AI_NAMING_CANDIDATES", "10"))
+# Number of multi-candidate rounds before naming gives up on the AI and composes a name
+# locally. Each extra round re-prompts with every concept rejected so far.
+# Naming deliberately sends no output-token cap: thinking models spend tokens on thought
+# parts first, and a low cap makes them return nothing at all.
+AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
+
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
 # RQ worker tuning: restart-after-N-jobs (memory-leak guard) and log level.
 RQ_MAX_JOBS = int(os.getenv('RQ_MAX_JOBS', '50'))
 RQ_MAX_JOBS_HIGH = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
 RQ_LOGGING_LEVEL = os.getenv('RQ_LOGGING_LEVEL', 'INFO').upper()
+# Seconds a 'started' RQ job's heartbeat may go stale before the janitor treats the
+# job as abandoned (worker died mid-run) and requeues it within its retry budget.
+RQ_JOB_ABANDONED_SECONDS = int(os.getenv('RQ_JOB_ABANDONED_SECONDS', '300'))
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
@@ -900,6 +932,11 @@ CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "Tr
 # Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
 # run. Editable in the setup wizard (advanced section) and applied on the next analysis.
 CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "1000"))
+# Seconds between progress writes (and cancellation polls) inside the backfill loop. The loop
+# downloads and fingerprints one track at a time, so a 1000-album run is hours of work: without
+# a periodic write the task row's timestamp freezes, the UI looks hung at 99%, Cancel is ignored,
+# and the janitor sees a stale row it must not reap.
+CHROMAPRINT_BACKFILL_REPORT_SECONDS = int(os.getenv("CHROMAPRINT_BACKFILL_REPORT_SECONDS", "15"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
 # Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.

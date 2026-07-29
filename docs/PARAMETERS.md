@@ -179,7 +179,12 @@ These are the default parameters used when launching analysis or clustering task
 | `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OpenAI` or `NONE`.                           | `NONE`                                 |
 | `AI_REQUEST_TIMEOUT_SECONDS`                | Timeout (in seconds) for AI API requests. Increase for slower hardware or larger models.  | `300`                                  |
 | `MAX_SONGS_IN_AI_PROMPT`                    | Max songs included in an AI naming prompt; larger playlists use only the first N songs.   | `25`                                   |
-| `AI_TOOLCALL_TEMPERATURE`                   | Sampling temperature for the tool-calling (playlist planning) LLM request. Qwen3-family models warn against greedy decoding, so do not set this to `0`. | `0.7`             |
+| `AI_TOOLCALL_TEMPERATURE`                   | Sampling temperature for the tool-calling (playlist planning) LLM request. Kept low so the same request picks the same tools every time. Qwen3-family models warn against greedy decoding, so do not set this to `0`. | `0.2`             |
+| `AI_TOOLCALL_TOP_P`                         | Nucleus sampling cutoff for the tool-calling request.                                     | `0.8`                                  |
+| `AI_TOOLCALL_TOP_K`                         | Top-k sampling cutoff for the tool-calling request.                                       | `20`                                   |
+| `AI_TOOLCALL_MIN_P`                         | Minimum token probability for the tool-calling request.                                   | `0.0`                                  |
+| `AI_TOOLCALL_NUM_PREDICT`                   | Max tokens the tool-calling request may generate.                                         | `1536`                                 |
+| `AI_MAX_TOOL_CALLS`                         | Max tool calls kept from one Instant Playlist plan (bounds both the planner and the output grammar). | `4`                          |
 | `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
 | `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample on every run, including the first run of a batch (0.0 to 1.0; limited when a genre has no unsampled alternatives). | `0.2`                                  |
 | `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`    | Minimum number of songs to target per stratified genre during sampling.                   | `100`                                  |

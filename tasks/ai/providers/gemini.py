@@ -15,6 +15,7 @@ list of tool calls.
 
 Main Features:
 * call_with_tools forces function_calling_config mode ANY and flattens the SDK function_call parts into the shared {"name","arguments"} shape.
+* generate_text strips the returned text and retries an empty response, which thinking models produce when the token budget goes to thought parts.
 * Applies an optional pre-call delay (env GEMINI_API_CALL_DELAY_SECONDS, default 7s) for rate limits; on any SDK error returns a generic "AI service unavailable" string, never a traceback.
 """
 
@@ -24,6 +25,8 @@ import time
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+EMPTY_RESPONSE_RETRIES = 3
 
 
 def generate_text(
@@ -41,33 +44,42 @@ def generate_text(
     try:
         import google.genai as genai
 
-        if not skip_delay:
-            gemini_call_delay = int(os.environ.get("GEMINI_API_CALL_DELAY_SECONDS", "7"))
-            if gemini_call_delay > 0:
-                logger.debug(
-                    "Waiting for %ss before Gemini API call to respect rate limits.",
-                    gemini_call_delay,
-                )
-                time.sleep(gemini_call_delay)
-
-        client = genai.Client(api_key=api_key)
-        logger.debug("Starting API call for model '%s'.", model_name)
-
         temp = 0.9 if temperature is None else float(temperature)
         cfg_kwargs = {"temperature": temp}
         if max_tokens is not None:
             cfg_kwargs["max_output_tokens"] = int(max_tokens)
-        response = client.models.generate_content(
-            model=model_name,
-            contents=full_prompt,
-            config=genai.types.GenerateContentConfig(**cfg_kwargs),
-        )
 
-        if response and hasattr(response, "text") and response.text:
-            extracted_text = response.text
-            logger.info("Gemini API returned: '%s'", extracted_text)
-            return extracted_text
-        logger.warning("Gemini returned no content. Raw response: %s", response)
+        client = None
+        for attempt in range(EMPTY_RESPONSE_RETRIES):
+            if not skip_delay:
+                gemini_call_delay = int(os.environ.get("GEMINI_API_CALL_DELAY_SECONDS", "7"))
+                if gemini_call_delay > 0:
+                    logger.debug(
+                        "Waiting for %ss before Gemini API call to respect rate limits.",
+                        gemini_call_delay,
+                    )
+                    time.sleep(gemini_call_delay)
+
+            if client is None:
+                client = genai.Client(api_key=api_key)
+            logger.debug("Starting API call for model '%s'.", model_name)
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=full_prompt,
+                config=genai.types.GenerateContentConfig(**cfg_kwargs),
+            )
+
+            extracted_text = (getattr(response, "text", None) or "").strip()
+            if extracted_text:
+                logger.info("Gemini API returned: '%s'", extracted_text)
+                return extracted_text
+            logger.warning(
+                "Gemini returned no content (attempt %d/%d).",
+                attempt + 1,
+                EMPTY_RESPONSE_RETRIES,
+            )
+
         return "Error: Gemini returned no content."
 
     except Exception:
