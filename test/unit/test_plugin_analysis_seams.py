@@ -452,6 +452,14 @@ class TestRegisterAnalysisProvider:
         }
         assert mgr.get_analysis_provider('asr') is backend
         assert 'returned None' in caplog.text
+        winner_logs = [r.getMessage() for r in caplog.records if 'the one in use' in r.getMessage()]
+        assert winner_logs == ["Plugin b: its analysis provider for 'asr' is the one in use"]
+
+    def test_single_provider_resolution_does_not_log_a_winner(self, caplog):
+        mgr = manager.PluginManager()
+        mgr.records = {'p': _record('p', analysis_providers={'asr': object()})}
+        assert mgr.get_analysis_provider('asr') is not None
+        assert 'the one in use' not in caplog.text
 
     def test_none_result_is_not_cached(self):
         mgr = manager.PluginManager()
@@ -502,6 +510,22 @@ class TestRegisterAnalysisProvider:
 
     def test_owner_is_none_when_nothing_resolved(self):
         mgr = manager.PluginManager()
+        assert mgr.analysis_provider_owner('asr') is None
+
+    def test_owner_cleared_when_an_uncached_provider_stops_resolving(self):
+        mgr = manager.PluginManager()
+        backend = object()
+        results = [backend, None]
+
+        def factory():
+            return results.pop(0)
+
+        mgr.records = {'p': _record('p', analysis_providers={
+            'asr': {'factory': factory, 'cache': False},
+        })}
+        assert mgr.get_analysis_provider('asr') is backend
+        assert mgr.analysis_provider_owner('asr') == 'p'
+        assert mgr.get_analysis_provider('asr') is None
         assert mgr.analysis_provider_owner('asr') is None
 
 

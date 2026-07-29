@@ -887,8 +887,8 @@ class PluginManager:
         ]
         if len(owners) > 1:
             logger.warning(
-                'Plugins %s all provide the analysis component %r; using %s',
-                ', '.join(owners), component, owners[0],
+                'Plugins %s all provide the analysis component %r; trying them in that order',
+                ', '.join(owners), component,
             )
         for plugin_id in owners:
             entry = _analysis_provider_entry(
@@ -914,9 +914,15 @@ class PluginManager:
                 )
                 continue
             self._analysis_provider_owners[component] = plugin_id
+            if len(owners) > 1:
+                logger.warning(
+                    'Plugin %s: its analysis provider for %r is the one in use',
+                    plugin_id, component,
+                )
             if entry['cache']:
                 self._analysis_provider_cache[component] = provider
             return provider
+        self._analysis_provider_owners.pop(component, None)
         return None
 
     def analysis_provider_owner(self, component):

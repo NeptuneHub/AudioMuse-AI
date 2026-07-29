@@ -1002,6 +1002,12 @@ def _asr_confidence(transcription: Dict[str, object]) -> Optional[float]:
     if math.isnan(confidence):
         logger.warning('ASR backend returned a NaN avg_logprob - treating confidence as unknown')
         return None
+    if confidence >= 0:
+        logger.warning(
+            'ASR backend returned avg_logprob %s but a real mean log-probability is negative - '
+            'the confidence gate cannot drop this transcript',
+            confidence,
+        )
     return confidence
 
 
@@ -1150,7 +1156,7 @@ def analyze_lyrics(
     used_seconds = 0.0
     detected_lang = 'en'
     asr_lang = 'en'
-    asr_avg_logprob = 0.0
+    asr_avg_logprob = None
     whisper_raw_len = 0
 
     normalized_moods, vocal_prior = _compute_vocal_prior(top_moods)

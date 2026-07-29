@@ -285,6 +285,21 @@ class TestAsrConfidence:
     def test_overflowing_value_is_unknown_not_fatal(self, lt):
         assert lt._asr_confidence({'avg_logprob': 10 ** 400}) is None
 
+    def test_neg_inf_is_the_builtin_worst_confidence_sentinel_and_stays_real(self, lt):
+        assert lt._asr_confidence({'avg_logprob': float('-inf')}) == float('-inf')
+
+    def test_pos_inf_stays_real_but_warns_as_impossible(self, lt, caplog):
+        assert lt._asr_confidence({'avg_logprob': float('inf')}) == float('inf')
+        assert 'cannot drop this transcript' in caplog.text
+
+    def test_zero_the_documented_forbidden_placeholder_is_kept_but_warned(self, lt, caplog):
+        assert lt._asr_confidence({'avg_logprob': 0.0}) == 0.0
+        assert 'cannot drop this transcript' in caplog.text
+
+    def test_good_negative_confidence_does_not_warn(self, lt, caplog):
+        assert lt._asr_confidence({'avg_logprob': -0.3}) == pytest.approx(-0.3)
+        assert 'cannot drop this transcript' not in caplog.text
+
     def test_postprocess_keeps_a_transcript_without_confidence(self, lt):
         # Long enough to clear the minimum-length quality check on its own.
         text = (
@@ -315,6 +330,9 @@ class TestAsrShouldDrop:
 
     def test_keeps_good_confidence(self, lt):
         assert self._drop(lt, 'en', lt.ASR_MIN_AVG_LOGPROB + 0.1) is False
+
+    def test_neg_inf_confidence_still_drops_it_is_not_an_unknown(self, lt):
+        assert self._drop(lt, 'en', float('-inf')) is True
 
     def test_unknown_confidence_skips_the_gate(self, lt):
         # The whole point: a backend that reports no confidence must not lose
