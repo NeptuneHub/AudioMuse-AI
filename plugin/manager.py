@@ -190,6 +190,13 @@ _PLUGIN_ROLES = ('flask', 'worker')
 _LOADED_STATUSES = ('ok', 'deps_failed')
 
 
+def _analysis_provider_entry(value):
+    """Normalize a stored analysis provider to ``{'factory': ..., 'cache': bool}``."""
+    if isinstance(value, dict) and 'factory' in value:
+        return {'factory': value['factory'], 'cache': bool(value.get('cache', True))}
+    return {'factory': value, 'cache': True}
+
+
 def _plugin_targets(manifest):
     raw = (manifest or {}).get('targets')
     if not raw:
@@ -272,6 +279,8 @@ class PluginManager:
         self._boot_snapshot = None
         self._runtime_dirty = False
         self.last_pip_error = None
+        self._analysis_provider_cache = {}
+        self._analysis_provider_owners = {}
 
     def enabled(self):
         return bool(config.PLUGINS_ENABLED)
@@ -309,6 +318,8 @@ class PluginManager:
         return _role_target(role) in _plugin_targets(record.get('manifest'))
 
     def sync(self, conn=None, role=None):
+        self._analysis_provider_cache = {}
+        self._analysis_provider_owners = {}
         if not self.enabled():
             self.records = {}
             return
@@ -324,6 +335,7 @@ class PluginManager:
                 record['settings_endpoint'] = None
                 record['cron_tasks'] = {}
                 record['onnx_providers'] = []
+                record['analysis_providers'] = {}
                 record['song_analyzed_hooks'] = []
                 record['error'] = None
                 records[row['id']] = record
@@ -600,6 +612,7 @@ class PluginManager:
                     record['settings_endpoint'] = ctx.settings_endpoint
                     record['cron_tasks'] = {**(ctx.tasks or {}), **(ctx.cron_tasks or {})}
                     record['onnx_providers'] = ctx.onnx_providers
+                    record['analysis_providers'] = ctx.analysis_providers
                     record['song_analyzed_hooks'] = ctx.song_analyzed_hooks
                     if role == 'web' and flask_app is not None and ctx.blueprint is not None:
                         if ctx.blueprint.name != plugin_id:
@@ -853,6 +866,67 @@ class PluginManager:
             if record.get('load_status') in _LOADED_STATUSES:
                 providers.extend(record.get('onnx_providers', []))
         return providers
+
+    def get_analysis_provider(self, component):
+        """Return the first loaded plugin's replacement for ``component``, or None.
+
+        Resolves ``factory`` to the actual implementation (calling it when it is a
+        zero-arg callable) and reuses that result unless the plugin registered with
+        ``cache=False``, so a model is not rebuilt on every call. Used by core to
+        let a plugin swap out a whole analysis step such as the ASR/Whisper backend.
+
+        A plugin whose factory raises or returns None is logged by id and skipped,
+        so core falls back to the built-in component with a trace of why.
+        """
+        if component in self._analysis_provider_cache:
+            return self._analysis_provider_cache[component]
+        owners = [
+            plugin_id for plugin_id, record in self.records.items()
+            if record.get('load_status') in _LOADED_STATUSES
+            and record.get('analysis_providers', {}).get(component) is not None
+        ]
+        if len(owners) > 1:
+            logger.warning(
+                'Plugins %s all provide the analysis component %r; trying them in that order',
+                ', '.join(owners), component,
+            )
+        for plugin_id in owners:
+            entry = _analysis_provider_entry(
+                self.records[plugin_id]['analysis_providers'][component]
+            )
+            try:
+                factory = entry['factory']
+                provider = factory() if callable(factory) else factory
+            except Exception:
+                logger.exception(
+                    'Plugin %s: its analysis provider for %r failed to resolve; '
+                    'falling back to the next provider or the built-in one',
+                    plugin_id, component,
+                )
+                continue
+            if provider is None:
+                # A factory returning None is a plugin opting out at runtime (no
+                # GPU found, say). Say so, or the built-in silently stays in use.
+                logger.warning(
+                    'Plugin %s: its analysis provider factory for %r returned None; '
+                    'falling back to the next provider or the built-in one',
+                    plugin_id, component,
+                )
+                continue
+            self._analysis_provider_owners[component] = plugin_id
+            if len(owners) > 1:
+                logger.warning(
+                    'Plugin %s: its analysis provider for %r is the one in use',
+                    plugin_id, component,
+                )
+            if entry['cache']:
+                self._analysis_provider_cache[component] = provider
+            return provider
+        self._analysis_provider_owners.pop(component, None)
+        return None
+
+    def analysis_provider_owner(self, component):
+        return self._analysis_provider_owners.get(component)
 
     def song_analyzed_hooks(self):
         hooks = []

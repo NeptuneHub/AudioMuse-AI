@@ -50,6 +50,12 @@ logger = logging.getLogger('audiomuse.plugin')
 _ID_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
 _NAME_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
 
+# Analysis steps a plugin may replace wholesale with register_analysis_provider.
+ANALYSIS_COMPONENTS = frozenset({'asr'})
+
+# Where a plugin provider goes in the ONNX chain, see register_onnx_provider.
+ONNX_POSITIONS = frozenset({'before_cuda', 'before_cpu'})
+
 __all__ = [
     'PluginContext', 'config', 'logger', 'get_db', 'save_task_status',
     'get_score_data_by_ids', 'get_tracks_by_ids', 'get_setting', 'set_setting',
@@ -183,6 +189,19 @@ def use_server(server_id):
     return ms_registry.bind({'server_id': server_id})
 
 
+def _model_scope(value):
+    """Normalize an only_models/exclude_models argument to a list or None.
+
+    A single label is accepted as a plain string; without this ``'musicnn'``
+    would become ``['m', 'u', 's', ...]`` and silently match nothing.
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        return [value]
+    return list(value)
+
+
 class PluginContext:
     """Registration sink passed to a plugin's ``register(ctx)``.
 
@@ -202,6 +221,7 @@ class PluginContext:
         self.cron_tasks = {}
         self.tasks = {}
         self.onnx_providers = []
+        self.analysis_providers = {}
         self.flask_start = []
         self.worker_start = []
         self.song_analyzed_hooks = []
@@ -227,8 +247,32 @@ class PluginContext:
     def add_cron_task(self, name, func, queue='default'):
         self.cron_tasks[name] = {'dotted': dotted_path(func), 'queue': queue}
 
-    def register_onnx_provider(self, name, options=None, position='before_cpu'):
-        self.onnx_providers.append({'name': name, 'options': options or {}, 'position': position})
+    def register_onnx_provider(self, name, options=None, position='before_cpu',
+                               only_models=None, exclude_models=None,
+                               needs_static_shapes=False):
+        """Offer an extra ONNX Runtime execution provider for the analysis sessions.
+
+        ``only_models``/``exclude_models`` scope the provider to specific session
+        labels (a single label may be given as a plain string). ``position`` is
+        ``'before_cpu'`` (the default) or ``'before_cuda'``. Set
+        ``needs_static_shapes`` when the provider's graph compiler cannot handle
+        symbolic dimensions, so core pins them before building the session.
+        """
+        if position not in ONNX_POSITIONS:
+            logger.warning(
+                "Plugin %s registered ONNX provider %s with unknown position %r; "
+                "using 'before_cpu'. Valid positions: %s",
+                self.plugin_id, name, position, sorted(ONNX_POSITIONS),
+            )
+            position = 'before_cpu'
+        self.onnx_providers.append({
+            'name': name,
+            'options': options or {},
+            'position': position,
+            'only_models': _model_scope(only_models),
+            'exclude_models': _model_scope(exclude_models),
+            'needs_static_shapes': bool(needs_static_shapes),
+        })
 
     def on_flask_start(self, func):
         self.flask_start.append(func)
@@ -251,9 +295,40 @@ class PluginContext:
     def on_install(self, func):
         self.install_hooks.append(func)
 
-    def register_analysis_provider(self, *args, **kwargs):
-        logger.info(
-            'Plugin %s called register_analysis_provider; alternative analysis models '
-            'are a forward seam and are not wired in this version.',
-            self.plugin_id,
-        )
+    def register_analysis_provider(self, component, factory, cache=True):
+        """Replace a whole analysis component with a plugin-supplied implementation.
+
+        Some accelerators need more than a different ONNX execution provider: they
+        need a different library entirely. MIGraphX, for instance, cannot run the
+        ONNX Whisper decoder at all, so an AMD plugin swaps in faster-whisper.
+
+        ``component`` names the step to replace, one of ANALYSIS_COMPONENTS.
+        ``factory`` is the replacement module/object, or a zero-arg callable
+        returning one. It must match the built-in module's public surface; for
+        ``asr`` that is ``load_whisper_model()``, ``transcribe(wav, sr,
+        language=None)``, ``is_loaded()`` and ``unload()``, where ``transcribe``
+        returns ``{'text': ..., 'language': ..., 'avg_logprob': ...}`` - the last
+        one gates transcript quality and must be left out, not faked, when the
+        backend cannot report a confidence. Core consults the registered provider
+        first and falls back to the built-in when no plugin registered one, when
+        the factory fails or returns None, or when the replacement is missing part
+        of that surface.
+
+        A callable ``factory`` is resolved once and the result reused, matching the
+        built-in modules, which stay loaded for a whole album and are freed at its
+        end. Pass ``cache=False`` to be called for every use instead; then the
+        plugin owns unloading whatever it hands out.
+        """
+        if component not in ANALYSIS_COMPONENTS:
+            logger.warning(
+                'Plugin %s registered an analysis provider for unknown component %r; '
+                'ignoring it. Known components: %s',
+                self.plugin_id, component, sorted(ANALYSIS_COMPONENTS),
+            )
+            return
+        if component in self.analysis_providers:
+            logger.warning(
+                'Plugin %s registered two analysis providers for %r; keeping the last one',
+                self.plugin_id, component,
+            )
+        self.analysis_providers[component] = {'factory': factory, 'cache': bool(cache)}

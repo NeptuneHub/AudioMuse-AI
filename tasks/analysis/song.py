@@ -104,11 +104,60 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
-def resolve_providers(allow_coreml=False, cuda_options=None):
+# The session labels a plugin can scope an ONNX provider to. Every session that
+# calls resolve_providers passes one of these, so anything else in a plugin's
+# only_models/exclude_models is a typo that would silently match nothing.
+MODEL_LABELS = frozenset({
+    'musicnn',
+    'clap',
+    'clap_text',
+    'whisper_encoder',
+    'whisper_decoder',
+    'gte',
+    'silero_vad',
+})
+
+def _scoped_labels(provider, key):
+    """Return a provider's model scope as a list, warning about unknown labels."""
+    value = provider.get(key)
+    if not value:
+        return None
+    labels = [value] if isinstance(value, str) else list(value)
+    unknown = [name for name in labels if name not in MODEL_LABELS]
+    if unknown:
+        logger.warning(
+            "ONNX provider %s: unknown %s %s - known model labels are %s",
+            provider.get('name'), key, unknown, sorted(MODEL_LABELS),
+        )
+    return labels
+
+
+def _add_plugin_provider(chain, provider, entry):
+    position = provider.get('position') or 'before_cpu'
+    if position == 'before_cuda':
+        chain.insert(0, entry)
+        return
+    if position != 'before_cpu':
+        logger.warning(
+            "ONNX provider %s: unknown position %r - using 'before_cpu'",
+            provider.get('name'), position,
+        )
+    chain.append(entry)
+
+
+def resolve_providers(allow_coreml=False, cuda_options=None, label=None,
+                      cpu_only_default=False):
+    """Build the ONNX provider chain for one session.
+
+    ``label`` names the model (see MODEL_LABELS) so a plugin can offer its
+    accelerator for only the graphs it can compile. ``cpu_only_default`` marks a
+    session that core keeps on CPU: the built-in GPU providers are skipped and a
+    plugin provider is used only when it names the label in ``only_models``.
+    """
     available = ort.get_available_providers()
     chain = []
 
-    if 'CUDAExecutionProvider' in available:
+    if not cpu_only_default and 'CUDAExecutionProvider' in available:
         chain.append(
             (
                 'CUDAExecutionProvider',
@@ -122,7 +171,7 @@ def resolve_providers(allow_coreml=False, cuda_options=None):
             )
         )
 
-    if allow_coreml and 'CoreMLExecutionProvider' in available:
+    if not cpu_only_default and allow_coreml and 'CoreMLExecutionProvider' in available:
         chain.append(
             (
                 'CoreMLExecutionProvider',
@@ -135,11 +184,23 @@ def resolve_providers(allow_coreml=False, cuda_options=None):
 
     for provider in _plugin_onnx_providers():
         name = provider.get('name')
-        if name and name in available and name not in [p[0] for p in chain]:
-            chain.append((name, provider.get('options') or {}))
+        if not name or name not in available or name in [p[0] for p in chain]:
+            continue
+        # Providers can be scoped to specific models by their session label, so a
+        # plugin can offer an accelerator for the graphs it handles
+        only = _scoped_labels(provider, 'only_models')
+        exclude = _scoped_labels(provider, 'exclude_models')
+        if only and label not in only:
+            continue
+        if exclude and label in exclude:
+            continue
+        # A CPU-by-default session is opt-in: the plugin has to name it.
+        if cpu_only_default and not only:
+            continue
+        _add_plugin_provider(chain, provider, (name, provider.get('options') or {}))
 
     chain.append(('CPUExecutionProvider', {}))
-    logger.info("ONNX provider chain: %s", [p[0] for p in chain])
+    logger.info("ONNX provider chain for %s: %s", label or 'unlabelled', [p[0] for p in chain])
     return chain
 
 
@@ -209,8 +270,10 @@ def _default_sess_options():
     return opts
 
 
-def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
-    opts = provider_options or resolve_providers()
+def create_onnx_session(
+    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False
+):
+    opts = provider_options or resolve_providers(allow_coreml=allow_coreml, label=label)
     if sess_options is None:
         sess_options = _default_sess_options()
     try:
@@ -230,7 +293,7 @@ def create_onnx_session(model_path, provider_options=None, label="", sess_option
 
 
 def load_musicnn_sessions(model_paths):
-    opts = resolve_providers(allow_coreml=False)
+    opts = resolve_providers(allow_coreml=False, label='musicnn')
     try:
         sessions = {n: create_onnx_session(p, opts, label=n) for n, p in model_paths.items()}
         logger.info(f"OK Loaded {len(sessions)} MusiCNN models for album reuse")
@@ -414,7 +477,7 @@ def _patches_for_track(audio, sr, name):
 def _sessions_for_track(onnx_sessions, model_paths):
     if onnx_sessions:
         return onnx_sessions['embedding'], onnx_sessions['prediction'], False
-    provider_options = resolve_providers()
+    provider_options = resolve_providers(label='musicnn')
     embedding_sess = create_onnx_session(
         model_paths['embedding'], provider_options, label='embedding'
     )
