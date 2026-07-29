@@ -280,6 +280,7 @@ class PluginManager:
         self._runtime_dirty = False
         self.last_pip_error = None
         self._analysis_provider_cache = {}
+        self._analysis_provider_owners = {}
 
     def enabled(self):
         return bool(config.PLUGINS_ENABLED)
@@ -318,6 +319,7 @@ class PluginManager:
 
     def sync(self, conn=None, role=None):
         self._analysis_provider_cache = {}
+        self._analysis_provider_owners = {}
         if not self.enabled():
             self.records = {}
             return
@@ -911,10 +913,14 @@ class PluginManager:
                     plugin_id, component,
                 )
                 continue
+            self._analysis_provider_owners[component] = plugin_id
             if entry['cache']:
                 self._analysis_provider_cache[component] = provider
             return provider
         return None
+
+    def analysis_provider_owner(self, component):
+        return self._analysis_provider_owners.get(component)
 
     def song_analyzed_hooks(self):
         hooks = []

@@ -25,6 +25,8 @@ Main Features:
 * Consults the loaded plugins for an 'asr' analysis provider before the built-in
 * Falls back to the built-in whisper_onnx backend when no plugin registered one,
   or when the replacement is missing part of the required surface
+* Rejection of an incomplete replacement is warned on every resolution, naming
+  the owning plugin so the user knows which one to fix or remove
 * Swallows any plugin-resolution error so a broken plugin never breaks lyrics
 """
 
@@ -55,6 +57,15 @@ def _plugin_asr_backend():
         return None
 
 
+def _provider_owner():
+    try:
+        from plugin.manager import plugin_manager
+
+        return plugin_manager.analysis_provider_owner('asr')
+    except Exception:
+        return None
+
+
 # Rejects a backend that cannot stand in for whisper_onnx. A missing method would
 # surface far from here: a broken is_loaded makes is_lyrics_loaded() report True
 # forever, so every album pays a full memory cleanup for nothing, and a broken
@@ -66,7 +77,7 @@ def _has_required_surface(backend):
     if not missing:
         return True
     logger.warning(
-        'Plugin ASR backend %r is missing %s; using the built-in whisper instead',
-        backend, ', '.join(missing),
+        'Plugin %s: its ASR backend %r is missing %s; using the built-in whisper instead',
+        _provider_owner() or 'unknown', backend, ', '.join(missing),
     )
     return False

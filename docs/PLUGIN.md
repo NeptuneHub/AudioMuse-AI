@@ -474,7 +474,7 @@ And the methods on the `ctx` object in `register(ctx)`:
 
 ### Offer an ONNX execution provider
 
-`register_onnx_provider` adds your provider to the chain AudioMuse-AI builds for every analysis model. `position` is `before_cpu` (the default) or `before_cuda` when your provider should win over CUDA. Set `needs_static_shapes=True` if your graph compiler cannot handle symbolic dimensions, so core pins them before it builds the session; today that only affects the CLAP audio model, the one analysis model with a symbolic axis.
+`register_onnx_provider` adds your provider to the chain AudioMuse-AI builds for every analysis model. `position` is `before_cpu` (the default) or `before_cuda` when your provider should win over CUDA. Set `needs_static_shapes=True` if your graph compiler cannot handle symbolic dimensions, so core pins them before it builds the session; today core pins them only for the CLAP audio model. Other models (the GTE embedder and the Whisper decoder, for example) also carry symbolic axes but are never pinned, so a provider that cannot compile them must be scoped away from those models with `only_models`/`exclude_models`.
 
 Your provider must already exist in the `onnxruntime` build of the image you run, because core only offers providers that `onnxruntime.get_available_providers()` reports. A plugin cannot add one by pip-installing into its own `_lib`: execution providers are compiled into `onnxruntime` itself, so a provider that needs a different build needs a different image. A provider core has already put in the chain for that session (`CUDAExecutionProvider`, or `CoreMLExecutionProvider` on macOS) wins: your entry for that same name is dropped and core's own options are kept, so use `position` to order yourself around them instead of re-registering them.
 
@@ -507,7 +507,7 @@ def register(ctx):
 
 Sometimes a different execution provider is not enough and the step needs a different library altogether: some execution providers cannot run the ONNX Whisper decoder at all, so a plugin can swap in faster-whisper instead. `register_analysis_provider(component, factory)` hands core a full replacement for one step. The only component today is `asr`, the Whisper backend used by the lyrics pipeline.
 
-Your replacement must expose all four methods below. Core checks for them when it resolves your plugin and falls back to the built-in backend - with a warning naming what is missing - if any is absent.
+Your replacement must expose all four methods below. Core checks for them when it resolves your plugin and falls back to the built-in backend - with a warning naming your plugin and what is missing - if any is absent.
 
 | Method | Must return                                                                                                                                                                                         |
 |---|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -516,7 +516,7 @@ Your replacement must expose all four methods below. Core checks for them when i
 | `is_loaded()` | `True` while your model is in memory. Core uses it to decide whether a memory cleanup is needed after an album.                                                                                     |
 | `unload()` | Nothing. Free the model and its memory.                                                                                                                                                             |
 
-`avg_logprob` is the one that quietly matters: core drops a transcript whose confidence is below `LYRICS_ASR_MIN_AVG_LOGPROB` (and below `LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB` for non-English) and treats the song as instrumental. Return the real value if your backend has one. If it does not, leave the key out entirely - core then skips the confidence check instead of reading a missing value as the worst possible score. Do not return a placeholder like `0.0`, which disables the check without saying so.
+`avg_logprob` is the one that quietly matters: core drops a transcript whose confidence is below `LYRICS_ASR_MIN_AVG_LOGPROB` (and below `LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB` for non-English) and treats the song as instrumental. Return the real value if your backend has one. If it does not, leave the key out entirely - core then skips the confidence check instead of reading a missing value as the worst possible score. Do not return a placeholder like `0.0`, which disables the check without saying so. An explicit `None` or a NaN is treated like a missing key.
 
 ```python
 def register(ctx):

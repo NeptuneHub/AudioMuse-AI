@@ -278,6 +278,13 @@ class TestAsrConfidence:
         assert lt._asr_confidence({'avg_logprob': 'very good'}) is None
         assert 'non-numeric avg_logprob' in caplog.text
 
+    def test_nan_is_unknown_and_warns_instead_of_disabling_the_gate(self, lt, caplog):
+        assert lt._asr_confidence({'avg_logprob': float('nan')}) is None
+        assert 'NaN avg_logprob' in caplog.text
+
+    def test_overflowing_value_is_unknown_not_fatal(self, lt):
+        assert lt._asr_confidence({'avg_logprob': 10 ** 400}) is None
+
     def test_postprocess_keeps_a_transcript_without_confidence(self, lt):
         # Long enough to clear the minimum-length quality check on its own.
         text = (

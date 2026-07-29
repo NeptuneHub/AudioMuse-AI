@@ -466,6 +466,44 @@ class TestRegisterAnalysisProvider:
         # None means "not this time", so a later call asks the plugin again.
         assert mgr.get_analysis_provider('asr') is backend
 
+    def test_broken_factory_reinvoked_and_logged_on_every_call(self, caplog):
+        mgr = manager.PluginManager()
+        calls = []
+
+        def boom():
+            calls.append(1)
+            raise RuntimeError('backend import failed')
+
+        mgr.records = {'p': _record('p', analysis_providers={'asr': boom})}
+        assert mgr.get_analysis_provider('asr') is None
+        assert mgr.get_analysis_provider('asr') is None
+        assert len(calls) == 2
+        assert len([r for r in caplog.records if 'failed to resolve' in r.getMessage()]) == 2
+
+    def test_none_factory_logged_on_every_call(self, caplog):
+        mgr = manager.PluginManager()
+        mgr.records = {'p': _record('p', analysis_providers={'asr': lambda: None})}
+        assert mgr.get_analysis_provider('asr') is None
+        assert mgr.get_analysis_provider('asr') is None
+        assert len([r for r in caplog.records if 'returned None' in r.getMessage()]) == 2
+
+    def test_sync_resets_the_owner(self, monkeypatch):
+        mgr = manager.PluginManager()
+        mgr._analysis_provider_owners = {'asr': 'p'}
+        monkeypatch.setattr(mgr, 'enabled', lambda: False)
+        mgr.sync()
+        assert mgr._analysis_provider_owners == {}
+
+    def test_owner_of_the_resolved_provider_is_exposed(self):
+        mgr = manager.PluginManager()
+        mgr.records = {'gpu_plugin': _record('gpu_plugin', analysis_providers={'asr': object()})}
+        assert mgr.get_analysis_provider('asr') is not None
+        assert mgr.analysis_provider_owner('asr') == 'gpu_plugin'
+
+    def test_owner_is_none_when_nothing_resolved(self):
+        mgr = manager.PluginManager()
+        assert mgr.analysis_provider_owner('asr') is None
+
 
 class TestGetAsrBackend:
     @pytest.fixture
@@ -511,6 +549,29 @@ class TestGetAsrBackend:
         stub = self._stub_builtin(monkeypatch)
         assert asr.get_asr_backend() is stub
         assert missing in caplog.text
+
+    def test_incomplete_override_warning_names_the_owning_plugin(self, asr, monkeypatch, caplog):
+        backend = self._backend(unload=None)
+        monkeypatch.setattr(
+            manager.plugin_manager, 'get_analysis_provider', lambda component: backend
+        )
+        monkeypatch.setattr(
+            manager.plugin_manager, 'analysis_provider_owner', lambda component: 'gpu_plugin'
+        )
+        stub = self._stub_builtin(monkeypatch)
+        assert asr.get_asr_backend() is stub
+        assert 'gpu_plugin' in caplog.text
+        assert 'unload' in caplog.text
+
+    def test_incomplete_override_warns_on_every_call(self, asr, monkeypatch, caplog):
+        backend = self._backend(unload=None)
+        monkeypatch.setattr(
+            manager.plugin_manager, 'get_analysis_provider', lambda component: backend
+        )
+        stub = self._stub_builtin(monkeypatch)
+        assert asr.get_asr_backend() is stub
+        assert asr.get_asr_backend() is stub
+        assert len([r for r in caplog.records if 'is missing' in r.getMessage()]) == 2
 
     def test_non_callable_attribute_is_not_enough(self, asr, monkeypatch):
         backend = self._backend(is_loaded=True)

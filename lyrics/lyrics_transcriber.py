@@ -28,6 +28,7 @@ Main Features:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import signal
@@ -994,10 +995,14 @@ def _asr_confidence(transcription: Dict[str, object]) -> Optional[float]:
     if value is None:
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        confidence = float(value)
+    except (TypeError, ValueError, OverflowError):
         logger.warning('ASR backend returned a non-numeric avg_logprob %r - ignoring it', value)
         return None
+    if math.isnan(confidence):
+        logger.warning('ASR backend returned a NaN avg_logprob - treating confidence as unknown')
+        return None
+    return confidence
 
 
 def _postprocess_asr(
