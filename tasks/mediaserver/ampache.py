@@ -8,6 +8,11 @@
 
 """Ampache media-server backend, speaking Ampache's own JSON API.
 
+Requires Ampache API 8 or newer: album browsing depends on the catalogue id being
+present on album objects and on the ``cond`` browse filter. test_connection warns
+when a server reports an older API rather than letting an analysis quietly find
+nothing.
+
 Ampache also serves a Subsonic API, so it can be driven through the ``navidrome``
 backend instead. This backend exists because the native API answers in one call
 what Subsonic needs several for, and it returns fields Subsonic has no room for
@@ -57,6 +62,13 @@ from . import context
 from .helper import detect_download_extension, detect_path_format
 
 logger = logging.getLogger(__name__)
+
+_API_VERSION = '8.0.0'
+# Ampache 8 is the floor, not a preference: album browsing needs the catalogue id
+# on album objects and the `cond` browse filter, and older servers answer the same
+# calls differently (or not at all). test_connection warns when a server reports
+# an older API so the setup wizard says so instead of an analysis finding nothing.
+_MIN_API_MAJOR = 8
 
 _TOKEN_TTL_SECONDS = 3000
 _HANDSHAKE_TIMEOUT_SECONDS = 30
@@ -122,7 +134,7 @@ def _handshake(url, user, password, timeout=None):
 
     body = None
     for params in _handshake_attempts(user, password, timestamp, passphrase):
-        params['version'] = '8.0.0'
+        params['version'] = _API_VERSION
         try:
             response = requests.get(
                 f"{url}/server/json.server.php",
@@ -159,8 +171,46 @@ def _token(user_creds=None, force=False, timeout=None):
         return url, None, err
 
     with _token_lock:
-        _token_cache[key] = {'token': body['auth'], 'expires': time.time() + _TOKEN_TTL_SECONDS}
+        _token_cache[key] = {
+            'token': body['auth'],
+            'expires': time.time() + _TOKEN_TTL_SECONDS,
+            # The handshake already reports the API version, so the version gate
+            # needs no extra round trip.
+            'api': str(body.get('api') or body.get('version') or ''),
+        }
     return url, body['auth'], None
+
+
+def _api_major(version):
+    """Major API version from either the '8.0.0' or the packed '600000' form."""
+    text = str(version or '').strip()
+    if '.' in text:
+        head = text.split('.', 1)[0]
+        return int(head) if head.isdigit() else None
+    if text.isdigit():
+        return int(text[0]) if len(text) >= 4 else int(text)
+    return None
+
+
+def _cached_api_version(user_creds=None):
+    url, user, password = _creds(user_creds)
+    with _token_lock:
+        cached = _token_cache.get(_cache_key(url, user, password)) or {}
+    return cached.get('api')
+
+
+def _api_version_warning(user_creds=None):
+    """Warn when the server is older than the API this backend is written against."""
+    major = _api_major(_cached_api_version(user_creds))
+    if major is None or major >= _MIN_API_MAJOR:
+        return None
+    return (
+        f'This server reports Ampache API {major}, but AudioMuse-AI targets API '
+        f'{_MIN_API_MAJOR} or newer. Album browsing needs the catalogue id on album '
+        'objects and the "cond" browse filter that API 8 provides, so on an older '
+        'server an analysis can find no albums or ignore your library selection. '
+        'Upgrade Ampache before relying on this connection.'
+    )
 
 
 def _error_from_body(body):
@@ -193,7 +243,7 @@ def _close_quietly(response):
 
 
 def _fetch(url, action, token, params, stream, timeout):
-    all_params = {'action': action, 'auth': token, 'version': '8.0.0', **(params or {})}
+    all_params = {'action': action, 'auth': token, 'version': _API_VERSION, **(params or {})}
     try:
         response = requests.get(
             f"{url}/server/json.server.php",
@@ -371,17 +421,24 @@ def _in_catalogs(row, catalog_ids):
     return catalog_ids is None or str(row.get('catalog')) in catalog_ids
 
 
-def _in_catalogs_when_known(row, catalog_ids):
-    """Re-check a row's catalogue ONLY when the row actually reports one.
+def _filter_album_rows(rows, catalog_ids):
+    """Keep the rows inside the target catalogues; report a page that names none.
 
-    Songs carry ``catalog``; ALBUMS DO NOT (verified against Ampache 8, whose
-    album object has id/name/artist/year/songcount/type/genre/art/mbid and no
-    catalogue at all). Treating a missing field as "not in the catalogue" drops
-    every album and reports a successful analysis of nothing, so album discovery
-    relies on the server-side rule and this stays a belt-and-braces check for
-    servers that do include the field.
+    Ampache IGNORES a ``cond`` it does not understand instead of failing, so a
+    filtered browse can come back as the whole library. Re-checking each row's
+    catalogue id is therefore not belt-and-braces, it is what stops an ignored
+    filter from silently analysing everything. A page that reports no catalogue
+    ids at all means the server cannot express the filter (API 8 added the field),
+    which the caller surfaces rather than passing off as an empty library.
+
+    Returns ``(kept rows, server reported no catalogue ids)``.
     """
-    return not catalog_ids or 'catalog' not in row or str(row.get('catalog')) in catalog_ids
+    if not catalog_ids:
+        return rows, False
+    reported = [row for row in rows if 'catalog' in row]
+    if not reported:
+        return [], True
+    return [row for row in reported if str(row.get('catalog')) in catalog_ids], False
 
 
 def _should_retry_unfiltered(action, err, offset, collected):
@@ -488,9 +545,18 @@ def _collect_albums_for(base_params, catalog_ids, fetch_all, wanted, collected):
         rows = _album_page(base_params, offset, page, len(collected))
         if not rows:
             return
-        for row in rows:
-            if _in_catalogs_when_known(row, catalog_ids):
-                collected.setdefault(str(row.get('id')), _map_album(row))
+        kept, unreported = _filter_album_rows(rows, catalog_ids)
+        if unreported:
+            logger.error(
+                "AMPACHE REPORTED NO CATALOGUE IDS on its albums, so the library "
+                "filter %s cannot be verified and album discovery is stopping rather "
+                "than analysing the whole library. Ampache API %s or newer is "
+                "required for a library-filtered install.",
+                sorted(catalog_ids), _MIN_API_MAJOR,
+            )
+            return
+        for row in kept:
+            collected.setdefault(str(row.get('id')), _map_album(row))
         offset += len(rows)
         if len(rows) < page or (not fetch_all and len(collected) >= wanted):
             return
@@ -581,6 +647,10 @@ def test_connection(user_creds=None):
             'path_format': 'none',
             'warnings': warnings,
         }
+
+    version_warning = _api_version_warning(user_creds)
+    if version_warning:
+        warnings.append(version_warning)
 
     songs = [_map_song(s) for s in (body.get('song') or [])]
     path_format = detect_path_format(songs)

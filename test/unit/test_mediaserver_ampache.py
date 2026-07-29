@@ -541,7 +541,9 @@ class TestLibraryFilter:
 
         with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
              patch.object(ampache, '_request_ex') as request:
-            request.return_value = ({'album': [{'id': 9, 'name': 'Filtered'}]}, None)
+            request.return_value = (
+                {'album': [{'id': 9, 'name': 'Filtered', 'catalog': '2'}]}, None
+            )
             albums = ampache.get_recent_albums(1)
 
         action, params = request.call_args_list[0][0][0], request.call_args_list[0][0][1]
@@ -556,26 +558,45 @@ class TestLibraryFilter:
         with patch.object(ampache, '_target_catalog_ids', return_value={'2', '3'}), \
              patch.object(ampache, '_request_ex') as request:
             request.side_effect = [
-                ({'album': [{'id': 1, 'name': 'From 2'}]}, None),
-                ({'album': [{'id': 1, 'name': 'From 2'}, {'id': 5, 'name': 'From 3'}]}, None),
+                ({'album': [{'id': 1, 'name': 'From 2', 'catalog': '2'}]}, None),
+                ({'album': [
+                    {'id': 1, 'name': 'From 2', 'catalog': '2'},
+                    {'id': 5, 'name': 'From 3', 'catalog': '3'},
+                ]}, None),
             ]
             albums = ampache.get_recent_albums(0)
 
         assert [c[0][1]['cond'] for c in request.call_args_list] == ['catalog,2', 'catalog,3']
         assert [a['Id'] for a in albums] == ['1', '5']
 
-    def test_albums_without_a_catalog_field_survive_the_local_recheck(self):
-        """The regression that made a library-filtered install analyse nothing."""
+    def test_an_ignored_cond_cannot_leak_albums_from_other_catalogues(self):
+        """Ampache ignores an unknown `cond` and returns everything, so rows are re-checked."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value={'32'}), \
+             patch.object(ampache, '_request_ex') as request:
+            request.return_value = (
+                {'album': [
+                    {'id': 1, 'name': 'Wanted', 'catalog': '32'},
+                    {'id': 2, 'name': 'Other catalogue', 'catalog': '2'},
+                ]},
+                None,
+            )
+            albums = ampache.get_recent_albums(0)
+
+        assert [a['Id'] for a in albums] == ['1']
+
+    def test_albums_with_no_catalogue_ids_stop_instead_of_analysing_everything(self, caplog):
+        """A server too old to report catalogue ids must not be filtered by guesswork."""
         from tasks.mediaserver import ampache
 
         with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
              patch.object(ampache, '_request_ex') as request:
-            request.return_value = (
-                {'album': [{'id': 1, 'name': 'No catalog key'}]}, None
-            )
+            request.return_value = ({'album': [{'id': 1, 'name': 'No catalog key'}]}, None)
             albums = ampache.get_recent_albums(1)
 
-        assert [a['Id'] for a in albums] == ['1']
+        assert albums == []
+        assert 'AMPACHE REPORTED NO CATALOGUE IDS' in caplog.text
 
     def test_fetching_every_album_pages_instead_of_asking_for_limit_zero(self):
         from tasks.mediaserver import ampache
@@ -601,6 +622,45 @@ class TestLibraryFilter:
 
         assert albums == []
         assert 'AMPACHE ALBUM FETCH FAILED' in caplog.text
+
+
+class TestApiVersionGate:
+    """This backend targets Ampache API 8; older servers must be told, not guessed at."""
+
+    @pytest.mark.parametrize(
+        ('reported', 'expected'),
+        [('8.0.0', 8), ('6.6.6', 6), ('600000', 6), ('400001', 4), ('8', 8), ('', None),
+         ('nonsense', None)],
+    )
+    def test_api_major_reads_both_version_forms(self, reported, expected):
+        from tasks.mediaserver import ampache
+
+        assert ampache._api_major(reported) == expected
+
+    def test_test_connection_warns_when_the_server_predates_api_8(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok', 'api': '6.6.6'}),
+                _json_response({'song': [{'id': 1, 'title': 'S', 'filename': '/music/a.mp3'}]}),
+            ]
+            result = ampache.test_connection()
+
+        assert result['ok'] is True
+        assert any('API 8 or newer' in w for w in result['warnings'])
+
+    def test_test_connection_is_quiet_on_api_8(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok', 'api': '8.0.0'}),
+                _json_response({'song': [{'id': 1, 'title': 'S', 'filename': '/music/a.mp3'}]}),
+            ]
+            result = ampache.test_connection()
+
+        assert result['warnings'] == []
 
 
 class TestPlayStats:

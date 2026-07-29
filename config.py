@@ -93,7 +93,7 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 # --- Ampache Constants ---
 # These are used only if MEDIASERVER_TYPE is "ampache". AMPACHE_PASSWORD takes either the
 # account password or an API key; the handshake tries both, so no separate key field exists.
-AMPACHE_URL = os.environ.get("AMPACHE_URL", "")  # e.g. http://your-ampache-server
+AMPACHE_URL = os.environ.get("AMPACHE_URL", "")  # e.g. https://your-ampache-server
 # Optional: an API key authenticates on its own, so leave this empty in that mode.
 AMPACHE_USER = os.environ.get("AMPACHE_USER", "")
 AMPACHE_PASSWORD = os.environ.get("AMPACHE_PASSWORD", "")
