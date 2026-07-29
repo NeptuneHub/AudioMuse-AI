@@ -31,8 +31,10 @@ Main Features:
 * Fetches catalogues, recent albums, album tracks, search results and the whole
   song list with pagination, honouring MUSIC_LIBRARIES by resolving it to
   Ampache catalog ids, pushing that filter into the server query and still
-  enforcing it locally. Recent albums page on until the filter yields the
-  requested count instead of filtering one server-limited page.
+  enforcing it locally. Album discovery pushes that filter into an
+  advanced_search because Ampache's album objects carry no catalogue id, and
+  every page asks for a real page size so "analyse every album" is not capped
+  at the server's first page.
 * Downloads the original file rather than a transcoded stream, refusing a
   response that carries an Ampache JSON error under HTTP 200 instead of audio.
 * Reads play stats and lyrics, and manages playlists through the shared
@@ -79,6 +81,16 @@ def _redact_ampache_secrets(text):
     return _SECRET_QUERY_PARAM.sub(r'\1[REDACTED]', str(text))
 
 
+def _log_error(message, error):
+    """Log a failure WITHOUT its traceback, redacting the exception text.
+
+    Every Ampache call carries its session token (and the handshake its passphrase)
+    in the query string, so a traceback - which prints the request URL verbatim.
+    Logging lives in this helper rather than inline.
+    """
+    logger.error("%s: %s", message, _redact_ampache_secrets(error))
+
+
 def _creds(user_creds=None):
     user_creds = context.active_creds(user_creds) or {}
     url = (user_creds.get('url') or config.AMPACHE_URL or '').rstrip('/')
@@ -119,9 +131,7 @@ def _handshake(url, user, password, timeout=None):
             )
             body = response.json()
         except Exception as e:
-            logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
-                f"Ampache handshake failed: {_redact_ampache_secrets(e)}"
-            )
+            _log_error("Ampache handshake failed", e)
             return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
 
         if isinstance(body, dict) and body.get('auth'):
@@ -192,9 +202,7 @@ def _fetch(url, action, token, params, stream, timeout):
             timeout=timeout or _REQUEST_TIMEOUT_SECONDS,
         )
     except Exception as e:
-        logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
-            f"Ampache request '{action}' failed: {_redact_ampache_secrets(e)}"
-        )
+        _log_error(f"Ampache request '{action}' failed", e)
         return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
     return response, None
 
@@ -203,9 +211,7 @@ def _stream_payload(action, response):
     try:
         response.raise_for_status()
     except Exception as e:
-        logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
-            f"Ampache stream '{action}' failed: {_redact_ampache_secrets(e)}"
-        )
+        _log_error(f"Ampache stream '{action}' failed", e)
         return None, None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
 
     body = _stream_error_body(response)
@@ -231,36 +237,56 @@ def _body_error(action, body, stream):
     return 'ok', None
 
 
+def _response_payload(action, response, stream):
+    """Split a response into (passthrough, parsed body, error).
+
+    A streamed response that really is audio is handed back as ``passthrough``
+    for the caller to consume; anything else is parsed so the Ampache error
+    envelope (which arrives under HTTP 200) can be inspected.
+    """
+    if stream:
+        return _stream_payload(action, response)
+    try:
+        return None, response.json(), None
+    except Exception as e:
+        return None, None, {'kind': 'parse', 'message': str(_redact_ampache_secrets(e))}
+
+
+def _attempt_request(action, params, stream, user_creds, timeout, force):
+    """One handshake-and-fetch attempt, reporting 'ok' / 'retry' / 'error'.
+
+    'retry' means Ampache reported an expired session, which the caller answers
+    by re-handshaking once with ``force=True``.
+    """
+    url, token, err = _token(user_creds, force=force, timeout=timeout)
+    if not token:
+        return 'error', None, err
+
+    response, err = _fetch(url, action, token, params, stream, timeout)
+    if err:
+        return 'error', None, err
+
+    passthrough, body, err = _response_payload(action, response, stream)
+    if err:
+        return 'error', None, err
+    if passthrough is not None:
+        return 'ok', passthrough, None
+
+    verdict, err = _body_error(action, body, stream)
+    if verdict == 'ok':
+        return 'ok', body, None
+    return verdict, None, err
+
+
 def _request_ex(action, params=None, stream=False, user_creds=None, timeout=None):
     for attempt in (0, 1):
-        url, token, err = _token(user_creds, force=bool(attempt), timeout=timeout)
-        if not token:
-            return None, err
-
-        response, err = _fetch(url, action, token, params, stream, timeout)
-        if err:
-            return None, err
-
-        if stream:
-            passthrough, body, err = _stream_payload(action, response)
-            if err:
-                return None, err
-            if passthrough is not None:
-                return passthrough, None
-        else:
-            try:
-                body = response.json()
-            except Exception as e:
-                return None, {'kind': 'parse', 'message': str(_redact_ampache_secrets(e))}
-
-        verdict, err = _body_error(action, body, stream)
-        if verdict == 'retry':
-            if attempt == 0:
-                continue
-            break
+        verdict, payload, err = _attempt_request(
+            action, params, stream, user_creds, timeout, force=bool(attempt)
+        )
+        if verdict == 'ok':
+            return payload, None
         if verdict == 'error':
             return None, err
-        return body, None
 
     return None, {'kind': 'auth', 'message': 'Ampache session could not be renewed'}
 
@@ -345,6 +371,19 @@ def _in_catalogs(row, catalog_ids):
     return catalog_ids is None or str(row.get('catalog')) in catalog_ids
 
 
+def _in_catalogs_when_known(row, catalog_ids):
+    """Re-check a row's catalogue ONLY when the row actually reports one.
+
+    Songs carry ``catalog``; ALBUMS DO NOT (verified against Ampache 8, whose
+    album object has id/name/artist/year/songcount/type/genre/art/mbid and no
+    catalogue at all). Treating a missing field as "not in the catalogue" drops
+    every album and reports a successful analysis of nothing, so album discovery
+    relies on the server-side rule and this stays a belt-and-braces check for
+    servers that do include the field.
+    """
+    return not catalog_ids or 'catalog' not in row or str(row.get('catalog')) in catalog_ids
+
+
 def _should_retry_unfiltered(action, err, offset, collected):
     message = (err or {}).get('message') or 'unknown error'
     if action == 'advanced_search' and not collected:
@@ -403,6 +442,69 @@ def _map_album(album):
     }
 
 
+def _album_query_plan(catalog_ids):
+    """One album browse per target catalogue, or a single unfiltered browse.
+
+    Ampache filters a browse with ``cond=<field>,<value>``, and conditions
+    combine, so several catalogues are not expressible as one ``cond``. Issuing
+    one filtered browse per catalogue keeps each response's newest-first order
+    intact and merges cleanly; the common case of a single catalogue stays a
+    single query.
+    """
+    if not catalog_ids:
+        return [{}]
+    return [{'cond': f'catalog,{catalog_id}'} for catalog_id in sorted(catalog_ids)]
+
+
+def _log_album_fetch_failure(err, offset, collected):
+    logger.error(
+        "AMPACHE ALBUM FETCH FAILED at offset %d after %d albums (%s). Album "
+        "discovery is INCOMPLETE - do not read this as an empty library. With a "
+        "library filter set, check that this server supports the 'cond' browse "
+        "filter on the albums action.",
+        offset, collected, (err or {}).get('message') or 'unknown error',
+    )
+
+
+def _album_page(base_params, offset, page, collected):
+    params = {**base_params, 'offset': offset, 'limit': page, 'sort': 'addition_time,DESC'}
+    body, err = _request_ex('albums', params)
+    if body is None:
+        _log_album_fetch_failure(err, offset, collected)
+        return None
+    return body.get('album') or []
+
+
+def _collect_albums_for(base_params, catalog_ids, fetch_all, wanted, collected):
+    """Page one browse into ``collected``, keyed by album id so merges dedupe.
+
+    Every page asks for a real page size: ``limit=0`` is not a portable "no
+    limit" on Ampache, and combining it with a single pass meant an install
+    configured to analyse EVERY album only ever saw the server's first page.
+    """
+    offset = 0
+    page = _PAGE_SIZE if (fetch_all or catalog_ids) else max(wanted, 1)
+    while True:
+        rows = _album_page(base_params, offset, page, len(collected))
+        if not rows:
+            return
+        for row in rows:
+            if _in_catalogs_when_known(row, catalog_ids):
+                collected.setdefault(str(row.get('id')), _map_album(row))
+        offset += len(rows)
+        if len(rows) < page or (not fetch_all and len(collected) >= wanted):
+            return
+
+
+def _collect_recent_albums(catalog_ids, fetch_all, wanted):
+    collected = {}
+    for base_params in _album_query_plan(catalog_ids):
+        _collect_albums_for(base_params, catalog_ids, fetch_all, wanted, collected)
+        if not fetch_all and len(collected) >= wanted:
+            break
+    return list(collected.values())
+
+
 def get_recent_albums(limit):
     fetch_all = not limit or int(limit) <= 0
     wanted = 0 if fetch_all else int(limit)
@@ -411,20 +513,13 @@ def get_recent_albums(limit):
     if isinstance(catalog_ids, set) and not catalog_ids:
         return []
 
-    mapped = []
-    offset = 0
-    page = _PAGE_SIZE if catalog_ids else max(wanted, 1)
-    while True:
-        params = {'offset': offset, 'limit': 0 if fetch_all else page, 'sort': 'addition_time,DESC'}
-        albums = (_request('albums', params) or {}).get('album') or []
-        if not albums:
-            break
-
-        mapped.extend(_map_album(a) for a in albums if _in_catalogs(a, catalog_ids))
-        offset += len(albums)
-        if fetch_all or len(albums) < page or len(mapped) >= wanted:
-            break
-
+    mapped = _collect_recent_albums(catalog_ids, fetch_all, wanted)
+    if not mapped:
+        logger.warning(
+            "AMPACHE RETURNED NO ALBUMS%s, so there is nothing to analyse. Treat this "
+            "as a configuration or API problem unless the server really is empty.",
+            f" for catalogs {sorted(catalog_ids)}" if catalog_ids else '',
+        )
     return mapped if fetch_all else mapped[:wanted]
 
 
@@ -470,9 +565,7 @@ def download_track(temp_dir, item):
         logger.info(f"Downloaded '{item.get('Name') or item.get('title') or 'Unknown'}' to '{local_filename}'")
         return local_filename
     except Exception as e:
-        logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
-            f"Failed to download Ampache track {item.get('Name', 'Unknown')}: {_redact_ampache_secrets(e)}"
-        )
+        _log_error(f"Failed to download Ampache track {item.get('Name', 'Unknown')}", e)
     return None
 
 
@@ -530,12 +623,14 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
     return [str(s.get('id')) for s in ((body or {}).get('song') or [])]
 
 
-def delete_playlist(playlist_id):
-    return _request('playlist_delete', {'filter': playlist_id}) is not None
+def delete_playlist(playlist_id, user_creds=None):
+    return _request('playlist_delete', {'filter': playlist_id}, user_creds=user_creds) is not None
 
 
-def create_playlist(base_name, item_ids):
-    body = _request('playlist_create', {'name': base_name, 'type': 'private'})
+def create_playlist(base_name, item_ids, user_creds=None):
+    body = _request(
+        'playlist_create', {'name': base_name, 'type': 'private'}, user_creds=user_creds
+    )
     playlist = (body or {}).get('playlist') or {}
     playlist_id = playlist.get('id') or (body or {}).get('id')
     if not playlist_id:
@@ -545,7 +640,11 @@ def create_playlist(base_name, item_ids):
     wanted = list(item_ids or [])
     added = 0
     for item_id in wanted:
-        if _request('playlist_add_song', {'filter': playlist_id, 'song': item_id, 'check': 1}) is not None:
+        if _request(
+            'playlist_add_song',
+            {'filter': playlist_id, 'song': item_id, 'check': 1},
+            user_creds=user_creds,
+        ) is not None:
             added += 1
 
     if wanted and not added:
@@ -566,19 +665,23 @@ def create_playlist(base_name, item_ids):
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
-    return create_playlist(f"{playlist_name.strip()}_instant", item_ids)
+    return create_playlist(
+        f"{playlist_name.strip()}_instant", item_ids, user_creds=context.active_creds(user_creds)
+    )
 
 
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     user_creds = context.active_creds(user_creds)
     existing = get_playlist_by_name(playlist_name, user_creds=user_creds)
-    if existing and existing.get('Id') and not delete_playlist(existing['Id']):
+    if existing and existing.get('Id') and not delete_playlist(
+        existing['Id'], user_creds=user_creds
+    ):
         logger.error(
             f"Ampache create_or_replace_playlist: failed to delete existing "
             f"'{playlist_name}' (id={existing['Id']}); aborting to avoid creating a duplicate"
         )
         return None
-    return create_playlist(playlist_name, item_ids)
+    return create_playlist(playlist_name, item_ids, user_creds=user_creds)
 
 
 def get_top_played_songs(limit, user_creds):
@@ -586,7 +689,16 @@ def get_top_played_songs(limit, user_creds):
     return [_map_song(s) for s in ((body or {}).get('song') or [])]
 
 
-def get_last_played_time(item_id, user_creds):
+def get_last_played_time(_item_id, _user_creds=None):
+    """Not available: Ampache reports play stats per library, not per track.
+
+    ``stats`` can rank songs by play count but exposes no per-song "last played
+    at" timestamp, so there is nothing to return. The parameters are part of the
+    dispatcher contract and are deliberately unused (leading underscores).
+    Recency-weighted callers such as the Sonic Fingerprint treat ``None`` as
+    "unknown" and fall back to play counts.
+    """
+    logger.debug("Ampache exposes no per-track last-played timestamp; returning None.")
     return None
 
 

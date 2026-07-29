@@ -34,7 +34,7 @@
             { key: 'token', label: 'Plex Token', secret: true }
         ],
         ampache: [
-            { key: 'url', label: 'Server URL', placeholder: 'http://ampache' },
+            { key: 'url', label: 'Server URL', placeholder: 'https://ampache' },
             { key: 'user', label: 'Username' },
             { key: 'password', label: 'Password or API key', secret: true }
         ]

@@ -22,7 +22,7 @@ var serverFields = {
         {name: 'PLEX_TOKEN', label: 'Plex API token', placeholder: 'your-plex-token', tooltip: 'Your X-Plex-Token for the server. See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ to find it.'}
     ],
     ampache: [
-        {name: 'AMPACHE_URL', label: 'Ampache URL', placeholder: 'http://your-ampache-server', tooltip: 'Base URL of your Ampache server, including http:// or https:// and the port if it is not the default.'},
+        {name: 'AMPACHE_URL', label: 'Ampache URL', placeholder: 'https://your-ampache-server', tooltip: 'Base URL of your Ampache server, including the scheme and the port if it is not the default.'},
         {name: 'AMPACHE_USER', label: 'Ampache username', placeholder: 'your-username', tooltip: 'Username of an Ampache account that can read the music library. Leave empty if you authenticate with an API key instead of a password.'},
         {name: 'AMPACHE_PASSWORD', label: 'Ampache password or API key', placeholder: 'your-password-or-api-key', tooltip: 'Password for the Ampache user above, or an Ampache API key. The handshake accepts either, so there is no separate API key field.'}
     ]

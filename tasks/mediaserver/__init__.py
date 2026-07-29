@@ -14,7 +14,8 @@ by config.MEDIASERVER_TYPE.
 
 Main Features:
 * Lazily imports and dispatches to the active provider backend (jellyfin, emby,
-  navidrome, lyrion, plex), so importing this package does not load inactive backends.
+  navidrome, lyrion, plex, ampache), so importing this package does not load
+  inactive backends.
 * Centralizes the provider-agnostic public API; shared HTTP and metadata parsing
   live in http.py and helper.py.
 """

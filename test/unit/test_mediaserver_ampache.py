@@ -148,6 +148,16 @@ class TestDispatcherArity:
         assert created.call_args[0][0] == 'Nightly'
         assert result == {'Id': '9'}
 
+    def test_playlist_writes_use_the_callers_creds_not_the_default_server(self, creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'get_playlist_by_name', return_value=None), \
+             patch.object(ampache, 'create_playlist', return_value={'Id': '9'}) as created:
+            ampache.create_or_replace_playlist('Nightly', ['1'], creds)
+            ampache.create_instant_playlist('My Mix', ['1'], user_creds=creds)
+
+        assert [call.kwargs.get('user_creds') for call in created.call_args_list] == [creds, creds]
+
     def test_create_or_replace_playlist_deletes_the_existing_playlist_first(self, creds):
         from tasks.mediaserver import ampache
 
@@ -156,7 +166,7 @@ class TestDispatcherArity:
              patch.object(ampache, 'create_playlist', return_value={'Id': '9'}):
             ampache.create_or_replace_playlist('Nightly', ['1'], creds)
 
-        deleted.assert_called_once_with('3')
+        deleted.assert_called_once_with('3', user_creds=creds)
 
     def test_a_failed_delete_aborts_instead_of_creating_a_duplicate_name(self, creds):
         from tasks.mediaserver import ampache
@@ -494,8 +504,8 @@ class TestLibraryFilter:
         first = [{'id': i, 'name': f'A{i}', 'catalog': 7} for i in range(500)]
         second = [{'id': 500, 'name': 'Wanted', 'catalog': 2}]
         with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
-             patch.object(ampache, '_request') as request:
-            request.side_effect = [{'album': first}, {'album': second}]
+             patch.object(ampache, '_request_ex') as request:
+            request.side_effect = [({'album': first}, None), ({'album': second}, None)]
             albums = ampache.get_recent_albums(1)
 
         assert [a['Id'] for a in albums] == ['500']
@@ -505,10 +515,13 @@ class TestLibraryFilter:
         from tasks.mediaserver import ampache
 
         with patch.object(ampache, '_target_catalog_ids', return_value=None), \
-             patch.object(ampache, '_request') as request:
-            request.return_value = {'album': [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}]}
+             patch.object(ampache, '_request_ex') as request:
+            request.return_value = (
+                {'album': [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}]}, None
+            )
             albums = ampache.get_recent_albums(2)
 
+        assert request.call_args_list[0][0][0] == 'albums'
         assert request.call_args_list[0][0][1]['limit'] == 2
         assert [a['Id'] for a in albums] == ['1', '2']
 
@@ -516,11 +529,78 @@ class TestLibraryFilter:
         from tasks.mediaserver import ampache
 
         with patch.object(ampache, '_target_catalog_ids', return_value=set()), \
-             patch.object(ampache, '_request') as request:
+             patch.object(ampache, '_request_ex') as request:
             albums = ampache.get_recent_albums(10)
 
         assert albums == []
         request.assert_not_called()
+
+    def test_a_library_filter_is_pushed_into_the_album_browse(self):
+        """Ampache album objects carry no catalog id, so the filter must be server-side."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
+             patch.object(ampache, '_request_ex') as request:
+            request.return_value = ({'album': [{'id': 9, 'name': 'Filtered'}]}, None)
+            albums = ampache.get_recent_albums(1)
+
+        action, params = request.call_args_list[0][0][0], request.call_args_list[0][0][1]
+        assert action == 'albums'
+        assert params['cond'] == 'catalog,2'
+        assert [a['Id'] for a in albums] == ['9']
+
+    def test_several_catalogues_are_browsed_separately_and_merged_without_duplicates(self):
+        """`cond` conditions combine, so one browse per catalogue is the portable form."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value={'2', '3'}), \
+             patch.object(ampache, '_request_ex') as request:
+            request.side_effect = [
+                ({'album': [{'id': 1, 'name': 'From 2'}]}, None),
+                ({'album': [{'id': 1, 'name': 'From 2'}, {'id': 5, 'name': 'From 3'}]}, None),
+            ]
+            albums = ampache.get_recent_albums(0)
+
+        assert [c[0][1]['cond'] for c in request.call_args_list] == ['catalog,2', 'catalog,3']
+        assert [a['Id'] for a in albums] == ['1', '5']
+
+    def test_albums_without_a_catalog_field_survive_the_local_recheck(self):
+        """The regression that made a library-filtered install analyse nothing."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
+             patch.object(ampache, '_request_ex') as request:
+            request.return_value = (
+                {'album': [{'id': 1, 'name': 'No catalog key'}]}, None
+            )
+            albums = ampache.get_recent_albums(1)
+
+        assert [a['Id'] for a in albums] == ['1']
+
+    def test_fetching_every_album_pages_instead_of_asking_for_limit_zero(self):
+        from tasks.mediaserver import ampache
+
+        first = [{'id': i, 'name': f'A{i}'} for i in range(ampache._PAGE_SIZE)]
+        second = [{'id': 9001, 'name': 'Last'}]
+        with patch.object(ampache, '_target_catalog_ids', return_value=None), \
+             patch.object(ampache, '_request_ex') as request:
+            request.side_effect = [({'album': first}, None), ({'album': second}, None)]
+            albums = ampache.get_recent_albums(0)
+
+        assert request.call_args_list[0][0][1]['limit'] == ampache._PAGE_SIZE
+        assert request.call_args_list[1][0][1]['offset'] == ampache._PAGE_SIZE
+        assert len(albums) == ampache._PAGE_SIZE + 1
+
+    def test_a_failed_album_page_is_reported_not_treated_as_an_empty_library(self, caplog):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value=None), \
+             patch.object(ampache, '_request_ex') as request:
+            request.return_value = (None, {'kind': 'api', 'message': 'boom'})
+            albums = ampache.get_recent_albums(5)
+
+        assert albums == []
+        assert 'AMPACHE ALBUM FETCH FAILED' in caplog.text
 
 
 class TestPlayStats:
