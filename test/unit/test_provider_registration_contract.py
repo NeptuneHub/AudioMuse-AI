@@ -29,6 +29,7 @@ import inspect
 import re
 from importlib import import_module
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -115,6 +116,80 @@ def test_every_backend_binds_to_every_dispatcher_call_site(provider):
                 f'{positional} positional + {list(keywords)}: {error}'
             )
     assert not failures, f'{provider} backend does not match the dispatcher: ' + '; '.join(failures)
+
+
+def _http_json(payload):
+    response = MagicMock()
+    response.json.return_value = payload
+    response.raise_for_status.return_value = None
+    return response
+
+
+# What each backend has to be fed for list_libraries to reach its return, and the
+# one library both JavaScript consumers must then be able to render.
+LIST_LIBRARIES_FIXTURES = {
+    'jellyfin': (
+        'requests',
+        lambda http: setattr(
+            http, 'get', MagicMock(return_value=_http_json(
+                [{'ItemId': '2', 'Name': 'Main', 'CollectionType': 'music'}]
+            ))
+        ),
+    ),
+    'emby': (
+        'requests',
+        lambda http: setattr(
+            http, 'get', MagicMock(return_value=_http_json(
+                [{'ItemId': '2', 'Name': 'Main', 'CollectionType': 'music'}]
+            ))
+        ),
+    ),
+    'plex': (
+        'requests',
+        lambda http: setattr(
+            http, 'get', MagicMock(return_value=_http_json(
+                {'MediaContainer': {'Directory': [
+                    {'key': '2', 'title': 'Main', 'type': 'artist'}
+                ]}}
+            ))
+        ),
+    ),
+    'navidrome': (
+        '_navidrome_request',
+        lambda stub: stub.configure_mock(
+            return_value={'musicFolders': {'musicFolder': [{'id': '2', 'name': 'Main'}]}}
+        ),
+    ),
+    'lyrion': (
+        '_jsonrpc_request',
+        lambda stub: stub.configure_mock(
+            return_value={'folder_loop': [{'id': '2', 'filename': 'Main'}]}
+        ),
+    ),
+    'ampache': (
+        '_request',
+        lambda stub: stub.configure_mock(return_value={'catalog': [{'id': 2, 'name': 'Main'}]}),
+    ),
+}
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+def test_every_backend_lists_libraries_with_the_lowercase_keys_the_ui_reads(provider):
+    backend = import_module('tasks.mediaserver.' + provider)
+    attribute, prime = LIST_LIBRARIES_FIXTURES[provider]
+
+    with patch.object(backend, attribute) as stub:
+        prime(stub)
+        libraries = backend.list_libraries()
+
+    assert libraries, f'{provider} list_libraries returned nothing for a music library'
+    for library in libraries:
+        assert set(library) == {'id', 'name'}, (
+            f"{provider} list_libraries returns {sorted(library)}; static/setup.js and "
+            f"static/music_servers_admin.js both read lowercase 'id'/'name', so any "
+            f"other shape renders an empty or '[object Object]' library picker"
+        )
+        assert library['name'], f'{provider} list_libraries returned a nameless library'
 
 
 def test_dispatcher_provider_names_match_config():

@@ -161,8 +161,10 @@
         }
         boxes.appendChild(row('No restriction (use all libraries)', { 'data-lib-all': '1' }, selected.length === 0));
         libraries.forEach(function (lib) {
-            var name = lib.name || lib;
-            boxes.appendChild(row(name, { 'data-lib-name': name }, selected.indexOf(String(name).toLowerCase()) !== -1));
+            var name = (lib && typeof lib === 'object') ? lib.name : lib;
+            name = name ? String(name) : '';
+            if (!name) { return; }
+            boxes.appendChild(row(name, { 'data-lib-name': name }, selected.indexOf(name.toLowerCase()) !== -1));
         });
         boxes.style.display = 'flex';
         syncLibraryBoxesToInput();

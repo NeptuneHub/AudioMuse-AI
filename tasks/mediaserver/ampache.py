@@ -22,14 +22,24 @@ Two things differ from the Subsonic path and both matter to callers:
   on every request. The token is cached per server and re-issued on expiry.
 
 Main Features:
-* Trades credentials for a session token that accepts either an API key or a
-  time-salted password hash in the same field, caching it per server and
-  re-handshaking once when a session lapses mid-run.
+* Trades credentials for a session token that holds either an API key or a
+  time-salted password hash in the same field. The token is cached per
+  CREDENTIAL SET (a rotated password never reuses the old session) and
+  re-handshaked once when a session lapses mid-run; the API-key attempt is only
+  made for a key-shaped secret, so a real password never travels in a query
+  string. The caller's timeout bounds the handshake too, not just the data call.
 * Fetches catalogues, recent albums, album tracks, search results and the whole
   song list with pagination, honouring MUSIC_LIBRARIES by resolving it to
-  Ampache catalog ids.
-* Downloads the original file rather than a transcoded stream, reads play stats
-  and lyrics, and manages playlists through the shared dispatcher contract.
+  Ampache catalog ids, pushing that filter into the server query and still
+  enforcing it locally. Recent albums page on until the filter yields the
+  requested count instead of filtering one server-limited page.
+* Downloads the original file rather than a transcoded stream, refusing a
+  response that carries an Ampache JSON error under HTTP 200 instead of audio.
+* Reads play stats and lyrics, and manages playlists through the shared
+  dispatcher contract: creation returns the ``{'Id', 'Name'}`` dict callers
+  dereference, a playlist that received none of its tracks is not reported as
+  created, and a failed delete aborts the replace rather than leaving two
+  playlists under one name.
 """
 
 from . import http as requests
@@ -42,17 +52,27 @@ import time
 
 import config
 from . import context
-from .helper import detect_path_format
+from .helper import detect_download_extension, detect_path_format
 
 logger = logging.getLogger(__name__)
 
-# Ampache expires idle sessions server-side; re-handshake a little before that so
-# a long analysis run never fails midway on a token that lapsed between calls.
 _TOKEN_TTL_SECONDS = 3000
+_HANDSHAKE_TIMEOUT_SECONDS = 30
+_REQUEST_TIMEOUT_SECONDS = 60
+_PAGE_SIZE = 500
+_SESSION_EXPIRED_CODE = '4701'
+_AUTH_ERROR_CODES = ('4742', '4704')
+
 _token_cache = {}
 _token_lock = threading.Lock()
 
 _SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:auth|passphrase|password)=)[^&\s]*')
+_API_KEY_SHAPE = re.compile(r'\A[0-9a-fA-F]{32,}\Z')
+
+_CATALOGUE_KEYS = (
+    'Id', 'Name', 'AlbumArtist', 'ArtistId', 'OriginalAlbumArtist', 'Album',
+    'Path', 'FilePath', 'Year', 'Rating', 'DurationSeconds',
+)
 
 
 def _redact_ampache_secrets(text):
@@ -67,31 +87,36 @@ def _creds(user_creds=None):
     return url, user, password
 
 
-def _cache_key(url, user):
-    return f"{url}|{user}"
+def _cache_key(url, user, password):
+    secret = hashlib.sha256((password or '').encode('utf-8')).hexdigest()
+    return f"{url}|{user}|{secret}"
 
 
-def _handshake(url, user, password):
-    """Trade credentials for a session token.
+def _handshake_attempts(user, password, timestamp, passphrase):
+    attempts = []
+    if user:
+        attempts.append(
+            {'action': 'handshake', 'user': user, 'timestamp': timestamp, 'auth': passphrase}
+        )
+    if not user or _API_KEY_SHAPE.match(password or ''):
+        attempts.append({'action': 'handshake', 'auth': password})
+    return attempts
 
-    Ampache accepts either an API key or a time-salted password hash as ``auth``.
-    An API key is passed through untouched; anything else is treated as a
-    password and hashed as ``sha256(timestamp + sha256(password))``, which is
-    what lets the same field hold either.
-    """
+
+def _handshake(url, user, password, timeout=None):
     timestamp = int(time.time())
     pass_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
     passphrase = hashlib.sha256(f"{timestamp}{pass_hash}".encode('utf-8')).hexdigest()
 
-    for params in (
-        {'action': 'handshake', 'user': user, 'timestamp': timestamp, 'auth': passphrase},
-        # An API key needs neither user nor timestamp; try it second so a real
-        # password is never sent as a key.
-        {'action': 'handshake', 'auth': password},
-    ):
+    body = None
+    for params in _handshake_attempts(user, password, timestamp, passphrase):
         params['version'] = '8.0.0'
         try:
-            response = requests.get(f"{url}/server/json.server.php", params=params, timeout=30)
+            response = requests.get(
+                f"{url}/server/json.server.php",
+                params=params,
+                timeout=timeout or _HANDSHAKE_TIMEOUT_SECONDS,
+            )
             body = response.json()
         except Exception as e:
             logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
@@ -107,19 +132,19 @@ def _handshake(url, user, password):
     return None, {'kind': 'auth', 'message': message}
 
 
-def _token(user_creds=None, force=False):
+def _token(user_creds=None, force=False, timeout=None):
     url, user, password = _creds(user_creds)
     if not url or not password:
         logger.warning("Ampache URL or password is not configured.")
         return None, None, {'kind': 'config', 'message': 'Ampache URL or password is not configured.'}
 
-    key = _cache_key(url, user)
+    key = _cache_key(url, user, password)
     with _token_lock:
         cached = _token_cache.get(key)
         if cached and not force and cached['expires'] > time.time():
             return url, cached['token'], None
 
-    body, err = _handshake(url, user, password)
+    body, err = _handshake(url, user, password, timeout=timeout)
     if not body:
         return url, None, err
 
@@ -128,10 +153,38 @@ def _token(user_creds=None, force=False):
     return url, body['auth'], None
 
 
+def _error_from_body(body):
+    if not isinstance(body, dict):
+        return None, ''
+    error = body.get('error')
+    if not error:
+        return None, ''
+    return error, str(error.get('errorCode') or error.get('code') or '')
+
+
+def _stream_error_body(response):
+    try:
+        content_type = str((response.headers or {}).get('Content-Type') or '')
+    except Exception:
+        return None
+    if 'json' not in content_type.lower():
+        return None
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def _close_quietly(response):
+    try:
+        response.close()
+    except Exception:
+        logger.debug("Ampache: closing an errored stream response failed.", exc_info=True)
+
+
 def _request_ex(action, params=None, stream=False, user_creds=None, timeout=None):
-    """Call one Ampache action, re-handshaking once if the session has lapsed."""
     for attempt in (0, 1):
-        url, token, err = _token(user_creds, force=bool(attempt))
+        url, token, err = _token(user_creds, force=bool(attempt), timeout=timeout)
         if not token:
             return None, err
 
@@ -141,7 +194,7 @@ def _request_ex(action, params=None, stream=False, user_creds=None, timeout=None
                 f"{url}/server/json.server.php",
                 params=all_params,
                 stream=stream,
-                timeout=timeout or 60,
+                timeout=timeout or _REQUEST_TIMEOUT_SECONDS,
             )
         except Exception as e:
             logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
@@ -157,21 +210,26 @@ def _request_ex(action, params=None, stream=False, user_creds=None, timeout=None
                     f"Ampache stream '{action}' failed: {_redact_ampache_secrets(e)}"
                 )
                 return None, {'kind': 'network', 'message': str(_redact_ampache_secrets(e))}
-            return response, None
+            body = _stream_error_body(response)
+            if body is None:
+                return response, None
+            _close_quietly(response)
+        else:
+            try:
+                body = response.json()
+            except Exception as e:
+                return None, {'kind': 'parse', 'message': str(_redact_ampache_secrets(e))}
 
-        try:
-            body = response.json()
-        except Exception as e:
-            return None, {'kind': 'parse', 'message': str(_redact_ampache_secrets(e))}
-
-        error = body.get('error') if isinstance(body, dict) else None
+        error, code = _error_from_body(body)
         if error:
-            code = str(error.get('errorCode') or error.get('code') or '')
-            # 4701 is Ampache's "session expired"; anything else is not worth a retry.
-            if code == '4701' and attempt == 0:
-                continue
-            kind = 'auth' if code in ('4701', '4742', '4704') else 'api'
+            if code == _SESSION_EXPIRED_CODE:
+                if attempt == 0:
+                    continue
+                break
+            kind = 'auth' if code in _AUTH_ERROR_CODES else 'api'
             return None, {'kind': kind, 'message': error.get('errorMessage') or error.get('message') or 'Ampache error'}
+        if stream:
+            return None, {'kind': 'api', 'message': f"Ampache returned JSON instead of audio for '{action}'"}
 
         return body, None
 
@@ -184,7 +242,6 @@ def _request(action, params=None, stream=False, user_creds=None, timeout=None):
 
 
 def _target_catalog_ids(user_creds=None):
-    """Catalog ids the configured library filter selects, or None for everything."""
     libraries = (context.active_libraries(config.MUSIC_LIBRARIES) or '').strip()
     if not libraries:
         return None
@@ -208,11 +265,10 @@ def _target_catalog_ids(user_creds=None):
 def list_libraries(user_creds=None):
     body = _request('catalogs', {'filter': 'music'}, user_creds=user_creds)
     catalogs = (body or {}).get('catalog') or []
-    return [{'Id': str(c.get('id')), 'Name': c.get('name') or f"Catalog {c.get('id')}"} for c in catalogs]
+    return [{'id': str(c.get('id')), 'name': c.get('name') or f"Catalog {c.get('id')}"} for c in catalogs]
 
 
 def _map_song(song):
-    """Normalise one Ampache song row into the shape every backend returns."""
     artist = (song.get('artist') or {}) if isinstance(song.get('artist'), dict) else {}
     albumartist = (song.get('albumartist') or {}) if isinstance(song.get('albumartist'), dict) else {}
     album = (song.get('album') or {}) if isinstance(song.get('album'), dict) else {}
@@ -231,11 +287,23 @@ def _map_song(song):
         'Year': song.get('year'),
         'Rating': song.get('rating') or None,
         'DurationSeconds': song.get('time'),
-        # `suffix` is what download_track uses to name the temp file; Ampache
-        # calls the same thing `format`.
         'suffix': song.get('format') or song.get('stream_format'),
         'title': song.get('title'),
     }
+
+
+def _map_catalogue_song(song):
+    mapped = _map_song(song)
+    return {key: mapped[key] for key in _CATALOGUE_KEYS}
+
+
+def _catalog_filter_params(catalog_ids):
+    params = {'type': 'song', 'operator': 'or'}
+    for index, catalog_id in enumerate(sorted(catalog_ids), start=1):
+        params[f'rule_{index}'] = 'catalog'
+        params[f'rule_{index}_operator'] = 0
+        params[f'rule_{index}_input'] = catalog_id
+    return params
 
 
 def get_all_songs(user_creds=None, apply_filter=True):
@@ -243,51 +311,91 @@ def get_all_songs(user_creds=None, apply_filter=True):
     if isinstance(catalog_ids, set) and not catalog_ids:
         return []
 
+    if catalog_ids:
+        action = 'advanced_search'
+        base_params = _catalog_filter_params(catalog_ids)
+    else:
+        action = 'songs'
+        base_params = {}
+
     songs = []
     offset = 0
-    page = 500
     while True:
-        params = {'offset': offset, 'limit': page}
-        body = _request('songs', params, user_creds=user_creds)
-        rows = (body or {}).get('song') or []
+        params = {**base_params, 'offset': offset, 'limit': _PAGE_SIZE}
+        body, err = _request_ex(action, params, user_creds=user_creds)
+        if body is None:
+            message = (err or {}).get('message') or 'unknown error'
+            if action == 'advanced_search' and not songs:
+                logger.warning(
+                    "Ampache advanced_search catalog filter failed (%s); falling back to a "
+                    "full song fetch filtered locally.",
+                    message,
+                )
+                action = 'songs'
+                base_params = {}
+                continue
+            logger.error(
+                "AMPACHE CATALOGUE FETCH FAILED at offset %d after %d songs (%s). The "
+                "returned catalogue is INCOMPLETE - do not treat missing tracks as deleted.",
+                offset, len(songs), message,
+            )
+            break
+
+        rows = body.get('song') or []
         if not rows:
             break
 
         for row in rows:
             if catalog_ids is not None and str(row.get('catalog')) not in catalog_ids:
                 continue
-            songs.append(_map_song(row))
+            songs.append(_map_catalogue_song(row))
 
         offset += len(rows)
-        if len(rows) < page:
+        if len(rows) < _PAGE_SIZE:
             break
 
     logger.info(f"Fetched {len(songs)} songs from Ampache.")
     return songs
 
 
+def _map_album(album):
+    artist = (album.get('artist') or {}) if isinstance(album.get('artist'), dict) else {}
+    return {
+        **album,
+        'Id': str(album.get('id')),
+        'Name': album.get('name'),
+        'AlbumArtist': artist.get('name'),
+    }
+
+
 def get_recent_albums(limit):
     fetch_all = not limit or int(limit) <= 0
-    params = {'limit': 0 if fetch_all else int(limit), 'sort': 'addition_time,DESC'}
-    body = _request('albums', params)
-    albums = (body or {}).get('album') or []
+    wanted = 0 if fetch_all else int(limit)
 
     catalog_ids = _target_catalog_ids()
-    if isinstance(catalog_ids, set):
-        if not catalog_ids:
-            return []
-        albums = [a for a in albums if str(a.get('catalog')) in catalog_ids]
+    if isinstance(catalog_ids, set) and not catalog_ids:
+        return []
 
-    mapped = [
-        {
-            **a,
-            'Id': str(a.get('id')),
-            'Name': a.get('name'),
-            'AlbumArtist': ((a.get('artist') or {}) if isinstance(a.get('artist'), dict) else {}).get('name'),
-        }
-        for a in albums
-    ]
-    return mapped if fetch_all else mapped[: int(limit)]
+    mapped = []
+    offset = 0
+    page = _PAGE_SIZE if catalog_ids else max(wanted, 1)
+    while True:
+        params = {'offset': offset, 'limit': 0 if fetch_all else page, 'sort': 'addition_time,DESC'}
+        body = _request('albums', params)
+        albums = (body or {}).get('album') or []
+        if not albums:
+            break
+
+        for album in albums:
+            if catalog_ids is not None and str(album.get('catalog')) not in catalog_ids:
+                continue
+            mapped.append(_map_album(album))
+
+        offset += len(albums)
+        if fetch_all or len(albums) < page or len(mapped) >= wanted:
+            break
+
+    return mapped if fetch_all else mapped[:wanted]
 
 
 def get_tracks_from_album(album_id, user_creds=None):
@@ -313,22 +421,13 @@ def search_albums(query, user_creds=None):
 
 
 def download_track(temp_dir, item):
-    """Stream one track to disk, returning the local path."""
     try:
         track_id = item.get('id') or item.get('Id')
-
-        suffix = item.get('suffix') or item.get('format')
-        if suffix and isinstance(suffix, str) and suffix.strip():
-            file_extension = '.' + suffix.strip().replace('/', '').replace('\\', '')
-        elif item.get('Path'):
-            file_extension = os.path.splitext(item['Path'])[1] or '.tmp'
-        else:
-            file_extension = '.tmp'
-
+        file_extension = detect_download_extension(
+            {**item, 'Container': item.get('suffix') or item.get('format')}
+        )
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
 
-        # `download` hands back the original file; `stream` would transcode it and
-        # analysis must see the real audio.
         response = _request('download', {'id': track_id, 'type': 'song'}, stream=True)
         if response is None:
             return None
@@ -361,24 +460,36 @@ def test_connection(user_creds=None):
         }
 
     songs = [_map_song(s) for s in (body.get('song') or [])]
+    path_format = detect_path_format(songs)
+    if path_format != 'absolute':
+        warnings.append(
+            'Ampache is returning relative paths or no paths at all. This happens when '
+            'the catalog was added with a relative path, or when the API user cannot '
+            'read the filename field. Automatic path-based matching will not work well, '
+            'so you will need to manually match most albums in Step 4.'
+        )
     return {
         'ok': True,
         'error': None,
         'auth_failed': False,
         'sample_count': len(songs),
-        'path_format': detect_path_format(songs),
+        'path_format': path_format,
         'warnings': warnings,
     }
 
 
-def get_all_playlists():
-    body = _request('playlists', {'limit': 0})
+def _playlists(user_creds=None):
+    body = _request('playlists', {'limit': 0}, user_creds=user_creds)
     playlists = (body or {}).get('playlist') or []
     return [{**p, 'Id': str(p.get('id')), 'Name': p.get('name')} for p in playlists]
 
 
+def get_all_playlists():
+    return _playlists()
+
+
 def get_playlist_by_name(playlist_name, user_creds=None):
-    for playlist in get_all_playlists():
+    for playlist in _playlists(user_creds=user_creds):
         if playlist.get('Name') == playlist_name:
             return playlist
     return None
@@ -401,10 +512,27 @@ def create_playlist(base_name, item_ids):
         logger.error(f"Ampache refused to create playlist '{base_name}'.")
         return None
 
-    for item_id in item_ids:
-        _request('playlist_add_song', {'filter': playlist_id, 'song': item_id, 'check': 1})
+    wanted = list(item_ids or [])
+    added = 0
+    for item_id in wanted:
+        if _request('playlist_add_song', {'filter': playlist_id, 'song': item_id, 'check': 1}) is not None:
+            added += 1
 
-    return str(playlist_id)
+    if wanted and not added:
+        logger.error(
+            "AMPACHE PLAYLIST '%s' (id=%s) RECEIVED NONE OF ITS %d TRACKS - every "
+            "playlist_add_song call was rejected. The playlist exists on the server but "
+            "is EMPTY; the Ampache error is logged above.",
+            base_name, playlist_id, len(wanted),
+        )
+        return None
+    if added < len(wanted):
+        logger.error(
+            "AMPACHE PLAYLIST '%s' (id=%s) IS INCOMPLETE: Ampache rejected %d of its %d tracks.",
+            base_name, playlist_id, len(wanted) - added, len(wanted),
+        )
+
+    return {'Id': str(playlist_id), 'Name': base_name}
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
@@ -414,8 +542,12 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     user_creds = context.active_creds(user_creds)
     existing = get_playlist_by_name(playlist_name, user_creds=user_creds)
-    if existing:
-        delete_playlist(existing['Id'])
+    if existing and existing.get('Id') and not delete_playlist(existing['Id']):
+        logger.error(
+            f"Ampache create_or_replace_playlist: failed to delete existing "
+            f"'{playlist_name}' (id={existing['Id']}); aborting to avoid creating a duplicate"
+        )
+        return None
     return create_playlist(playlist_name, item_ids)
 
 
@@ -425,7 +557,6 @@ def get_top_played_songs(limit, user_creds):
 
 
 def get_last_played_time(item_id, user_creds):
-    """Ampache exposes no per-track last-played timestamp, so callers get None."""
     return None
 
 

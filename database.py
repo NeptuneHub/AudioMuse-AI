@@ -886,12 +886,12 @@ def purge_media_keys_from_app_config(cur):
 
 def missing_required_creds(server_type, creds):
     """Required-but-empty credential keys for ``server_type``."""
+    server_type = (server_type or '').strip().lower()
+    optional = set(config.MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE.get(server_type, []))
     required = [
         config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
-        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(
-            (server_type or '').strip().lower(), []
-        )
-        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD
+        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(server_type, [])
+        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD and field not in optional
     ]
     creds = creds or {}
     return [key for key in required if not creds.get(key)]

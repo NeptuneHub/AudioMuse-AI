@@ -94,6 +94,7 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 # These are used only if MEDIASERVER_TYPE is "ampache". AMPACHE_PASSWORD takes either the
 # account password or an API key; the handshake tries both, so no separate key field exists.
 AMPACHE_URL = os.environ.get("AMPACHE_URL", "")  # e.g. http://your-ampache-server
+# Optional: an API key authenticates on its own, so leave this empty in that mode.
 AMPACHE_USER = os.environ.get("AMPACHE_USER", "")
 AMPACHE_PASSWORD = os.environ.get("AMPACHE_PASSWORD", "")
 
@@ -113,6 +114,13 @@ MEDIASERVER_FIELDS_BY_TYPE = {
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
     'plex': ['PLEX_URL', 'PLEX_TOKEN'],
     'ampache': ['AMPACHE_URL', 'AMPACHE_USER', 'AMPACHE_PASSWORD'],
+}
+
+# Fields the provider offers but does not require. Ampache's handshake takes an
+# API key in the password field, and an API key needs no username, so demanding
+# one would make the documented API-key-only install impossible to save.
+MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE = {
+    'ampache': ['AMPACHE_USER'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
@@ -177,6 +185,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'POSTGRES_DB',
     'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
+    'MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'MEDIASERVER_CONFIG_KEYS',

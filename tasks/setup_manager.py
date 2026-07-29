@@ -282,13 +282,21 @@ class SetupManager:
 
         return config.MEDIASERVER_FIELDS_BY_TYPE
 
+    @property
+    def server_optional_fields(self):
+        import config
+
+        return config.MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE
+
     def _is_valid_server_config(self, config_module):
         media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
         if media_type not in self.server_required_fields:
             return False
+        optional = set(self.server_optional_fields.get(media_type, []))
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
             for field in self.server_required_fields[media_type]
+            if field not in optional
         )
 
     def _is_valid_auth_config(self, config_module):
