@@ -48,6 +48,7 @@ from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
 from database import get_db, missing_required_creds
+from sanitization import sanitize_string_for_db
 
 logger = logging.getLogger(__name__)
 
@@ -625,14 +626,29 @@ def _staged_map_upsert(db, rows, stage_ddl, stage_insert, conflict_delete,
         cur.close()
 
 
+def _clean_map_text(value, field):
+    text = str(value)
+    cleaned = sanitize_string_for_db(text)
+    if cleaned != text:
+        logger.warning(
+            "Sanitized control characters out of %s %r before map upsert",
+            field, text,
+        )
+    return cleaned
+
+
 def upsert_artist_maps(server_id, mapping, conn=None):
     """Bulk-upsert ``{artist_name: provider_artist_id}`` for one server."""
-    rows_by_provider = {}
+    cleaned = {}
     for name, provider_id in (mapping or {}).items():
         if name and provider_id and server_id:
-            rows_by_provider[str(provider_id)] = (
-                str(name), str(server_id), str(provider_id)
-            )
+            clean_name = _clean_map_text(name, 'artist_name')
+            clean_id = _clean_map_text(provider_id, 'provider_artist_id')
+            if clean_name and clean_id:
+                cleaned[clean_name] = clean_id
+    rows_by_provider = {}
+    for clean_name, clean_id in cleaned.items():
+        rows_by_provider[clean_id] = (clean_name, str(server_id), clean_id)
     rows = list(rows_by_provider.values())
     if not rows:
         return 0
@@ -750,10 +766,14 @@ def upsert_track_maps(server_id, mapping, conn=None):
             continue
         if item_id is None or item_id == '':
             continue
-        provider_track_id = str(provider_track_id)
+        provider_track_id = _clean_map_text(provider_track_id, 'provider_track_id')
+        item_id = _clean_map_text(item_id, 'item_id')
+        if not provider_track_id or not item_id:
+            continue
+        file_path = _clean_map_text(file_path, 'file_path') if file_path else None
         rows_by_provider[provider_track_id] = (
-            str(item_id), server_id, provider_track_id, match_tier,
-            str(file_path) if file_path else None,
+            item_id, server_id, provider_track_id, match_tier,
+            file_path or None,
         )
     rows = list(rows_by_provider.values())
     if not rows:

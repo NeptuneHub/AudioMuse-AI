@@ -72,6 +72,7 @@ from psycopg2.extras import execute_values
 import rq_job_state
 from config import SWEEP_PRUNE_MIN_FETCH_RATIO
 from database import connect_raw, INLINE_FLASK_TASK_TYPES
+from sanitization import sanitize_string_for_db
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
 from tasks.provider_migration_matcher import CandidateIndex
@@ -646,7 +647,7 @@ def prune_stale_mappings(db, server_id, present_ids, refused=None):
     which is indistinguishable from "nothing to prune", so a library that really
     had shrunk by more than half kept its stale mappings and said nothing.
     """
-    present = [(pid,) for pid in present_ids]
+    present = [(_strip_nul(str(pid)),) for pid in present_ids if pid is not None]
     if not present:
         return 0
     cur = db.cursor()
@@ -724,10 +725,12 @@ def _store_server_track_count(db, server_id, track_count):
 
 def _strip_nul(value):
     """Postgres text cannot hold a NUL (0x00) byte, but provider tags and file
-    paths occasionally carry one; execute_values/mogrify raises on it. Strip it
-    from strings so a single bad tag cannot fail the whole sweep write."""
-    if isinstance(value, str) and '\x00' in value:
-        return value.replace('\x00', '')
+    paths occasionally carry one; execute_values/mogrify raises on it. Delegates
+    to the shared sanitizer so every sweep bind site applies the exact transform
+    the registry map upserts apply - a divergence would make the prune anti-join
+    and metadata-refresh join miss rows the registry stored sanitized."""
+    if isinstance(value, str):
+        return sanitize_string_for_db(value)
     return value
 
 
@@ -765,8 +768,11 @@ def _stage_track_metadata(db, tracks):
         provider_id = t.get('id')
         if not provider_id:
             continue
-        rows[str(provider_id)] = (
-            _strip_nul(str(provider_id)), _strip_nul(t.get('album')),
+        clean_id = _strip_nul(str(provider_id))
+        if not clean_id:
+            continue
+        rows[clean_id] = (
+            clean_id, _strip_nul(t.get('album')),
             _strip_nul(t.get('album_artist')),
             t.get('year'), t.get('rating'), _strip_nul(t.get('path')),
         )

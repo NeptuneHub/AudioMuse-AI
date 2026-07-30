@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 from tz_helper import UTC_NOW_SQL
 
-from sanitization import sanitize_db_field
+from sanitization import sanitize_db_field, sanitize_string_for_db
 
 from config import (
     TASK_STATUS_PENDING,
@@ -761,7 +761,7 @@ def persist_chromaprint(server_id, provider_track_id, fingerprint):
             "VALUES (%s, %s, %s, now()) "
             "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
             "fingerprint = EXCLUDED.fingerprint, updated_at = now()",
-            (str(server_id), str(provider_track_id), blob),
+            (str(server_id), sanitize_string_for_db(str(provider_track_id)), blob),
         )
         conn.commit()
     except Exception:
@@ -787,7 +787,7 @@ def get_chromaprint(server_id, provider_track_id):
         cur.execute(
             "SELECT fingerprint FROM chromaprint "
             "WHERE server_id = %s AND provider_track_id = %s",
-            (str(server_id), str(provider_track_id)),
+            (str(server_id), sanitize_string_for_db(str(provider_track_id))),
         )
         row = cur.fetchone()
         return bytes(row[0]) if row and row[0] is not None else None
