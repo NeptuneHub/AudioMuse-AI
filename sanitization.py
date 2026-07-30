@@ -15,6 +15,7 @@ used across the data-access layer and API responses.
 Main Features:
 * ``sanitize_db_field`` removes non-printable characters and truncates to a max length.
 * ``sanitize_string_for_db`` / ``sanitize_json_for_db`` strip NUL and control chars from text and nested JSON.
+* ``sanitize_string_for_db_loud`` is the same transform with a per-value warning when it changed something.
 * ``sanitize_for_json`` converts numpy int/float/bool/array types to native Python.
 """
 
@@ -26,6 +27,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_DB_CONTROL_CHARS = re.compile(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]')
+
 
 def sanitize_string_for_db(value: Optional[str]) -> Optional[str]:
     if value is None:
@@ -34,11 +37,18 @@ def sanitize_string_for_db(value: Optional[str]) -> Optional[str]:
     if not isinstance(value, str):
         value = str(value)
 
-    value = value.replace('\x00', '')
+    return _DB_CONTROL_CHARS.sub('', value)
 
-    value = re.sub(r'[\x01-\x08\x0B-\x0C\x0E-\x1F]', '', value)
 
-    return value
+def sanitize_string_for_db_loud(value, field):
+    text = value if isinstance(value, str) else str(value)
+    cleaned = _DB_CONTROL_CHARS.sub('', text)
+    if cleaned != text:
+        logger.warning(
+            "Sanitized control characters out of %s %r before database write",
+            field, text,
+        )
+    return cleaned
 
 
 def sanitize_db_field(s, max_length=1000, field_name="field"):

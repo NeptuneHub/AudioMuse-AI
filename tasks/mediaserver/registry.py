@@ -48,7 +48,7 @@ from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
 from database import get_db, missing_required_creds
-from sanitization import sanitize_string_for_db
+from sanitization import sanitize_string_for_db, sanitize_string_for_db_loud
 
 logger = logging.getLogger(__name__)
 
@@ -567,19 +567,23 @@ def reverse_translate_ids(provider_ids, server_id=None, conn=None):
     target = server_id or default_id
     if target is None:
         return {i: i for i in ids}
-    cur = db.cursor()
-    try:
-        cur.execute(
-            "SELECT provider_track_id, item_id FROM track_server_map "
-            "WHERE server_id = %s AND provider_track_id = ANY(%s)",
-            (target, ids),
-        )
-        mapped = {r[0]: r[1] for r in cur.fetchall()}
-    finally:
-        cur.close()
+    clean_of = {i: sanitize_string_for_db(i) for i in ids}
+    lookup = [c for c in dict.fromkeys(clean_of.values()) if c]
+    by_clean = {}
+    if lookup:
+        cur = db.cursor()
+        try:
+            cur.execute(
+                "SELECT provider_track_id, item_id FROM track_server_map "
+                "WHERE server_id = %s AND provider_track_id = ANY(%s)",
+                (target, lookup),
+            )
+            by_clean = {r[0]: r[1] for r in cur.fetchall()}
+        finally:
+            cur.close()
     if is_default:
-        return {i: mapped.get(i, i) for i in ids}
-    return mapped
+        return {i: by_clean.get(clean_of[i], i) for i in ids}
+    return {i: by_clean[clean_of[i]] for i in ids if clean_of[i] in by_clean}
 
 
 def canonical_input_ids(item_ids, server_id=None, conn=None):
@@ -626,28 +630,21 @@ def _staged_map_upsert(db, rows, stage_ddl, stage_insert, conflict_delete,
         cur.close()
 
 
-def _clean_map_text(value, field):
-    text = str(value)
-    cleaned = sanitize_string_for_db(text)
-    if cleaned != text:
-        logger.warning(
-            "Sanitized control characters out of %s %r before map upsert",
-            field, text,
-        )
-    return cleaned
-
-
 def upsert_artist_maps(server_id, mapping, conn=None):
     """Bulk-upsert ``{artist_name: provider_artist_id}`` for one server."""
     cleaned = {}
     for name, provider_id in (mapping or {}).items():
         if name and provider_id and server_id:
-            clean_name = _clean_map_text(name, 'artist_name')
-            clean_id = _clean_map_text(provider_id, 'provider_artist_id')
-            if clean_name and clean_id:
-                cleaned[clean_name] = clean_id
+            clean_name = sanitize_string_for_db_loud(name, 'artist_name')
+            clean_id = sanitize_string_for_db_loud(provider_id, 'provider_artist_id')
+            if not clean_name or not clean_id:
+                continue
+            rank = (0 if clean_name == str(name) else 1, clean_id)
+            prev = cleaned.get(clean_name)
+            if prev is None or rank < prev:
+                cleaned[clean_name] = rank
     rows_by_provider = {}
-    for clean_name, clean_id in cleaned.items():
+    for clean_name, (_dirty, clean_id) in cleaned.items():
         rows_by_provider[clean_id] = (clean_name, str(server_id), clean_id)
     rows = list(rows_by_provider.values())
     if not rows:
@@ -682,8 +679,12 @@ def _artist_lookup(values, server_id, conn, map_columns):
     (source, result) column pair, never caller input. The default server's ids now
     live in artist_server_map like every other server's (the legacy artist_mapping
     table was folded in and dropped at startup), so there is no fallback."""
-    wanted = [str(value) for value in values if value]
+    wanted = [str(value) for value in dict.fromkeys(values) if value]
     if not wanted:
+        return {}
+    clean_of = {value: sanitize_string_for_db(value) for value in wanted}
+    lookup = [c for c in dict.fromkeys(clean_of.values()) if c]
+    if not lookup:
         return {}
     db = conn or get_db()
     target = server_id or get_default_server_id(db)
@@ -695,11 +696,16 @@ def _artist_lookup(values, server_id, conn, map_columns):
         cur.execute(
             f"SELECT {src}, {dst} FROM artist_server_map "
             f"WHERE server_id = %s AND {src} = ANY(%s)",
-            (target, wanted),
+            (target, lookup),
         )
-        return {str(row[0]): str(row[1]) for row in cur.fetchall()}
+        by_clean = {str(row[0]): str(row[1]) for row in cur.fetchall()}
     finally:
         cur.close()
+    return {
+        value: by_clean[clean_of[value]]
+        for value in wanted
+        if clean_of[value] in by_clean
+    }
 
 
 def artist_names_for_ids(provider_artist_ids, server_id=None, conn=None):
@@ -766,14 +772,17 @@ def upsert_track_maps(server_id, mapping, conn=None):
             continue
         if item_id is None or item_id == '':
             continue
-        provider_track_id = _clean_map_text(provider_track_id, 'provider_track_id')
-        item_id = _clean_map_text(item_id, 'item_id')
-        if not provider_track_id or not item_id:
+        provider_track_id = sanitize_string_for_db_loud(
+            provider_track_id, 'provider_track_id'
+        )
+        if not provider_track_id:
             continue
-        file_path = _clean_map_text(file_path, 'file_path') if file_path else None
+        file_path = (
+            (sanitize_string_for_db_loud(file_path, 'file_path') or None)
+            if file_path else None
+        )
         rows_by_provider[provider_track_id] = (
-            item_id, server_id, provider_track_id, match_tier,
-            file_path or None,
+            str(item_id), server_id, provider_track_id, match_tier, file_path,
         )
     rows = list(rows_by_provider.values())
     if not rows:

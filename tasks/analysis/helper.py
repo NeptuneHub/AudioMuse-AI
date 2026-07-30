@@ -44,6 +44,7 @@ from config import (
 from database import get_db, save_task_status
 from psycopg2 import OperationalError
 from psycopg2 import sql as pgsql
+from sanitization import sanitize_string_for_db
 
 from error import error_manager
 from error.error_dictionary import ERR_DB_CONNECTION
@@ -144,7 +145,7 @@ def make_task_reporter(task_id, task_type, job, initial_message,
 
 
 def _str_ids(ids):
-    return [str(i) for i in ids]
+    return [sanitize_string_for_db(str(i)) for i in ids]
 
 
 def attach_catalog_item_ids(tracks, server_id=None):
@@ -152,7 +153,9 @@ def attach_catalog_item_ids(tracks, server_id=None):
         return tracks
     from tasks.mediaserver import context, registry
 
-    provider_ids = [str(t.get('Id') or t.get('id')) for t in tracks]
+    provider_ids = [
+        sanitize_string_for_db(str(t.get('Id') or t.get('id'))) for t in tracks
+    ]
     active_server_id = server_id or context.active_server_id()
     mapped = registry.reverse_translate_ids(provider_ids, active_server_id)
     for item, provider_id in zip(tracks, provider_ids):

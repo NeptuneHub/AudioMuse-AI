@@ -378,7 +378,10 @@ def _populate_migration_map_table(cur, mapping):
     for i in range(0, len(_rows), 1000):
         chunk = _rows[i : i + 1000]
         placeholders = ",".join(["(%s,%s)"] * len(chunk))
-        flat = [_sanitize_text(v) if isinstance(v, str) else v for pair in chunk for v in pair]
+        flat = []
+        for old_id, new_id in chunk:
+            flat.append(old_id)
+            flat.append(_sanitize_text(new_id) if isinstance(new_id, str) else new_id)
         cur.execute(
             "INSERT INTO item_id_migration_map (old_id, new_id) VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
             flat,
