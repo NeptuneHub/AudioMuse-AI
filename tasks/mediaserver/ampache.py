@@ -424,6 +424,11 @@ def _error_from_body(body):
     return error, str(error.get('errorCode') or error.get('code') or '')
 
 
+def _err_message(err):
+    """The message from a ``_request_ex`` error, so a log line always says something."""
+    return (err or {}).get('message') or 'unknown error'
+
+
 def _stream_error_body(response):
     try:
         content_type = str((response.headers or {}).get('Content-Type') or '')
@@ -709,8 +714,33 @@ def _log_catalogue_fetch_failure(err, offset, collected):
     logger.error(
         "AMPACHE CATALOGUE FETCH FAILED at offset %d after %d songs (%s). The "
         "returned catalogue is INCOMPLETE - do not treat missing tracks as deleted.",
-        offset, collected, (err or {}).get('message') or 'unknown error',
+        offset, collected, _err_message(err),
     )
+
+
+def _song_page(params, offset, page, user_creds, collected):
+    """One page of a song browse, retried once, as ``(rows, failed)``.
+
+    The retry keeps the catalogue filter and the SAME offset. That is the whole point:
+    the previous behaviour abandoned the filter on the first failure and re-walked the
+    entire unfiltered library, so one transient error on page one cost a full-library
+    enumeration. The budget is per page, so a later page still gets its own retry.
+    """
+    err = None
+    for attempt in (0, 1):
+        body, err = _request_ex(
+            'songs', {**params, 'offset': offset, 'limit': page}, user_creds=user_creds
+        )
+        if body is not None:
+            return body.get('song') or [], False
+        if attempt == 0:
+            logger.warning(
+                "Ampache song browse failed at offset %d (%s); retrying that page "
+                "once before giving up on it.",
+                offset, _err_message(err),
+            )
+    _log_catalogue_fetch_failure(err, offset, collected)
+    return [], True
 
 
 def _collect_songs_for(params, catalog_id, catalog_ids, songs, user_creds):
@@ -728,26 +758,11 @@ def _collect_songs_for(params, catalog_id, catalog_ids, songs, user_creds):
     library enumeration.
     """
     offset = 0
-    retried = False
     page = _page_size()
     while True:
-        body, err = _request_ex(
-            'songs', {**params, 'offset': offset, 'limit': page}, user_creds=user_creds
-        )
-        if body is None:
-            if not retried:
-                retried = True
-                logger.warning(
-                    "Ampache song browse failed at offset %d (%s); retrying that page "
-                    "once before giving up on it.",
-                    offset, (err or {}).get('message') or 'unknown error',
-                )
-                continue
-            _log_catalogue_fetch_failure(err, offset, len(songs))
+        rows, failed = _song_page(params, offset, page, user_creds, len(songs))
+        if failed:
             return 'failed'
-        retried = False
-
-        rows = body.get('song') or []
         if not rows:
             return 'ok'
         if catalog_id is not None and offset == 0 and not _cond_trusted(rows, catalog_id):
@@ -837,7 +852,7 @@ def _log_album_fetch_failure(err, offset, collected):
         "discovery is INCOMPLETE - do not read this as an empty library. With a "
         "library filter set, check that this server supports the 'cond' browse "
         "filter on the albums action.",
-        offset, collected, (err or {}).get('message') or 'unknown error',
+        offset, collected, _err_message(err),
     )
 
 
@@ -981,7 +996,7 @@ def _browse_album_track_ids(album_id, user_creds=None):
     if body is None:
         logger.debug(
             "Ampache browse for album %s failed (%s); falling back to album_songs.",
-            album_id, (err or {}).get('message') or 'unknown error',
+            album_id, _err_message(err),
         )
         return None
 
