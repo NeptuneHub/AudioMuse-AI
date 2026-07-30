@@ -72,6 +72,7 @@ import numpy as np
 
 import config
 from database import connect_raw
+from sanitization import sanitize_string_for_db
 from tasks import simhash
 from tasks.mediaserver import registry
 from tasks.provider_migration_tasks import (
@@ -175,7 +176,7 @@ def _fetch_provider_durations(source_id, conn):
                 server['server_type'], server['creds'], apply_filter=False
             )
         durations = {
-            str(track['id']): track['duration']
+            sanitize_string_for_db(str(track['id'])): track['duration']
             for track in tracks
             if track.get('id') is not None and track.get('duration') is not None
         }
@@ -206,9 +207,10 @@ def _durations_for_rows(cur, ids, rows, provider_durations, source_id):
         for item_id, duration in cur.fetchall():
             durations[str(item_id)] = float(duration)
     unresolved = [i for i in wanted if i not in durations]
-    direct = [i for i in unresolved if i in provider_durations]
-    for item_id in direct:
-        durations[item_id] = provider_durations[item_id]
+    for item_id in unresolved:
+        value = provider_durations.get(sanitize_string_for_db(item_id))
+        if value is not None:
+            durations[item_id] = value
     unresolved = [i for i in unresolved if i not in durations]
     if unresolved and provider_durations:
         for begin in range(0, len(unresolved), _CHUNK_ROWS):
@@ -219,7 +221,7 @@ def _durations_for_rows(cur, ids, rows, provider_durations, source_id):
                 (source_id, chunk),
             )
             for item_id, provider_id in cur.fetchall():
-                value = provider_durations.get(str(provider_id))
+                value = provider_durations.get(sanitize_string_for_db(str(provider_id)))
                 if value is not None:
                     durations.setdefault(str(item_id), value)
     return durations

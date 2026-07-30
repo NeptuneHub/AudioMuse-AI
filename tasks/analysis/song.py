@@ -48,6 +48,8 @@ from database import (
 )
 from psycopg2 import OperationalError
 
+from sanitization import sanitize_string_for_db
+
 from error import error_manager
 from error.error_dictionary import (
     ERR_DB_QUERY,
@@ -588,11 +590,13 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
 
 
 def catalog_item_id(item):
-    return str(item.get('_catalog_item_id') or item.get('Id') or item.get('id'))
+    return sanitize_string_for_db(
+        str(item.get('_catalog_item_id') or item.get('Id') or item.get('id'))
+    )
 
 
 def provider_item_id(item):
-    return str(item.get('Id') or item.get('id'))
+    return sanitize_string_for_db(str(item.get('Id') or item.get('id')))
 
 
 def ensure_musicnn_sessions(onnx_sessions, model_paths, session_recycler, album_name):

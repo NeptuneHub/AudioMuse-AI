@@ -293,8 +293,8 @@ def download_track(temp_dir, item):
                     f.write(chunk)
         logger.info(f"Downloaded '{item.get('Name', 'Unknown')}' to '{local_filename}'")
         return local_filename
-    except Exception:
-        logger.exception(f"Failed to download track {item.get('Name', 'Unknown')}")
+    except Exception as exc:
+        logger.warning(f"Failed to download track {item.get('Name', 'Unknown')}: {exc}")
         return None
 
 

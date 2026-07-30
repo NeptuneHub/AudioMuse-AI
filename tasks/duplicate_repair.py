@@ -74,6 +74,7 @@ from psycopg2.extras import execute_values
 
 import config
 from database import connect_raw
+from sanitization import sanitize_string_for_db
 from tasks import provider_probe
 from tasks import simhash
 from tasks.chromaprint import chromaprints_agree
@@ -169,7 +170,7 @@ def _server_durations(server):
             server['server_type'], server['creds'], apply_filter=True
         )
     return {
-        str(track['id']): track['duration']
+        sanitize_string_for_db(str(track['id'])): track['duration']
         for track in tracks
         if track.get('id') is not None and track.get('duration') is not None
     }
@@ -182,7 +183,10 @@ def _group_duration(provider_ids, durations):
     DURATION_TOLERANCE_SECONDS; the stamped value is the smallest, deterministic
     and within tolerance of the survivor's true length.
     """
-    values = [durations.get(provider_id) for provider_id in provider_ids]
+    values = [
+        durations.get(sanitize_string_for_db(provider_id))
+        for provider_id in provider_ids
+    ]
     if any(value is None for value in values):
         return None
     if (max(values) - min(values)) > config.DURATION_TOLERANCE_SECONDS:
