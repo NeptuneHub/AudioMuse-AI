@@ -15,11 +15,11 @@ Two projects are involved:
 
 AudioMuse-AI can talk to Ampache two ways, and they are not equivalent:
 
-- **`ampache`** — the native connector, using Ampache's own JSON API. This is the
+- **`ampache`** - the native connector, using Ampache's own JSON API. This is the
   one to pick. It reads catalogs, playlists and play statistics the way Ampache
   models them, so catalog filtering and playlist creation behave the way they do
   in the Ampache UI.
-- **`navidrome`** — the OpenSubsonic connector. Ampache serves that API too, so
+- **`navidrome`** - the OpenSubsonic connector. Ampache serves that API too, so
   this works, but everything is seen through the Subsonic model: ids are the
   prefixed Subsonic form (`so-123`), and Ampache-specific concepts are not
   visible.
@@ -38,15 +38,15 @@ analysis means the stored results no longer line up with what the server reports
 
 AudioMuse-AI runs as a small stack: the Flask app, a worker, PostgreSQL and
 Redis. Follow Step 1 of [the Navidrome guide](NAVIDROME.md), which is identical
-here — only the media server chosen in the Setup Wizard differs.
+here - only the media server chosen in the Setup Wizard differs.
 
 In the Setup Wizard pick **Ampache** as the media server and enter:
 
-- **URL** — the base address of your Ampache server, for example
+- **URL** - the base address of your Ampache server, for example
   `http://192.168.1.50`. Do not include `/server/json.server.php`; the connector
   appends its own paths.
-- **User** — an Ampache username.
-- **Password** — either that user's password **or** their API key. The connector
+- **User** - an Ampache username.
+- **Password** - either that user's password **or** their API key. The connector
   tries the API key form first and falls back to password authentication, so
   whichever you have works without any extra setting.
 
@@ -97,7 +97,7 @@ The connector degrades cleanly on an older Ampache, but two things need
   or later, which added the maintained `last_played` column. Earlier servers omit
   the field and the connector returns `None`, so anything ranking by recency
   simply has nothing to sort on. The value is server-wide rather than per-user,
-  matching how Ampache scopes `playcount` — `starred` and `userRating` are its
+  matching how Ampache scopes `playcount` - `starred` and `userRating` are its
   per-user pair. An upgraded database backfills the column from the play history
   it already has, so it is populated for old plays too, not just new ones.
 - **The `sonic_match` API method** is API 8 only. A client pinned to an older API

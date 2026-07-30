@@ -644,11 +644,7 @@ def _page_size():
     artist names individually. Raising this shortens the request count, not the
     work, and makes each request longer.
     """
-    size = getattr(config, 'AMPACHE_PAGE_SIZE', _PAGE_SIZE)
-    try:
-        size = int(size)
-    except (TypeError, ValueError):
-        return _PAGE_SIZE
+    size = config.AMPACHE_PAGE_SIZE
     return size if size > 0 else _PAGE_SIZE
 
 
