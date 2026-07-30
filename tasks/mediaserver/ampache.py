@@ -24,7 +24,9 @@ Two things differ from the Subsonic path and both matter to callers:
   form (``so-1``). A library analysed through one backend is therefore keyed
   differently from the same library analysed through the other.
 * Auth is a handshake that returns a session token, rather than credentials sent
-  on every request. The token is cached per server and re-issued on expiry.
+  on every request. The token is cached per server, its window slides forward on
+  every call the server accepts - the way Ampache's own session does - and it is
+  re-issued only once that window has really lapsed.
 
 Main Features:
 * Trades credentials for a session token that holds either an API key or a
@@ -56,6 +58,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime, timezone
 
 import config
 from . import context
@@ -70,7 +73,14 @@ _API_VERSION = '8.0.0'
 # an older API so the setup wizard says so instead of an analysis finding nothing.
 _MIN_API_MAJOR = 8
 
+# Fallback session window, used only when a handshake reports no usable
+# session_expire. The real length comes from the server.
 _TOKEN_TTL_SECONDS = 3000
+# Ampache extends a session's expiry on every authenticated call, so the cached
+# window slides forward on each success rather than counting down from the
+# handshake. Renewing at a fraction of the window keeps a request from leaving
+# just after the server has dropped the session.
+_SESSION_RENEW_MARGIN = 0.9
 _HANDSHAKE_TIMEOUT_SECONDS = 30
 _REQUEST_TIMEOUT_SECONDS = 60
 _PAGE_SIZE = 500
@@ -154,6 +164,29 @@ def _handshake(url, user, password, timeout=None):
     return None, {'kind': 'auth', 'message': message}
 
 
+def _session_lifetime(body):
+    """How long a fresh session lasts, in seconds, from the handshake body.
+
+    Ampache reports an absolute ISO-8601 ``session_expire``. What the cache needs
+    is a LENGTH, because that expiry slides forward on every authenticated call,
+    so the timestamp is converted once and the duration reapplied on each
+    success. Falls back to the conservative default when the field is missing,
+    unparseable, or implausibly short - an older server, a proxy that rewrites
+    it, or a clock disagreement between us and the server.
+    """
+    raw = str((body or {}).get('session_expire') or '').strip()
+    if not raw:
+        return _TOKEN_TTL_SECONDS
+    try:
+        expires_at = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+    except ValueError:
+        return _TOKEN_TTL_SECONDS
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    seconds = (expires_at - datetime.now(timezone.utc)).total_seconds()
+    return seconds if seconds >= 60 else _TOKEN_TTL_SECONDS
+
+
 def _token(user_creds=None, force=False, timeout=None):
     url, user, password = _creds(user_creds)
     if not url or not password:
@@ -170,15 +203,42 @@ def _token(user_creds=None, force=False, timeout=None):
     if not body:
         return url, None, err
 
+    lifetime = _session_lifetime(body)
     with _token_lock:
         _token_cache[key] = {
             'token': body['auth'],
-            'expires': time.time() + _TOKEN_TTL_SECONDS,
+            # Kept so every later success can reapply the same window.
+            'lifetime': lifetime,
+            'expires': time.time() + lifetime * _SESSION_RENEW_MARGIN,
             # The handshake already reports the API version, so the version gate
             # needs no extra round trip.
             'api': str(body.get('api') or body.get('version') or ''),
         }
     return url, body['auth'], None
+
+
+def _extend_session(user_creds=None):
+    """Slide the cached expiry forward after a call the server accepted.
+
+    Ampache resets a session's expiry on every authenticated request, so a token
+    that is kept busy never needs re-issuing. Without this the cache counts down
+    from the handshake instead, and a long analysis re-handshakes on a timer while
+    the session it already holds is still perfectly valid - once per window, per
+    worker process, for the whole run.
+
+    Only called on success. A session that really has lapsed is what the 4701
+    retry in ``_request_ex`` is for.
+    """
+    url, user, password = _creds(user_creds)
+    if not url:
+        return
+    key = _cache_key(url, user, password)
+    with _token_lock:
+        cached = _token_cache.get(key)
+        if not cached:
+            return
+        lifetime = cached.get('lifetime') or _TOKEN_TTL_SECONDS
+        cached['expires'] = time.time() + lifetime * _SESSION_RENEW_MARGIN
 
 
 def _api_major(version):
@@ -320,10 +380,12 @@ def _attempt_request(action, params, stream, user_creds, timeout, force):
     if err:
         return 'error', None, err
     if passthrough is not None:
+        _extend_session(user_creds)
         return 'ok', passthrough, None
 
     verdict, err = _body_error(action, body, stream)
     if verdict == 'ok':
+        _extend_session(user_creds)
         return 'ok', body, None
     return verdict, None, err
 
