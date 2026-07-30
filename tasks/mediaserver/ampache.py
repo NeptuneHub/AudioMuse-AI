@@ -23,12 +23,18 @@ Two things differ from the Subsonic path and both matter to callers:
 * Track ids here are Ampache's own row ids (``1``), not the prefixed Subsonic
   form (``so-1``). A library analysed through one backend is therefore keyed
   differently from the same library analysed through the other.
-* Auth is a handshake that returns a session token, rather than credentials sent
-  on every request. The token is cached per server, its window slides forward on
-  every call the server accepts - the way Ampache's own session does - and it is
-  re-issued only once that window has really lapsed.
+* Auth is a session token rather than credentials sent on every request. An API
+  key skips the handshake entirely - Ampache takes it from an Authorization header
+  and opens the session itself. A password must handshake; that token is cached
+  per server, its window slides forward on every call the server accepts - the way
+  Ampache's own session does - and it is re-issued only once the window has lapsed.
 
 Main Features:
+* Prefers an API key sent as ``Authorization: Bearer``, which Ampache resolves
+  with findByApiKey and answers by creating the session server-side - so there is
+  no handshake, and no secret in the query string or the web server's access log.
+  Tried on the first request per credential set and remembered, falling back to the
+  handshake on a server that refuses it. A password cannot use this path.
 * Trades credentials for a session token that holds either an API key or a
   time-salted password hash in the same field. The token is cached per
   CREDENTIAL SET (a rotated password never reuses the old session) and
@@ -89,6 +95,15 @@ _AUTH_ERROR_CODES = ('4742', '4704')
 
 _token_cache = {}
 _token_lock = threading.Lock()
+
+# Ampache reads an API key straight from an Authorization header and creates the
+# session itself, so a key-shaped secret needs no handshake at all. Whether a
+# given server accepts that is discovered on the first real request per credential
+# set and remembered here - True: header auth works, False: it was refused and the
+# handshake is used instead. Deliberately not configurable: there is nothing for an
+# operator to decide that the first response does not answer.
+_header_auth = {}
+_header_auth_lock = threading.Lock()
 
 _SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:auth|passphrase|password)=)[^&\s]*')
 _API_KEY_SHAPE = re.compile(r'\A[0-9a-fA-F]{32,}\Z')
@@ -196,7 +211,9 @@ def _token(user_creds=None, force=False, timeout=None):
     key = _cache_key(url, user, password)
     with _token_lock:
         cached = _token_cache.get(key)
-        if cached and not force and cached['expires'] > time.time():
+        # A header-auth entry exists for the version gate and may hold no token,
+        # so require one rather than handing back an empty session.
+        if cached and not force and cached.get('token') and cached.get('expires', 0) > time.time():
             return url, cached['token'], None
 
     body, err = _handshake(url, user, password, timeout=timeout)
@@ -241,6 +258,85 @@ def _extend_session(user_creds=None):
         cached['expires'] = time.time() + lifetime * _SESSION_RENEW_MARGIN
 
 
+def _header_auth_state(url, user, password):
+    with _header_auth_lock:
+        return _header_auth.get(_cache_key(url, user, password))
+
+
+def _remember_header_auth(url, user, password, works):
+    with _header_auth_lock:
+        _header_auth[_cache_key(url, user, password)] = works
+
+
+def _bootstrap_header_auth(url, user, password, timeout=None):
+    """Settle header auth for these credentials with a single bearer ping.
+
+    A bearer-authenticated ``ping`` answers with everything the handshake would
+    have returned - ``api``, ``session_expire`` and an ``auth`` token - so one call
+    both proves the key is accepted and fills the cache the version gate and the
+    expiry window read. It REPLACES the handshake rather than adding to it, and it
+    is cheaper: no password on the wire, and nothing secret in the query string.
+
+    Returns True when header auth is available. A refusal is remembered so the
+    handshake is used from then on; a network failure is not, because it says
+    nothing about whether the header would be accepted.
+    """
+    response, err = _fetch(url, 'ping', None, None, False, timeout, api_key=password)
+    if err:
+        return False
+
+    try:
+        body = response.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    error, _code = _error_from_body(body)
+
+    # An accepted bearer ping carries the server_details payload. Ampache answers
+    # an unauthenticated ping with server/version only, so requiring `api` is what
+    # separates "the key was taken" from "the endpoint merely replied".
+    if error or not body.get('api'):
+        _remember_header_auth(url, user, password, False)
+        logger.info(
+            "Ampache would not take the API key as a bearer token (%s); using the "
+            "handshake for this server instead.",
+            (error or {}).get('message') or (error or {}).get('errorMessage') or 'no api in ping',
+        )
+        return False
+
+    lifetime = _session_lifetime(body)
+    with _token_lock:
+        _token_cache[_cache_key(url, user, password)] = {
+            'token': str(body.get('auth') or ''),
+            'lifetime': lifetime,
+            'expires': time.time() + lifetime * _SESSION_RENEW_MARGIN,
+            'api': str(body.get('api') or body.get('version') or ''),
+        }
+    _remember_header_auth(url, user, password, True)
+    logger.info(
+        "Ampache accepted the API key in an Authorization header (API %s), so this "
+        "server needs no handshake - it opens the session itself.",
+        body.get('api'),
+    )
+    return True
+
+
+def _header_auth_ready(url, user, password, timeout=None):
+    """True when requests for these credentials should carry a bearer header.
+
+    Only a key-shaped secret qualifies: Ampache resolves a bearer token with
+    findByApiKey, so a real password would just be refused - and being refused
+    means having put the password on the wire for nothing.
+    """
+    if not url or not password or not _API_KEY_SHAPE.match(password):
+        return False
+    state = _header_auth_state(url, user, password)
+    if state is not None:
+        return state
+    return _bootstrap_header_auth(url, user, password, timeout)
+
+
 def _api_major(version):
     """Major API version from either the '8.0.0' or the packed '600000' form."""
     text = str(version or '').strip()
@@ -254,8 +350,10 @@ def _api_major(version):
 
 def _cached_api_version(user_creds=None):
     url, user, password = _creds(user_creds)
+    key = _cache_key(url, user, password)
     with _token_lock:
-        cached = _token_cache.get(_cache_key(url, user, password)) or {}
+        cached = _token_cache.get(key) or {}
+    # Filled by the handshake, or by the bearer ping in header-auth mode.
     return cached.get('api')
 
 
@@ -302,12 +400,21 @@ def _close_quietly(response):
         logger.debug("Ampache: closing an errored stream response failed.", exc_info=True)
 
 
-def _fetch(url, action, token, params, stream, timeout):
-    all_params = {'action': action, 'auth': token, 'version': _API_VERSION, **(params or {})}
+def _fetch(url, action, token, params, stream, timeout, api_key=None):
+    all_params = {'action': action, 'version': _API_VERSION, **(params or {})}
+    headers = None
+    if api_key:
+        # Ampache only looks at the Authorization header when there is NO auth
+        # parameter at all (ApiHandler: `if (!isset($input['auth']))`), so the
+        # token has to be absent from the query string, not merely empty.
+        headers = {'Authorization': f'Bearer {api_key}'}
+    else:
+        all_params['auth'] = token
     try:
         response = requests.get(
             f"{url}/server/json.server.php",
             params=all_params,
+            headers=headers,
             stream=stream,
             timeout=timeout or _REQUEST_TIMEOUT_SECONDS,
         )
@@ -362,12 +469,40 @@ def _response_payload(action, response, stream):
         return None, None, {'kind': 'parse', 'message': str(_redact_ampache_secrets(e))}
 
 
+def _evaluate(action, response, stream, user_creds, extend):
+    """A fetched response as ('ok' | 'retry' | 'error', payload, error)."""
+    passthrough, body, err = _response_payload(action, response, stream)
+    if err:
+        return 'error', None, err
+    if passthrough is not None:
+        if extend:
+            _extend_session(user_creds)
+        return 'ok', passthrough, None
+
+    verdict, err = _body_error(action, body, stream)
+    if verdict == 'ok':
+        if extend:
+            _extend_session(user_creds)
+        return 'ok', body, None
+    return verdict, None, err
+
+
 def _attempt_request(action, params, stream, user_creds, timeout, force):
-    """One handshake-and-fetch attempt, reporting 'ok' / 'retry' / 'error'.
+    """One authenticate-and-fetch attempt, reporting 'ok' / 'retry' / 'error'.
 
     'retry' means Ampache reported an expired session, which the caller answers
-    by re-handshaking once with ``force=True``.
+    by re-authenticating once with ``force=True``.
     """
+    url, user, password = _creds(user_creds)
+    if _header_auth_ready(url, user, password, timeout):
+        # Nothing to slide: Ampache opens and extends the session for a
+        # header-authenticated call itself, so the cached window is only there for
+        # the version gate.
+        response, err = _fetch(url, action, None, params, stream, timeout, api_key=password)
+        if err:
+            return 'error', None, err
+        return _evaluate(action, response, stream, user_creds, extend=False)
+
     url, token, err = _token(user_creds, force=force, timeout=timeout)
     if not token:
         return 'error', None, err
@@ -375,19 +510,7 @@ def _attempt_request(action, params, stream, user_creds, timeout, force):
     response, err = _fetch(url, action, token, params, stream, timeout)
     if err:
         return 'error', None, err
-
-    passthrough, body, err = _response_payload(action, response, stream)
-    if err:
-        return 'error', None, err
-    if passthrough is not None:
-        _extend_session(user_creds)
-        return 'ok', passthrough, None
-
-    verdict, err = _body_error(action, body, stream)
-    if verdict == 'ok':
-        _extend_session(user_creds)
-        return 'ok', body, None
-    return verdict, None, err
+    return _evaluate(action, response, stream, user_creds, extend=True)
 
 
 def _request_ex(action, params=None, stream=False, user_creds=None, timeout=None):
