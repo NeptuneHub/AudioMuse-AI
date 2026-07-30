@@ -41,7 +41,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | `PLEX_TOKEN`         | (Required) Plex API token (X-Plex-Token).                               | *(N/A - from Secret)* |
 | `AMPACHE_URL`        | (Required) Your Ampache server's full URL. Needs Ampache API8 or newer. | `https://YOUR_AMPACHE_HOST`       |
 | `AMPACHE_USER`       | (Optional) Ampache username. Leave empty when using an API key.         | *(N/A - from Secret)* |
-| `AMPACHE_PASSWORD`   | (Required) Ampache user password or API key.                            | *(N/A - from Secret)* |
+| `AMPACHE_PASSWORD`   | (Required) Ampache user password or API key. **An API key is preferred.** A key is sent as an `Authorization: Bearer` header and Ampache opens the session itself, so there is no handshake and the secret never reaches the URL or the web server's access log. A password must handshake and travels as a query parameter. | *(N/A - from Secret)* |
 | `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* |
 | `POSTGRES_PASSWORD`  | (Required) PostgreSQL password.                                         | *(N/A - from Secret)* |
 | `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |

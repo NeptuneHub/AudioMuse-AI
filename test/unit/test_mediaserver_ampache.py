@@ -20,8 +20,10 @@ Main Features:
 * A streamed download that errors, or that carries an Ampache JSON error under
   HTTP 200, yields no file
 * list_libraries returns the lowercase id/name both JavaScript consumers read
-* Handshake caches its token per credential SET, re-handshakes once on a lapsed
-  session, and never sends a real password as a plaintext API key
+* Handshake caches its token per credential SET, takes its window from the
+  server's session_expire and slides it forward on every accepted call rather than
+  re-handshaking on a timer, re-handshakes once on a genuinely lapsed session, and
+  never sends a real password as a plaintext API key
 * The library filter is pushed into the query and still enforced locally
 * _map_song exposes the keys analysis and provider_probe read
 """
@@ -36,13 +38,34 @@ def _clear_token_cache():
     from tasks.mediaserver import ampache
 
     ampache._token_cache.clear()
+    ampache._header_auth.clear()
     yield
     ampache._token_cache.clear()
+    ampache._header_auth.clear()
 
 
 @pytest.fixture
 def creds():
     return {'url': 'http://ampache.test', 'user': 'amp', 'password': 'secret'}
+
+
+@pytest.fixture
+def key_creds():
+    """Credentials whose secret is API-key shaped, so header auth is eligible."""
+    return {'url': 'http://ampache.test', 'user': '', 'password': 'a' * 64}
+
+
+def _ping_response(api='8.0.0', **extra):
+    """A bearer-authenticated ping, which carries the whole server_details payload."""
+    return _json_response({
+        'session_expire': '2126-07-30T17:06:45+10:00',
+        'server': api,
+        'version': api,
+        'api': api,
+        'auth': 'a201455bfaecb00b082a5716d3dee64d',
+        'username': 'user',
+        **extra,
+    })
 
 
 @pytest.fixture
@@ -441,6 +464,191 @@ class TestHandshake:
             ampache._request('songs', user_creds=creds)
 
         assert http.get.call_args_list[0].kwargs['timeout'] == ampache._HANDSHAKE_TIMEOUT_SECONDS
+
+    def test_a_successful_call_slides_the_session_window_forward(self, creds):
+        import time
+
+        from tasks.mediaserver import ampache
+
+        key = ampache._cache_key('http://ampache.test', 'amp', 'secret')
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                _json_response({'song': []}),
+                _json_response({'song': []}),
+            ]
+            ampache._request('songs', user_creds=creds)
+            # Stand the cache up as it would look late in a long run, a moment
+            # before the window the handshake opened would have lapsed.
+            ampache._token_cache[key]['expires'] = time.time() + 1
+            ampache._request('songs', user_creds=creds)
+            slid = ampache._token_cache[key]['expires']
+
+        handshakes = [
+            call for call in http.get.call_args_list
+            if (call.kwargs.get('params') or {}).get('action') == 'handshake'
+        ]
+        # Ampache extends a session on every accepted call, so the second request
+        # must reuse the token AND push the expiry back out - not re-handshake on
+        # a timer while the session it holds is still valid.
+        assert len(handshakes) == 1
+        assert slid > time.time() + 60
+
+    def test_the_session_window_comes_from_the_servers_session_expire(self, creds):
+        from datetime import datetime, timedelta, timezone
+
+        from tasks.mediaserver import ampache
+
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=1800)
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok', 'session_expire': expires_at.isoformat()}),
+                _json_response({'song': []}),
+            ]
+            ampache._request('songs', user_creds=creds)
+
+        cached = ampache._token_cache[ampache._cache_key('http://ampache.test', 'amp', 'secret')]
+        assert 1700 < cached['lifetime'] <= 1800
+
+    @pytest.mark.parametrize(
+        'session_expire',
+        [
+            None,                           # older server, field absent
+            '',
+            'not-a-date',                   # a proxy rewrote it
+            0,                              # perpetual_api_session=true reports 0
+            '1970-01-01T00:00:00+00:00',    # already past, or our clock disagrees
+        ],
+    )
+    def test_an_unusable_session_expire_falls_back_to_the_default_window(self, session_expire):
+        from tasks.mediaserver import ampache
+
+        body = {'auth': 'tok'}
+        if session_expire is not None:
+            body['session_expire'] = session_expire
+
+        assert ampache._session_lifetime(body) == ampache._TOKEN_TTL_SECONDS
+
+
+def _authorization(call):
+    return (call.kwargs.get('headers') or {}).get('Authorization')
+
+
+class TestHeaderAuth:
+    """An API key goes in an Authorization header, and Ampache opens the session.
+
+    ApiHandler only reads the header when NO auth parameter is present, so these
+    tests assert the absence of `auth` from the query string as much as the
+    presence of the header.
+    """
+
+    def test_a_key_shaped_secret_pings_once_then_sends_a_bearer_header(self, key_creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [_ping_response(), _json_response({'song': []})]
+            body, err = ampache._request_ex('songs', user_creds=key_creds)
+
+        assert err is None
+        assert body == {'song': []}
+        assert http.get.call_count == 2
+
+        ping, call = http.get.call_args_list
+        assert ping.kwargs['params']['action'] == 'ping'
+        assert _authorization(ping) == 'Bearer ' + 'a' * 64
+        assert _authorization(call) == 'Bearer ' + 'a' * 64
+        # The header is only honoured when the query string carries no auth at all.
+        assert 'auth' not in ping.kwargs['params']
+        assert 'auth' not in call.kwargs['params']
+
+    def test_the_bearer_ping_fills_the_version_gate(self, key_creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [_ping_response(api='8.0.0'), _json_response({'song': []})]
+            ampache._request('songs', user_creds=key_creds)
+
+        # Without this the API-8 warning would go quiet, since nothing handshaked.
+        assert ampache._cached_api_version(key_creds) == '8.0.0'
+        assert ampache._api_version_warning(key_creds) is None
+
+    def test_an_old_server_still_warns_under_header_auth(self, key_creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [_ping_response(api='6.6.0'), _json_response({'song': []})]
+            ampache._request('songs', user_creds=key_creds)
+
+        assert 'API 6' in (ampache._api_version_warning(key_creds) or '')
+
+    def test_a_refused_bearer_ping_falls_back_to_the_handshake(self, key_creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'error': {'errorCode': '4742', 'errorMessage': 'Access Denied'}}),
+                _json_response({'auth': 'tok'}),
+                _json_response({'song': []}),
+            ]
+            body, err = ampache._request_ex('songs', user_creds=key_creds)
+
+        assert err is None
+        assert body == {'song': []}
+
+        ping, handshake, call = http.get.call_args_list
+        assert ping.kwargs['params']['action'] == 'ping'
+        assert handshake.kwargs['params']['action'] == 'handshake'
+        # Back on the session path: token in the query string, no header.
+        assert call.kwargs['params']['auth'] == 'tok'
+        assert _authorization(call) is None
+
+    def test_an_unauthenticated_ping_reply_is_not_mistaken_for_acceptance(self, key_creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            # Ampache answers a ping it did not authenticate with server/version
+            # only - no `api`, no session. That must not read as success.
+            http.get.side_effect = [
+                _json_response({'server': '8.0.0', 'version': '8.0.0'}),
+                _json_response({'auth': 'tok'}),
+                _json_response({'song': []}),
+            ]
+            ampache._request('songs', user_creds=key_creds)
+
+        assert http.get.call_args_list[1].kwargs['params']['action'] == 'handshake'
+        assert ampache._header_auth[ampache._cache_key('http://ampache.test', '', 'a' * 64)] is False
+
+    def test_the_bearer_ping_happens_once_per_credential_set(self, key_creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _ping_response(),
+                _json_response({'song': []}),
+                _json_response({'song': []}),
+            ]
+            ampache._request('songs', user_creds=key_creds)
+            ampache._request('songs', user_creds=key_creds)
+
+        pings = [
+            call for call in http.get.call_args_list
+            if call.kwargs['params']['action'] == 'ping'
+        ]
+        assert len(pings) == 1
+        assert http.get.call_count == 3
+
+    def test_a_password_never_travels_as_a_bearer_header(self, creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [_json_response({'auth': 'tok'}), _json_response({'song': []})]
+            ampache._request('songs', user_creds=creds)
+
+        # No ping, no header: a password would only be refused by findByApiKey, and
+        # being refused means having sent it for nothing.
+        assert http.get.call_count == 2
+        assert http.get.call_args_list[0].kwargs['params']['action'] == 'handshake'
+        assert all(_authorization(call) is None for call in http.get.call_args_list)
 
 
 class TestLibraryFilter:
