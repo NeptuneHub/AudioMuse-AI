@@ -40,10 +40,12 @@ def _clear_token_cache():
     ampache._token_cache.clear()
     ampache._header_auth.clear()
     ampache._album_lyrics.clear()
+    ampache._album_catalogs.clear()
     yield
     ampache._token_cache.clear()
     ampache._header_auth.clear()
     ampache._album_lyrics.clear()
+    ampache._album_catalogs.clear()
 
 
 @pytest.fixture
@@ -1139,6 +1141,148 @@ class TestLyricsFromTheAlbumFetch:
             ampache.get_tracks_from_album('214980')
 
         assert ampache._album_lyrics == {}
+
+
+class TestAlbumTrackIds:
+    """The dispatch loop needs ids and a count, so it does not pay for metadata.
+
+    `browse` answers through Catalog::get_name_array (id/name/prefix/basename), which
+    skips the per-song hydration an `album_songs` row costs. Every case that cannot be
+    trusted falls back to `album_songs`, because a SHORT list is worse than a slow one:
+    the dispatcher compares the count against the tracks already analysed, so a
+    truncated album looks finished and gets skipped.
+    """
+
+    def _browse(self, ids, total=None):
+        rows = [{'id': i, 'name': f'Track {i}'} for i in ids]
+        return _json_response({
+            'total_count': len(ids) if total is None else total,
+            'parent_type': 'album',
+            'child_type': 'song',
+            'browse': rows,
+        })
+
+    def test_browse_returns_the_ids_without_an_album_songs_call(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                self._browse(['1121487', '1121488', '1121489', '1121490']),
+            ]
+            ids = ampache.get_album_track_ids('181398')
+
+        assert ids == ['1121487', '1121488', '1121489', '1121490']
+        actions = [c.kwargs['params']['action'] for c in http.get.call_args_list]
+        assert 'album_songs' not in actions
+        assert actions[-1] == 'browse'
+
+    def test_the_browse_asks_for_the_album_whole_with_no_offset_or_limit(self, configured):
+        """The reply is validated against total_count instead of being paged."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [_json_response({'auth': 'tok'}), self._browse(['1', '2'])]
+            ampache.get_album_track_ids('181398')
+
+        params = http.get.call_args_list[-1].kwargs['params']
+        assert params['type'] == 'album'
+        assert params['filter'] == '181398'
+        assert 'offset' not in params
+        assert 'limit' not in params
+
+    def test_the_catalogue_id_album_discovery_reported_is_sent(self, configured):
+        """Stock Ampache 8 refuses a sub-type browse without it."""
+        from tasks.mediaserver import ampache
+
+        ampache._remember_album_catalogs([{'id': '181398', 'catalog': '2'}])
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [_json_response({'auth': 'tok'}), self._browse(['1'])]
+            ampache.get_album_track_ids('181398')
+
+        assert http.get.call_args_list[-1].kwargs['params']['catalog'] == '2'
+
+    def test_an_unknown_catalogue_omits_the_parameter_rather_than_sending_a_blank(
+        self, configured
+    ):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [_json_response({'auth': 'tok'}), self._browse(['1'])]
+            ampache.get_album_track_ids('181398')
+
+        assert 'catalog' not in http.get.call_args_list[-1].kwargs['params']
+
+    def test_a_total_count_that_disagrees_falls_back_instead_of_returning_short(
+        self, configured
+    ):
+        """The silent-skip guard: 2 rows for a reported 7 must not be believed."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                self._browse(['1', '2'], total=7),
+                _json_response({'song': [{'id': str(n)} for n in range(1, 8)]}),
+            ]
+            ids = ampache.get_album_track_ids('181398')
+
+        assert ids == [str(n) for n in range(1, 8)]
+        assert http.get.call_args_list[-1].kwargs['params']['action'] == 'album_songs'
+
+    def test_a_missing_total_count_is_not_trusted_either(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                _json_response({'browse': [{'id': '1'}, {'id': '2'}]}),
+                _json_response({'song': [{'id': '1'}, {'id': '2'}]}),
+            ]
+            ids = ampache.get_album_track_ids('181398')
+
+        assert ids == ['1', '2']
+        assert http.get.call_args_list[-1].kwargs['params']['action'] == 'album_songs'
+
+    def test_a_refused_browse_falls_back_to_album_songs(self, configured):
+        """A server that will not browse without a catalogue it never reported."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                _json_response({'error': {'errorCode': '4710', 'errorMessage': 'Bad Request: catalog'}}),
+                _json_response({'song': [{'id': '55'}]}),
+            ]
+            ids = ampache.get_album_track_ids('181398')
+
+        assert ids == ['55']
+        assert http.get.call_args_list[-1].kwargs['params']['action'] == 'album_songs'
+
+    def test_an_album_with_no_songs_reports_an_empty_list(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                _json_response({}),
+                _json_response({'song': []}),
+            ]
+
+            assert ampache.get_album_track_ids('181398') == []
+
+    def test_album_discovery_records_the_catalogue_of_every_album_it_keeps(self):
+        from tasks.mediaserver import ampache
+
+        ampache._remember_album_catalogs([
+            {'id': 1, 'catalog': 2},
+            {'id': '3', 'catalog': '4'},
+            {'id': '5'},
+        ])
+
+        assert ampache._cached_album_catalog('1') == '2'
+        assert ampache._cached_album_catalog(3) == '4'
+        assert ampache._cached_album_catalog('5') is None
 
 
 class TestSecretRedaction:

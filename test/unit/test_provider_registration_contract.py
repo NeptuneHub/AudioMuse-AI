@@ -118,6 +118,39 @@ def test_every_backend_binds_to_every_dispatcher_call_site(provider):
     assert not failures, f'{provider} backend does not match the dispatcher: ' + '; '.join(failures)
 
 
+# Optional provider capabilities: the dispatcher resolves these with getattr and
+# supplies its own fallback, so a backend is NOT required to implement one. Pinning
+# them in DISPATCHER_CALLS would force five backends to carry a wrapper they do not
+# need; this instead checks that the ones which DO implement it match the call, and
+# that the fallback covers the ones which do not.
+OPTIONAL_DISPATCHER_CALLS = (
+    ('get_album_track_ids', 1, ('user_creds',)),
+)
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+def test_optional_capabilities_bind_when_a_backend_implements_them(provider):
+    backend = import_module('tasks.mediaserver.' + provider)
+    for attribute, positional, keywords in OPTIONAL_DISPATCHER_CALLS:
+        function = getattr(backend, attribute, None)
+        if function is None:
+            continue
+        inspect.signature(function).bind(*range(positional), **{k: None for k in keywords})
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+def test_album_track_ids_falls_back_to_the_full_fetch_for_every_backend(provider):
+    """A backend without the lighter call must still answer with ids, not crash."""
+    from tasks import mediaserver
+
+    backend = import_module('tasks.mediaserver.' + provider)
+    tracks = [{'Id': '11'}, {'id': 22}]
+    with patch.object(mediaserver, '_provider', return_value=backend), \
+         patch.object(backend, 'get_tracks_from_album', return_value=tracks, create=True), \
+         patch.object(backend, 'get_album_track_ids', create=True, new=None):
+        assert mediaserver.get_album_track_ids('album-1') == ['11', '22']
+
+
 def _http_json(payload):
     response = MagicMock()
     response.json.return_value = payload

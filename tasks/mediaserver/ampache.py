@@ -51,6 +51,12 @@ Main Features:
   server's first page.
 * Downloads the original file rather than a transcoded stream, refusing a
   response that carries an Ampache JSON error under HTTP 200 instead of audio.
+* Answers "which tracks are on this album" with a ``browse`` when only ids are
+  wanted, which returns a name array instead of hydrating every song. The analysis
+  dispatcher needs ids and a count to decide what to enqueue and nothing more.
+  Anything that cannot be trusted - an unknown catalogue id, a total that does not
+  match the rows returned - falls back to the full ``album_songs`` fetch, because a
+  short list would make an unfinished album look complete.
 * Serves lyrics from the album fetch that already returned them. Ampache
   serialises a single ``song`` and an ``album_songs`` row through the same
   songs_array, so asking per track re-paid that row's whole hydration cost to
@@ -128,6 +134,20 @@ _LYRICS_CACHE_MAX = 5000
 # needs no request. Only an absent entry justifies one, so absence needs a sentinel
 # that None cannot be confused with.
 _LYRICS_UNCACHED = object()
+
+# Stock Ampache 8 requires `catalog` on a sub-type browse alongside `filter`
+# (BrowseMethod.php: `foreach (['filter', 'catalog'] as $parameter)`), so the album's
+# catalogue id has to be known before its songs can be browsed. Album discovery
+# already reads that field off every album row - the API-8 gate and the library
+# filter both depend on it - so it is recorded here for the dispatch loop, which runs
+# in the same process as the discovery that fills it.
+_album_catalogs = {}
+_album_catalogs_lock = threading.Lock()
+# Bounded by the library's album count in practice. Unlike the lyrics cache this is
+# NOT cleared wholesale on overflow: entries are added during discovery and read
+# later, so clearing would strand albums the loop has not reached yet. Overflow stops
+# recording instead, and the albums past the ceiling fall back to the heavier fetch.
+_ALBUM_CATALOG_CACHE_MAX = 100000
 
 _SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:auth|passphrase|password)=)[^&\s]*')
 _API_KEY_SHAPE = re.compile(r'\A[0-9a-fA-F]{32,}\Z')
@@ -791,6 +811,26 @@ def _album_query_plan(catalog_ids):
     return [{'cond': f'catalog,{catalog_id}'} for catalog_id in sorted(catalog_ids)]
 
 
+def _remember_album_catalogs(rows):
+    """Record each album's catalogue id so its songs can be browsed later."""
+    fresh = {
+        str(row.get('id')): str(row.get('catalog'))
+        for row in rows
+        if isinstance(row, dict) and row.get('id') is not None and row.get('catalog') is not None
+    }
+    if not fresh:
+        return
+    with _album_catalogs_lock:
+        if len(_album_catalogs) >= _ALBUM_CATALOG_CACHE_MAX:
+            return
+        _album_catalogs.update(fresh)
+
+
+def _cached_album_catalog(album_id):
+    with _album_catalogs_lock:
+        return _album_catalogs.get(str(album_id))
+
+
 def _log_album_fetch_failure(err, offset, collected):
     logger.error(
         "AMPACHE ALBUM FETCH FAILED at offset %d after %d albums (%s). Album "
@@ -833,6 +873,7 @@ def _collect_albums_for(base_params, catalog_ids, fetch_all, wanted, collected):
                 sorted(catalog_ids), _MIN_API_MAJOR,
             )
             return
+        _remember_album_catalogs(kept)
         for row in kept:
             collected.setdefault(str(row.get('id')), _map_album(row))
         offset += len(rows)
@@ -901,6 +942,83 @@ def get_tracks_from_album(album_id, user_creds=None):
     rows = (body or {}).get('song') or []
     _remember_album_lyrics(rows)
     return [_map_song(s) for s in rows]
+
+
+def _browse_total_count(body, ids):
+    """True when the browse reported a total that matches the rows it returned.
+
+    A ``total_count`` that disagrees means the answer was truncated (or is not the
+    shape expected), and a short list is worse here than a failed request: the
+    dispatch loop compares this count against the number of tracks already analysed,
+    so a truncated album looks finished and is silently skipped. An absent
+    ``total_count`` is treated the same way, since there is then nothing to check
+    against.
+    """
+    try:
+        return int(body.get('total_count')) == len(ids)
+    except (TypeError, ValueError):
+        return False
+
+
+def _browse_album_track_ids(album_id, user_creds=None):
+    """Song ids for one album via ``browse``, or None when it cannot be trusted.
+
+    ``browse`` answers through ``Catalog::get_name_array`` - id, name, prefix and
+    basename, nothing else - so it skips the per-song hydration (rating, userflag, art,
+    album name, artist names) that makes an ``album_songs`` row expensive to produce.
+    A caller that only needs ids and a count should not pay for the rest.
+
+    Deliberately sends no ``offset``/``limit``: the album is asked for whole, and a
+    reply that does not account for every row is rejected rather than paged. Returns
+    None for every case a caller must not read as "this album has no tracks", so the
+    fallback stays responsible for that distinction.
+    """
+    params = {'type': 'album', 'filter': album_id}
+    catalog_id = _cached_album_catalog(album_id)
+    if catalog_id:
+        params['catalog'] = catalog_id
+    body, err = _request_ex('browse', params, user_creds=user_creds)
+    if body is None:
+        logger.debug(
+            "Ampache browse for album %s failed (%s); falling back to album_songs.",
+            album_id, (err or {}).get('message') or 'unknown error',
+        )
+        return None
+
+    rows = body.get('browse')
+    if not isinstance(rows, list) or not rows:
+        return None
+    ids = [
+        str(row.get('id'))
+        for row in rows
+        if isinstance(row, dict) and row.get('id') is not None
+    ]
+    if not ids or not _browse_total_count(body, ids):
+        logger.debug(
+            "Ampache browse for album %s returned %d usable ids for a reported total "
+            "of %r; falling back to album_songs rather than risk a short list.",
+            album_id, len(ids), body.get('total_count'),
+        )
+        return None
+    return ids
+
+
+def get_album_track_ids(album_id, user_creds=None):
+    """Track ids for one album, without serialising each track's metadata.
+
+    Falls back to the full ``album_songs`` fetch whenever ``browse`` cannot be
+    trusted - a server that will not browse without a catalogue id it never reported,
+    an album whose catalogue is unknown, or any answer that does not account for every
+    row. The fallback returns the same ids, just more expensively, so a refusal costs
+    speed and never correctness.
+    """
+    ids = _browse_album_track_ids(album_id, user_creds=user_creds)
+    if ids is not None:
+        return ids
+    return [
+        str(track.get('Id') or track.get('id'))
+        for track in (get_tracks_from_album(album_id, user_creds=user_creds) or [])
+    ]
 
 
 def search_albums(query, user_creds=None):
