@@ -661,37 +661,97 @@ class TestLibraryFilter:
             songs = ampache.get_all_songs(user_creds=creds)
 
         action, params = request.call_args[0][0], request.call_args[0][1]
-        assert action == 'advanced_search'
-        assert params['rule_1'] == 'catalog'
-        assert params['rule_1_input'] == '2'
+        # A plain browse with an indexed `song.catalog = N`, not an advanced_search
+        # building the same rows out of OR'd rules.
+        assert action == 'songs'
+        assert params['cond'] == 'catalog,2'
         assert [s['Id'] for s in songs] == ['1']
 
-    def test_a_server_that_ignores_the_rule_is_still_filtered_locally(self, creds):
+    def test_several_catalogues_are_one_browse_each(self, creds):
         from tasks.mediaserver import ampache
 
-        with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
+        with patch.object(ampache, '_target_catalog_ids', return_value={'2', '3'}), \
              patch.object(ampache, '_request_ex') as request:
-            request.return_value = (
-                {'song': [{'id': 1, 'catalog': 2}, {'id': 2, 'catalog': 7}]},
-                None,
-            )
+            request.side_effect = [
+                ({'song': [{'id': 1, 'catalog': 2}]}, None),
+                ({'song': [{'id': 2, 'catalog': 3}]}, None),
+            ]
             songs = ampache.get_all_songs(user_creds=creds)
 
+        assert [c[0][1]['cond'] for c in request.call_args_list] == ['catalog,2', 'catalog,3']
+        assert sorted(s['Id'] for s in songs) == ['1', '2']
+
+    def test_an_ignored_cond_falls_back_to_one_unfiltered_walk(self, creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value={'2', '3'}), \
+             patch.object(ampache, '_request_ex') as request:
+            request.side_effect = [
+                # Rows from outside catalogue 2 prove the cond was ignored, so the
+                # library must not be walked once per catalogue.
+                ({'song': [{'id': 1, 'catalog': 2}, {'id': 2, 'catalog': 7}]}, None),
+                ({'song': [{'id': 1, 'catalog': 2}, {'id': 2, 'catalog': 7}]}, None),
+            ]
+            songs = ampache.get_all_songs(user_creds=creds)
+
+        assert request.call_count == 2
+        assert 'cond' not in request.call_args_list[1][0][1]
+        # Filtered locally, and counted once rather than once per catalogue.
         assert [s['Id'] for s in songs] == ['1']
 
-    def test_an_unsupported_advanced_search_falls_back_to_a_full_fetch(self, creds):
+    def test_a_page_that_reports_no_catalogue_id_is_not_trusted(self, creds):
         from tasks.mediaserver import ampache
 
         with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
              patch.object(ampache, '_request_ex') as request:
             request.side_effect = [
-                (None, {'kind': 'api', 'message': 'bad request'}),
-                ({'song': [{'id': 1, 'catalog': 2}, {'id': 2, 'catalog': 7}]}, None),
+                ({'song': [{'id': 1}]}, None),
+                ({'song': [{'id': 1, 'catalog': 2}]}, None),
+            ]
+            ampache.get_all_songs(user_creds=creds)
+
+        assert 'cond' not in request.call_args_list[1][0][1]
+
+    def test_a_transient_failure_retries_the_page_instead_of_dropping_the_filter(self, creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
+             patch.object(ampache, '_request_ex') as request:
+            request.side_effect = [
+                (None, {'kind': 'api', 'message': 'bad gateway'}),
+                ({'song': [{'id': 1, 'catalog': 2}]}, None),
             ]
             songs = ampache.get_all_songs(user_creds=creds)
 
-        assert request.call_args_list[1][0][0] == 'songs'
+        # Both calls keep the filter: one 500 must not cost a full-library walk.
+        assert [c[0][1].get('cond') for c in request.call_args_list] == ['catalog,2', 'catalog,2']
         assert [s['Id'] for s in songs] == ['1']
+
+    def test_a_page_that_fails_twice_reports_an_incomplete_catalogue(self, creds, caplog):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value={'2'}), \
+             patch.object(ampache, '_request_ex') as request:
+            request.side_effect = [
+                (None, {'kind': 'api', 'message': 'gone'}),
+                (None, {'kind': 'api', 'message': 'gone'}),
+            ]
+            with caplog.at_level('ERROR'):
+                songs = ampache.get_all_songs(user_creds=creds)
+
+        assert songs == []
+        assert 'INCOMPLETE' in caplog.text
+
+    def test_the_page_size_is_configurable(self, creds):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, '_target_catalog_ids', return_value=None), \
+             patch.object(ampache.config, 'AMPACHE_PAGE_SIZE', 25, create=True), \
+             patch.object(ampache, '_request_ex') as request:
+            request.return_value = ({'song': []}, None)
+            ampache.get_all_songs(user_creds=creds)
+
+        assert request.call_args[0][1]['limit'] == 25
 
     def test_a_catalogue_row_carries_only_the_keys_consumers_read(self, creds):
         from tasks.mediaserver import ampache

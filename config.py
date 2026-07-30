@@ -114,11 +114,18 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 
 # --- Ampache Constants ---
 # These are used only if MEDIASERVER_TYPE is "ampache". AMPACHE_PASSWORD takes either the
-# account password or an API key; the handshake tries both, so no separate key field exists.
+# account password or an API key; an API key is preferred, because it is sent as an
+# Authorization header and Ampache opens the session itself - no handshake, and no secret
+# in the query string. A password has to handshake and travels as a query parameter.
 AMPACHE_URL = os.environ.get("AMPACHE_URL", "")  # e.g. https://your-ampache-server
 # Optional: an API key authenticates on its own, so leave this empty in that mode.
 AMPACHE_USER = os.environ.get("AMPACHE_USER", "")
 AMPACHE_PASSWORD = os.environ.get("AMPACHE_PASSWORD", "")
+# Rows per page when paging Ampache browse results: the full catalogue enumeration used by the
+# sweep and cleaning, and album discovery. Ampache does per-object work on every row it
+# serialises, so a bigger page cuts the number of requests but not the server's cost, and makes
+# each request longer. Raise it only on a fast local server.
+AMPACHE_PAGE_SIZE = int(os.environ.get("AMPACHE_PAGE_SIZE", "500") or 500)
 
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
