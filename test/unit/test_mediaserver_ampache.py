@@ -39,9 +39,11 @@ def _clear_token_cache():
 
     ampache._token_cache.clear()
     ampache._header_auth.clear()
+    ampache._album_lyrics.clear()
     yield
     ampache._token_cache.clear()
     ampache._header_auth.clear()
+    ampache._album_lyrics.clear()
 
 
 @pytest.fixture
@@ -1018,6 +1020,125 @@ class TestTrackMapping:
         assert mapped['Name'] == 'Unknown'
         assert mapped['AlbumArtist'] == 'Unknown'
         assert mapped['ArtistId'] is None
+
+
+class TestLyricsFromTheAlbumFetch:
+    """album_songs already carries lyrics, so the lyrics stage need not refetch.
+
+    Ampache serialises `song` and `album_songs` through the same
+    Json8_Data::songs_array, so the per-track `song` call the lyrics stage used to make
+    asked for a field the album fetch had already returned - and repeated all of that
+    row's hydration to get it.
+    """
+
+    def _album_body(self, songs):
+        return _json_response({'song': songs})
+
+    def test_the_album_fetch_serves_the_lyrics_stage_with_no_further_request(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                self._album_body([{'id': '1368676', 'title': 'Feel Small', 'lyrics': 'la la'}]),
+            ]
+            ampache.get_tracks_from_album('214980')
+            calls_after_album = http.get.call_count
+
+            assert ampache.get_lyrics('1368676') == 'la la'
+
+        assert http.get.call_count == calls_after_album
+
+    def test_a_null_lyrics_field_is_an_answer_and_costs_no_request(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                self._album_body([{'id': '1368676', 'lyrics': None}]),
+            ]
+            ampache.get_tracks_from_album('214980')
+            calls_after_album = http.get.call_count
+
+            assert ampache.get_lyrics('1368676') is None
+
+        assert http.get.call_count == calls_after_album
+
+    def test_a_row_that_omits_the_field_entirely_still_falls_back_to_the_song_call(
+        self, configured
+    ):
+        """A missing key says nothing about the track, unlike an explicit null."""
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                self._album_body([{'id': '1368676', 'title': 'Feel Small'}]),
+                _json_response({'song': [{'id': '1368676', 'lyrics': 'fetched'}]}),
+            ]
+            ampache.get_tracks_from_album('214980')
+
+            assert ampache.get_lyrics('1368676') == 'fetched'
+
+        assert http.get.call_args_list[-1].kwargs['params']['action'] == 'song'
+
+    def test_a_track_no_album_fetch_ever_covered_still_falls_back(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                _json_response({'song': [{'id': '99', 'lyrics': 'fetched'}]}),
+            ]
+
+            assert ampache.get_lyrics('99') == 'fetched'
+
+        assert http.get.call_args_list[-1].kwargs['params']['action'] == 'song'
+
+    def test_an_integer_row_id_is_cached_under_the_string_key_callers_use(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                self._album_body([{'id': 1368676, 'lyrics': 'la'}]),
+            ]
+            ampache.get_tracks_from_album('214980')
+
+            assert ampache.get_lyrics(1368676) == 'la'
+            assert ampache.get_lyrics('1368676') == 'la'
+
+    def test_the_cache_is_bounded_but_always_keeps_the_album_just_fetched(self, configured):
+        """Eviction must not drop the rows the caller is about to read."""
+        from tasks.mediaserver import ampache
+
+        ampache._album_lyrics.update(
+            {str(n): 'old' for n in range(ampache._LYRICS_CACHE_MAX)}
+        )
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                self._album_body([{'id': 'fresh', 'lyrics': 'new'}]),
+            ]
+            ampache.get_tracks_from_album('214980')
+            calls_after_album = http.get.call_count
+
+            assert len(ampache._album_lyrics) <= ampache._LYRICS_CACHE_MAX
+            assert ampache.get_lyrics('fresh') == 'new'
+
+        assert http.get.call_count == calls_after_album
+
+    def test_an_album_fetch_that_fails_caches_nothing(self, configured):
+        from tasks.mediaserver import ampache
+
+        with patch.object(ampache, 'requests') as http:
+            http.get.side_effect = [
+                _json_response({'auth': 'tok'}),
+                _json_response({'error': {'errorCode': '4704', 'errorMessage': 'no album'}}),
+            ]
+            ampache.get_tracks_from_album('214980')
+
+        assert ampache._album_lyrics == {}
 
 
 class TestSecretRedaction:

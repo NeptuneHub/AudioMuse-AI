@@ -51,6 +51,10 @@ Main Features:
   server's first page.
 * Downloads the original file rather than a transcoded stream, refusing a
   response that carries an Ampache JSON error under HTTP 200 instead of audio.
+* Serves lyrics from the album fetch that already returned them. Ampache
+  serialises a single ``song`` and an ``album_songs`` row through the same
+  songs_array, so asking per track re-paid that row's whole hydration cost to
+  re-read one field. A caller with no album context still falls back to ``song``.
 * Reads play stats and lyrics, and manages playlists through the shared
   dispatcher contract: creation returns the ``{'Id', 'Name'}`` dict callers
   dereference, a playlist that received none of its tracks is not reported as
@@ -105,6 +109,25 @@ _token_lock = threading.Lock()
 # operator to decide that the first response does not answer.
 _header_auth = {}
 _header_auth_lock = threading.Lock()
+
+# Ampache serialises a single `song` and an `album_songs` row through the SAME
+# Json8_Data::songs_array, so an album fetch has already returned the lyrics the
+# lyrics stage would otherwise ask for one track at a time - and that per-song call
+# repeats every bit of hydration (rating, userflag, art, album and artist lookups)
+# the album fetch just paid for. The rows are kept here for the lyrics stage, which
+# runs in the same job and process as the album fetch that filled it.
+#
+# Keyed by track id alone, with no credential set in the key: `lyrics` comes off the
+# song row itself, not from the calling user (unlike rating and flag, which
+# songs_array resolves per user), so it does not vary between callers.
+_album_lyrics = {}
+_album_lyrics_lock = threading.Lock()
+# A whole-library run walks every album in one job, so the cache needs a ceiling.
+_LYRICS_CACHE_MAX = 5000
+# A cached None means "Ampache says this song has no lyrics", which is an answer and
+# needs no request. Only an absent entry justifies one, so absence needs a sentinel
+# that None cannot be confused with.
+_LYRICS_UNCACHED = object()
 
 _SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:auth|passphrase|password)=)[^&\s]*')
 _API_KEY_SHAPE = re.compile(r'\A[0-9a-fA-F]{32,}\Z')
@@ -844,9 +867,40 @@ def get_recent_albums(limit):
     return mapped if fetch_all else mapped[:wanted]
 
 
+def _remember_album_lyrics(rows):
+    """Keep the lyrics an ``album_songs`` response already carried.
+
+    Only a row that actually carries the field is remembered. ``lyrics: null`` is
+    Ampache answering "this song has none", which is worth caching; a row missing the
+    key entirely says nothing and must still fall back to a request.
+    """
+    fresh = {
+        str(row.get('id')): row.get('lyrics') or None
+        for row in rows
+        if isinstance(row, dict) and 'lyrics' in row and row.get('id') is not None
+    }
+    if not fresh:
+        return
+    with _album_lyrics_lock:
+        # Dropped wholesale rather than by age: the lyrics stage reads an entry in the
+        # same job, right after the album is fetched, and the album just fetched
+        # survives because it is added after the clear. A dropped entry costs one
+        # fallback request, never a wrong answer.
+        if len(_album_lyrics) + len(fresh) > _LYRICS_CACHE_MAX:
+            _album_lyrics.clear()
+        _album_lyrics.update(fresh)
+
+
+def _cached_album_lyrics(track_id):
+    with _album_lyrics_lock:
+        return _album_lyrics.get(str(track_id), _LYRICS_UNCACHED)
+
+
 def get_tracks_from_album(album_id, user_creds=None):
     body = _request('album_songs', {'filter': album_id}, user_creds=user_creds)
-    return [_map_song(s) for s in ((body or {}).get('song') or [])]
+    rows = (body or {}).get('song') or []
+    _remember_album_lyrics(rows)
+    return [_map_song(s) for s in rows]
 
 
 def search_albums(query, user_creds=None):
@@ -1028,6 +1082,16 @@ def get_last_played_time(_item_id, _user_creds=None):
 
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Lyrics for one track, preferring what the album fetch already returned.
+
+    The analysis path reaches every track through ``get_tracks_from_album``, whose
+    response carries this field already, so the common case costs no request at all.
+    A fetch that never happened (a caller with no album context, or an evicted entry)
+    still falls back to the single-song call.
+    """
+    cached = _cached_album_lyrics(track_id)
+    if cached is not _LYRICS_UNCACHED:
+        return cached
     body = _request('song', {'filter': track_id}, timeout=timeout)
     songs = (body or {}).get('song') or []
     if isinstance(songs, list) and songs:

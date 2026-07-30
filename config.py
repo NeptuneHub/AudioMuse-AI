@@ -102,7 +102,10 @@ AMPACHE_PASSWORD = os.environ.get("AMPACHE_PASSWORD", "")
 # Rows per page when paging Ampache browse results: the full catalogue enumeration used by the
 # sweep and cleaning, and album discovery. Ampache does per-object work on every row it
 # serialises, so a bigger page cuts the number of requests but not the server's cost, and makes
-# each request longer. Raise it only on a fast local server.
+# each request longer. HARD CEILING: requests time out at _REQUEST_TIMEOUT_SECONDS (60), and a
+# page too big to serve inside that budget makes EVERY page fail, retry once and abort the
+# enumeration - a sweep that fails outright rather than running slowly. At ~38 songs/second that
+# is ~2300 rows, so keep well under it; 1000 is a safe step up on a fast local server.
 AMPACHE_PAGE_SIZE = int(os.environ.get("AMPACHE_PAGE_SIZE", "500") or 500)
 
 # --- Lyrion (LMS) Constants ---
