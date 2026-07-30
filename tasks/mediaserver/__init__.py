@@ -150,18 +150,6 @@ def get_album_track_ids(album_id, user_creds=None, provider_type=None):
 
 
 def download_track(temp_dir, item):
-    # A mounted library is read from disk instead of fetched over HTTP. This
-    # returns a link inside temp_dir, never the library file, because callers
-    # delete what this function hands back. None means "not available locally",
-    # so the provider download below stays the fallback for every track.
-    # Imported here, not at module scope, to keep the eager import chain within
-    # the depth the import-architecture gate allows.
-    from . import local_file
-
-    local_path = local_file.link_local_copy(temp_dir, item)
-    if local_path:
-        return local_path
-
     provider = _provider()
     downloaded_path = provider.download_track(temp_dir, item) if provider is not None else None
 
