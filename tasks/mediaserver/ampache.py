@@ -42,12 +42,13 @@ Main Features:
   made for a key-shaped secret, so a real password never travels in a query
   string. The caller's timeout bounds the handshake too, not just the data call.
 * Fetches catalogues, recent albums, album tracks, search results and the whole
-  song list with pagination, honouring MUSIC_LIBRARIES by resolving it to
-  Ampache catalog ids, pushing that filter into the server query and still
-  enforcing it locally. Album discovery pushes that filter into an
-  advanced_search because Ampache's album objects carry no catalogue id, and
-  every page asks for a real page size so "analyse every album" is not capped
-  at the server's first page.
+  song list with pagination, honouring MUSIC_LIBRARIES by resolving it to Ampache
+  catalog ids and pushing that filter into the server query as
+  ``cond=catalog,<id>`` - one browse per catalogue, since conditions combine
+  rather than alternate - while still enforcing it locally, because Ampache
+  IGNORES a condition it does not understand instead of refusing it. Every page
+  asks for a real page size so "analyse every album" is not capped at the
+  server's first page.
 * Downloads the original file rather than a transcoded stream, refusing a
   response that carries an Ampache JSON error under HTTP 200 instead of audio.
 * Reads play stats and lyrics, and manages playlists through the shared
@@ -587,19 +588,54 @@ def _map_catalogue_song(song):
     return {key: mapped[key] for key in _CATALOGUE_KEYS}
 
 
-def _catalog_filter_params(catalog_ids):
-    params = {'type': 'song', 'operator': 'or'}
-    for index, catalog_id in enumerate(sorted(catalog_ids), start=1):
-        params[f'rule_{index}'] = 'catalog'
-        params[f'rule_{index}_operator'] = 0
-        params[f'rule_{index}_input'] = catalog_id
-    return params
+def _page_size():
+    """Rows per browse page, from config so a fast server can raise it.
+
+    Bigger pages cut request overhead but NOT the server's cost, which is
+    per-song: Ampache hydrates every row and looks up its rating, art, album and
+    artist names individually. Raising this shortens the request count, not the
+    work, and makes each request longer.
+    """
+    size = getattr(config, 'AMPACHE_PAGE_SIZE', _PAGE_SIZE)
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        return _PAGE_SIZE
+    return size if size > 0 else _PAGE_SIZE
 
 
-def _catalogue_query(catalog_ids):
-    if catalog_ids:
-        return 'advanced_search', _catalog_filter_params(catalog_ids)
-    return 'songs', {}
+def _catalogue_query_plan(catalog_ids):
+    """One song browse per target catalogue, or a single unfiltered browse.
+
+    A plain ``songs`` browse with ``cond=catalog,<id>`` compiles to an indexed
+    ``song.catalog = <id>`` with no join, where the equivalent ``advanced_search``
+    with the catalogues OR'd together builds a much heavier query for the same
+    rows. Album discovery already browses one catalogue at a time for this reason,
+    and ``cond`` conditions combine rather than alternate, so several catalogues
+    are one browse each either way.
+
+    Each entry is ``(params, catalog_id)``; ``catalog_id`` is None when nothing is
+    being filtered and there is therefore nothing to verify.
+    """
+    if not catalog_ids:
+        return [({}, None)]
+    return [({'cond': f'catalog,{catalog_id}'}, catalog_id) for catalog_id in sorted(catalog_ids)]
+
+
+def _cond_trusted(rows, catalog_id):
+    """False when a ``cond=catalog`` browse returned rows it should not have.
+
+    Ampache IGNORES a ``cond`` it does not understand instead of refusing it, so a
+    browse that should be one catalogue can quietly be the whole library. That
+    matters more here than for albums: with one browse per catalogue, an ignored
+    condition would walk the entire library once per selected catalogue. Rows
+    carry their catalogue id, so the first page settles it. A page that reports no
+    catalogue id cannot be verified, which is treated the same as being ignored.
+    """
+    reported = [row for row in rows if 'catalog' in row]
+    if not reported:
+        return False
+    return all(str(row.get('catalog')) == str(catalog_id) for row in reported)
 
 
 def _in_catalogs(row, catalog_ids):
@@ -626,21 +662,58 @@ def _filter_album_rows(rows, catalog_ids):
     return [row for row in reported if str(row.get('catalog')) in catalog_ids], False
 
 
-def _should_retry_unfiltered(action, err, offset, collected):
-    message = (err or {}).get('message') or 'unknown error'
-    if action == 'advanced_search' and not collected:
-        logger.warning(
-            "Ampache advanced_search catalog filter failed (%s); falling back to a "
-            "full song fetch filtered locally.",
-            message,
-        )
-        return True
+def _log_catalogue_fetch_failure(err, offset, collected):
     logger.error(
         "AMPACHE CATALOGUE FETCH FAILED at offset %d after %d songs (%s). The "
         "returned catalogue is INCOMPLETE - do not treat missing tracks as deleted.",
-        offset, collected, message,
+        offset, collected, (err or {}).get('message') or 'unknown error',
     )
-    return False
+
+
+def _collect_songs_for(params, catalog_id, catalog_ids, songs, user_creds):
+    """Page one browse into ``songs``, reporting how it ended.
+
+    ``'ok'``        - the browse was walked to the end.
+    ``'untrusted'`` - the catalogue condition was ignored, so the whole plan has
+                      to be abandoned rather than repeated per catalogue.
+    ``'failed'``    - a page could not be fetched twice running, so what has been
+                      collected is INCOMPLETE.
+
+    A failed page is retried once before giving up. That matters: the previous
+    behaviour abandoned the catalogue filter on the first failure and re-walked the
+    entire unfiltered library, so one transient error on page one cost a full-
+    library enumeration.
+    """
+    offset = 0
+    retried = False
+    page = _page_size()
+    while True:
+        body, err = _request_ex(
+            'songs', {**params, 'offset': offset, 'limit': page}, user_creds=user_creds
+        )
+        if body is None:
+            if not retried:
+                retried = True
+                logger.warning(
+                    "Ampache song browse failed at offset %d (%s); retrying that page "
+                    "once before giving up on it.",
+                    offset, (err or {}).get('message') or 'unknown error',
+                )
+                continue
+            _log_catalogue_fetch_failure(err, offset, len(songs))
+            return 'failed'
+        retried = False
+
+        rows = body.get('song') or []
+        if not rows:
+            return 'ok'
+        if catalog_id is not None and offset == 0 and not _cond_trusted(rows, catalog_id):
+            return 'untrusted'
+
+        songs.extend(_map_catalogue_song(r) for r in rows if _in_catalogs(r, catalog_ids))
+        offset += len(rows)
+        if len(rows) < page:
+            return 'ok'
 
 
 def get_all_songs(user_creds=None, apply_filter=True):
@@ -648,26 +721,23 @@ def get_all_songs(user_creds=None, apply_filter=True):
     if isinstance(catalog_ids, set) and not catalog_ids:
         return []
 
-    action, base_params = _catalogue_query(catalog_ids)
-
     songs = []
-    offset = 0
-    while True:
-        params = {**base_params, 'offset': offset, 'limit': _PAGE_SIZE}
-        body, err = _request_ex(action, params, user_creds=user_creds)
-        if body is None:
-            if not _should_retry_unfiltered(action, err, offset, len(songs)):
-                break
-            action, base_params = 'songs', {}
-            continue
-
-        rows = body.get('song') or []
-        if not rows:
+    for params, catalog_id in _catalogue_query_plan(catalog_ids):
+        verdict = _collect_songs_for(params, catalog_id, catalog_ids, songs, user_creds)
+        if verdict == 'failed':
             break
-
-        songs.extend(_map_catalogue_song(r) for r in rows if _in_catalogs(r, catalog_ids))
-        offset += len(rows)
-        if len(rows) < _PAGE_SIZE:
+        if verdict == 'untrusted':
+            logger.warning(
+                "Ampache ignored the catalog condition on a song browse, so browsing "
+                "per catalogue would walk the whole library once for each of %d "
+                "catalogues. Falling back to one unfiltered fetch filtered locally.",
+                len(catalog_ids or ()),
+            )
+            # Start clean: anything already collected came from a browse that was
+            # not filtering, and the replacement walk covers the same ground from
+            # offset 0. Reusing the partial list would double-count it.
+            songs.clear()
+            _collect_songs_for({}, None, catalog_ids, songs, user_creds)
             break
 
     logger.info(f"Fetched {len(songs)} songs from Ampache.")
@@ -725,7 +795,7 @@ def _collect_albums_for(base_params, catalog_ids, fetch_all, wanted, collected):
     configured to analyse EVERY album only ever saw the server's first page.
     """
     offset = 0
-    page = _PAGE_SIZE if (fetch_all or catalog_ids) else max(wanted, 1)
+    page = _page_size() if (fetch_all or catalog_ids) else max(wanted, 1)
     while True:
         rows = _album_page(base_params, offset, page, len(collected))
         if not rows:
