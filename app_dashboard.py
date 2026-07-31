@@ -28,6 +28,10 @@ Main Features:
   Coverage, Tempo) via ``refresh_dashboard_charts_stats()`` hourly, carrying its
   own ``charts_updated_at`` stamp so the UI can label it honestly.
 * LIVE tier: workers (Redis), recent tasks and cron (tiny tables) only.
+* Both distribution pies count each song ONCE under its winning label. Summing
+  the raw per-song scores instead makes every slice converge on the same value
+  as the library grows, because the CLAP-derived mood scores share a large
+  constant offset (issue #826).
 """
 
 import json
@@ -38,7 +42,7 @@ from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 
 import config
-from database import get_db
+from database import get_db, like_contains_pattern
 from taskqueue import redis_conn
 from tasks.mediaserver import registry
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
@@ -92,11 +96,10 @@ def browse_page():
     )
 
 
-def _browse_like(value):
-    # ILIKE contains-pattern with the user's own % / _ / \ escaped, so a search for
-    # "50%" matches a literal percent instead of acting as a wildcard.
-    escaped = value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-    return '%' + escaped + '%'
+# ILIKE contains-pattern with the user's own % / _ / \ escaped, so a search for
+# "50%" matches a literal percent instead of acting as a wildcard. One shared
+# escaper (database.like_contains_pattern) serves browse and the ivf fuzzy match.
+_browse_like = like_contains_pattern
 
 
 def _browse_songs_sql(server_id, filt, q):
@@ -578,14 +581,22 @@ def _collect_charts_metrics(cur):
     # hourly cadence and one `charts_updated_at` stamp, kept off the 60s path.
     #
     #  - mood_dominant_counts: per-song dominant-label counts -> Genres chart.
-    #  - other_feature_totals: emotional mood scores summed across songs
+    #  - other_feature_dominant_counts: per-song dominant EMOTIONAL label counts
     #    (other_features column) -> Moods Coverage pie.
+    # BOTH are per-song argmax counts, never sums of the raw scores. The
+    # other_features values are CLAP audio-vs-text cosine similarities pushed
+    # through (sim+1)/2, and CLAP's modality gap pins every one of them into a
+    # narrow band well above 0, so summing them converged on N*mean(label) and
+    # drew all six slices at 1/6 +- <1% - the bigger the library, the MORE
+    # uniform the pie looked (issue #826). Taking the argmax cancels that shared
+    # offset, and counting each song exactly once makes the pie a real partition
+    # instead of six independent scores posing as parts of a whole.
     # Both columns are the plain `key:value,key:value` text produced by
     # save_track_analysis_and_embedding(), parsed directly (never JSON). A NAMED
     # server-side cursor streams the whole table in chunks so the web process
     # never buffers all rows at once (an unnamed cursor would).
     mood_dominant_counts = {}
-    other_feature_totals = {}
+    other_feature_dominant_counts = {}
     complete = True
     try:
         with cur.connection.cursor(name='dash_mood_scan') as scan:
@@ -604,11 +615,22 @@ def _collect_charts_metrics(cur):
                 mood_dominant_counts[dom] = mood_dominant_counts.get(dom, 0) + 1
 
                 if of:
-                    of_parsed = _parse_keyval(of)
-                    for k, s in of_parsed.items():
-                        if k in ('tempo_normalized', 'energy_normalized'):
-                            continue
-                        other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
+                    emotional_scores = {
+                        k: s for k, s in _parse_keyval(of).items()
+                        if k not in ('tempo_normalized', 'energy_normalized')
+                    }
+                    top = max(
+                        emotional_scores.items(), key=lambda kv: kv[1], default=None
+                    )
+                    # analyze_track writes ZERO_OTHER_FEATURES up front and only
+                    # refresh_other_features fills it in once CLAP lands, so an
+                    # all-zero row means "not scored yet", not "the least
+                    # danceable song in the library". Counting its argmax would
+                    # hand every un-CLAPped song to whichever label parses first.
+                    if top and top[1] > 0:
+                        other_feature_dominant_counts[top[0]] = (
+                            other_feature_dominant_counts.get(top[0], 0) + 1
+                        )
     except Exception as e:
         logger.debug(f"dashboard: mood aggregation failed: {e}")
         _safe_rollback(cur)
@@ -616,12 +638,16 @@ def _collect_charts_metrics(cur):
 
     # Genre breakdown: dominant-mood counts from mood_vector (genre-like labels).
     top_genre = sorted(mood_dominant_counts.items(), key=lambda kv: kv[1], reverse=True)
-    # Moods Coverage: emotional mood vector (other_features):
-    # danceable / aggressive / happy / party / relaxed / sad.
-    emotional = sorted(other_feature_totals.items(), key=lambda kv: kv[1], reverse=True)
+    # Moods Coverage: how many songs each emotional label (danceable /
+    # aggressive / happy / party / relaxed / sad) actually WINS. `count`, not the
+    # old `score`: the key rename is deliberate, so a stale snapshot holding the
+    # summed scores renders the placeholder instead of the flat six-way pie.
+    emotional = sorted(
+        other_feature_dominant_counts.items(), key=lambda kv: kv[1], reverse=True
+    )
     metrics = {
         'top_genre': [{'label': k, 'count': int(v)} for k, v in top_genre],
-        'moods_coverage': [{'label': k, 'score': round(v, 2)} for k, v in emotional],
+        'moods_coverage': [{'label': k, 'count': int(v)} for k, v in emotional],
     }
 
     # Tempo profile: bucket songs into slow/medium/fast/very-fast. Always populate

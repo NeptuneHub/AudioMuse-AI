@@ -113,6 +113,87 @@ class TestCadenceSplit:
         assert metrics['top_genre'][0]['label'] == 'happy'
 
 
+class TestMoodsCoverageIsAPartitionNotASumOfScores:
+    """Issue #826: the pie used to sum every song's raw emotional scores. Those
+    scores are CLAP audio-vs-text cosine similarities remapped by (sim+1)/2, so
+    they all sit in a narrow band well above 0; summing them converges on
+    N*mean(label) and every slice lands at 1/6 +- <1%, the more so the LARGER the
+    library. Counting each song once under its winning label removes the shared
+    offset and makes the six slices a real partition."""
+
+    def test_each_song_is_counted_once_under_its_winning_label(self):
+        rows = (
+            ('happy:0.9', 'danceable:0.61,sad:0.55'),
+            ('happy:0.9', 'danceable:0.60,sad:0.58'),
+            ('happy:0.9', 'danceable:0.52,sad:0.64'),
+        )
+
+        metrics = dash._collect_charts_metrics(_cursor_with(mood_rows=rows))
+
+        counts = {r['label']: r['count'] for r in metrics['moods_coverage']}
+        assert counts == {'danceable': 2, 'sad': 1}
+        assert sum(counts.values()) == len(rows)
+
+    def test_no_row_reports_a_summed_score(self):
+        metrics = dash._collect_charts_metrics(_cursor_with())
+
+        assert metrics['moods_coverage']
+        for row in metrics['moods_coverage']:
+            assert 'score' not in row
+            assert isinstance(row['count'], int)
+
+    def test_a_near_tie_library_still_separates_instead_of_flattening(self):
+        # The exact #826 shape: every score is ~0.6 and the labels differ only in
+        # the second decimal. Summing gives six ~equal slices; argmax gives 3:1.
+        flat = tuple(
+            ('happy:0.9', 'danceable:0.62,sad:0.61,party:0.60')
+            for _ in range(3)
+        ) + (('happy:0.9', 'danceable:0.60,sad:0.61,party:0.62'),)
+
+        metrics = dash._collect_charts_metrics(_cursor_with(mood_rows=flat))
+
+        counts = {r['label']: r['count'] for r in metrics['moods_coverage']}
+        assert counts == {'danceable': 3, 'party': 1}
+
+    def test_a_song_awaiting_clap_is_left_out_entirely(self):
+        # analyze_track writes ZERO_OTHER_FEATURES up front; refresh_other_features
+        # fills it in only once CLAP lands. An all-zero row must not be credited to
+        # whichever label happens to parse first, or every un-CLAPped song in the
+        # library piles onto 'danceable'.
+        zero = 'danceable:0.00,aggressive:0.00,happy:0.00,party:0.00,relaxed:0.00,sad:0.00'
+        rows = (
+            ('happy:0.9', zero),
+            ('happy:0.9', zero),
+            ('happy:0.9', 'relaxed:0.58,sad:0.55'),
+        )
+
+        metrics = dash._collect_charts_metrics(_cursor_with(mood_rows=rows))
+
+        counts = {r['label']: r['count'] for r in metrics['moods_coverage']}
+        assert counts == {'relaxed': 1}
+
+    def test_tempo_and_energy_are_not_emotional_labels(self):
+        # other_features also carries tempo_normalized / energy_normalized, which
+        # are near 1.0 for fast songs and would win every argmax.
+        rows = (('happy:0.9',
+                 'tempo_normalized:0.98,energy_normalized:0.95,relaxed:0.60'),)
+
+        metrics = dash._collect_charts_metrics(_cursor_with(mood_rows=rows))
+
+        assert [r['label'] for r in metrics['moods_coverage']] == ['relaxed']
+
+    def test_biggest_slice_comes_first(self):
+        rows = (
+            ('happy:0.9', 'sad:0.70,danceable:0.50'),
+            ('happy:0.9', 'sad:0.70,danceable:0.50'),
+            ('happy:0.9', 'danceable:0.80,sad:0.50'),
+        )
+
+        metrics = dash._collect_charts_metrics(_cursor_with(mood_rows=rows))
+
+        assert metrics['moods_coverage'][0] == {'label': 'sad', 'count': 2}
+
+
 class TestSnapshotContract:
     def test_no_tautological_musicnn_percentage(self, monkeypatch):
         # A song only enters `score` when it is analyzed, and its embedding row
