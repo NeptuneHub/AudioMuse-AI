@@ -2533,6 +2533,11 @@ def coerce_db_details(raw_details):
     return {}
 
 
+def like_contains_pattern(value):
+    escaped = value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return '%' + escaped + '%'
+
+
 def save_map_projection(index_name, id_map, projection_array):
     conn = get_db()
     try:
