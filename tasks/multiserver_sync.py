@@ -104,6 +104,12 @@ def _sweep_job_state(task_id):
 
 _recovery_state = {'last': None}
 
+# A row is written BEFORE its RQ job is enqueued (and, for a provider migration,
+# committed with the migration itself), so a brand-new row legitimately has no job
+# yet. Without this, recovery could revoke a perfectly good alignment microseconds
+# before its enqueue landed and run a second one alongside it.
+_ENQUEUE_GRACE_SECONDS = 120
+
 _ABANDONED_FIRST_SEEN = {}
 
 _ABANDONED_CONFIRM_SECONDS = 60
@@ -135,23 +141,28 @@ def _details_full_refresh(details):
     return bool(details.get('full_refresh')) if isinstance(details, dict) else False
 
 
-def enqueue_server_alignment(server_id=None, message=None):
-    """Queue a full-refresh alignment of ONE server (the default when unnamed).
-
-    Raw connection and a direct enqueue, like ``recover_abandoned_sweeps``, so a
-    caller with no Flask app context - the provider migration runs in an RQ job -
-    can ask for the alignment that rebuilds what a provider swap cannot carry:
-    the server's artist ids and the file paths of the tracks it repointed.
-    Returns the task id, or None when there is no server to align.
-    """
+def insert_pending_sweep_row(cur, task_id, message, full_refresh=True):
     import config
+
+    details = json.dumps({
+        'message': message,
+        'status_message': message,
+        'full_refresh': bool(full_refresh),
+    })
+    cur.execute(
+        "INSERT INTO task_status "
+        "(task_id, task_type, status, progress, details, timestamp, start_time) "
+        "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
+        "ON CONFLICT (task_id) DO NOTHING",
+        (task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_PENDING, details, time.time()),
+    )
+
+
+def enqueue_server_alignment(server_id=None, message=None, task_id=None):
     from app_helper import rq_queue_high
 
-    task_id = str(uuid.uuid4())
+    task_id = task_id or str(uuid.uuid4())
     text = message or 'Server alignment queued.'
-    details = json.dumps(
-        {'message': text, 'status_message': text, 'full_refresh': True}
-    )
     db = connect_raw()
     db.autocommit = True
     try:
@@ -160,13 +171,7 @@ def enqueue_server_alignment(server_id=None, message=None):
             return None
         cur = db.cursor()
         try:
-            cur.execute(
-                "INSERT INTO task_status "
-                "(task_id, task_type, status, progress, details, timestamp, start_time) "
-                "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
-                "ON CONFLICT (task_id) DO NOTHING",
-                (task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_PENDING, details, time.time()),
-            )
+            insert_pending_sweep_row(cur, task_id, text)
         finally:
             cur.close()
     finally:
@@ -220,9 +225,11 @@ def recover_abandoned_sweeps():
         try:
             cur.execute(
                 "SELECT task_id, details FROM task_status WHERE task_type = %s "
-                "AND status NOT IN (%s, %s, %s)",
+                "AND status NOT IN (%s, %s, %s) "
+                "AND timestamp < NOW() - make_interval(secs => %s)",
                 (SWEEP_TASK_TYPE, config.TASK_STATUS_SUCCESS,
-                 config.TASK_STATUS_FAILURE, config.TASK_STATUS_REVOKED),
+                 config.TASK_STATUS_FAILURE, config.TASK_STATUS_REVOKED,
+                 _ENQUEUE_GRACE_SECONDS),
             )
             rows = cur.fetchall()
             candidates = [r[0] for r in rows]
@@ -264,16 +271,10 @@ def recover_abandoned_sweeps():
             if not revoked_count:
                 return None
             new_task_id = str(uuid.uuid4())
-            queued = json.dumps({
-                'message': 'Server alignment queued for all servers.',
-                'full_refresh': full_refresh,
-            })
-            cur.execute(
-                "INSERT INTO task_status "
-                "(task_id, task_type, status, progress, details, timestamp, start_time) "
-                "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
-                "ON CONFLICT (task_id) DO NOTHING",
-                (new_task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_PENDING, queued, now),
+            insert_pending_sweep_row(
+                cur, new_task_id,
+                'Server alignment queued for all servers.',
+                full_refresh=full_refresh,
             )
         finally:
             cur.close()

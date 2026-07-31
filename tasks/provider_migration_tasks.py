@@ -28,15 +28,22 @@ Main Features:
 * The 'analysis' match tier survives the repoint: it is the only record that a
   catalogue row has no usable signature and can never be relabelled, and dropping
   it makes the next boot re-hash the whole catalogue for nothing.
-* Queues a full-refresh alignment of the migrated server after the commit. That
-  sweep is what rebuilds the artist ids the swap had to clear and refreshes the
-  file paths the target may not have reported.
+* Queues a full-refresh alignment of the migrated server, whose task row is
+  written INSIDE the migration transaction so the intent survives a crash between
+  the commit and the enqueue. That sweep rebuilds the artist ids the swap had to
+  clear and refreshes the file paths the target may not have reported.
+* SUCCESS is recorded before the worker restart is published, and a retry of an
+  ALREADY APPLIED session reports SUCCESS instead of failing its dry_run_ready
+  gate: that restart can kill this very job, RQ requeues it under the same task
+  id, and the retry used to report FAILURE over a migration that had committed.
 * Reads target metadata from the migration_target_meta side table and builds
   the old->new id mapping via indexed per-album queries; reloads state after commit.
 """
 
 import json
 import logging
+import time
+import uuid
 
 from rq import get_current_job
 
@@ -53,6 +60,14 @@ logger = logging.getLogger(__name__)
 _ADVISORY_LOCK_KEY = 7421536190082003
 
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
+
+# The restart request is a Redis publish, so the only way it fails is a Redis
+# blip - the same blip that would have failed the alignment enqueue. A few bounded
+# retries ride that out; a persistent outage falls through to the loud log, since
+# nothing this job can do will reach a Redis that is down.
+_RESTART_PUBLISH_ATTEMPTS = 3
+
+_RESTART_PUBLISH_RETRY_SECONDS = 2
 
 
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
@@ -197,6 +212,35 @@ def execute_provider_migration(session_id):
         target_creds = session['target_creds']
         state = session['state']
 
+        # A retry of an ALREADY APPLIED migration is a success, not a failure. The
+        # restart this job publishes can kill the job itself, and RQ then requeues
+        # it under the SAME task id: raising here made that retry overwrite the
+        # SUCCESS row with FAILURE for a migration that had fully committed.
+        if session['status'] == 'completed':
+            summary = {
+                'ok': True,
+                'matched': 0,
+                'index_rebuild_needed': False,
+                'already_applied': True,
+            }
+            logger.warning(
+                "provider migration: session %s is already applied; this run is a "
+                "retry of a job that committed before it could report. Reporting "
+                "SUCCESS and re-running the post-commit reload.",
+                session_id,
+            )
+            _report_migration(
+                task_id, TASK_STATUS_SUCCESS, 100,
+                "Provider migration already applied; nothing left to do.",
+                details=summary,
+            )
+            # The first run may have died of something OTHER than its own restart
+            # (an OOM kill, an evicted pod) and never reached these at all. They
+            # are all idempotent, and skipping them would leave every worker on the
+            # old provider's settings with nothing left to signal otherwise.
+            _post_commit_reload(redis)
+            return summary
+
         if session['status'] != 'dry_run_ready':
             raise RuntimeError(
                 f"Cannot execute migration: session {session_id} is in status "
@@ -211,6 +255,7 @@ def execute_provider_migration(session_id):
             "the catalogue itself is not touched", len(mapping),
         )
 
+        alignment_task_id = str(uuid.uuid4())
         try:
             index_rebuild_needed = _run_migration_transaction(
                 cur=cur,
@@ -220,6 +265,7 @@ def execute_provider_migration(session_id):
                 target_creds=target_creds,
                 session_id=session_id,
                 selected_libraries=selected_libraries,
+                alignment_task_id=alignment_task_id,
             )
             conn.commit()
         except Exception:
@@ -229,18 +275,20 @@ def execute_provider_migration(session_id):
                 pass
             raise
 
-        _post_commit_reload(redis)
-
         summary = {
             'ok': True,
             'matched': len(mapping),
             'index_rebuild_needed': bool(index_rebuild_needed),
         }
+        # Recorded BEFORE the restart is published: that restart can kill this very
+        # job, and a migration that already committed would then come back as a
+        # retry, fail the dry_run_ready gate, and report FAILURE over a success.
         _report_migration(
             task_id, TASK_STATUS_SUCCESS, 100,
             f"Provider migration complete: {len(mapping)} tracks repointed.",
             details=summary,
         )
+        _post_commit_reload(redis, alignment_task_id)
         return summary
     except Exception:
         logger.exception("Provider migration failed for session %s", session_id)
@@ -527,6 +575,20 @@ def _clear_default_server_artist_map(cur):
             )
 
 
+def _stage_post_migration_alignment(cur, task_id):
+    if not task_id:
+        return
+    cur.execute("SELECT to_regclass('public.task_status')")
+    if cur.fetchone()[0] is None:
+        return
+    from tasks.multiserver_sync import insert_pending_sweep_row
+
+    insert_pending_sweep_row(
+        cur, task_id,
+        'Aligning the migrated server: rebuilding artist ids and file paths.',
+    )
+
+
 def _report_playlists_bound_to_default_server(cur):
     cur.execute("SELECT to_regclass('public.playlist')")
     if cur.fetchone()[0] is None:
@@ -564,6 +626,7 @@ def _run_migration_transaction(
     target_creds,
     session_id,
     selected_libraries=None,
+    alignment_task_id=None,
 ):
     """Repoint the DEFAULT server's mappings at a new provider. Nothing else.
 
@@ -649,6 +712,7 @@ def _run_migration_transaction(
         cur, target_type, target_creds, selected_libraries=selected_libraries
     )
     _purge_media_keys_from_app_config(cur)
+    _stage_post_migration_alignment(cur, alignment_task_id)
 
     cur.execute(
         "UPDATE migration_session SET status = 'completed', completed_at = NOW() WHERE id = %s",
@@ -726,7 +790,7 @@ def _purge_media_keys_from_app_config(cur):
         )
 
 
-def _post_commit_reload(redis):
+def _post_commit_reload(redis, alignment_task_id=None):
     try:
         from tasks.mediaserver import registry
 
@@ -739,21 +803,50 @@ def _post_commit_reload(redis):
         config.refresh_config()
     except Exception as e:
         logger.warning("config.refresh_config() failed: %s", e)
-    _enqueue_post_migration_alignment()
-    try:
-        import restart_manager
-
-        restart_manager.publish_restart_request()
-    except Exception as e:
-        logger.warning("restart_manager.publish_restart_request() failed: %s", e)
+    _enqueue_post_migration_alignment(alignment_task_id)
+    _publish_restart_with_retries()
 
 
-def _enqueue_post_migration_alignment():
+def _publish_restart_with_retries():
+    for attempt in range(1, _RESTART_PUBLISH_ATTEMPTS + 1):
+        try:
+            import restart_manager
+
+            if restart_manager.publish_restart_request() is not False:
+                return True
+        except Exception as e:
+            logger.warning("restart_manager.publish_restart_request() failed: %s", e)
+        if attempt < _RESTART_PUBLISH_ATTEMPTS:
+            logger.warning(
+                "provider migration: restart request not delivered (attempt %d of "
+                "%d); retrying in %ss",
+                attempt, _RESTART_PUBLISH_ATTEMPTS, _RESTART_PUBLISH_RETRY_SECONDS,
+            )
+            time.sleep(_RESTART_PUBLISH_RETRY_SECONDS)
+    logger.error(
+        "PROVIDER MIGRATION: THE WORKER RESTART REQUEST WAS NOT DELIVERED after %d "
+        "attempts. The catalogue is migrated and the registry points at the new "
+        "provider, but running workers keep the OLD provider's settings until they "
+        "restart. RESTART AUDIOMUSE MANUALLY to finish the swap.",
+        _RESTART_PUBLISH_ATTEMPTS,
+    )
+    return False
+
+
+def _enqueue_post_migration_alignment(alignment_task_id=None):
+    if not alignment_task_id:
+        logger.info(
+            "provider migration: this run has no alignment id of its own (a retry of "
+            "an already applied session); the alignment row its first run committed "
+            "is left to the janitor rather than queueing a second one"
+        )
+        return
     try:
         from tasks import multiserver_sync
 
         task_id = multiserver_sync.enqueue_server_alignment(
             message='Aligning the migrated server: rebuilding artist ids and file paths.',
+            task_id=alignment_task_id,
         )
         if task_id:
             logger.info(

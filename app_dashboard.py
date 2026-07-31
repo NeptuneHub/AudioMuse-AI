@@ -597,6 +597,7 @@ def _collect_charts_metrics(cur):
     # never buffers all rows at once (an unnamed cursor would).
     mood_dominant_counts = {}
     other_feature_dominant_counts = {}
+    tied_songs = 0
     complete = True
     try:
         with cur.connection.cursor(name='dash_mood_scan') as scan:
@@ -611,26 +612,35 @@ def _collect_charts_metrics(cur):
                 parsed = _parse_keyval(mv)
                 if not parsed:
                     continue
-                dom = max(parsed.items(), key=lambda kv: kv[1])[0]
-                mood_dominant_counts[dom] = mood_dominant_counts.get(dom, 0) + 1
+                dom = _dominant_label(parsed)
+                if dom:
+                    mood_dominant_counts[dom[0]] = mood_dominant_counts.get(dom[0], 0) + 1
+                else:
+                    tied_songs += 1
 
                 if of:
                     emotional_scores = {
                         k: s for k, s in _parse_keyval(of).items()
                         if k not in ('tempo_normalized', 'energy_normalized')
                     }
-                    top = max(
-                        emotional_scores.items(), key=lambda kv: kv[1], default=None
-                    )
+                    top = _dominant_label(emotional_scores)
                     # analyze_track writes ZERO_OTHER_FEATURES up front and only
                     # refresh_other_features fills it in once CLAP lands, so an
                     # all-zero row means "not scored yet", not "the least
                     # danceable song in the library". Counting its argmax would
                     # hand every un-CLAPped song to whichever label parses first.
-                    if top and top[1] > 0:
+                    if top is None:
+                        tied_songs += 1
+                    elif top[1] > 0:
                         other_feature_dominant_counts[top[0]] = (
                             other_feature_dominant_counts.get(top[0], 0) + 1
                         )
+        if tied_songs:
+            logger.info(
+                "dashboard: %d song(s) had no single strongest label and were left "
+                "out of the dominance counts rather than handed to whichever label "
+                "parses first", tied_songs,
+            )
     except Exception as e:
         logger.debug(f"dashboard: mood aggregation failed: {e}")
         _safe_rollback(cur)
@@ -685,6 +695,16 @@ def _collect_charts_metrics(cur):
     metrics['charts_updated_at'] = time.strftime(LOCAL_TZ_FMT)
     metrics['_complete'] = complete
     return metrics
+
+
+def _dominant_label(scores):
+    if not scores:
+        return None
+    best = max(scores.values())
+    winners = [label for label, score in scores.items() if score == best]
+    if len(winners) != 1:
+        return None
+    return winners[0], best
 
 
 def _parse_keyval(s):

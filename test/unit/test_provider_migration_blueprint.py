@@ -172,6 +172,78 @@ class TestApplySourcePathOverrides:
         assert rows[0]['file_path'] == '/old/a.mp3'
 
 
+class TestOverridesAreRekeyedOntoCatalogueIds:
+    """The probe hands back the PROVIDER's ids; the rows these paths patch are
+    catalogue rows keyed by the canonical fp_ content id. Stored as probed, the map
+    was looked up with ids it could never contain, so "Refresh source paths"
+    reported N overrides and changed nothing on every canonicalized install - and
+    the matcher fell back to weaker metadata tiers with the stale path.
+    """
+
+    def test_provider_ids_are_translated_to_canonical_ids(self, bp_mod, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry, 'canonical_input_ids',
+            lambda ids, server_id=None, conn=None: {
+                'prov-1': 'fp_3aaa', 'prov-2': 'fp_3bbb',
+            },
+        )
+
+        out = bp_mod._overrides_by_catalogue_id(
+            {'prov-1': '/music/a.flac', 'prov-2': '/music/b.flac'}
+        )
+
+        assert out == {'fp_3aaa': '/music/a.flac', 'fp_3bbb': '/music/b.flac'}
+
+        rows = [{'item_id': 'fp_3aaa', 'file_path': '/stale/a.flac'}]
+        bp_mod._apply_source_path_overrides(rows, out)
+        assert rows[0]['file_path'] == '/music/a.flac', (
+            "the refreshed path must actually reach the row the matcher reads"
+        )
+
+    def test_a_pre_canonicalization_install_is_unaffected(self, bp_mod, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry, 'canonical_input_ids',
+            lambda ids, server_id=None, conn=None: {i: i for i in ids},
+        )
+
+        out = bp_mod._overrides_by_catalogue_id({'prov-1': '/music/a.flac'})
+
+        assert out == {'prov-1': '/music/a.flac'}
+
+    def test_an_empty_probe_needs_no_registry_call(self, bp_mod):
+        assert bp_mod._overrides_by_catalogue_id({}) == {}
+
+    def test_duplicate_files_of_one_song_collapse_deterministically(
+        self, bp_mod, monkeypatch
+    ):
+        """Two files of one song share a canonical id. Left to dict order the
+        provider's listing order decides which path survives, so the refreshed path
+        could flip between runs for no reason the user can see."""
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry, 'canonical_input_ids',
+            lambda ids, server_id=None, conn=None: {i: 'fp_3same' for i in ids},
+        )
+
+        forward = bp_mod._overrides_by_catalogue_id({
+            'prov-a': '/music/a.flac',
+            'prov-b': '/music/b.flac',
+        })
+        reversed_order = bp_mod._overrides_by_catalogue_id({
+            'prov-b': '/music/b.flac',
+            'prov-a': '/music/a.flac',
+        })
+
+        assert forward == reversed_order == {'fp_3same': '/music/a.flac'}, (
+            "the lowest provider id wins, whatever order the provider listed them in"
+        )
+
+
 class TestSourcePathsRefreshRoute:
     def test_stores_overrides_in_session_state(self, bp_mod):
         import config

@@ -43,7 +43,11 @@ def _load_tasks_mod():
 
 @pytest.fixture
 def mig():
-    return _load_tasks_mod()
+    mod = _load_tasks_mod()
+    # Production waits between restart-publish attempts; the suite must not. The
+    # retry tests assert the attempt COUNT, which this does not touch.
+    mod._RESTART_PUBLISH_RETRY_SECONDS = 0
+    return mod
 
 
 class TestFindFk:
@@ -576,6 +580,177 @@ class TestMigrationClearsStaleArtistIds:
         assert not any('DELETE FROM artist_server_map' in s for s in executed)
 
 
+class TestTheMigrationSurvivesTheRestartItTriggers:
+    def test_success_is_recorded_before_the_restart_is_published(self, mig, monkeypatch):
+        """The restart can kill this very job. Published before SUCCESS is written,
+        the row stays non-terminal, RQ retries the job, the retry fails the
+        dry_run_ready gate (the session is 'completed' now) and reports FAILURE over
+        a migration that actually succeeded."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _install_fake_psycopg2(mig, session_row)
+
+        order = []
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
+        monkeypatch.setattr(
+            mig, '_report_migration',
+            lambda task_id, status, progress, message, details=None: order.append(status),
+        )
+        monkeypatch.setattr(
+            mig, '_post_commit_reload', lambda *a, **k: order.append('reload')
+        )
+
+        mig.execute_provider_migration(1)
+
+        assert order[-1] == 'reload', "the restart must come after SUCCESS is written"
+        assert 'SUCCESS' in order
+
+    def test_a_retry_of_an_applied_migration_reports_success_not_failure(
+        self, mig, monkeypatch
+    ):
+        """RQ requeues an abandoned job under the SAME task id, so a migration that
+        committed and was then killed by its own restart comes back here. Raising on
+        the dry_run_ready gate made that retry overwrite the SUCCESS row with
+        FAILURE (save_task_status protects only REVOKED), telling the user a
+        completed migration had failed."""
+        session_row = _make_session_row(status='completed')
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        reported = []
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
+        monkeypatch.setattr(
+            mig, '_report_migration',
+            lambda task_id, status, progress, message, details=None: reported.append(
+                (status, details)
+            ),
+        )
+
+        reloaded = []
+        monkeypatch.setattr(
+            mig, '_post_commit_reload', lambda *a, **k: reloaded.append(1)
+        )
+
+        result = mig.execute_provider_migration(1)
+
+        assert result['ok'] is True
+        assert result['already_applied'] is True
+        assert reported and reported[-1][0] == 'SUCCESS'
+        assert not any(
+            s.upper().startswith('UPDATE TRACK_SERVER_MAP') for s in executed
+        ), "a retry must not repoint anything a second time"
+        assert reloaded, (
+            "the first run may have died of an OOM before it ever reached the "
+            "reload, so the retry must still refresh config and publish the restart"
+        )
+
+    def test_a_retry_does_not_queue_a_second_alignment(self, mig, monkeypatch):
+        """Its first run already committed an alignment row; the janitor revives
+        that one. Queueing another would run the same full-refresh sweep twice."""
+        from tasks import multiserver_sync as sync
+
+        calls = []
+        monkeypatch.setattr(
+            sync, 'enqueue_server_alignment', lambda **kw: calls.append(kw)
+        )
+
+        mig._enqueue_post_migration_alignment(None)
+
+        assert calls == []
+
+    def test_a_blip_in_the_restart_publish_is_retried_not_abandoned(
+        self, mig, monkeypatch
+    ):
+        """The request is a Redis publish, so a failure is a Redis blip. Giving up on
+        the first one leaves the registry pointing at the new provider while every
+        running worker still holds the old one."""
+        import types
+
+        monkeypatch.setattr(mig, '_RESTART_PUBLISH_RETRY_SECONDS', 0)
+        attempts = []
+        fake_restart = types.ModuleType('restart_manager')
+
+        def _flaky():
+            attempts.append(1)
+            return len(attempts) >= 2
+
+        fake_restart.publish_restart_request = _flaky
+        monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
+
+        assert mig._publish_restart_with_retries() is True
+        assert len(attempts) == 2
+
+    def test_an_undelivered_restart_request_is_reported_loudly(self, mig, monkeypatch, caplog):
+        """The swap is only half applied until the workers restart: the registry
+        points at the new provider while running workers still hold the old one."""
+        import types
+
+        monkeypatch.setattr(mig, '_RESTART_PUBLISH_RETRY_SECONDS', 0)
+        fake_restart = types.ModuleType('restart_manager')
+        fake_restart.publish_restart_request = lambda: False
+        monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
+
+        with caplog.at_level(logging.ERROR):
+            assert mig._publish_restart_with_retries() is False
+
+        assert 'RESTART AUDIOMUSE MANUALLY' in caplog.text
+
+    def test_a_raising_restart_manager_is_retried_too(self, mig, monkeypatch, caplog):
+        import types
+
+        monkeypatch.setattr(mig, '_RESTART_PUBLISH_RETRY_SECONDS', 0)
+        calls = []
+        fake_restart = types.ModuleType('restart_manager')
+
+        def _boom():
+            calls.append(1)
+            raise RuntimeError('redis is down')
+
+        fake_restart.publish_restart_request = _boom
+        monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
+
+        with caplog.at_level(logging.ERROR):
+            assert mig._publish_restart_with_retries() is False
+
+        assert len(calls) == mig._RESTART_PUBLISH_ATTEMPTS
+
+    def test_the_alignment_row_is_committed_with_the_migration(self, mig):
+        """A crash between the commit and the enqueue would otherwise leave no
+        record that an alignment is owed, and the artist ids the swap cleared stay
+        empty forever. The row rides the migration's own transaction, so the janitor
+        can always find it."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        rows = [s for s in executed if s.upper().startswith('INSERT INTO TASK_STATUS')]
+        assert rows, "the alignment intent must be written inside the transaction"
+        commit_marker = next(
+            i for i, s in enumerate(executed)
+            if s.upper().startswith('UPDATE MIGRATION_SESSION')
+        )
+        staged = next(
+            i for i, s in enumerate(executed)
+            if s.upper().startswith('INSERT INTO TASK_STATUS')
+        )
+        assert staged < commit_marker
+
+    def test_the_enqueue_adopts_the_row_the_transaction_committed(self, mig, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        calls = []
+        monkeypatch.setattr(
+            sync, 'enqueue_server_alignment',
+            lambda **kwargs: calls.append(kwargs) or kwargs.get('task_id'),
+        )
+
+        mig._enqueue_post_migration_alignment('align-42')
+
+        assert calls[0]['task_id'] == 'align-42', (
+            "the queued job must carry the id already committed, or the row and the "
+            "job describe two different alignments"
+        )
+
+
 class TestPlaylistReportIsInformationalOnly:
     """Counting stored playlists is a log line. A schema where that query fails must
     not abort an otherwise good migration, and in Postgres a failed statement
@@ -650,7 +825,8 @@ class TestPostMigrationAlignment:
 
         order = []
         monkeypatch.setattr(
-            mig, '_enqueue_post_migration_alignment', lambda: order.append('align')
+            mig, '_enqueue_post_migration_alignment',
+            lambda *a, **k: order.append('align'),
         )
         fake_restart = types.ModuleType('restart_manager')
         fake_restart.publish_restart_request = lambda: order.append('restart')
@@ -673,7 +849,7 @@ class TestPostMigrationAlignment:
             lambda **kwargs: calls.append(kwargs) or 'sweep-task-1',
         )
 
-        mig._enqueue_post_migration_alignment()
+        mig._enqueue_post_migration_alignment('align-1')
 
         assert len(calls) == 1, "the sweep module owns the enqueue"
         assert calls[0].get('message')
@@ -686,7 +862,7 @@ class TestPostMigrationAlignment:
 
         monkeypatch.setattr(sync, 'enqueue_server_alignment', _boom)
 
-        mig._enqueue_post_migration_alignment()
+        mig._enqueue_post_migration_alignment('align-1')
 
     def test_the_user_is_told_how_to_align_by_hand_when_none_was_queued(
         self, mig, monkeypatch, caplog
@@ -696,7 +872,7 @@ class TestPostMigrationAlignment:
         monkeypatch.setattr(sync, 'enqueue_server_alignment', lambda **kwargs: None)
 
         with caplog.at_level(logging.WARNING):
-            mig._enqueue_post_migration_alignment()
+            mig._enqueue_post_migration_alignment('align-1')
 
         assert 'Align' in caplog.text
 
