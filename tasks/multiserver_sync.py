@@ -35,7 +35,13 @@ Main Features:
   of re-implementing the fetch and the prune, so the two can never drift apart.
 * ``enqueue_server_alignment`` queues a full-refresh alignment of one server from
   a caller with no Flask app context - the provider migration uses it so the
-  artist ids and file paths a provider swap cannot carry are rebuilt.
+  artist ids and file paths a provider swap cannot carry are rebuilt. The row it
+  writes carries ``full_refresh`` so recovery can tell how strong it was.
+* Recovery PRESERVES the strength of the sweep it replaces: a killed full-refresh
+  alignment comes back as a full refresh. Replacing it with a matching-only sweep
+  silently did nothing whenever every track was already mapped - exactly the state
+  a provider migration leaves behind - so the artist ids it was queued to rebuild
+  stayed empty while the logs claimed the alignment had run.
 * Zero-download alignment: matching from catalogue metadata only.
 * Artist links: each swept server's ``artist_server_map`` rows are upserted
   from its fetched catalogue.
@@ -116,6 +122,19 @@ def _clear_abandoned_sighting(task_id):
     _ABANDONED_FIRST_SEEN.pop(task_id, None)
 
 
+def _details_full_refresh(details):
+    if not details:
+        return False
+    if isinstance(details, (bytes, bytearray)):
+        details = details.decode('utf-8', 'replace')
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except (ValueError, TypeError):
+            return False
+    return bool(details.get('full_refresh')) if isinstance(details, dict) else False
+
+
 def enqueue_server_alignment(server_id=None, message=None):
     """Queue a full-refresh alignment of ONE server (the default when unnamed).
 
@@ -130,7 +149,9 @@ def enqueue_server_alignment(server_id=None, message=None):
 
     task_id = str(uuid.uuid4())
     text = message or 'Server alignment queued.'
-    details = json.dumps({'message': text, 'status_message': text})
+    details = json.dumps(
+        {'message': text, 'status_message': text, 'full_refresh': True}
+    )
     db = connect_raw()
     db.autocommit = True
     try:
@@ -198,12 +219,14 @@ def recover_abandoned_sweeps():
         cur = db.cursor()
         try:
             cur.execute(
-                "SELECT task_id FROM task_status WHERE task_type = %s "
+                "SELECT task_id, details FROM task_status WHERE task_type = %s "
                 "AND status NOT IN (%s, %s, %s)",
                 (SWEEP_TASK_TYPE, config.TASK_STATUS_SUCCESS,
                  config.TASK_STATUS_FAILURE, config.TASK_STATUS_REVOKED),
             )
-            candidates = [r[0] for r in cur.fetchall()]
+            rows = cur.fetchall()
+            candidates = [r[0] for r in rows]
+            was_full_refresh = {r[0]: _details_full_refresh(r[1]) for r in rows}
         finally:
             cur.close()
         stale = []
@@ -220,6 +243,7 @@ def recover_abandoned_sweeps():
             return None
 
         now = time.time()
+        full_refresh = any(was_full_refresh.get(task_id) for task_id in stale)
         message = (
             "Alignment was interrupted (worker restarted); "
             "a fresh alignment of all servers was enqueued."
@@ -242,6 +266,7 @@ def recover_abandoned_sweeps():
             new_task_id = str(uuid.uuid4())
             queued = json.dumps({
                 'message': 'Server alignment queued for all servers.',
+                'full_refresh': full_refresh,
             })
             cur.execute(
                 "INSERT INTO task_status "
@@ -254,14 +279,15 @@ def recover_abandoned_sweeps():
             cur.close()
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
-            kwargs={'task_id': new_task_id, 'full_refresh': False},
+            kwargs={'task_id': new_task_id, 'full_refresh': full_refresh},
             job_id=new_task_id,
             job_timeout=-1,
         )
         _recovery_state['last'] = time.monotonic()
         logger.warning(
-            "Recovered %d interrupted alignment sweep(s); enqueued replacement %s",
-            revoked_count, new_task_id,
+            "Recovered %d interrupted alignment sweep(s); enqueued replacement %s "
+            "(full refresh: %s)",
+            revoked_count, new_task_id, full_refresh,
         )
         return new_task_id
     finally:

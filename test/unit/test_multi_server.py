@@ -1880,13 +1880,108 @@ class TestSweepAlignment:
         assert sync.enqueue_server_alignment() is None
         assert called == []
 
+    def test_recovery_replacement_keeps_the_strength_of_the_sweep_it_replaces(
+        self, monkeypatch
+    ):
+        """A killed FULL-REFRESH alignment must come back as a full refresh. Replaced
+        by a matching-only sweep it does nothing at all whenever every track is
+        already mapped - exactly the state a provider migration leaves - so the
+        artist ids the alignment existed to rebuild stay empty."""
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
+        cur = MagicMock()
+        cur.rowcount = 1
+        cur.fetchall.return_value = [
+            ('dead-alignment', json.dumps({'message': 'x', 'full_refresh': True})),
+        ]
+        cur.execute.side_effect = lambda sql, params=None: None
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
+        enqueued = {}
+
+        import app_helper
+        monkeypatch.setattr(
+            app_helper.rq_queue_high, 'enqueue',
+            lambda func, **kwargs: enqueued.update({'func': func}, **kwargs),
+        )
+
+        sync.recover_abandoned_sweeps()
+
+        assert enqueued['kwargs']['full_refresh'] is True
+
+    def test_recovery_of_a_plain_sweep_stays_matching_only(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
+        cur = MagicMock()
+        cur.rowcount = 1
+        cur.fetchall.return_value = [('dead-sweep', json.dumps({'message': 'x'}))]
+        cur.execute.side_effect = lambda sql, params=None: None
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
+        enqueued = {}
+
+        import app_helper
+        monkeypatch.setattr(
+            app_helper.rq_queue_high, 'enqueue',
+            lambda func, **kwargs: enqueued.update({'func': func}, **kwargs),
+        )
+
+        sync.recover_abandoned_sweeps()
+
+        assert enqueued['kwargs']['full_refresh'] is False
+
+    def test_unreadable_details_never_break_recovery(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        assert sync._details_full_refresh(None) is False
+        assert sync._details_full_refresh('not json') is False
+        assert sync._details_full_refresh('[]') is False
+        assert sync._details_full_refresh('{"full_refresh": true}') is True
+        assert sync._details_full_refresh(b'{"full_refresh": true}') is True
+        assert sync._details_full_refresh({'full_refresh': True}) is True
+
+    def test_a_redis_hiccup_leaves_a_row_the_janitor_can_recover(self, monkeypatch):
+        """If the enqueue throws, the task_status row is ALREADY written, so the
+        janitor finds a sweep with no RQ job and re-queues it. Writing the row after
+        the enqueue would lose the alignment outright."""
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append(sql)
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(
+            sync.registry, 'get_default_server_id', lambda conn=None: 'srv-default'
+        )
+
+        def _boom(*a, **k):
+            raise RuntimeError('redis is down')
+
+        import app_helper
+        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', _boom)
+
+        with pytest.raises(RuntimeError):
+            sync.enqueue_server_alignment(message='after the migration')
+
+        assert any(s.startswith('INSERT INTO task_status') for s in executed), (
+            "the recoverable row must exist before the enqueue is attempted"
+        )
+
     def test_recover_abandoned_sweeps_replaces_dead_sweep(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
         cur.rowcount = 1
-        cur.fetchall.return_value = [('dead-sweep',)]
+        cur.fetchall.return_value = [('dead-sweep', None)]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -1914,7 +2009,7 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
-        cur.fetchall.return_value = [('live-sweep',)]
+        cur.fetchall.return_value = [('live-sweep', None)]
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
@@ -1939,7 +2034,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
         cur.rowcount = 1
-        cur.fetchall.return_value = [('never-enqueued-sweep',)]
+        cur.fetchall.return_value = [('never-enqueued-sweep', None)]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -2260,7 +2355,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
         cur.rowcount = 1
-        cur.fetchall.return_value = [('dead-sweep',)]
+        cur.fetchall.return_value = [('dead-sweep', None)]
         db = MagicMock()
         db.cursor.return_value = cur
         connections = []
@@ -2285,7 +2380,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
         cur.rowcount = 0
-        cur.fetchall.return_value = [('just-finished-sweep',)]
+        cur.fetchall.return_value = [('just-finished-sweep', None)]
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -2311,7 +2406,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
         cur = MagicMock()
         cur.rowcount = 1
-        cur.fetchall.return_value = [('suspended-sweep',)]
+        cur.fetchall.return_value = [('suspended-sweep', None)]
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)

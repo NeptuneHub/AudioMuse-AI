@@ -734,11 +734,14 @@ def test_navidrome_id_rotation_carries_fingerprints_through_duplicate_files(migr
     duplicate_owner = rendered[1]['id']
     duplicate_file_id = _provider_id(source, 0, _ORPHAN_OFFSET)
     with conn.cursor() as cur:
+        # The unsignable marker sits on the SECOND row, which the collapse discards
+        # (it keeps the lowest ctid, i.e. the row seeded first). The marker belongs
+        # to the SONG, not to whichever file wins that race.
         cur.execute(
             "INSERT INTO track_server_map "
             "(item_id, server_id, provider_track_id, match_tier, file_path) "
             "VALUES (%s, %s, %s, %s, %s)",
-            (duplicate_owner, _DEFAULT_SERVER_ID, duplicate_file_id, 'path',
+            (duplicate_owner, _DEFAULT_SERVER_ID, duplicate_file_id, 'analysis',
              rendered[1]['path'] + '.dup'),
         )
         cur.execute(
@@ -785,6 +788,16 @@ def test_navidrome_id_rotation_carries_fingerprints_through_duplicate_files(migr
             (_DEFAULT_SERVER_ID, duplicate_owner),
         )
         assert cur.fetchone()[0] == 1, "duplicate files collapse to one row per song"
+        cur.execute(
+            "SELECT match_tier FROM track_server_map "
+            "WHERE server_id = %s AND item_id = %s",
+            (_DEFAULT_SERVER_ID, duplicate_owner),
+        )
+        assert cur.fetchone()[0] == 'analysis', (
+            "the unsignable marker belongs to the SONG: collapsing its duplicate "
+            "files must not throw it away with the discarded row, or every later "
+            "boot re-hashes the whole catalogue"
+        )
     verify.close()
 
 

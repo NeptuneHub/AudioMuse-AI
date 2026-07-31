@@ -175,7 +175,10 @@ def _enqueue_sweep(at_front=False):
     try:
         save_task_status(
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={'message': 'Server alignment queued for all servers.'},
+            details={
+                'message': 'Server alignment queued for all servers.',
+                'full_refresh': True,
+            },
         )
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
@@ -491,7 +494,10 @@ def sweep_server(server_id):
     try:
         save_task_status(
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={'message': 'Server matching sweep queued.'},
+            details={
+                'message': 'Server matching sweep queued.',
+                'full_refresh': True,
+            },
         )
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_server',

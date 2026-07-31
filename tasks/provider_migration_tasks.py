@@ -375,6 +375,21 @@ def _populate_migration_map_table(cur, mapping):
     cur.execute("ANALYZE item_id_migration_map")
 
 
+def _stage_unsignable_items(cur):
+    cur.execute(
+        "CREATE TEMP TABLE migration_unsignable_items ("
+        " item_id TEXT PRIMARY KEY"
+        ") ON COMMIT DROP"
+    )
+    cur.execute(
+        "INSERT INTO migration_unsignable_items (item_id) "
+        "SELECT DISTINCT t.item_id FROM track_server_map t, music_servers s "
+        "WHERE s.is_default AND t.server_id = s.server_id "
+        "AND t.match_tier = 'analysis'"
+    )
+    return cur.rowcount
+
+
 def _stage_chromaprint_carry(cur):
     cur.execute("SELECT to_regclass('public.chromaprint')")
     if cur.fetchone()[0] is None:
@@ -577,6 +592,7 @@ def _run_migration_transaction(
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
 
     _populate_migration_map_table(cur, mapping)
+    _stage_unsignable_items(cur)
     chromaprint_staged = _stage_chromaprint_carry(cur)
 
     # Unbind what the target does not have. The catalogue row stays.
@@ -608,8 +624,8 @@ def _run_migration_transaction(
     # unprefixed row survives to collide with them.
     cur.execute(
         "UPDATE track_server_map t SET provider_track_id = %s || m.new_id, "
-        "match_tier = CASE WHEN t.match_tier = 'analysis' THEN 'analysis' "
-        "  ELSE 'default' END, "
+        "match_tier = CASE WHEN EXISTS (SELECT 1 FROM migration_unsignable_items u "
+        "  WHERE u.item_id = t.item_id) THEN 'analysis' ELSE 'default' END, "
         "updated_at = now() "
         "FROM item_id_migration_map m, music_servers s "
         "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.old_id",
