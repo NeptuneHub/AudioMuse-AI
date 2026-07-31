@@ -33,6 +33,9 @@ Main Features:
 * ``fetch_server_catalogue`` / ``prune_stale_mappings`` / ``unmapped_local_count``
   are the public helpers this module owns; the cleaning task reuses them instead
   of re-implementing the fetch and the prune, so the two can never drift apart.
+* ``enqueue_server_alignment`` queues a full-refresh alignment of one server from
+  a caller with no Flask app context - the provider migration uses it so the
+  artist ids and file paths a provider swap cannot carry are rebuilt.
 * Zero-download alignment: matching from catalogue metadata only.
 * Artist links: each swept server's ``artist_server_map`` rows are upserted
   from its fetched catalogue.
@@ -111,6 +114,53 @@ def _confirm_abandoned(task_id):
 
 def _clear_abandoned_sighting(task_id):
     _ABANDONED_FIRST_SEEN.pop(task_id, None)
+
+
+def enqueue_server_alignment(server_id=None, message=None):
+    """Queue a full-refresh alignment of ONE server (the default when unnamed).
+
+    Raw connection and a direct enqueue, like ``recover_abandoned_sweeps``, so a
+    caller with no Flask app context - the provider migration runs in an RQ job -
+    can ask for the alignment that rebuilds what a provider swap cannot carry:
+    the server's artist ids and the file paths of the tracks it repointed.
+    Returns the task id, or None when there is no server to align.
+    """
+    import config
+    from app_helper import rq_queue_high
+
+    task_id = str(uuid.uuid4())
+    text = message or 'Server alignment queued.'
+    details = json.dumps({'message': text, 'status_message': text})
+    db = connect_raw()
+    db.autocommit = True
+    try:
+        target = str(server_id) if server_id else registry.get_default_server_id(db)
+        if not target:
+            return None
+        cur = db.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO task_status "
+                "(task_id, task_type, status, progress, details, timestamp, start_time) "
+                "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
+                "ON CONFLICT (task_id) DO NOTHING",
+                (task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_PENDING, details, time.time()),
+            )
+        finally:
+            cur.close()
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Alignment enqueue connection close failed", exc_info=True)
+    rq_queue_high.enqueue(
+        'tasks.multiserver_sync.sweep_server',
+        args=(target,),
+        kwargs={'task_id': task_id},
+        job_id=task_id,
+        job_timeout=-1,
+    )
+    return task_id
 
 
 def recover_abandoned_sweeps():

@@ -1827,6 +1827,59 @@ class TestSweepAlignment:
         queued_job.cancel.assert_called_once()
         started_job.cancel.assert_not_called()
 
+    def test_enqueue_server_alignment_targets_the_default_server_with_no_app_context(
+        self, monkeypatch
+    ):
+        """The provider migration asks for this from an RQ job, where Flask's ``g``
+        does not exist, so the server is resolved on the helper's own connection
+        rather than through get_db()."""
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(
+            sync.registry, 'get_default_server_id', lambda conn=None: 'srv-default'
+        )
+        enqueued = {}
+
+        def fake_enqueue(func, **kwargs):
+            enqueued['func'] = func
+            enqueued.update(kwargs)
+
+        import app_helper
+        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', fake_enqueue)
+
+        task_id = sync.enqueue_server_alignment(message='after the migration')
+
+        assert task_id
+        assert enqueued['func'] == 'tasks.multiserver_sync.sweep_server'
+        assert enqueued['args'] == ('srv-default',)
+        assert enqueued['kwargs'] == {'task_id': task_id}
+        rows = [e for e in executed if e[0].startswith('INSERT INTO task_status')]
+        assert rows, "the sweep must be visible in task_status before it is queued"
+        assert sync.SWEEP_TASK_TYPE in rows[0][1]
+
+    def test_enqueue_server_alignment_queues_nothing_without_a_server(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        db = MagicMock()
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(
+            sync.registry, 'get_default_server_id', lambda conn=None: None
+        )
+        import app_helper
+        called = []
+        monkeypatch.setattr(
+            app_helper.rq_queue_high, 'enqueue', lambda *a, **k: called.append(1)
+        )
+
+        assert sync.enqueue_server_alignment() is None
+        assert called == []
+
     def test_recover_abandoned_sweeps_replaces_dead_sweep(self, monkeypatch):
         from tasks import multiserver_sync as sync
 

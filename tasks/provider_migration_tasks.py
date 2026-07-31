@@ -21,6 +21,16 @@ Main Features:
 * Under an advisory lock, repoints the default server's mappings, refreshes song
   metadata from the new provider, clears the old provider's artist ids, and points
   the music_servers default row at the target.
+* Chromaprint fingerprints are CARRIED onto the target's track ids in the same
+  transaction instead of being left behind keyed by dead ids. A provider swap does
+  not touch the audio, so a same-provider re-id (a Navidrome id rotation) keeps
+  every fingerprint it already computed rather than re-downloading the library.
+* The 'analysis' match tier survives the repoint: it is the only record that a
+  catalogue row has no usable signature and can never be relabelled, and dropping
+  it makes the next boot re-hash the whole catalogue for nothing.
+* Queues a full-refresh alignment of the migrated server after the commit. That
+  sweep is what rebuilds the artist ids the swap had to clear and refreshes the
+  file paths the target may not have reported.
 * Reads target metadata from the migration_target_meta side table and builds
   the old->new id mapping via indexed per-album queries; reloads state after commit.
 """
@@ -365,6 +375,63 @@ def _populate_migration_map_table(cur, mapping):
     cur.execute("ANALYZE item_id_migration_map")
 
 
+def _stage_chromaprint_carry(cur):
+    cur.execute("SELECT to_regclass('public.chromaprint')")
+    if cur.fetchone()[0] is None:
+        return False
+    cur.execute(
+        "CREATE TEMP TABLE migration_chromaprint_carry ("
+        " provider_track_id TEXT PRIMARY KEY, "
+        " new_id TEXT NOT NULL UNIQUE"
+        ") ON COMMIT DROP"
+    )
+    cur.execute(
+        "INSERT INTO migration_chromaprint_carry (provider_track_id, new_id) "
+        "SELECT DISTINCT ON (m.new_id) c.provider_track_id, m.new_id "
+        "FROM chromaprint c "
+        "JOIN music_servers s ON s.is_default AND c.server_id = s.server_id "
+        "JOIN track_server_map t "
+        "  ON t.server_id = c.server_id AND t.provider_track_id = c.provider_track_id "
+        "JOIN item_id_migration_map m ON m.old_id = t.item_id "
+        "ORDER BY m.new_id, (c.fingerprint IS NULL), c.provider_track_id"
+    )
+    return True
+
+
+def _repoint_chromaprint(cur, staged):
+    if not staged:
+        return
+    cur.execute(
+        "DELETE FROM chromaprint c USING music_servers s "
+        "WHERE s.is_default AND c.server_id = s.server_id "
+        "AND NOT EXISTS (SELECT 1 FROM migration_chromaprint_carry k "
+        "WHERE k.provider_track_id = c.provider_track_id)"
+    )
+    dropped = cur.rowcount
+    cur.execute(
+        "UPDATE chromaprint c SET provider_track_id = %s || k.new_id, updated_at = now() "
+        "FROM migration_chromaprint_carry k, music_servers s "
+        "WHERE s.is_default AND c.server_id = s.server_id "
+        "AND c.provider_track_id = k.provider_track_id",
+        (_MIG_TMP_PREFIX,),
+    )
+    carried = cur.rowcount
+    cur.execute(
+        "UPDATE chromaprint c "
+        "SET provider_track_id = substr(c.provider_track_id, %s) "
+        "FROM music_servers s "
+        "WHERE s.is_default AND c.server_id = s.server_id "
+        "AND c.provider_track_id LIKE %s",
+        (len(_MIG_TMP_PREFIX) + 1, _MIG_TMP_PREFIX + '%'),
+    )
+    if carried or dropped:
+        logger.info(
+            "provider migration: carried %d Chromaprint fingerprint(s) onto the new "
+            "provider ids, dropped %d that no longer map to anything",
+            carried, dropped,
+        )
+
+
 def _apply_new_meta(cur, new_meta):
     if not new_meta:
         return
@@ -445,6 +512,35 @@ def _clear_default_server_artist_map(cur):
             )
 
 
+def _report_playlists_bound_to_default_server(cur):
+    cur.execute("SELECT to_regclass('public.playlist')")
+    if cur.fetchone()[0] is None:
+        return
+    cur.execute("SAVEPOINT mig_playlist_report")
+    try:
+        cur.execute(
+            "SELECT count(DISTINCT p.playlist_name) FROM playlist p, music_servers s "
+            "WHERE s.is_default AND p.server_id = s.server_id"
+        )
+        row = cur.fetchone()
+        cur.execute("RELEASE SAVEPOINT mig_playlist_report")
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT mig_playlist_report")
+        logger.exception(
+            "provider migration: could not count the stored playlists (reporting only)"
+        )
+        return
+    stored = row[0] if row else 0
+    if stored:
+        logger.warning(
+            "provider migration: %d stored playlist(s) are still recorded against the "
+            "migrated server. Their songs survived and re-translate to the new provider "
+            "ids, but the playlists themselves live on the OLD provider: re-run "
+            "clustering to create them on the target.",
+            stored,
+        )
+
+
 def _run_migration_transaction(
     cur,
     mapping,
@@ -481,6 +577,7 @@ def _run_migration_transaction(
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
 
     _populate_migration_map_table(cur, mapping)
+    chromaprint_staged = _stage_chromaprint_carry(cur)
 
     # Unbind what the target does not have. The catalogue row stays.
     cur.execute(
@@ -511,7 +608,9 @@ def _run_migration_transaction(
     # unprefixed row survives to collide with them.
     cur.execute(
         "UPDATE track_server_map t SET provider_track_id = %s || m.new_id, "
-        "match_tier = 'default', updated_at = now() "
+        "match_tier = CASE WHEN t.match_tier = 'analysis' THEN 'analysis' "
+        "  ELSE 'default' END, "
+        "updated_at = now() "
         "FROM item_id_migration_map m, music_servers s "
         "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.old_id",
         (_MIG_TMP_PREFIX,),
@@ -525,8 +624,10 @@ def _run_migration_transaction(
         (len(_MIG_TMP_PREFIX) + 1, _MIG_TMP_PREFIX + '%'),
     )
 
+    _repoint_chromaprint(cur, chromaprint_staged)
     _apply_new_meta(cur, new_meta)
     _clear_default_server_artist_map(cur)
+    _report_playlists_bound_to_default_server(cur)
 
     _write_provider_to_default_server(
         cur, target_type, target_creds, selected_libraries=selected_libraries
@@ -622,12 +723,38 @@ def _post_commit_reload(redis):
         config.refresh_config()
     except Exception as e:
         logger.warning("config.refresh_config() failed: %s", e)
+    _enqueue_post_migration_alignment()
     try:
         import restart_manager
 
         restart_manager.publish_restart_request()
     except Exception as e:
         logger.warning("restart_manager.publish_restart_request() failed: %s", e)
+
+
+def _enqueue_post_migration_alignment():
+    try:
+        from tasks import multiserver_sync
+
+        task_id = multiserver_sync.enqueue_server_alignment(
+            message='Aligning the migrated server: rebuilding artist ids and file paths.',
+        )
+        if task_id:
+            logger.info(
+                "provider migration: queued alignment %s of the migrated server; it "
+                "rebuilds the artist ids the swap cleared and refreshes the file paths",
+                task_id,
+            )
+        else:
+            logger.warning(
+                "provider migration: no alignment was queued; run 'Align' from the "
+                "music servers page so artist ids are rebuilt for the new provider"
+            )
+    except Exception:
+        logger.exception(
+            "provider migration: could not queue the post-migration alignment; run "
+            "'Align' from the music servers page to rebuild the artist ids"
+        )
 
 
 def dry_run_provider_migration(session_id, allow_title_artist_only=False):

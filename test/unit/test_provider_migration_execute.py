@@ -129,6 +129,18 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
             lambda up, params: _set_one(('artist_server_map',)),
         ),
         (
+            lambda up: _matches(up, 'TO_REGCLASS', 'CHROMAPRINT'),
+            lambda up, params: _set_one(('chromaprint',)),
+        ),
+        (
+            lambda up: _matches(up, 'TO_REGCLASS', 'PLAYLIST'),
+            lambda up, params: _set_one(('playlist',)),
+        ),
+        (
+            lambda up: _matches(up, 'COUNT(DISTINCT P.PLAYLIST_NAME)'),
+            lambda up, params: _set_one((2,)),
+        ),
+        (
             lambda up: _matches(up, 'FROM MIGRATION_SESSION', 'SELECT'),
             lambda up, params: _set_one(session_row),
         ),
@@ -272,6 +284,103 @@ class TestExecuteProviderMigration:
         ]
         assert unbind, "unmatched songs must be unbound from the default server"
         assert 'IS_DEFAULT' in unbind[0].upper(), "only the migrated server is unbound"
+
+    def test_chromaprints_are_carried_onto_the_target_ids_not_left_under_dead_ones(self, mig):
+        """`chromaprint` is keyed by the (server_id, provider_track_id) pair the
+        migration rewrites. Left alone, every fingerprint on the server becomes
+        unreachable AND a target that recycles one of those ids inherits the wrong
+        one - analysis reads the stored print back and never recomputes it. The
+        audio did not change, so the print follows the song."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        upper = [s.upper() for s in executed]
+        carried = [s for s in upper if s.startswith('UPDATE CHROMAPRINT')]
+        assert carried, "fingerprints must be repointed at the new provider ids"
+        assert all('IS_DEFAULT' in s for s in carried), (
+            "only the migrated server's fingerprints move"
+        )
+
+    def test_the_carry_is_staged_before_the_ids_it_reads_are_overwritten(self, mig):
+        """The staging join reads the OLD provider ids out of track_server_map. Run
+        it after the repoint and it reads the new ids and carries nothing."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        upper = [s.upper() for s in executed]
+        staged = next(
+            i for i, s in enumerate(upper)
+            if s.startswith('INSERT INTO MIGRATION_CHROMAPRINT_CARRY')
+        )
+        repointed = next(
+            i for i, s in enumerate(upper) if s.startswith('UPDATE TRACK_SERVER_MAP')
+        )
+        assert staged < repointed, (
+            "the fingerprint carry must be staged while the old ids are still there"
+        )
+
+    def test_fingerprints_that_carry_nothing_are_deleted_not_orphaned(self, mig):
+        """A row keyed by an id the server no longer has is unreachable through
+        track_server_map and is exactly what lets a recycled id serve a stale
+        fingerprint later. It goes; the backfill recomputes if the song comes back."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        dropped = [
+            s for s in executed
+            if s.upper().startswith('DELETE FROM CHROMAPRINT')
+        ]
+        assert dropped, "uncarried fingerprints must not be left keyed by dead ids"
+        assert 'MIGRATION_CHROMAPRINT_CARRY' in dropped[0].upper()
+        assert 'IS_DEFAULT' in dropped[0].upper(), (
+            "another server's fingerprints are none of this migration's business"
+        )
+
+    def test_the_fingerprint_rewrite_is_two_pass_like_the_mapping_rewrite(self, mig):
+        """A re-point onto the SAME provider (a Navidrome id rotation) permutes ids
+        rather than replacing them, so a one-pass UPDATE trips the primary key the
+        moment it assigns an id another row still holds."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        prefixed = [
+            s for s in executed
+            if s.upper().startswith('UPDATE CHROMAPRINT') and '|| K.NEW_ID' in s.upper()
+        ]
+        stripped = [
+            s for s in executed
+            if s.upper().startswith('UPDATE CHROMAPRINT') and 'SUBSTR(' in s.upper()
+        ]
+        assert prefixed and stripped, (
+            "the fingerprint rewrite needs the same two passes through a temp prefix"
+        )
+
+    def test_the_unsignable_analysis_tier_survives_the_repoint(self, mig):
+        """'analysis' is not provenance: it is the only record that a catalogue row
+        yields no usable signature and can never be relabelled. Flatten it and the
+        startup canonicalizer counts the row as legacy again and re-hashes the whole
+        catalogue on the next boot, relabelling nothing."""
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        repoint = next(
+            s for s in executed if s.upper().startswith('UPDATE TRACK_SERVER_MAP')
+            and 'MATCH_TIER' in s.upper()
+        )
+        assert "'analysis'" in repoint.lower(), (
+            "the repoint must preserve the unsignable marker, not overwrite it"
+        )
+        assert 'CASE' in repoint.upper()
 
     def test_rejects_session_not_in_dry_run_ready(self, mig):
         session_row = _make_session_row(status='in_progress')
@@ -465,6 +574,131 @@ class TestMigrationClearsStaleArtistIds:
         mig._clear_default_server_artist_map(cur)
 
         assert not any('DELETE FROM artist_server_map' in s for s in executed)
+
+
+class TestPlaylistReportIsInformationalOnly:
+    """Counting stored playlists is a log line. A schema where that query fails must
+    not abort an otherwise good migration, and in Postgres a failed statement
+    poisons the whole transaction unless it is fenced by a savepoint."""
+
+    def test_a_failing_count_cannot_abort_the_migration(self, mig):
+        cur = MagicMock()
+        executed = []
+
+        def _execute(sql, params=None):
+            executed.append(sql)
+            if 'count(DISTINCT p.playlist_name)' in sql:
+                raise RuntimeError('column p.server_id does not exist')
+
+        cur.execute.side_effect = _execute
+        cur.fetchone.return_value = ('playlist',)
+
+        mig._report_playlists_bound_to_default_server(cur)
+
+        assert any(s.startswith('SAVEPOINT') for s in executed)
+        assert any(s.startswith('ROLLBACK TO SAVEPOINT') for s in executed), (
+            "the transaction must be left usable for the rest of the migration"
+        )
+
+    def test_a_clean_count_releases_its_savepoint(self, mig):
+        cur = MagicMock()
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append(sql)
+        cur.fetchone.side_effect = [('playlist',), (3,)]
+
+        mig._report_playlists_bound_to_default_server(cur)
+
+        assert any(s.startswith('RELEASE SAVEPOINT') for s in executed)
+        assert not any(s.startswith('ROLLBACK') for s in executed)
+
+
+class TestChromaprintCarryTolerance:
+    def test_missing_chromaprint_table_is_tolerated(self, mig):
+        cur = MagicMock()
+        cur.fetchone.return_value = (None,)
+        executed = []
+        cur.execute.side_effect = lambda sql, p=None: executed.append(sql)
+
+        staged = mig._stage_chromaprint_carry(cur)
+        mig._repoint_chromaprint(cur, staged)
+
+        assert staged is False
+        assert not any('chromaprint' in s and 'to_regclass' not in s for s in executed)
+
+    def test_nothing_is_rewritten_when_staging_was_skipped(self, mig):
+        cur = MagicMock()
+        executed = []
+        cur.execute.side_effect = lambda sql, p=None: executed.append(sql)
+
+        mig._repoint_chromaprint(cur, False)
+
+        assert executed == []
+
+
+class TestPostMigrationAlignment:
+    """A provider swap CLEARS the server's artist ids (the matcher maps tracks, not
+    artists) and cannot refresh a path the target did not report. Only an alignment
+    rebuilds those, and the migration is the one default-server change that never
+    queued one - so the ids stayed empty until the user happened to re-analyze.
+    The artist lookup has no fallback: it returns nothing at all meanwhile.
+    """
+
+    def test_the_alignment_is_queued_before_the_restart_that_kills_the_worker(
+        self, mig, monkeypatch
+    ):
+        import types
+
+        order = []
+        monkeypatch.setattr(
+            mig, '_enqueue_post_migration_alignment', lambda: order.append('align')
+        )
+        fake_restart = types.ModuleType('restart_manager')
+        fake_restart.publish_restart_request = lambda: order.append('restart')
+        monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
+
+        mig._post_commit_reload(MagicMock())
+
+        assert order == ['align', 'restart'], (
+            "queue the alignment first: the restart can kill this very worker"
+        )
+
+    def test_the_alignment_is_asked_of_the_sweep_layer_not_reimplemented(
+        self, mig, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        calls = []
+        monkeypatch.setattr(
+            sync, 'enqueue_server_alignment',
+            lambda **kwargs: calls.append(kwargs) or 'sweep-task-1',
+        )
+
+        mig._enqueue_post_migration_alignment()
+
+        assert len(calls) == 1, "the sweep module owns the enqueue"
+        assert calls[0].get('message')
+
+    def test_a_failed_enqueue_never_fails_the_migration(self, mig, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        def _boom(**kwargs):
+            raise RuntimeError("redis is down")
+
+        monkeypatch.setattr(sync, 'enqueue_server_alignment', _boom)
+
+        mig._enqueue_post_migration_alignment()
+
+    def test_the_user_is_told_how_to_align_by_hand_when_none_was_queued(
+        self, mig, monkeypatch, caplog
+    ):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, 'enqueue_server_alignment', lambda **kwargs: None)
+
+        with caplog.at_level(logging.WARNING):
+            mig._enqueue_post_migration_alignment()
+
+        assert 'Align' in caplog.text
 
 
 class TestMigrationWarnsOnMissingTargetMetadata:
