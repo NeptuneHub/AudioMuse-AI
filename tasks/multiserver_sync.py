@@ -515,7 +515,7 @@ def reap_orphaned_tasks():
             logger.debug("Orphan-reap connection close failed", exc_info=True)
 
 
-def _make_reporter(task_id, label):
+def _make_reporter(task_id, label, full_refresh=None):
     try:
         from flask_app import app
         from app_helper import save_task_status
@@ -532,6 +532,13 @@ def _make_reporter(task_id, label):
         if task_state is None and pct == last['pct']:
             return
         last['pct'] = pct
+        details = {
+            'status_message': message,
+            'message': message,
+            'log': [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"],
+        }
+        if full_refresh is not None:
+            details['full_refresh'] = bool(full_refresh)
         try:
             with app.app_context():
                 save_task_status(
@@ -539,11 +546,7 @@ def _make_reporter(task_id, label):
                     SWEEP_TASK_TYPE,
                     task_state or TASK_STATUS_PROGRESS,
                     progress=pct,
-                    details={
-                        'status_message': message,
-                        'message': message,
-                        'log': [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"],
-                    },
+                    details=details,
                 )
         except Exception:
             logger.debug("Sweep status update failed (ignored)", exc_info=True)
@@ -1079,7 +1082,7 @@ def sweep_server(server_id, task_id=None, conn=None):
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = _make_reporter(task_id, server_id)
+    report = _make_reporter(task_id, server_id, full_refresh=True)
     cancel, close_cancel = _make_cancel_check(task_id)
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
@@ -1144,7 +1147,7 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = _make_reporter(task_id, 'all')
+    report = _make_reporter(task_id, 'all', full_refresh=full_refresh)
     cancel, close_cancel = _make_cancel_check(task_id)
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS

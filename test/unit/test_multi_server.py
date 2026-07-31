@@ -30,6 +30,7 @@ Main Features:
 import gc
 import json
 import logging
+import sys
 import weakref
 
 import pytest
@@ -1387,7 +1388,7 @@ class TestSweepAlignment:
         reports = []
         monkeypatch.setattr(
             sync, '_make_reporter',
-            lambda task_id, label: (
+            lambda task_id, label, full_refresh=None: (
                 lambda message, progress, task_state=None: reports.append(
                     (message, progress, task_state)
                 )
@@ -1463,7 +1464,7 @@ class TestSweepAlignment:
         reports = []
         monkeypatch.setattr(
             sync, '_make_reporter',
-            lambda task_id, label: (
+            lambda task_id, label, full_refresh=None: (
                 lambda message, progress, task_state=None: reports.append(
                     (message, progress, task_state)
                 )
@@ -1879,6 +1880,56 @@ class TestSweepAlignment:
 
         assert sync.enqueue_server_alignment() is None
         assert called == []
+
+    def test_a_progress_update_does_not_wipe_the_full_refresh_flag(self, monkeypatch):
+        """save_task_status REPLACES details wholesale, and recovery only ever fires
+        for a sweep that STARTED and died (a still-queued job counts as alive and
+        just runs after the restart). By then the first progress report has
+        rewritten the row, so a flag written only at enqueue time is gone exactly
+        when the janitor needs it. Every progress update has to carry it."""
+        import types
+
+        from tasks import multiserver_sync as sync
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = MagicMock()
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        saved = []
+        import app_helper
+        monkeypatch.setattr(
+            app_helper, 'save_task_status',
+            lambda *a, **k: saved.append(k.get('details')),
+        )
+
+        report = sync._make_reporter('t1', 'all', full_refresh=True)
+        report('Starting alignment...', 2, task_state='STARTED')
+
+        assert saved, "the reporter must actually have written a row"
+        assert sync._details_full_refresh(saved[0]) is True, (
+            "the running sweep's strength must survive its own progress updates"
+        )
+
+    def test_a_matching_only_sweep_reports_itself_as_such(self, monkeypatch):
+        import types
+
+        from tasks import multiserver_sync as sync
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = MagicMock()
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        saved = []
+        import app_helper
+        monkeypatch.setattr(
+            app_helper, 'save_task_status',
+            lambda *a, **k: saved.append(k.get('details')),
+        )
+
+        report = sync._make_reporter('t2', 'all', full_refresh=False)
+        report('Aligning...', 5, task_state='STARTED')
+
+        assert saved and sync._details_full_refresh(saved[0]) is False
 
     def test_recovery_replacement_keeps_the_strength_of_the_sweep_it_replaces(
         self, monkeypatch
