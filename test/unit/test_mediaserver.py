@@ -17,7 +17,11 @@ Main Features:
 * Best-artist selection, field normalization and playlist/album/track parsing
 * getAllSongs pagination, list-libraries shape, and create-or-replace flows
 * Dispatcher validation and automatic-playlist deletion routing
+* Every provider's create_playlist returns the created playlist on success and
+  None on failure, so a caller may test the result instead of assuming success
 """
+
+import importlib
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch
@@ -2640,6 +2644,103 @@ class TestJellyfinCreateOrReplacePlaylist:
         ]
 
         assert jellyfin._create_fresh_playlist('SF', item_ids) is None
+
+
+_DELEGATING_CREATORS = [
+    ('jellyfin', '_create_fresh_playlist'),
+    ('lyrion', '_create_playlist_batched'),
+    ('navidrome', '_create_playlist_batched'),
+    ('plex', '_create_playlist_batched'),
+]
+
+
+class TestCreatePlaylistReturnContract:
+    @pytest.mark.parametrize('provider,creator', _DELEGATING_CREATORS)
+    def test_returns_the_created_playlist_rather_than_none(self, provider, creator):
+        module = importlib.import_module(f'tasks.mediaserver.{provider}')
+        created = {'Id': 'p-1', 'Name': 'Mix'}
+
+        with patch.object(module, creator, return_value=created):
+            assert module.create_playlist('Mix', ['t1']) == created
+
+    @pytest.mark.parametrize('provider,creator', _DELEGATING_CREATORS)
+    def test_returns_none_when_the_creator_reports_failure(self, provider, creator):
+        module = importlib.import_module(f'tasks.mediaserver.{provider}')
+
+        with patch.object(module, creator, return_value=None):
+            assert module.create_playlist('Mix', ['t1']) is None
+
+
+class TestJellyfinCreatePlaylist:
+    @patch('tasks.mediaserver.jellyfin._add_items_to_playlist', return_value=True)
+    @patch('tasks.mediaserver.jellyfin.requests')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_overflow_tracks_are_added_instead_of_truncated(
+        self, mock_config, mock_requests, mock_add
+    ):
+        from tasks.mediaserver import jellyfin
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="t"'}
+        post_resp = MagicMock()
+        post_resp.json.return_value = {'Id': 'new-jf', 'Name': 'Mix'}
+        mock_requests.post.return_value = post_resp
+        item_ids = [f'song-{i}' for i in range(jellyfin.JELLYFIN_PLAYLIST_BATCH_SIZE + 5)]
+
+        result = jellyfin.create_playlist('Mix', item_ids)
+
+        assert result['Id'] == 'new-jf'
+        posted = mock_requests.post.call_args[1]['json']['Ids']
+        assert len(posted) == jellyfin.JELLYFIN_PLAYLIST_BATCH_SIZE
+        assert mock_add.call_args[0][1] == item_ids[jellyfin.JELLYFIN_PLAYLIST_BATCH_SIZE:]
+
+    @patch('tasks.mediaserver.jellyfin.requests')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_server_rejection_returns_none_instead_of_silent_success(
+        self, mock_config, mock_requests
+    ):
+        from tasks.mediaserver import jellyfin
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="t"'}
+        post_resp = MagicMock()
+        post_resp.raise_for_status.side_effect = requests.exceptions.HTTPError('403')
+        mock_requests.post.return_value = post_resp
+
+        assert jellyfin.create_playlist('Mix', ['t1']) is None
+
+
+class TestEmbyCreatePlaylistReturnContract:
+    @patch('tasks.mediaserver.emby.requests')
+    @patch('tasks.mediaserver.emby.config')
+    def test_returns_the_created_playlist_rather_than_none(self, mock_config, mock_requests):
+        from tasks.mediaserver import emby
+
+        mock_config.EMBY_URL = 'http://emby'
+        mock_config.EMBY_USER_ID = 'user123'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_requests.utils.quote.side_effect = lambda value: value
+        mock_requests.post.return_value.json.return_value = {'Id': 'new-emby', 'Name': 'Mix'}
+
+        assert emby.create_playlist('Mix', ['t1'])['Id'] == 'new-emby'
+
+    @patch('tasks.mediaserver.emby.requests')
+    @patch('tasks.mediaserver.emby.config')
+    def test_server_rejection_returns_none(self, mock_config, mock_requests):
+        from tasks.mediaserver import emby
+
+        mock_config.EMBY_URL = 'http://emby'
+        mock_config.EMBY_USER_ID = 'user123'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_requests.utils.quote.side_effect = lambda value: value
+        mock_requests.exceptions = requests.exceptions
+        mock_requests.post.return_value.raise_for_status.side_effect = (
+            requests.exceptions.HTTPError('403')
+        )
+
+        assert emby.create_playlist('Mix', ['t1']) is None
 
 
 class TestEmbyCreateOrReplacePlaylist:

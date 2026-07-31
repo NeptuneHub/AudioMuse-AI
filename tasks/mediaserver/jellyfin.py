@@ -478,14 +478,7 @@ def get_playlist_by_name(playlist_name):
 
 
 def create_playlist(base_name, item_ids):
-    url = f"{_jellyfin_base_url()}/Playlists"
-    body = {"Name": base_name, "Ids": item_ids, "UserId": _jellyfin_user_id()}
-    try:
-        r = requests.post(url, headers=_jellyfin_headers_from_creds(), json=body, timeout=REQUESTS_TIMEOUT)
-        if r.ok:
-            logger.info("Created Jellyfin playlist '%s'", base_name)
-    except Exception:
-        logger.exception("Exception creating Jellyfin playlist '%s'", base_name)
+    return _create_fresh_playlist(base_name, item_ids)
 
 
 def get_all_playlists():
