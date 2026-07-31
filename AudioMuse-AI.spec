@@ -96,7 +96,7 @@ hiddenimports = [
     "numkong._numkong",
 ]
 hiddenimports += cfg["extra_hiddenimports"]
-for _mod in ("tasks", "lyrics", "sklearn", *cfg["collect_submodules"]):
+for _mod in ("tasks", "lyrics", "sklearn", "joblib", *cfg["collect_submodules"]):
     hiddenimports += collect_submodules(_mod)
 hiddenimports = list(dict.fromkeys(hiddenimports))
 

@@ -19,6 +19,8 @@ Main Features:
 * gmm_soft_chamfer_distance: soft-Chamfer distance over component means for
   artist-vs-artist scoring, with a lazily loaded, force-reloadable index cache.
 * find_similar_artists / search_artists_by_name / get_artist_tracks: query surface.
+* _fit_pending_artists: fits across a loky pool, falling back loudly to in-process
+  fits if the pool cannot start, so the index is never silently left unbuilt.
 """
 
 import logging
@@ -340,26 +342,39 @@ def _run_fit_batches(cur, pending, artist_tracks, artist_track_hashes, dispatch)
     return fitted
 
 
+def _fit_artists_in_process(cur, pending, artist_tracks, artist_track_hashes):
+    return _run_fit_batches(
+        cur, pending, artist_tracks, artist_track_hashes,
+        lambda jobs: [_fit_artist_job(job) for job in jobs],
+    )
+
+
 def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
     workers = _gmm_worker_count(len(pending))
     logger.info(
         "Fitting %d artist GMMs across %d worker process(es)...", len(pending), workers
     )
     if workers <= 1:
-        return _run_fit_batches(
-            cur, pending, artist_tracks, artist_track_hashes,
-            lambda jobs: [_fit_artist_job(job) for job in jobs],
-        )
+        return _fit_artists_in_process(cur, pending, artist_tracks, artist_track_hashes)
 
     try:
-        with Parallel(n_jobs=workers, backend='loky', max_nbytes=None) as runner:
-            fitted = _run_fit_batches(
-                cur, pending, artist_tracks, artist_track_hashes,
-                lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs),
-            )
-            _release_gmm_pool_temp_folders()
-    finally:
-        _shutdown_gmm_pool()
+        try:
+            with Parallel(n_jobs=workers, backend='loky', max_nbytes=None) as runner:
+                fitted = _run_fit_batches(
+                    cur, pending, artist_tracks, artist_track_hashes,
+                    lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs),
+                )
+                _release_gmm_pool_temp_folders()
+        finally:
+            _shutdown_gmm_pool()
+    except Exception:
+        logger.exception(
+            "ARTIST GMM WORKER POOL FAILED with %d worker process(es). REFITTING ALL "
+            "%d ARTIST(S) IN-PROCESS so the artist similarity index is still rebuilt. "
+            "This is slower: set INDEX_BUILD_WORKERS=1 to skip the pool outright.",
+            workers, len(pending),
+        )
+        return _fit_artists_in_process(cur, pending, artist_tracks, artist_track_hashes)
     return fitted
 
 

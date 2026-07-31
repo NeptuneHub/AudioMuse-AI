@@ -18,6 +18,8 @@ Linux/macOS launchers are the platform-specific siblings.
 Main Features:
 * Runs Flask via waitress or launches a named RQ role in-process.
 * Patches multiprocessing and os so fork-based RQ workers run on Windows.
+* Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
+  instead of re-entering the launcher as a stray copy of the app.
 """
 
 import multiprocessing
@@ -62,6 +64,8 @@ import sys
 import threading
 import time
 import webbrowser
+
+from native_common import frozen_children
 
 WEB_URL = "http://127.0.0.1:8000"
 
@@ -166,6 +170,9 @@ def _silence_supervisor_db_probe():
 
 
 def main():
+    if frozen_children.run_frozen_child():
+        return
+
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner

@@ -16,9 +16,13 @@ Main Features:
   and omits covariance fields
 * gmm_soft_chamfer_distance is zero for identical, scale-invariant, symmetric,
   and weight-sensitive; find_similar_artists reranks and excludes self
+* _fit_pending_artists refits in-process, loudly, when the worker pool cannot run
 """
 
+import logging
+
 import numpy as np
+import pytest
 from tasks.artist_gmm_manager import (
     fit_artist_gmm,
     GMM_N_COMPONENTS_MAX,
@@ -270,3 +274,117 @@ class TestEdgeCases:
         gmm_params = fit_artist_gmm("Popular Artist", embeddings)
 
         assert gmm_params['n_components'] <= GMM_N_COMPONENTS_MAX
+
+
+class TestPoolFallback:
+    ARTISTS = ["A", "B", "C"]
+
+    def _harness(self, monkeypatch, workers, dispatches):
+        import tasks.artist_gmm_manager as agm
+
+        monkeypatch.setattr(agm, "_gmm_worker_count", lambda _pending: workers)
+        monkeypatch.setattr(agm, "_shutdown_gmm_pool", lambda: None)
+        monkeypatch.setattr(agm, "_release_gmm_pool_temp_folders", lambda: None)
+        monkeypatch.setattr(
+            agm, "_run_fit_batches",
+            lambda cur, pending, tracks, hashes, dispatch: (
+                dispatches.append(dispatch) or dict.fromkeys(pending, {"fitted": True})
+            ),
+        )
+        return agm
+
+    def test_a_dead_worker_pool_refits_every_artist_in_process(self, monkeypatch):
+        dispatches = []
+        agm = self._harness(monkeypatch, 4, dispatches)
+
+        class _DeadPool:
+            def __enter__(self):
+                raise RuntimeError("A worker process managed by the executor died")
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(agm, "Parallel", lambda **kwargs: _DeadPool())
+
+        fitted = agm._fit_pending_artists(None, self.ARTISTS, {}, {})
+
+        assert sorted(fitted) == self.ARTISTS
+        assert len(dispatches) == 1
+
+    def test_a_dead_worker_pool_is_reported_with_a_traceback(self, monkeypatch, caplog):
+        agm = self._harness(monkeypatch, 4, [])
+
+        class _DeadPool:
+            def __enter__(self):
+                raise RuntimeError("A worker process managed by the executor died")
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(agm, "Parallel", lambda **kwargs: _DeadPool())
+
+        with caplog.at_level(logging.ERROR, logger="tasks.artist_gmm_manager"):
+            agm._fit_pending_artists(None, self.ARTISTS, {}, {})
+
+        records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert records, "a dead worker pool must be logged at ERROR"
+        assert "ARTIST GMM WORKER POOL FAILED" in records[0].message
+        assert records[0].exc_info is not None
+
+    def test_the_pool_is_shut_down_before_the_in_process_refit_starts(self, monkeypatch):
+        dispatches = []
+        agm = self._harness(monkeypatch, 4, dispatches)
+        events = []
+
+        class _DeadPool:
+            def __enter__(self):
+                raise RuntimeError("boom")
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(agm, "Parallel", lambda **kwargs: _DeadPool())
+        monkeypatch.setattr(agm, "_shutdown_gmm_pool", lambda: events.append("shutdown"))
+        monkeypatch.setattr(
+            agm, "_fit_artists_in_process",
+            lambda *args: events.append("refit") or {},
+        )
+
+        agm._fit_pending_artists(None, self.ARTISTS, {}, {})
+
+        assert events == ["shutdown", "refit"]
+
+    def test_a_healthy_worker_pool_is_used_and_never_refits_in_process(self, monkeypatch):
+        dispatches = []
+        agm = self._harness(monkeypatch, 4, dispatches)
+
+        class _LivePool:
+            def __enter__(self):
+                return lambda jobs: jobs
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(agm, "Parallel", lambda **kwargs: _LivePool())
+        monkeypatch.setattr(
+            agm, "_fit_artists_in_process",
+            lambda *args: pytest.fail("a healthy pool must not trigger the refit"),
+        )
+
+        fitted = agm._fit_pending_artists(None, self.ARTISTS, {}, {})
+
+        assert sorted(fitted) == self.ARTISTS
+        assert len(dispatches) == 1
+
+    def test_a_single_worker_count_skips_the_pool_entirely(self, monkeypatch):
+        dispatches = []
+        agm = self._harness(monkeypatch, 1, dispatches)
+        monkeypatch.setattr(
+            agm, "Parallel",
+            lambda **kwargs: pytest.fail("workers <= 1 must not build a pool"),
+        )
+
+        fitted = agm._fit_pending_artists(None, self.ARTISTS, {}, {})
+
+        assert sorted(fitted) == self.ARTISTS
+        assert len(dispatches) == 1
