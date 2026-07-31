@@ -45,30 +45,6 @@ _ADVISORY_LOCK_KEY = 7421536190082003
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 
 
-def rewrite_id_map_json(id_map_json, mapping):
-    if not id_map_json:
-        return id_map_json
-    try:
-        m = json.loads(id_map_json)
-    except Exception:
-        logger.warning("Could not parse id_map_json, leaving it unchanged")
-        return id_map_json
-    if isinstance(m, dict):
-        rewritten = {}
-        for k, v in m.items():
-            if v in mapping:
-                rewritten[k] = mapping[v]
-        return json.dumps(rewritten)
-    if isinstance(m, list):
-        rewritten = [mapping[v] if v in mapping else None for v in m]
-        return json.dumps(rewritten)
-    logger.warning(
-        "id_map_json has unexpected top-level type %s, leaving it unchanged",
-        type(m).__name__,
-    )
-    return id_map_json
-
-
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
     cur.execute(
         """

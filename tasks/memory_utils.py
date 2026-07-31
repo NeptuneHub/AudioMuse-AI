@@ -248,6 +248,3 @@ class SessionRecycler:
 
     def get_use_count(self) -> int:
         return self.use_count
-
-    def reset(self) -> None:
-        self.use_count = 0

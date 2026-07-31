@@ -599,16 +599,6 @@ class TestGetItemIdByTitleAndArtist:
             assert result is None
 
 
-class TestCleanupResources:
-    @patch('tasks.ivf_manager._shutdown_thread_pool')
-    def test_shuts_down_pool(self, mock_shutdown):
-        from tasks.ivf_manager import cleanup_resources
-
-        cleanup_resources()
-
-        mock_shutdown.assert_called_once()
-
-
 class TestGetMaxDistanceForId:
     @pytest.fixture(autouse=True)
     def _clear_max_distance_cache(self):

@@ -6,13 +6,12 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Provider-migration execution SQL sequence and id-map rewrite.
+"""Provider-migration execution SQL sequence.
 
 Covers the core migration executor that swaps provider ids across tables,
-asserting the ordered SQL steps and the JSON/list id-map rewriting.
+asserting the ordered SQL steps.
 
 Main Features:
-* rewrite_id_map swaps values, drops unmapped entries and handles list form
 * Foreign keys are dropped before updates and re-added afterwards
 * Orphan deletion runs before updates and workers are paused before starting
 * app_config music-libraries row is written/deleted from the selected libraries
@@ -45,59 +44,6 @@ def _load_tasks_mod():
 @pytest.fixture
 def mig():
     return _load_tasks_mod()
-
-
-class TestRewriteIdMapJson:
-    def test_swaps_values_leaves_int_keys(self, mig):
-        old = json.dumps({'0': 'old_a', '1': 'old_b', '2': 'old_c'})
-        mapping = {'old_a': 'new_a', 'old_b': 'new_b', 'old_c': 'new_c'}
-        new = mig.rewrite_id_map_json(old, mapping)
-        parsed = json.loads(new)
-        assert parsed == {'0': 'new_a', '1': 'new_b', '2': 'new_c'}
-
-    def test_drops_entries_with_no_mapping(self, mig):
-        old = json.dumps({'0': 'keep', '1': 'orphan', '2': 'keep2'})
-        mapping = {'keep': 'new1', 'keep2': 'new2'}
-        new = mig.rewrite_id_map_json(old, mapping)
-        parsed = json.loads(new)
-        assert parsed == {'0': 'new1', '2': 'new2'}
-        assert '1' not in parsed
-
-    def test_empty_input_returns_empty(self, mig):
-        assert mig.rewrite_id_map_json('', {'a': 'b'}) == ''
-        assert mig.rewrite_id_map_json(None, {'a': 'b'}) is None
-
-    def test_empty_mapping_drops_everything(self, mig):
-        old = json.dumps({'0': 'a', '1': 'b'})
-        new = mig.rewrite_id_map_json(old, {})
-        parsed = json.loads(new)
-        assert parsed == {}
-
-    def test_list_format_rewrites_in_place(self, mig):
-        old = json.dumps(['old_a', 'old_b', 'old_c'])
-        mapping = {'old_a': 'new_a', 'old_b': 'new_b', 'old_c': 'new_c'}
-        new = mig.rewrite_id_map_json(old, mapping)
-        parsed = json.loads(new)
-        assert parsed == ['new_a', 'new_b', 'new_c']
-
-    def test_list_format_orphans_become_none(self, mig):
-        old = json.dumps(['keep', 'orphan', 'keep2'])
-        mapping = {'keep': 'new1', 'keep2': 'new2'}
-        new = mig.rewrite_id_map_json(old, mapping)
-        parsed = json.loads(new)
-        assert parsed == ['new1', None, 'new2']
-        assert len(parsed) == 3
-
-    def test_list_format_empty_mapping(self, mig):
-        old = json.dumps(['a', 'b', 'c'])
-        new = mig.rewrite_id_map_json(old, {})
-        parsed = json.loads(new)
-        assert parsed == [None, None, None]
-
-    def test_unknown_top_level_type_is_left_alone(self, mig):
-        old = json.dumps('scalar_value')
-        new = mig.rewrite_id_map_json(old, {'scalar_value': 'new'})
-        assert new == old
 
 
 class TestFindFk:

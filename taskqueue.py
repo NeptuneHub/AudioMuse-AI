@@ -14,6 +14,7 @@ callers depend on this module rather than on ``rq`` directly.
 
 Main Features:
 * Configures the Redis connection with keepalive and Unix-socket awareness.
+* Provides a factory for fresh Redis connections with the same standard kwargs.
 * Builds the argv for the embedded Redis server used by the standalone build.
 """
 
@@ -32,6 +33,7 @@ BaseRegistry.death_penalty_class = _death_penalty_class
 
 __all__ = [
     "redis_conn",
+    "new_redis_connection",
     "rq_queue_high",
     "rq_queue_default",
     "Job",
@@ -47,14 +49,19 @@ def redis_socket_options(url):
     return {} if str(url).startswith("unix://") else {"socket_keepalive": True}
 
 
-redis_conn = Redis.from_url(
-    config.REDIS_URL,
-    socket_connect_timeout=30,
-    socket_timeout=60,
-    health_check_interval=30,
-    retry_on_timeout=True,
-    **redis_socket_options(config.REDIS_URL),
-)
+def new_redis_connection(**overrides):
+    kwargs = {
+        "socket_connect_timeout": 30,
+        "socket_timeout": 60,
+        "health_check_interval": 30,
+        "retry_on_timeout": True,
+        **redis_socket_options(config.REDIS_URL),
+    }
+    kwargs.update(overrides)
+    return Redis.from_url(config.REDIS_URL, **kwargs)
+
+
+redis_conn = new_redis_connection()
 
 rq_queue_high = Queue(
     'high', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class

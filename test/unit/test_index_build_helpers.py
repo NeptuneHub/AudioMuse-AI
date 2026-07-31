@@ -8,12 +8,12 @@
 
 """Index-build primitives in index_build_helpers.
 
-Covers SQL-identifier validation, id-map building, byte/text splitting, segmented
-id-map storage and reassembly, and streaming embeddings out of Postgres.
+Covers SQL-identifier validation, byte/text splitting, segmented id-map storage
+and reassembly, and streaming embeddings out of Postgres.
 
 Main Features:
 * _validate_sql_identifier accepts bare names and rejects injection-shaped input
-* build_id_map, _split_bytes/_split_text, and reassemble/rewrite of segmented id maps
+* _split_bytes/_split_text and reassembly of segmented id maps
 * store_ivf_index_segmented delete-then-upsert across parts with id map only on part 1
 * stream_embeddings_to_buffer / iter_embedding_batches skip null/wrong-dim rows,
   grow the buffer, use a read-only non-autocommit side session, and close on failure
@@ -90,19 +90,6 @@ class TestValidateSqlIdentifier:
                 _helpers._validate_sql_identifier(bad, "table")
 
 
-class TestBuildIdMap:
-    def test_empty(self):
-        assert _helpers.build_id_map([]) == {}
-
-    def test_preserves_order_and_keys(self):
-        ids = ["song-c", "song-a", "song-b"]
-        assert _helpers.build_id_map(ids) == {0: "song-c", 1: "song-a", 2: "song-b"}
-
-    def test_accepts_iterable_not_just_list(self):
-        gen = (f"id-{i}" for i in range(3))
-        assert _helpers.build_id_map(gen) == {0: "id-0", 1: "id-1", 2: "id-2"}
-
-
 class TestSplitBytes:
     def test_exact_multiple(self):
         assert _helpers._split_bytes(b"abcdef", 2) == [b"ab", b"cd", b"ef"]
@@ -152,109 +139,6 @@ class TestReassembleSegmentedIdMap:
     def test_handles_none_fragments(self):
         frags = [(1, '{"0": "a"}'), (2, None)]
         assert _helpers.reassemble_segmented_id_map(frags) == '{"0": "a"}'
-
-
-class TestRewriteSegmentedIdMap:
-    class _FakeCursor:
-        def __init__(self, store):
-            self.store = store
-            self._result = []
-
-        def execute(self, sql, params=None):
-            s = " ".join(sql.split())
-            if s.startswith("SELECT id_map_json FROM") and "WHERE index_name = %s" in s:
-                key = params[0]
-                self._result = [(self.store[key],)] if key in self.store else []
-            elif s.startswith("SELECT index_name, id_map_json FROM") and "LIKE" in s:
-                self._result = [
-                    (k, v) for k, v in self.store.items() if re.match(r".*_\d+_\d+$", k)
-                ]
-            elif s.startswith("UPDATE") and "SET id_map_json = %s WHERE index_name = %s" in s:
-                self.store[params[1]] = params[0]
-                self._result = []
-            else:
-                raise AssertionError(f"unexpected SQL: {s}")
-
-        def fetchone(self):
-            return self._result[0] if self._result else None
-
-        def fetchall(self):
-            return list(self._result)
-
-    @staticmethod
-    def _dict_rewriter(mapping):
-        def _fn(js):
-            d = json.loads(js)
-            return json.dumps({k: mapping[v] for k, v in d.items() if v in mapping})
-
-        return _fn
-
-    def test_single_row_rewrite(self):
-        store = {"ivf_main": json.dumps({"0": "a", "1": "b"})}
-        cur = self._FakeCursor(store)
-        changed = _helpers.rewrite_segmented_id_map(
-            cur,
-            "voyager_index_data",
-            "ivf_main",
-            self._dict_rewriter({"a": "A", "b": "B"}),
-            max_part_size_mb=50,
-        )
-        assert changed is True
-        assert json.loads(store["ivf_main"]) == {"0": "A", "1": "B"}
-
-    def test_segmented_reassemble_rewrite_resplit(self):
-        full = json.dumps({str(i): c for i, c in enumerate("abcdef")})
-        step = max(1, -(-len(full) // 3))
-        frags = [full[i : i + step] for i in range(0, len(full), step)]
-        while len(frags) < 3:
-            frags.append("")
-        store = {f"ivf_main_{k}_3": frags[k - 1] for k in range(1, 4)}
-        assert "".join(store[f"ivf_main_{k}_3"] for k in range(1, 4)) == full
-        assert sum(1 for f in frags if f) >= 2, "fixture must actually be segmented"
-
-        cur = self._FakeCursor(store)
-        mapping = {c: c.upper() for c in "abcdef"}
-        changed = _helpers.rewrite_segmented_id_map(
-            cur,
-            "voyager_index_data",
-            "ivf_main",
-            self._dict_rewriter(mapping),
-            max_part_size_mb=50,
-        )
-        assert changed is True
-
-        keys = [k for k in store if re.match(r".*_\d+_\d+$", k)]
-        assert len(keys) == 3, "row count must be preserved"
-        reassembled = _helpers.reassemble_segmented_id_map(
-            (int(k.split("_")[-2]), store[k]) for k in keys
-        )
-        assert json.loads(reassembled) == {str(i): c.upper() for i, c in enumerate("abcdef")}
-
-    def test_no_op_when_rewrite_returns_unchanged(self):
-        full = json.dumps({"0": "a"})
-        store = {"ivf_main": full}
-        cur = self._FakeCursor(store)
-        changed = _helpers.rewrite_segmented_id_map(
-            cur,
-            "voyager_index_data",
-            "ivf_main",
-            lambda js: js,
-            max_part_size_mb=50,
-        )
-        assert changed is False
-        assert store["ivf_main"] == full
-
-    def test_raises_when_rewrite_needs_more_rows_than_exist(self):
-        store = {"ivf_main_1_1": json.dumps({"0": "a", "1": "b"})}
-        cur = self._FakeCursor(store)
-        with pytest.raises(ValueError, match="rebuild"):
-            _helpers.rewrite_segmented_id_map(
-                cur,
-                "voyager_index_data",
-                "ivf_main",
-                self._dict_rewriter({"a": "AAAA", "b": "BBBB"}),
-                max_part_size_mb=0,
-            )
 
 
 class TestStoreIVFIndexSegmented:

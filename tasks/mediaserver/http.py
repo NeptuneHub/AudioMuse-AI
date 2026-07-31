@@ -54,14 +54,6 @@ def delete(*args, **kwargs):
     return _request("delete", *args, **kwargs)
 
 
-def head(*args, **kwargs):
-    return _request("head", *args, **kwargs)
-
-
-def patch(*args, **kwargs):
-    return _request("patch", *args, **kwargs)
-
-
 def request(*args, **kwargs):
     return _request("request", *args, **kwargs)
 

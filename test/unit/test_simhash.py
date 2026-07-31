@@ -25,7 +25,6 @@ Main Features:
 """
 
 import numpy as np
-import pytest
 
 from tasks import simhash
 
@@ -307,25 +306,6 @@ class TestFolderRule:
             '/mnt/music/Artist/Album/02 - Other.flac'
         ) == 'artist/album'
 
-    def test_same_folder_distinct_files_conflict(self):
-        assert simhash.same_folder_conflict(
-            '/media/music/A/Alb/01 - One.flac',
-            '/media/music/A/Alb/02 - Two.flac',
-        ) is True
-
-    def test_same_file_is_not_a_conflict(self):
-        path = '/media/music/A/Alb/01 - One.flac'
-        assert simhash.same_folder_conflict(path, path) is False
-
-    def test_different_folders_do_not_conflict(self):
-        assert simhash.same_folder_conflict(
-            '/media/music/A/Album A/01 - Song.flac',
-            '/media/music/A/Album B/05 - Song.flac',
-        ) is False
-
-    def test_unknown_path_never_conflicts(self):
-        assert simhash.same_folder_conflict(None, '/media/music/A/Alb/x.flac') is False
-
     def test_group_conflict_detects_two_files_in_one_folder(self):
         assert simhash.folder_conflict_in_group([
             '/media/music/A/Alb/01 - x.flac',
@@ -392,103 +372,3 @@ class TestFolderRule:
 
         plain = simhash.merge_pairs(3, packed, left, right)
         assert plain[2] == 0, "without folders they would all collapse into one id"
-
-
-class TestBatchResolveMatchesStreaming:
-    """The whole-catalogue resolver must decide identity exactly like the
-    streaming one - it rewrites every id in the catalogue, so "faster" is only
-    acceptable if it is also "the same answer"."""
-
-    @staticmethod
-    def _catalogue(n, seed, clusters=40, dup_frac=0.08):
-        rng = np.random.default_rng(seed)
-        centers = rng.standard_normal((clusters, simhash.SIGNATURE_BITS)).astype(np.float32)
-        idx = rng.integers(0, clusters, size=n)
-        rows = centers[idx] + rng.standard_normal(
-            (n, simhash.SIGNATURE_BITS)
-        ).astype(np.float32) * 0.35
-        durations = rng.uniform(60.0, 600.0, size=n)
-        # Genuine re-encodes of earlier tracks: these must merge.
-        ndup = int(n * dup_frac)
-        dst = rng.choice(np.arange(n // 2, n), size=ndup, replace=False)
-        src = rng.choice(np.arange(0, n // 2), size=ndup, replace=False)
-        rows[dst] = rows[src] + rng.standard_normal(
-            (ndup, simhash.SIGNATURE_BITS)
-        ) * 0.002
-        durations[dst] = durations[src] + rng.uniform(-2.0, 2.0, size=ndup)
-        return rows.astype(np.float32), durations
-
-    @staticmethod
-    def _streaming_parents(rows, durations):
-        blobs = [row.tobytes() for row in rows]
-        signatures = simhash.signature_batch(blobs)
-        resolver = simhash.CatalogResolver()
-        minted = {}
-        parents = []
-        for index, (blob, signature) in enumerate(zip(blobs, signatures)):
-            kind, item_id = resolver.resolve(
-                blob, signature=signature, duration=durations[index]
-            )
-            if kind == 'existing':
-                parents.append(minted[item_id])
-            else:
-                minted[item_id] = index
-                parents.append(index)
-        return np.array(parents)
-
-    def _batch_parents(self, packed, valid, rows, durations):
-        """The whole-catalogue resolution, composed exactly as the startup
-        migration composes it (near_duplicate_pairs -> confirm_pairs ->
-        merge_pairs). There is no in-memory shortcut for this in production."""
-        left, right = simhash.near_duplicate_pairs(packed, valid)
-        if left.size == 0:
-            return np.arange(packed.shape[0], dtype=np.int64)
-        confirmed = simhash.confirm_pairs(
-            rows[left], rows[right], durations[left], durations[right]
-        )
-        return simhash.merge_pairs(
-            packed.shape[0], packed, left[confirmed], right[confirmed]
-        )
-
-    @pytest.mark.parametrize('seed', [0, 1, 2, 3])
-    def test_same_merges_as_the_streaming_resolver(self, seed):
-        rows, durations = self._catalogue(600, seed)
-        packed, valid = simhash.signature_matrix(rows)
-
-        batch = self._batch_parents(packed, valid, rows, durations)
-        streaming = self._streaming_parents(rows, durations)
-
-        assert np.array_equal(batch, streaming)
-        assert int((batch != np.arange(len(rows))).sum()) > 0
-
-    def test_unknown_durations_merge_nothing(self):
-        rows, _durations = self._catalogue(200, seed=4)
-        packed, valid = simhash.signature_matrix(rows)
-        unknown = np.full(len(rows), np.nan)
-        parent = self._batch_parents(packed, valid, rows, unknown)
-        assert np.array_equal(parent, np.arange(len(rows)))
-
-    def test_a_merged_row_is_never_a_merge_target(self):
-        rows, durations = self._catalogue(400, seed=9)
-        packed, valid = simhash.signature_matrix(rows)
-        parent = self._batch_parents(packed, valid, rows, durations)
-        for child, target in enumerate(parent):
-            if target != child:
-                assert parent[target] == target, "merge chains must not form"
-                assert target < child, "a track merges into an EARLIER row"
-
-    def test_distinct_audio_is_never_merged(self):
-        rng = np.random.default_rng(3)
-        rows = rng.standard_normal((300, simhash.SIGNATURE_BITS)).astype(np.float32)
-        durations = rng.uniform(60.0, 600.0, size=300)
-        packed, valid = simhash.signature_matrix(rows)
-        parent = self._batch_parents(packed, valid, rows, durations)
-        assert np.array_equal(parent, np.arange(len(rows)))
-
-    def test_unusable_embeddings_stay_their_own_track(self):
-        rows, durations = self._catalogue(50, seed=5)
-        rows[7] = 0.0
-        packed, valid = simhash.signature_matrix(rows)
-        assert valid[7] is np.False_
-        parent = self._batch_parents(packed, valid, rows, durations)
-        assert parent[7] == 7

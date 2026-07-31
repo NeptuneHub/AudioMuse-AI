@@ -25,8 +25,8 @@ import socket
 import subprocess
 import threading
 
-from redis import Redis
 import config
+from taskqueue import new_redis_connection
 
 RESTART_CHANNEL = os.environ.get('AUDIO_MUSE_CONFIG_RESTART_CHANNEL', 'audiomuse:config_restart')
 SUPERVISORCTL_CMD = os.environ.get('SUPERVISORCTL_CMD', '/usr/bin/supervisorctl')
@@ -35,17 +35,13 @@ logger = logging.getLogger(__name__)
 
 FLASK_SERVICE = ['flask']
 WORKER_SERVICES = ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
-ALL_SUPERVISOR_SERVICES = FLASK_SERVICE + WORKER_SERVICES
 
 
 def publish_control_request(action):
     try:
-        redis_conn = Redis.from_url(
-            config.REDIS_URL,
+        redis_conn = new_redis_connection(
             socket_connect_timeout=5,
             socket_timeout=5,
-            health_check_interval=30,
-            retry_on_timeout=True,
             decode_responses=True,
         )
         redis_conn.publish(RESTART_CHANNEL, action)

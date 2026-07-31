@@ -146,14 +146,6 @@ def _get_thread_pool():
         return _thread_pool
 
 
-def _shutdown_thread_pool():
-    global _thread_pool
-    with _thread_pool_lock:
-        if _thread_pool is not None:
-            _thread_pool.shutdown(wait=True)
-            _thread_pool = None
-
-
 def _fetch_in_batches(item_ids, fetch_batch_fn):
     id_batches = [
         item_ids[i : i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)
@@ -1289,7 +1281,9 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
             ORDER BY score DESC
             LIMIT 1
         """
-        cur.execute(query, (title, artist, f"%{title}%", f"%{artist}%"))
+        title_like = title.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        artist_like = artist.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        cur.execute(query, (title, artist, f"%{title_like}%", f"%{artist_like}%"))
         result = cur.fetchone()
         if result:
             logger.info(
@@ -1419,15 +1413,3 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
 
     except Exception as e:
         raise e
-
-
-def cleanup_resources():
-    logger.info("Cleaning up similarity manager resources...")
-    _shutdown_thread_pool()
-    try:
-        from tasks.paged_ivf import shutdown_query_pool
-
-        shutdown_query_pool()
-    except Exception:
-        logger.debug("IVF query pool shutdown failed during cleanup.", exc_info=True)
-    logger.info("Similarity manager cleanup complete.")

@@ -30,6 +30,8 @@ from psycopg2.extras import DictCursor
 from typing import List, Dict
 import config
 
+from .lyrics_manager import _build_capped_results
+
 logger = logging.getLogger(__name__)
 
 _CLAP_CACHE = {'loaded': False}
@@ -258,39 +260,9 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
             metadata_map = _fetch_clap_metadata(candidate_item_ids)
 
-            results = []
-            artist_counts: dict = {}
-            seen: set = set()
-            for vec_id, distance in zip(neighbor_ids, distances):
-                if len(results) >= limit:
-                    break
-                item_id = id_map.get(int(vec_id))
-                # Two slots can name the same track (a migration merges duplicate
-                # recordings into one row), and their vectors are near-identical,
-                # so the same song would otherwise come back twice.
-                if item_id is None or item_id in seen:
-                    continue
-                seen.add(item_id)
-
-                metadata = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
-                author = metadata.get('author', '')
-
-                if artist_cap and author:
-                    author_norm = author.strip().lower()
-                    if artist_counts.get(author_norm, 0) >= artist_cap:
-                        continue
-                    artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
-
-                similarity = ivf_index.distance_to_similarity(distance)
-                results.append(
-                    {
-                        'item_id': item_id,
-                        'title': metadata.get('title', ''),
-                        'author': metadata.get('author', ''),
-                        'album': metadata.get('album', ''),
-                        'similarity': similarity,
-                    }
-                )
+            results = _build_capped_results(
+                ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+            )
 
             logger.info(
                 f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})"

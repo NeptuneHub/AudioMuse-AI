@@ -22,22 +22,39 @@ from flask import Blueprint, jsonify, request, render_template
 import logging
 
 import app_server_context
-from error import error_manager
+from app_helper import index_error_body
 from error.error_dictionary import ERR_INDEX_EMPTY, UNKNOWN_ERROR_CODE
 from tasks.artist_gmm_manager import find_similar_artists, search_artists_by_name, get_artist_tracks
 
 logger = logging.getLogger(__name__)
 
-
-# Structured error body with a stable, user-facing 'error' string plus the numeric
-# error_code so API consumers can distinguish an unbuilt index from a real crash.
-def _index_error_body(code, message):
-    payload = error_manager.build(code)
-    payload["error"] = message
-    return payload
-
 # Create Blueprint
 artist_similarity_bp = Blueprint('artist_similarity_bp', __name__, template_folder='templates')
+
+
+def artist_search_response(query, start, end, cap):
+    if start < 0:
+        start = 0
+    if end is not None and end <= start:
+        return jsonify([])
+    limit = (end - start) if end is not None else 20
+    if cap is not None:
+        limit = min(limit, cap)
+    offset = start
+    try:
+        server_id, include_legacy = app_server_context.selected_server_scope()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return jsonify({'error': 'Invalid server selection.'}), 400
+    results = search_artists_by_name(
+        query,
+        limit=limit,
+        offset=offset,
+        server_id=server_id,
+        include_legacy_default=include_legacy,
+    )
+    results = app_server_context.scope_artist_results(results)
+    return jsonify(results)
 
 
 @artist_similarity_bp.route('/artist_similarity', methods=['GET'])
@@ -91,35 +108,14 @@ def search_artists_endpoint():
     if not query or len(query) < 2:
         return jsonify([])
 
-    # Pagination: start / end (0-based). Defaults to first 20 results.
     start = request.args.get('start', 0, type=int)
     end = request.args.get('end', None, type=int)
-    if start < 0:
-        start = 0
-    if end is not None and end <= start:
-        return jsonify([])
-    limit = (end - start) if end is not None else 20
-    limit = min(limit, 100)
-    offset = start
 
     try:
-        try:
-            server_id, include_legacy = app_server_context.selected_server_scope()
-        except ValueError:
-            logger.warning("Invalid server selection.", exc_info=True)
-            return jsonify({'error': 'Invalid server selection.'}), 400
-        results = search_artists_by_name(
-            query,
-            limit=limit,
-            offset=offset,
-            server_id=server_id,
-            include_legacy_default=include_legacy,
-        )
-        results = app_server_context.scope_artist_results(results)
-        return jsonify(results)
+        return artist_search_response(query, start, end, 100)
     except Exception:
         logger.exception("Error during artist search")
-        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
 
 
 @artist_similarity_bp.route('/api/similar_artists', methods=['GET'])
@@ -263,7 +259,7 @@ def get_similar_artists_endpoint():
             f"Runtime error finding similar artists for '{query_artist}'"
         )
         return jsonify(
-            _index_error_body(
+            index_error_body(
                 ERR_INDEX_EMPTY, "The artist similarity search service is currently unavailable."
             )
         ), 503
@@ -271,7 +267,7 @@ def get_similar_artists_endpoint():
         logger.exception(
             f"Unexpected error finding similar artists for '{query_artist}'"
         )
-        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
+        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
 
 
 @artist_similarity_bp.route('/api/artist_tracks', methods=['GET'])
@@ -332,5 +328,5 @@ def get_artist_tracks_endpoint():
     except Exception:
         logger.exception(f"Error getting tracks for artist '{query_artist}'")
         return jsonify(
-            _index_error_body(UNKNOWN_ERROR_CODE, "An error occurred while fetching tracks.")
+            index_error_body(UNKNOWN_ERROR_CODE, "An error occurred while fetching tracks.")
         ), 500

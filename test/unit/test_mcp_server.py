@@ -431,47 +431,7 @@ class TestDatabaseGenreQuery:
 
 
 @pytest.mark.unit
-class TestRerouteMoodLabelsFromGenres:
-    def test_no_genres_is_noop(self):
-        mod = _import_mcp_impl()
-        g, m, msg = mod._reroute_mood_labels_from_genres(None, ["happy"])
-        assert g is None
-        assert m == ["happy"]
-        assert msg is None
-
-    def test_only_real_genres_is_noop(self):
-        mod = _import_mcp_impl()
-        g, m, msg = mod._reroute_mood_labels_from_genres(["rock", "metal"], None)
-        assert g == ["rock", "metal"]
-        assert m is None
-        assert msg is None
-
-    def test_mood_label_in_genres_gets_rerouted(self):
-        mod = _import_mcp_impl()
-        g, m, msg = mod._reroute_mood_labels_from_genres(["aggressive"], None)
-        assert g == []
-        assert m == ["aggressive"]
-        assert msg is not None and "aggressive" in msg
-
-    def test_mixed_keeps_real_genres_reroutes_mood(self):
-        mod = _import_mcp_impl()
-        g, m, msg = mod._reroute_mood_labels_from_genres(["rock", "aggressive", "metal"], None)
-        assert g == ["rock", "metal"]
-        assert m == ["aggressive"]
-        assert msg is not None
-
-    def test_case_insensitive(self):
-        mod = _import_mcp_impl()
-        g, m, msg = mod._reroute_mood_labels_from_genres(["Aggressive"], None)
-        assert g == []
-        assert m == ["aggressive"]
-
-    def test_no_duplicate_when_already_in_moods(self):
-        mod = _import_mcp_impl()
-        g, m, msg = mod._reroute_mood_labels_from_genres(["aggressive"], ["aggressive"])
-        assert m == ["aggressive"]
-        assert g == []
-
+class TestRerouteOtherFeatureLabels:
     def test_rerouting_applied_in_database_query(self):
         mod = _import_mcp_impl()
         cur = MagicMock()

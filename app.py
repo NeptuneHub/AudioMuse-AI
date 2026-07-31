@@ -35,14 +35,11 @@ from rq.exceptions import NoSuchJobError
 import rq_job_state
 from tasks.setup_manager import setup_manager
 
-# Redis client
-from redis import Redis
-
 # Swagger imports
 from flasgger import Swagger
 
 # Import configuration
-from config import TEMP_DIR, REDIS_URL, APP_VERSION, ENABLE_PROXY_FIX, JWT_SECRET
+from config import TEMP_DIR, APP_VERSION, ENABLE_PROXY_FIX, JWT_SECRET
 
 if ENABLE_PROXY_FIX:
     # Werkzeug import for reverse proxy support
@@ -931,16 +928,9 @@ def listen_for_index_reloads():
     """
     # Create a new Redis connection for this thread.
     # Sharing the main redis_conn object across threads is not recommended.
-    from taskqueue import redis_socket_options
+    from taskqueue import new_redis_connection
 
-    thread_redis_conn = Redis.from_url(
-        REDIS_URL,
-        socket_connect_timeout=30,
-        socket_timeout=60,
-        health_check_interval=30,
-        retry_on_timeout=True,
-        **redis_socket_options(REDIS_URL),
-    )
+    thread_redis_conn = new_redis_connection()
     pubsub = thread_redis_conn.pubsub()
     pubsub.subscribe('index-updates')
     logger.info(

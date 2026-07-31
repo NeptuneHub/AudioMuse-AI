@@ -15,7 +15,8 @@ the supervisor actions defined in ``restart_manager`` in response to published
 worker's own volume so the apply restart reloads fast.
 
 Main Features:
-* Redis pub/sub loop with automatic reconnect and health checks.
+* Redis pub/sub loop with automatic reconnect, keepalive and health checks
+  via the shared taskqueue connection factory.
 * Acts only when ``SERVICE_TYPE`` is ``worker``, ignoring other roles.
 * Pre-installs plugin dependencies on ``plugin-sync`` in a background thread.
 """
@@ -25,9 +26,8 @@ import os
 import threading
 import time
 
-from redis import Redis
-import config
 from app_logging import configure_logging
+from taskqueue import new_redis_connection
 from restart_manager import (
     RESTART_CHANNEL,
     restart_supervisor_workers,
@@ -60,7 +60,6 @@ def _dispatch_plugin_sync():
 
 
 def main():
-    redis_url = config.REDIS_URL
     channel = os.environ.get('AUDIO_MUSE_CONFIG_RESTART_CHANNEL', RESTART_CHANNEL)
     logger.info('Starting restart listener on channel: %s', channel)
 
@@ -68,12 +67,9 @@ def main():
         redis_conn = None
         pubsub = None
         try:
-            redis_conn = Redis.from_url(
-                redis_url,
+            redis_conn = new_redis_connection(
                 socket_connect_timeout=5,
                 socket_timeout=5,
-                health_check_interval=30,
-                retry_on_timeout=True,
                 decode_responses=True,
             )
             pubsub = redis_conn.pubsub(ignore_subscribe_messages=True)

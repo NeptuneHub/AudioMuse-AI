@@ -14,8 +14,8 @@ per-song IVF indexes), loads it for querying, and answers the similar-artists an
 artist-search endpoints; also used by tasks.song_alchemy for artist anchors.
 
 Main Features:
-* fit_artist_gmm / select_optimal_gmm_components: fit a diagonal-covariance GMM per
-  artist, auto-selecting component count within configured bounds.
+* fit_artist_gmm: fit a diagonal-covariance GMM per artist, auto-selecting
+  component count within configured bounds.
 * gmm_soft_chamfer_distance: soft-Chamfer distance over component means for
   artist-vs-artist scoring, with a lazily loaded, force-reloadable index cache.
 * find_similar_artists / search_artists_by_name / get_artist_tracks: query surface.
@@ -51,14 +51,6 @@ artist_map = None
 reverse_artist_map = None
 artist_gmm_params = None
 _index_lock = threading.Lock()
-
-
-def select_optimal_gmm_components(
-    embeddings: np.ndarray,
-    min_components: int = GMM_N_COMPONENTS_MIN,
-    max_components: int = GMM_N_COMPONENTS_MAX,
-) -> int:
-    return fit_best_gmm(embeddings, min_components, max_components)[0]
 
 
 def fit_best_gmm(
@@ -846,14 +838,3 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
 
     finally:
         cur.close()
-
-
-def cleanup_resources():
-    global artist_index, artist_map, reverse_artist_map, artist_gmm_params
-
-    with _index_lock:
-        artist_index = None
-        artist_map = None
-        reverse_artist_map = None
-        artist_gmm_params = None
-        logger.info("Artist index resources cleaned up")

@@ -38,7 +38,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from config import OTHER_FEATURE_LABELS, STRATIFIED_GENRES
+from config import MOOD_SCORE_MATCH_THRESHOLD, OTHER_FEATURE_LABELS, STRATIFIED_GENRES
 
 
 _INSTRUMENTAL_MUSIC = 'instrumental music'
@@ -154,26 +154,15 @@ AXIS_IDEAS = {
     },
 }
 
-def _parse_pairs(text: Optional[str]) -> Dict[str, float]:
-    parsed = {}
-    for part in (text or '').split(','):
-        key, separator, raw_value = part.partition(':')
-        if not separator:
-            continue
-        try:
-            parsed[key.strip()] = float(raw_value)
-        except ValueError:
-            continue
-    return parsed
-
-
 def _average_column(rows: Iterable[Dict], column: str) -> Dict[str, float]:
+    from tasks.ai.vocab import parse_tag_score_pairs
+
     rows = list(rows)
     if not rows:
         return {}
     sums = defaultdict(float)
     for row in rows:
-        for key, value in _parse_pairs(row.get(column)).items():
+        for key, value in parse_tag_score_pairs(row.get(column)).items():
             sums[key] += value
     return {key: sums[key] / len(rows) for key in sums}
 
@@ -521,7 +510,7 @@ def build_naming_context(
     has_lyrics_coverage = _usable_axis_vector_count(
         axis_blobs, axis_columns
     ) >= ceil(total_tracks * MIN_LYRICS_COVERAGE)
-    instrumental = mood_scores.get('instrumental', 0.0) > 0.5 or (
+    instrumental = mood_scores.get('instrumental', 0.0) > MOOD_SCORE_MATCH_THRESHOLD or (
         not has_lyrics_coverage
         and (
             genre == 'Ambient'

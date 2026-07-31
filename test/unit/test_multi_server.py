@@ -909,6 +909,52 @@ class TestSingleTranslationPoint:
         with pytest.raises(ValueError):
             asc.create_instant_playlist_for_server('P', ['fp_a'], 'sec')
 
+    def test_translation_failure_never_leaks_internal_ids(self, monkeypatch):
+        import database
+        from tasks import mediaserver
+        from tasks.mediaserver import registry
+
+        def fail_translation(*_args, **_kwargs):
+            raise RuntimeError('mapping unavailable')
+
+        monkeypatch.setattr(registry, 'translate_ids', fail_translation)
+        monkeypatch.setattr(database, 'connect_raw', fail_translation)
+
+        with pytest.raises(ValueError, match='could not be translated'):
+            mediaserver._to_server_ids(['fp_internal'])
+
+    def test_translation_failure_raises_instead_of_truncating_mixed_playlists(self, monkeypatch):
+        import database
+        from tasks import mediaserver
+        from tasks.mediaserver import registry
+
+        def fail_translation(*_args, **_kwargs):
+            raise RuntimeError('mapping unavailable')
+
+        monkeypatch.setattr(registry, 'translate_ids', fail_translation)
+        monkeypatch.setattr(database, 'connect_raw', fail_translation)
+
+        with pytest.raises(mediaserver.PlaylistIdTranslationError):
+            mediaserver._to_server_ids(['fp_internal', 'legacy-7'])
+
+    def test_translation_failure_sends_pure_legacy_ids_unchanged_on_default_server(
+        self, monkeypatch
+    ):
+        import database
+        from tasks import mediaserver
+        from tasks.mediaserver import registry
+
+        def fail_translation(*_args, **_kwargs):
+            raise RuntimeError('mapping unavailable')
+
+        monkeypatch.setattr(registry, 'translate_ids', fail_translation)
+        monkeypatch.setattr(database, 'connect_raw', fail_translation)
+
+        assert mediaserver._to_server_ids(['legacy-7', 'legacy-8']) == [
+            'legacy-7',
+            'legacy-8',
+        ]
+
 
 def _legacy_cursor(legacy_rows, canonical_rows=()):
     """A cursor over a catalogue of legacy rows (+ already-canonical ones).

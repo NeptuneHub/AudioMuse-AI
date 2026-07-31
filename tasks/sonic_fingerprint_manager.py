@@ -85,9 +85,13 @@ def run_sonic_fingerprint_task(server_scope="all"):
                             row['item_id'] for row in fingerprint_results if 'item_id' in row
                         ]
                         try:
-                            create_or_replace_playlist(
+                            if create_or_replace_playlist(
                                 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
-                            )
+                            ) is None:
+                                raise RuntimeError(
+                                    "Media server reported failure upserting the "
+                                    "sonic fingerprint playlist"
+                                )
                             name = SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
                         except NotImplementedError:
                             name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"

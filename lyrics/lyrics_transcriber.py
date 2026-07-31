@@ -216,14 +216,6 @@ _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
 
 
-def load_asr_model(num_threads: Optional[int] = None):
-    threads = num_threads or get_lyrics_threads()
-    _apply_thread_env(threads)
-    from ._asr_backend import get_asr_backend
-
-    return get_asr_backend().load_whisper_model()
-
-
 def load_topic_embedding_model(model_name: Optional[str] = None):
     from .gte_onnx import load_gte_model
 

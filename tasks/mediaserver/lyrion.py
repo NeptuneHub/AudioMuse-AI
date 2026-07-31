@@ -136,108 +136,6 @@ def _get_target_paths_for_filtering():
     return target_paths
 
 
-def _get_target_music_folder_ids():
-    folder_names_str = context.active_libraries(config.MUSIC_LIBRARIES)
-
-    logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
-
-    if not folder_names_str.strip():
-        logger.info("DEBUG: MUSIC_LIBRARIES is empty, scanning all folders")
-        return None
-
-    target_names_lower = {
-        name.strip().lower() for name in folder_names_str.split(',') if name.strip()
-    }
-    logger.info(f"DEBUG: Target names/paths to match: {list(target_names_lower)}")
-
-    response = _jsonrpc_request("musicfolders", [0, 999999])
-
-    logger.info(f"DEBUG: Lyrion musicfolders response: {response}")
-
-    if not response:
-        logger.error("Failed to fetch music folders from Lyrion or response was empty.")
-        logger.warning(
-            "Since MUSIC_LIBRARIES is configured but folder detection failed, returning empty set to prevent scanning everything."
-        )
-        return set()
-
-    all_folders = []
-    if isinstance(response, dict) and "folder_loop" in response:
-        all_folders = response["folder_loop"]
-    elif isinstance(response, dict) and "folders_loop" in response:
-        all_folders = response["folders_loop"]
-    elif isinstance(response, list):
-        all_folders = response
-    else:
-        if isinstance(response, dict):
-            for v in response.values():
-                if isinstance(v, list):
-                    all_folders = v
-                    break
-
-    if not all_folders:
-        logger.error("No music folders found in Lyrion response.")
-        return set()
-
-    folder_map = {}
-    for folder in all_folders:
-        if isinstance(folder, dict):
-            folder_name = folder.get('name') or folder.get('folder')
-            folder_path = folder.get('path') or folder.get('url')
-            folder_id = folder.get('id') or folder.get('folder_id')
-            logger.info(
-                f"DEBUG: Processing folder - name: '{folder_name}', path: '{folder_path}', id: '{folder_id}', raw: {folder}"
-            )
-            if folder_name and folder_id:
-                folder_info = {
-                    'name': folder_name,
-                    'id': folder_id,
-                    'path': folder_path or folder_name,
-                }
-                folder_map[folder_name.lower()] = folder_info
-                if folder_path and folder_path.lower() != folder_name.lower():
-                    folder_map[folder_path.lower()] = folder_info
-                logger.info(
-                    f"DEBUG: Added to folder_map - name key: '{folder_name.lower()}', path key: '{folder_path.lower() if folder_path else 'N/A'}'"
-                )
-
-    unique_folders = {folder['id']: folder for folder in folder_map.values()}
-    available_info = [
-        f"{folder['name']} (path: {folder['path']})" for folder in unique_folders.values()
-    ]
-    logger.info(f"Available Lyrion music folders found: {available_info}")
-
-    found_folders = []
-    unfound_names = []
-    logger.info(f"DEBUG: Available folder_map keys: {list(folder_map.keys())}")
-    for target_name in target_names_lower:
-        logger.info(f"DEBUG: Looking for target: '{target_name}'")
-        if target_name in folder_map:
-            found_folders.append(folder_map[target_name])
-            logger.info(f"DEBUG: FOUND match for '{target_name}': {folder_map[target_name]}")
-        else:
-            unfound_names.append(target_name)
-            logger.info(f"DEBUG: NO MATCH found for '{target_name}'")
-
-    if unfound_names:
-        logger.warning(
-            f"Lyrion config specified folder names that were not found: {list(unfound_names)}"
-        )
-
-    if not found_folders:
-        logger.warning(
-            f"No matching music folders found for configured names: {list(target_names_lower)}. No albums will be analyzed."
-        )
-        return set()
-
-    music_folder_ids = {folder['id'] for folder in found_folders}
-    found_info = [f"{folder['name']} (path: {folder['path']})" for folder in found_folders]
-
-    logger.info(f"Filtering analysis to {len(music_folder_ids)} Lyrion folders: {found_info}")
-    logger.info(f"DEBUG: Returning folder IDs: {music_folder_ids}")
-    return music_folder_ids
-
-
 def list_libraries(user_creds=None):
     user_creds = context.active_creds(user_creds)
     response = _jsonrpc_request("musicfolder", [0, 999999], user_creds=user_creds)
@@ -939,24 +837,51 @@ def _create_playlist_batched(playlist_name, item_ids):
         create_response = _jsonrpc_request("playlists", ["new", f"name:{playlist_name}"])
 
         if create_response:
-            playlist_id = (
-                create_response.get("id")
-                or create_response.get("overwritten_playlist_id")
-                or create_response.get("playlist_id")
-            )
+            overwritten_id = create_response.get("overwritten_playlist_id")
+            if overwritten_id is not None:
+                logger.info(
+                    "Lyrion already has playlist %s under the name '%s'; "
+                    "replacing it.",
+                    overwritten_id,
+                    playlist_name,
+                )
+                if not delete_playlist(overwritten_id):
+                    logger.error(
+                        "Could not delete existing Lyrion playlist %s to free the "
+                        "name '%s'; aborting create.",
+                        overwritten_id,
+                        playlist_name,
+                    )
+                    return None
+                create_response = _jsonrpc_request(
+                    "playlists", ["new", f"name:{playlist_name}"]
+                )
+                if not create_response or create_response.get(
+                    "overwritten_playlist_id"
+                ) is not None:
+                    logger.error(
+                        "Lyrion still reports the name '%s' as taken after deleting "
+                        "playlist %s; aborting create.",
+                        playlist_name,
+                        overwritten_id,
+                    )
+                    return None
+
+            playlist_id = create_response.get("id") or create_response.get("playlist_id")
 
             if playlist_id:
                 logger.info(f"Created Lyrion playlist '{playlist_name}' (ID: {playlist_id}).")
 
                 if item_ids:
-                    if _add_to_playlist(playlist_id, item_ids):
-                        logger.info(
-                            f"Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'."
+                    if not _add_to_playlist(playlist_id, item_ids):
+                        logger.error(
+                            f"Playlist '{playlist_name}' was created but its tracks "
+                            "could not be added."
                         )
-                    else:
-                        logger.warning(
-                            f"Playlist '{playlist_name}' created but some tracks may not have been added."
-                        )
+                        return None
+                    logger.info(
+                        f"Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'."
+                    )
 
                 return {"Id": playlist_id, "Name": playlist_name}
 

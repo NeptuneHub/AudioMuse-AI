@@ -55,6 +55,7 @@ from config import (
     STRATIFIED_GENRES,
     OTHER_FEATURE_LABELS,
     MOOD_LABELS,
+    MOOD_SCORE_MATCH_THRESHOLD,
     MAX_DISTANCE,
     MAX_SONGS_PER_ARTIST,
     MIN_PLAYLIST_SIZE_FOR_TOP_N,
@@ -1023,7 +1024,7 @@ def _format_and_score_iteration_result(
 
 def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
     TOP_MOODS_IN_NAME = 3
-    OTHER_FEATURE_THRESHOLD_FOR_NAME = 0.5
+    OTHER_FEATURE_THRESHOLD_FOR_NAME = MOOD_SCORE_MATCH_THRESHOLD
     MAX_OTHER_FEATURES_IN_NAME = 2
 
     if scaler:

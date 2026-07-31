@@ -8,11 +8,10 @@
 
 """Per-artist GMM fitting and soft-Chamfer similarity in artist_gmm_manager.
 
-Covers component selection, GMM parameter construction from track embeddings,
-the mode-to-mode divergence metric, and candidate reranking in find_similar_artists.
+Covers GMM parameter construction from track embeddings, the mode-to-mode
+divergence metric, and candidate reranking in find_similar_artists.
 
 Main Features:
-* select_optimal_gmm_components respects sample size and min/max bounds
 * fit_artist_gmm produces normalized weights, correct means shape, few-songs flag,
   and omits covariance fields
 * gmm_soft_chamfer_distance is zero for identical, scale-invariant, symmetric,
@@ -21,7 +20,6 @@ Main Features:
 
 import numpy as np
 from tasks.artist_gmm_manager import (
-    select_optimal_gmm_components,
     fit_artist_gmm,
     GMM_N_COMPONENTS_MAX,
     gmm_soft_chamfer_distance,
@@ -31,69 +29,6 @@ from tasks.artist_gmm_manager import (
 
 def _gmm(means, weights):
     return {"means": [list(m) for m in means], "weights": list(weights)}
-
-
-class TestSelectOptimalGMMComponents:
-    def test_single_sample_returns_one_component(self):
-        embeddings = np.random.rand(1, 128)
-
-        n_components = select_optimal_gmm_components(embeddings)
-
-        assert n_components == 1
-
-    def test_two_samples_returns_valid_components(self):
-        embeddings = np.random.rand(2, 128)
-
-        n_components = select_optimal_gmm_components(embeddings)
-
-        assert 1 <= n_components <= 2
-
-    def test_small_dataset_respects_max_feasible(self):
-        embeddings = np.random.rand(4, 128)
-
-        n_components = select_optimal_gmm_components(embeddings)
-
-        assert n_components <= 4
-        assert n_components >= 1
-
-    def test_large_dataset_respects_sample_ratio(self):
-        embeddings = np.random.rand(50, 128)
-
-        n_components = select_optimal_gmm_components(embeddings)
-
-        assert 1 <= n_components <= 10
-
-    def test_respects_min_components_parameter(self):
-        embeddings = np.random.rand(50, 128)
-
-        n_components = select_optimal_gmm_components(embeddings, min_components=3, max_components=8)
-
-        assert n_components >= 1
-        assert n_components <= 8
-
-    def test_respects_max_components_parameter(self):
-        embeddings = np.random.rand(100, 128)
-
-        n_components = select_optimal_gmm_components(embeddings, min_components=2, max_components=5)
-
-        assert n_components <= 5
-        assert n_components >= 1
-
-    def test_deterministic_with_same_data(self):
-        np.random.seed(42)
-        embeddings = np.random.rand(30, 128)
-
-        n1 = select_optimal_gmm_components(embeddings)
-        n2 = select_optimal_gmm_components(embeddings)
-
-        assert n1 == n2
-
-    def test_high_dimensional_embeddings(self):
-        embeddings = np.random.rand(25, 512)
-
-        n_components = select_optimal_gmm_components(embeddings)
-
-        assert 1 <= n_components <= min(GMM_N_COMPONENTS_MAX, 25 // 5)
 
 
 class TestFitArtistGMM:

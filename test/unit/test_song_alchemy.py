@@ -12,9 +12,10 @@ Covers the alchemy engine that blends song/artist centroids into a new playlist,
 including vector arithmetic, temperature sampling and cluster component selection.
 
 Main Features:
-* Centroids computed from songs or artists and combined via add/subtract
 * Temperature sampling and euclidean/angular metric distance behavior
 * get_playlist_components uses cell groups, caps clusters and samples large playlists
+* Artist anchors expand their GMM components into weighted points that blend
+  into the ADD centroid
 * Full alchemy flow dedups songs and applies the distance filter
 * ADD-ed anchors re-apply their stored exclusions at the saved per-point radius
   and the run exports subtract regions as `exclusions` for anchor saving
@@ -49,7 +50,6 @@ class TestSongAlchemy:
             patch('tasks.song_alchemy._filter_by_distance') as mock_filter_dist,
             patch('app_helper.get_db') as mock_get_db,
             patch('tasks.song_alchemy.load_map_projection') as mock_load_proj,
-            patch('tasks.song_alchemy._get_artist_gmm_vectors_and_weights') as mock_get_gmm,
             patch('tasks.song_alchemy.config') as mock_config,
         ):
             mock_filter_dist.side_effect = lambda song_results, db_conn: song_results
@@ -72,30 +72,8 @@ class TestSongAlchemy:
                 'filter_by_distance': mock_filter_dist,
                 'get_db': mock_get_db,
                 'load_map_projection': mock_load_proj,
-                'get_artist_gmm': mock_get_gmm,
                 'config': mock_config,
             }
-
-    def test_compute_centroid_from_items_songs(self, mock_dependencies):
-        mock_dependencies['get_vector_by_id'].side_effect = (
-            lambda x: [1.0, 0.0] if x == 's1' else [0.0, 1.0]
-        )
-
-        items = [{'type': 'song', 'id': 's1'}, {'type': 'song', 'id': 's2'}]
-        centroid = song_alchemy._compute_centroid_from_items(items)
-
-        assert np.allclose(centroid, [0.5, 0.5])
-
-    def test_compute_centroid_from_items_artist(self, mock_dependencies):
-        mock_dependencies['get_artist_gmm'].return_value = (
-            [np.array([1.0, 0.0]), np.array([3.0, 0.0])],
-            [0.5, 0.5],
-        )
-
-        items = [{'type': 'artist', 'id': 'a1'}]
-        centroid = song_alchemy._compute_centroid_from_items(items)
-
-        assert np.allclose(centroid, [2.0, 0.0])
 
     def test_song_alchemy_basic_flow(self, mock_dependencies):
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
@@ -274,6 +252,30 @@ class TestSongAlchemy:
         assert len(points) == 2
         assert all(p['source_type'] == 'playlist' for p in points)
         assert [p['comp_idx'] for p in points] == [0, 1]
+
+    def test_gather_anchor_points_artist_expands_gmm_components(self):
+        with patch(
+            'tasks.song_alchemy._get_artist_gmm_vectors_and_weights',
+            return_value=([np.array([1.0, 0.0]), np.array([0.0, 1.0])], [0.75, 0.25]),
+        ):
+            points = song_alchemy._gather_anchor_points([{'type': 'artist', 'id': 'art1'}])
+
+        assert [p['source_type'] for p in points] == ['artist', 'artist']
+        assert [p['source_id'] for p in points] == ['art1', 'art1']
+        assert [p['comp_idx'] for p in points] == [0, 1]
+        assert [p['weight'] for p in points] == [0.75, 0.25]
+        assert np.allclose(points[0]['vector'], [1.0, 0.0])
+        assert np.allclose(points[1]['vector'], [0.0, 1.0])
+
+    def test_artist_gmm_components_blend_into_weighted_add_centroid(self):
+        with patch(
+            'tasks.song_alchemy._get_artist_gmm_vectors_and_weights',
+            return_value=([np.array([1.0, 0.0]), np.array([0.0, 1.0])], [0.75, 0.25]),
+        ):
+            points = song_alchemy._gather_anchor_points([{'type': 'artist', 'id': 'art1'}])
+        centroid = song_alchemy._compute_centroid_from_points(points)
+
+        assert np.allclose(centroid, [0.75, 0.25])
 
     def test_song_alchemy_playlist_matches_any_cluster(self, mock_dependencies):
         def get_vec(id):

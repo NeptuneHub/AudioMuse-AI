@@ -2452,6 +2452,32 @@ class TestNavidromeCreateOrReplacePlaylist:
 
         assert result is None
 
+    @patch('tasks.mediaserver.navidrome._add_to_playlist', return_value=False)
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_new_playlist_overflow_failure_rolls_back_and_returns_none(
+        self, mock_request, _mock_add
+    ):
+        from tasks.mediaserver import navidrome
+
+        mock_request.side_effect = [
+            {'status': 'ok', 'playlist': {'id': 'new-pl', 'name': 'SF'}},
+            {'status': 'ok'},
+            {'status': 'ok'},
+        ]
+        item_ids = [
+            f'song-{index}'
+            for index in range(navidrome.NAVIDROME_API_BATCH_SIZE + 1)
+        ]
+
+        assert navidrome._create_playlist_batched('SF', item_ids) is None
+
+        delete_calls = [
+            call for call in mock_request.call_args_list
+            if call.args and call.args[0] == 'deletePlaylist'
+        ]
+        assert len(delete_calls) == 1
+        assert delete_calls[0].args[1] == {'id': 'new-pl'}
+
 
 class TestJellyfinCreateOrReplacePlaylist:
     @patch('tasks.mediaserver.jellyfin.requests')
@@ -2596,6 +2622,25 @@ class TestJellyfinCreateOrReplacePlaylist:
         assert result is None
         mock_create.assert_not_called()
 
+    @patch('tasks.mediaserver.jellyfin._add_items_to_playlist', return_value=False)
+    @patch('tasks.mediaserver.jellyfin.requests')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_new_playlist_overflow_failure_returns_none(
+        self, mock_config, mock_requests, _mock_add
+    ):
+        from tasks.mediaserver import jellyfin
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="t"'}
+        mock_requests.post.return_value.json.return_value = {'Id': 'new-jf', 'Name': 'SF'}
+        item_ids = [
+            f'song-{index}'
+            for index in range(jellyfin.JELLYFIN_PLAYLIST_BATCH_SIZE + 1)
+        ]
+
+        assert jellyfin._create_fresh_playlist('SF', item_ids) is None
+
 
 class TestEmbyCreateOrReplacePlaylist:
     @patch('tasks.mediaserver.emby.requests')
@@ -2652,6 +2697,51 @@ class TestEmbyCreateOrReplacePlaylist:
         result = create_or_replace_playlist('SF', ['n1'])
 
         assert result is None
+
+    @patch('tasks.mediaserver.emby._add_items_to_playlist', return_value=False)
+    @patch('tasks.mediaserver.emby.requests')
+    @patch('tasks.mediaserver.emby.get_playlist_by_name', return_value=None)
+    @patch('tasks.mediaserver.emby.config')
+    def test_new_playlist_overflow_failure_returns_none(
+        self, mock_config, _mock_get, mock_requests, _mock_add
+    ):
+        from tasks.mediaserver import emby
+
+        mock_config.EMBY_URL = 'http://emby'
+        mock_config.EMBY_USER_ID = 'admin-emby'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_requests.utils.quote.side_effect = lambda value: value
+        mock_requests.post.return_value.json.return_value = {
+            'Id': 'new-emby',
+            'Name': 'SF',
+        }
+        item_ids = [
+            f'song-{index}'
+            for index in range(emby.EMBY_PLAYLIST_BATCH_SIZE + 1)
+        ]
+
+        assert emby.create_or_replace_playlist('SF', item_ids) is None
+
+
+class TestLyrionCreatePlaylistBatched:
+    @patch('tasks.mediaserver.lyrion._add_to_playlist')
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_refuses_overwritten_playlist_response(self, mock_rpc, mock_add):
+        from tasks.mediaserver.lyrion import _create_playlist_batched
+
+        mock_rpc.return_value = {'overwritten_playlist_id': 77}
+
+        result = _create_playlist_batched('Managed', ['t1'])
+
+        assert result is None
+        mock_add.assert_not_called()
+
+    @patch('tasks.mediaserver.lyrion._add_to_playlist', return_value=False)
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request', return_value={'playlist_id': 78})
+    def test_track_add_failure_is_not_reported_as_success(self, _mock_rpc, _mock_add):
+        from tasks.mediaserver.lyrion import _create_playlist_batched
+
+        assert _create_playlist_batched('Managed', ['t1']) is None
 
 
 class TestLyrionCreateOrReplacePlaylist:

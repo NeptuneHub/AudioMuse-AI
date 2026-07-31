@@ -33,11 +33,10 @@ import tempfile
 import zipfile
 from datetime import datetime
 from flask import Blueprint, render_template, jsonify, request, send_file
-from redis import Redis
 from redis.exceptions import RedisError
-import config
 from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 import restart_manager
+from taskqueue import new_redis_connection
 from error import error_manager
 from error.error_dictionary import (
     ERR_BACKUP_VERSION_MISMATCH,
@@ -61,7 +60,9 @@ RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
 def _acquire_restore_lock():
     """SET NX EX. Returns True if we got the lock, False if held or Redis is down."""
     try:
-        client = Redis.from_url(config.REDIS_URL, socket_timeout=5, decode_responses=True)
+        client = new_redis_connection(
+            socket_connect_timeout=5, socket_timeout=5, decode_responses=True
+        )
         return bool(client.set(RESTORE_LOCK_KEY, '1', nx=True, ex=RESTORE_LOCK_TTL_SECONDS))
     except RedisError:
         logger.exception("Redis unavailable while acquiring restore lock; failing closed.")
@@ -70,7 +71,7 @@ def _acquire_restore_lock():
 
 def _release_restore_lock():
     try:
-        Redis.from_url(config.REDIS_URL, socket_timeout=5).delete(RESTORE_LOCK_KEY)
+        new_redis_connection(socket_connect_timeout=5, socket_timeout=5).delete(RESTORE_LOCK_KEY)
     except RedisError:
         logger.exception("Redis unavailable while releasing restore lock; relying on TTL.")
 
@@ -82,7 +83,9 @@ def _restore_lock_held():
     than to let it write into a possibly-orphaned chunks_dir.
     """
     try:
-        client = Redis.from_url(config.REDIS_URL, socket_timeout=5, decode_responses=True)
+        client = new_redis_connection(
+            socket_connect_timeout=5, socket_timeout=5, decode_responses=True
+        )
         return bool(client.exists(RESTORE_LOCK_KEY))
     except RedisError:
         logger.exception("Redis unavailable while checking restore lock; failing closed.")
