@@ -55,6 +55,7 @@ from config import (
     IVF_RERANK_OVERFETCH,
     IVF_LAZY_LOAD_RETRY_SECONDS,
 )
+from database import like_contains_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -1281,9 +1282,10 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
             ORDER BY score DESC
             LIMIT 1
         """
-        title_like = title.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        artist_like = artist.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        cur.execute(query, (title, artist, f"%{title_like}%", f"%{artist_like}%"))
+        cur.execute(
+            query,
+            (title, artist, like_contains_pattern(title), like_contains_pattern(artist)),
+        )
         result = cur.fetchone()
         if result:
             logger.info(

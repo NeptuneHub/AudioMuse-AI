@@ -264,19 +264,25 @@ def _project_matrix_2d(mat, label):
     projections = None
     try:
         projections = _project_with_umap(mat)
-    except Exception as e:
-        logger.warning(f"UMAP projection failed for {label}: {e}")
+    except Exception:
+        logger.exception(f"UMAP projection failed for {label}; falling back to PCA")
         projections = None
 
     if projections is None:
         try:
             projections = _project_to_2d(mat)
-        except Exception as e:
-            logger.warning(f"PCA projection failed for {label}: {e}")
-            projections = None
+        except Exception as exc:
+            logger.exception(f"PCA projection failed for {label}")
+            raise RuntimeError(
+                f"2D projection failed for {label}: both UMAP and PCA raised; "
+                "refusing to store an all-zeros projection."
+            ) from exc
 
     if projections is None:
-        return np.zeros((mat.shape[0], 2), dtype=np.float32)
+        raise RuntimeError(
+            f"2D projection failed for {label}: no projector produced output; "
+            "refusing to store an all-zeros projection."
+        )
     return np.array(projections, dtype=np.float32)
 
 
@@ -303,15 +309,7 @@ def build_and_store_map_projection(index_name='main_map'):
         return False
 
     logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
-    try:
-        projections = _project_matrix_2d(mat, 'map projection')
-    except ImportError:
-        logger.exception(
-            "PROJECTION HELPERS UNAVAILABLE: tasks.alchemy_projections failed to "
-            "import; storing a zero map projection so the map page stays up. Fix "
-            "the install to get real coordinates."
-        )
-        projections = np.zeros((mat.shape[0], 2), dtype=np.float32)
+    projections = _project_matrix_2d(mat, 'map projection')
     logger.info(f"Computed projection shape: {projections.shape}")
 
     # Save to DB

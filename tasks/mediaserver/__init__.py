@@ -289,7 +289,10 @@ def _to_server_ids(item_ids):
             internal_count = sum(
                 1 for item_id in item_ids if is_fingerprint_id(str(item_id))
             )
-            is_default = server_id is None or server_id == get_default_server_id()
+            try:
+                is_default = server_id is None or server_id == get_default_server_id()
+            except Exception:
+                is_default = False
             if internal_count == 0 and is_default:
                 logger.exception(
                     "Playlist id translation failed; all %d ids are legacy "

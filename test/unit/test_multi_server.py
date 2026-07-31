@@ -955,6 +955,24 @@ class TestSingleTranslationPoint:
             'legacy-8',
         ]
 
+    def test_translation_failure_with_unreachable_default_lookup_refuses_passthrough(
+        self, monkeypatch
+    ):
+        import database
+        from tasks import mediaserver
+        from tasks.mediaserver import registry
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError('db unavailable')
+
+        monkeypatch.setattr(registry, 'translate_ids', fail)
+        monkeypatch.setattr(database, 'connect_raw', fail)
+        monkeypatch.setattr(registry, 'get_default_server_id', fail)
+        monkeypatch.setattr(mediaserver.context, 'active_server_id', lambda: 'srv-2')
+
+        with pytest.raises(mediaserver.PlaylistIdTranslationError):
+            mediaserver._to_server_ids(['legacy-7'])
+
 
 def _legacy_cursor(legacy_rows, canonical_rows=()):
     """A cursor over a catalogue of legacy rows (+ already-canonical ones).
