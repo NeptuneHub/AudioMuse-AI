@@ -206,21 +206,40 @@ _SCHEMA_DDL = [
     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
     "CREATE UNIQUE INDEX idx_music_servers_single_default "
     "ON music_servers (is_default) WHERE is_default",
+    # The PRODUCTION shape: relax_track_server_map_pk() moves the primary key to
+    # (server_id, provider_track_id) so N provider files may map to one song. Held
+    # at the old (item_id, server_id) key, this harness could not even seed the
+    # duplicate the migration has to collapse.
     "CREATE TABLE track_server_map ("
     "item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE, "
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
     "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
-    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (item_id, server_id))",
-    "CREATE UNIQUE INDEX idx_track_server_map_provider_unique "
-    "ON track_server_map (server_id, provider_track_id)",
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "PRIMARY KEY (server_id, provider_track_id))",
+    "CREATE INDEX idx_track_server_map_item ON track_server_map (item_id, server_id)",
     "CREATE TABLE artist_server_map (artist_name TEXT NOT NULL, "
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
     "provider_artist_id TEXT NOT NULL, "
     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
     "PRIMARY KEY (artist_name, server_id), UNIQUE (server_id, provider_artist_id))",
+    "CREATE TABLE chromaprint ("
+    "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
+    "provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "PRIMARY KEY (server_id, provider_track_id))",
 ]
 
 _DEFAULT_SERVER_ID = 'srv-default'
+
+_UNSIGNABLE_SEED_INDEX = 0
+
+
+def _seeded_fingerprint(index):
+    return b'FPCALC' + bytes([index])
+
+
+def _seeded_tier(index):
+    return 'analysis' if index == _UNSIGNABLE_SEED_INDEX else 'default'
 
 
 @pytest.fixture(scope='session')
@@ -341,7 +360,17 @@ def _seed_library(conn, source_rendered, segmented=False, source_type='jellyfin'
                 "INSERT INTO track_server_map "
                 "(item_id, server_id, provider_track_id, match_tier, file_path) "
                 "VALUES (%s, %s, %s, %s, %s)",
-                (r['id'], _DEFAULT_SERVER_ID, r['id'], 'default', r['path']),
+                (r['id'], _DEFAULT_SERVER_ID, r['id'], _seeded_tier(index), r['path']),
+            )
+            cur.execute(
+                "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint) "
+                "VALUES (%s, %s, %s)",
+                (_DEFAULT_SERVER_ID, r['id'], psycopg2.Binary(_seeded_fingerprint(index))),
+            )
+            cur.execute(
+                "INSERT INTO playlist (playlist_name, item_id, title, author, server_id) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                ('Seeded Mix', r['id'], r['title'], r['artist'], _DEFAULT_SERVER_ID),
             )
             for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
                 cur.execute(f"INSERT INTO {table} (item_id) VALUES (%s)", (r['id'],))
@@ -572,6 +601,59 @@ def test_real_provider_migration(source, target, migration_db):
                 "the target's path must land on the server's own map row"
             )
 
+        # A Chromaprint is computed from the AUDIO, which a provider swap does not
+        # touch, so it follows the song onto the target's id. This is what lets a
+        # Navidrome id rotation migrate without re-fingerprinting the library.
+        cur.execute(
+            "SELECT c.provider_track_id, c.fingerprint FROM chromaprint c "
+            "WHERE c.server_id = %s",
+            (_DEFAULT_SERVER_ID,),
+        )
+        prints = {row[0]: bytes(row[1]) for row in cur.fetchall()}
+        assert set(prints.keys()) == new_provider_ids, (
+            f"{source}->{target}: fingerprints are still keyed by dead provider ids\n"
+            f"  want {new_provider_ids}\n  got {set(prints.keys())}"
+        )
+        for index in range(len(SHARED_TRACKS)):
+            carried = prints[expected_map[source_rendered[index]['id']]]
+            assert carried == _seeded_fingerprint(index), (
+                "each song kept ITS OWN fingerprint across the repoint"
+            )
+
+        # Reached the way every consumer reaches it: joined to the map row.
+        cur.execute(
+            "SELECT m.item_id, c.fingerprint FROM chromaprint c "
+            "JOIN track_server_map m ON m.server_id = c.server_id "
+            "AND m.provider_track_id = c.provider_track_id "
+            "WHERE m.server_id = %s",
+            (_DEFAULT_SERVER_ID,),
+        )
+        joined = {row[0]: bytes(row[1]) for row in cur.fetchall()}
+        assert set(joined.keys()) == matched_item_ids, (
+            "the Chromaprint duplicate veto must still see every migrated song"
+        )
+        assert orphan_id not in joined, (
+            "the unbound song's fingerprint must not linger keyed by a dead id"
+        )
+
+        # 'analysis' marks a row whose embedding yields no signature: the startup
+        # canonicalizer reads that tier to know the row can never be relabelled, so
+        # flattening it here makes every later boot re-hash the whole catalogue.
+        cur.execute(
+            "SELECT item_id, match_tier FROM track_server_map WHERE server_id = %s",
+            (_DEFAULT_SERVER_ID,),
+        )
+        tiers = dict(cur.fetchall())
+        unsignable_id = source_rendered[_UNSIGNABLE_SEED_INDEX]['id']
+        assert tiers[unsignable_id] == 'analysis', (
+            "the unsignable marker must survive the repoint"
+        )
+        assert all(
+            tier == 'default'
+            for item_id, tier in tiers.items()
+            if item_id != unsignable_id
+        ), "every other migrated row is a plain repoint"
+
         # Embeddings hang off score, so if the catalogue survived, so did they.
         for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
             cur.execute(f"SELECT item_id FROM {table}")
@@ -629,6 +711,100 @@ def test_real_provider_migration(source, target, migration_db):
         f"  ok: {len(matched_item_ids)} mappings repointed, orphan unbound but kept, "
         f"catalogue + indexes intact, default server -> {target}"
     )
+
+
+@pytest.mark.integration
+def test_navidrome_id_rotation_carries_fingerprints_through_duplicate_files(migration_db):
+    """The Navidrome id-rotation case, hardest shape: same server, ids PERMUTED onto
+    each other, and one song owning two files. The rotation must not trip the
+    (server_id, provider_track_id) key, must leave no fingerprint under a dead id,
+    and must keep a real fingerprint for the song rather than a NULL sibling row.
+    """
+    source = target = 'navidrome'
+    rendered = []
+    for index, track in enumerate(SHARED_TRACKS):
+        rendered.append(
+            {
+                'id': _provider_id(source, 0, index),
+                'path': _provider_path(source, _relative_path(track)),
+                'title': track['title'],
+                'artist': track['artist'],
+                'album': track['album'],
+                'album_artist': track['album_artist'],
+            }
+        )
+
+    conn = migration_db['connect']()
+    _seed_library(conn, rendered, source_type=source)
+
+    duplicate_owner = rendered[1]['id']
+    duplicate_file_id = _provider_id(source, 0, _ORPHAN_OFFSET)
+    with conn.cursor() as cur:
+        # The unsignable marker sits on the SECOND row, which the collapse discards
+        # (it keeps the lowest ctid, i.e. the row seeded first). The marker belongs
+        # to the SONG, not to whichever file wins that race.
+        cur.execute(
+            "INSERT INTO track_server_map "
+            "(item_id, server_id, provider_track_id, match_tier, file_path) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (duplicate_owner, _DEFAULT_SERVER_ID, duplicate_file_id, 'analysis',
+             rendered[1]['path'] + '.dup'),
+        )
+        cur.execute(
+            "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint) "
+            "VALUES (%s, %s, NULL)",
+            (_DEFAULT_SERVER_ID, duplicate_file_id),
+        )
+    conn.commit()
+
+    rotated = {r['id']: _provider_id(source, 1, i) for i, r in enumerate(rendered)}
+    overlap = set(rotated.values()) & set(rotated.keys())
+    assert overlap, "the rotation must reuse ids the catalogue still holds"
+
+    session_id = _insert_session(
+        conn, source, target, rotated,
+        {new_id: {'path': f'/rotated/{new_id}.flac'} for new_id in rotated.values()},
+    )
+    result = mig.execute_provider_migration(session_id)
+    assert result['ok'] is True
+
+    verify = migration_db['connect']()
+    with verify.cursor() as cur:
+        cur.execute(
+            "SELECT c.provider_track_id, c.fingerprint, m.item_id FROM chromaprint c "
+            "LEFT JOIN track_server_map m ON m.server_id = c.server_id "
+            "AND m.provider_track_id = c.provider_track_id "
+            "WHERE c.server_id = %s",
+            (_DEFAULT_SERVER_ID,),
+        )
+        rows = cur.fetchall()
+        assert {r[0] for r in rows} == set(rotated.values()), (
+            "every fingerprint must sit on a rotated id, and none under a retired one"
+        )
+        assert all(r[2] is not None for r in rows), (
+            "no fingerprint may survive without a map row to reach it by"
+        )
+        by_item = {r[2]: r[1] for r in rows}
+        assert bytes(by_item[duplicate_owner]) == _seeded_fingerprint(1), (
+            "collapsing duplicate files must keep the fingerprint that HAS bytes, "
+            "not the NULL sibling"
+        )
+        cur.execute(
+            "SELECT count(*) FROM track_server_map WHERE server_id = %s AND item_id = %s",
+            (_DEFAULT_SERVER_ID, duplicate_owner),
+        )
+        assert cur.fetchone()[0] == 1, "duplicate files collapse to one row per song"
+        cur.execute(
+            "SELECT match_tier FROM track_server_map "
+            "WHERE server_id = %s AND item_id = %s",
+            (_DEFAULT_SERVER_ID, duplicate_owner),
+        )
+        assert cur.fetchone()[0] == 'analysis', (
+            "the unsignable marker belongs to the SONG: collapsing its duplicate "
+            "files must not throw it away with the discarded row, or every later "
+            "boot re-hashes the whole catalogue"
+        )
+    verify.close()
 
 
 @pytest.mark.integration

@@ -19,7 +19,6 @@ Main Features:
 
 ERR_CONFIG_INVALID = 1001
 ERR_CONFIG_MEDIASERVER_CREDENTIALS = 1002
-ERR_STARTUP = 1003
 
 ERR_MEDIASERVER_UNREACHABLE = 1101
 ERR_MEDIASERVER_REFUSED = 1102
@@ -29,7 +28,6 @@ ERR_MEDIASERVER_LIBRARY = 1105
 
 ERR_ANALYSIS_FAILED = 2001
 ERR_ALBUM_ANALYSIS_FAILED = 2002
-ERR_ANALYSIS_NO_ALBUMS = 2003
 ERR_MODEL_INFERENCE = 2004
 ERR_ANALYSIS_NO_TRACKS_ANALYZED = 2005
 ERR_ANALYSIS_SERVER_FAILED = 2006
@@ -62,10 +60,6 @@ ERROR_REGISTRY = {
         "error_class": "Configuration Error",
         "default_message": "Required media server credentials are missing.",
     },
-    ERR_STARTUP: {
-        "error_class": "Startup Error",
-        "default_message": "The application failed to start.",
-    },
     ERR_MEDIASERVER_UNREACHABLE: {
         "error_class": "Music Server Connection Error",
         "default_message": "Could not reach the configured media server.",
@@ -93,10 +87,6 @@ ERROR_REGISTRY = {
     ERR_ALBUM_ANALYSIS_FAILED: {
         "error_class": "Analysis Error",
         "default_message": "Album analysis failed.",
-    },
-    ERR_ANALYSIS_NO_ALBUMS: {
-        "error_class": "Analysis Error",
-        "default_message": "No albums were available to analyze.",
     },
     ERR_MODEL_INFERENCE: {
         "error_class": "Model Inference Error",

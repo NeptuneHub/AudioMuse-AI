@@ -614,8 +614,23 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
     if ids_to_add_later:
         if not _add_to_playlist(new_playlist_id, ids_to_add_later, user_creds):
             logger.error(
-                f"Failed to add all songs to the new playlist '{playlist_name}'. The playlist was created but may be incomplete."
+                f"Failed to add all songs to the new playlist '{playlist_name}'. "
+                f"Deleting the half-filled playlist (ID: {new_playlist_id}) so a "
+                "retry starts clean."
             )
+            delete_response = _navidrome_request(
+                "deletePlaylist",
+                {"id": new_playlist_id},
+                method='post',
+                user_creds=user_creds,
+            )
+            if not (delete_response and delete_response.get("status") == "ok"):
+                logger.error(
+                    f"Rollback delete of half-filled Navidrome playlist "
+                    f"'{playlist_name}' (ID: {new_playlist_id}) also failed; a "
+                    "partial playlist remains on the server."
+                )
+            return None
 
     new_playlist['Id'] = new_playlist.get('id')
     new_playlist['Name'] = new_playlist.get('name')
@@ -624,7 +639,7 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
 
 
 def create_playlist(base_name, item_ids):
-    _create_playlist_batched(base_name, item_ids, user_creds=None)
+    return _create_playlist_batched(base_name, item_ids, user_creds=None)
 
 
 def get_all_playlists():

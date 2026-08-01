@@ -72,6 +72,7 @@ import numpy as np
 
 import config
 from database import connect_raw
+from sanitization import sanitize_string_for_db
 from tasks import simhash
 from tasks.mediaserver import registry
 from tasks.provider_migration_tasks import (
@@ -108,9 +109,15 @@ _CURRENT_SCHEME_SQL = (
 # 'analysis' match tier. Such a row can never be relabelled, so counting it as
 # legacy work made this "one-time" migration re-hash the whole catalogue on EVERY
 # boot and relabel nothing.
+# The fp_0 head IS the marker for a row minted as unsignable, and unlike the map
+# row it cannot be taken away: a provider migration unbinds an unmatched song from
+# its server, which used to strip the only evidence and hand the row straight back
+# to this migration as legacy work it can never relabel.
 _UNSIGNABLE_SQL = (
-    "EXISTS (SELECT 1 FROM track_server_map t "
-    "WHERE t.item_id = s.item_id AND t.match_tier = 'analysis')"
+    "((s.item_id LIKE 'fp\\_0%%' AND length(s.item_id) = "
+    + str(simhash.CANONICAL_ID_LEN)
+    + ") OR EXISTS (SELECT 1 FROM track_server_map t "
+    "WHERE t.item_id = s.item_id AND t.match_tier = 'analysis'))"
 )
 _LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL + " AND NOT " + _UNSIGNABLE_SQL
 _RELABEL_ADVISORY_LOCK = 726354822
@@ -175,7 +182,7 @@ def _fetch_provider_durations(source_id, conn):
                 server['server_type'], server['creds'], apply_filter=False
             )
         durations = {
-            str(track['id']): track['duration']
+            sanitize_string_for_db(str(track['id'])): track['duration']
             for track in tracks
             if track.get('id') is not None and track.get('duration') is not None
         }
@@ -206,9 +213,10 @@ def _durations_for_rows(cur, ids, rows, provider_durations, source_id):
         for item_id, duration in cur.fetchall():
             durations[str(item_id)] = float(duration)
     unresolved = [i for i in wanted if i not in durations]
-    direct = [i for i in unresolved if i in provider_durations]
-    for item_id in direct:
-        durations[item_id] = provider_durations[item_id]
+    for item_id in unresolved:
+        value = provider_durations.get(sanitize_string_for_db(item_id))
+        if value is not None:
+            durations[item_id] = value
     unresolved = [i for i in unresolved if i not in durations]
     if unresolved and provider_durations:
         for begin in range(0, len(unresolved), _CHUNK_ROWS):
@@ -219,7 +227,7 @@ def _durations_for_rows(cur, ids, rows, provider_durations, source_id):
                 (source_id, chunk),
             )
             for item_id, provider_id in cur.fetchall():
-                value = provider_durations.get(str(provider_id))
+                value = provider_durations.get(sanitize_string_for_db(str(provider_id)))
                 if value is not None:
                     durations.setdefault(str(item_id), value)
     return durations

@@ -20,6 +20,9 @@ Main Features:
 * ``build_and_store_map_projection`` / ``build_and_store_artist_projection``
   compute a 2D projection and persist it; ``attach_song_features`` /
   ``top_stratified_genre`` enrich API result rows.
+* Shared blueprint helpers: ``index_error_body`` builds the structured API
+  error body and ``probe_catalogue_canonical_ids`` probes score for canonical
+  fp_ ids (None on probe failure so callers pick their own fail-closed policy).
 """
 
 import json
@@ -34,6 +37,7 @@ import rq_job_state
 from database import (  # noqa: F401
     get_db,
     close_db,
+    coerce_db_details,
     INLINE_FLASK_TASK_TYPES,
     save_task_status,
     record_task_history,
@@ -79,21 +83,29 @@ logger = logging.getLogger(__name__)
 # the build_and_store_* helpers below and read by database.load_*_projection.
 
 
-def coerce_db_details(raw_details):
-    """Normalize a task_status.details DB value to a dict without double-parsing.
+def index_error_body(code, message):
+    payload = error_manager.build(code)
+    payload["error"] = message
+    return payload
 
-    psycopg2 hands back a TEXT details column as a JSON string (needs json.loads)
-    but a JSONB column as an already-parsed dict (must NOT be re-parsed). NULL or
-    unparseable values collapse to {}.
-    """
-    if isinstance(raw_details, dict):
-        return raw_details
-    if raw_details:
-        try:
-            return json.loads(raw_details)
-        except (json.JSONDecodeError, TypeError):
-            return {}
-    return {}
+
+def probe_catalogue_canonical_ids():
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
+            )
+            return bool(cur.fetchone()[0])
+    except Exception:
+        logger.exception("Canonical-id probe failed; failing closed")
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.exception("Rollback after failed canonical-id probe also failed")
+        return None
 
 
 def sanitize_task_details(details, state, task_type=None):
@@ -246,17 +258,38 @@ def serialize_neighbor_results(
     return out
 
 
+def _project_matrix_2d(mat, label):
+    from tasks.alchemy_projections import _project_with_umap, _project_to_2d
+
+    projections = None
+    try:
+        projections = _project_with_umap(mat)
+    except Exception:
+        logger.exception(f"UMAP projection failed for {label}; falling back to PCA")
+        projections = None
+
+    if projections is None:
+        try:
+            projections = _project_to_2d(mat)
+        except Exception as exc:
+            logger.exception(f"PCA projection failed for {label}")
+            raise RuntimeError(
+                f"2D projection failed for {label}: both UMAP and PCA raised; "
+                "refusing to store an all-zeros projection."
+            ) from exc
+
+    if projections is None:
+        raise RuntimeError(
+            f"2D projection failed for {label}: no projector produced output; "
+            "refusing to store an all-zeros projection."
+        )
+    return np.array(projections, dtype=np.float32)
+
+
 def build_and_store_map_projection(index_name='main_map'):
     """Compute 2D projection for all tracks and store it. Uses available projection helpers if present.
     Returns True on success.
     """
-    # Import local projection helpers to avoid circular imports
-    try:
-        from tasks.alchemy_projections import _project_with_umap, _project_to_2d
-    except Exception:
-        _project_with_umap = None
-        _project_to_2d = None
-
     from config import EMBEDDING_DIMENSION
     from tasks.index_build_helpers import stream_embeddings_to_buffer
 
@@ -275,27 +308,8 @@ def build_and_store_map_projection(index_name='main_map'):
         logger.info('No embeddings available to build map projection.')
         return False
 
-    projections = None
-    try:
-        logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
-        if _project_with_umap is not None:
-            projections = _project_with_umap(mat)
-    except Exception as e:
-        logger.warning(f"UMAP projection failed during build: {e}")
-        projections = None
-
-    if projections is None:
-        try:
-            if _project_to_2d is not None:
-                projections = _project_to_2d(mat)
-        except Exception as e:
-            logger.warning(f"PCA projection failed during build: {e}")
-            projections = None
-
-    if projections is None:
-        projections = np.zeros((mat.shape[0], 2), dtype=np.float32)
-    else:
-        projections = np.array(projections, dtype=np.float32)
+    logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
+    projections = _project_matrix_2d(mat, 'map projection')
     logger.info(f"Computed projection shape: {projections.shape}")
 
     # Save to DB
@@ -320,7 +334,6 @@ def build_and_store_artist_projection(index_name='artist_map'):
     Returns True on success.
     """
     from tasks.artist_gmm_manager import load_artist_index_for_querying
-    from tasks.alchemy_projections import _project_with_umap, _project_to_2d
 
     # Always reload artist GMM params from database (force reload to ensure fresh data)
     load_artist_index_for_querying(force_reload=True)
@@ -374,31 +387,8 @@ def build_and_store_artist_projection(index_name='artist_map'):
             )
             row_i += 1
 
-    projections = None
-
-    try:
-        logger.info(f"Starting to build artist projection: {mat.shape[0]} component vectors found.")
-        # Try UMAP first
-        if _project_with_umap is not None:
-            projections = _project_with_umap(mat)
-    except Exception as e:
-        logger.warning(f"UMAP projection failed for artist components: {e}")
-        projections = None
-
-    # Fallback to PCA
-    if projections is None:
-        try:
-            if _project_to_2d is not None:
-                projections = _project_to_2d(mat)
-        except Exception as e:
-            logger.warning(f"PCA projection failed for artist components: {e}")
-            projections = None
-
-    if projections is None:
-        projections = np.zeros((mat.shape[0], 2), dtype=np.float32)
-    else:
-        projections = np.array(projections, dtype=np.float32)
-
+    logger.info(f"Starting to build artist projection: {mat.shape[0]} component vectors found.")
+    projections = _project_matrix_2d(mat, 'artist components')
     logger.info(f"Computed artist projection shape: {projections.shape}")
 
     try:

@@ -330,3 +330,70 @@ class TestOrphanReapAgainstRealRows:
 
         status, _progress, _details = _read_row(text_details_db, 'reap-young')
         assert status == 'PROGRESS'
+
+
+class TestSweepStrengthSurvivesItsOwnProgressUpdates:
+    """A sweep's task row records whether it is a FULL-REFRESH alignment, because
+    recovery has to queue an equally strong replacement when the job dies: a
+    matching-only sweep exits at "already aligned; nothing to do" without fetching
+    whenever every track is mapped - exactly the state a provider migration leaves -
+    so the artist ids it was queued to rebuild would stay empty.
+
+    save_task_status REPLACES the details column wholesale, and recovery only ever
+    fires for a job that STARTED and died (a still-queued job counts as alive and
+    simply runs after the restart). So the flag has to survive the running sweep's
+    own progress reports, not merely be written once at enqueue time.
+    """
+
+    def _reporter(self, monkeypatch, conn, full_refresh):
+        import types
+        from unittest.mock import MagicMock
+
+        import database
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = MagicMock()
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+        return sync, sync._make_reporter('sweep-1', 'all', full_refresh=full_refresh)
+
+    def test_the_flag_is_still_readable_after_a_progress_report(
+        self, text_details_db, monkeypatch
+    ):
+        import database
+
+        sync, report = self._reporter(monkeypatch, text_details_db, True)
+        database.save_task_status(
+            'sweep-1', 'server_sweep', status='PENDING', progress=0,
+            details={'message': 'queued', 'full_refresh': True},
+        )
+        report('Starting alignment for Navidrome...', 2, task_state='STARTED')
+
+        row = database.get_task_info_from_db('sweep-1')
+        assert sync._details_full_refresh(row['details']) is True, (
+            "the janitor reads this row AFTER the sweep started; a wiped flag "
+            "downgrades the replacement to a no-op matching-only sweep"
+        )
+
+    def test_the_flag_survives_a_jsonb_details_column_too(
+        self, jsonb_details_db, monkeypatch
+    ):
+        import database
+
+        sync, report = self._reporter(monkeypatch, jsonb_details_db, True)
+        report('Aligning...', 10, task_state='STARTED')
+
+        row = database.get_task_info_from_db('sweep-1')
+        assert sync._details_full_refresh(row['details']) is True
+
+    def test_a_matching_only_sweep_is_recorded_as_weak(
+        self, text_details_db, monkeypatch
+    ):
+        import database
+
+        sync, report = self._reporter(monkeypatch, text_details_db, False)
+        report('Aligning...', 10, task_state='STARTED')
+
+        row = database.get_task_info_from_db('sweep-1')
+        assert sync._details_full_refresh(row['details']) is False

@@ -33,6 +33,18 @@ from psycopg2.extras import DictCursor
 logger = logging.getLogger(__name__)
 
 
+def _fetch_score_details(item_ids: list, db_conn):
+    details_map = {}
+    with db_conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
+            (item_ids,),
+        )
+        for row in cur.fetchall():
+            details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
+    return details_map
+
+
 def get_vectors_from_database(item_ids: list, db_conn):
     vectors_map = {}
 
@@ -58,7 +70,6 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
         DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
         IVF_METRIC,
     )
-
     if DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
         return song_results
 
@@ -83,12 +94,7 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
         )
         return apply_title_artist_deduplication(song_results, db_conn, log_prefix)
 
-    details_map = {}
-    with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (item_ids,))
-        rows = cur.fetchall()
-        for row in rows:
-            details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
+    details_map = _fetch_score_details(item_ids, db_conn)
 
     threshold = (
         DUPLICATE_DISTANCE_THRESHOLD_COSINE
@@ -210,13 +216,7 @@ def apply_title_artist_deduplication(song_results: list, db_conn, log_prefix="")
         return []
 
     item_ids = [s['item_id'] for s in song_results]
-    details_map = {}
-
-    with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (item_ids,))
-        rows = cur.fetchall()
-        for row in rows:
-            details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
+    details_map = _fetch_score_details(item_ids, db_conn)
 
     seen_combinations = set()
     filtered_songs = []
@@ -711,7 +711,3 @@ def select_diverse_playlists_with_genre_coverage(
     )
 
     return new_result
-
-
-def select_top_n_diverse_playlists(best_result, n):
-    return select_diverse_playlists_with_genre_coverage(best_result, n)

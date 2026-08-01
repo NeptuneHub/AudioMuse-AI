@@ -32,12 +32,6 @@ BUCKET_SIZE = 50
 INSTRUMENT_BUCKET_SKIPS = RADIUS_INSTRUMENTATION
 
 
-def _normalize_string(text: str) -> str:
-    if not text:
-        return ""
-    return text.strip().lower()
-
-
 def _default_distance_fn(v1: np.ndarray, v2: np.ndarray) -> float:
     try:
         return float(np.linalg.norm(v1 - v2))

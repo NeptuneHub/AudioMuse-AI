@@ -23,7 +23,6 @@ Main Features:
   media servers here before any admin account exists.
 """
 
-import json
 import logging
 import uuid
 
@@ -32,7 +31,7 @@ from rq.job import Job
 
 import config
 import rq_job_state
-from app_helper import redis_conn, rq_queue_high, save_task_status, send_stop_job_command
+from app_helper import coerce_db_details, redis_conn, rq_queue_high, save_task_status, send_stop_job_command
 from database import get_db, missing_required_creds, get_active_main_task
 from app_server_context import (
     merge_creds,
@@ -176,7 +175,10 @@ def _enqueue_sweep(at_front=False):
     try:
         save_task_status(
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={'message': 'Server alignment queued for all servers.'},
+            details={
+                'message': 'Server alignment queued for all servers.',
+                'full_refresh': True,
+            },
         )
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
@@ -210,13 +212,10 @@ def _latest_sweep_task():
             cur.close()
         if not row:
             return None
-        details = row[3]
-        if isinstance(details, str):
-            try:
-                details = json.loads(details)
-            except ValueError:
-                details = {}
-        message = (details or {}).get('status_message') or (details or {}).get('message') or ''
+        details = coerce_db_details(row[3])
+        if not isinstance(details, dict):
+            details = {}
+        message = details.get('status_message') or details.get('message') or ''
         return {'task_id': row[0], 'status': row[1], 'progress': row[2] or 0, 'message': message}
     except Exception:
         logger.exception("Could not load latest sweep task")
@@ -429,21 +428,29 @@ def set_default_server(server_id):
     return jsonify(payload)
 
 
-@music_servers_bp.route('/api/servers/test', methods=['POST'])
-def test_server():
+def _parse_probe_request():
     forbidden = _forbid_non_admin()
     if forbidden:
-        return forbidden
+        return None, None, forbidden
     data = request.get_json(silent=True) or {}
     server_type = (data.get('server_type') or '').strip().lower()
     creds = data.get('creds') or {}
     if not _validate_type(server_type):
-        return jsonify({"error": f"server_type must be one of {list(_SUPPORTED_TYPES)}."}), 400
+        error = jsonify({"error": f"server_type must be one of {list(_SUPPORTED_TYPES)}."}), 400
+        return None, None, error
     server_id = data.get('server_id')
     if server_id:
         existing = registry.get_server(server_id)
         if existing is not None:
             creds = merge_creds(existing['creds'], creds)
+    return server_type, creds, None
+
+
+@music_servers_bp.route('/api/servers/test', methods=['POST'])
+def test_server():
+    server_type, creds, error = _parse_probe_request()
+    if error is not None:
+        return error
     try:
         result = provider_probe.test_connection(server_type, creds)
     except Exception:
@@ -454,19 +461,9 @@ def test_server():
 
 @music_servers_bp.route('/api/servers/libraries', methods=['POST'])
 def server_libraries():
-    forbidden = _forbid_non_admin()
-    if forbidden:
-        return forbidden
-    data = request.get_json(silent=True) or {}
-    server_type = (data.get('server_type') or '').strip().lower()
-    creds = data.get('creds') or {}
-    if not _validate_type(server_type):
-        return jsonify({"error": f"server_type must be one of {list(_SUPPORTED_TYPES)}."}), 400
-    server_id = data.get('server_id')
-    if server_id:
-        existing = registry.get_server(server_id)
-        if existing is not None:
-            creds = merge_creds(existing['creds'], creds)
+    server_type, creds, error = _parse_probe_request()
+    if error is not None:
+        return error
     try:
         return jsonify(provider_probe.list_libraries(server_type, creds))
     except Exception:
@@ -497,7 +494,10 @@ def sweep_server(server_id):
     try:
         save_task_status(
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={'message': 'Server matching sweep queued.'},
+            details={
+                'message': 'Server matching sweep queued.',
+                'full_refresh': True,
+            },
         )
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_server',

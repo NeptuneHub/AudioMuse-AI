@@ -18,6 +18,8 @@ Main Features:
 * Runs Flask via waitress or launches a named RQ role in-process.
 * Pins the numeric locale early and warms up scipy longdouble for every role
   except janitor and restart-listener (macOS newlocale crash fix).
+* Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
+  and rejects any other unknown argv rather than starting a second menu bar.
 """
 
 import os
@@ -26,11 +28,20 @@ import subprocess
 import sys
 import threading
 
+from native_common import frozen_children
+
 
 def _role_from_argv():
     for arg in sys.argv[1:]:
         if arg.startswith("--role="):
             return arg.split("=", 1)[1]
+    return None
+
+
+def _command_from_argv():
+    for arg in sys.argv[1:]:
+        if not arg.startswith("-"):
+            return arg
     return None
 
 
@@ -177,6 +188,9 @@ def main():
     except Exception:
         pass
 
+    if frozen_children.run_frozen_child():
+        return
+
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner
@@ -186,8 +200,15 @@ def main():
     role = _role_from_argv()
     if role:
         _run_role(role)
-    else:
-        _run_menubar()
+        return
+
+    unknown = _command_from_argv()
+    if unknown is not None:
+        print(f"Unknown argument: {unknown}", file=sys.stderr)
+        print("Usage: AudioMuse-AI [--role=<role>]", file=sys.stderr)
+        sys.exit(2)
+
+    _run_menubar()
 
 
 if __name__ == "__main__":

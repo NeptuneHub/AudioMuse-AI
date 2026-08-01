@@ -13,7 +13,7 @@ handle_onnx_memory_error retry/fallback logic and comprehensive_memory_cleanup,
 alongside the sanitization routines that strip control bytes before DB writes.
 
 Main Features:
-* SessionRecycler increment/should_recycle/reset lifecycle at the interval
+* SessionRecycler increment/should_recycle/mark_recycled lifecycle at the interval
 * Non-memory errors re-raise unchanged; OOM triggers cleanup, retry or CPU fallback
 * comprehensive_memory_cleanup returns the expected bool-valued result map
 * sanitize_string/json remove null and control chars while preserving unicode
@@ -161,15 +161,6 @@ class TestSessionRecycler:
         recycler.increment()
         recycler.increment()
         assert recycler.get_use_count() == 3
-
-    def test_reset(self):
-        recycler = SessionRecycler(recycle_interval=5)
-
-        for i in range(3):
-            recycler.increment()
-
-        recycler.reset()
-        assert recycler.use_count == 0
 
     def test_full_cycle(self):
         recycler = SessionRecycler(recycle_interval=3)

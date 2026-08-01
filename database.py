@@ -19,7 +19,7 @@ Main Features:
   timeout), fails that unit of work once with ``ConnectionLostError`` (an
   ``OperationalError`` subclass), and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped history rows.
-* Embedding, projection, and alchemy CRUD helpers shared by workers and the web app.
+* Embedding, projection, and alchemy CRUD shared by workers and the web app.
 """
 
 import json
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 from tz_helper import UTC_NOW_SQL
 
-from sanitization import sanitize_db_field
+from sanitization import sanitize_db_field, sanitize_string_for_db
 
 from config import (
     TASK_STATUS_PENDING,
@@ -731,22 +731,6 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         cur.close()
 
 
-def get_clap_embedding(item_id):
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT embedding FROM clap_embedding WHERE item_id = %s", (item_id,))
-        row = cur.fetchone()
-        if row and row[0]:
-            return np.frombuffer(row[0], dtype=np.float32)
-        return None
-    except Exception:
-        logger.exception(f"Error loading CLAP embedding for {item_id}")
-        return None
-    finally:
-        cur.close()
-
-
 def persist_chromaprint(server_id, provider_track_id, fingerprint):
     if not server_id or not provider_track_id:
         return
@@ -761,7 +745,7 @@ def persist_chromaprint(server_id, provider_track_id, fingerprint):
             "VALUES (%s, %s, %s, now()) "
             "ON CONFLICT (server_id, provider_track_id) DO UPDATE SET "
             "fingerprint = EXCLUDED.fingerprint, updated_at = now()",
-            (str(server_id), str(provider_track_id), blob),
+            (str(server_id), sanitize_string_for_db(str(provider_track_id)), blob),
         )
         conn.commit()
     except Exception:
@@ -787,7 +771,7 @@ def get_chromaprint(server_id, provider_track_id):
         cur.execute(
             "SELECT fingerprint FROM chromaprint "
             "WHERE server_id = %s AND provider_track_id = %s",
-            (str(server_id), str(provider_track_id)),
+            (str(server_id), sanitize_string_for_db(str(provider_track_id))),
         )
         row = cur.fetchone()
         return bytes(row[0]) if row and row[0] is not None else None
@@ -1554,6 +1538,7 @@ def init_db():
             _seed_registry_from_legacy_config(cur)
             _drop_unconfigured_servers(cur)
             _migrate_artist_mapping_to_server_map(cur)
+            _scrub_control_chars_from_map_ids(cur)
             _migrate_playlist_server_column(cur)
             removed_media_keys = purge_media_keys_from_app_config(cur)
             if removed_media_keys:
@@ -1629,6 +1614,57 @@ def _migrate_file_path_to_track_server_map(cur):
             "Moved %d file path(s) onto the default server's map rows and cleared "
             "%d shared score.file_path value(s).", moved, cleared,
         )
+
+
+_MAP_ID_SCRUB_MARKER = 'map_id_c0_scrub_v1'
+
+
+def _scrub_control_chars_from_map_ids(cur):
+    cur.execute("SELECT 1 FROM app_config WHERE key = %s", (_MAP_ID_SCRUB_MARKER,))
+    if cur.fetchone():
+        return
+    controls = ''.join(
+        chr(c) for c in (*range(0x01, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20))
+    )
+    klass = '[' + controls + ']'
+    cur.execute(
+        "DELETE FROM track_server_map t WHERE t.provider_track_id ~ %s AND ("
+        "regexp_replace(t.provider_track_id, %s, '', 'g') = '' "
+        "OR EXISTS (SELECT 1 FROM track_server_map c WHERE c.server_id = t.server_id "
+        "AND c.provider_track_id = regexp_replace(t.provider_track_id, %s, '', 'g')) "
+        "OR t.provider_track_id > (SELECT MIN(d.provider_track_id) FROM track_server_map d "
+        "WHERE d.server_id = t.server_id AND d.provider_track_id ~ %s "
+        "AND regexp_replace(d.provider_track_id, %s, '', 'g') = "
+        "regexp_replace(t.provider_track_id, %s, '', 'g')))",
+        (klass, klass, klass, klass, klass, klass),
+    )
+    dropped = cur.rowcount
+    cur.execute(
+        "UPDATE track_server_map SET provider_track_id = "
+        "regexp_replace(provider_track_id, %s, '', 'g'), updated_at = now() "
+        "WHERE provider_track_id ~ %s",
+        (klass, klass),
+    )
+    rewritten = cur.rowcount
+    cur.execute(
+        "DELETE FROM artist_server_map WHERE artist_name ~ %s OR provider_artist_id ~ %s",
+        (klass, klass),
+    )
+    artist_rows = cur.rowcount
+    cur.execute("DELETE FROM chromaprint WHERE provider_track_id ~ %s", (klass,))
+    chroma_rows = cur.rowcount
+    if dropped or rewritten or artist_rows or chroma_rows:
+        logger.warning(
+            "Scrubbed control characters from legacy map rows: %d track map ids "
+            "rewritten, %d colliding/empty track rows dropped, %d artist rows and "
+            "%d chromaprint rows removed (they re-populate on the next sweep/analysis)",
+            rewritten, dropped, artist_rows, chroma_rows,
+        )
+    cur.execute(
+        "INSERT INTO app_config (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        (_MAP_ID_SCRUB_MARKER, 'done'),
+    )
 
 
 def _ensure_track_server_map_key(cur):
@@ -2484,6 +2520,22 @@ def delete_alchemy_radio(radio_id):
         return False
     finally:
         cur.close()
+
+
+def coerce_db_details(raw_details):
+    if isinstance(raw_details, dict):
+        return raw_details
+    if raw_details:
+        try:
+            return json.loads(raw_details)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def like_contains_pattern(value):
+    escaped = value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return '%' + escaped + '%'
 
 
 def save_map_projection(index_name, id_map, projection_array):

@@ -31,7 +31,6 @@ from error.error_dictionary import (
     ERR_MEDIASERVER_AUTH,
     ERR_DB_CONNECTION,
     ERR_DB_QUERY,
-    ERR_INDEX_EMPTY,
     ERR_MODEL_INFERENCE,
     get_error_class,
     get_default_message,
@@ -50,7 +49,6 @@ _AUTH_STATUS_CODES = (401, 403)
 # BrokenPipeError) from stealing a media-server or database code.
 _EXCEPTION_RULES = (
     ("LyrionAPIError", None, ERR_MEDIASERVER_UNREACHABLE),
-    ("EmptyIndexError", None, ERR_INDEX_EMPTY),
     ("OperationalError", ("psycopg2",), ERR_DB_CONNECTION),
     ("InterfaceError", ("psycopg2",), ERR_DB_CONNECTION),
     ("DatabaseError", ("psycopg2",), ERR_DB_QUERY),

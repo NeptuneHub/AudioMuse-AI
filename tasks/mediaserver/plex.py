@@ -293,8 +293,8 @@ def download_track(temp_dir, item):
                     f.write(chunk)
         logger.info(f"Downloaded '{item.get('Name', 'Unknown')}' to '{local_filename}'")
         return local_filename
-    except Exception:
-        logger.exception(f"Failed to download track {item.get('Name', 'Unknown')}")
+    except Exception as exc:
+        logger.warning(f"Failed to download track {item.get('Name', 'Unknown')}: {exc}")
         return None
 
 
@@ -560,9 +560,10 @@ def _create_playlist_batched(title, item_ids, user_creds=None):
 
 def create_playlist(base_name, item_ids):
     try:
-        _create_playlist_batched(base_name, list(item_ids))
+        return _create_playlist_batched(base_name, list(item_ids))
     except Exception:
         logger.exception("Exception creating Plex playlist '%s'", base_name)
+        return None
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):

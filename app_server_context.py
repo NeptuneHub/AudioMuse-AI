@@ -78,13 +78,6 @@ def resolve_request_server_id(data=None):
     return server['server_id']
 
 
-def is_default_server(server_id):
-    from tasks.mediaserver import registry
-    if not server_id:
-        return True
-    return server_id == registry.get_default_server_id()
-
-
 def selected_server_scope(data=None):
     """The request's effective server id plus whether legacy default-keyed rows
     count as present on it (i.e. the selection IS the default server).

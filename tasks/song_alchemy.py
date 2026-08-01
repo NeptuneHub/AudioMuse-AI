@@ -361,10 +361,6 @@ def _compute_centroid_from_points(points: List[dict]) -> np.ndarray:
     return np.sum(vectors_array * weights_array[:, np.newaxis], axis=0)
 
 
-def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
-    return _compute_centroid_from_points(_gather_anchor_points(items))
-
-
 def _select_query_points(points: List[dict], max_points: int) -> List[dict]:
     if len(points) <= max_points:
         return points

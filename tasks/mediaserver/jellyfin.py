@@ -302,8 +302,8 @@ def download_track(temp_dir, item):
                     f.write(chunk)
         logger.info(f"Downloaded '{item.get('Name', track_id)}' to '{local_filename}'")
         return local_filename
-    except Exception:
-        logger.exception(f"Failed to download track {item.get('Name', 'Unknown')}")
+    except Exception as exc:
+        logger.warning(f"Failed to download track {item.get('Name', 'Unknown')}: {exc}")
         return None
 
 
@@ -478,14 +478,7 @@ def get_playlist_by_name(playlist_name):
 
 
 def create_playlist(base_name, item_ids):
-    url = f"{_jellyfin_base_url()}/Playlists"
-    body = {"Name": base_name, "Ids": item_ids, "UserId": _jellyfin_user_id()}
-    try:
-        r = requests.post(url, headers=_jellyfin_headers_from_creds(), json=body, timeout=REQUESTS_TIMEOUT)
-        if r.ok:
-            logger.info("Created Jellyfin playlist '%s'", base_name)
-    except Exception:
-        logger.exception("Exception creating Jellyfin playlist '%s'", base_name)
+    return _create_fresh_playlist(base_name, item_ids)
 
 
 def get_all_playlists():
@@ -710,6 +703,7 @@ def _create_fresh_playlist(playlist_name, item_ids):
         logger.error(
             f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but failed to add overflow tracks"
         )
+        return None
 
     logger.info(
         f"Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks"

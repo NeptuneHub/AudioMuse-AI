@@ -549,8 +549,8 @@ def download_track(temp_dir, item):
                     f.write(chunk)
         logger.info(f"Downloaded '{item.get('Name', track_id)}' to '{local_filename}'")
         return local_filename
-    except Exception:
-        logger.exception(f"Failed to download track {item.get('Name', 'Unknown')}")
+    except Exception as exc:
+        logger.warning(f"Failed to download track {item.get('Name', 'Unknown')}: {exc}")
         return None
 
 
@@ -1038,6 +1038,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
             logger.error(
                 f"Emby create_or_replace_playlist: created '{playlist_name}' but failed to add overflow tracks"
             )
+            return None
 
         logger.info(
             f"OK Emby: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks"

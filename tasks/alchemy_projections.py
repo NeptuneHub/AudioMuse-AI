@@ -16,8 +16,6 @@ in a shared, stable coordinate frame across requests.
 Main Features:
 * _project_to_2d / _project_with_umap / _project_with_discriminant: alternative
   dimensionality reductions, with a plain SVD fallback when sklearn is absent.
-* _project_aligned_add_sub: projects added/subtracted anchors into an existing
-  basis so incremental map edits stay aligned with the saved projection.
 """
 
 import logging
@@ -67,58 +65,6 @@ def _project_to_2d(vectors: List[np.ndarray]) -> List[Tuple[float, float]]:
     if max_abs == 0:
         return [(0.0, 0.0)] * mat.shape[0]
     scaled = proj_centered / max_abs
-    scaled = np.clip(scaled, -1.0, 1.0)
-    return [(float(x), float(y)) for x, y in scaled]
-
-
-def _project_aligned_add_sub(
-    vectors: List[np.ndarray], add_centroid: np.ndarray, subtract_centroid: np.ndarray
-) -> List[Tuple[float, float]]:
-    if not vectors:
-        return []
-    mat = np.vstack(vectors)
-    rel = mat - add_centroid
-    axis = subtract_centroid - add_centroid
-    axis_norm = np.linalg.norm(axis)
-    if axis_norm == 0:
-        return _project_to_2d(vectors)
-    axis_u = axis / axis_norm
-
-    x_coords = rel.dot(axis_u)
-
-    proj_on_axis = np.outer(x_coords, axis_u)
-    residuals = rel - proj_on_axis
-
-    try:
-        _, _, vh = np.linalg.svd(residuals, full_matrices=False)
-        y_u = vh[0]
-    except Exception:
-        y_u = None
-
-    if y_u is None or np.linalg.norm(y_u) == 0:
-        idx = int(np.argmin(np.abs(axis_u)))
-        e = np.zeros_like(axis_u)
-        e[idx] = 1.0
-        y_u = e - np.dot(e, axis_u) * axis_u
-        norm_y = np.linalg.norm(y_u)
-        if norm_y == 0:
-            return _project_to_2d(vectors)
-        y_u = y_u / norm_y
-    else:
-        y_u = y_u - np.dot(y_u, axis_u) * axis_u
-        y_u_norm = np.linalg.norm(y_u)
-        if y_u_norm == 0:
-            return _project_to_2d(vectors)
-        y_u = y_u / y_u_norm
-
-    y_coords = residuals.dot(y_u)
-
-    coords = np.vstack([x_coords, y_coords]).T
-    coords_centered = coords - coords.mean(axis=0)
-    max_abs = np.max(np.abs(coords_centered))
-    if max_abs == 0:
-        return [(0.0, 0.0) for _ in vectors]
-    scaled = coords_centered / max_abs
     scaled = np.clip(scaled, -1.0, 1.0)
     return [(float(x), float(y)) for x, y in scaled]
 

@@ -31,7 +31,7 @@ import numpy as np
 import gzip
 
 from database import get_db
-from app_helper import load_map_projection
+from app_helper import load_map_projection, probe_catalogue_canonical_ids
 import app_server_context
 
 # Try to reuse the shared projection helpers
@@ -71,26 +71,19 @@ _HAS_CANONICAL_TTL = 60.0
 
 
 def _catalogue_has_canonical_ids():
-    """True when score holds canonical fp_ ids (memoized; fails closed on error)."""
+    """True when score holds canonical fp_ ids (memoized; fails closed on error,
+    remembering the failure for the TTL so a DB outage does not re-probe on
+    every request)."""
     global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
     if _HAS_CANONICAL_IDS:
         return True
     now = time.monotonic()
-    if _HAS_CANONICAL_IDS is False and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
-        return False
-    try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
-            )
-            result = bool(cur.fetchone()[0])
-    except Exception:
-        logger.exception("Canonical-id probe failed; failing closed")
-        return True
+    if _HAS_CANONICAL_CHECKED_AT and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
+        return _HAS_CANONICAL_IDS is not False
+    result = probe_catalogue_canonical_ids()
     _HAS_CANONICAL_IDS = result
     _HAS_CANONICAL_CHECKED_AT = now
-    return result
+    return result is not False
 
 
 def _pick_top_mood(mood_vector_str):

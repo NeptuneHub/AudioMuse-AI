@@ -167,6 +167,20 @@ def _current_provider_creds():
     return t, creds
 
 
+def _overrides_by_catalogue_id(by_provider_id):
+    if not by_provider_id:
+        return {}
+    from tasks.mediaserver import registry
+
+    canonical_of = registry.canonical_input_ids(list(by_provider_id.keys()))
+    overrides = {}
+    for provider_id in sorted(by_provider_id):
+        catalogue_id = canonical_of.get(provider_id, provider_id)
+        if catalogue_id not in overrides:
+            overrides[catalogue_id] = by_provider_id[provider_id]
+    return overrides
+
+
 def _apply_source_path_overrides(old_rows, overrides):
     """Patch ``old_rows[i]['file_path']`` from the overrides dict in place.
 
@@ -814,7 +828,9 @@ def run_source_refresh_core(session_id):
     tracks = provider_probe.fetch_all_tracks(source_type, creds)
 
     path_format = _detect_path_format(tracks)
-    overrides = {t['id']: t['path'] for t in tracks if t.get('id') and t.get('path')}
+    overrides = _overrides_by_catalogue_id(
+        {t['id']: t['path'] for t in tracks if t.get('id') and t.get('path')}
+    )
 
     warnings = []
     if path_format != 'absolute':

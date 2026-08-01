@@ -116,12 +116,17 @@ from database import (
 
 from sanitization import sanitize_for_json
 
-from .mediaserver import create_playlist, delete_automatic_playlists
+from .mediaserver import (
+    PlaylistIdTranslationError,
+    create_playlist,
+    delete_automatic_playlists,
+)
 from .mediaserver import registry
 from sklearn.neighbors import NearestNeighbors
 
 from .clustering_helper import (
     _get_stratified_song_subset,
+    _get_track_primary_genre,
     get_job_result_safely,
     _perform_single_clustering_iteration,
     _prepare_iteration_data,
@@ -1328,6 +1333,15 @@ def _cluster_one_server(
             item_ids = [item_id for item_id, _, _ in songs_with_details]
             try:
                 create_playlist(name, item_ids)
+            except PlaylistIdTranslationError:
+                logger.exception(
+                    "PLAYLIST CREATION ABORTED on server '%s': the id "
+                    "translation infrastructure failed while creating '%s'. "
+                    "This is NOT an availability skip; failing the task.",
+                    server_name,
+                    name,
+                )
+                raise
             except ValueError:
                 logger.warning(
                     "Playlist '%s' skipped on server '%s': none of its "
@@ -1348,17 +1362,7 @@ def _prepare_genre_map(lightweight_rows):
     genre_map = defaultdict(list)
     for row in lightweight_rows:
         if row.get('mood_vector'):
-            mood_scores = {
-                p.split(':')[0]: float(p.split(':')[1])
-                for p in row['mood_vector'].split(',')
-                if ':' in p
-            }
-            top_genre = max(
-                (g for g in STRATIFIED_GENRES if g in mood_scores),
-                key=mood_scores.get,
-                default='__other__',
-            )
-            genre_map[top_genre].append(
+            genre_map[_get_track_primary_genre(row)].append(
                 {'item_id': row['item_id'], 'mood_vector': row['mood_vector']}
             )
     return genre_map

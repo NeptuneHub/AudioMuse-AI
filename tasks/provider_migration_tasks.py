@@ -21,12 +21,29 @@ Main Features:
 * Under an advisory lock, repoints the default server's mappings, refreshes song
   metadata from the new provider, clears the old provider's artist ids, and points
   the music_servers default row at the target.
+* Chromaprint fingerprints are CARRIED onto the target's track ids in the same
+  transaction instead of being left behind keyed by dead ids. A provider swap does
+  not touch the audio, so a same-provider re-id (a Navidrome id rotation) keeps
+  every fingerprint it already computed rather than re-downloading the library.
+* The 'analysis' match tier survives the repoint: it is the only record that a
+  catalogue row has no usable signature and can never be relabelled, and dropping
+  it makes the next boot re-hash the whole catalogue for nothing.
+* Queues a full-refresh alignment of the migrated server, whose task row is
+  written INSIDE the migration transaction so the intent survives a crash between
+  the commit and the enqueue. That sweep rebuilds the artist ids the swap had to
+  clear and refreshes the file paths the target may not have reported.
+* SUCCESS is recorded before the worker restart is published, and a retry of an
+  ALREADY APPLIED session reports SUCCESS instead of failing its dry_run_ready
+  gate: that restart can kill this very job, RQ requeues it under the same task
+  id, and the retry used to report FAILURE over a migration that had committed.
 * Reads target metadata from the migration_target_meta side table and builds
   the old->new id mapping via indexed per-album queries; reloads state after commit.
 """
 
 import json
 import logging
+import time
+import uuid
 
 from rq import get_current_job
 
@@ -44,29 +61,13 @@ _ADVISORY_LOCK_KEY = 7421536190082003
 
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 
+# The restart request is a Redis publish, so the only way it fails is a Redis
+# blip - the same blip that would have failed the alignment enqueue. A few bounded
+# retries ride that out; a persistent outage falls through to the loud log, since
+# nothing this job can do will reach a Redis that is down.
+_RESTART_PUBLISH_ATTEMPTS = 3
 
-def rewrite_id_map_json(id_map_json, mapping):
-    if not id_map_json:
-        return id_map_json
-    try:
-        m = json.loads(id_map_json)
-    except Exception:
-        logger.warning("Could not parse id_map_json, leaving it unchanged")
-        return id_map_json
-    if isinstance(m, dict):
-        rewritten = {}
-        for k, v in m.items():
-            if v in mapping:
-                rewritten[k] = mapping[v]
-        return json.dumps(rewritten)
-    if isinstance(m, list):
-        rewritten = [mapping[v] if v in mapping else None for v in m]
-        return json.dumps(rewritten)
-    logger.warning(
-        "id_map_json has unexpected top-level type %s, leaving it unchanged",
-        type(m).__name__,
-    )
-    return id_map_json
+_RESTART_PUBLISH_RETRY_SECONDS = 2
 
 
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
@@ -211,6 +212,35 @@ def execute_provider_migration(session_id):
         target_creds = session['target_creds']
         state = session['state']
 
+        # A retry of an ALREADY APPLIED migration is a success, not a failure. The
+        # restart this job publishes can kill the job itself, and RQ then requeues
+        # it under the SAME task id: raising here made that retry overwrite the
+        # SUCCESS row with FAILURE for a migration that had fully committed.
+        if session['status'] == 'completed':
+            summary = {
+                'ok': True,
+                'matched': 0,
+                'index_rebuild_needed': False,
+                'already_applied': True,
+            }
+            logger.warning(
+                "provider migration: session %s is already applied; this run is a "
+                "retry of a job that committed before it could report. Reporting "
+                "SUCCESS and re-running the post-commit reload.",
+                session_id,
+            )
+            _report_migration(
+                task_id, TASK_STATUS_SUCCESS, 100,
+                "Provider migration already applied; nothing left to do.",
+                details=summary,
+            )
+            # The first run may have died of something OTHER than its own restart
+            # (an OOM kill, an evicted pod) and never reached these at all. They
+            # are all idempotent, and skipping them would leave every worker on the
+            # old provider's settings with nothing left to signal otherwise.
+            _post_commit_reload(redis)
+            return summary
+
         if session['status'] != 'dry_run_ready':
             raise RuntimeError(
                 f"Cannot execute migration: session {session_id} is in status "
@@ -225,6 +255,7 @@ def execute_provider_migration(session_id):
             "the catalogue itself is not touched", len(mapping),
         )
 
+        alignment_task_id = str(uuid.uuid4())
         try:
             index_rebuild_needed = _run_migration_transaction(
                 cur=cur,
@@ -234,6 +265,7 @@ def execute_provider_migration(session_id):
                 target_creds=target_creds,
                 session_id=session_id,
                 selected_libraries=selected_libraries,
+                alignment_task_id=alignment_task_id,
             )
             conn.commit()
         except Exception:
@@ -243,18 +275,20 @@ def execute_provider_migration(session_id):
                 pass
             raise
 
-        _post_commit_reload(redis)
-
         summary = {
             'ok': True,
             'matched': len(mapping),
             'index_rebuild_needed': bool(index_rebuild_needed),
         }
+        # Recorded BEFORE the restart is published: that restart can kill this very
+        # job, and a migration that already committed would then come back as a
+        # retry, fail the dry_run_ready gate, and report FAILURE over a success.
         _report_migration(
             task_id, TASK_STATUS_SUCCESS, 100,
             f"Provider migration complete: {len(mapping)} tracks repointed.",
             details=summary,
         )
+        _post_commit_reload(redis, alignment_task_id)
         return summary
     except Exception:
         logger.exception("Provider migration failed for session %s", session_id)
@@ -378,12 +412,87 @@ def _populate_migration_map_table(cur, mapping):
     for i in range(0, len(_rows), 1000):
         chunk = _rows[i : i + 1000]
         placeholders = ",".join(["(%s,%s)"] * len(chunk))
-        flat = [v for pair in chunk for v in pair]
+        flat = []
+        for old_id, new_id in chunk:
+            flat.append(old_id)
+            flat.append(_sanitize_text(new_id) if isinstance(new_id, str) else new_id)
         cur.execute(
             "INSERT INTO item_id_migration_map (old_id, new_id) VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
             flat,
         )
     cur.execute("ANALYZE item_id_migration_map")
+
+
+def _stage_unsignable_items(cur):
+    cur.execute(
+        "CREATE TEMP TABLE migration_unsignable_items ("
+        " item_id TEXT PRIMARY KEY"
+        ") ON COMMIT DROP"
+    )
+    cur.execute(
+        "INSERT INTO migration_unsignable_items (item_id) "
+        "SELECT DISTINCT t.item_id FROM track_server_map t, music_servers s "
+        "WHERE s.is_default AND t.server_id = s.server_id "
+        "AND t.match_tier = 'analysis'"
+    )
+    return cur.rowcount
+
+
+def _stage_chromaprint_carry(cur):
+    cur.execute("SELECT to_regclass('public.chromaprint')")
+    if cur.fetchone()[0] is None:
+        return False
+    cur.execute(
+        "CREATE TEMP TABLE migration_chromaprint_carry ("
+        " provider_track_id TEXT PRIMARY KEY, "
+        " new_id TEXT NOT NULL UNIQUE"
+        ") ON COMMIT DROP"
+    )
+    cur.execute(
+        "INSERT INTO migration_chromaprint_carry (provider_track_id, new_id) "
+        "SELECT DISTINCT ON (m.new_id) c.provider_track_id, m.new_id "
+        "FROM chromaprint c "
+        "JOIN music_servers s ON s.is_default AND c.server_id = s.server_id "
+        "JOIN track_server_map t "
+        "  ON t.server_id = c.server_id AND t.provider_track_id = c.provider_track_id "
+        "JOIN item_id_migration_map m ON m.old_id = t.item_id "
+        "ORDER BY m.new_id, (c.fingerprint IS NULL), c.provider_track_id"
+    )
+    return True
+
+
+def _repoint_chromaprint(cur, staged):
+    if not staged:
+        return
+    cur.execute(
+        "DELETE FROM chromaprint c USING music_servers s "
+        "WHERE s.is_default AND c.server_id = s.server_id "
+        "AND NOT EXISTS (SELECT 1 FROM migration_chromaprint_carry k "
+        "WHERE k.provider_track_id = c.provider_track_id)"
+    )
+    dropped = cur.rowcount
+    cur.execute(
+        "UPDATE chromaprint c SET provider_track_id = %s || k.new_id, updated_at = now() "
+        "FROM migration_chromaprint_carry k, music_servers s "
+        "WHERE s.is_default AND c.server_id = s.server_id "
+        "AND c.provider_track_id = k.provider_track_id",
+        (_MIG_TMP_PREFIX,),
+    )
+    carried = cur.rowcount
+    cur.execute(
+        "UPDATE chromaprint c "
+        "SET provider_track_id = substr(c.provider_track_id, %s) "
+        "FROM music_servers s "
+        "WHERE s.is_default AND c.server_id = s.server_id "
+        "AND c.provider_track_id LIKE %s",
+        (len(_MIG_TMP_PREFIX) + 1, _MIG_TMP_PREFIX + '%'),
+    )
+    if carried or dropped:
+        logger.info(
+            "provider migration: carried %d Chromaprint fingerprint(s) onto the new "
+            "provider ids, dropped %d that no longer map to anything",
+            carried, dropped,
+        )
 
 
 def _apply_new_meta(cur, new_meta):
@@ -466,6 +575,49 @@ def _clear_default_server_artist_map(cur):
             )
 
 
+def _stage_post_migration_alignment(cur, task_id):
+    if not task_id:
+        return
+    cur.execute("SELECT to_regclass('public.task_status')")
+    if cur.fetchone()[0] is None:
+        return
+    from tasks.multiserver_sync import insert_pending_sweep_row
+
+    insert_pending_sweep_row(
+        cur, task_id,
+        'Aligning the migrated server: rebuilding artist ids and file paths.',
+    )
+
+
+def _report_playlists_bound_to_default_server(cur):
+    cur.execute("SELECT to_regclass('public.playlist')")
+    if cur.fetchone()[0] is None:
+        return
+    cur.execute("SAVEPOINT mig_playlist_report")
+    try:
+        cur.execute(
+            "SELECT count(DISTINCT p.playlist_name) FROM playlist p, music_servers s "
+            "WHERE s.is_default AND p.server_id = s.server_id"
+        )
+        row = cur.fetchone()
+        cur.execute("RELEASE SAVEPOINT mig_playlist_report")
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT mig_playlist_report")
+        logger.exception(
+            "provider migration: could not count the stored playlists (reporting only)"
+        )
+        return
+    stored = row[0] if row else 0
+    if stored:
+        logger.warning(
+            "provider migration: %d stored playlist(s) are still recorded against the "
+            "migrated server. Their songs survived and re-translate to the new provider "
+            "ids, but the playlists themselves live on the OLD provider: re-run "
+            "clustering to create them on the target.",
+            stored,
+        )
+
+
 def _run_migration_transaction(
     cur,
     mapping,
@@ -474,6 +626,7 @@ def _run_migration_transaction(
     target_creds,
     session_id,
     selected_libraries=None,
+    alignment_task_id=None,
 ):
     """Repoint the DEFAULT server's mappings at a new provider. Nothing else.
 
@@ -502,6 +655,8 @@ def _run_migration_transaction(
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
 
     _populate_migration_map_table(cur, mapping)
+    _stage_unsignable_items(cur)
+    chromaprint_staged = _stage_chromaprint_carry(cur)
 
     # Unbind what the target does not have. The catalogue row stays.
     cur.execute(
@@ -532,7 +687,9 @@ def _run_migration_transaction(
     # unprefixed row survives to collide with them.
     cur.execute(
         "UPDATE track_server_map t SET provider_track_id = %s || m.new_id, "
-        "match_tier = 'default', updated_at = now() "
+        "match_tier = CASE WHEN EXISTS (SELECT 1 FROM migration_unsignable_items u "
+        "  WHERE u.item_id = t.item_id) THEN 'analysis' ELSE 'default' END, "
+        "updated_at = now() "
         "FROM item_id_migration_map m, music_servers s "
         "WHERE s.is_default AND t.server_id = s.server_id AND t.item_id = m.old_id",
         (_MIG_TMP_PREFIX,),
@@ -546,13 +703,16 @@ def _run_migration_transaction(
         (len(_MIG_TMP_PREFIX) + 1, _MIG_TMP_PREFIX + '%'),
     )
 
+    _repoint_chromaprint(cur, chromaprint_staged)
     _apply_new_meta(cur, new_meta)
     _clear_default_server_artist_map(cur)
+    _report_playlists_bound_to_default_server(cur)
 
     _write_provider_to_default_server(
         cur, target_type, target_creds, selected_libraries=selected_libraries
     )
     _purge_media_keys_from_app_config(cur)
+    _stage_post_migration_alignment(cur, alignment_task_id)
 
     cur.execute(
         "UPDATE migration_session SET status = 'completed', completed_at = NOW() WHERE id = %s",
@@ -564,8 +724,8 @@ def _run_migration_transaction(
 
 
 def _cleaned_libraries_value(selected_libraries):
-    cleaned = [str(name).strip() for name in (selected_libraries or []) if str(name).strip()]
-    cleaned = [name for name in cleaned if ',' not in name]
+    cleaned = [_sanitize_text(str(name)).strip() for name in (selected_libraries or [])]
+    cleaned = [name for name in cleaned if name and ',' not in name]
     return ','.join(cleaned)
 
 
@@ -630,7 +790,7 @@ def _purge_media_keys_from_app_config(cur):
         )
 
 
-def _post_commit_reload(redis):
+def _post_commit_reload(redis, alignment_task_id=None):
     try:
         from tasks.mediaserver import registry
 
@@ -643,12 +803,67 @@ def _post_commit_reload(redis):
         config.refresh_config()
     except Exception as e:
         logger.warning("config.refresh_config() failed: %s", e)
-    try:
-        import restart_manager
+    _enqueue_post_migration_alignment(alignment_task_id)
+    _publish_restart_with_retries()
 
-        restart_manager.publish_restart_request()
-    except Exception as e:
-        logger.warning("restart_manager.publish_restart_request() failed: %s", e)
+
+def _publish_restart_with_retries():
+    for attempt in range(1, _RESTART_PUBLISH_ATTEMPTS + 1):
+        try:
+            import restart_manager
+
+            if restart_manager.publish_restart_request() is not False:
+                return True
+        except Exception as e:
+            logger.warning("restart_manager.publish_restart_request() failed: %s", e)
+        if attempt < _RESTART_PUBLISH_ATTEMPTS:
+            logger.warning(
+                "provider migration: restart request not delivered (attempt %d of "
+                "%d); retrying in %ss",
+                attempt, _RESTART_PUBLISH_ATTEMPTS, _RESTART_PUBLISH_RETRY_SECONDS,
+            )
+            time.sleep(_RESTART_PUBLISH_RETRY_SECONDS)
+    logger.error(
+        "PROVIDER MIGRATION: THE WORKER RESTART REQUEST WAS NOT DELIVERED after %d "
+        "attempts. The catalogue is migrated and the registry points at the new "
+        "provider, but running workers keep the OLD provider's settings until they "
+        "restart. RESTART AUDIOMUSE MANUALLY to finish the swap.",
+        _RESTART_PUBLISH_ATTEMPTS,
+    )
+    return False
+
+
+def _enqueue_post_migration_alignment(alignment_task_id=None):
+    if not alignment_task_id:
+        logger.info(
+            "provider migration: this run has no alignment id of its own (a retry of "
+            "an already applied session); the alignment row its first run committed "
+            "is left to the janitor rather than queueing a second one"
+        )
+        return
+    try:
+        from tasks import multiserver_sync
+
+        task_id = multiserver_sync.enqueue_server_alignment(
+            message='Aligning the migrated server: rebuilding artist ids and file paths.',
+            task_id=alignment_task_id,
+        )
+        if task_id:
+            logger.info(
+                "provider migration: queued alignment %s of the migrated server; it "
+                "rebuilds the artist ids the swap cleared and refreshes the file paths",
+                task_id,
+            )
+        else:
+            logger.warning(
+                "provider migration: no alignment was queued; run 'Align' from the "
+                "music servers page so artist ids are rebuilt for the new provider"
+            )
+    except Exception:
+        logger.exception(
+            "provider migration: could not queue the post-migration alignment; run "
+            "'Align' from the music servers page to rebuild the artist ids"
+        )
 
 
 def dry_run_provider_migration(session_id, allow_title_artist_only=False):

@@ -218,7 +218,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.1.0"
+APP_VERSION = "v3.1.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -806,6 +806,10 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 # --- Energy Normalization Range ---
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
 ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
+
+# --- Mood/Feature Score Matching ---
+# A 0-1 mood/other-feature score at or above this counts as the tag applying.
+MOOD_SCORE_MATCH_THRESHOLD = float(os.environ.get("MOOD_SCORE_MATCH_THRESHOLD", "0.5"))
 
 # --- Plugin System ---
 # Master switch for the plugin subsystem (discovery, loading, admin UI).

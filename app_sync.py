@@ -31,7 +31,7 @@ from flasgger import swag_from
 
 import config
 from database import get_db
-from app_helper import load_map_projection
+from app_helper import load_map_projection, probe_catalogue_canonical_ids
 from error import error_manager
 from error.error_dictionary import ERR_DB_QUERY
 
@@ -229,16 +229,8 @@ def _server_ids_for_rows(rows, server_id):
 
 
 def _catalogue_has_canonical_ids():
-    try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
-            )
-            return bool(cur.fetchone()[0])
-    except Exception:
-        logger.exception("Canonical-id probe failed; failing closed")
-        return True
+    result = probe_catalogue_canonical_ids()
+    return True if result is None else result
 
 
 def _availability_sql(alias='s'):

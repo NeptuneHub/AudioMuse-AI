@@ -17,10 +17,10 @@ Main Features:
 * Log-mel spectrogram front end, forced-language-token detection, and greedy or
   beam decoding with repetition-penalty, no-repeat-ngram and suppress-token
   logit shaping to curb hallucinated loops.
-* Rejects likely-garbage output via a zlib compression-ratio threshold and a
-  no-speech probability check, returning avg_logprob for upstream gating.
+* Rejects likely-garbage output via a zlib compression-ratio threshold,
+  returning avg_logprob for upstream gating.
 * Lazy thread-safe session load with a minimum-free-RAM guard (raises
-  WhisperLoadRefused) plus unload / reset_session hooks for memory reclaim.
+  WhisperLoadRefused) plus an unload hook for memory reclaim.
 """
 
 from __future__ import annotations
@@ -77,10 +77,8 @@ WHISPER_FRAMES_PER_CHUNK = WHISPER_CHUNK_SAMPLES // HOP_LENGTH
 
 SOT_TOKEN_ID = 50258
 EOT_TOKEN_ID = 50257
-TRANSLATE_TOKEN_ID = 50358
 TRANSCRIBE_TOKEN_ID = 50359
 NO_TIMESTAMPS_TOKEN_ID = 50363
-NO_SPEECH_TOKEN_ID = 50362
 LANGUAGE_TOKEN_START = 50259
 LANGUAGE_TOKEN_END = 50358
 
@@ -827,7 +825,3 @@ def unload() -> bool:
             logger.exception("Error during ONNX memory pool reset on Whisper unload")
     logger.info("Whisper-small: pipeline unloaded (~1.5 GB freed)")
     return True
-
-
-def reset_session() -> None:
-    unload()
