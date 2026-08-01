@@ -31,7 +31,7 @@ TASK_STATUS_FAILURE = 'FAILURE'
 TASK_STATUS_REVOKED = 'REVOKED'
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex, k7
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -44,6 +44,11 @@ JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "")  # Replace with a suitable
 EMBY_URL = os.environ.get("EMBY_URL", "") # Replace with your default URL
 EMBY_USER_ID = os.environ.get("EMBY_USER_ID", "")  # Replace with a suitable default or handle missing case
 EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "")  # Replace with a suitable default or handle missing case
+
+# --- K7 Constants ---
+# These are used only if MEDIASERVER_TYPE is "k7".
+K7_URL = os.environ.get("K7_URL", "")
+K7_API_KEY = os.environ.get("K7_API_KEY", "")
 
 
 # NEW: Allow specifying music libraries/folders for analysis across all media servers.
@@ -80,6 +85,8 @@ def _compute_headers():
         return jellyfin_auth_header(JELLYFIN_TOKEN)
     if MEDIASERVER_TYPE == "emby":
         return {"X-Emby-Token": EMBY_TOKEN}
+    if MEDIASERVER_TYPE == "k7":
+        return {"X-Api-Key": K7_API_KEY}
     return {}
 
 HEADERS = _compute_headers()
@@ -105,6 +112,7 @@ MEDIASERVER_FIELDS_BY_TYPE = {
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
     'plex': ['PLEX_URL', 'PLEX_TOKEN'],
+    'k7': ['K7_URL', 'K7_API_KEY'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
@@ -128,6 +136,7 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
     'NAVIDROME_URL': 'url', 'NAVIDROME_USER': 'user', 'NAVIDROME_PASSWORD': 'password',
     'LYRION_URL': 'url',
     'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
+    'K7_URL': 'url', 'K7_API_KEY': 'api_key',
 }
 
 # The ONLY persistent home of these settings is the music_servers registry

@@ -181,7 +181,7 @@
     <form id="setup-form" autocomplete="off">
         <section class="section" id="music-servers-section">
                 <h2>Music Servers</h2>
-                <p class="subtitle" style="margin-top:0.75rem;">Connect one or more media servers (Jellyfin, Emby, Navidrome, Lyrion, Plex, even several of the same type). Analysis covers every configured server: the default server runs first, then each remaining server in turn. Songs shared by several servers are recognized by their audio fingerprint and analyzed only once, and songs that exist on just one server are analyzed too, so the catalogue is the union of all your libraries. Alignment sweeps map the shared content across servers as analysis progresses. Use the server switcher at the bottom of the menu to pick which server the interface works against: playlists and searches then target that server, and tracks it does not have are skipped.</p>
+                <p class="subtitle" style="margin-top:0.75rem;">Connect one or more media servers (Jellyfin, Emby, Navidrome, Lyrion, Plex, K7, even several of the same type). Analysis covers every configured server: the default server runs first, then each remaining server in turn. Songs shared by several servers are recognized by their audio fingerprint and analyzed only once, and songs that exist on just one server are analyzed too, so the catalogue is the union of all your libraries. Alignment sweeps map the shared content across servers as analysis progresses. Use the server switcher at the bottom of the menu to pick which server the interface works against: playlists and searches then target that server, and tracks it does not have are skipped.</p>
                 <div id="music-servers-panel" style="max-width:100%;">
                     <div style="overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch;">
                     <table id="music-servers-table" style="width:100%; border-collapse:collapse; min-width:480px;">
@@ -226,6 +226,7 @@
                             <option value="navidrome">Navidrome / Subsonic</option>
                             <option value="lyrion">Lyrion (LMS)</option>
                             <option value="plex">Plex</option>
+                            <option value="k7">K7</option>
                         </select>
                         <div id="ms-cred-fields" style="display:flex; flex-direction:column; gap:0.5rem;"></div>
                         <input type="hidden" id="ms-libraries" value="">
@@ -246,7 +247,7 @@
                         Media server type
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL, Plex uses URL + API token.</span>
+                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL, Plex uses URL + API token, K7 uses URL + API key.</span>
                         </span>
                     </label>
                     <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
@@ -255,6 +256,7 @@
                         <option value="lyrion">Lyrion</option>
                         <option value="emby">Emby</option>
                         <option value="plex">Plex</option>
+                        <option value="k7">K7</option>
                     </select>
                 </div>
                 <div id="server-config-fields"></div>

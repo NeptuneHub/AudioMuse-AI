@@ -1,6 +1,6 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Navidrome 0.62.0, Jellyfin 12.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80, Plex 1.43.2](https://img.shields.io/badge/Media%20Server-Navidrome%200.62.0%2C%20Jellyfin%2012.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80%2C%20Plex%201.43.2-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Navidrome 0.62.0, Jellyfin 12.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80, Plex 1.43.2, K7 1.0.0](https://img.shields.io/badge/Media%20Server-Navidrome%200.62.0%2C%20Jellyfin%2012.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80%2C%20Plex%201.43.2%2C%20K7%201.0.0-blue?style=flat-square&logo=server&logoColor=white)
 <a href="https://www.bestpractices.dev/projects/13329"><img src="https://www.bestpractices.dev/projects/13329/badge"></a>
 
 <p align="center">
@@ -19,12 +19,12 @@
 
 AudioMuse-AI is an opensource and self-hosted tool that uses sonic analysis to rediscover forgotten songs in your music library and generate groove-aware playlists that also capture the meaning behind each track, without relying on metadata or external APIs.
 
-You can run it locally with Docker Compose or Podman, deploy it at scale in a Kubernetes cluster (**AMD64** and **ARM64** supported), or use native applications available for **macOS, Windows, and Linux**. It integrates with major self-hosted music servers including [Navidrome](https://www.navidrome.org/), [Jellyfin](https://jellyfin.org), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), [Emby](https://emby.media), and [Plex](https://www.plex.tv/), with more integrations planned.
+You can run it locally with Docker Compose or Podman, deploy it at scale in a Kubernetes cluster (**AMD64** and **ARM64** supported), or use native applications available for **macOS, Windows, and Linux**. It integrates with major self-hosted music servers including [Navidrome](https://www.navidrome.org/), [Jellyfin](https://jellyfin.org), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), [Emby](https://emby.media), [Plex](https://www.plex.tv/), and K7, with more integrations planned.
 
 > **Prefer not to self-host?** [Elestio](https://elest.io/open-source/audiomuse-ai) offers AudioMuse-AI as a managed cloud service, and their [YouTube video](https://www.youtube.com/watch?v=Ow89q6gQ1mM) is a good introduction to the project and its features.
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
-* **Multiple Music Servers** (from `v3.0.0`): connect several media servers - any mix of Navidrome, Jellyfin, LMS, Lyrion, Emby and Plex - to a **single AudioMuse-AI deployment**. Built-in duplicate detection recognizes the same song across servers, so each track is **analyzed only once** and every server shares the result.
+* **Multiple Music Servers** (from `v3.0.0`): connect several media servers - any mix of Navidrome, Jellyfin, LMS, Lyrion, Emby, Plex and K7 - to a **single AudioMuse-AI deployment**. Built-in duplicate detection recognizes the same song across servers, so each track is **analyzed only once** and every server shares the result.
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
 * **Instant Playlists**: Simply tell the AI what you want to hear-like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
 * **Music Map**: Discover your music collection visually with a vibrant, genre-based 2D map.
@@ -84,7 +84,7 @@ From `v1.0.0`, only PostgreSQL, Redis and `TZ` are configured via environment va
 
 **Prerequisites:**
 * Docker and Docker Compose installed
-* A running media server (Navidrome, Jellyfin, Lyrion, Emby, or Plex)
+* A running media server (Navidrome, Jellyfin, Lyrion, Emby, Plex, or K7)
 * See [Hardware Requirements](#hardware-requirements)
 
 **Steps:**

@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 music_servers_bp = Blueprint('music_servers_bp', __name__)
 
-_SUPPORTED_TYPES = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex')
+_SUPPORTED_TYPES = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex', 'k7')
 
 
 def _setup_in_progress():

@@ -26,7 +26,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | Parameter            | Description                                                             | Default Value                     |
 |----------------------|-------------------------------------------------------------------------|-----------------------------------|
 | **Mediaserver General**                        |                                                                 |                 |
-| `MEDIASERVER_TYPE`   | (Required) Which media server to use: `jellyfin`, `navidrome`, `emby`, `lyrion` or `plex`. | `jellyfin` |
+| `MEDIASERVER_TYPE`   | (Required) Which media server to use: `jellyfin`, `navidrome`, `emby`, `lyrion`, `plex` or `k7`. | `jellyfin` |
 | `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_NAVIDROME_IP:4533`   |
 | `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
 | `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
@@ -39,6 +39,8 @@ The **mandatory** parameter that you need to change from the example are this:
 | `LYRION_URL`         | (Required) Your Lyrion server's full URL                                | `http://YOUR_LYRION_IP:9000`      |
 | `PLEX_URL`           | (Required) Your Plex Media Server's full URL                            | `http://YOUR_PLEX_IP:32400`       |
 | `PLEX_TOKEN`         | (Required) Plex API token (X-Plex-Token).                               | *(N/A - from Secret)* |
+| `K7_URL`             | (Required) Your K7 server's full URL                                    | `http://YOUR_K7_IP:7080`          |
+| `K7_API_KEY`         | (Required) K7 API key (X-Api-Key).                                      | *(N/A - from Secret)* |
 | `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* |
 | `POSTGRES_PASSWORD`  | (Required) PostgreSQL password.                                         | *(N/A - from Secret)* |
 | `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |

@@ -82,7 +82,7 @@ provider_probe = _LazyProbe()
 # Supported target providers (what the tool knows how to talk to)
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex'})
+_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex', 'k7'})
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +181,11 @@ def _current_provider_creds():
             'url': getattr(cfg, 'PLEX_URL', ''),
             'token': getattr(cfg, 'PLEX_TOKEN', ''),
         }
+    if t == 'k7':
+        return t, {
+            'url': getattr(cfg, 'K7_URL', ''),
+            'api_key': getattr(cfg, 'K7_API_KEY', ''),
+        }
     return None, {}
 
 
@@ -225,7 +230,7 @@ def provider_migration_page():
     ---
     tags:
       - Provider Migration
-    summary: HTML wizard for migrating analysis state between media-server providers (Jellyfin/Emby/Navidrome/Lyrion).
+    summary: HTML wizard for migrating analysis state between media-server providers (Jellyfin/Emby/Navidrome/Lyrion/Plex/K7).
     description: Resumes any in-flight session so a page refresh lands on the right step.
     responses:
       200:
@@ -284,7 +289,7 @@ def session_start():
             properties:
               target_type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion, plex]
+                enum: [jellyfin, emby, navidrome, lyrion, plex, k7]
               target_creds:
                 type: object
                 additionalProperties: true
@@ -498,7 +503,7 @@ def probe_test():
             properties:
               type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion, plex]
+                enum: [jellyfin, emby, navidrome, lyrion, plex, k7]
               creds:
                 type: object
                 additionalProperties: true

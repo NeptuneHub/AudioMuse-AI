@@ -28,7 +28,7 @@ Find answers to common questions about setting up, configuring, and deploying Au
 
 > Yes, in two different ways.
 >
-> **Several libraries inside one server.** Each server has a library filter. It is a comma-separated list of libraries or folders to analyze; if it is empty, everything is scanned. For Lyrion use folder paths like "/music/myfolder". For Navidrome, Jellyfin, Emby and Plex use the library or folder names.
+> **Several libraries inside one server.** Each server has a library filter. It is a comma-separated list of libraries or folders to analyze; if it is empty, everything is scanned. For Lyrion use folder paths like "/music/myfolder". For Navidrome, Jellyfin, Emby, Plex and K7 use the library or folder names.
 >
 > **Several servers at the same time.** A single AudioMuse-AI instance can be connected to several media servers at once, including several servers of the same type, for example one Navidrome plus two Jellyfins plus a Plex. Add them under Setup > Music Servers. The same song present on two servers is analyzed only once and mapped to both. See [MULTI_SERVER](MULTI_SERVER.md) for the full model.
 

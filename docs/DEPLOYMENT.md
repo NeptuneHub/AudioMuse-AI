@@ -20,7 +20,7 @@ The easiest way to install AudioMuse-AI on K3S is with the [AudioMuse-AI Helm Ch
   * A running K3S cluster
   * `kubectl` configured for your cluster
   * `helm` installed
-  * A media server already installed: Navidrome, Jellyfin, Emby, Lyrion or Plex
+  * A media server already installed: Navidrome, Jellyfin, Emby, Lyrion, Plex or K7
   * See the hardware requirements in the documentation
 
 Use the Helm chart for the simplest, most production-ready K3S deploy.
@@ -32,7 +32,7 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
 * **Prerequisites:**
   * A running K3S cluster
   * `kubectl` configured for your cluster
-  * A media server already installed: Navidrome, Jellyfin, Emby, Lyrion or Plex
+  * A media server already installed: Navidrome, Jellyfin, Emby, Lyrion, Plex or K7
   * See the hardware requirements in the documentation
 
 * **Get manifest example:**
@@ -67,7 +67,7 @@ Both files start the whole stack: Flask, one worker, Redis and PostgreSQL.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
-* A media server already installed: Navidrome, Jellyfin, Emby, Lyrion or Plex
+* A media server already installed: Navidrome, Jellyfin, Emby, Lyrion, Plex or K7
 * See the [hardware requirements](../README.md#hardware-requirements)
 
 **Steps:**

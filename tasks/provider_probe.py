@@ -13,7 +13,7 @@ provider-migration flow and by the multi-server sweep to test connectivity,
 enumerate libraries, and pull whole catalogues.
 
 Main Features:
-* Supports jellyfin, emby, navidrome, lyrion, and plex, rejecting any other
+* Supports jellyfin, emby, navidrome, lyrion, plex, and k7, rejecting any other
   provider type early.
 * Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, Subsonic
   camelCase, and lower-case variants) into one flat track dict, coercing the
@@ -87,7 +87,7 @@ def _normalize_track(item):
     }
 
 
-_SUPPORTED_PROVIDERS = {'jellyfin', 'emby', 'navidrome', 'lyrion', 'plex'}
+_SUPPORTED_PROVIDERS = {'jellyfin', 'emby', 'navidrome', 'lyrion', 'plex', 'k7'}
 
 
 def _normalize_provider_type(provider_type):

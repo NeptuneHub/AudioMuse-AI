@@ -31,6 +31,8 @@
 - [ ] Jellyfin
 - [ ] Emby
 - [ ] Lyrion
+- [ ] Plex
+- [ ] K7
 
 **Updated:**
 - [ ] Documentation

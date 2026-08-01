@@ -32,6 +32,10 @@
         plex: [
             { key: 'url', label: 'Server URL', placeholder: 'http://plex:32400' },
             { key: 'token', label: 'Plex Token', secret: true }
+        ],
+        k7: [
+            { key: 'url', label: 'Server URL', placeholder: 'http://k7:7080' },
+            { key: 'api_key', label: 'API Key', secret: true }
         ]
     };
 

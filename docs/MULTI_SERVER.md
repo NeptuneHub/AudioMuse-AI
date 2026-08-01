@@ -1,7 +1,7 @@
 # Multiple Music Servers
 
 AudioMuse-AI can talk to several media servers at once - for example a Navidrome
-plus two Jellyfins plus a Plex, in any combination, including several instances
+plus two Jellyfins plus a Plex or K7, in any combination, including several instances
 of the same type. This is fully backward compatible: an install that only ever
 configures one server behaves exactly as it always has.
 
