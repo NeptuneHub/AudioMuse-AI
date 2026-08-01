@@ -129,9 +129,9 @@ database and edited in the Setup Wizard.
 Core infrastructure (environment only):
 
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`,
-  `POSTGRES_DB`: the parts used to build the connection string when
-  `DATABASE_URL` is not given directly.
-- `DATABASE_URL`: full PostgreSQL connection string.
+  `POSTGRES_DB`: the five parts a deployment sets. `config.py` assembles them
+  into the PostgreSQL connection string used by the whole application, so
+  `DATABASE_URL` is derived, internal, and must not be set by hand.
 - `REDIS_URL`: Redis connection string used by RQ and by the pub/sub channel.
 - `TZ`: the timezone used for logs and for cron evaluation.
 
@@ -331,7 +331,8 @@ exception: a database outage is re-raised so the whole album is retried.
 
 **Core**
 
-- `DATABASE_URL` (or the `POSTGRES_*` parts), `REDIS_URL`: required.
+- The `POSTGRES_*` parts and `REDIS_URL`: required. The PostgreSQL connection
+  string is built from those parts by `config.py`.
 - `TEMP_DIR`: download directory for the audio files.
 
 **Media server**
@@ -1584,7 +1585,8 @@ button calls `/api/find_path` for each consecutive pair and draws the segments.
 
 The map has few settings of its own. What matters is the data behind it:
 
-- `DATABASE_URL`: read at startup to build the cache.
+- The PostgreSQL connection built from the `POSTGRES_*` parts: read at startup
+  to build the cache.
 - The **embeddings** produced by analysis decide the layout, and the
   `mood_vector` decides the colours and the legend.
 - The projection method actually used (stored UMAP projection, or an on-the-fly
@@ -2110,7 +2112,7 @@ collected and returned in the summary rather than aborting the run.
 - `CHROMAPRINT_GATE_ENABLED` and the other Chromaprint settings: used by the
   duplicate repair step, see
   [chapter 2](#2-catalogue-identity-and-deduplication).
-- `REDIS_URL`, `DATABASE_URL` and the media server registry credentials.
+- `REDIS_URL`, the `POSTGRES_*` parts and the media server registry credentials.
 
 ---
 
