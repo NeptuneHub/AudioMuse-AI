@@ -16,6 +16,8 @@ Flask/waitress server or an RQ worker/janitor/restart-listener.
 Main Features:
 * Runs Flask via waitress or launches a named RQ role in-process.
 * Enforces single-instance startup with an flock-based supervisor lock.
+* Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
+  instead of re-entering the supervisor as a stray copy of the app.
 """
 
 import os
@@ -26,6 +28,8 @@ import sys
 import threading
 import time
 import webbrowser
+
+from native_common import frozen_children
 
 WEB_URL = "http://127.0.0.1:8000"
 
@@ -231,6 +235,9 @@ def _refuse_root_for_stack():
 
 
 def main():
+    if frozen_children.run_frozen_child():
+        return
+
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner

@@ -15,7 +15,7 @@ Main Features:
 * Minimum-size filter drops small playlists and keeps exact-threshold ones
 * Title/artist dedup normalizes remastered/explicit markers and is case-insensitive
 * Distance filtering drops near-duplicate vectors, falls back to title/artist dedup
-  when vectors are missing, and select_top_n_diverse picks the largest first
+  when vectors are missing, and diverse Top-N selection picks the largest first
 """
 
 import numpy as np
@@ -24,7 +24,7 @@ from tasks.clustering_postprocessing import (
     apply_minimum_size_filter_to_clustering_result,
     apply_title_artist_deduplication,
     apply_distance_filtering_direct,
-    select_top_n_diverse_playlists,
+    select_diverse_playlists_with_genre_coverage,
 )
 
 
@@ -252,7 +252,7 @@ class TestDistanceFilteringDirect:
         assert filtered == song_results
 
 
-class TestSelectTopNDiversePlaylists:
+class TestSelectDiversePlaylists:
     def test_selects_diverse_playlists(self):
         best_result = {
             "playlist_to_centroid_vector_map": {
@@ -272,11 +272,11 @@ class TestSelectTopNDiversePlaylists:
             },
         }
 
-        selected = select_top_n_diverse_playlists(best_result, n=2)
+        selected = select_diverse_playlists_with_genre_coverage(best_result, limit=2)
 
         assert len(selected["named_playlists"]) == 2
 
-    def test_returns_all_when_n_exceeds_available(self):
+    def test_returns_all_when_limit_exceeds_available(self):
         best_result = {
             "playlist_to_centroid_vector_map": {
                 "Playlist 1": np.array([1.0, 0.0]),
@@ -292,7 +292,7 @@ class TestSelectTopNDiversePlaylists:
             },
         }
 
-        selected = select_top_n_diverse_playlists(best_result, n=5)
+        selected = select_diverse_playlists_with_genre_coverage(best_result, limit=5)
 
         assert len(selected["named_playlists"]) == 2
 
@@ -315,7 +315,7 @@ class TestSelectTopNDiversePlaylists:
             },
         }
 
-        selected = select_top_n_diverse_playlists(best_result, n=2)
+        selected = select_diverse_playlists_with_genre_coverage(best_result, limit=2)
 
         assert "Large" in selected["named_playlists"]
 

@@ -19,7 +19,7 @@ Main Features:
   timeout), fails that unit of work once with ``ConnectionLostError`` (an
   ``OperationalError`` subclass), and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped history rows.
-* Embedding, projection, and alchemy CRUD helpers shared by workers and the web app.
+* Embedding, projection, and alchemy CRUD shared by workers and the web app.
 """
 
 import json
@@ -727,22 +727,6 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         conn.rollback()
         logger.exception(f"Error saving CLAP embedding for {item_id}")
         raise
-    finally:
-        cur.close()
-
-
-def get_clap_embedding(item_id):
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT embedding FROM clap_embedding WHERE item_id = %s", (item_id,))
-        row = cur.fetchone()
-        if row and row[0]:
-            return np.frombuffer(row[0], dtype=np.float32)
-        return None
-    except Exception:
-        logger.exception(f"Error loading CLAP embedding for {item_id}")
-        return None
     finally:
         cur.close()
 
@@ -2536,6 +2520,22 @@ def delete_alchemy_radio(radio_id):
         return False
     finally:
         cur.close()
+
+
+def coerce_db_details(raw_details):
+    if isinstance(raw_details, dict):
+        return raw_details
+    if raw_details:
+        try:
+            return json.loads(raw_details)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def like_contains_pattern(value):
+    escaped = value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return '%' + escaped + '%'
 
 
 def save_map_projection(index_name, id_map, projection_array):

@@ -499,8 +499,8 @@ class TestTrackPrimaryGenre:
 
 
 class TestGenreMapPreparation:
-    @patch('tasks.clustering.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
-    def test_prepare_genre_map_basic(self):
+    @patch('tasks.clustering_helper.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
+    def test_prepare_genre_map_groups_by_primary_genre_from_stratified_list(self):
         from tasks.clustering import _prepare_genre_map
 
         rows = [
@@ -508,6 +508,7 @@ class TestGenreMapPreparation:
             {'item_id': '2', 'mood_vector': 'rock:0.8,jazz:0.2'},
             {'item_id': '3', 'mood_vector': 'pop:0.9,rock:0.1'},
             {'item_id': '4', 'mood_vector': 'jazz:0.7,rock:0.3'},
+            {'item_id': '5', 'mood_vector': 'electronic:0.9,rock:0.1'},
         ]
 
         genre_map = _prepare_genre_map(rows)
@@ -515,7 +516,8 @@ class TestGenreMapPreparation:
         assert 'rock' in genre_map
         assert 'pop' in genre_map
         assert 'jazz' in genre_map
-        assert len(genre_map['rock']) == 2
+        assert 'electronic' not in genre_map
+        assert len(genre_map['rock']) == 3
         assert len(genre_map['pop']) == 1
         assert len(genre_map['jazz']) == 1
 
@@ -887,51 +889,7 @@ class TestMinimumSizeFilter:
         assert len(result['named_playlists']) == 0
 
 
-class TestSelectTopNDiversePlaylists:
-    def test_select_top_n_diverse_basic(self):
-        from tasks.clustering_postprocessing import select_top_n_diverse_playlists
-
-        best_result = {
-            'named_playlists': {
-                f'Playlist {i}': [{'item_id': f'song{j}'} for j in range(20)] for i in range(5)
-            },
-            'playlist_centroids': {f'Playlist {i}': [float(i), float(i)] for i in range(5)},
-            'playlist_to_centroid_vector_map': {
-                f'Playlist {i}': np.array([float(i), float(i)]) for i in range(5)
-            },
-        }
-
-        result = select_top_n_diverse_playlists(best_result, n=3)
-
-        assert len(result['named_playlists']) == 3
-        assert len(result['playlist_centroids']) == 3
-        assert len(result['playlist_to_centroid_vector_map']) == 3
-
-    def test_select_top_n_diverse_preserves_largest_first(self):
-        from tasks.clustering_postprocessing import select_top_n_diverse_playlists
-
-        best_result = {
-            'named_playlists': {
-                'Small': [{'item_id': f'song{i}'} for i in range(10)],
-                'Large': [{'item_id': f'song{i}'} for i in range(100)],
-                'Medium': [{'item_id': f'song{i}'} for i in range(50)],
-            },
-            'playlist_centroids': {
-                'Small': [1.0, 1.0],
-                'Large': [2.0, 2.0],
-                'Medium': [3.0, 3.0],
-            },
-            'playlist_to_centroid_vector_map': {
-                'Small': np.array([1.0, 1.0]),
-                'Large': np.array([2.0, 2.0]),
-                'Medium': np.array([3.0, 3.0]),
-            },
-        }
-
-        result = select_top_n_diverse_playlists(best_result, n=2)
-
-        assert 'Large' in result['named_playlists']
-
+class TestSelectDiversePlaylists:
     def test_default_strategy_returns_two_top_variants_and_four_other_genres(
         self, monkeypatch
     ):
@@ -1041,7 +999,7 @@ class TestSelectTopNDiversePlaylists:
         assert 'Soul Near' not in result['named_playlists']
 
     def test_limit_is_a_hard_cap_and_short_candidate_sets_are_returned_whole(self):
-        from tasks.clustering_postprocessing import select_top_n_diverse_playlists
+        from tasks.clustering_postprocessing import select_diverse_playlists_with_genre_coverage
 
         many = {
             'named_playlists': {
@@ -1057,8 +1015,12 @@ class TestSelectTopNDiversePlaylists:
             for key, value in many.items()
         }
 
-        assert len(select_top_n_diverse_playlists(many, 10)['named_playlists']) == 10
-        assert len(select_top_n_diverse_playlists(short, 10)['named_playlists']) == 4
+        assert len(
+            select_diverse_playlists_with_genre_coverage(many, 10)['named_playlists']
+        ) == 10
+        assert len(
+            select_diverse_playlists_with_genre_coverage(short, 10)['named_playlists']
+        ) == 4
 
     def test_naming_receives_recent_names_from_previous_runs(self, monkeypatch):
         from tasks import clustering
@@ -1169,30 +1131,8 @@ class TestSelectTopNDiversePlaylists:
         assert result['Happy Pop_automatic'] == [('song-1', 'Song 1', 'Artist')]
         assert result['Happy Pop (2)_automatic'] == [('song-2', 'Song 2', 'Artist')]
 
-    def test_select_top_n_skips_when_n_too_large(self):
-        from tasks.clustering_postprocessing import select_top_n_diverse_playlists
-
-        best_result = {
-            'named_playlists': {
-                'P1': [{'item_id': 'song1'}],
-                'P2': [{'item_id': 'song2'}],
-            },
-            'playlist_centroids': {
-                'P1': [1.0],
-                'P2': [2.0],
-            },
-            'playlist_to_centroid_vector_map': {
-                'P1': np.array([1.0]),
-                'P2': np.array([2.0]),
-            },
-        }
-
-        result = select_top_n_diverse_playlists(best_result, n=10)
-
-        assert len(result['named_playlists']) == 2
-
-    def test_select_top_n_skips_when_n_zero(self):
-        from tasks.clustering_postprocessing import select_top_n_diverse_playlists
+    def test_limit_zero_returns_the_original_result(self):
+        from tasks.clustering_postprocessing import select_diverse_playlists_with_genre_coverage
 
         best_result = {
             'named_playlists': {'P1': [{'item_id': 'song1'}]},
@@ -1200,12 +1140,12 @@ class TestSelectTopNDiversePlaylists:
             'playlist_to_centroid_vector_map': {'P1': np.array([1.0])},
         }
 
-        result = select_top_n_diverse_playlists(best_result, n=0)
+        result = select_diverse_playlists_with_genre_coverage(best_result, limit=0)
 
         assert result == best_result
 
-    def test_select_top_n_empty_result(self):
-        from tasks.clustering_postprocessing import select_top_n_diverse_playlists
+    def test_empty_candidate_map_returns_the_original_result(self):
+        from tasks.clustering_postprocessing import select_diverse_playlists_with_genre_coverage
 
         best_result = {
             'named_playlists': {},
@@ -1213,7 +1153,7 @@ class TestSelectTopNDiversePlaylists:
             'playlist_to_centroid_vector_map': {},
         }
 
-        result = select_top_n_diverse_playlists(best_result, n=5)
+        result = select_diverse_playlists_with_genre_coverage(best_result, limit=5)
 
         assert result == best_result
 

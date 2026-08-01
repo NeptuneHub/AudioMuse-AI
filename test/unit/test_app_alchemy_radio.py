@@ -347,6 +347,45 @@ class TestRunRadioPlaylists:
         assert summary['failed'] == ['Broken']
 
     @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.create_playlist')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_fallback_create_playlist_none_counts_radio_as_failed(
+        self, mock_alchemy, mock_upsert, mock_create, mock_get_radios
+    ):
+        from tasks.radio_manager import run_radio_playlists
+
+        mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
+        mock_alchemy.return_value = {'results': [{'item_id': 'a'}]}
+        mock_upsert.side_effect = NotImplementedError()
+        mock_create.return_value = None
+
+        summary = run_radio_playlists()
+
+        mock_create.assert_called_once_with('Chill', ['a'])
+        assert summary['playlists_created'] == 0
+        assert summary['failed'] == ['Chill']
+
+    @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.create_playlist')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_fallback_create_playlist_success_counts_radio_created(
+        self, mock_alchemy, mock_upsert, mock_create, mock_get_radios
+    ):
+        from tasks.radio_manager import run_radio_playlists
+
+        mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
+        mock_alchemy.return_value = {'results': [{'item_id': 'a'}]}
+        mock_upsert.side_effect = NotImplementedError()
+        mock_create.return_value = {'Id': 'p1'}
+
+        summary = run_radio_playlists()
+
+        assert summary['playlists_created'] == 1
+        assert summary['failed'] == []
+
+    @patch('database.get_alchemy_radios')
     @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
     def test_radio_with_no_results_creates_no_playlist(

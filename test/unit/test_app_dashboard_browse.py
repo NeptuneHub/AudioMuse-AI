@@ -285,3 +285,48 @@ class TestBrowseTemplateParses:
         src = (Path(__file__).resolve().parents[2] / 'templates' / 'browse.html').read_text(
             encoding='utf-8')
         jinja2.Environment().parse(src)
+
+
+class TestDominantLabelTieBreak:
+    """A pie of per-song dominance must not hand every tie to the same label.
+
+    max() returns the FIRST maximal item, so a tie always went to whichever label
+    the stored `key:value` string lists first - the same one for every tied song in
+    the library. CLAP scores sit in a narrow band (issue #826) and are stored
+    rounded to two decimals, so exact ties are ordinary, and that tie-break
+    rebuilt the very skew the per-song argmax was introduced to remove.
+    """
+
+    def test_a_clear_winner_is_returned(self):
+        assert dash._dominant_label({'danceable': 0.61, 'aggressive': 0.72}) == (
+            'aggressive', 0.72
+        )
+
+    def test_a_tie_has_no_dominant_label(self):
+        assert dash._dominant_label({'danceable': 0.62, 'aggressive': 0.62}) is None
+
+    def test_a_tie_is_not_awarded_to_the_first_label(self):
+        tied = {'danceable': 0.62, 'aggressive': 0.62, 'party': 0.41}
+        assert dash._dominant_label(tied) is None, (
+            "'danceable' parses first, so first-wins would silently give it every "
+            "tied song in the library"
+        )
+
+    def test_a_three_way_tie_is_also_undecided(self):
+        assert dash._dominant_label({'a': 0.5, 'b': 0.5, 'c': 0.5}) is None
+
+    def test_a_single_label_wins_outright(self):
+        assert dash._dominant_label({'danceable': 0.62}) == ('danceable', 0.62)
+
+    def test_no_scores_has_no_dominant_label(self):
+        assert dash._dominant_label({}) is None
+        assert dash._dominant_label(None) is None
+
+    def test_an_all_zero_row_still_yields_a_winner_the_caller_can_reject(self):
+        """The caller drops it with `top[1] > 0`: an all-zero row means CLAP has not
+        scored the song yet, not that it is the least danceable song in the
+        library. A tie among zeros is undecided anyway."""
+        assert dash._dominant_label({'danceable': 0.0, 'aggressive': 0.0}) is None
+        assert dash._dominant_label({'danceable': 0.0, 'aggressive': 0.1}) == (
+            'aggressive', 0.1
+        )

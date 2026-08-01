@@ -779,6 +779,10 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
 ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
 
+# --- Mood/Feature Score Matching ---
+# A 0-1 mood/other-feature score at or above this counts as the tag applying.
+MOOD_SCORE_MATCH_THRESHOLD = float(os.environ.get("MOOD_SCORE_MATCH_THRESHOLD", "0.5"))
+
 # --- Plugin System ---
 # Master switch for the plugin subsystem (discovery, loading, admin UI).
 PLUGINS_ENABLED = os.environ.get("PLUGINS_ENABLED", "true").lower() == "true"

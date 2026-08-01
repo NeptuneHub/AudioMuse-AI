@@ -257,15 +257,20 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
     return provider.get_playlist_track_ids(playlist_id, user_creds=user_creds)
 
 
+class PlaylistIdTranslationError(ValueError):
+    pass
+
+
 def _to_server_ids(item_ids):
     """Translate canonical catalogue ids to the active (or default) server's
     real track ids. This is the SINGLE translation point for playlist creation:
     callers pass canonical ids and must never pre-translate. Legacy provider
     ids map to themselves on the default server, so mixed catalogues pass
     through unchanged. Raises ValueError when the server has NONE of the
-    requested tracks, so no caller can report a playlist that was never sent
-    to the provider."""
-    from .registry import translate_ids
+    requested tracks, and PlaylistIdTranslationError when the translation
+    infrastructure itself fails, so no caller can report a playlist that was
+    never sent (or was sent truncated) to the provider."""
+    from .registry import translate_ids, get_default_server_id
 
     server_id = context.active_server_id()
     try:
@@ -278,9 +283,32 @@ def _to_server_ids(item_ids):
                 mapping = translate_ids(item_ids, server_id, conn=raw)
             finally:
                 raw.close()
-        except Exception:
-            logger.exception("Playlist id translation failed; sending ids unchanged")
-            return list(item_ids)
+        except Exception as exc:
+            from ..simhash import is_fingerprint_id
+
+            internal_count = sum(
+                1 for item_id in item_ids if is_fingerprint_id(str(item_id))
+            )
+            try:
+                is_default = server_id is None or server_id == get_default_server_id()
+            except Exception:
+                is_default = False
+            if internal_count == 0 and is_default:
+                logger.exception(
+                    "Playlist id translation failed; all %d ids are legacy "
+                    "provider ids on the default server, sending them unchanged",
+                    len(item_ids),
+                )
+                return [str(item_id) for item_id in item_ids]
+            logger.exception(
+                "Playlist id translation failed; refusing to send %d internal "
+                "id(s) (server %s) to the media server",
+                internal_count,
+                server_id or 'default',
+            )
+            raise PlaylistIdTranslationError(
+                "Playlist track ids could not be translated for the selected server."
+            ) from exc
     translated = [mapping[str(i)] for i in item_ids if str(i) in mapping]
     if item_ids and not translated:
         raise ValueError(
@@ -297,8 +325,9 @@ def create_playlist(base_name, item_ids):
         raise ValueError(_TRACK_IDS_REQUIRED)
     item_ids = _to_server_ids(item_ids)
     provider = _provider()
-    if provider is not None and item_ids:
-        provider.create_playlist(base_name, item_ids)
+    if provider is None or not item_ids:
+        return None
+    return provider.create_playlist(base_name, item_ids)
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):

@@ -47,7 +47,6 @@ if _LYRICS_ENABLED:
             axis_columns,
             embed_query_text,
             load_topic_embedding_model,
-            load_asr_model,
         )
     except Exception as _exc:
         _logger.warning(
@@ -59,7 +58,6 @@ if _LYRICS_ENABLED:
         axis_columns = _disabled
         embed_query_text = _disabled
         load_topic_embedding_model = _disabled
-        load_asr_model = _disabled
 else:
     _logger.info("Lyrics features are disabled (LYRICS_ENABLED=false).")
     MUSIC_ANALYSIS_AXES = {}
@@ -67,7 +65,6 @@ else:
     axis_columns = _disabled
     embed_query_text = _disabled
     load_topic_embedding_model = _disabled
-    load_asr_model = _disabled
 
 
 def _safe_call(label, fn):
@@ -152,7 +149,6 @@ __all__ = [
     'axis_columns',
     'embed_query_text',
     'load_topic_embedding_model',
-    'load_asr_model',
     'is_lyrics_loaded',
     'unload_lyrics_models',
 ]

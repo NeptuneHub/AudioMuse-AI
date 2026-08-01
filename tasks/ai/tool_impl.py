@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 
 from psycopg2.extras import DictCursor
 
+from tasks.ai.vocab import parse_tag_score_pairs
 from tasks.mcp_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
@@ -66,27 +67,6 @@ def _reroute_other_feature_labels(genres, moods, other_features):
         parts.append(f"from moods: {', '.join(rerouted_from_moods)}")
     msg = "WARN: Rerouted to other_features (" + "; ".join(parts) + ")"
     return new_genres, new_moods, new_other, msg
-
-
-def _reroute_mood_labels_from_genres(genres, moods):
-    from config import OTHER_FEATURE_LABELS
-
-    if not genres:
-        return genres, moods, None
-    mood_set = {m.lower() for m in OTHER_FEATURE_LABELS}
-    rerouted = [g for g in genres if isinstance(g, str) and g.lower() in mood_set]
-    if not rerouted:
-        return genres, moods, None
-    kept = [g for g in genres if not (isinstance(g, str) and g.lower() in mood_set)]
-    new_moods = list(moods or [])
-    existing_lower = {m.lower() for m in new_moods if isinstance(m, str)}
-    for g in rerouted:
-        canonical = g.lower()
-        if canonical not in existing_lower:
-            new_moods.append(canonical)
-            existing_lower.add(canonical)
-    msg = f"WARN: Rerouted from genres to moods (not real genres): {', '.join(rerouted)}"
-    return kept, new_moods, msg
 
 
 _FUZZY_MATCH_CUTOFF = 75
@@ -624,20 +604,6 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
         db_conn.close()
 
 
-def _alchemy_parse_tag_scores(text):
-    scores = {}
-    for tag in (text or '').split(','):
-        tag = tag.strip()
-        if ':' not in tag:
-            continue
-        name, score_str = tag.split(':', 1)
-        try:
-            scores[name.strip()] = float(score_str)
-        except ValueError:
-            pass
-    return scores
-
-
 def _alchemy_collect_seed_ids(cur, add_items):
     seed_ids = []
     for item in add_items:
@@ -737,7 +703,7 @@ def _alchemy_result_genres(cur, result_ids):
     """,
         result_ids,
     )
-    return {r['item_id']: _alchemy_parse_tag_scores(r['mood_vector'] or '') for r in cur}
+    return {r['item_id']: parse_tag_score_pairs(r['mood_vector'] or '') for r in cur}
 
 
 def _alchemy_apply_genre_filter(cur, songs, add_items, log_messages):

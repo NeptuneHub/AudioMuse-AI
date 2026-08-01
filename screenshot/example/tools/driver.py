@@ -352,7 +352,8 @@ def fake_dashboard(data):
         if isinstance(mc, list):
             for i, e in enumerate(mc):
                 if isinstance(e, dict):
-                    e['score'] = round(max(55.0, 1850.0 - i * 250.0), 2)
+                    e.pop('score', None)
+                    e['count'] = max(61, 780 - i * 130)
         tp = c.get('tempo_profile')
         if isinstance(tp, dict):
             tp.update(

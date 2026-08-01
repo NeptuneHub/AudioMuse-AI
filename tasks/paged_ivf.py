@@ -342,9 +342,6 @@ class _CellLruCache:
         self._cells[cell_id] = (ids, vecs)
         self._bytes += size
 
-    def has_cell(self, cell_id: int) -> bool:
-        return cell_id in self._cells
-
     def get_cell(self, cell_id: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         entry = self._cells.get(cell_id)
         if entry is not None:
@@ -447,11 +444,6 @@ class _GlobalCellCache:
                 old_ids, old_vecs = self._cells.pop(k)
                 self._bytes -= self._entry_bytes(old_ids, old_vecs)
 
-    def clear(self) -> None:
-        with self._lock:
-            self._cells.clear()
-            self._bytes = 0
-
     def resident_bytes(self) -> int:
         with self._lock:
             return self._bytes
@@ -526,15 +518,6 @@ def _query_thread_pool():
 
 def _in_query_pool_thread() -> bool:
     return threading.current_thread().name.startswith(_QUERY_THREAD_PREFIX)
-
-
-def shutdown_query_pool() -> None:
-    global _QUERY_THREAD_POOL
-    with _QUERY_THREAD_POOL_LOCK:
-        pool = _QUERY_THREAD_POOL
-        _QUERY_THREAD_POOL = None
-    if pool is not None:
-        pool.shutdown(wait=True)
 
 
 _BLAS_LIMITER = None
@@ -1049,9 +1032,6 @@ class PagedIvfIndex:
 
     def _cell_distances(self, qp: np.ndarray, vecs: np.ndarray) -> np.ndarray:
         return quant.cell_distances(self._metric, self._storage_dtype, qp, vecs, self._normalized)
-
-    def _distances(self, q: np.ndarray, vecs: np.ndarray) -> np.ndarray:
-        return self._cell_distances(self._prep_query(q), vecs)
 
     def _distances_over_cells(self, q: np.ndarray, vecs_list: List[np.ndarray]) -> List[np.ndarray]:
         n_cells = len(vecs_list)

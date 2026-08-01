@@ -16,15 +16,29 @@ an optional WordNet synonym fallback.
 Main Features:
 * Routes each mood label into mood_vector vs other_features and splits out vocal-type tags into a separate voices list; tempo/energy phrases resolve to numeric BPM/energy ranges. Exact canonical mood labels (config.OTHER_FEATURE_LABELS) win over energy/tempo alias phrases so 'relaxed' stays a mood.
 * Fuzzy remap (rapidfuzz WRatio, cutoff 75, min length 4) plus gender-aware WordNet expansion for vocalist synonyms; unrecognized labels are dropped with a note rather than passed through.
+* parse_tag_score_pairs is the shared parser for the DB's comma-separated 'tag:score' strings (mood_vector/other_features): entries without ':' or with a non-numeric score are silently skipped.
 """
 
 import functools
 import re
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from rapidfuzz import fuzz, process
 
 import config
+
+
+def parse_tag_score_pairs(text: Optional[str]) -> Dict[str, float]:
+    parsed = {}
+    for part in (text or '').split(','):
+        key, separator, raw_value = part.partition(':')
+        if not separator:
+            continue
+        try:
+            parsed[key.strip()] = float(raw_value)
+        except ValueError:
+            continue
+    return parsed
 
 
 _MOOD_VOCAB_FROM_MOODVECTOR_RAW = [

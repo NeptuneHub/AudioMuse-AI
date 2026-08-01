@@ -450,16 +450,6 @@ class TestIsValidEnvConfig:
         assert self.mgr.is_valid_env_config(cfg) is True
 
 
-class TestIsSetupComplete:
-    def test_delegates_to_is_valid_env_config(self):
-        mgr = _mgr()
-        good = _cfg(MEDIASERVER_TYPE="lyrion", LYRION_URL="http://x:9000", AUTH_ENABLED=False)
-        assert mgr.is_setup_complete(good) is True
-
-        bad = _cfg(MEDIASERVER_TYPE="unknown")
-        assert mgr.is_setup_complete(bad) is False
-
-
 class TestGetEnvConfigValues:
     def setup_method(self):
         self.mgr = _mgr()

@@ -38,10 +38,6 @@ import config
 logger = logging.getLogger(__name__)
 
 
-class EmptyIndexError(ValueError):
-    pass
-
-
 _STREAM_ITERSIZE = 5000
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -390,74 +386,6 @@ def store_ivf_index_segmented(
                 len(bin_parts),
                 len(id_map_parts),
             )
-
-
-def rewrite_segmented_id_map(
-    cur,
-    target_table: str,
-    index_name: str,
-    rewrite_fn,
-    max_part_size_mb: Optional[int] = None,
-) -> bool:
-    _validate_sql_identifier(target_table, "table")
-    _validate_sql_identifier(index_name, "index_name")
-    mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
-    max_part_size = mb * 1024 * 1024
-
-    cur.execute(
-        f"SELECT id_map_json FROM {target_table} WHERE index_name = %s",
-        (index_name,),
-    )
-    single_row = cur.fetchone()
-    if single_row is not None:
-        old_json = single_row[0]
-        new_json = rewrite_fn(old_json)
-        if new_json == old_json:
-            return False
-        cur.execute(
-            f"UPDATE {target_table} SET id_map_json = %s WHERE index_name = %s",
-            (new_json, index_name),
-        )
-        return True
-
-    like_pattern = index_name.replace("_", r"\_") + r"\_%\_%"
-    cur.execute(
-        f"SELECT index_name, id_map_json FROM {target_table} WHERE index_name LIKE %s ESCAPE '\\'",
-        (like_pattern,),
-    )
-    seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
-    parts = []
-    for name, frag in cur.fetchall() or []:
-        m = seg_pattern.match(name)
-        if m:
-            parts.append((int(m.group(1)), name, frag))
-    if not parts:
-        return False
-    parts.sort(key=lambda p: p[0])
-    num_parts = len(parts)
-
-    old_full = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
-    new_full = rewrite_fn(old_full)
-    if new_full == old_full:
-        return False
-
-    new_frags = _split_text(new_full, max_part_size)
-    if len(new_frags) > num_parts:
-        raise ValueError(
-            f"rewritten id_map for '{index_name}' needs {len(new_frags)} part rows "
-            f"but the index has {num_parts}; rebuild the index instead of rewriting in place."
-        )
-    for position, (_, name, _) in enumerate(parts):
-        frag = new_frags[position] if position < len(new_frags) else ""
-        cur.execute(
-            f"UPDATE {target_table} SET id_map_json = %s WHERE index_name = %s",
-            (frag, name),
-        )
-    return True
-
-
-def build_id_map(item_ids: Iterable[str]) -> dict:
-    return {i: item_id for i, item_id in enumerate(item_ids)}
 
 
 def store_segmented_blob(

@@ -109,9 +109,15 @@ _CURRENT_SCHEME_SQL = (
 # 'analysis' match tier. Such a row can never be relabelled, so counting it as
 # legacy work made this "one-time" migration re-hash the whole catalogue on EVERY
 # boot and relabel nothing.
+# The fp_0 head IS the marker for a row minted as unsignable, and unlike the map
+# row it cannot be taken away: a provider migration unbinds an unmatched song from
+# its server, which used to strip the only evidence and hand the row straight back
+# to this migration as legacy work it can never relabel.
 _UNSIGNABLE_SQL = (
-    "EXISTS (SELECT 1 FROM track_server_map t "
-    "WHERE t.item_id = s.item_id AND t.match_tier = 'analysis')"
+    "((s.item_id LIKE 'fp\\_0%%' AND length(s.item_id) = "
+    + str(simhash.CANONICAL_ID_LEN)
+    + ") OR EXISTS (SELECT 1 FROM track_server_map t "
+    "WHERE t.item_id = s.item_id AND t.match_tier = 'analysis'))"
 )
 _LEGACY_ROW_SQL = "NOT " + _CURRENT_SCHEME_SQL + " AND NOT " + _UNSIGNABLE_SQL
 _RELABEL_ADVISORY_LOCK = 726354822

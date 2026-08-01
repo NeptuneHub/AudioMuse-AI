@@ -33,6 +33,15 @@ Main Features:
 * ``fetch_server_catalogue`` / ``prune_stale_mappings`` / ``unmapped_local_count``
   are the public helpers this module owns; the cleaning task reuses them instead
   of re-implementing the fetch and the prune, so the two can never drift apart.
+* ``enqueue_server_alignment`` queues a full-refresh alignment of one server from
+  a caller with no Flask app context - the provider migration uses it so the
+  artist ids and file paths a provider swap cannot carry are rebuilt. The row it
+  writes carries ``full_refresh`` so recovery can tell how strong it was.
+* Recovery PRESERVES the strength of the sweep it replaces: a killed full-refresh
+  alignment comes back as a full refresh. Replacing it with a matching-only sweep
+  silently did nothing whenever every track was already mapped - exactly the state
+  a provider migration leaves behind - so the artist ids it was queued to rebuild
+  stayed empty while the logs claimed the alignment had run.
 * Zero-download alignment: matching from catalogue metadata only.
 * Artist links: each swept server's ``artist_server_map`` rows are upserted
   from its fetched catalogue.
@@ -95,6 +104,12 @@ def _sweep_job_state(task_id):
 
 _recovery_state = {'last': None}
 
+# A row is written BEFORE its RQ job is enqueued (and, for a provider migration,
+# committed with the migration itself), so a brand-new row legitimately has no job
+# yet. Without this, recovery could revoke a perfectly good alignment microseconds
+# before its enqueue landed and run a second one alongside it.
+_ENQUEUE_GRACE_SECONDS = 120
+
 _ABANDONED_FIRST_SEEN = {}
 
 _ABANDONED_CONFIRM_SECONDS = 60
@@ -111,6 +126,67 @@ def _confirm_abandoned(task_id):
 
 def _clear_abandoned_sighting(task_id):
     _ABANDONED_FIRST_SEEN.pop(task_id, None)
+
+
+def _details_full_refresh(details):
+    if not details:
+        return False
+    if isinstance(details, (bytes, bytearray)):
+        details = details.decode('utf-8', 'replace')
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except (ValueError, TypeError):
+            return False
+    return bool(details.get('full_refresh')) if isinstance(details, dict) else False
+
+
+def insert_pending_sweep_row(cur, task_id, message, full_refresh=True):
+    import config
+
+    details = json.dumps({
+        'message': message,
+        'status_message': message,
+        'full_refresh': bool(full_refresh),
+    })
+    cur.execute(
+        "INSERT INTO task_status "
+        "(task_id, task_type, status, progress, details, timestamp, start_time) "
+        "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
+        "ON CONFLICT (task_id) DO NOTHING",
+        (task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_PENDING, details, time.time()),
+    )
+
+
+def enqueue_server_alignment(server_id=None, message=None, task_id=None):
+    from app_helper import rq_queue_high
+
+    task_id = task_id or str(uuid.uuid4())
+    text = message or 'Server alignment queued.'
+    db = connect_raw()
+    db.autocommit = True
+    try:
+        target = str(server_id) if server_id else registry.get_default_server_id(db)
+        if not target:
+            return None
+        cur = db.cursor()
+        try:
+            insert_pending_sweep_row(cur, task_id, text)
+        finally:
+            cur.close()
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Alignment enqueue connection close failed", exc_info=True)
+    rq_queue_high.enqueue(
+        'tasks.multiserver_sync.sweep_server',
+        args=(target,),
+        kwargs={'task_id': task_id},
+        job_id=task_id,
+        job_timeout=-1,
+    )
+    return task_id
 
 
 def recover_abandoned_sweeps():
@@ -148,12 +224,16 @@ def recover_abandoned_sweeps():
         cur = db.cursor()
         try:
             cur.execute(
-                "SELECT task_id FROM task_status WHERE task_type = %s "
-                "AND status NOT IN (%s, %s, %s)",
+                "SELECT task_id, details FROM task_status WHERE task_type = %s "
+                "AND status NOT IN (%s, %s, %s) "
+                "AND timestamp < NOW() - make_interval(secs => %s)",
                 (SWEEP_TASK_TYPE, config.TASK_STATUS_SUCCESS,
-                 config.TASK_STATUS_FAILURE, config.TASK_STATUS_REVOKED),
+                 config.TASK_STATUS_FAILURE, config.TASK_STATUS_REVOKED,
+                 _ENQUEUE_GRACE_SECONDS),
             )
-            candidates = [r[0] for r in cur.fetchall()]
+            rows = cur.fetchall()
+            candidates = [r[0] for r in rows]
+            was_full_refresh = {r[0]: _details_full_refresh(r[1]) for r in rows}
         finally:
             cur.close()
         stale = []
@@ -170,6 +250,7 @@ def recover_abandoned_sweeps():
             return None
 
         now = time.time()
+        full_refresh = any(was_full_refresh.get(task_id) for task_id in stale)
         message = (
             "Alignment was interrupted (worker restarted); "
             "a fresh alignment of all servers was enqueued."
@@ -190,28 +271,24 @@ def recover_abandoned_sweeps():
             if not revoked_count:
                 return None
             new_task_id = str(uuid.uuid4())
-            queued = json.dumps({
-                'message': 'Server alignment queued for all servers.',
-            })
-            cur.execute(
-                "INSERT INTO task_status "
-                "(task_id, task_type, status, progress, details, timestamp, start_time) "
-                "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
-                "ON CONFLICT (task_id) DO NOTHING",
-                (new_task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_PENDING, queued, now),
+            insert_pending_sweep_row(
+                cur, new_task_id,
+                'Server alignment queued for all servers.',
+                full_refresh=full_refresh,
             )
         finally:
             cur.close()
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
-            kwargs={'task_id': new_task_id, 'full_refresh': False},
+            kwargs={'task_id': new_task_id, 'full_refresh': full_refresh},
             job_id=new_task_id,
             job_timeout=-1,
         )
         _recovery_state['last'] = time.monotonic()
         logger.warning(
-            "Recovered %d interrupted alignment sweep(s); enqueued replacement %s",
-            revoked_count, new_task_id,
+            "Recovered %d interrupted alignment sweep(s); enqueued replacement %s "
+            "(full refresh: %s)",
+            revoked_count, new_task_id, full_refresh,
         )
         return new_task_id
     finally:
@@ -439,7 +516,7 @@ def reap_orphaned_tasks():
             logger.debug("Orphan-reap connection close failed", exc_info=True)
 
 
-def _make_reporter(task_id, label):
+def _make_reporter(task_id, label, full_refresh=None):
     try:
         from flask_app import app
         from app_helper import save_task_status
@@ -456,6 +533,13 @@ def _make_reporter(task_id, label):
         if task_state is None and pct == last['pct']:
             return
         last['pct'] = pct
+        details = {
+            'status_message': message,
+            'message': message,
+            'log': [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"],
+        }
+        if full_refresh is not None:
+            details['full_refresh'] = bool(full_refresh)
         try:
             with app.app_context():
                 save_task_status(
@@ -463,11 +547,7 @@ def _make_reporter(task_id, label):
                     SWEEP_TASK_TYPE,
                     task_state or TASK_STATUS_PROGRESS,
                     progress=pct,
-                    details={
-                        'status_message': message,
-                        'message': message,
-                        'log': [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"],
-                    },
+                    details=details,
                 )
         except Exception:
             logger.debug("Sweep status update failed (ignored)", exc_info=True)
@@ -1003,7 +1083,7 @@ def sweep_server(server_id, task_id=None, conn=None):
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = _make_reporter(task_id, server_id)
+    report = _make_reporter(task_id, server_id, full_refresh=True)
     cancel, close_cancel = _make_cancel_check(task_id)
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
@@ -1068,7 +1148,7 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = _make_reporter(task_id, 'all')
+    report = _make_reporter(task_id, 'all', full_refresh=full_refresh)
     cancel, close_cancel = _make_cancel_check(task_id)
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS

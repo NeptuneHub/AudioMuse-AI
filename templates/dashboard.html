@@ -326,7 +326,7 @@
             <h3 class="dash-subhead">Moods Coverage
                 <span class="info-tooltip" tabindex="0">
                     <span class="info-icon" aria-hidden="true"></span>
-                    <span class="tooltip-text">Emotional mood breakdown (<strong>danceable</strong>, <strong>aggressive</strong>, <strong>happy</strong>, <strong>party</strong>, <strong>relaxed</strong>, <strong>sad</strong>) summed across every song’s mood vector.</span>
+                    <span class="tooltip-text" id="moods-tooltip">Emotional mood breakdown (<strong>danceable</strong>, <strong>aggressive</strong>, <strong>happy</strong>, <strong>party</strong>, <strong>relaxed</strong>, <strong>sad</strong>). Each song is counted once, under whichever of the six scored highest for it. Only songs with a CLAP analysis are included.</span>
                 </span>
             </h3>
             <div class="chart-wrap chart-wrap-pie"><canvas id="chart-moods-coverage"></canvas></div>
@@ -680,7 +680,16 @@
     }
 
     function renderMoodsCoverage(rows) {
-        if (!rows || rows.length === 0) {
+        // Each row is a COUNT of songs that label wins, so the slices partition
+        // the CLAP-scored songs. An hourly snapshot written before that change
+        // carries `score` (the summed CLAP similarities) instead, which is not a
+        // partition and always drew a near-equal six-way pie - show the
+        // placeholder until the next refresh rather than that flat chart.
+        const usable = Array.isArray(rows)
+            ? rows.filter(r => r && typeof r.count === 'number')
+            : [];
+        const total = usable.reduce((a, r) => a + r.count, 0);
+        if (total === 0) {
             showChartPlaceholder('chart-moods-coverage', 'Still collecting library data…');
             return;
         }
@@ -692,10 +701,18 @@
             '#22C55E', '#DB2777', '#6366F1', '#D946EF', '#0891B2',
             '#65A30D', '#DC2626'
         ];
-        const labels = rows.map(r => r.label);
-        const data = rows.map(r => r.score);
+        const labels = usable.map(r => r.label);
+        const data = usable.map(r => r.count);
         const colors = labels.map((_, i) => palette[i % palette.length]);
         renderChartDoughnut('chart-moods-coverage', labels, data, colors);
+        const tip = document.getElementById('moods-tooltip');
+        if (tip) {
+            tip.innerHTML = 'Emotional mood breakdown (<strong>danceable</strong>, '
+                + '<strong>aggressive</strong>, <strong>happy</strong>, <strong>party</strong>, '
+                + '<strong>relaxed</strong>, <strong>sad</strong>). Each song is counted once, '
+                + 'under whichever of the six scored highest for it. '
+                + total.toLocaleString() + ' songs with a CLAP analysis.';
+        }
     }
 
     function renderTempo(profile) {

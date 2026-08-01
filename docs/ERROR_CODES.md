@@ -50,7 +50,7 @@ internal detail leaks to the frontend.
 | 2006 | Analysis Error | A multi-server (union) run finishes with **every** music server failed | [tasks/analysis/main.py](../tasks/analysis/main.py) `run_analysis_task` | Named servers all failed; check their connectivity/credentials. If only *some* servers fail the run still succeeds and lists them in `failed_servers`. |
 | 2007 | Track Skipped | A single track holds no analyzable audio: a silent hidden track, a corrupt/undecodable file, or an instrumental whose lyrics produced nothing | [tasks/analysis/album.py](../tasks/analysis/album.py) `TrackNotAnalyzable` | Informational, logged at WARNING and counted as `tracks_not_analyzable`. **Never fails the album or the run** - a real library always has some of these. |
 | 3001 | Index Error | Final index rebuild fails (non-empty) | [tasks/analysis/index.py](../tasks/analysis/index.py) index wrap | Inspect the log for the rebuild failure; verify disk space and that embeddings exist. |
-| 3002 | Index Error | Final index rebuild raises `EmptyIndexError`; a similarity endpoint hits a not-loaded/empty index | [tasks/analysis/index.py](../tasks/analysis/index.py) index wrap, [app_ivf.py](../app_ivf.py), [app_artist_similarity.py](../app_artist_similarity.py) | Nothing was indexed - run analysis so embeddings exist before the similarity search or index step runs. |
+| 3002 | Index Error | A similarity endpoint hits a not-loaded/empty index | [app_ivf.py](../app_ivf.py), [app_artist_similarity.py](../app_artist_similarity.py) | Nothing was indexed - run analysis so embeddings exist before the similarity search runs. |
 | 4001 | Database Error | `OperationalError` in a task or endpoint (DB down / connection dropped) | classify map + `OperationalError` branches ([tasks/analysis/main.py](../tasks/analysis/main.py), [tasks/cleaning.py](../tasks/cleaning.py), data/auth endpoints) | PostgreSQL is unreachable or dropped the connection - confirm the DB is up, credentials are valid, and the connection pool isn't exhausted. |
 | 4002 | Database Error | A psycopg2 `DatabaseError` subclass (query failure), or the default for a failed DB-backed endpoint ([app_sync.py](../app_sync.py), [app_external.py](../app_external.py), [app_auth.py](../app_auth.py) count/list) | classify map + endpoint defaults | A query failed rather than the connection - inspect the container log for the failing statement. |
 | 4101 | Backup Error | `pg_dump` reports a server version mismatch (#540) | [app_backup.py](../app_backup.py) | Match the `pg_dump` client version to the PostgreSQL server version. |
@@ -70,8 +70,6 @@ correctly) but no call site raises them yet. They are reserved for future use.
 | Code | Class | Reserved for |
 |------|-------|--------------|
 | 1001 | Configuration Error | Invalid application configuration |
-| 1003 | Startup Error | Application failed to start |
-| 2003 | Analysis Error | No albums available to analyze |
 
 ## Exception → code classification
 
@@ -92,7 +90,6 @@ steal a media-server or database code. `classify` also walks the exception's
 | `psycopg2` `OperationalError`, `InterfaceError` | 4001 |
 | `psycopg2` `DatabaseError` (query subclasses) | 4002 |
 | `onnxruntime` `Fail`, `RuntimeException`, `InvalidArgument`; builtin `MemoryError` | 2004 |
-| `EmptyIndexError` | 3002 |
 | anything else | the caller's `default_code` (often the domain code, e.g. 2001 / 6001) |
 
 An `AudioMuseError` always keeps its own code regardless of the classify map.

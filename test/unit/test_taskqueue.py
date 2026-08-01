@@ -14,6 +14,7 @@ the platform-specific death-penalty class and socket-option selection by URL sch
 Main Features:
 * Base registry and queues use the platform death-penalty class, inherited by registries
 * Redis socket options drop keepalive for unix sockets and keep it for tcp/tls
+* Fresh-connection factory applies the standard kwargs and lets overrides win
 * Embedded-Redis argv builds the expected binary flags and URL
 * Queue names, connection kwargs and default timeout are as configured; app_helper re-exports handles
 """
@@ -80,6 +81,26 @@ def test_redis_conn_connection_kwargs():
     assert kwargs['retry_on_timeout'] is True
     expected_keepalive = not str(config.REDIS_URL).startswith('unix://')
     assert ('socket_keepalive' in kwargs) == expected_keepalive
+
+
+def test_new_redis_connection_uses_standard_kwargs():
+    kwargs = taskqueue.new_redis_connection().connection_pool.connection_kwargs
+    assert kwargs['socket_connect_timeout'] == 30
+    assert kwargs['socket_timeout'] == 60
+    assert kwargs['health_check_interval'] == 30
+    assert kwargs['retry_on_timeout'] is True
+    expected_keepalive = not str(config.REDIS_URL).startswith('unix://')
+    assert ('socket_keepalive' in kwargs) == expected_keepalive
+
+
+def test_new_redis_connection_overrides_win_over_standard_kwargs():
+    kwargs = taskqueue.new_redis_connection(
+        socket_connect_timeout=2, socket_timeout=5
+    ).connection_pool.connection_kwargs
+    assert kwargs['socket_connect_timeout'] == 2
+    assert kwargs['socket_timeout'] == 5
+    assert kwargs['health_check_interval'] == 30
+    assert kwargs['retry_on_timeout'] is True
 
 
 def test_queue_names_connection_and_default_timeout():

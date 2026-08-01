@@ -1415,10 +1415,6 @@ def validate_and_normalize_plan(tool_calls: List[Dict]) -> ToolPlan:
     return plan
 
 
-def plan_from_tool_calls(tool_calls: List[Dict]) -> ToolPlan:
-    return validate_and_normalize_plan(tool_calls or [])
-
-
 MAX_TOOL_CALLS = config.AI_MAX_TOOL_CALLS
 
 

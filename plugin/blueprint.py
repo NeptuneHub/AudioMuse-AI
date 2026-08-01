@@ -33,7 +33,7 @@ import database
 import restart_manager
 from plugin import net
 from ssrf_guard import validate_outbound_url
-from plugin.manager import plugin_manager, version_ge, _parse_version
+from plugin.manager import plugin_manager, version_ge, _parse_version, _download_url as _download
 
 logger = logging.getLogger(__name__)
 
@@ -176,10 +176,6 @@ def _get_repos():
 
 def _set_repos(repos):
     database.set_app_config_value(_REPOS_KEY, json.dumps(repos))
-
-
-def _download(url, max_bytes):
-    return net.download(url, max_bytes)
 
 
 def _pick_version(versions, requested=None):

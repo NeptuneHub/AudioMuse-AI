@@ -32,16 +32,13 @@ Main Features:
   guarantee within ``SIGNATURE_MATCH_MAX_HAMMING`` bits).
 * ``CatalogResolver.resolve``: signature proposes, raw-embedding cosine plus
   duration agreement confirm, collisions mint the next free id.
-* ``near_duplicate_pairs`` / ``confirm_pairs`` / ``merge_pairs``: the streaming
-  whole-catalogue form the startup migration drives itself.
+* ``confirm_pairs`` / ``merge_pairs``: the vectorized whole-catalogue confirm
+  and merge steps the startup migration drives.
 * ``is_fingerprint_id`` recognizes any ``fp_``-prefixed catalogue id.
 """
 
 import hashlib
 import logging
-import os
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -102,27 +99,13 @@ def _band_bit_ranges():
 
 _BAND_BITS = _band_bit_ranges()
 
-# Popcount tables: "how many bits differ" becomes one vectorized lookup and sum
-# over packed signatures, instead of a Python XOR + bin().count('1'). The 16-bit
-# table halves the lookups (and the adds) of the 8-bit one.
+# Popcount table: "how many bits differ" becomes one vectorized lookup and sum
+# over packed signatures, instead of a Python XOR + bin().count('1').
 _POPCOUNT = (
     np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1)
     .sum(axis=1)
     .astype(np.uint8)
 )
-_POPCOUNT16 = (
-    np.unpackbits(
-        np.arange(65536, dtype=np.uint16).view(np.uint8).reshape(-1, 2), axis=1
-    )
-    .sum(axis=1)
-    .astype(np.uint8)
-)
-
-# A candidate pair is measured on this PREFIX first. Two unrelated signatures
-# differ in about half their bits, so a random pair blows a 10-bit budget inside
-# its first 8 bytes and never needs the other 17 read at all - and unrelated pairs
-# are almost all of them, because a shared band is mostly a coincidence.
-_HEAD_BYTES = 8
 
 # Candidate pairs are GENERATED and filtered in slices of this size, so peak
 # memory stays flat no matter how crowded a band gets. A real library clusters
@@ -130,11 +113,6 @@ _HEAD_BYTES = 8
 # materializing them all at once is worth gigabytes and gets the container
 # OOM-killed, while a slice is worth tens of megabytes - per scanning thread.
 _PAIR_CHUNK = 150_000
-
-
-def _scan_threads():
-    """Threads for the band scan; each holds one slice of candidates at a time."""
-    return max(1, min(4, (os.cpu_count() or 2) // 2, _BAND_COUNT))
 
 
 def _pack_signature(signature):
@@ -233,15 +211,6 @@ def folder_key(file_path):
     if '/' not in normalized:
         return ''
     return normalized.rsplit('/', 1)[0]
-
-
-def same_folder_conflict(path_a, path_b):
-    normalized_a = normalize_path(path_a)
-    normalized_b = normalize_path(path_b)
-    if not normalized_a or not normalized_b or normalized_a == normalized_b:
-        return False
-    key_a = folder_key(path_a)
-    return key_a is not None and key_a == folder_key(path_b)
 
 
 def folder_conflict_in_group(paths):
@@ -414,11 +383,6 @@ def is_signature_id(item_id):
     )
 
 
-def is_current_scheme_id(item_id):
-    return isinstance(item_id, str) and item_id.startswith(_ID_HEAD) \
-        and len(item_id) == CANONICAL_ID_LEN
-
-
 def to_current_scheme_id(item_id):
     """Rewrite any signature id to the current scheme, keeping its 200-bit body.
 
@@ -486,15 +450,6 @@ def _band_key(signature, band):
     return (signature >> shift) & ((1 << (high - low)) - 1)
 
 
-def _band_keys(bits, band):
-    """The band key of EVERY signature at once, from an unpacked bit matrix."""
-    low, high = _BAND_BITS[band]
-    keys = np.zeros(bits.shape[0], dtype=np.uint64)
-    for column in range(low, high):
-        keys = (keys << np.uint64(1)) | bits[:, column].astype(np.uint64)
-    return keys
-
-
 def _iter_group_pairs(order, starts, sizes, limit=_PAIR_CHUNK):
     """Every (a, b), a < b, inside each sorted group - yielded in bounded slices.
 
@@ -528,105 +483,6 @@ def _iter_group_pairs(order, starts, sizes, limit=_PAIR_CHUNK):
         )
         base = starts[group]
         yield order[base + first], order[base + second]
-
-
-def near_duplicate_pairs(
-    packed, valid, max_hamming=SIGNATURE_MATCH_MAX_HAMMING, progress=None
-):
-    """Every pair of rows whose signatures are within ``max_hamming`` bits.
-
-    Blocks on the bit-aligned bands (pigeonhole: a pair within tolerance MUST
-    share a whole band), then measures the candidates with one vectorized XOR +
-    popcount per slice. This is the whole-catalogue form of
-    ``SignatureIndex.find_candidates`` - the same comparisons, done as big array
-    operations instead of one call per track - and it streams: only ``_PAIR_CHUNK``
-    candidate pairs are ever resident, however crowded the band.
-
-    ``progress(band, bands, candidates, survivors)`` is called after each band, so
-    a caller running this over a whole library can say what it is doing.
-    """
-    rows = np.flatnonzero(valid).astype(np.int64)
-    if rows.size < 2:
-        empty = np.empty(0, dtype=np.int64)
-        return empty, empty
-    subject = packed[rows]
-    # Unpacked once, not per band: 200 bits x n rows is a byte a bit, which for a
-    # 200k-track library is 38 MB - a rounding error next to the candidate pairs
-    # this is here to avoid generating.
-    bits = np.unpackbits(subject, axis=1)
-    head = np.ascontiguousarray(subject[:, :_HEAD_BYTES]).view(np.uint16)
-    left_out = []
-    right_out = []
-    counters = {"candidates": 0, "survivors": 0, "bands": 0}
-    lock = threading.Lock()
-
-    def scan_band(band):
-        local_left = []
-        local_right = []
-        candidates = 0
-        survivors = 0
-        keys = _band_keys(bits, band)
-        order = np.argsort(keys, kind="stable")
-        _unique, starts, sizes = np.unique(
-            keys[order], return_index=True, return_counts=True
-        )
-        crowded = sizes > 1
-        del keys
-        if crowded.any():
-            for first, second in _iter_group_pairs(order, starts[crowded], sizes[crowded]):
-                candidates += first.size
-                near = _POPCOUNT16[head[first] ^ head[second]].sum(
-                    axis=1, dtype=np.int16
-                ) <= max_hamming
-                if not near.any():
-                    continue
-                first = first[near]
-                second = second[near]
-                distances = _POPCOUNT[subject[first] ^ subject[second]].sum(
-                    axis=1, dtype=np.int16
-                )
-                keep = distances <= max_hamming
-                if keep.any():
-                    # Survivors are a thin residue of the candidates - int32 rows
-                    # keep even a pathological catalogue's residue small.
-                    local_left.append(rows[first[keep]].astype(np.int32))
-                    local_right.append(rows[second[keep]].astype(np.int32))
-                    survivors += int(keep.sum())
-        with lock:
-            left_out.extend(local_left)
-            right_out.extend(local_right)
-            counters["candidates"] += candidates
-            counters["survivors"] += survivors
-            counters["bands"] += 1
-            if progress is not None:
-                progress(
-                    counters["bands"], _BAND_COUNT,
-                    counters["candidates"], counters["survivors"],
-                )
-
-    # The bands are independent, and every operation in a band - the sort, the
-    # XOR, the popcount lookup - is a numpy call that drops the GIL, so this is
-    # one of the rare places where THREADS genuinely parallelize Python. The pair
-    # order does not matter: the pairs are deduplicated and sorted at the end.
-    workers = _scan_threads()
-    if workers > 1:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            list(pool.map(scan_band, range(_BAND_COUNT)))
-    else:
-        for band in range(_BAND_COUNT):
-            scan_band(band)
-    bits = None
-    head = None
-    if not left_out:
-        empty = np.empty(0, dtype=np.int64)
-        return empty, empty
-    left = np.concatenate(left_out).astype(np.int64)
-    right = np.concatenate(right_out).astype(np.int64)
-    low = np.minimum(left, right)
-    high = np.maximum(left, right)
-    # The same pair can surface in several bands.
-    unique = np.unique(low * packed.shape[0] + high)
-    return unique // packed.shape[0], unique % packed.shape[0]
 
 
 class SignatureIndex:

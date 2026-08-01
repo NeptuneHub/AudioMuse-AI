@@ -637,6 +637,45 @@ class TestRealCanonicalization:
         second = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
         assert second == {'relabelled': 0, 'duplicates': 0}
 
+    def test_an_unbound_fp0_row_is_not_handed_back_as_legacy_work(self, db):
+        """A provider migration unbinds every song the target does not have, which
+        deletes the 'analysis' map row that used to be the ONLY evidence a row was
+        minted unsignable. The row then looked like legacy work to this migration -
+        which can never relabel it - so every boot re-hashed the whole catalogue and
+        re-minted a mapping to a provider id the server no longer has. The fp_0 head
+        is evidence nothing can unbind."""
+        from tasks import fingerprint_canonicalize as fc
+
+        flat = np.full(simhash.SIGNATURE_BITS, 0.5, dtype=np.float32)
+        unsignable_id = simhash.unsignable_canonical_id('srv', 'nav-gone')
+        _build(db, [(unsignable_id, '/music/T/tone.flac', flat)])
+        db.commit()
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result == {'relabelled': 0, 'duplicates': 0}, (
+            "an unbound fp_0 row is already canonical; it is not legacy work"
+        )
+        with db.cursor() as cur:
+            cur.execute("SELECT item_id FROM score")
+            assert [r[0] for r in cur.fetchall()] == [unsignable_id]
+            cur.execute("SELECT count(*) FROM track_server_map")
+            assert cur.fetchone()[0] == 0, (
+                "no phantom mapping to a provider id the server no longer has"
+            )
+
+    def test_an_id_that_only_looks_like_fp0_is_still_legacy_work(self, db):
+        from tasks import fingerprint_canonicalize as fc
+
+        _build(db, [('fp_0short', '/music/A/song.flac', _distinct_embedding(1))])
+        db.commit()
+
+        result = fc.canonicalize_fingerprinted_ids(conn=db, source_server_id='srv')
+
+        assert result['relabelled'] == 1, (
+            "the exemption is the exact minted fp_0 shape, not any id starting fp_0"
+        )
+
     def test_relabel_preserves_an_existing_provider_migration_tier(self, db):
         from tasks import fingerprint_canonicalize as fc
 

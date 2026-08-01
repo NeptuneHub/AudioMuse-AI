@@ -87,38 +87,23 @@ def search_artists():
               items:
                 type: object
     """
-    from tasks.artist_gmm_manager import search_artists_by_name
+    from app_artist_similarity import artist_search_response
+    from app_helper import index_error_body
+    from error.error_dictionary import UNKNOWN_ERROR_CODE
 
-    query = request.args.get('query', '')
+    query = request.args.get('query', '', type=str)
 
-    # Pagination: start / end (0-based). Defaults to first 20 results.
+    if not query or len(query) < 2:
+        return jsonify([])
+
     start = request.args.get('start', 0, type=int)
     end = request.args.get('end', None, type=int)
-    if start < 0:
-        start = 0
-    if end is not None and end <= start:
-        return jsonify([])
-    limit = (end - start) if end is not None else 20
-    offset = start
 
     try:
-        server_id, include_legacy = app_server_context.selected_server_scope()
-    except ValueError:
-        logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
-    try:
-        results = search_artists_by_name(
-            query,
-            limit=limit,
-            offset=offset,
-            server_id=server_id,
-            include_legacy_default=include_legacy,
-        )
-        results = app_server_context.scope_artist_results(results)
-        return jsonify(results)
+        return artist_search_response(query, start, end, 100)
     except Exception:
-        logger.exception("Artist search failed")
-        return jsonify([]), 200  # Return empty list on error
+        logger.exception("Error during artist search")
+        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
 
 
 def _cached_all_playlists(server_id):

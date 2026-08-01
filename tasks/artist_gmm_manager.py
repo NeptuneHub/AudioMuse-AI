@@ -14,11 +14,13 @@ per-song IVF indexes), loads it for querying, and answers the similar-artists an
 artist-search endpoints; also used by tasks.song_alchemy for artist anchors.
 
 Main Features:
-* fit_artist_gmm / select_optimal_gmm_components: fit a diagonal-covariance GMM per
-  artist, auto-selecting component count within configured bounds.
+* fit_artist_gmm: fit a diagonal-covariance GMM per artist, auto-selecting
+  component count within configured bounds.
 * gmm_soft_chamfer_distance: soft-Chamfer distance over component means for
   artist-vs-artist scoring, with a lazily loaded, force-reloadable index cache.
 * find_similar_artists / search_artists_by_name / get_artist_tracks: query surface.
+* _fit_pending_artists: fits across a loky pool, falling back loudly to in-process
+  fits if the pool cannot start, so the index is never silently left unbuilt.
 """
 
 import logging
@@ -51,14 +53,6 @@ artist_map = None
 reverse_artist_map = None
 artist_gmm_params = None
 _index_lock = threading.Lock()
-
-
-def select_optimal_gmm_components(
-    embeddings: np.ndarray,
-    min_components: int = GMM_N_COMPONENTS_MIN,
-    max_components: int = GMM_N_COMPONENTS_MAX,
-) -> int:
-    return fit_best_gmm(embeddings, min_components, max_components)[0]
 
 
 def fit_best_gmm(
@@ -348,26 +342,39 @@ def _run_fit_batches(cur, pending, artist_tracks, artist_track_hashes, dispatch)
     return fitted
 
 
+def _fit_artists_in_process(cur, pending, artist_tracks, artist_track_hashes):
+    return _run_fit_batches(
+        cur, pending, artist_tracks, artist_track_hashes,
+        lambda jobs: [_fit_artist_job(job) for job in jobs],
+    )
+
+
 def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
     workers = _gmm_worker_count(len(pending))
     logger.info(
         "Fitting %d artist GMMs across %d worker process(es)...", len(pending), workers
     )
     if workers <= 1:
-        return _run_fit_batches(
-            cur, pending, artist_tracks, artist_track_hashes,
-            lambda jobs: [_fit_artist_job(job) for job in jobs],
-        )
+        return _fit_artists_in_process(cur, pending, artist_tracks, artist_track_hashes)
 
     try:
-        with Parallel(n_jobs=workers, backend='loky', max_nbytes=None) as runner:
-            fitted = _run_fit_batches(
-                cur, pending, artist_tracks, artist_track_hashes,
-                lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs),
-            )
-            _release_gmm_pool_temp_folders()
-    finally:
-        _shutdown_gmm_pool()
+        try:
+            with Parallel(n_jobs=workers, backend='loky', max_nbytes=None) as runner:
+                fitted = _run_fit_batches(
+                    cur, pending, artist_tracks, artist_track_hashes,
+                    lambda jobs: runner(delayed(_fit_artist_job)(job) for job in jobs),
+                )
+                _release_gmm_pool_temp_folders()
+        finally:
+            _shutdown_gmm_pool()
+    except Exception:
+        logger.exception(
+            "ARTIST GMM WORKER POOL FAILED with %d worker process(es). REFITTING ALL "
+            "%d ARTIST(S) IN-PROCESS so the artist similarity index is still rebuilt. "
+            "This is slower: set INDEX_BUILD_WORKERS=1 to skip the pool outright.",
+            workers, len(pending),
+        )
+        return _fit_artists_in_process(cur, pending, artist_tracks, artist_track_hashes)
     return fitted
 
 
@@ -846,14 +853,3 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
 
     finally:
         cur.close()
-
-
-def cleanup_resources():
-    global artist_index, artist_map, reverse_artist_map, artist_gmm_params
-
-    with _index_lock:
-        artist_index = None
-        artist_map = None
-        reverse_artist_map = None
-        artist_gmm_params = None
-        logger.info("Artist index resources cleaned up")
