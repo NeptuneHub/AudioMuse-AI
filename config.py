@@ -439,18 +439,26 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres-service.playlist") # D
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "audiomusedb")
 
-# Allow an explicit DATABASE_URL to override construction (useful for docker-compose or direct env override)
+# DATABASE_URL is derived, never configured. Every deployment sets the five
+# POSTGRES_* parts above and this is the single place that assembles them, so a
+# DATABASE_URL in the environment is deliberately ignored: two config sources
+# for one connection is what broke pg_dump when only one of them was set.
 from urllib.parse import quote
 
 # Percent-encode username and password to safely include special characters like '@' in the URI
 _pg_user_esc = quote(POSTGRES_USER, safe='')
 _pg_pass_esc = quote(POSTGRES_PASSWORD, safe='')
 
-# If DATABASE_URL is set in the environment, prefer it; otherwise build one using the escaped credentials
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-)
+# The host is escaped the same way: a normal name or IP passes through untouched,
+# while the Unix socket directory the standalone builds use gets its slashes
+# percent-encoded, which is how libpq expects a socket path inside a URI.
+_pg_host_esc = quote(POSTGRES_HOST, safe='[]:')
+
+# The database name is escaped too: an unescaped '?' or '#' would otherwise start
+# a query string or a fragment and silently point the connection somewhere else.
+_pg_db_esc = quote(POSTGRES_DB, safe='')
+
+DATABASE_URL = f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{_pg_host_esc}:{POSTGRES_PORT}/{_pg_db_esc}"
 
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE", "postgres").lower()
 QUEUE_TYPE = os.environ.get("QUEUE_TYPE", "redis").lower()

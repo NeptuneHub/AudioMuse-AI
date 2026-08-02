@@ -137,13 +137,7 @@ def _get_dedicated_conn():
     import psycopg2
     import config  # noqa: F401  (lazy so tests don't need live env vars)
 
-    return psycopg2.connect(
-        host=config.POSTGRES_HOST,
-        port=config.POSTGRES_PORT,
-        user=config.POSTGRES_USER,
-        password=config.POSTGRES_PASSWORD,
-        dbname=config.POSTGRES_DB,
-    )
+    return psycopg2.connect(config.DATABASE_URL)
 
 
 def _get_redis():

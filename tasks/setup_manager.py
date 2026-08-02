@@ -34,7 +34,6 @@ import psycopg2
 from argon2 import PasswordHasher
 from argon2 import exceptions as argon2_exceptions
 from psycopg2.extras import RealDictCursor
-from urllib.parse import quote
 
 DEFAULT_CONFIG_TABLE = "app_config"
 BASIC_SERVER_FIELDS = {
@@ -83,30 +82,35 @@ def hydrate_worker_config():
 
 class SetupManager:
     def __init__(self, database_url=None):
-        self.database_url = database_url or self._get_database_url()
+        self._database_url = database_url or None
+        self._database_url_resolved = self._database_url is not None
         self.logger = logging.getLogger(__name__)
         self._password_hasher = PasswordHasher()
 
-    def _get_database_url(self):
-        env_url = os.environ.get("DATABASE_URL")
-        if env_url:
-            return env_url
+    @property
+    def database_url(self):
+        if not self._database_url_resolved:
+            self._database_url = self._get_database_url()
+            self._database_url_resolved = True
+        return self._database_url
 
+    @database_url.setter
+    def database_url(self, value):
+        self._database_url = value
+        self._database_url_resolved = True
+
+    def _get_database_url(self):
         import sys
 
-        if getattr(sys, "frozen", False):
+        # The standalone launcher imports config before it has started its
+        # embedded server, and must not dial anything: SERVICE_TYPE is set by
+        # build_child_env, so only a supervised child gets a connection.
+        if getattr(sys, "frozen", False) and not os.environ.get("SERVICE_TYPE"):
             return None
 
         import config
 
-        user = os.environ.get("POSTGRES_USER") or config.POSTGRES_USER
-        password = os.environ.get("POSTGRES_PASSWORD") or config.POSTGRES_PASSWORD
-        host = os.environ.get("POSTGRES_HOST") or config.POSTGRES_HOST
-        port = os.environ.get("POSTGRES_PORT") or config.POSTGRES_PORT
-        db = os.environ.get("POSTGRES_DB") or config.POSTGRES_DB
-        user_escaped = quote(user, safe='')
-        password_escaped = quote(password, safe='')
-        return f"postgresql://{user_escaped}:{password_escaped}@{host}:{port}/{db}"
+        return config.DATABASE_URL
 
     def get_connection(self):
         if not self.database_url:

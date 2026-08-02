@@ -1625,3 +1625,43 @@ class TestGenreVocabCoverage:
         from tasks.ai.vocab import GENRE_VOCAB
 
         assert set(config.STRATIFIED_GENRES) <= set(GENRE_VOCAB)
+
+
+class TestAiChatDbUrl:
+    @staticmethod
+    def _build(monkeypatch, database_url, user='ai_user', password='pw'):
+        import config
+        from tasks.mcp_helper import _build_ai_chat_db_url
+
+        monkeypatch.setattr(config, 'DATABASE_URL', database_url)
+        monkeypatch.setattr(config, 'AI_CHAT_DB_USER_NAME', user)
+        monkeypatch.setattr(config, 'AI_CHAT_DB_USER_PASSWORD', password)
+        return _build_ai_chat_db_url()
+
+    def test_only_the_credentials_are_swapped(self, monkeypatch):
+        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@postgres:5432/audiomusedb')
+        assert url == 'postgresql://ai_user:pw@postgres:5432/audiomusedb'
+
+    def test_ipv6_host_keeps_its_brackets(self, monkeypatch):
+        from psycopg2.extensions import parse_dsn
+
+        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@[::1]:5432/audiomusedb')
+        assert url == 'postgresql://ai_user:pw@[::1]:5432/audiomusedb'
+        assert parse_dsn(url)['host'] == '::1'
+
+    def test_unix_socket_host_survives_percent_encoded(self, monkeypatch):
+        from psycopg2.extensions import parse_dsn
+
+        url = self._build(
+            monkeypatch, 'postgresql://postgres:@%2Fvar%2Flib%2Fpgdata:5432/postgres'
+        )
+        assert parse_dsn(url)['host'] == '/var/lib/pgdata'
+        assert parse_dsn(url)['user'] == 'ai_user'
+
+    def test_uppercase_host_is_not_lowercased(self, monkeypatch):
+        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@PGHost.local:5432/db')
+        assert url == 'postgresql://ai_user:pw@PGHost.local:5432/db'
+
+    def test_no_chat_user_returns_the_primary_url_untouched(self, monkeypatch):
+        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@[::1]:5432/db', user='')
+        assert url == 'postgresql://audiomuse:secret@[::1]:5432/db'

@@ -40,9 +40,11 @@ def _build_ai_chat_db_url():
     if not AI_CHAT_DB_USER_NAME:
         return DATABASE_URL
     parsed = urlparse(DATABASE_URL)
-    host = parsed.hostname or ''
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
+    # Only the credentials are swapped: the host part is carried over verbatim.
+    # Rebuilding it from .hostname/.port would drop the brackets of an IPv6
+    # literal and mangle the percent-encoded socket directory of the standalone
+    # builds, leaving the AI chat as the one caller unable to reach the database.
+    host = parsed.netloc.rpartition('@')[2]
     return urlunparse(
         (
             parsed.scheme,

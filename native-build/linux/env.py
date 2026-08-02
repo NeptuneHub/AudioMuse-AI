@@ -20,15 +20,28 @@ Main Features:
   ``native_lib_path_restored`` applies the same fix in-process (no-op when not frozen).
 * ``build_child_env`` points model/cache/temp/backup paths at ``linux.paths`` and
   forces offline HuggingFace/Transformers for supervised Flask/RQ children.
+* It derives POSTGRES_HOST/POSTGRES_PORT from the URL the embedded server
+  reported, so the children reach the socket it actually opened rather than a
+  guess: ``config.py`` builds every connection string from those two.
 """
 
 import contextlib
 import os
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 from linux import paths
 
 _WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
+
+
+def _pg_conn_parts(database_url):
+    parts = urlsplit(database_url or "")
+    socket_dir = parse_qs(parts.query).get("host", [""])[0]
+    return (
+        socket_dir or parts.hostname or paths.pgdata_dir(),
+        str(parts.port or 5432),
+    )
 
 
 def restore_native_lib_path(env):
@@ -61,6 +74,7 @@ def native_lib_path_restored():
 def build_child_env(role, database_url, redis_url):
     env = dict(os.environ)
     model_dir = paths.model_dir()
+    pg_host, pg_port = _pg_conn_parts(database_url)
     env.update(
         {
             "AUDIOMUSE_PLATFORM": "linux",
@@ -86,8 +100,8 @@ def build_child_env(role, database_url, redis_url):
             "LYRICS_GTE_TOKENIZER_DIR": os.path.join(model_dir, "gte-multilingual-base"),
             "BACKUP_DIR": paths.backup_dir(),
             "RESTORE_LOG_DIR": paths.backup_dir(),
-            "POSTGRES_HOST": paths.pgdata_dir(),
-            "POSTGRES_PORT": "5432",
+            "POSTGRES_HOST": pg_host,
+            "POSTGRES_PORT": pg_port,
             "POSTGRES_USER": "postgres",
             "POSTGRES_PASSWORD": "",
             "POSTGRES_DB": "postgres",

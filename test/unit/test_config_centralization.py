@@ -16,6 +16,8 @@ default or use a getattr(config, ...) fallback default.
 
 Main Features:
 * config attributes exist with the documented default and coerce env overrides
+* DATABASE_URL is derived from the five POSTGRES_* parts only and a DATABASE_URL
+  env var is ignored; libpq resolves the result for TCP, IPv6 and socket hosts
 * Importer modules still reference the config names they depend on
 * Importers have no local os.environ.get or getattr-fallback default for those names
 * Repo-wide: no runtime module re-reads a config-owned env var with a default
@@ -29,6 +31,7 @@ import re
 import subprocess
 
 import pytest
+from psycopg2.extensions import parse_dsn
 
 import config
 
@@ -70,6 +73,88 @@ def test_attribute_honors_env(attr, _default, env_var, env_value, expected, monk
     finally:
         monkeypatch.delenv(env_var, raising=False)
         importlib.reload(config)
+
+
+_PG_PARTS = {
+    'POSTGRES_USER': 'myuser',
+    'POSTGRES_PASSWORD': 'mypass',
+    'POSTGRES_HOST': 'myhost',
+    'POSTGRES_PORT': '5433',
+    'POSTGRES_DB': 'mydb',
+}
+
+
+def _reload_config_with(monkeypatch, env):
+    for key in list(_PG_PARTS) + ['DATABASE_URL']:
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return importlib.reload(config)
+
+
+def _refuse_connection(*_args, **_kwargs):
+    raise RuntimeError('unit test: config reload must not open a database connection')
+
+
+class TestDatabaseUrlIsDerivedFromThePostgresParts:
+    @pytest.fixture(autouse=True)
+    def _offline_config_reload(self, monkeypatch):
+        from tasks.setup_manager import SetupManager
+
+        monkeypatch.setattr(SetupManager, 'get_connection', _refuse_connection)
+        yield
+        for key in list(_PG_PARTS) + ['DATABASE_URL']:
+            monkeypatch.delenv(key, raising=False)
+        importlib.reload(config)
+
+    def test_url_is_built_from_the_five_parts(self, monkeypatch):
+        reloaded = _reload_config_with(monkeypatch, _PG_PARTS)
+        assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/mydb'
+
+    def test_database_url_env_var_is_ignored(self, monkeypatch):
+        env = dict(_PG_PARTS, DATABASE_URL='postgresql://someone:else@elsewhere:1/other')
+        reloaded = _reload_config_with(monkeypatch, env)
+        assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/mydb'
+
+    def test_credentials_are_percent_encoded(self, monkeypatch):
+        env = dict(_PG_PARTS, POSTGRES_USER='user@domain', POSTGRES_PASSWORD='p@ss:word')
+        reloaded = _reload_config_with(monkeypatch, env)
+        assert reloaded.DATABASE_URL == 'postgresql://user%40domain:p%40ss%3Aword@myhost:5433/mydb'
+
+    def test_unix_socket_directory_host_is_percent_encoded(self, monkeypatch):
+        env = dict(_PG_PARTS, POSTGRES_HOST='/var/lib/audiomuse/pgdata')
+        reloaded = _reload_config_with(monkeypatch, env)
+        assert reloaded.DATABASE_URL == (
+            'postgresql://myuser:mypass@%2Fvar%2Flib%2Faudiomuse%2Fpgdata:5433/mydb'
+        )
+        assert parse_dsn(reloaded.DATABASE_URL)['host'] == '/var/lib/audiomuse/pgdata'
+
+    def test_socket_directory_with_a_space_stays_resolvable(self, monkeypatch):
+        env = dict(
+            _PG_PARTS,
+            POSTGRES_HOST='/Users/me/Library/Application Support/AudioMuse-AI/pgdata',
+            POSTGRES_PASSWORD='',
+            POSTGRES_USER='postgres',
+            POSTGRES_DB='postgres',
+            POSTGRES_PORT='5432',
+        )
+        reloaded = _reload_config_with(monkeypatch, env)
+        parsed = parse_dsn(reloaded.DATABASE_URL)
+        assert parsed['host'] == '/Users/me/Library/Application Support/AudioMuse-AI/pgdata'
+        assert parsed['dbname'] == 'postgres'
+        assert parsed['port'] == '5432'
+
+    def test_ipv6_host_keeps_its_brackets(self, monkeypatch):
+        env = dict(_PG_PARTS, POSTGRES_HOST='[::1]')
+        reloaded = _reload_config_with(monkeypatch, env)
+        assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@[::1]:5433/mydb'
+        assert parse_dsn(reloaded.DATABASE_URL)['host'] == '::1'
+
+    def test_database_name_is_percent_encoded(self, monkeypatch):
+        env = dict(_PG_PARTS, POSTGRES_DB='db?x#y')
+        reloaded = _reload_config_with(monkeypatch, env)
+        assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/db%3Fx%23y'
+        assert parse_dsn(reloaded.DATABASE_URL)['dbname'] == 'db?x#y'
 
 
 def _read_source(relative_path):
@@ -180,6 +265,26 @@ def _config_reread_violation(rel, node, owned):
     if name in owned:
         return f'{rel}:{node.lineno}: os.environ.get({name!r}, <default>)'
     return None
+
+
+_DERIVED_ONLY_ENV_NAMES = ('DATABASE_URL',)
+
+
+def test_no_module_reads_the_derived_database_url_from_env():
+    violations = []
+    for rel in ['config.py'] + _tracked_runtime_py_files():
+        for node in ast.walk(_parse(rel)):
+            if not (isinstance(node, ast.Call) and _is_os_environ_get(node)):
+                continue
+            if not (node.args and isinstance(node.args[0], ast.Constant)):
+                continue
+            if node.args[0].value in _DERIVED_ONLY_ENV_NAMES:
+                violations.append(f'{rel}:{node.lineno}: os.environ.get({node.args[0].value!r})')
+    assert not violations, (
+        'DATABASE_URL is derived by config.py from the POSTGRES_* parts and must never '
+        'be read from the environment, with or without a default (use config.DATABASE_URL):\n  '
+        + '\n  '.join(violations)
+    )
 
 
 def test_no_module_rereads_config_env_with_default():

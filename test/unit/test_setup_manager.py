@@ -15,7 +15,8 @@ Main Features:
 * Placeholder and empty/whitespace strings are detected while real values pass
 * Argon2id/argon2i hashes are recognized and bcrypt/plain are not
 * cast_value coerces bool/int/float/list/dict and falls back on invalid JSON
-* cast and format round-trip preserves the original value; DATABASE_URL env honored
+* cast and format round-trip preserves the original value; the connection always
+  comes from config.DATABASE_URL and a DATABASE_URL env var is ignored
 * Startup pruning deletes retired keys without touching valid config rows
 * Importing tasks.setup_manager before config keeps the DB-override init working
 """
@@ -215,51 +216,33 @@ class TestCastFormatRoundTrip:
 
 
 class TestGetDatabaseUrl:
-    def test_uses_database_url_env(self):
+    def test_returns_the_config_database_url(self):
+        import config
+
+        assert _mgr(database_url=None)._get_database_url() == config.DATABASE_URL
+
+    def test_database_url_env_var_is_ignored(self):
         with patch.dict("os.environ", {"DATABASE_URL": "postgresql://u:p@h:5/d"}, clear=False):
             url = _mgr(database_url=None)._get_database_url()
-            assert url == "postgresql://u:p@h:5/d"
+        assert url != "postgresql://u:p@h:5/d"
 
-    def test_builds_from_components(self):
-        env = {
-            "POSTGRES_USER": "myuser",
-            "POSTGRES_PASSWORD": "mypass",
-            "POSTGRES_HOST": "myhost",
-            "POSTGRES_PORT": "5433",
-            "POSTGRES_DB": "mydb",
-        }
-        old = os.environ.pop("DATABASE_URL", None)
-        try:
-            with patch.dict("os.environ", env, clear=False):
-                mgr = SetupManager.__new__(SetupManager)
-                url = mgr._get_database_url()
-                assert "myuser" in url
-                assert "mypass" in url
-                assert "myhost" in url
-                assert "5433" in url
-                assert "mydb" in url
-        finally:
-            if old is not None:
-                os.environ["DATABASE_URL"] = old
+    def test_empty_url_argument_falls_back_to_the_derived_url(self):
+        import config
 
-    def test_special_chars_escaped(self):
-        env = {
-            "POSTGRES_USER": "user@domain",
-            "POSTGRES_PASSWORD": "p@ss:word",
-            "POSTGRES_HOST": "host",
-            "POSTGRES_PORT": "5432",
-            "POSTGRES_DB": "db",
-        }
-        old = os.environ.pop("DATABASE_URL", None)
-        try:
-            with patch.dict("os.environ", env, clear=False):
-                mgr = SetupManager.__new__(SetupManager)
-                url = mgr._get_database_url()
-                assert "user%40domain" in url
-                assert "p%40ss%3Aword" in url
-        finally:
-            if old is not None:
-                os.environ["DATABASE_URL"] = old
+        assert SetupManager(database_url="").database_url == config.DATABASE_URL
+
+    def test_url_is_resolved_on_first_use_not_at_construction(self):
+        import config
+
+        mgr = SetupManager()
+        assert mgr._database_url_resolved is False
+        assert mgr.database_url == config.DATABASE_URL
+        assert mgr._database_url_resolved is True
+
+    def test_explicit_url_is_kept_and_never_resolved(self):
+        mgr = SetupManager(database_url="postgresql://explicit:pw@host:5432/db")
+        assert mgr._database_url_resolved is True
+        assert mgr.database_url == "postgresql://explicit:pw@host:5432/db"
 
 
 class TestIsValidServerConfig:
