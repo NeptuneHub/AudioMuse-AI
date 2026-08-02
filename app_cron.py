@@ -34,8 +34,10 @@ from database import (
     get_db,
     save_task_status,
     get_active_main_task,
+    clean_up_previous_main_tasks,
     INLINE_FLASK_TASK_TYPES,
 )
+from tasks.task_details import stamp
 from taskqueue import rq_queue_high, rq_queue_default
 from config import (
     TASK_STATUS_PENDING,
@@ -514,7 +516,7 @@ def _inline_progress_reporter(job_id, task_type):
                 details={
                     'message': message,
                     'status_message': message,
-                    'log': [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"],
+                    'log': [stamp(message)],
                 },
             )
         except Exception:
@@ -569,6 +571,17 @@ def run_due_cron_jobs():
                             task_type, active['task_id'], active['status'],
                         )
                         continue
+                    # The same archival the manual Start endpoints run. A headless
+                    # install never presses Start, so without this every nightly
+                    # run left its per-album child rows behind for good.
+                    # Best effort on purpose: housekeeping must never be the
+                    # reason tonight's analysis does not run.
+                    try:
+                        clean_up_previous_main_tasks()
+                    except Exception:
+                        logger.exception(
+                            "Cron: could not archive previous main tasks; enqueueing anyway"
+                        )
                 if task_type == 'analysis':
                     # mark queued in task_status
                     save_task_status(

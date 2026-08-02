@@ -122,6 +122,7 @@ from .mediaserver import (
     delete_automatic_playlists,
 )
 from .mediaserver import registry
+from .task_details import shape_log, stamp, success_recap
 from sklearn.neighbors import NearestNeighbors
 
 from .clustering_helper import (
@@ -199,6 +200,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
             "error": error_manager.build(ERR_CLUSTERING_FAILED, str(value)),
             "error_type": str(type.__name__),
             "error_value": str(value),
+            "log": [stamp("Clustering batch sub-task failed permanently after all retries.")],
         }
 
         save_task_status(
@@ -256,6 +258,7 @@ def run_clustering_batch_task(
     logger.info(f"Starting clustering batch task {current_task_id} (Batch: {batch_id_str})")
 
     with app.app_context():
+        batch_logs = []
 
         def _log_and_update(message, progress, details=None, state=TASK_STATUS_PROGRESS):
             logger.info(f"[ClusteringBatchTask-{current_task_id}] {message}")
@@ -266,6 +269,7 @@ def run_clustering_batch_task(
                 "status_message": message,
                 **(details or {}),
             }
+            db_details["log"] = shape_log(batch_logs, message, state == TASK_STATUS_SUCCESS)
             if current_job:
                 current_job.meta['progress'] = progress
                 current_job.meta['status_message'] = message
@@ -555,8 +559,11 @@ def run_clustering_task(
 
             _main_task_accumulated_details["status_message"] = message
 
-            log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
-            _main_task_accumulated_details["log"].append(log_entry)
+            shaped_log = shape_log(
+                _main_task_accumulated_details["log"],
+                message,
+                task_state == TASK_STATUS_SUCCESS,
+            )
 
             details_for_db = _main_task_accumulated_details.copy()
             details_for_db.pop('active_jobs', None)
@@ -566,6 +573,7 @@ def run_clustering_task(
             details_for_db.pop('failed_batches', None)
             details_for_db.pop('timed_out_batches', None)
             details_for_db.pop('batch_start_times', None)
+            details_for_db["log"] = shaped_log
 
             if current_job:
                 current_job.meta['progress'] = progress
@@ -732,12 +740,7 @@ def run_clustering_task(
                 f"{len(target_servers)} server(s)!"
             )
 
-            log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {final_message}"
-            _main_task_accumulated_details["log"].append(log_entry)
             logger.info(f"[MainClusteringTask-{current_task_id}] {final_message}")
-
-            final_log = _main_task_accumulated_details.get('log', [])
-            truncated_log = final_log[-10:]
 
             final_db_summary = {
                 "status_message": final_message,
@@ -748,10 +751,7 @@ def run_clustering_task(
                     s.get('playlists_created', 0) for s in successes
                 ),
                 "per_server": per_server_summary,
-                "log": truncated_log,
-                "log_storage_info": f"Log truncated to last {len(truncated_log)} entries. Original length: {len(final_log)}."
-                if len(final_log) > 10
-                else "Full log.",
+                "log": success_recap(final_message),
             }
 
             if current_job:

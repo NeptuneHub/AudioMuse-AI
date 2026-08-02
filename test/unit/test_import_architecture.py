@@ -46,6 +46,7 @@ LEAF_MODULES = {
     "ssrf_guard",
     "sanitization",
     "tasks.memory_utils",
+    "tasks.task_details",
 }
 
 ALLOWED_CYCLES = {
@@ -63,6 +64,7 @@ LAYERS = [
         "ssrf_guard",
         "sanitization",
         "tasks.memory_utils",
+        "tasks.task_details",
     },
     {
         "database",

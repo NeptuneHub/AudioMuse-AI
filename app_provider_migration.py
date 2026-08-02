@@ -84,6 +84,10 @@ provider_probe = _LazyProbe()
 
 _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex'})
 
+# How long a non-terminal wizard session is assumed to still be executable. Any
+# older one is treated as abandoned and pruned when the next session starts.
+ABANDONED_SESSION_GRACE_HOURS = 24
+
 
 # ---------------------------------------------------------------------------
 # SSRF guard for the user-supplied media-server URL. Delegates to the shared
@@ -318,9 +322,34 @@ def session_start():
 
     db = get_db()
     with db.cursor() as cur:
-        # Prune terminal rows so the table does not grow unboundedly.
-        # Safe: never touches in-flight sessions (in_progress / dry_run_ready).
-        cur.execute("DELETE FROM migration_session WHERE status IN ('completed', 'failed')")
+        # Prune terminal rows, plus wizard sessions abandoned long enough that no
+        # execute can still be running against them; ON DELETE CASCADE takes their
+        # migration_target_meta rows (one per target track, so a 190k library left
+        # a 190k-row table behind) with them. Terminal-only was not enough: 'failed'
+        # is never actually written, so an abandoned wizard parked at
+        # 'dry_run_ready' survived forever, and the page only ever resumes the
+        # newest session (ORDER BY id DESC LIMIT 1), so older ones were unreachable
+        # and could not even be discarded by hand.
+        # The age guard is what keeps this safe: a session stays 'dry_run_ready'
+        # for the WHOLE execute, so an executing migration is indistinguishable
+        # from an abandoned one by status alone. Deleting one mid-execute would let
+        # the final "SET status = 'completed'" match zero rows while the catalogue
+        # commit still lands, leaving a repointed catalogue with no completed
+        # marker for the retry to find.
+        # The newest row is exempt from the age rule on purpose: it is the only one
+        # the wizard ever resumes, so it is both the session a user may still be
+        # working through and the one any running execute belongs to. created_at is
+        # never refreshed by a wizard step, so without that exemption a multi-day
+        # manual-matching session would be deleted as "abandoned" - and deleting it
+        # mid-execute would let the catalogue repoint commit while the final
+        # "SET status = 'completed'" matched zero rows, leaving no marker for the
+        # retry and reporting FAILURE for a migration that fully applied.
+        cur.execute(
+            "DELETE FROM migration_session WHERE status IN ('completed', 'failed') "
+            "OR (id < (SELECT MAX(id) FROM migration_session) "
+            "AND created_at < NOW() - make_interval(hours => %s))",
+            (ABANDONED_SESSION_GRACE_HOURS,),
+        )
         cur.execute(
             "INSERT INTO migration_session "
             "(source_type, target_type, target_creds, state, status) "
@@ -1633,7 +1662,28 @@ def dry_run_report(session_id):
               type: string
       404:
         description: Session not found.
+      410:
+        description: The migration already ran; its dry-run staging data has been discarded.
     """
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT status FROM migration_session WHERE id = %s", (session_id,))
+        row = cur.fetchone()
+    if row is None:
+        return jsonify({'error': 'session not found'}), 404
+    # Applying a migration discards the per-track staging rows and the mapping
+    # blob this CSV is built from. Without this guard the report would still
+    # render, with every new-side cell blank and match_source 'orphan' - a
+    # confident report of total failure for a migration that fully succeeded.
+    if row[0] in ('completed', 'failed'):
+        return jsonify(
+            {
+                'error': 'This migration has already been applied; its dry-run '
+                         'staging data was discarded. Download the report before '
+                         'running the migration.'
+            }
+        ), 410
+
     state = _load_state(session_id)
     if state is None:
         return jsonify({'error': 'session not found'}), 404

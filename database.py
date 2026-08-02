@@ -54,6 +54,8 @@ from config import (
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
+ORPHAN_CHILD_GRACE_MINUTES = 30
+
 SELF_MANAGED_TASK_TYPES = ('server_sweep', 'alchemy_radio')
 
 INLINE_FLASK_TASK_TYPES = ('alchemy_radio',)
@@ -2142,6 +2144,12 @@ def clean_up_previous_main_tasks():
         TASK_STATUS_SUCCESS,
     )
 
+    live_parent_statuses = (
+        TASK_STATUS_PENDING,
+        TASK_STATUS_STARTED,
+        TASK_STATUS_PROGRESS,
+    )
+
     try:
         cur.execute(
             "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status "
@@ -2220,10 +2228,42 @@ def clean_up_previous_main_tasks():
                 )
             archived_count += 1
 
-        if archived_count > 0:
+        orphans_deleted = 0
+        with db.cursor() as reap_cur:
+            reap_cur.execute(
+                """
+                SELECT child.parent_task_id
+                FROM task_status AS child
+                WHERE child.parent_task_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM task_status AS parent
+                      WHERE parent.task_id = child.parent_task_id
+                        AND (parent.status IN %s
+                             OR parent.timestamp > NOW() - make_interval(mins => %s))
+                  )
+                GROUP BY child.parent_task_id
+                HAVING MAX(child.timestamp) <= NOW() - make_interval(mins => %s)
+                """,
+                (
+                    live_parent_statuses,
+                    ORPHAN_CHILD_GRACE_MINUTES,
+                    ORPHAN_CHILD_GRACE_MINUTES,
+                ),
+            )
+            dead_parents = [r[0] for r in reap_cur.fetchall()]
+            if dead_parents:
+                reap_cur.execute(
+                    "DELETE FROM task_status WHERE parent_task_id = ANY(%s)",
+                    (dead_parents,),
+                )
+                orphans_deleted = reap_cur.rowcount
+
+        if archived_count > 0 or orphans_deleted > 0:
             db.commit()
             logger.info(
-                f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks."
+                f"Archived {archived_count} previous main tasks, deleted "
+                f"{deleted_children_count} child tasks and reaped {orphans_deleted} "
+                f"orphaned child rows."
             )
         else:
             logger.info("No previous main tasks found to clean up.")

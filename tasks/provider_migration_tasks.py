@@ -709,9 +709,11 @@ def _run_migration_transaction(
     _stage_post_migration_alignment(cur, alignment_task_id)
 
     cur.execute(
-        "UPDATE migration_session SET status = 'completed', completed_at = NOW() WHERE id = %s",
+        "UPDATE migration_session SET status = 'completed', completed_at = NOW(), "
+        "state = '{}'::jsonb WHERE id = %s",
         (session_id,),
     )
+    cur.execute("DELETE FROM migration_target_meta WHERE session_id = %s", (session_id,))
 
     # item_ids never moved, so every similarity index still points at the right songs.
     return False

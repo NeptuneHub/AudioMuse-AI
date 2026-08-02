@@ -44,7 +44,6 @@ Main Features:
   been told to reload them.
 """
 
-import time
 import logging
 import uuid
 from collections import defaultdict
@@ -57,6 +56,7 @@ from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION, ERR_INDEX_BUILD
 
 from .mediaserver import registry
+from .task_details import shape_log, stamp
 
 from psycopg2 import OperationalError
 
@@ -92,9 +92,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
     with app.app_context():
         initial_details = {
             "message": "Starting per-server library cleanup...",
-            "log": [
-                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Library cleanup task started."
-            ],
+            "log": [stamp("Library cleanup task started.")],
         }
         save_task_status(
             current_task_id, "cleaning", TASK_STATUS_STARTED, progress=0, details=initial_details
@@ -107,14 +105,11 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
             current_progress = progress
             logger.info(f"[CleaningTask-{current_task_id}] {message}")
             details = {**kwargs, "status_message": message}
-            log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
             task_state = kwargs.get('task_state', TASK_STATUS_PROGRESS)
 
-            if task_state != TASK_STATUS_SUCCESS:
-                current_task_logs.append(log_entry)
-                details["log"] = current_task_logs
-            else:
-                details["log"] = [f"Task completed successfully. Final status: {message}"]
+            details["log"] = shape_log(
+                current_task_logs, message, task_state == TASK_STATUS_SUCCESS
+            )
 
             if current_job:
                 current_job.meta.update(

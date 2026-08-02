@@ -85,6 +85,7 @@ from sanitization import sanitize_string_for_db
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
 from tasks.provider_migration_matcher import CandidateIndex
+from tasks.task_details import stamp
 
 logger = logging.getLogger(__name__)
 
@@ -536,7 +537,7 @@ def _make_reporter(task_id, label, full_refresh=None):
         details = {
             'status_message': message,
             'message': message,
-            'log': [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"],
+            'log': [stamp(message)],
         }
         if full_refresh is not None:
             details['full_refresh'] = bool(full_refresh)

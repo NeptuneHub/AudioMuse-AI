@@ -49,6 +49,8 @@ from sanitization import sanitize_string_for_db
 from error import error_manager
 from error.error_dictionary import ERR_DB_CONNECTION
 
+from ..task_details import DEFAULT_LOG_CAP, shape_log, stamp
+
 _SONG_EXPORTS = frozenset((
     'analysis_server_identity', 'catalog_item_id', 'provider_item_id',
     'compute_other_features_str', 'ensure_musicnn_sessions',
@@ -85,10 +87,10 @@ logger = logging.getLogger(__name__)
 
 def make_task_reporter(task_id, task_type, job, initial_message,
                         parent_task_id=None, sub_type_identifier=None,
-                        base_details=None, log_cap=200, prefix=None,
+                        base_details=None, log_cap=DEFAULT_LOG_CAP, prefix=None,
                         progress_base=0.0, progress_span=100.0,
                         downgrade_terminal=False, min_db_interval=0.0):
-    logs = [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {initial_message}"]
+    logs = [stamp(initial_message)]
     base = dict(base_details or {})
     state = {'progress': 0, 'last_db': float('-inf')}
     label = prefix or f"{task_type}-{task_id}"
@@ -112,13 +114,9 @@ def make_task_reporter(task_id, task_type, job, initial_message,
         if downgrade_terminal and task_state in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE):
             task_state = TASK_STATUS_PROGRESS
         scaled = int(progress_base + (progress or 0) * progress_span / 100.0)
-        if task_state == TASK_STATUS_SUCCESS:
-            details["log"] = [f"Task completed successfully. Final status: {message}"]
-        else:
-            logs.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
-            if len(logs) > log_cap:
-                del logs[:-log_cap]
-            details["log"] = logs
+        details["log"] = shape_log(
+            logs, message, task_state == TASK_STATUS_SUCCESS, cap=log_cap
+        )
         if job:
             job.meta.update(
                 {'progress': scaled, 'status_message': message, 'details': details}
