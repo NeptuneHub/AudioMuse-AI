@@ -190,7 +190,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.1.1"
+APP_VERSION = "v3.1.2"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -439,17 +439,29 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres-service.playlist") # D
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "audiomusedb")
 
-# Allow an explicit DATABASE_URL to override construction (useful for docker-compose or direct env override)
+# DATABASE_URL is derived, never configured. Every deployment sets the five
+# POSTGRES_* parts above and this is the single place that assembles them, so a
+# DATABASE_URL in the environment is deliberately ignored: two config sources
+# for one connection is what broke pg_dump when only one of them was set.
 from urllib.parse import quote
 
 # Percent-encode username and password to safely include special characters like '@' in the URI
 _pg_user_esc = quote(POSTGRES_USER, safe='')
 _pg_pass_esc = quote(POSTGRES_PASSWORD, safe='')
 
-# If DATABASE_URL is set in the environment, prefer it; otherwise build one using the escaped credentials
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+# The host is escaped the same way: a normal name or IP passes through untouched,
+# while the Unix socket directory the standalone builds use gets its slashes
+# percent-encoded, which is how libpq expects a socket path inside a URI.
+_pg_host_esc = quote(POSTGRES_HOST, safe='[]:')
+
+# Database name and port are escaped too. Every part has to be, or a stray '/',
+# '?' or '#' in one of them re-splits the URI: a port of "5432/evil" silently
+# moves the connection to a database named "evil/<db>" instead of failing.
+_pg_db_esc = quote(POSTGRES_DB, safe='')
+_pg_port_esc = quote(POSTGRES_PORT, safe='')
+
+DATABASE_URL = (
+    f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{_pg_host_esc}:{_pg_port_esc}/{_pg_db_esc}"
 )
 
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE", "postgres").lower()

@@ -18,6 +18,8 @@ Main Features:
 * Create returning the zipped backup file name as JSON; download serving only
   filenames matching the backup pattern and 404ing everything else.
 * Zip-or-sql detection by magic bytes with in-zip .sql extraction for restore.
+* pg_dump/psql connection args come from config.DATABASE_URL, with the password
+  moved into PGPASSWORD so it never appears in argv.
 """
 
 import io
@@ -27,6 +29,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from flask import Flask
+from psycopg2.extensions import parse_dsn
 
 import app_backup
 
@@ -240,6 +243,71 @@ class TestFeedDumpStrip:
         assert result.get('ok') is not True
         assert 'error' in result
         assert fake.closed is True
+
+
+class TestPgConnectionArgs:
+    def test_pg_dump_targets_the_database_url(self, monkeypatch):
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://audiomuse:pw@postgres:5432/audiomusedb'
+        )
+        cmd = app_backup._pg_cmd('pg_dump', '--clean')
+        assert cmd == [
+            'pg_dump', '-d', 'postgresql://audiomuse@postgres:5432/audiomusedb', '--clean',
+        ]
+
+    def test_password_goes_to_pgpassword_and_never_into_argv(self, monkeypatch):
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://audiomuse:s3cr%40t@db:5432/audiomusedb'
+        )
+        assert 's3cr' not in ' '.join(app_backup._pg_cmd('pg_dump'))
+        assert app_backup._pg_env()['PGPASSWORD'] == 's3cr@t'
+
+    def test_unix_socket_url_still_resolves_to_the_socket_directory(self, monkeypatch):
+        monkeypatch.setattr(
+            app_backup.config,
+            'DATABASE_URL',
+            'postgresql://postgres:@%2Fvar%2Flib%2Fpgdata:5432/postgres',
+        )
+        cmd = app_backup._pg_cmd('psql', '-v', 'ON_ERROR_STOP=1')
+        assert cmd == [
+            'psql',
+            '-d',
+            'postgresql://postgres@%2Fvar%2Flib%2Fpgdata:5432/postgres',
+            '-v',
+            'ON_ERROR_STOP=1',
+        ]
+        assert parse_dsn(cmd[2])['host'] == '/var/lib/pgdata'
+        assert app_backup._pg_env()['PGPASSWORD'] == ''
+
+    def test_unusable_connection_releases_the_restore_lock_and_logs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_backup.config, 'DATABASE_URL', 'postgresql://u:p@[::1:5432/db')
+        released = []
+        monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: released.append(True))
+        log_file = tmp_path / 'restore.log'
+        assert app_backup._run_restore_runner(str(tmp_path / 'dump.sql'), str(log_file)) == 1
+        assert released == [True]
+        assert 'unusable' in log_file.read_text()
+
+    def test_create_backup_runs_pg_dump_against_the_database_url(
+        self, client, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://audiomuse:pw@postgres:5432/audiomusedb'
+        )
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen['cmd'] = cmd
+            seen['env'] = kwargs['env']
+            kwargs['stdout'].write('-- dump\n')
+            return MagicMock(returncode=0, stderr='')
+
+        monkeypatch.setattr(app_backup.subprocess, 'run', fake_run)
+        assert client.post('/api/backup/create').status_code == 200
+        assert 'postgresql://audiomuse@postgres:5432/audiomusedb' in seen['cmd']
+        assert '-h' not in seen['cmd']
+        assert seen['env']['PGPASSWORD'] == 'pw'
 
 
 class TestRestoreChunkProgress:

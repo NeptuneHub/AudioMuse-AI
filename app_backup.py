@@ -15,6 +15,9 @@ workers around a restore.
 Main Features:
 * Routes: `/backup` page, `/api/backup/create`, `/api/backup/download/<filename>`,
   `/api/backup/restore`.
+* Connects exactly like the rest of the app: `pg_dump`/`psql` are handed
+  `config.DATABASE_URL`, with the password moved into PGPASSWORD so it never
+  reaches argv or the restore log.
 * Serializes restores across containers with a self-releasing Redis lock and
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
 * Backups are compressed to .zip; restore accepts .sql or .zip uploads
@@ -32,9 +35,11 @@ import logging
 import tempfile
 import zipfile
 from datetime import datetime
+from functools import lru_cache
+from urllib.parse import unquote, urlsplit, urlunsplit
 from flask import Blueprint, render_template, jsonify, request, send_file
 from redis.exceptions import RedisError
-from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
+import config
 import restart_manager
 from taskqueue import new_redis_connection
 from error import error_manager
@@ -92,25 +97,33 @@ def _restore_lock_held():
         return True
 
 
+@lru_cache(maxsize=1)
+def _split_conninfo(database_url):
+    parts = urlsplit(database_url)
+    userinfo, at, hostport = parts.netloc.rpartition('@')
+    user, _, password = userinfo.partition(':')
+    conninfo = urlunsplit(
+        (parts.scheme, f"{user}{at}{hostport}", parts.path, parts.query, parts.fragment)
+    )
+    return conninfo, unquote(password)
+
+
+def _pg_conninfo():
+    return _split_conninfo(config.DATABASE_URL)
+
+
 def _pg_env():
     """Return a copy of os.environ with PGPASSWORD set."""
+    _, password = _pg_conninfo()
     env = os.environ.copy()
-    env['PGPASSWORD'] = POSTGRES_PASSWORD
+    env['PGPASSWORD'] = password
     return env
 
 
 def _pg_cmd(tool, *extra_args):
-    """Build a pg command list with common connection args."""
-    return [
-        tool,
-        '-h',
-        POSTGRES_HOST,
-        '-p',
-        POSTGRES_PORT,
-        '-U',
-        POSTGRES_USER,
-        *extra_args,
-    ]
+    """Build a pg command list with the connection string."""
+    conninfo, _ = _pg_conninfo()
+    return [tool, '-d', conninfo, *extra_args]
 
 
 # Only files created by create_backup may be served by the download route.
@@ -178,11 +191,18 @@ def _extract_sql_if_zip(dump_file, log):
 def _run_restore_runner(dump_file, log_file):
     """Run the restore outside the Flask request in a detached process."""
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    env = _pg_env()
     with open(log_file, 'a', encoding='utf-8', errors='ignore') as log:
         log.write(f"Restore runner started at {datetime.now().isoformat()}\n")
         log.write(f"Dump file: {dump_file}\n")
         log.flush()
+
+        try:
+            env = _pg_env()
+        except ValueError as exc:
+            log.write(f"Restore FAILED: the configured database connection is unusable: {exc}\n")
+            log.flush()
+            _release_restore_lock()
+            return 1
 
         # Worker stop is published by the Flask restore endpoint before this
         # detached runner starts. The runner only waits briefly to allow
@@ -216,8 +236,6 @@ def _run_restore_runner(dump_file, log_file):
 
         restore_cmd = _pg_cmd(
             'psql',
-            '-d',
-            POSTGRES_DB,
             '-v',
             'ON_ERROR_STOP=1',
             '--single-transaction',
@@ -286,7 +304,7 @@ def _run_restore_runner(dump_file, log_file):
                 from database import USERS_PASSWORD_CHANGED_AT_DDL
 
                 ensure_cmd = _pg_cmd(
-                    'psql', '-d', POSTGRES_DB, '-v', 'ON_ERROR_STOP=1',
+                    'psql', '-v', 'ON_ERROR_STOP=1',
                     '-c', USERS_PASSWORD_CHANGED_AT_DDL,
                 )
                 ensure_ret = -1
@@ -423,7 +441,7 @@ def create_backup():
     filename = f"audiomuse_backup_{timestamp}.sql"
     filepath = os.path.join(BACKUP_DIR, filename)
 
-    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '--no-owner', '--no-acl', '-d', POSTGRES_DB)
+    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '--no-owner', '--no-acl')
 
     try:
         with open(filepath, 'w') as f:
