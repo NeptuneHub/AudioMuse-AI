@@ -215,28 +215,40 @@ class TestCastFormatRoundTrip:
         assert recovered == original
 
 
+DERIVED = "postgresql://derived:pw@derived-host:5432/derived-db"
+FROM_ENV = "postgresql://fromenv:pw@fromenv-host:5432/fromenv-db"
+
+
 class TestGetDatabaseUrl:
-    def test_returns_the_config_database_url(self):
+    @pytest.fixture(autouse=True)
+    def _derived_url(self, monkeypatch):
         import config
 
-        assert _mgr(database_url=None)._get_database_url() == config.DATABASE_URL
+        monkeypatch.setattr(config, 'DATABASE_URL', DERIVED)
+
+    def test_returns_the_config_database_url(self):
+        assert _mgr(database_url=None)._get_database_url() == DERIVED
 
     def test_database_url_env_var_is_ignored(self):
-        with patch.dict("os.environ", {"DATABASE_URL": "postgresql://u:p@h:5/d"}, clear=False):
-            url = _mgr(database_url=None)._get_database_url()
-        assert url != "postgresql://u:p@h:5/d"
+        with patch.dict("os.environ", {"DATABASE_URL": FROM_ENV}, clear=False):
+            assert _mgr(database_url=None)._get_database_url() == DERIVED
+
+    def test_postgres_part_env_vars_are_ignored_too(self):
+        env = {"POSTGRES_HOST": "late-host", "POSTGRES_DB": "late-db", "POSTGRES_PORT": "5599"}
+        with patch.dict("os.environ", env, clear=False):
+            assert _mgr(database_url=None)._get_database_url() == DERIVED
 
     def test_empty_url_argument_falls_back_to_the_derived_url(self):
+        assert SetupManager(database_url="").database_url == DERIVED
+
+    def test_url_is_resolved_on_first_use_not_at_construction(self, monkeypatch):
         import config
 
-        assert SetupManager(database_url="").database_url == config.DATABASE_URL
-
-    def test_url_is_resolved_on_first_use_not_at_construction(self):
-        import config
-
+        monkeypatch.setattr(config, 'DATABASE_URL', 'postgresql://stale:pw@stale-host:5432/stale')
         mgr = SetupManager()
         assert mgr._database_url_resolved is False
-        assert mgr.database_url == config.DATABASE_URL
+        monkeypatch.setattr(config, 'DATABASE_URL', DERIVED)
+        assert mgr.database_url == DERIVED
         assert mgr._database_url_resolved is True
 
     def test_explicit_url_is_kept_and_never_resolved(self):

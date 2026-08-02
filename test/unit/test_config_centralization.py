@@ -17,7 +17,10 @@ default or use a getattr(config, ...) fallback default.
 Main Features:
 * config attributes exist with the documented default and coerce env overrides
 * DATABASE_URL is derived from the five POSTGRES_* parts only and a DATABASE_URL
-  env var is ignored; libpq resolves the result for TCP, IPv6 and socket hosts
+  env var is ignored; libpq resolves the result for TCP, IPv6 and socket hosts,
+  and every part is escaped so none of them can re-split the URI
+* No module outside test/ reads DATABASE_URL from the environment, by get/getenv
+  or by subscript
 * Importer modules still reference the config names they depend on
 * Importers have no local os.environ.get or getattr-fallback default for those names
 * Repo-wide: no runtime module re-reads a config-owned env var with a default
@@ -156,6 +159,17 @@ class TestDatabaseUrlIsDerivedFromThePostgresParts:
         assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/db%3Fx%23y'
         assert parse_dsn(reloaded.DATABASE_URL)['dbname'] == 'db?x#y'
 
+    def test_a_malformed_port_cannot_repoint_the_database(self, monkeypatch):
+        env = dict(_PG_PARTS, POSTGRES_PORT='5432/evil')
+        reloaded = _reload_config_with(monkeypatch, env)
+        parsed = parse_dsn(reloaded.DATABASE_URL)
+        assert parsed['dbname'] == 'mydb'
+        assert parsed['port'] == '5432/evil'
+
+    def test_a_normal_port_is_left_alone(self, monkeypatch):
+        reloaded = _reload_config_with(monkeypatch, _PG_PARTS)
+        assert reloaded.DATABASE_URL.endswith('@myhost:5433/mydb')
+
 
 def _read_source(relative_path):
     repo_root = os.path.normpath(
@@ -270,20 +284,43 @@ def _config_reread_violation(rel, node, owned):
 _DERIVED_ONLY_ENV_NAMES = ('DATABASE_URL',)
 
 
+def _tracked_py_files_outside_tests():
+    out = subprocess.check_output(['git', 'ls-files', '*.py'], cwd=_REPO_ROOT).decode('utf-8')
+    return [rel for rel in out.splitlines() if rel and not rel.startswith('test/')]
+
+
+def _is_os_environ_subscript(node):
+    if not isinstance(node, ast.Subscript):
+        return False
+    target = node.value
+    return (
+        isinstance(target, ast.Attribute)
+        and target.attr == 'environ'
+        and isinstance(target.value, ast.Name)
+        and target.value.id == 'os'
+    )
+
+
+def _env_name_read(node):
+    if isinstance(node, ast.Call) and _is_os_environ_get(node):
+        if node.args and isinstance(node.args[0], ast.Constant):
+            return node.args[0].value
+    if _is_os_environ_subscript(node) and isinstance(node.slice, ast.Constant):
+        return node.slice.value
+    return None
+
+
 def test_no_module_reads_the_derived_database_url_from_env():
     violations = []
-    for rel in ['config.py'] + _tracked_runtime_py_files():
+    for rel in _tracked_py_files_outside_tests():
         for node in ast.walk(_parse(rel)):
-            if not (isinstance(node, ast.Call) and _is_os_environ_get(node)):
-                continue
-            if not (node.args and isinstance(node.args[0], ast.Constant)):
-                continue
-            if node.args[0].value in _DERIVED_ONLY_ENV_NAMES:
-                violations.append(f'{rel}:{node.lineno}: os.environ.get({node.args[0].value!r})')
+            name = _env_name_read(node)
+            if name in _DERIVED_ONLY_ENV_NAMES:
+                violations.append(f'{rel}:{node.lineno}: reads {name!r} from the environment')
     assert not violations, (
         'DATABASE_URL is derived by config.py from the POSTGRES_* parts and must never '
-        'be read from the environment, with or without a default (use config.DATABASE_URL):\n  '
-        + '\n  '.join(violations)
+        'be read from the environment, by get/getenv or subscript, with or without a '
+        'default (use config.DATABASE_URL):\n  ' + '\n  '.join(violations)
     )
 
 

@@ -25,6 +25,11 @@ Main Features:
   parameters in config.py, without rewriting values that are still valid.
 * Hashes secrets with Argon2, skips re-hashing values already hashed, treats
   placeholder values as unset, and reports whether server/auth setup is complete.
+* The connection is always ``config.DATABASE_URL`` and is resolved on first use,
+  not at construction, so importing this module never pulls in config. In a
+  frozen build only a supervised child connects at all: the standalone launcher
+  imports config before its embedded Postgres exists and must dial nothing, and
+  ``build_child_env`` sets SERVICE_TYPE on exactly the children.
 """
 
 import os
@@ -102,9 +107,6 @@ class SetupManager:
     def _get_database_url(self):
         import sys
 
-        # The standalone launcher imports config before it has started its
-        # embedded server, and must not dial anything: SERVICE_TYPE is set by
-        # build_child_env, so only a supervised child gets a connection.
         if getattr(sys, "frozen", False) and not os.environ.get("SERVICE_TYPE"):
             return None
 

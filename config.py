@@ -454,11 +454,15 @@ _pg_pass_esc = quote(POSTGRES_PASSWORD, safe='')
 # percent-encoded, which is how libpq expects a socket path inside a URI.
 _pg_host_esc = quote(POSTGRES_HOST, safe='[]:')
 
-# The database name is escaped too: an unescaped '?' or '#' would otherwise start
-# a query string or a fragment and silently point the connection somewhere else.
+# Database name and port are escaped too. Every part has to be, or a stray '/',
+# '?' or '#' in one of them re-splits the URI: a port of "5432/evil" silently
+# moves the connection to a database named "evil/<db>" instead of failing.
 _pg_db_esc = quote(POSTGRES_DB, safe='')
+_pg_port_esc = quote(POSTGRES_PORT, safe='')
 
-DATABASE_URL = f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{_pg_host_esc}:{POSTGRES_PORT}/{_pg_db_esc}"
+DATABASE_URL = (
+    f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{_pg_host_esc}:{_pg_port_esc}/{_pg_db_esc}"
+)
 
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE", "postgres").lower()
 QUEUE_TYPE = os.environ.get("QUEUE_TYPE", "redis").lower()

@@ -35,6 +35,7 @@ import logging
 import tempfile
 import zipfile
 from datetime import datetime
+from functools import lru_cache
 from urllib.parse import unquote, urlsplit, urlunsplit
 from flask import Blueprint, render_template, jsonify, request, send_file
 from redis.exceptions import RedisError
@@ -96,14 +97,19 @@ def _restore_lock_held():
         return True
 
 
-def _pg_conninfo():
-    parts = urlsplit(config.DATABASE_URL)
+@lru_cache(maxsize=1)
+def _split_conninfo(database_url):
+    parts = urlsplit(database_url)
     userinfo, at, hostport = parts.netloc.rpartition('@')
     user, _, password = userinfo.partition(':')
     conninfo = urlunsplit(
         (parts.scheme, f"{user}{at}{hostport}", parts.path, parts.query, parts.fragment)
     )
     return conninfo, unquote(password)
+
+
+def _pg_conninfo():
+    return _split_conninfo(config.DATABASE_URL)
 
 
 def _pg_env():
