@@ -22,9 +22,17 @@ Main Features:
 * A failed status QUERY is not an empty answer, and leaves the task running
 """
 
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def stub_the_start_lock(monkeypatch):
+    import app_helper
+
+    monkeypatch.setattr(app_helper, 'main_task_start_lock', nullcontext)
 
 
 class _FakeCursor:

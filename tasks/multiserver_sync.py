@@ -257,6 +257,10 @@ def recover_abandoned_sweeps():
             "a fresh alignment of all servers was enqueued."
         )
         details = json.dumps({'message': message, 'status_message': message})
+        # One transaction: revoking the abandoned sweep and inserting its
+        # replacement used to be two autocommits, so a crash in between retired the
+        # alignment and left nothing to take its place.
+        db.autocommit = False
         cur = db.cursor()
         try:
             cur.execute(
@@ -270,6 +274,7 @@ def recover_abandoned_sweeps():
             )
             revoked_count = cur.rowcount
             if not revoked_count:
+                db.rollback()
                 return None
             new_task_id = str(uuid.uuid4())
             insert_pending_sweep_row(
@@ -277,8 +282,13 @@ def recover_abandoned_sweeps():
                 'Server alignment queued for all servers.',
                 full_refresh=full_refresh,
             )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             cur.close()
+            db.autocommit = True
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_all_secondary_servers',
             kwargs={'task_id': new_task_id, 'full_refresh': full_refresh},
@@ -298,6 +308,8 @@ def recover_abandoned_sweeps():
         except Exception:
             logger.debug("Recovery connection close failed", exc_info=True)
 
+
+_JANITOR_LOCK_KEY = 6193044728150337
 
 _ORPHAN_GRACE_SECONDS = 120
 
@@ -366,6 +378,14 @@ def reap_orphaned_tasks():
 
     db = connect_raw()
     db.autocommit = True
+    # One janitor at a time. Two of them probing the same abandoned job both
+    # decided to requeue it, because retrying had no claim anywhere. The lock is
+    # session scoped, so closing this connection releases it.
+    with db.cursor() as claim:
+        claim.execute("SELECT pg_try_advisory_lock(%s)", (_JANITOR_LOCK_KEY,))
+        if not claim.fetchone()[0]:
+            db.close()
+            return 0
     missing = []
     terminal = {}
     restarted = []

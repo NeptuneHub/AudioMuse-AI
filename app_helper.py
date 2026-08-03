@@ -46,6 +46,7 @@ from database import (  # noqa: F401
     load_map_projection,
     get_task_info_from_db,
     get_task_statuses,
+    main_task_start_lock,
     get_tracks_by_ids,
     save_track_analysis_and_embedding,
     # Used internally by the build_and_store_* projection orchestration below.
@@ -448,6 +449,15 @@ def cancel_job_and_children_recursive(
     REVOKED row for the requested `job_id` (so UI sees one canonical cancelled task).
     This is intentionally simple and destructive (as requested).
     """
+    # Serialize against the start paths. Cancel scans RQ, then wipes task_status;
+    # a starter that had committed its PENDING row but not yet enqueued was invisible
+    # to the scan AND had its row deleted, so it enqueued afterwards and ran after the
+    # user pressed Cancel.
+    with main_task_start_lock():
+        return _cancel_job_and_children_locked(job_id, reason)
+
+
+def _cancel_job_and_children_locked(job_id, reason):
     cancelled_count = 0
 
     # --- Scan RQ for job ids to cancel ---

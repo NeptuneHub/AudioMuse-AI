@@ -23,6 +23,7 @@ Main Features:
 
 import logging
 import os
+import socket
 import threading
 import time
 
@@ -30,6 +31,7 @@ from app_logging import configure_logging
 from taskqueue import new_redis_connection
 from restart_manager import (
     RESTART_CHANNEL,
+    WORKER_PRESENCE_PREFIX,
     restart_supervisor_workers,
     stop_supervisor_workers,
     start_supervisor_workers,
@@ -37,6 +39,21 @@ from restart_manager import (
 
 logger = logging.getLogger(__name__)
 configure_logging()
+
+PRESENCE_REFRESH_SECONDS = 15
+
+PRESENCE_TTL_SECONDS = 60
+
+
+def presence_key():
+    return f"{WORKER_PRESENCE_PREFIX}{socket.gethostname()}:{os.getpid()}"
+
+
+def announce_presence(redis_conn):
+    try:
+        redis_conn.set(presence_key(), '1', ex=PRESENCE_TTL_SECONDS)
+    except Exception:
+        logger.exception('Could not refresh the worker restart-listener presence key')
 
 try:
     from plugin.manager import worker_presync
@@ -76,14 +93,22 @@ def main():
             pubsub.subscribe(channel)
             logger.info('Subscribed to restart channel. Waiting for restart messages...')
 
-            for message in pubsub.listen():
+            # get_message with a timeout instead of listen(): the presence key below
+            # has to be refreshed on a schedule, and listen() blocks forever between
+            # messages. Only a WORKER-role listener registers, because only it acts
+            # on a signal - the Flask container subscribes and ignores, which is why
+            # counting PUBLISH subscribers could never prove delivery.
+            while True:
+                service_type = os.environ.get('SERVICE_TYPE', '').lower()
+                if service_type == 'worker':
+                    announce_presence(redis_conn)
+                message = pubsub.get_message(timeout=PRESENCE_REFRESH_SECONDS)
                 if not message:
                     continue
                 if message.get('type') != 'message':
                     continue
                 payload = message.get('data')
                 logger.info('Control listener received signal: %s', payload)
-                service_type = os.environ.get('SERVICE_TYPE', '').lower()
                 if service_type != 'worker':
                     logger.info('Control signal received, but SERVICE_TYPE is not worker; skipping')
                     continue

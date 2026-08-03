@@ -97,14 +97,15 @@ _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex
 _COMPLETED_SESSIONS_KEPT = 10
 
 
-def _migration_job_in_flight(cur):
+def _migration_job_in_flight(cur, keys=('dry_run_task_id', 'source_refresh_task_id',
+                                        'exec_task_id')):
     # Dry-run and source-refresh write no task row and hold no lock, so their only
     # durable trace is the RQ job id parked on the session. Without this a second
     # and third session start would prune the session out from under a running dry
     # run, and the job would fail or silently update nothing.
     cur.execute(
-        "SELECT state->>'dry_run_task_id', state->>'source_refresh_task_id', "
-        "state->>'exec_task_id' FROM migration_session"
+        "SELECT " + ", ".join("state->>'%s'" % k for k in keys)
+        + " FROM migration_session"  # nosec B608 - keys are module constants
     )
     job_ids = [j for row in (cur.fetchall() or []) for j in row if j]
     if not job_ids:
@@ -1583,6 +1584,20 @@ def execute():
     if not row:
         return jsonify({'error': 'session not found'}), 404
     target_type, status, is_current_session = row[0], row[1], row[2]
+
+    # Refuse while a dry run or source refresh is still producing a plan: the
+    # finalized numbers this request confirmed would be applied against a mapping
+    # another worker is in the middle of rewriting.
+    with db.cursor() as planning:
+        if _migration_job_in_flight(
+            planning, keys=('dry_run_task_id', 'source_refresh_task_id')
+        ):
+            return jsonify(
+                {
+                    'error': 'A dry run is still building the plan. Wait for it to '
+                             'finish, then confirm the numbers again.'
+                }
+            ), 409
 
     # A session kept alive by the prune is still reachable by id. Executing an older
     # one would repoint the catalogue using a superseded plan.

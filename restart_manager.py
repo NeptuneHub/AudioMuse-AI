@@ -33,6 +33,8 @@ SUPERVISORCTL_CMD = os.environ.get('SUPERVISORCTL_CMD', '/usr/bin/supervisorctl'
 SUPERVISOR_CONF = os.environ.get('SUPERVISOR_CONF', '/etc/supervisor/conf.d/supervisord.conf')
 logger = logging.getLogger(__name__)
 
+WORKER_PRESENCE_PREFIX = 'audiomuse:worker_restart_listener:'
+
 FLASK_SERVICE = ['flask']
 WORKER_SERVICES = ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
 
@@ -44,14 +46,24 @@ def publish_control_request(action):
             socket_timeout=5,
             decode_responses=True,
         )
-        delivered = redis_conn.publish(RESTART_CHANNEL, action)
-        if not delivered:
+        # Subscriber COUNT proves nothing: the Flask container also subscribes and
+        # then ignores every signal, so publish() returns >= 1 even when the worker
+        # listener - the only one that acts - is dead. Worker listeners announce
+        # themselves with a TTL key instead, so absence is a real answer.
+        listeners = 0
+        try:
+            for _ in redis_conn.scan_iter(match=f'{WORKER_PRESENCE_PREFIX}*', count=100):
+                listeners += 1
+                break
+        except Exception:
+            logger.exception('Could not check for live worker restart listeners')
+            listeners = -1
+        redis_conn.publish(RESTART_CHANNEL, action)
+        if listeners == 0:
             logger.error(
-                'PUBLISHED %s TO REDIS BUT NO LISTENER RECEIVED IT. Every deployment '
-                'runs a restart-listener (supervisord config-restart-listener, or the '
-                'native supervisor role), so zero subscribers means it is not running '
-                'and the workers are STILL ON THE OLD CONFIGURATION. Restart the '
-                'container or the app.',
+                'PUBLISHED %s BUT NO WORKER RESTART-LISTENER IS ALIVE. The workers are '
+                'STILL ON THE OLD CONFIGURATION. Check that the worker container (or '
+                'the native worker role) is running its restart listener.',
                 action,
             )
             return False
