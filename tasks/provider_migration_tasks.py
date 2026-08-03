@@ -61,6 +61,11 @@ _ADVISORY_LOCK_KEY = 7421536190082003
 
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 
+# The orphan snapshot lives in migration_session.state, which the wizard
+# rewrites key by key precisely to avoid multi-MB blobs. Cap it and record the
+# real total rather than persisting one row per unbound song forever.
+_ORPHAN_REPORT_MAX_ROWS = 5000
+
 # The restart request is a Redis publish, so the only way it fails is a Redis
 # blip - the same blip that would have failed the alignment enqueue. A few bounded
 # retries ride that out; a persistent outage falls through to the loud log, since
@@ -201,6 +206,8 @@ def execute_provider_migration(session_id):
 
         cur = conn.cursor()
 
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+
         session = _load_session(cur, session_id)
         target_type = session['target_type']
         target_creds = session['target_creds']
@@ -242,6 +249,12 @@ def execute_provider_migration(session_id):
             )
 
         mapping = _merge_mapping(state)
+        if not mapping:
+            raise RuntimeError(
+                f"Refusing to execute migration session {session_id}: the mapping is "
+                f"empty, which would unbind every song from the default server. Re-run "
+                f"the dry run."
+            )
         new_meta = _load_new_meta_from_table(cur, session_id)
         selected_libraries = state.get('selected_libraries')
         logger.info(
@@ -361,9 +374,13 @@ def _merge_mapping(state):
     return deduped
 
 
-def _load_new_meta_from_table(cur, session_id):
+def _migration_target_meta_exists(cur):
     cur.execute("SELECT to_regclass('public.migration_target_meta')")
-    if cur.fetchone()[0] is None:
+    return cur.fetchone()[0] is not None
+
+
+def _load_new_meta_from_table(cur, session_id):
+    if not _migration_target_meta_exists(cur):
         logger.warning(
             "provider migration: migration_target_meta does not exist; item ids "
             "will be rewritten but the target's path/title/artist/album will not "
@@ -656,8 +673,17 @@ def _run_migration_transaction(
     cur.execute(
         "DELETE FROM track_server_map t USING music_servers s "
         "WHERE s.is_default AND t.server_id = s.server_id "
-        "AND NOT EXISTS (SELECT 1 FROM item_id_migration_map m WHERE m.old_id = t.item_id)"
+        "AND NOT EXISTS (SELECT 1 FROM item_id_migration_map m WHERE m.old_id = t.item_id) "
+        "RETURNING t.item_id, t.provider_track_id, t.file_path"
     )
+    orphans = {}
+    for item_id, provider_id, file_path in cur.fetchall() or []:
+        orphans.setdefault(item_id, {
+            'item_id': item_id,
+            'old_id': provider_id or '',
+            'old_path': file_path or '',
+        })
+    orphan_rows = list(orphans.values())
 
     # N duplicate files of one song each own a default-server row. The repoint below
     # would stamp them all with the SAME target id and violate the
@@ -710,10 +736,27 @@ def _run_migration_transaction(
 
     cur.execute(
         "UPDATE migration_session SET status = 'completed', completed_at = NOW(), "
-        "state = '{}'::jsonb WHERE id = %s",
-        (session_id,),
+        "state = %s::jsonb WHERE id = %s RETURNING id",
+        (
+            json.dumps(
+                {
+                    'post_migration': {
+                        'orphans': orphan_rows[:_ORPHAN_REPORT_MAX_ROWS],
+                        'orphan_total': len(orphan_rows),
+                        'matched': len(mapping or {}),
+                    }
+                }
+            ),
+            session_id,
+        ),
     )
-    cur.execute("DELETE FROM migration_target_meta WHERE session_id = %s", (session_id,))
+    if cur.fetchone() is None:
+        raise RuntimeError(
+            f"migration_session {session_id} disappeared before the completion "
+            f"marker could be written; refusing to commit the repoint"
+        )
+    if _migration_target_meta_exists(cur):
+        cur.execute("DELETE FROM migration_target_meta WHERE session_id = %s", (session_id,))
 
     # item_ids never moved, so every similarity index still points at the right songs.
     return False

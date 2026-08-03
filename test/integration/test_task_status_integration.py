@@ -30,7 +30,6 @@ import copy
 import json
 import os
 import sys
-import tempfile
 import time
 
 import pytest
@@ -46,17 +45,6 @@ except Exception:  # pragma: no cover - psycopg2 is in test/requirements.txt
 
 pytestmark = pytest.mark.integration
 
-_TASK_STATUS_DDL = (
-    "CREATE TABLE task_status ("
-    "id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, "
-    "task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, "
-    "progress INTEGER DEFAULT 0, details TEXT, "
-    "timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
-    "start_time DOUBLE PRECISION, end_time DOUBLE PRECISION)"
-)
-
-_TASK_STATUS_JSONB_DDL = _TASK_STATUS_DDL.replace("details TEXT,", "details JSONB,")
-
 _SAMPLE_DETAILS = {
     "log": ["Analyzing album", "Done"],
     "current_album": "Album X",
@@ -65,35 +53,8 @@ _SAMPLE_DETAILS = {
 }
 
 
-@pytest.fixture(scope='session')
-def pg_dsn():
-    if psycopg2 is None:
-        pytest.skip("psycopg2 not importable")
-    dsn = os.environ.get('AUDIOMUSE_TEST_DATABASE_URL')
-    if dsn:
-        try:
-            psycopg2.connect(dsn).close()
-        except Exception as e:
-            pytest.skip(f"AUDIOMUSE_TEST_DATABASE_URL not reachable: {e}")
-        yield dsn
-        return
-    try:
-        import pgserver
-    except Exception:
-        pytest.skip(
-            "No test database. Set AUDIOMUSE_TEST_DATABASE_URL to a disposable "
-            "DB, or `pip install pgserver` for an ephemeral local instance."
-        )
-    data_dir = tempfile.mkdtemp(prefix='audiomuse_pg_')
-    server = pgserver.get_server(data_dir)
-    try:
-        yield server.get_uri()
-    finally:
-        server.cleanup()
-
-
-def _make_db(pg_dsn, ddl):
-    conn = psycopg2.connect(pg_dsn)
+def _make_db(shared_pg_dsn, ddl):
+    conn = psycopg2.connect(shared_pg_dsn)
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS task_status CASCADE")
@@ -102,8 +63,8 @@ def _make_db(pg_dsn, ddl):
 
 
 @pytest.fixture
-def text_details_db(pg_dsn):
-    conn = _make_db(pg_dsn, _TASK_STATUS_DDL)
+def text_details_db(shared_pg_dsn, task_status_ddl):
+    conn = _make_db(shared_pg_dsn, task_status_ddl)
     yield conn
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS task_status CASCADE")
@@ -111,8 +72,8 @@ def text_details_db(pg_dsn):
 
 
 @pytest.fixture
-def jsonb_details_db(pg_dsn):
-    conn = _make_db(pg_dsn, _TASK_STATUS_JSONB_DDL)
+def jsonb_details_db(shared_pg_dsn, task_status_jsonb_ddl):
+    conn = _make_db(shared_pg_dsn, task_status_jsonb_ddl)
     yield conn
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS task_status CASCADE")
@@ -239,13 +200,13 @@ def _read_row(conn, task_id):
         return cur.fetchone()
 
 
-def _arm_reaper(monkeypatch, pg_dsn, job):
+def _arm_reaper(monkeypatch, shared_pg_dsn, job):
     import rq.exceptions
     import rq.job
     from tasks import multiserver_sync as sync
 
     monkeypatch.setattr(
-        sync, 'connect_raw', lambda: psycopg2.connect(pg_dsn)
+        sync, 'connect_raw', lambda: psycopg2.connect(shared_pg_dsn)
     )
     monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
     monkeypatch.setattr(
@@ -267,10 +228,10 @@ def _arm_reaper(monkeypatch, pg_dsn, job):
 
 class TestOrphanReapAgainstRealRows:
     def test_stale_progress_row_behind_a_failed_rq_job_really_becomes_failure(
-        self, text_details_db, pg_dsn, monkeypatch
+        self, text_details_db, shared_pg_dsn, monkeypatch
     ):
         _insert_row(text_details_db, 'reap-failed')
-        sync = _arm_reaper(monkeypatch, pg_dsn, _FakeJob('failed'))
+        sync = _arm_reaper(monkeypatch, shared_pg_dsn, _FakeJob('failed'))
 
         assert sync.reap_orphaned_tasks() == 1
 
@@ -280,12 +241,12 @@ class TestOrphanReapAgainstRealRows:
         assert "'failed'" in json.loads(details)['message']
 
     def test_a_row_that_turns_success_mid_pass_is_never_overwritten(
-        self, text_details_db, pg_dsn, monkeypatch
+        self, text_details_db, shared_pg_dsn, monkeypatch
     ):
         _insert_row(text_details_db, 'reap-race')
 
         def flip_to_success():
-            racer = psycopg2.connect(pg_dsn)
+            racer = psycopg2.connect(shared_pg_dsn)
             racer.autocommit = True
             try:
                 with racer.cursor() as cur:
@@ -298,7 +259,7 @@ class TestOrphanReapAgainstRealRows:
                 racer.close()
 
         sync = _arm_reaper(
-            monkeypatch, pg_dsn, _FakeJob('finished', on_status=flip_to_success)
+            monkeypatch, shared_pg_dsn, _FakeJob('finished', on_status=flip_to_success)
         )
 
         sync.reap_orphaned_tasks()
@@ -309,10 +270,10 @@ class TestOrphanReapAgainstRealRows:
         assert json.loads(details)['message'] == 'Analysis complete.'
 
     def test_a_still_started_job_leaves_its_long_running_row_untouched(
-        self, text_details_db, pg_dsn, monkeypatch
+        self, text_details_db, shared_pg_dsn, monkeypatch
     ):
         _insert_row(text_details_db, 'reap-live')
-        sync = _arm_reaper(monkeypatch, pg_dsn, _FakeJob('started'))
+        sync = _arm_reaper(monkeypatch, shared_pg_dsn, _FakeJob('started'))
 
         assert sync.reap_orphaned_tasks() == 0
 
@@ -321,10 +282,10 @@ class TestOrphanReapAgainstRealRows:
         assert progress == 40
 
     def test_a_row_inside_the_grace_period_is_not_even_a_candidate(
-        self, text_details_db, pg_dsn, monkeypatch
+        self, text_details_db, shared_pg_dsn, monkeypatch
     ):
         _insert_row(text_details_db, 'reap-young', age_seconds=5)
-        sync = _arm_reaper(monkeypatch, pg_dsn, _FakeJob('failed'))
+        sync = _arm_reaper(monkeypatch, shared_pg_dsn, _FakeJob('failed'))
 
         assert sync.reap_orphaned_tasks() == 0
 

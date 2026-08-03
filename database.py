@@ -27,6 +27,7 @@ import logging
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 
 import numpy as np
 import psycopg2
@@ -54,7 +55,17 @@ from config import (
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
-ORPHAN_CHILD_GRACE_MINUTES = 30
+# Terminal top-level rows are not only history: _run_already_finished and the
+# clustering entry guard read them to refuse a delayed RQ retry of a completed or
+# cancelled run. Keeping several per type means a tombstone always outlives the
+# retry budget that could resurrect its job, while still bounding the table.
+TASK_STATUS_MAX_ROOTS_PER_TYPE = 20
+
+# Serializes the whole check-cleanup-claim sequence every main-task start runs.
+# Session scoped rather than transaction scoped on purpose: clean_up_previous_main_tasks
+# commits in the middle of that sequence, and a transaction lock would be released
+# by that commit - reopening the very gap this closes.
+MAIN_TASK_START_LOCK_KEY = 5512740318664902
 
 SELF_MANAGED_TASK_TYPES = ('server_sweep', 'alchemy_radio')
 
@@ -311,6 +322,7 @@ def save_task_status(
     sub_type_identifier=None,
     progress=0,
     details=None,
+    raise_on_error=False,
 ):
     try:
         db = get_db()
@@ -367,6 +379,11 @@ def save_task_status(
             logger.info(f"DB transaction rolled back for task status update of {task_id}.")
         except psycopg2.Error:
             logger.exception(f"DB Error during rollback for task status {task_id}")
+        # A start path MUST know its claim failed: swallowing it there let the
+        # caller release the start lock and enqueue anyway, so the task ran with no
+        # PENDING row and the next start saw nothing running.
+        if raise_on_error:
+            raise
     finally:
         cur.close()
 
@@ -2132,6 +2149,121 @@ def drop_plugin_data_tables(plugin_id, conn=None):
         cur.close()
 
 
+@contextmanager
+def main_task_start_lock():
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s)", (MAIN_TASK_START_LOCK_KEY,))
+    try:
+        yield
+    finally:
+        try:
+            with db.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (MAIN_TASK_START_LOCK_KEY,))
+        except Exception:
+            logger.exception(
+                "Could not release the main-task start lock; it will clear when the "
+                "connection closes"
+            )
+
+
+def _parents_with_live_jobs(parent_ids):
+    # A parent row saying FAILURE does not prove the run stopped: the RQ janitor
+    # stamps FAILURE on a live root when Redis restarts and the job looks missing,
+    # while the worker keeps analysing. RQ itself is the only authority that can
+    # tell those apart without inventing a timeout, so ask it before reclaiming a
+    # family. Any error keeps every candidate, because deleting a live run's child
+    # rows makes it cancel itself.
+    if not parent_ids:
+        return set()
+    try:
+        from rq.job import Job
+        from taskqueue import redis_conn
+        import rq_job_state
+
+        live = set()
+        for job in Job.fetch_many(list(parent_ids), connection=redis_conn):
+            if job is not None and rq_job_state.is_alive_status(job.get_status(refresh=False)):
+                live.add(job.id)
+        return live
+    except Exception:
+        logger.exception(
+            "COULD NOT ASK RQ WHICH TASKS ARE STILL RUNNING. Keeping every child row "
+            "this pass rather than risk cancelling a live run"
+        )
+        return set(parent_ids)
+
+
+def prune_task_status_history():
+    db = get_db()
+    live_statuses = (
+        TASK_STATUS_PENDING,
+        TASK_STATUS_STARTED,
+        TASK_STATUS_PROGRESS,
+    )
+    terminal_statuses = (
+        TASK_STATUS_SUCCESS,
+        TASK_STATUS_FAILURE,
+        TASK_STATUS_REVOKED,
+    )
+    try:
+        children_deleted = 0
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT child.parent_task_id
+                FROM task_status AS child
+                WHERE child.parent_task_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM task_status AS parent
+                      WHERE parent.task_id = child.parent_task_id
+                        AND parent.status IN %s
+                  )
+                """,
+                (live_statuses,),
+            )
+            candidates = [r[0] for r in cur.fetchall()]
+            dead = [p for p in candidates if p not in _parents_with_live_jobs(candidates)]
+            if dead:
+                cur.execute(
+                    "DELETE FROM task_status WHERE parent_task_id = ANY(%s)", (dead,)
+                )
+                children_deleted = cur.rowcount
+
+            cur.execute(
+                """
+                DELETE FROM task_status
+                WHERE task_id IN (
+                    SELECT task_id FROM (
+                        SELECT task_id, status,
+                               row_number() OVER (
+                                   PARTITION BY task_type ORDER BY id DESC
+                               ) AS rank
+                        FROM task_status
+                        WHERE parent_task_id IS NULL
+                    ) ranked
+                    WHERE ranked.rank > %s AND ranked.status IN %s
+                )
+                """,
+                (TASK_STATUS_MAX_ROOTS_PER_TYPE, terminal_statuses),
+            )
+            parents_deleted = cur.rowcount
+        db.commit()
+        if children_deleted or parents_deleted:
+            logger.info(
+                f"Pruned {children_deleted} child task rows and {parents_deleted} "
+                f"superseded top-level task rows."
+            )
+        return children_deleted + parents_deleted
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after a failed task_status prune also failed", exc_info=True)
+        logger.exception("Error pruning task_status history")
+        return 0
+
+
 def clean_up_previous_main_tasks():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -2142,12 +2274,6 @@ def clean_up_previous_main_tasks():
         TASK_STATUS_STARTED,
         TASK_STATUS_PROGRESS,
         TASK_STATUS_SUCCESS,
-    )
-
-    live_parent_statuses = (
-        TASK_STATUS_PENDING,
-        TASK_STATUS_STARTED,
-        TASK_STATUS_PROGRESS,
     )
 
     try:
@@ -2181,22 +2307,22 @@ def clean_up_previous_main_tasks():
                     )
 
             try:
-                duration_s = None
-                if task_row['start_time'] is not None:
-                    end = task_row['end_time'] if task_row['end_time'] is not None else time.time()
-                    duration_s = max(0.0, float(end) - float(task_row['start_time']))
-                final_status = (
-                    TASK_STATUS_SUCCESS
-                    if original_status == TASK_STATUS_SUCCESS
-                    else TASK_STATUS_REVOKED
-                )
-                record_task_history(
-                    task_id,
-                    task_row['task_type'],
-                    final_status,
-                    duration_s,
-                    details=original_details_dict,
-                )
+                if original_status != TASK_STATUS_SUCCESS:
+                    duration_s = None
+                    if task_row['start_time'] is not None:
+                        end = (
+                            task_row['end_time']
+                            if task_row['end_time'] is not None
+                            else time.time()
+                        )
+                        duration_s = max(0.0, float(end) - float(task_row['start_time']))
+                    record_task_history(
+                        task_id,
+                        task_row['task_type'],
+                        TASK_STATUS_REVOKED,
+                        duration_s,
+                        details=original_details_dict,
+                    )
             except Exception as e_hist:
                 logger.debug(f"history record skipped during archive of {task_id}: {e_hist}")
 
@@ -2228,50 +2354,24 @@ def clean_up_previous_main_tasks():
                 )
             archived_count += 1
 
-        orphans_deleted = 0
-        with db.cursor() as reap_cur:
-            reap_cur.execute(
-                """
-                SELECT child.parent_task_id
-                FROM task_status AS child
-                WHERE child.parent_task_id IS NOT NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM task_status AS parent
-                      WHERE parent.task_id = child.parent_task_id
-                        AND (parent.status IN %s
-                             OR parent.timestamp > NOW() - make_interval(mins => %s))
-                  )
-                GROUP BY child.parent_task_id
-                HAVING MAX(child.timestamp) <= NOW() - make_interval(mins => %s)
-                """,
-                (
-                    live_parent_statuses,
-                    ORPHAN_CHILD_GRACE_MINUTES,
-                    ORPHAN_CHILD_GRACE_MINUTES,
-                ),
-            )
-            dead_parents = [r[0] for r in reap_cur.fetchall()]
-            if dead_parents:
-                reap_cur.execute(
-                    "DELETE FROM task_status WHERE parent_task_id = ANY(%s)",
-                    (dead_parents,),
-                )
-                orphans_deleted = reap_cur.rowcount
-
-        if archived_count > 0 or orphans_deleted > 0:
+        if archived_count > 0:
             db.commit()
             logger.info(
-                f"Archived {archived_count} previous main tasks, deleted "
-                f"{deleted_children_count} child tasks and reaped {orphans_deleted} "
-                f"orphaned child rows."
+                f"Archived {archived_count} previous main tasks and deleted "
+                f"{deleted_children_count} child tasks."
             )
         else:
             logger.info("No previous main tasks found to clean up.")
+        archival_ok = True
     except Exception:
+        archival_ok = False
         db.rollback()
         logger.exception("Error during the main task cleanup process")
     finally:
         cur.close()
+
+    if archival_ok:
+        prune_task_status_history()
 
 
 def get_active_main_task(task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES):

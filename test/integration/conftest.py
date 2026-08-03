@@ -8,15 +8,28 @@
 
 """Shared Postgres fixtures for the integration suite.
 
-Hands every module the same disposable database and one copy of the task_status
-DDL, so a schema change lands in one place instead of drifting between
-hand-written duplicates. Modules that predate this file still define their own
-`pg_dsn`, which shadows the one here; new modules should use this one.
+Offers one disposable database and one copy of the task_status DDL, so a schema
+change lands in a single place. The last time task_status gained columns
+(start_time, end_time) a second hand-written copy is exactly the kind of drift
+that would have gone unnoticed.
+
+KNOWN LIMITATION, do not read the fixture list as a claim of the opposite: 16
+modules under test/integration still define their own module-level `pg_dsn`,
+which SHADOWS the one here, so each of them starts its own pgserver. Only
+modules that do not define it - currently the orphan-reap and task-status ones -
+share this instance. Until the rest are converted, a full `pytest test/unit
+test/integration` in one process starts many servers at once and has been seen
+to take WSL down with E_UNEXPECTED; running the two suites separately is
+reliable.
+
+The DDL is exposed as fixtures rather than importable constants because a test
+module cannot `import conftest`: pytest loads it under its own name, so the
+plain import fails at collection.
 
 Main Features:
-* Session-scoped `shared_pg_dsn` backed by AUDIOMUSE_TEST_DATABASE_URL or an
-  ephemeral pgserver instance
-* One canonical task_status / task_history DDL for the suite
+* Session-scoped `shared_pg_dsn` backed by AUDIOMUSE_TEST_DATABASE_URL or an ephemeral
+  pgserver instance, for modules that do not shadow it
+* `task_status_ddl` / `task_status_jsonb_ddl` expose the one canonical schema
 * `task_status_db` yields a work connection plus a separate verifier connection,
   so tests assert on committed state rather than an open transaction
 """
@@ -45,12 +58,24 @@ TASK_STATUS_DDL = (
     "start_time DOUBLE PRECISION, end_time DOUBLE PRECISION)"
 )
 
+TASK_STATUS_JSONB_DDL = TASK_STATUS_DDL.replace("details TEXT,", "details JSONB,")
+
 TASK_HISTORY_DDL = (
     "CREATE TABLE task_history ("
     "id SERIAL PRIMARY KEY, recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
     "task_id TEXT, task_type TEXT, status TEXT, "
     "duration_seconds DOUBLE PRECISION, note TEXT)"
 )
+
+
+@pytest.fixture(scope='session')
+def task_status_ddl():
+    return TASK_STATUS_DDL
+
+
+@pytest.fixture(scope='session')
+def task_status_jsonb_ddl():
+    return TASK_STATUS_JSONB_DDL
 
 
 @pytest.fixture

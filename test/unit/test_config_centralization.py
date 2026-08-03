@@ -153,6 +153,37 @@ class TestDatabaseUrlIsDerivedFromThePostgresParts:
         assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@[::1]:5433/mydb'
         assert parse_dsn(reloaded.DATABASE_URL)['host'] == '::1'
 
+    @pytest.mark.parametrize(
+        'bare', ['::1', '2001:db8::1', 'fe80::1'], ids=['loopback', 'global', 'link_local']
+    )
+    def test_an_unbracketed_ipv6_host_is_bracketed_for_us(self, monkeypatch, bare):
+        # Its own colons would otherwise be read as the port separator, so the URI
+        # resolved to a nonsense host and port instead of failing loudly.
+        env = dict(_PG_PARTS, POSTGRES_HOST=bare)
+        reloaded = _reload_config_with(monkeypatch, env)
+        parsed = parse_dsn(reloaded.DATABASE_URL)
+        assert parsed['host'] == bare
+        assert parsed['port'] == '5433'
+
+    def test_a_socket_directory_containing_a_colon_keeps_its_port(self, monkeypatch):
+        # ':' used to be left unescaped in the host, so this path split into
+        # host "/run/pg" and port "1" and the real port was silently discarded.
+        env = dict(_PG_PARTS, POSTGRES_HOST='/run/pg:1')
+        reloaded = _reload_config_with(monkeypatch, env)
+        parsed = parse_dsn(reloaded.DATABASE_URL)
+        assert parsed['host'] == '/run/pg:1'
+        assert parsed['port'] == '5433'
+
+    @pytest.mark.parametrize(
+        'host', ['myhost', 'db.internal', '10.0.0.5', '127.0.0.1'],
+        ids=['name', 'fqdn', 'private_ip', 'loopback_ip'],
+    )
+    def test_ordinary_hosts_are_untouched_by_the_shape_handling(self, monkeypatch, host):
+        env = dict(_PG_PARTS, POSTGRES_HOST=host)
+        reloaded = _reload_config_with(monkeypatch, env)
+        assert reloaded.DATABASE_URL == f'postgresql://myuser:mypass@{host}:5433/mydb'
+        assert parse_dsn(reloaded.DATABASE_URL)['host'] == host
+
     def test_database_name_is_percent_encoded(self, monkeypatch):
         env = dict(_PG_PARTS, POSTGRES_DB='db?x#y')
         reloaded = _reload_config_with(monkeypatch, env)

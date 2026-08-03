@@ -32,6 +32,7 @@ import json
 import logging
 import sys
 import weakref
+from contextlib import nullcontext
 
 import pytest
 from unittest.mock import MagicMock
@@ -1742,6 +1743,9 @@ class TestSweepAlignment:
         # No cleaning run in flight: the sweep and cleaning both prune
         # track_server_map, so an alignment refuses while cleaning is live.
         monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: None)
+        # The start lock and the prune reach the real connection, not this module's.
+        monkeypatch.setattr(msrv, 'main_task_start_lock', nullcontext)
+        monkeypatch.setattr(msrv, 'prune_task_status_history', lambda: 0)
         cancelled = []
         monkeypatch.setattr(
             msrv, '_cancel_active_sweeps', lambda: cancelled.append('old-task') or ['old-task']

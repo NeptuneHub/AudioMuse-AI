@@ -19,9 +19,16 @@ Main Features:
 """
 
 import pytest
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 from flask import Flask
+import app_clustering
 from app_clustering import clustering_bp
+
+
+@pytest.fixture(autouse=True)
+def stub_the_start_lock(monkeypatch):
+    monkeypatch.setattr(app_clustering, 'main_task_start_lock', nullcontext)
 
 
 @pytest.fixture

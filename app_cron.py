@@ -35,6 +35,8 @@ from database import (
     save_task_status,
     get_active_main_task,
     clean_up_previous_main_tasks,
+    prune_task_status_history,
+    main_task_start_lock,
     INLINE_FLASK_TASK_TYPES,
 )
 from tasks.task_details import stamp
@@ -541,6 +543,7 @@ def run_due_cron_jobs():
     rows = cur.fetchall()
     now_ts = time.time()
     minute_start = now_ts - (now_ts % 60)
+    fired_any = False
     for r in rows:
         try:
             if cron_matches_now(r['cron_expr'], now_ts):
@@ -553,6 +556,7 @@ def run_due_cron_jobs():
                 # dashboard's Last-run display.
                 if not _claim_cron_minute(db, r['id'], minute_start):
                     continue
+                fired_any = True
                 task_type = r['task_type']
                 # Batch work always covers every configured server, one server at
                 # a time. There is no per-schedule scope: a "default server only"
@@ -563,33 +567,37 @@ def run_due_cron_jobs():
                 if task_type in ('analysis', 'clustering'):
                     # The manual endpoints 409 while any main task is live; cron used
                     # to enqueue regardless, so a nightly row could start a second
-                    # full run on top of one still in progress.
-                    active = get_active_main_task()
-                    if active:
-                        logger.info(
-                            "Cron: skipping %s, main task %s is still %s",
-                            task_type, active['task_id'], active['status'],
-                        )
-                        continue
-                    # The same archival the manual Start endpoints run. A headless
-                    # install never presses Start, so without this every nightly
-                    # run left its per-album child rows behind for good.
-                    # Best effort on purpose: housekeeping must never be the
-                    # reason tonight's analysis does not run.
-                    try:
-                        clean_up_previous_main_tasks()
-                    except Exception:
-                        logger.exception(
-                            "Cron: could not archive previous main tasks; enqueueing anyway"
+                    # full run on top of one still in progress. The gate, the
+                    # archival and the claim are taken under one lock so a cron tick
+                    # and a manual Start cannot both pass the gate before either has
+                    # written its row.
+                    with main_task_start_lock():
+                        active = get_active_main_task()
+                        if active:
+                            logger.info(
+                                "Cron: skipping %s, main task %s is still %s",
+                                task_type, active['task_id'], active['status'],
+                            )
+                            continue
+                        # The same archival the manual Start endpoints run. A headless
+                        # install never presses Start, so without this every nightly
+                        # run left its per-album child rows behind for good.
+                        # Best effort on purpose: housekeeping must never be the
+                        # reason tonight's analysis does not run.
+                        try:
+                            clean_up_previous_main_tasks()
+                        except Exception:
+                            logger.exception(
+                                "Cron: could not archive previous main tasks; enqueueing anyway"
+                            )
+                        save_task_status(
+                            job_id,
+                            f"main_{task_type}",
+                            TASK_STATUS_PENDING,
+                            details={"message": _ENQUEUED_BY_CRON},
+                            raise_on_error=True,
                         )
                 if task_type == 'analysis':
-                    # mark queued in task_status
-                    save_task_status(
-                        job_id,
-                        f"main_{task_type}",
-                        TASK_STATUS_PENDING,
-                        details={"message": _ENQUEUED_BY_CRON},
-                    )
                     try:
                         rq_queue_high.enqueue(
                             'tasks.analysis.run_analysis_task',
@@ -608,13 +616,6 @@ def run_due_cron_jobs():
                             details={"error": "Could not enqueue the task (is Redis reachable?)"},
                         )
                 elif task_type == 'clustering':
-                    # mark queued in task_status
-                    save_task_status(
-                        job_id,
-                        f"main_{task_type}",
-                        TASK_STATUS_PENDING,
-                        details={"message": _ENQUEUED_BY_CRON},
-                    )
                     clustering_kwargs = {
                         "clustering_method": CLUSTER_ALGORITHM,
                         "num_clusters_min": int(NUM_CLUSTERS_MIN),
@@ -786,3 +787,13 @@ def run_due_cron_jobs():
             db.rollback()
             logger.exception(f"Error processing cron row {r}")
     cur.close()
+
+    # Every cron task type writes a top-level task_status row, and the ones that
+    # never reach clean_up_previous_main_tasks (alchemy_radio, sonic_fingerprint,
+    # plugin tasks) would otherwise leave one behind per tick, for good. Only on a
+    # minute that actually fired, so a quiet scheduler does no DB work.
+    if fired_any:
+        try:
+            prune_task_status_history()
+        except Exception:
+            logger.exception("Cron: could not prune task_status history")

@@ -735,9 +735,19 @@ def run_clustering_task(
                     )
                 )
 
+            skipped = [s for s in per_server_summary if s['status'] != 'success']
+            skipped_detail = (
+                ' Skipped: '
+                + '; '.join(
+                    f"{s['server']}: {s.get('reason') or 'no reason reported'}"
+                    for s in skipped
+                )
+                if skipped
+                else ''
+            )
             final_message = (
                 f"Clustering task completed successfully on {len(successes)}/"
-                f"{len(target_servers)} server(s)!"
+                f"{len(target_servers)} server(s)!{skipped_detail}"
             )
 
             logger.info(f"[MainClusteringTask-{current_task_id}] {final_message}")

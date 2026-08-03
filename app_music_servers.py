@@ -32,7 +32,13 @@ from rq.job import Job
 import config
 import rq_job_state
 from app_helper import coerce_db_details, redis_conn, rq_queue_high, save_task_status, send_stop_job_command
-from database import get_db, missing_required_creds, get_active_main_task
+from database import (
+    get_db,
+    missing_required_creds,
+    get_active_main_task,
+    prune_task_status_history,
+    main_task_start_lock,
+)
 from app_server_context import (
     merge_creds,
     server_public_dict,
@@ -133,6 +139,7 @@ def _cancel_active_sweeps():
                 stale_task_id, 'server_sweep', config.TASK_STATUS_REVOKED,
                 progress=100,
                 details={'message': 'Superseded by a new alignment covering all servers.'},
+                raise_on_error=True,
             )
             cancelled.append(stale_task_id)
         except Exception:
@@ -150,6 +157,17 @@ def _cancel_active_sweeps():
     return cancelled
 
 
+def _task_blocking_a_sweep():
+    # Cleaning and provider migration both rewrite track_server_map, which is
+    # exactly what a sweep writes. Migration refuses while a sweep runs; without
+    # this the reverse was not true, so a sweep could start mid-repoint.
+    for task_type in ('cleaning', 'provider_migration'):
+        active = get_active_main_task(task_type=task_type)
+        if active:
+            return active
+    return None
+
+
 def _enqueue_sweep(at_front=False):
     """Replace any queued/running sweep with one alignment of every server.
 
@@ -161,37 +179,59 @@ def _enqueue_sweep(at_front=False):
     catalogue snapshot taken minutes earlier, so an overlap lets one delete the
     mappings the other just wrote.
     """
-    active = get_active_main_task(task_type='cleaning')
-    if active:
-        logger.warning(
-            "Server alignment not enqueued: cleaning task %s is still %s. "
-            "Re-run the alignment once it finishes.",
-            active['task_id'], active['status'],
-        )
-        return None
-
-    superseded = _cancel_active_sweeps()
     task_id = str(uuid.uuid4())
     try:
-        save_task_status(
-            task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={
-                'message': 'Server alignment queued for all servers.',
-                'full_refresh': True,
-            },
-        )
-        rq_queue_high.enqueue(
-            'tasks.multiserver_sync.sweep_all_secondary_servers',
-            kwargs={'task_id': task_id},
-            job_id=task_id,
-            job_timeout=-1,
-            at_front=at_front,
-        )
+        # Cleaning's own gate sees sweeps (exclude_task_types=()), so without the
+        # shared lock a cleaning start and this enqueue could each pass their gate
+        # before either had written its row - and both prune track_server_map.
+        with main_task_start_lock():
+            active = _task_blocking_a_sweep()
+            if active:
+                logger.warning(
+                    "Server alignment not enqueued: %s task %s is still %s. "
+                    "Re-run the alignment once it finishes.",
+                    active['task_type'], active['task_id'], active['status'],
+                )
+                return None
+
+            superseded = _cancel_active_sweeps()
+            save_task_status(
+                task_id, 'server_sweep', config.TASK_STATUS_PENDING,
+                details={
+                    'message': 'Server alignment queued for all servers.',
+                    'full_refresh': True,
+                },
+                raise_on_error=True,
+            )
+        try:
+            rq_queue_high.enqueue(
+                'tasks.multiserver_sync.sweep_all_secondary_servers',
+                kwargs={'task_id': task_id},
+                job_id=task_id,
+                job_timeout=-1,
+                at_front=at_front,
+            )
+        except Exception:
+            # The PENDING row is already committed. Left alive it is indistinguishable
+            # from a running sweep, so every later start 409s behind a job that does
+            # not exist - and it is never terminal, so the prune cannot reclaim it.
+            save_task_status(
+                task_id, 'server_sweep', config.TASK_STATUS_FAILURE,
+                details={'error': 'Could not enqueue the alignment (is Redis reachable?)'},
+            )
+            raise
         if superseded:
             logger.info(
                 "Superseded %d active sweep(s) with consolidated alignment %s",
                 len(superseded), task_id,
             )
+        # Sweeps write a top-level row and never reach clean_up_previous_main_tasks,
+        # so an install whose only activity is adding servers grew one row per
+        # alignment for good.
+        try:
+            prune_task_status_history()
+        except Exception:
+            logger.exception("Could not prune task_status history after the alignment")
         return task_id
     except Exception:
         logger.exception("Failed to enqueue the server alignment")
@@ -492,13 +532,26 @@ def sweep_server(server_id):
         return jsonify({"error": "Unknown server."}), 404
     task_id = str(uuid.uuid4())
     try:
-        save_task_status(
-            task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={
-                'message': 'Server matching sweep queued.',
-                'full_refresh': True,
-            },
-        )
+        # This endpoint had no gate at all, so a single-server sweep could start
+        # mid-migration and rewrite the mappings it was repointing.
+        with main_task_start_lock():
+            active = _task_blocking_a_sweep()
+            if active:
+                return jsonify(
+                    {
+                        "error": f"A {active['task_type']} task is running. "
+                                 f"Re-run the sweep once it finishes.",
+                        "task_id": active['task_id'],
+                    }
+                ), 409
+            save_task_status(
+                task_id, 'server_sweep', config.TASK_STATUS_PENDING,
+                details={
+                    'message': 'Server matching sweep queued.',
+                    'full_refresh': True,
+                },
+                raise_on_error=True,
+            )
         rq_queue_high.enqueue(
             'tasks.multiserver_sync.sweep_server',
             args=(server_id,),
@@ -508,5 +561,21 @@ def sweep_server(server_id):
         )
     except Exception:
         logger.exception("Failed to enqueue matching sweep for server %s", server_id)
+        # Never leave the claim PENDING with no job behind it: it would 409 every
+        # later start and, being non-terminal, the prune could never reclaim it.
+        try:
+            save_task_status(
+                task_id, 'server_sweep', config.TASK_STATUS_FAILURE,
+                details={'error': 'Could not enqueue the sweep (is Redis reachable?)'},
+            )
+        except Exception:
+            logger.exception("Could not mark the failed sweep claim as FAILURE")
         return jsonify({"error": "Could not enqueue the sweep; check container logs."}), 500
+    # This endpoint writes its own server_sweep root and never goes through
+    # _enqueue_sweep, so without this an install that only ever re-syncs single
+    # servers kept every one of those rows.
+    try:
+        prune_task_status_history()
+    except Exception:
+        logger.exception("Could not prune task_status history after the sweep")
     return jsonify({"enqueued": True, "task_id": task_id, "job_id": task_id, "server_id": server_id}), 202

@@ -24,14 +24,20 @@ import uuid
 import logging
 
 # Import configuration from the main config.py
-from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING, CLEANING_CATALOGUE
+from config import (
+    NUM_RECENT_ALBUMS,
+    TOP_N_MOODS,
+    TASK_STATUS_PENDING,
+    TASK_STATUS_FAILURE,
+    CLEANING_CATALOGUE,
+)
 
 # RQ import
 from rq import Retry
 
 # App helper functions
 from app_helper import rq_queue_high, save_task_status
-from database import clean_up_previous_main_tasks, get_active_main_task
+from database import clean_up_previous_main_tasks, get_active_main_task, main_task_start_lock
 
 logger = logging.getLogger(__name__)
 
@@ -108,17 +114,6 @@ def start_analysis_endpoint():
       500:
         description: Server error during task enqueue.
     """
-    # Check for any existing active main task to prevent parallel batch runs.
-    active_task = get_active_main_task()
-    if active_task:
-        return jsonify(
-            {
-                "error": "An active batch task is already in progress.",
-                "task_id": active_task['task_id'],
-                "status": active_task['status'],
-            }
-        ), 409
-
     data = request.json or {}
     # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.
     # The task now gets these details from the central config.
@@ -130,22 +125,50 @@ def start_analysis_endpoint():
 
     job_id = str(uuid.uuid4())
 
-    # Clean up details of previously successful or stale tasks before starting a new one
-    clean_up_previous_main_tasks()
-    save_task_status(
-        job_id, "main_analysis", TASK_STATUS_PENDING, details={"message": "Task enqueued."}
-    )
+    # The gate, the archival and the claim are one atomic act. Checked separately,
+    # two starts (a double click, or a cron tick landing on a manual start) could
+    # both see "nothing running" before either had written its row, and then both
+    # launch - or one archival could revoke the row the other had just created.
+    with main_task_start_lock():
+        # Check for any existing active main task to prevent parallel batch runs.
+        active_task = get_active_main_task()
+        if active_task:
+            return jsonify(
+                {
+                    "error": "An active batch task is already in progress.",
+                    "task_id": active_task['task_id'],
+                    "status": active_task['status'],
+                }
+            ), 409
+
+        # Clean up details of previously successful or stale tasks before starting a new one
+        clean_up_previous_main_tasks()
+        save_task_status(
+            job_id, "main_analysis", TASK_STATUS_PENDING,
+            details={"message": "Task enqueued."}, raise_on_error=True,
+        )
 
     # Enqueue task using a string path to its function.
     # MODIFIED: The arguments passed to the task are updated to match the new function signature.
-    job = rq_queue_high.enqueue(
-        'tasks.analysis.run_analysis_task',
-        args=(num_recent_albums, top_n_moods),
-        job_id=job_id,
-        description="Main Music Analysis",
-        retry=Retry(max=3),
-        job_timeout=-1,  # No timeout
-    )
+    # The PENDING row is already committed, so a failed enqueue must not leave it:
+    # alive it looks like a running task and 409s every later start, and being
+    # non-terminal the prune can never reclaim it.
+    try:
+        job = rq_queue_high.enqueue(
+            'tasks.analysis.run_analysis_task',
+            args=(num_recent_albums, top_n_moods),
+            job_id=job_id,
+            description="Main Music Analysis",
+            retry=Retry(max=3),
+            job_timeout=-1,  # No timeout
+        )
+    except Exception:
+        logger.exception("Could not enqueue the analysis task")
+        save_task_status(
+            job_id, "main_analysis", TASK_STATUS_FAILURE,
+            details={"error": "Could not enqueue the task (is Redis reachable?)"},
+        )
+        return jsonify({"error": "Could not enqueue the analysis. Check the logs."}), 500
     return jsonify(
         {"task_id": job.id, "task_type": "main_analysis", "status": job.get_status()}
     ), 202
@@ -185,40 +208,50 @@ def start_cleaning_endpoint():
     # minutes earlier, so an overlap lets cleaning delete the mappings the sweep just
     # wrote. Every other task type may run alongside a sweep, so they keep the
     # default exclusion.
-    active_task = get_active_main_task(exclude_task_types=())
-    if active_task:
-        return jsonify(
-            {
-                "error": "An active batch task is already in progress.",
-                "task_id": active_task['task_id'],
-                "status": active_task['status'],
-            }
-        ), 409
-
     # Per-run opt-in: when the cleaning page's checkbox is ticked (or CLEANING_CATALOGUE
     # is the env default) the task also DELETES catalogue rows bound to no server;
     # otherwise it only unbinds each server's stale mappings.
     data = request.get_json(silent=True) or {}
     clean_catalogue = bool(data.get('clean_catalogue', CLEANING_CATALOGUE))
 
-    # Clean up any previous cleaning tasks
-    clean_up_previous_main_tasks()
-
     job_id = str(uuid.uuid4())
-    save_task_status(
-        job_id,
-        "cleaning",
-        TASK_STATUS_PENDING,
-        details={"message": "Database cleaning task enqueued."},
-    )
+
+    with main_task_start_lock():
+        active_task = get_active_main_task(exclude_task_types=())
+        if active_task:
+            return jsonify(
+                {
+                    "error": "An active batch task is already in progress.",
+                    "task_id": active_task['task_id'],
+                    "status": active_task['status'],
+                }
+            ), 409
+
+        # Clean up any previous cleaning tasks
+        clean_up_previous_main_tasks()
+        save_task_status(
+            job_id,
+            "cleaning",
+            TASK_STATUS_PENDING,
+            details={"message": "Database cleaning task enqueued."},
+            raise_on_error=True,
+        )
 
     # Enqueue combined cleaning task
-    job = rq_queue_high.enqueue(
-        'tasks.cleaning.identify_and_clean_orphaned_albums_task',
-        clean_catalogue,
-        job_id=job_id,
-        description="Database Cleaning (Identify and Delete Orphaned Albums)",
-        retry=Retry(max=2),
-        job_timeout=-1,  # No timeout
-    )
+    try:
+        job = rq_queue_high.enqueue(
+            'tasks.cleaning.identify_and_clean_orphaned_albums_task',
+            clean_catalogue,
+            job_id=job_id,
+            description="Database Cleaning (Identify and Delete Orphaned Albums)",
+            retry=Retry(max=2),
+            job_timeout=-1,  # No timeout
+        )
+    except Exception:
+        logger.exception("Could not enqueue the cleaning task")
+        save_task_status(
+            job_id, "cleaning", TASK_STATUS_FAILURE,
+            details={"error": "Could not enqueue the task (is Redis reachable?)"},
+        )
+        return jsonify({"error": "Could not enqueue the cleaning. Check the logs."}), 500
     return jsonify({"task_id": job.id, "task_type": "cleaning", "status": job.get_status()}), 202

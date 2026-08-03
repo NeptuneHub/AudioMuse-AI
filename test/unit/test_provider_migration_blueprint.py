@@ -22,6 +22,7 @@ import os
 import sys
 import importlib.util
 import pytest
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 
@@ -60,6 +61,11 @@ def client(app):
     return app.test_client()
 
 
+@pytest.fixture(autouse=True)
+def stub_the_start_lock(bp_mod, monkeypatch):
+    monkeypatch.setattr(bp_mod, 'main_task_start_lock', nullcontext)
+
+
 @pytest.fixture
 def fake_db(bp_mod):
     cur = MagicMock()
@@ -87,14 +93,8 @@ class TestMigrationPageRoute:
 
 
 class TestSessionStart:
-    def test_creates_session_row(self, bp_mod, client, fake_db):
-        db, cur = fake_db
-        cur._fetchone_queue.append((123,))
-        import config
-
-        config.MEDIASERVER_TYPE = 'jellyfin'
-
-        resp = client.post(
+    def _start(self, client):
+        return client.post(
             '/api/migration/session/start',
             json={
                 'target_type': 'navidrome',
@@ -102,11 +102,66 @@ class TestSessionStart:
             },
         )
 
+    def test_creates_session_row(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        # First fetchone answers the advisory-lock probe: True means nothing holds
+        # the migration lock, so it is safe to prune the older sessions.
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append((123,))
+        import config
+
+        config.MEDIASERVER_TYPE = 'jellyfin'
+
+        with patch.object(bp_mod, 'get_active_main_task', return_value=None):
+            resp = self._start(client)
+
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['session_id'] == 123
         sqls = [c[0][0] for c in cur.execute.call_args_list]
         assert any('INSERT INTO migration_session' in s for s in sqls)
+        assert any('DELETE FROM migration_session' in s for s in sqls)
+
+    def test_the_newest_session_and_the_newest_completed_one_are_spared(
+        self, bp_mod, client, fake_db
+    ):
+        db, cur = fake_db
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append((123,))
+        import config
+
+        config.MEDIASERVER_TYPE = 'jellyfin'
+
+        with patch.object(bp_mod, 'get_active_main_task', return_value=None):
+            self._start(client)
+
+        delete = next(
+            c[0][0] for c in cur.execute.call_args_list
+            if 'DELETE FROM migration_session' in c[0][0]
+        )
+        # The newest carries any queued dry-run; the newest completed sessions are
+        # the already-applied markers a restart-killed execute needs on its retry.
+        assert 'MAX(id) FROM migration_session)' in delete
+        assert "WHERE status = 'completed'" in delete
+        assert 'ORDER BY id DESC LIMIT' in delete
+
+    def test_start_is_refused_while_a_migration_is_queued_or_running(
+        self, bp_mod, client, fake_db
+    ):
+        db, cur = fake_db
+        import config
+
+        config.MEDIASERVER_TYPE = 'jellyfin'
+
+        with patch.object(
+            bp_mod, 'get_active_main_task', return_value={'task_id': 'mig-1'}
+        ):
+            resp = self._start(client)
+
+        assert resp.status_code == 409
+        sqls = [c[0][0] for c in cur.execute.call_args_list]
+        assert not any('DELETE FROM migration_session' in s for s in sqls)
+        assert not any('INSERT INTO migration_session' in s for s in sqls)
 
     def test_rejects_unknown_target_type(self, bp_mod, client, fake_db):
         resp = client.post(
@@ -441,7 +496,8 @@ class TestExecuteGate:
 
     def test_rejects_missing_backup_confirmation(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready'))
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
         p = self._base_payload()
         p['backup_confirmed'] = False
         resp = client.post('/api/migration/execute', json=p)
@@ -450,7 +506,8 @@ class TestExecuteGate:
 
     def test_rejects_wrong_confirmation_text(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready'))
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
         p = self._base_payload()
         p['confirmation_text'] = 'LGTM ship it'
         resp = client.post('/api/migration/execute', json=p)
@@ -459,7 +516,8 @@ class TestExecuteGate:
 
     def test_rejects_session_not_in_dry_run_ready(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        cur._fetchone_queue.append(('navidrome', 'in_progress'))
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append(('navidrome', 'in_progress', True))
         resp = client.post('/api/migration/execute', json=self._base_payload())
         assert resp.status_code == 400
         err = resp.get_json().get('error', '').lower()
@@ -467,14 +525,21 @@ class TestExecuteGate:
 
     def test_happy_path_enqueues_job(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready'))
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
         fake_queue = MagicMock()
         fake_job = MagicMock()
         fake_job.id = 'job-xyz'
         fake_queue.enqueue.return_value = fake_job
         bp_mod.rq_queue_high = fake_queue
 
-        resp = client.post('/api/migration/execute', json=self._base_payload())
+        with (
+            patch.object(bp_mod, 'get_active_main_task', return_value=None),
+            patch.object(bp_mod, 'save_task_status'),
+            patch.object(bp_mod, 'prune_task_status_history'),
+            patch.object(bp_mod, '_patch_state_keys'),
+        ):
+            resp = client.post('/api/migration/execute', json=self._base_payload())
 
         assert resp.status_code == 200
         data = resp.get_json()

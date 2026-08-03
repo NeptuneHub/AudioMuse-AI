@@ -23,6 +23,7 @@ Main Features:
 * A failed enqueue leaves FAILURE, never a PENDING row that would 409 every later start
 """
 
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 
@@ -315,6 +316,10 @@ def test_failed_analysis_enqueue_is_recorded_as_failure_not_left_pending(mock_ge
         patch('app_cron.get_active_main_task', return_value=None),
         patch('app_cron.save_task_status') as save,
         patch('app_cron.rq_queue_high', queue),
+        # The start lock talks to the real connection, not app_cron's mocked one.
+        patch('app_cron.main_task_start_lock', return_value=nullcontext()),
+        patch('app_cron.clean_up_previous_main_tasks'),
+        patch('app_cron.prune_task_status_history'),
     ):
         run_due_cron_jobs()
 

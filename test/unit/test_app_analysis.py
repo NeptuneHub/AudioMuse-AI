@@ -18,10 +18,17 @@ Main Features:
 """
 
 import pytest
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 from flask import Flask
 import config
+import app_analysis
 from app_analysis import analysis_bp
+
+
+@pytest.fixture(autouse=True)
+def stub_the_start_lock(monkeypatch):
+    monkeypatch.setattr(app_analysis, 'main_task_start_lock', nullcontext)
 
 
 @pytest.fixture
@@ -319,8 +326,12 @@ class TestEndpointErrorHandling:
     ):
         mock_queue.enqueue.side_effect = Exception("Queue error")
 
-        with pytest.raises(Exception, match="Queue error"):
-            client.post('/api/analysis/start', json={})
+        response = client.post('/api/analysis/start', json={})
+
+        assert response.status_code == 500
+        # The PENDING claim is already committed; left alive it 409s every later
+        # start and, being non-terminal, the prune can never reclaim it.
+        assert mock_save_status.call_args[0][2] == config.TASK_STATUS_FAILURE
 
     @patch(
         'app_analysis.get_active_main_task',
@@ -353,8 +364,10 @@ class TestEndpointErrorHandling:
     ):
         mock_queue.enqueue.side_effect = Exception("Queue error")
 
-        with pytest.raises(Exception, match="Queue error"):
-            client.post('/api/cleaning/start')
+        response = client.post('/api/cleaning/start')
+
+        assert response.status_code == 500
+        assert mock_save_status.call_args[0][2] == config.TASK_STATUS_FAILURE
 
 
 class TestBlueprintIntegration:

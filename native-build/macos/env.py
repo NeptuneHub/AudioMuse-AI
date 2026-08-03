@@ -22,16 +22,31 @@ Main Features:
 """
 
 import os
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import unquote, urlsplit
 
 from macos import paths
 
 _WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
 
 
+def _socket_dir_from_url(database_url):
+    # Read host= from the RAW url, not urlsplit(...).query: urlsplit drops anything
+    # after a '#', and parse_qs would form-decode so a '+' in the path came back as
+    # a space. A socket directory is the LAST parameter pgserver emits, so take the
+    # rest of the string rather than splitting on '&', which a path may contain.
+    marker = "?host="
+    at = (database_url or "").find(marker)
+    if at < 0:
+        marker = "&host="
+        at = (database_url or "").find(marker)
+    if at < 0:
+        return ""
+    return unquote((database_url or "")[at + len(marker):])
+
+
 def _pg_conn_parts(database_url):
     parts = urlsplit(database_url or "")
-    socket_dir = parse_qs(parts.query).get("host", [""])[0]
+    socket_dir = _socket_dir_from_url(database_url)
     return (
         socket_dir or parts.hostname or paths.pgdata_dir(),
         str(parts.port or 5432),

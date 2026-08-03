@@ -76,7 +76,7 @@ from error.error_dictionary import ERR_CLUSTERING_FAILED
 
 # App helper functions
 from app_helper import rq_queue_high, save_task_status
-from database import clean_up_previous_main_tasks, get_active_main_task
+from database import clean_up_previous_main_tasks, get_active_main_task, main_task_start_lock
 
 
 logger = logging.getLogger(__name__)
@@ -324,17 +324,6 @@ def start_clustering_endpoint():
                         status:
                             type: string
     """
-    # Check for any existing active main task to prevent parallel batch runs
-    active_task = get_active_main_task()
-    if active_task:
-        return jsonify(
-            {
-                "error": "An active batch task is already in progress.",
-                "task_id": active_task['task_id'],
-                "status": active_task['status'],
-            }
-        ), 409
-
     data = request.json
     job_id = str(uuid.uuid4())
 
@@ -422,21 +411,46 @@ def start_clustering_endpoint():
         ),
     }
 
-    # Clean up details of previously successful or stale tasks before starting a new one
-    clean_up_previous_main_tasks()
-    save_task_status(
-        job_id, "main_clustering", TASK_STATUS_PENDING, details={"message": "Task enqueued."}
-    )
+    # The gate, the archival and the claim are one atomic act, so two starts cannot
+    # both see "nothing running" before either has written its row.
+    with main_task_start_lock():
+        # Check for any existing active main task to prevent parallel batch runs
+        active_task = get_active_main_task()
+        if active_task:
+            return jsonify(
+                {
+                    "error": "An active batch task is already in progress.",
+                    "task_id": active_task['task_id'],
+                    "status": active_task['status'],
+                }
+            ), 409
 
-    job = rq_queue_high.enqueue(
-        'tasks.clustering.run_clustering_task',  # Enqueue by string path
-        kwargs=clustering_kwargs,
-        job_id=job_id,
-        description="Main Music Clustering",
-        retry=Retry(max=3),
-        job_timeout=-1,  # No timeout
-        on_failure=clustering_task_failure_handler,
-    )
+        # Clean up details of previously successful or stale tasks before starting a new one
+        clean_up_previous_main_tasks()
+        save_task_status(
+            job_id, "main_clustering", TASK_STATUS_PENDING,
+            details={"message": "Task enqueued."}, raise_on_error=True,
+        )
+
+    # A failed enqueue must not leave the committed PENDING row behind: it would
+    # 409 every later start and the prune cannot reclaim a non-terminal row.
+    try:
+        job = rq_queue_high.enqueue(
+            'tasks.clustering.run_clustering_task',  # Enqueue by string path
+            kwargs=clustering_kwargs,
+            job_id=job_id,
+            description="Main Music Clustering",
+            retry=Retry(max=3),
+            job_timeout=-1,  # No timeout
+            on_failure=clustering_task_failure_handler,
+        )
+    except Exception:
+        logger.exception("Could not enqueue the clustering task")
+        save_task_status(
+            job_id, "main_clustering", TASK_STATUS_FAILURE,
+            details={"error": "Could not enqueue the task (is Redis reachable?)"},
+        )
+        return jsonify({"error": "Could not enqueue the clustering. Check the logs."}), 500
     return jsonify(
         {"task_id": job.id, "task_type": "main_clustering", "status": job.get_status()}
     ), 202

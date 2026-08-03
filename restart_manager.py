@@ -44,7 +44,17 @@ def publish_control_request(action):
             socket_timeout=5,
             decode_responses=True,
         )
-        redis_conn.publish(RESTART_CHANNEL, action)
+        delivered = redis_conn.publish(RESTART_CHANNEL, action)
+        if not delivered:
+            logger.error(
+                'PUBLISHED %s TO REDIS BUT NO LISTENER RECEIVED IT. Every deployment '
+                'runs a restart-listener (supervisord config-restart-listener, or the '
+                'native supervisor role), so zero subscribers means it is not running '
+                'and the workers are STILL ON THE OLD CONFIGURATION. Restart the '
+                'container or the app.',
+                action,
+            )
+            return False
         return True
     except Exception:
         logger.exception('Could not publish %s request to Redis', action)

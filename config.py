@@ -449,10 +449,18 @@ from urllib.parse import quote
 _pg_user_esc = quote(POSTGRES_USER, safe='')
 _pg_pass_esc = quote(POSTGRES_PASSWORD, safe='')
 
-# The host is escaped the same way: a normal name or IP passes through untouched,
-# while the Unix socket directory the standalone builds use gets its slashes
-# percent-encoded, which is how libpq expects a socket path inside a URI.
-_pg_host_esc = quote(POSTGRES_HOST, safe='[]:')
+# The host has three shapes and each needs different treatment.
+# A Unix socket directory (the standalone builds use one) is percent-encoded whole,
+# INCLUDING any ':', which is how libpq expects a socket path inside a URI; leaving
+# ':' unescaped let a path like /run/pg:1 split into host "/run/pg" and port "1".
+# A bare IPv6 literal must be bracketed or its own colons are read as the port
+# separator. Anything already bracketed, or a plain name or IPv4, passes through.
+if POSTGRES_HOST.startswith('/'):
+    _pg_host_esc = quote(POSTGRES_HOST, safe='')
+elif ':' in POSTGRES_HOST and not POSTGRES_HOST.startswith('['):
+    _pg_host_esc = '[' + quote(POSTGRES_HOST, safe=':') + ']'
+else:
+    _pg_host_esc = quote(POSTGRES_HOST, safe='[]:')
 
 # Database name and port are escaped too. Every part has to be, or a stray '/',
 # '?' or '#' in one of them re-splits the URI: a port of "5432/evil" silently
