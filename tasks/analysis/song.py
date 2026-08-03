@@ -620,7 +620,7 @@ def run_clap_for_track(path, track_name_full):
         from ..clap_analyzer import analyze_audio_file
 
         emb, _, _ = analyze_audio_file(path)
-        if PER_SONG_MODEL_RELOAD:
+        if PER_SONG_MODEL_RELOAD == "true":
             try:
                 from ..clap_analyzer import unload_clap_audio_only
 
