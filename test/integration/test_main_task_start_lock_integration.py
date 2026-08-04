@@ -88,9 +88,12 @@ class TestMainTaskStartLock:
         monkeypatch.setattr(database, 'get_db', lambda: conn)
         key = database.MAIN_TASK_START_LOCK_KEY
 
-        with pytest.raises(RuntimeError):
+        def _fail_inside_the_lock():
             with database.main_task_start_lock():
                 raise RuntimeError("start failed")
+
+        with pytest.raises(RuntimeError):
+            _fail_inside_the_lock()
 
         assert _try_lock_from_other_connection(verifier, key) is True
 

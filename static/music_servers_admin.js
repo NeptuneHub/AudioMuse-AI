@@ -54,7 +54,7 @@
     var PENDING_WARNING_KEY = 'audiomuse_music_servers_warning';
 
     function parkWarning(body) {
-        if (!body || !body.warning) { return; }
+        if (!body?.warning) { return; }
         try {
             window.sessionStorage.setItem(PENDING_WARNING_KEY, body.warning);
         } catch (e) {
@@ -68,6 +68,7 @@
             parked = window.sessionStorage.getItem(PENDING_WARNING_KEY);
             window.sessionStorage.removeItem(PENDING_WARNING_KEY);
         } catch (e) {
+            console.warn('Could not read the parked warning', e);
             return;
         }
         if (parked) {

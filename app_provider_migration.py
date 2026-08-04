@@ -132,7 +132,7 @@ def _rq_jobs_by_id(job_ids):
 
     ids = [str(job_id) for job_id in job_ids if job_id]
     jobs = Job.fetch_many(ids, connection=redis_conn) if ids else []
-    return {job_id: job for job_id, job in zip(ids, jobs)}
+    return dict(zip(ids, jobs))
 
 
 def _rq_job_is_alive(job):

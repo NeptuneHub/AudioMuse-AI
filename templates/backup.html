@@ -205,6 +205,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     unreachable = false;
                 }
             } catch (err) {
+                console.warn('Restore status poll failed', err);
                 unreachable = true;
             }
 

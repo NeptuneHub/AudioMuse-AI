@@ -43,6 +43,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from flask import Blueprint, render_template, jsonify, request, send_file
 from redis.exceptions import RedisError
 import config
+from sanitization import sanitize_for_log
 import restart_manager
 from taskqueue import new_redis_connection
 from error import error_manager
@@ -148,6 +149,37 @@ _BACKUP_FILENAME_RE = re.compile(r'audiomuse_backup_\d{8}_\d{6}\.(sql|zip)')
 _TXN_TIMEOUT_RE = re.compile(rb'(?m)^SET transaction_timeout\b[^\n]*\n')
 
 
+def _is_contained(path, *allowed_dirs):
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    for base in allowed_dirs:
+        try:
+            base_real = os.path.realpath(base)
+        except OSError:
+            continue
+        if os.path.commonpath([base_real, real]) == base_real:
+            return True
+    return False
+
+
+def _unlink_restore_artifact(path):
+    """Delete a restore working file, refusing anything outside our own dirs."""
+    if not path:
+        return
+    if not _is_contained(path, BACKUP_DIR, RESTORE_LOG_DIR, tempfile.gettempdir()):
+        logger.error(
+            'Refusing to delete restore artifact outside the backup/temp dirs: %s',
+            sanitize_for_log(path),
+        )
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def _feed_dump(stdin, dump_file, result):
     """Stream the dump into psql; record delivery in result so a short feed isn't reported as success."""
     try:
@@ -245,10 +277,7 @@ def _run_restore_runner(dump_file, log_file):
             log.write(f"Restore FAILED: the configured database connection is unusable: {exc}\n")
             log.flush()
             _publish_worker_start(log)
-            try:
-                os.unlink(dump_file)
-            except OSError:
-                pass
+            _unlink_restore_artifact(dump_file)
             _write_restore_result(
                 log,
                 RESTORE_RESULT_FAILED,

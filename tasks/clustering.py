@@ -147,6 +147,8 @@ from .clustering_postprocessing import (
 
 logger = logging.getLogger(__name__)
 
+_PARENT_CANCELLED_MESSAGE = "Parent task was cancelled."
+
 
 def _derive_dbscan_eps(item_ids, min_samples, active_moods, enable_embeddings):
     valid_tracks, x_feat, x_embed = _prepare_iteration_data(
@@ -328,9 +330,9 @@ def run_clustering_batch_task(
                     "missing or terminal.",
                     current_task_id, parent_task_id,
                 )
-                return {"status": "REVOKED", "message": "Parent task was cancelled."}
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
             if not _log_and_update("Batch started.", 0):
-                return {"status": "REVOKED", "message": "Parent task was cancelled."}
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
             genre_to_lightweight_track_data_map = json.loads(
                 genre_to_lightweight_track_data_map_json
             )
@@ -445,7 +447,7 @@ def run_clustering_batch_task(
                 details=final_details,
                 state=TASK_STATUS_SUCCESS,
             ):
-                return {"status": "REVOKED", "message": "Parent task was cancelled."}
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
             return {
                 "status": "SUCCESS",
                 "iterations_completed_in_batch": iterations_completed,
@@ -461,7 +463,7 @@ def run_clustering_batch_task(
             if not _log_and_update(
                 f"Batch failed: {e}", 100, details={"error": err}, state=TASK_STATUS_FAILURE
             ):
-                return {"status": "REVOKED", "message": "Parent task was cancelled."}
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
             return {"status": "FAILURE", "message": str(e)}
 
 

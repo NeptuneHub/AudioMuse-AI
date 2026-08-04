@@ -233,7 +233,8 @@ def test_first_cancel_commits_tombstone_then_disables_retries_and_stops_all_jobs
     assert events.index(('retry-zero', 'cluster-batch')) < events.index(
         ('cancel', 'cluster-batch')
     )
-    assert ('empty', 'high') in events and ('empty', 'default') in events
+    assert ('empty', 'high') in events
+    assert ('empty', 'default') in events
 
 
 def test_cancel_reports_incomplete_when_redis_queue_cannot_be_emptied(cancel_env):

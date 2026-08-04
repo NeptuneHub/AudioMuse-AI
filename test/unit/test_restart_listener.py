@@ -126,9 +126,9 @@ def test_ack_write_retries_after_redis_reconnect_without_reexecuting(monkeypatch
         def hset(self, _key, _field, _value):
             raise ConnectionError('Redis dropped after supervisor action')
 
+    dropped = _DroppedRedis()
+    _prepare_request(dropped, request_id='req-reconnect')
     with pytest.raises(ConnectionError):
-        dropped = _DroppedRedis()
-        _prepare_request(dropped, request_id='req-reconnect')
         restart_listener.handle_control_message(
             dropped, _payload(request_id='req-reconnect'), pending
         )

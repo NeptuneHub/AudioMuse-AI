@@ -64,6 +64,9 @@ MAIN_TASK_START_LOCK_KEY = 5512740318664902
 # global Cancel. Lock order is always JANITOR_CYCLE -> MAIN_TASK_START.
 JANITOR_CYCLE_LOCK_KEY = 6193044728150338
 
+_ADVISORY_LOCK_SQL = "SELECT pg_advisory_lock(%s)"
+_ADVISORY_UNLOCK_SQL = "SELECT pg_advisory_unlock(%s)"
+
 GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 
 SELF_MANAGED_TASK_TYPES = ('server_sweep', 'alchemy_radio')
@@ -1113,7 +1116,7 @@ def _migrate_artist_mapping_to_server_map(cur):
 def init_db():
     db = get_db()
     with db.cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+        cur.execute(_ADVISORY_LOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
         try:
             if sys.platform == 'win32':
                 for ext in ('unaccent', 'pg_trgm'):
@@ -1645,7 +1648,7 @@ def init_db():
         finally:
             try:
                 db.rollback()
-                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
             except Exception:
                 logger.exception("Failed to release the schema advisory lock")
 
@@ -1925,14 +1928,14 @@ def ensure_plugins_table(conn=None):
     db = conn or connect_raw()
     try:
         with db.cursor() as cur:
-            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            cur.execute(_ADVISORY_LOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
             try:
                 _create_plugins_table(cur)
                 db.commit()
             finally:
                 try:
                     db.rollback()
-                    cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                    cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
                 except Exception:
                     logger.exception("Failed to release the schema advisory lock")
     finally:
@@ -2242,13 +2245,13 @@ def drop_plugin_data_tables(plugin_id, conn=None):
 def main_task_start_lock(conn=None):
     db = conn or get_db()
     with db.cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(%s)", (MAIN_TASK_START_LOCK_KEY,))
+        cur.execute(_ADVISORY_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,))
     try:
         yield
     finally:
         try:
             with db.cursor() as cur:
-                cur.execute("SELECT pg_advisory_unlock(%s)", (MAIN_TASK_START_LOCK_KEY,))
+                cur.execute(_ADVISORY_UNLOCK_SQL, (MAIN_TASK_START_LOCK_KEY,))
         except Exception:
             logger.exception(
                 "Could not release the main-task start lock; it will clear when the "
@@ -2263,7 +2266,7 @@ def janitor_cycle_lock(conn=None, *, blocking=False, timeout_seconds=None):
     try:
         if blocking and timeout_seconds is None:
             with db.cursor() as cur:
-                cur.execute("SELECT pg_advisory_lock(%s)", (JANITOR_CYCLE_LOCK_KEY,))
+                cur.execute(_ADVISORY_LOCK_SQL, (JANITOR_CYCLE_LOCK_KEY,))
             acquired = True
         elif blocking:
             deadline = time.monotonic() + max(0.0, float(timeout_seconds))
@@ -2294,9 +2297,7 @@ def janitor_cycle_lock(conn=None, *, blocking=False, timeout_seconds=None):
         if acquired:
             try:
                 with db.cursor() as cur:
-                    cur.execute(
-                        "SELECT pg_advisory_unlock(%s)", (JANITOR_CYCLE_LOCK_KEY,)
-                    )
+                    cur.execute(_ADVISORY_UNLOCK_SQL, (JANITOR_CYCLE_LOCK_KEY,))
             except Exception:
                 logger.exception(
                     "Could not release janitor cycle lock; connection close will clear it"

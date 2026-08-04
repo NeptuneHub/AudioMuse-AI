@@ -71,6 +71,8 @@ _ORPHAN_REPORT_MAX_ROWS = 5000
 
 # Upper bound on the post-commit restart handshake. The migration itself is
 # already durable by then; this only bounds how long one worker is held.
+_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
+
 _RESTART_HANDSHAKE_MAX_SECONDS = 900
 
 # The restart request is a Redis publish, so the only way it fails is a Redis
@@ -299,7 +301,7 @@ def _finalize_restart_handshake(
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT pg_advisory_xact_lock(%s)", (MAIN_TASK_START_LOCK_KEY,)
+            _XACT_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,)
         )
         cur.execute(
             "SELECT status, state FROM migration_session WHERE id = %s FOR UPDATE",
@@ -488,7 +490,7 @@ def execute_provider_migration(session_id):
 
         cur = conn.cursor()
 
-        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+        cur.execute(_XACT_LOCK_SQL, (_ADVISORY_LOCK_KEY,))
 
         session = _load_session(cur, session_id)
         target_type = session['target_type']
@@ -929,7 +931,7 @@ def _stage_restart_handshake(cur, task_id, session_id, restart_request_id):
         return
     from database import MAIN_TASK_START_LOCK_KEY
 
-    cur.execute("SELECT pg_advisory_xact_lock(%s)", (MAIN_TASK_START_LOCK_KEY,))
+    cur.execute(_XACT_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,))
     cur.execute(
         "SELECT status FROM task_status WHERE task_id = %s FOR UPDATE",
         (task_id,),
@@ -1029,7 +1031,7 @@ def _run_migration_transaction(
     Nothing here touches score.item_id now, so the similarity indexes stay valid and
     no rebuild is needed.
     """
-    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+    cur.execute(_XACT_LOCK_SQL, (_ADVISORY_LOCK_KEY,))
 
     _populate_migration_map_table(cur, mapping)
     _stage_unsignable_items(cur)
@@ -1344,7 +1346,7 @@ def recover_provider_migration_restart_handshakes():
             recovery_id = str(uuid.uuid4())
             try:
                 cur.execute(
-                    "SELECT pg_advisory_xact_lock(%s)", (MAIN_TASK_START_LOCK_KEY,)
+                    _XACT_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,)
                 )
                 cur.execute(
                     "SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,)
@@ -1449,7 +1451,7 @@ def resume_provider_migration_restart(session_id, root_task_id):
         except Exception:
             pass
         cur = conn.cursor()
-        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+        cur.execute(_XACT_LOCK_SQL, (_ADVISORY_LOCK_KEY,))
         session = _load_session(cur, session_id)
         state = session['state']
         if session['status'] != 'completed':
