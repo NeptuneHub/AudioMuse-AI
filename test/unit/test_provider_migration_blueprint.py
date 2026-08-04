@@ -731,7 +731,7 @@ class TestPlannerReservationProtocol:
         db.commit.assert_called_once()
 
         blocked = MagicMock()
-        blocked.fetchall.return_value = [(9, exc.value.job_id, None, None)]
+        blocked.fetchall.return_value = [(9, {'dry_run_task_id': exc.value.job_id})]
         with patch.object(bp_mod, '_rq_jobs_by_id', side_effect=RuntimeError('still down')):
             assert bp_mod._migration_job_in_flight(blocked) is True
         assert not any(
@@ -739,7 +739,7 @@ class TestPlannerReservationProtocol:
         )
 
         reconciled = MagicMock()
-        reconciled.fetchall.return_value = [(9, exc.value.job_id, None, None)]
+        reconciled.fetchall.return_value = [(9, {'dry_run_task_id': exc.value.job_id})]
         with patch.object(
             bp_mod, '_rq_jobs_by_id', return_value={exc.value.job_id: None}
         ):

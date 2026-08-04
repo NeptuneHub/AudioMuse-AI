@@ -1333,7 +1333,10 @@ class TestEmbeddingCanonicalization:
 
 
 def _candidate_selects(executed):
-    return [e for e in executed if e[0].startswith('SELECT') and e[1] is not None]
+    return [
+        e for e in executed
+        if e[0].lstrip().startswith('SELECT') and e[1] is not None
+    ]
 
 
 class TestSweepAlignment:

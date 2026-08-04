@@ -354,6 +354,7 @@ def _finalize_restart_handshake(
     except Exception:
         conn.rollback()
         raise
+
     try:
         from database import save_task_status
 
@@ -370,7 +371,6 @@ def _finalize_restart_handshake(
             "task row; history and cleanup will lag until the next run",
             session_id,
         )
-    return True
 
 
 def _restart_request_result(request_id):
@@ -402,7 +402,6 @@ def _await_worker_restart(
         try:
             if first_attempt:
                 acknowledged = _post_commit_reload(
-                    redis,
                     alignment_task_id,
                     restart_request_id=current_request_id,
                 )
@@ -1203,7 +1202,7 @@ def _purge_media_keys_from_app_config(cur):
         )
 
 
-def _post_commit_reload(redis, alignment_task_id=None, *, restart_request_id=None):
+def _post_commit_reload(alignment_task_id=None, *, restart_request_id=None):
     try:
         from tasks.mediaserver import registry
 

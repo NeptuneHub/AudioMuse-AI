@@ -27,7 +27,6 @@ import os
 import socket
 import subprocess
 import threading
-import time
 import uuid
 
 import config
@@ -47,11 +46,8 @@ CONTROL_ACK_TIMEOUT_SECONDS = max(
     5.0, float(os.environ.get('AUDIO_MUSE_CONTROL_ACK_TIMEOUT_SECONDS', '15'))
 )
 CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS = min(5.0, CONTROL_ACK_TIMEOUT_SECONDS)
-_configured_ipc_timeout = float(
-    os.environ.get('AUDIO_MUSE_CONTROL_IPC_TIMEOUT_SECONDS', CONTROL_ACK_TIMEOUT_SECONDS - 2)
-)
 CONTROL_IPC_TIMEOUT_SECONDS = max(
-    3.0, min(_configured_ipc_timeout, CONTROL_ACK_TIMEOUT_SECONDS - 2)
+    75.0, float(os.environ.get('AUDIO_MUSE_CONTROL_IPC_TIMEOUT_SECONDS', '120'))
 )
 CONTROL_RETRY_LEASE_SECONDS = max(
     CONTROL_ACK_TIMEOUT_SECONDS,
@@ -60,10 +56,6 @@ CONTROL_RETRY_LEASE_SECONDS = max(
 CONTROL_MAX_DELIVERY_ATTEMPTS = max(
     1, int(os.environ.get('AUDIO_MUSE_CONTROL_MAX_DELIVERY_ATTEMPTS', '3'))
 )
-
-_ACK_POLL_START_SECONDS = 0.1
-
-_ACK_POLL_MAX_SECONDS = 2.0
 
 _REGISTER_CONTROL_REQUEST_LUA = """
 local now = tonumber(redis.call('TIME')[1])
@@ -288,23 +280,11 @@ def publish_control_request(action, request_id=None, timeout_seconds=CONTROL_ACK
             )
             return False
 
-        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-        poll_interval = _ACK_POLL_START_SECONDS
-        while True:
-            result = get_control_request_result(action, request_id, redis_conn=redis_conn)
-            if result is not None:
-                return result
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                logger.error(
-                    'Timed out waiting for %d worker ACK(s) for %s request %s',
-                    expected,
-                    action,
-                    request_id,
-                )
-                return False
-            poll_interval = min(poll_interval * 2, _ACK_POLL_MAX_SECONDS)
-            time.sleep(min(poll_interval, remaining))
+        # DELIVERED IS THE ANSWER. A restart must happen the instant it is asked
+        # for, so nothing sits here waiting for the workers to finish dying. The
+        # listener still records a durable per-listener result, which the
+        # provider-migration handshake and the recovery janitor poll on their own.
+        return True
     except Exception:
         logger.exception('Could not publish or confirm %s request %s', action, request_id)
         return False

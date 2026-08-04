@@ -28,6 +28,7 @@ import logging
 import threading
 import time
 import config
+from sanitization import sanitize_for_log
 
 # RQ imports
 from rq.job import Job
@@ -60,7 +61,6 @@ from app_helper import (
     get_task_info_from_db,
     revoke_inline_task_row,
     cancel_job_and_children_recursive,
-    CancellationIncompleteError,
     coerce_db_details,
     sanitize_task_details,
 )
@@ -562,8 +562,11 @@ def cancel_task_endpoint(task_id):
         cancelled_count = cancel_job_and_children_recursive(
             task_id, reason=f"Cancellation requested for task {task_id} via API."
         )
-    except Exception as exc:
-        logger.exception("Cancellation of task %s could not be fully confirmed", task_id)
+    except Exception:
+        logger.exception(
+            "Cancellation of task %s could not be fully confirmed",
+            sanitize_for_log(task_id),
+        )
         return jsonify(
             {
                 "error": (
@@ -571,7 +574,7 @@ def cancel_task_endpoint(task_id):
                     "recovery tasks may remain active."
                 ),
                 "task_id": task_id,
-                "details": str(exc) if isinstance(exc, CancellationIncompleteError) else None,
+                "details": None,
             }
         ), 503
     return jsonify(
@@ -640,9 +643,10 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
             cancelled_main_task_ids[0],
             reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
         )
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            "Bulk cancellation for %s could not be fully confirmed", task_type_prefix
+            "Bulk cancellation for %s could not be fully confirmed",
+            sanitize_for_log(task_type_prefix),
         )
         return jsonify(
             {
@@ -651,7 +655,7 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
                     "recovery tasks may remain active."
                 ),
                 "cancelled_main_tasks": cancelled_main_task_ids,
-                "details": str(exc) if isinstance(exc, CancellationIncompleteError) else None,
+                "details": None,
             }
         ), 503
 

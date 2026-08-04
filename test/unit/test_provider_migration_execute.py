@@ -1224,9 +1224,9 @@ class TestMigrationSuccessFinalization:
             lambda *a, **k: saved.update({'args': a, 'kwargs': k}),
         )
 
-        assert mig._finalize_restart_handshake(
+        mig._finalize_restart_handshake(
             conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
-        ) is True
+        )
 
         conn.commit.assert_called_once()
         assert saved['args'][0] == 'root-1'
@@ -1260,7 +1260,7 @@ class TestMigrationSuccessFinalization:
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError('db gone')),
         )
 
-        assert mig._finalize_restart_handshake(
+        mig._finalize_restart_handshake(
             conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
-        ) is True
+        )
         conn.rollback.assert_not_called()

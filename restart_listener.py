@@ -118,7 +118,7 @@ def _persist_pending_result(redis_conn, pending):
 
 
 def flush_pending_results(redis_conn, pending_results):
-    for pending_id, pending in list(pending_results.items()):
+    for pending_id, pending in tuple(pending_results.items()):
         _persist_pending_result(redis_conn, pending)
         del pending_results[pending_id]
         logger.info(

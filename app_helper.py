@@ -78,9 +78,6 @@ from error.error_dictionary import UNKNOWN_ERROR_CODE
 logger = logging.getLogger(__name__)
 
 
-# Cancel waits this long for the janitor cycle lock, then proceeds regardless.
-CANCEL_JANITOR_LOCK_WAIT_SECONDS = 10.0
-
 ENQUEUE_ACCEPTED = 'accepted'
 ENQUEUE_MISSING = 'missing'
 ENQUEUE_UNKNOWN = 'unknown'
@@ -486,19 +483,16 @@ def cancel_job_and_children_recursive(
     # Lock order must match the janitor: cycle lock first, start/cancel lock
     # second. This prevents a stale janitor retry snapshot from requeueing a job
     # after the first Cancel, without introducing a cycle-lock/main-lock deadlock.
-    with database.janitor_cycle_lock(
-        db, blocking=True, timeout_seconds=CANCEL_JANITOR_LOCK_WAIT_SECONDS
-    ) as owns_cycle:
+    # CANCEL NEVER WAITS. The cycle lock is taken opportunistically: if a janitor
+    # holds it we cancel anyway rather than make the user wait out its pass. A
+    # janitor may then requeue one abandoned job, which stops again immediately
+    # because its row is already gone.
+    with database.janitor_cycle_lock(db) as owns_cycle:
         if not owns_cycle:
-            # Proceed anyway. Cancel is the one operation that must never hang or
-            # fail: refusing here left the user with a 503 and NOTHING cancelled,
-            # while the janitor merely might requeue one abandoned job - which the
-            # deleted rows then stop on its next cooperative check.
             logger.error(
-                "GLOBAL CANCEL COULD NOT SERIALIZE WITH THE RQ JANITOR within %ss; "
-                "cancelling anyway. A janitor pass may requeue one abandoned job, "
-                "which will stop again as soon as it sees its row is gone.",
-                CANCEL_JANITOR_LOCK_WAIT_SECONDS,
+                "GLOBAL CANCEL COULD NOT SERIALIZE WITH THE RQ JANITOR; cancelling "
+                "anyway. A janitor pass may requeue one abandoned job, which will "
+                "stop again as soon as it sees its row is gone."
             )
         with main_task_start_lock():
             return _cancel_job_and_children_locked(job_id, reason)
@@ -672,7 +666,7 @@ def _cancel_job_and_children_locked(job_id, reason):
                     # Skipping this block entirely left every queued job in place,
                     # so work still started after the user pressed Cancel. Drop the
                     # jobs one by one instead, keeping only the protected ids.
-                    for queued_id in list(getattr(q, 'job_ids', []) or []):
+                    for queued_id in getattr(q, 'job_ids', []) or []:
                         if queued_id in protected_task_ids:
                             continue
                         q.remove(queued_id)

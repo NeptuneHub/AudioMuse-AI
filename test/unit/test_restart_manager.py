@@ -182,12 +182,8 @@ class TestWorkerControlAcknowledgements:
         redis_conn = _ControlRedis(subscribers=1, auto_ack=False)
         monkeypatch.setattr(restart_manager, 'new_redis_connection', lambda **_kwargs: redis_conn)
 
-        assert restart_manager.publish_start_request(
-            request_id='pending', timeout_seconds=0
-        ) is False
-        assert restart_manager.publish_start_request(
-            request_id='pending', timeout_seconds=0
-        ) is False
+        assert restart_manager.publish_start_request(request_id='pending') is True
+        assert restart_manager.publish_start_request(request_id='pending') is True
         assert redis_conn.publish_count == 1
 
     def test_missing_ack_is_republished_after_lease_and_can_recover(self, monkeypatch):
@@ -195,12 +191,12 @@ class TestWorkerControlAcknowledgements:
         monkeypatch.setattr(restart_manager, 'new_redis_connection', lambda **_kwargs: redis_conn)
 
         assert restart_manager.publish_restart_request(
-            request_id='listener-crashed', timeout_seconds=0
-        ) is False
+            request_id='listener-crashed'
+        ) is True
         redis_conn.lease_expired = True
         redis_conn.auto_ack = True
         assert restart_manager.publish_restart_request(
-            request_id='listener-crashed', timeout_seconds=0
+            request_id='listener-crashed'
         ) is True
         assert redis_conn.publish_count == 2
 
@@ -209,14 +205,14 @@ class TestWorkerControlAcknowledgements:
         monkeypatch.setattr(restart_manager, 'new_redis_connection', lambda **_kwargs: redis_conn)
 
         assert restart_manager.publish_restart_request(
-            request_id='replica-gone', timeout_seconds=0
-        ) is False
+            request_id='replica-gone'
+        ) is True
         redis_conn.lease_expired = True
         redis_conn.subscribers = 1
         redis_conn.auto_ack = True
         assert restart_manager.publish_restart_request(
-            request_id='replica-gone', timeout_seconds=0
-        ) is False
+            request_id='replica-gone'
+        ) is True
         request = redis_conn.requests[restart_manager.control_request_key('replica-gone')]
         assert request['expected'] == 2
 
@@ -225,14 +221,10 @@ class TestWorkerControlAcknowledgements:
         monkeypatch.setattr(restart_manager, 'new_redis_connection', lambda **_kwargs: redis_conn)
 
         for _attempt in range(restart_manager.CONTROL_MAX_DELIVERY_ATTEMPTS):
-            assert restart_manager.publish_restart_request(
-                request_id='bounded', timeout_seconds=0
-            ) is False
+            assert restart_manager.publish_restart_request(request_id='bounded') is True
             redis_conn.lease_expired = True
 
-        assert restart_manager.publish_restart_request(
-            request_id='bounded', timeout_seconds=0
-        ) is False
+        assert restart_manager.publish_restart_request(request_id='bounded') is False
         assert restart_manager.get_control_request_result('restart', 'bounded') is False
         assert redis_conn.publish_count == restart_manager.CONTROL_MAX_DELIVERY_ATTEMPTS
 
@@ -267,7 +259,7 @@ class TestWorkerControlAcknowledgements:
         assert restart_manager.get_control_request_result('restart', 'request-2') is None
 
 
-def test_native_control_timeout_allows_completion_inside_ack_deadline(monkeypatch):
+def test_native_control_timeout_covers_three_sequential_worker_shutdowns(monkeypatch):
     seen = {}
 
     class _Socket:
@@ -297,8 +289,10 @@ def test_native_control_timeout_allows_completion_inside_ack_deadline(monkeypatc
     monkeypatch.setattr(restart_manager.socket, 'socket', lambda *_args: _Socket())
 
     assert restart_manager._send_control(['restart', 'rq-worker-default']) is True
-    assert 0 < seen['timeout'] < restart_manager.CONTROL_ACK_TIMEOUT_SECONDS
-    assert restart_manager.CONTROL_ACK_TIMEOUT_SECONDS <= 30
+    # Three sequential worker shutdowns: up to 20s each on Windows (wait 15 then
+    # kill + wait 5), 15s on linux/macos. Chaining this to the caller deadline cut
+    # it to 13s and made a correct native restore report failure.
+    assert seen['timeout'] >= 60
 
 
 def test_the_advisory_ack_bound_cannot_occupy_a_gunicorn_thread_for_long():
@@ -309,8 +303,7 @@ def test_the_advisory_ack_bound_cannot_occupy_a_gunicorn_thread_for_long():
     )
 
 
-def test_publish_control_request_never_sleeps_past_a_caller_supplied_ack_bound(monkeypatch):
-    clock = {'now': 1000.0}
+def test_publish_control_request_returns_on_delivery_without_ever_sleeping(monkeypatch):
     waited = []
 
     class _Redis:
@@ -323,20 +316,14 @@ def test_publish_control_request_never_sleeps_past_a_caller_supplied_ack_bound(m
         def hgetall(self, _key):
             return {}
 
-    def _sleep(seconds):
-        waited.append(seconds)
-        clock['now'] += seconds
-
     monkeypatch.setattr(restart_manager, 'new_redis_connection', lambda **_kw: _Redis())
-    monkeypatch.setattr(restart_manager.time, 'monotonic', lambda: clock['now'])
-    monkeypatch.setattr(restart_manager.time, 'sleep', _sleep)
+    monkeypatch.setattr('time.sleep', lambda s: waited.append(s))
 
-    assert restart_manager.publish_control_request('restart', timeout_seconds=4.0) is False
-    assert sum(waited) <= 4.0, (
-        'the wait occupies one of gunicorn 4 threads, so it must never outlive the '
-        'deadline the request handler asked for'
-    )
-    assert waited, 'it must actually poll rather than give up immediately'
+    # A restart must be dispatched the instant it is asked for. Polling for worker
+    # ACKs here put a multi-second wait on the caller - including gunicorn request
+    # threads - for an action that had already been delivered.
+    assert restart_manager.publish_control_request('restart') is True
+    assert waited == []
 
 
 @pytest.mark.parametrize(

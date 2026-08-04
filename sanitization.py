@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 _DB_CONTROL_CHARS = re.compile(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]')
 
 
+_LOG_UNSAFE_RE = re.compile(r'[\x00-\x1f\x7f]')
+
+
+def sanitize_for_log(value, max_length=200):
+    if value is None:
+        return ''
+    text = value if isinstance(value, str) else str(value)
+    return _LOG_UNSAFE_RE.sub('?', text)[:max_length]
+
+
 def sanitize_string_for_db(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None

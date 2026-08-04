@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 from tz_helper import UTC_NOW_SQL
 
-from sanitization import sanitize_db_field, sanitize_string_for_db
+from sanitization import sanitize_db_field, sanitize_string_for_db, sanitize_for_log
 
 from config import (
     TASK_STATUS_PENDING,
@@ -352,12 +352,12 @@ def _collapse_finished_task(db, task_id, task_type, parent_task_id, status):
             db.rollback()
         except Exception:
             logger.debug("Rollback after a failed task collapse failed", exc_info=True)
-        logger.exception("Could not collapse finished task %s", task_id)
+        logger.exception("Could not collapse finished task %s", sanitize_for_log(task_id))
         return 0
     if deleted:
         logger.info(
             "Task %s finished (%s); dropped %d rows, keeping only its one-line recap.",
-            task_id, status, deleted,
+            sanitize_for_log(task_id), sanitize_for_log(status), deleted,
         )
     return deleted
 

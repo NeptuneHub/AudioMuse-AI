@@ -457,7 +457,7 @@ def test_cancel_proceeds_when_the_janitor_lock_times_out(monkeypatch):
     assert events == ['cancel']
 
 
-def test_cancel_passes_a_bounded_wait_to_the_janitor_lock(monkeypatch):
+def test_cancel_never_waits_for_the_janitor_lock(monkeypatch):
     import app_helper
     from contextlib import nullcontext
 
@@ -477,6 +477,7 @@ def test_cancel_passes_a_bounded_wait_to_the_janitor_lock(monkeypatch):
 
     app_helper.cancel_job_and_children_recursive('cluster-parent')
 
-    assert seen['blocking'] is True
-    assert seen['timeout'] == app_helper.CANCEL_JANITOR_LOCK_WAIT_SECONDS
-    assert 0 < seen['timeout'] <= 60
+    # Cancel cancels NOW. Waiting out a janitor pass is a delay the user feels as
+    # the app ignoring the button.
+    assert seen['blocking'] is False
+    assert seen['timeout'] is None

@@ -101,11 +101,17 @@ _MIGRATION_TASK_KEYS = _PLANNER_TASK_KEYS + ('exec_task_id',)
 
 
 class _PlanningClaimError(RuntimeError):
-    """A planner could not reserve the current, mutable migration session."""
+    """A planner could not reserve the current, mutable migration session.
+
+    ``user_message`` is the deliberately authored, safe text the endpoint returns.
+    Formatting ``str(exc)`` into a response makes exception text reachable from the
+    frontend, which is exactly what must never happen.
+    """
 
     def __init__(self, message, status_code=409):
         super().__init__(message)
         self.status_code = status_code
+        self.user_message = message
 
 
 class _PlanningEnqueueUncertain(RuntimeError):
@@ -162,6 +168,15 @@ def _clear_stale_planner_reservation(cur, session_id, key, job_id):
             )
 
 
+def _session_state(raw_state):
+    if isinstance(raw_state, str):
+        try:
+            return json.loads(raw_state) or {}
+        except (TypeError, ValueError):
+            return {}
+    return raw_state or {}
+
+
 def _migration_job_in_flight(cur, keys=_MIGRATION_TASK_KEYS):
     # Dry-run and source-refresh write no task row and hold no long-lived DB lock,
     # so their durable reservation on the session is what closes the DB/Redis
@@ -169,14 +184,14 @@ def _migration_job_in_flight(cur, keys=_MIGRATION_TASK_KEYS):
     # result is reconciled only after this control acquired the same advisory lock
     # that covered claim plus enqueue.
     cur.execute(
-        "SELECT id, " + ", ".join("state->>'%s'" % k for k in keys)
-        + " FROM migration_session"  # nosec B608 - keys are module constants
+        "SELECT id, state FROM migration_session"
     )
+    rows = [(row[0], _session_state(row[1])) for row in (cur.fetchall() or [])]
     reservations = [
-        (row[0], key, job_id)
-        for row in (cur.fetchall() or [])
-        for key, job_id in zip(keys, row[1:])
-        if job_id
+        (session_id, key, state.get(key))
+        for session_id, state in rows
+        for key in keys
+        if state.get(key)
     ]
     job_ids = [reservation[2] for reservation in reservations]
     if not job_ids:
@@ -1331,7 +1346,7 @@ def source_paths_refresh():
             get_db().rollback()
         except Exception:
             pass
-        return jsonify({'error': str(exc)}), exc.status_code
+        return jsonify({'error': exc.user_message}), exc.status_code
     except _PlanningEnqueueUncertain as exc:
         logger.exception(
             "Source-path refresh enqueue returned an ambiguous error; keeping "
@@ -1504,7 +1519,7 @@ def dry_run():
             get_db().rollback()
         except Exception:
             pass
-        return jsonify({'error': str(exc)}), exc.status_code
+        return jsonify({'error': exc.user_message}), exc.status_code
     except _PlanningEnqueueUncertain as exc:
         logger.exception(
             "Dry-run enqueue returned an ambiguous error; keeping durable "

@@ -397,6 +397,31 @@ def janitor_cycle_lock():
         except Exception:
             logger.debug("Janitor cycle lock connection close failed", exc_info=True)
 
+_ORPHAN_CANDIDATES_NO_MIGRATION_SQL = """
+    SELECT ts.task_id FROM task_status AS ts
+    WHERE ts.parent_task_id IS NULL AND ts.task_type <> ALL(%s)
+      AND ts.status NOT IN (%s, %s, %s)
+      AND ts.timestamp < NOW() - make_interval(secs => %s)
+"""
+
+# The janitor lives in the WORKER container but init_db() only ever runs in Flask,
+# so a worker that starts first reaches this against a schema that has task_status
+# and not yet migration_session. Postgres resolves relations at parse time, so the
+# two shapes are kept as whole literal statements rather than assembled at runtime.
+_ORPHAN_CANDIDATES_SQL = """
+    SELECT ts.task_id FROM task_status AS ts
+    WHERE ts.parent_task_id IS NULL AND ts.task_type <> ALL(%s)
+      AND ts.status NOT IN (%s, %s, %s)
+      AND ts.timestamp < NOW() - make_interval(secs => %s)
+      AND NOT (ts.task_type = 'provider_migration' AND EXISTS (
+          SELECT 1 FROM migration_session AS ms
+          WHERE ms.status = 'completed'
+            AND ms.state->>'exec_task_id' = ts.task_id
+            AND lower(COALESCE(ms.state->>'restart_acknowledged', 'false'))
+                NOT IN ('true', '1', 'yes')
+      ))
+"""
+
 _ORPHAN_GRACE_SECONDS = 120
 
 _INLINE_STALE_SECONDS = 1800
@@ -480,21 +505,10 @@ def reap_orphaned_tasks():
         cur = db.cursor()
         try:
             cur.execute("SELECT to_regclass('migration_session')")
-            handshake_guard = (
-                "AND NOT (ts.task_type = 'provider_migration' AND EXISTS ("
-                "  SELECT 1 FROM migration_session AS ms "
-                "  WHERE ms.status = 'completed' "
-                "    AND ms.state->>'exec_task_id' = ts.task_id "
-                "    AND lower(COALESCE(ms.state->>'restart_acknowledged', 'false')) "
-                "        NOT IN ('true', '1', 'yes')"
-                "))"
-            ) if cur.fetchone()[0] is not None else ""
             cur.execute(
-                "SELECT ts.task_id FROM task_status AS ts "
-                "WHERE ts.parent_task_id IS NULL AND ts.task_type <> ALL(%s) "
-                "AND ts.status NOT IN (%s, %s, %s) "
-                "AND ts.timestamp < NOW() - make_interval(secs => %s) "
-                + handshake_guard,
+                _ORPHAN_CANDIDATES_SQL
+                if cur.fetchone()[0] is not None
+                else _ORPHAN_CANDIDATES_NO_MIGRATION_SQL,
                 (list((SWEEP_TASK_TYPE,) + tuple(INLINE_FLASK_TASK_TYPES)),
                  config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
                  config.TASK_STATUS_REVOKED, _ORPHAN_GRACE_SECONDS),

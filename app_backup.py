@@ -690,7 +690,12 @@ def restore_status():
     if not RESTORE_LOG_NAME_PATTERN.fullmatch(log_name):
         return jsonify({'error': 'Invalid restore log name.'}), 400
 
-    outcome = _read_restore_result_from(os.path.join(RESTORE_LOG_DIR, log_name))
+    base_dir_real = os.path.realpath(RESTORE_LOG_DIR)
+    log_path_real = os.path.realpath(os.path.join(base_dir_real, log_name))
+    if os.path.commonpath([base_dir_real, log_path_real]) != base_dir_real:
+        return jsonify({'error': 'Invalid restore log name.'}), 400
+
+    outcome = _read_restore_result_from(log_path_real)
     if outcome is None:
         return jsonify({'state': 'running'})
     return jsonify({'state': outcome['result'], 'message': outcome['message']})
