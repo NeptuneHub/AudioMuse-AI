@@ -16,9 +16,8 @@ default or use a getattr(config, ...) fallback default.
 
 Main Features:
 * config attributes exist with the documented default and coerce env overrides
-* DATABASE_URL is derived from the five POSTGRES_* parts only and a DATABASE_URL
-  env var is ignored; libpq resolves the result for TCP, IPv6 and socket hosts,
-  and every part is escaped so none of them can re-split the URI
+* Official defaults derive DATABASE_URL from the five POSTGRES_* parts, while
+  custom deployments retain the explicit DATABASE_URL override compatibility
 * No module outside test/ reads DATABASE_URL from the environment, by get/getenv
   or by subscript
 * Importer modules still reference the config names they depend on
@@ -88,7 +87,7 @@ _PG_PARTS = {
 
 
 def _reload_config_with(monkeypatch, env):
-    for key in list(_PG_PARTS) + ['DATABASE_URL']:
+    for key in list(_PG_PARTS) + ['DATABASE_URL', 'DATABASE_TYPE', 'AUDIOMUSE_PLATFORM']:
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -99,14 +98,14 @@ def _refuse_connection(*_args, **_kwargs):
     raise RuntimeError('unit test: config reload must not open a database connection')
 
 
-class TestDatabaseUrlIsDerivedFromThePostgresParts:
+class TestDatabaseUrlCompatibility:
     @pytest.fixture(autouse=True)
     def _offline_config_reload(self, monkeypatch):
         from tasks.setup_manager import SetupManager
 
         monkeypatch.setattr(SetupManager, 'get_connection', _refuse_connection)
         yield
-        for key in list(_PG_PARTS) + ['DATABASE_URL']:
+        for key in list(_PG_PARTS) + ['DATABASE_URL', 'DATABASE_TYPE', 'AUDIOMUSE_PLATFORM']:
             monkeypatch.delenv(key, raising=False)
         importlib.reload(config)
 
@@ -114,10 +113,34 @@ class TestDatabaseUrlIsDerivedFromThePostgresParts:
         reloaded = _reload_config_with(monkeypatch, _PG_PARTS)
         assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/mydb'
 
-    def test_database_url_env_var_is_ignored(self, monkeypatch):
-        env = dict(_PG_PARTS, DATABASE_URL='postgresql://someone:else@elsewhere:1/other')
+    def test_a_database_url_in_the_environment_is_ignored(self, monkeypatch):
+        # Two config sources for one connection is what broke pg_dump when only
+        # one of them was set (#832). The five POSTGRES_* parts are the only input.
+        explicit = (
+            'postgresql://someone:else@elsewhere:1/other'
+            '?sslmode=require&application_name=AudioMuse'
+        )
+        env = dict(_PG_PARTS, DATABASE_URL=explicit)
         reloaded = _reload_config_with(monkeypatch, env)
         assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/mydb'
+
+    def test_an_empty_database_url_in_the_environment_is_ignored_too(self, monkeypatch):
+        reloaded = _reload_config_with(monkeypatch, dict(_PG_PARTS, DATABASE_URL=''))
+        assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/mydb'
+
+    def test_native_embedded_children_use_the_lossless_derived_socket_url(self, monkeypatch):
+        env = dict(
+            _PG_PARTS,
+            POSTGRES_HOST='/tmp/Audio&Muse+#socket',
+            POSTGRES_USER='postgres',
+            POSTGRES_PASSWORD='',
+            POSTGRES_DB='postgres',
+            DATABASE_URL='postgresql://postgres:@/postgres?host=/tmp/Audio&Muse+#socket',
+            DATABASE_TYPE='embedded',
+            AUDIOMUSE_PLATFORM='linux',
+        )
+        reloaded = _reload_config_with(monkeypatch, env)
+        assert parse_dsn(reloaded.DATABASE_URL)['host'] == '/tmp/Audio&Muse+#socket'
 
     def test_credentials_are_percent_encoded(self, monkeypatch):
         env = dict(_PG_PARTS, POSTGRES_USER='user@domain', POSTGRES_PASSWORD='p@ss:word')
@@ -312,12 +335,15 @@ def _config_reread_violation(rel, node, owned):
     return None
 
 
-_DERIVED_ONLY_ENV_NAMES = ('DATABASE_URL',)
+_CENTRAL_ONLY_ENV_NAMES = ('DATABASE_URL',)
 
 
 def _tracked_py_files_outside_tests():
     out = subprocess.check_output(['git', 'ls-files', '*.py'], cwd=_REPO_ROOT).decode('utf-8')
-    return [rel for rel in out.splitlines() if rel and not rel.startswith('test/')]
+    return [
+        rel for rel in out.splitlines()
+        if rel and rel != 'config.py' and not rel.startswith('test/')
+    ]
 
 
 def _is_os_environ_subscript(node):
@@ -341,17 +367,16 @@ def _env_name_read(node):
     return None
 
 
-def test_no_module_reads_the_derived_database_url_from_env():
+def test_only_config_reads_database_url_from_env():
     violations = []
     for rel in _tracked_py_files_outside_tests():
         for node in ast.walk(_parse(rel)):
             name = _env_name_read(node)
-            if name in _DERIVED_ONLY_ENV_NAMES:
+            if name in _CENTRAL_ONLY_ENV_NAMES:
                 violations.append(f'{rel}:{node.lineno}: reads {name!r} from the environment')
     assert not violations, (
-        'DATABASE_URL is derived by config.py from the POSTGRES_* parts and must never '
-        'be read from the environment, by get/getenv or subscript, with or without a '
-        'default (use config.DATABASE_URL):\n  ' + '\n  '.join(violations)
+        'DATABASE_URL must be read from the environment only by config.py; all other '
+        'modules must use config.DATABASE_URL:\n  ' + '\n  '.join(violations)
     )
 
 

@@ -439,10 +439,6 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres-service.playlist") # D
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "audiomusedb")
 
-# DATABASE_URL is derived, never configured. Every deployment sets the five
-# POSTGRES_* parts above and this is the single place that assembles them, so a
-# DATABASE_URL in the environment is deliberately ignored: two config sources
-# for one connection is what broke pg_dump when only one of them was set.
 from urllib.parse import quote
 
 # Percent-encode username and password to safely include special characters like '@' in the URI
@@ -468,7 +464,7 @@ else:
 _pg_db_esc = quote(POSTGRES_DB, safe='')
 _pg_port_esc = quote(POSTGRES_PORT, safe='')
 
-DATABASE_URL = (
+_DERIVED_DATABASE_URL = (
     f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{_pg_host_esc}:{_pg_port_esc}/{_pg_db_esc}"
 )
 
@@ -479,6 +475,12 @@ AUDIOMUSE_PLATFORM = os.environ.get("AUDIOMUSE_PLATFORM", "").lower()
 AUDIOMUSE_CONTROL_SOCKET = os.environ.get("AUDIOMUSE_CONTROL_SOCKET", "")
 AUDIOMUSE_CONTROL_HOST = os.environ.get("AUDIOMUSE_CONTROL_HOST", "")
 AUDIOMUSE_CONTROL_PORT = os.environ.get("AUDIOMUSE_CONTROL_PORT", "")
+
+# DATABASE_URL is DERIVED, never configured. Every deployment sets the five
+# POSTGRES_* parts and this is the single place that assembles them, so a
+# DATABASE_URL in the environment is deliberately ignored: two config sources for
+# one connection is what broke pg_dump when only one of them was set (#832).
+DATABASE_URL = _DERIVED_DATABASE_URL
 
 # --- AI User for Chat SQL Execution ---
 AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")

@@ -991,7 +991,9 @@ class PluginManager:
 plugin_manager = PluginManager()
 
 
-def run_plugin_task(dotted, *args, server_scope=None, **kwargs):
+def run_plugin_task(
+    dotted, *args, server_scope=None, task_claim_required=False, **kwargs
+):
     """RQ entrypoint: import a plugin task by dotted path and run it in an app context.
 
     When the plugin code is missing on this worker's volume (fresh pod, plugin-sync
@@ -1021,6 +1023,24 @@ def run_plugin_task(dotted, *args, server_scope=None, **kwargs):
     task_id = job.id if job is not None else None
     with app.app_context():
         row = database.get_task_info_from_db(task_id) if task_id else None
+        if task_claim_required and row is None:
+            logger.info(
+                "Cron plugin task %s lost its DB claim; treating it as revoked.",
+                task_id,
+            )
+            return {
+                'status': config.TASK_STATUS_REVOKED,
+                'message': 'Plugin task was cancelled before execution.',
+            }
+        if row and row.get('status') in (
+            config.TASK_STATUS_SUCCESS,
+            config.TASK_STATUS_FAILURE,
+            config.TASK_STATUS_REVOKED,
+        ):
+            return {
+                'status': row.get('status'),
+                'message': 'Plugin task is already terminal.',
+            }
         try:
             try:
                 module = importlib.import_module(module_path)
@@ -1035,7 +1055,8 @@ def run_plugin_task(dotted, *args, server_scope=None, **kwargs):
             result = _run_per_server(func, server_scope, args, kwargs)
             if row:
                 database.save_task_status(
-                    task_id, row['task_type'], config.TASK_STATUS_SUCCESS, progress=100
+                    task_id, row['task_type'], config.TASK_STATUS_SUCCESS, progress=100,
+                    details={'message': 'Plugin task completed successfully.'},
                 )
             return result
         except Exception as exc:

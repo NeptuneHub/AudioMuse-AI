@@ -70,7 +70,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
     clean_catalogue = CLEANING_CATALOGUE if clean_catalogue is None else bool(clean_catalogue)
 
     from flask_app import app
-    from app_helper import redis_conn, get_db, save_task_status
+    from app_helper import redis_conn, get_db, get_task_info_from_db, save_task_status
     from config import (
         TASK_STATUS_STARTED,
         TASK_STATUS_PROGRESS,
@@ -90,6 +90,30 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        task_info = get_task_info_from_db(current_task_id)
+        if current_job and task_info is None:
+            logger.info(
+                "Cleaning task %s has no live DB claim; treating it as revoked.",
+                current_task_id,
+            )
+            return {
+                "status": TASK_STATUS_REVOKED,
+                "message": "Library cleanup was cancelled before execution.",
+            }
+        if task_info and task_info.get('status') in (
+            TASK_STATUS_SUCCESS,
+            TASK_STATUS_FAILURE,
+            TASK_STATUS_REVOKED,
+        ):
+            logger.info(
+                "Cleaning task %s is already terminal (%s); skipping.",
+                current_task_id,
+                task_info.get('status'),
+            )
+            return {
+                "status": task_info.get('status'),
+                "message": "Library cleanup is already terminal.",
+            }
         initial_details = {
             "message": "Starting per-server library cleanup...",
             "log": [stamp("Library cleanup task started.")],

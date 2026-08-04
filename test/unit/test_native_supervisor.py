@@ -23,6 +23,8 @@ import os
 import sys
 import threading
 import time
+import types
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -220,7 +222,7 @@ class TestSpawnRefusedWhileStopping:
         monkeypatch.setattr(mod.subprocess, 'Popen', _FakePopen)
         for name in ('_terminate_named',):
             if hasattr(sup, name):
-                monkeypatch.setattr(sup, name, lambda *a, **k: None)
+                monkeypatch.setattr(sup, name, lambda *a, **k: True)
         if hasattr(mod, 'threading'):
             monkeypatch.setattr(
                 mod.threading,
@@ -240,6 +242,25 @@ class TestSpawnRefusedWhileStopping:
         result = sup.start_child('flask')
         assert result is True
         assert 'flask' in sup._desired
+
+    def test_start_is_idempotent_for_an_existing_live_child(self, supervisor_case, monkeypatch):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+
+        class _Live:
+            def poll(self):
+                return None
+
+        live = _Live()
+        sup._children['rq-worker-default'] = live
+        popen = MagicMock(side_effect=AssertionError('must not spawn a duplicate child'))
+        monkeypatch.setattr(mod.subprocess, 'Popen', popen)
+
+        assert sup.start_child('rq-worker-default') is True
+        assert sup._children['rq-worker-default'] is live
+        assert 'rq-worker-default' in sup._desired
+        popen.assert_not_called()
 
 
 class TestStartInBackground:
@@ -265,3 +286,124 @@ class TestStartInBackground:
         assert boot_thread_seen['thread'] is sup._boot_thread
         assert boot_thread_seen['thread'] is not threading.current_thread()
         thread.join(2)
+
+
+@pytest.mark.parametrize('platform_name', PLATFORMS)
+def test_control_reply_waits_for_all_services_and_aggregates_failure(
+    platform_name, monkeypatch
+):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+    completed = []
+
+    def restart(service):
+        completed.append(service)
+        return service != 'rq-worker-high'
+
+    monkeypatch.setattr(sup, 'restart_child', restart)
+
+    result = sup.dispatch_control(
+        'restart', ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
+    )
+
+    assert completed == ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
+    assert result is False
+
+
+@pytest.mark.parametrize('platform_name', PLATFORMS)
+def test_control_service_exception_is_a_negative_result_and_later_services_run(
+    platform_name, monkeypatch
+):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+    completed = []
+
+    def stop(service):
+        completed.append(service)
+        if service == 'rq-worker-default':
+            raise RuntimeError('stop failed')
+        return True
+
+    monkeypatch.setattr(sup, 'stop_child', stop)
+
+    assert sup.dispatch_control('stop', ['rq-worker-default', 'rq-janitor']) is False
+    assert completed == ['rq-worker-default', 'rq-janitor']
+
+
+@pytest.mark.parametrize('platform_name', PLATFORMS)
+def test_unstoppable_child_returns_false_and_remains_tracked(platform_name, monkeypatch):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+
+    class _StubbornProcess:
+        pid = 4321
+        stdout = None
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise TimeoutError('still alive')
+
+        def send_signal(self, _signal):
+            return None
+
+        def kill(self):
+            return None
+
+    proc = _StubbornProcess()
+    sup._children['rq-worker-default'] = proc
+    sup._desired.add('rq-worker-default')
+    if platform_name != 'windows':
+        monkeypatch.setattr(mod.os, 'getpgid', lambda _pid: 4321, raising=False)
+        monkeypatch.setattr(mod.os, 'killpg', lambda *_args: None, raising=False)
+
+    assert sup.stop_child('rq-worker-default') is False
+    assert sup._children['rq-worker-default'] is proc
+    assert 'rq-worker-default' in sup._desired
+
+
+@pytest.mark.parametrize('platform_name', ['linux', 'macos'])
+def test_postgres_health_uses_lossless_socket_kwargs(platform_name, monkeypatch):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+    socket_dir = '/tmp/Audio&Muse+#socket'
+    sup._database_url = f'postgresql://postgres:@/postgres?host={socket_dir}'
+    seen = {}
+
+    class _Cursor:
+        def execute(self, sql):
+            seen['sql'] = sql
+
+        def fetchone(self):
+            return (1,)
+
+    class _Connection:
+        def cursor(self):
+            return _Cursor()
+
+        def close(self):
+            seen['closed'] = True
+
+    def connect(*args, **kwargs):
+        seen['args'] = args
+        seen['kwargs'] = kwargs
+        return _Connection()
+
+    monkeypatch.setitem(sys.modules, 'psycopg2', types.SimpleNamespace(connect=connect))
+    restart = MagicMock(side_effect=AssertionError('healthy PostgreSQL must not be restarted'))
+    if hasattr(mod, 'db_backend'):
+        monkeypatch.setattr(mod.db_backend, 'ensure_embedded_running', restart)
+    else:
+        monkeypatch.setattr(mod.database, 'ensure_embedded_running', restart)
+
+    sup._ensure_postgres_healthy()
+
+    assert seen['args'] == ()
+    assert seen['kwargs']['host'] == socket_dir
+    assert seen['kwargs']['port'] == '5432'
+    assert seen['kwargs']['user'] == 'postgres'
+    assert seen['kwargs']['dbname'] == 'postgres'
+    assert seen['sql'] == 'SELECT 1'
+    assert seen['closed'] is True
+    restart.assert_not_called()

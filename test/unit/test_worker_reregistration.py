@@ -26,6 +26,8 @@ Main Features:
   result and delete the running job's key.
 * The beat thread is serialized with execution preparation and cleanup, refreshes
   the worker key when no execution exists, and execute_job joins it before returning.
+* Stopping a Windows SimpleWorker terminates its supervised process instead of
+  calling RQ's no-op child-process hook.
 """
 
 import logging
@@ -158,6 +160,36 @@ def _make_worker(worker_cls):
     )
     worker.birth_date = now()
     return worker, fake
+
+
+def test_windows_simple_worker_stop_job_terminates_the_worker_process(monkeypatch):
+    worker, _fake = _make_worker(rhw.HeartbeatSimpleWorker)
+    exits = []
+    monkeypatch.setattr(worker, 'get_current_job_id', lambda: 'cluster-batch-1')
+    monkeypatch.setattr(rhw.os, '_exit', lambda code: exits.append(code))
+
+    worker.kill_horse()
+
+    assert exits == [1], (
+        "SimpleWorker has no horse to signal, so rq's stock kill_horse is a no-op: "
+        "a stop-job command must terminate this supervised process or a long "
+        "clustering iteration keeps running after the user presses Cancel"
+    )
+
+
+def test_kill_horse_with_no_job_in_flight_never_hard_exits(monkeypatch):
+    worker, _fake = _make_worker(rhw.HeartbeatSimpleWorker)
+    exits = []
+    monkeypatch.setattr(worker, 'get_current_job_id', lambda: None)
+    monkeypatch.setattr(rhw.os, '_exit', lambda code: exits.append(code))
+
+    worker.kill_horse()
+
+    assert exits == [], (
+        "os._exit abandons the in-flight save_task_status transaction and drops the "
+        "psycopg2 connection uncleanly; with no job to interrupt there is nothing "
+        "that justifies it"
+    )
 
 
 @pytest.mark.parametrize('worker_cls', [rhw.ReregisteringWorker, rhw.HeartbeatSimpleWorker])

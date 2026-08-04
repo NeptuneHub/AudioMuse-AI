@@ -47,6 +47,14 @@ def mig():
     # Production waits between restart-publish attempts; the suite must not. The
     # retry tests assert the attempt COUNT, which this does not touch.
     mod._RESTART_PUBLISH_RETRY_SECONDS = 0
+    mod._RESTART_HANDSHAKE_RETRY_SECONDS = 0
+    # Core SQL tests run outside an RQ/supervisor topology.  Exercise the
+    # unbounded ACK loop explicitly in dedicated tests below; ordinary migration
+    # tests treat the already-verified handoff as acknowledged.
+    mod._real_await_worker_restart = mod._await_worker_restart
+    mod._await_worker_restart = MagicMock(
+        side_effect=lambda _redis, _conn, _session_id, request_id, **_kw: request_id
+    )
     return mod
 
 
@@ -94,6 +102,8 @@ def _id_map_lookup(rows, params):
 
 
 def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, lyrics_exists):
+    session_snapshot = {'row': session_row}
+
     def _matches(up, *needles):
         return all(n in up for n in needles)
 
@@ -102,6 +112,22 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
 
     def _set_all(value):
         mock_cur.fetchall.return_value = value
+
+    def _set_completed(up, params):
+        row = session_snapshot['row']
+        session_snapshot['row'] = (
+            row[0], row[1], row[2], params[0], 'completed'
+        )
+        _set_one((row[0],))
+
+    def _set_restart_ack(up, params):
+        row = session_snapshot['row']
+        state = json.loads(row[3]) if isinstance(row[3], str) else dict(row[3])
+        state['restart_acknowledged'] = True
+        session_snapshot['row'] = (
+            row[0], row[1], row[2], json.dumps(state), row[4]
+        )
+        _set_one((row[0],))
 
     return [
         (
@@ -145,8 +171,33 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
             lambda up, params: _set_one((2,)),
         ),
         (
+            lambda up: up.startswith('SELECT STATUS FROM TASK_STATUS'),
+            lambda up, params: _set_one(('STARTED',)),
+        ),
+        (
+            lambda up: up.startswith('UPDATE TASK_STATUS') and 'RETURNING TASK_ID' in up,
+            lambda up, params: _set_one(((params or [None, None, 'task'])[2],)),
+        ),
+        (
+            lambda up: up.startswith(
+                "UPDATE MIGRATION_SESSION SET STATUS = 'COMPLETED'"
+            ),
+            _set_completed,
+        ),
+        (
+            lambda up: up.startswith('SELECT STATUS, STATE FROM MIGRATION_SESSION'),
+            lambda up, params: _set_one(
+                (session_snapshot['row'][4], session_snapshot['row'][3])
+            ),
+        ),
+        (
+            lambda up: up.startswith('UPDATE MIGRATION_SESSION SET STATE = JSONB_SET')
+            and "'{RESTART_ACKNOWLEDGED}'" in up,
+            _set_restart_ack,
+        ),
+        (
             lambda up: _matches(up, 'FROM MIGRATION_SESSION', 'SELECT'),
-            lambda up, params: _set_one(session_row),
+            lambda up, params: _set_one(session_snapshot['row']),
         ),
         (
             lambda up: up.startswith('SELECT DISTINCT INDEX_NAME FROM VOYAGER_INDEX_DATA'),
@@ -412,6 +463,13 @@ class TestExecuteProviderMigration:
                 (task_id, status)
             ),
         )
+        monkeypatch.setattr(
+            mig,
+            '_finalize_restart_handshake',
+            lambda _conn, _sid, _rid, task_id, _message, **_kw: reported.append(
+                (task_id, 'SUCCESS')
+            ),
+        )
 
         mig.execute_provider_migration(1)
 
@@ -581,11 +639,8 @@ class TestMigrationClearsStaleArtistIds:
 
 
 class TestTheMigrationSurvivesTheRestartItTriggers:
-    def test_success_is_recorded_before_the_restart_is_published(self, mig, monkeypatch):
-        """The restart can kill this very job. Published before SUCCESS is written,
-        the row stays non-terminal, RQ retries the job, the retry fails the
-        dry_run_ready gate (the session is 'completed' now) and reports FAILURE over
-        a migration that actually succeeded."""
+    def test_success_is_recorded_only_after_restart_ack(self, mig, monkeypatch):
+        """The root remains an admission barrier until every worker ACKs restart."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _install_fake_psycopg2(mig, session_row)
 
@@ -593,16 +648,26 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
         monkeypatch.setattr(
             mig, '_report_migration',
-            lambda task_id, status, progress, message, details=None: order.append(status),
+            lambda task_id, status, progress, message, details=None: (
+                order.append(status) or True
+            ),
         )
         monkeypatch.setattr(
-            mig, '_post_commit_reload', lambda *a, **k: order.append('reload')
+            mig,
+            '_await_worker_restart',
+            lambda _redis, _conn, _session, request_id, **_kw: (
+                order.append('restart_ack') or request_id
+            ),
+        )
+        monkeypatch.setattr(
+            mig,
+            '_finalize_restart_handshake',
+            lambda *_args, **_kwargs: order.append('SUCCESS'),
         )
 
         mig.execute_provider_migration(1)
 
-        assert order[-1] == 'reload', "the restart must come after SUCCESS is written"
-        assert 'SUCCESS' in order
+        assert order[-2:] == ['restart_ack', 'SUCCESS']
 
     def test_a_retry_of_an_applied_migration_reports_success_not_failure(
         self, mig, monkeypatch
@@ -612,7 +677,14 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         the dry_run_ready gate made that retry overwrite the SUCCESS row with
         FAILURE (save_task_status protects only REVOKED), telling the user a
         completed migration had failed."""
-        session_row = _make_session_row(status='completed')
+        completed_state = {
+            'post_migration': {'matched': 1},
+            'exec_task_id': 'mig-1',
+            'alignment_task_id': 'align-1',
+            'restart_request_id': 'restart-1',
+            'restart_acknowledged': False,
+        }
+        session_row = _make_session_row(status='completed', state=completed_state)
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
         reported = []
@@ -625,8 +697,18 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         )
 
         reloaded = []
+        monkeypatch.setattr(mig, '_restart_request_result', lambda _request_id: None)
         monkeypatch.setattr(
-            mig, '_post_commit_reload', lambda *a, **k: reloaded.append(1)
+            mig,
+            '_await_worker_restart',
+            lambda *a, **k: reloaded.append(k.get('alignment_task_id')) or 'restart-1',
+        )
+        monkeypatch.setattr(
+            mig,
+            '_finalize_restart_handshake',
+            lambda _conn, _sid, _rid, _task_id, _message, **kw: reported.append(
+                ('SUCCESS', kw.get('details'))
+            ),
         )
 
         result = mig.execute_provider_migration(1)
@@ -637,7 +719,7 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         assert not any(
             s.upper().startswith('UPDATE TRACK_SERVER_MAP') for s in executed
         ), "a retry must not repoint anything a second time"
-        assert reloaded, (
+        assert reloaded == ['align-1'], (
             "the first run may have died of an OOM before it ever reached the "
             "reload, so the retry must still refresh config and publish the restart"
         )
@@ -668,14 +750,14 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         attempts = []
         fake_restart = types.ModuleType('restart_manager')
 
-        def _flaky():
+        def _flaky(request_id=None):
             attempts.append(1)
             return len(attempts) >= 2
 
         fake_restart.publish_restart_request = _flaky
         monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
 
-        assert mig._publish_restart_with_retries() is True
+        assert mig._publish_restart_with_retries('restart-1') is True
         assert len(attempts) == 2
 
     def test_an_undelivered_restart_request_is_reported_loudly(self, mig, monkeypatch, caplog):
@@ -685,11 +767,11 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
 
         monkeypatch.setattr(mig, '_RESTART_PUBLISH_RETRY_SECONDS', 0)
         fake_restart = types.ModuleType('restart_manager')
-        fake_restart.publish_restart_request = lambda: False
+        fake_restart.publish_restart_request = lambda request_id=None: False
         monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
 
         with caplog.at_level(logging.ERROR):
-            assert mig._publish_restart_with_retries() is False
+            assert mig._publish_restart_with_retries('restart-1') is False
 
         assert 'RESTART AUDIOMUSE MANUALLY' in caplog.text
 
@@ -700,7 +782,7 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         calls = []
         fake_restart = types.ModuleType('restart_manager')
 
-        def _boom():
+        def _boom(request_id=None):
             calls.append(1)
             raise RuntimeError('redis is down')
 
@@ -708,7 +790,7 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
 
         with caplog.at_level(logging.ERROR):
-            assert mig._publish_restart_with_retries() is False
+            assert mig._publish_restart_with_retries('restart-1') is False
 
         assert len(calls) == mig._RESTART_PUBLISH_ATTEMPTS
 
@@ -749,6 +831,176 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
             "the queued job must carry the id already committed, or the row and the "
             "job describe two different alignments"
         )
+
+
+class TestRestartHandshakeStateMachine:
+    def test_commit_marker_is_written_under_cancel_start_lock(self, mig):
+        cur = MagicMock()
+        cur.fetchone.side_effect = [('STARTED',), ('mig-1',)]
+
+        mig._stage_restart_handshake(cur, 'mig-1', 7, 'restart-7')
+
+        sql = [call.args[0] for call in cur.execute.call_args_list]
+        assert 'pg_advisory_xact_lock' in sql[0]
+        assert 'FOR UPDATE' in sql[1]
+        assert sql[2].startswith('UPDATE task_status')
+        details = json.loads(cur.execute.call_args_list[2].args[1][1])
+        assert details == {
+            'message': 'Provider swap committed; waiting for worker restart acknowledgement.',
+            'status_message': (
+                'Provider swap committed; waiting for worker restart acknowledgement.'
+            ),
+            'phase': 'restart_handshake',
+            'provider_migration_committed': True,
+            'migration_session_id': 7,
+            'restart_request_id': 'restart-7',
+        }
+
+    def test_cancel_tombstone_before_commit_forces_full_rollback(self, mig):
+        cur = MagicMock()
+        cur.fetchone.return_value = ('REVOKED',)
+
+        with pytest.raises(RuntimeError, match='cancelled or lost'):
+            mig._stage_restart_handshake(cur, 'mig-1', 7, 'restart-7')
+
+        assert not any(
+            call.args[0].startswith('UPDATE task_status')
+            for call in cur.execute.call_args_list
+        )
+
+    def test_completed_state_retains_every_recovery_id(self, mig, monkeypatch):
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _conn, cur, _executed = _install_fake_psycopg2(mig, session_row)
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
+        monkeypatch.setattr(mig, '_report_migration', lambda *a, **k: True)
+        monkeypatch.setattr(
+            mig,
+            '_await_worker_restart',
+            lambda _redis, _conn, _session, request_id, **_kw: request_id,
+        )
+
+        mig.execute_provider_migration(1)
+
+        completion = next(
+            call
+            for call in cur.execute.call_args_list
+            if call.args[0].startswith('UPDATE migration_session SET status = \'completed\'')
+        )
+        state = json.loads(completion.args[1][0])
+        assert state['exec_task_id'] == 'mig-1'
+        assert state['alignment_task_id']
+        assert state['restart_request_id'] == 'provider-migration-restart:mig-1'
+        assert state['restart_acknowledged'] is False
+
+    def test_unknown_ack_keeps_same_job_live_until_it_recovers(self, mig, monkeypatch):
+        persisted = []
+        sleeps = []
+        monkeypatch.setattr(mig, '_post_commit_reload', lambda *a, **k: False)
+        monkeypatch.setattr(mig, '_publish_restart_with_retries', lambda _rid: True)
+        monkeypatch.setattr(mig, '_restart_request_result', lambda _rid: None)
+        monkeypatch.setattr(
+            mig,
+            '_persist_completed_restart_state',
+            lambda _conn, _sid, rid, **kw: persisted.append((rid, kw)),
+        )
+        monkeypatch.setattr(mig.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+        result = mig._real_await_worker_restart(
+            MagicMock(), MagicMock(), 7, 'restart-7'
+        )
+
+        assert result == 'restart-7'
+        assert sleeps == [0]
+        # ACK is deliberately left false until the caller can commit it together
+        # with root SUCCESS under the global main-task lock.
+        assert persisted == []
+
+    def test_definitive_negative_rotates_persisted_id_before_republish(
+        self, mig, monkeypatch
+    ):
+        import types
+
+        persisted = []
+        fake_restart = types.ModuleType('restart_manager')
+        fake_restart.new_control_request_id = lambda: 'restart-8'
+        monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
+        monkeypatch.setattr(mig, '_post_commit_reload', lambda *a, **k: False)
+        monkeypatch.setattr(mig, '_publish_restart_with_retries', lambda rid: rid == 'restart-8')
+        monkeypatch.setattr(mig, '_restart_request_result', lambda _rid: False)
+        monkeypatch.setattr(
+            mig,
+            '_persist_completed_restart_state',
+            lambda _conn, _sid, rid, **kw: persisted.append((rid, kw)),
+        )
+        monkeypatch.setattr(mig.time, 'sleep', lambda _seconds: None)
+
+        result = mig._real_await_worker_restart(
+            MagicMock(), MagicMock(), 7, 'restart-7'
+        )
+
+        assert result == 'restart-8'
+        assert persisted == [
+            ('restart-8', {'acknowledged': False}),
+        ]
+
+    def test_success_cannot_regress_on_delayed_retry(self, mig, monkeypatch):
+        import types
+        import database
+        from contextlib import nullcontext
+
+        cur = MagicMock()
+        cur.__enter__ = lambda self: self
+        cur.__exit__ = lambda self, *a: None
+        cur.fetchone.return_value = ('SUCCESS',)
+        db = MagicMock()
+        db.cursor.return_value = cur
+        save = MagicMock()
+        fake_flask = types.ModuleType('flask_app')
+        fake_flask.app = types.SimpleNamespace(app_context=lambda: nullcontext())
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask)
+        monkeypatch.setattr(database, 'get_db', lambda: db)
+        monkeypatch.setattr(database, 'save_task_status', save)
+
+        result = mig._report_migration(
+            'mig-1', 'FAILURE', 100, 'late retry failed'
+        )
+
+        assert result == 'success'
+        save.assert_not_called()
+        db.commit.assert_called_once()
+
+    @pytest.mark.parametrize(('existing', 'result'), [(None, 'missing'), ('REVOKED', 'revoked')])
+    def test_orphan_or_revoked_job_cannot_start(self, mig, monkeypatch, existing, result):
+        import types
+        import database
+        from contextlib import nullcontext
+
+        cur = MagicMock()
+        cur.__enter__ = lambda self: self
+        cur.__exit__ = lambda self, *a: None
+        cur.fetchone.return_value = (existing,) if existing else None
+        db = MagicMock()
+        db.cursor.return_value = cur
+        save = MagicMock()
+        fake_flask = types.ModuleType('flask_app')
+        fake_flask.app = types.SimpleNamespace(app_context=lambda: nullcontext())
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask)
+        monkeypatch.setattr(database, 'get_db', lambda: db)
+        monkeypatch.setattr(database, 'save_task_status', save)
+
+        assert mig._report_migration('mig-1', 'STARTED', 0, 'start') == result
+        save.assert_not_called()
+
+    def test_revoked_root_aborts_before_opening_migration_connection(self, mig, monkeypatch):
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
+        monkeypatch.setattr(mig, '_report_migration', lambda *a, **k: 'revoked')
+        conn = MagicMock()
+        monkeypatch.setattr(mig, '_get_dedicated_conn', conn)
+
+        with pytest.raises(RuntimeError, match='no live execution claim'):
+            mig.execute_provider_migration(7)
+
+        conn.assert_not_called()
 
 
 class TestPlaylistReportIsInformationalOnly:
@@ -829,10 +1081,12 @@ class TestPostMigrationAlignment:
             lambda *a, **k: order.append('align'),
         )
         fake_restart = types.ModuleType('restart_manager')
-        fake_restart.publish_restart_request = lambda: order.append('restart')
+        fake_restart.publish_restart_request = (
+            lambda request_id=None: order.append('restart') or True
+        )
         monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
 
-        mig._post_commit_reload(MagicMock())
+        mig._post_commit_reload(MagicMock(), restart_request_id='restart-1')
 
         assert order == ['align', 'restart'], (
             "queue the alignment first: the restart can kill this very worker"
@@ -896,3 +1150,117 @@ class TestMigrationWarnsOnMissingTargetMetadata:
             assert mig._load_new_meta_from_table(cur, 7) == {}
 
         assert 'migration_target_meta does not exist' in caplog.text
+
+
+class TestRestartHandshakeRecoverySchemaGuard:
+    def test_recovery_is_a_no_op_when_migration_session_does_not_exist_yet(
+        self, monkeypatch
+    ):
+        import tasks.provider_migration_tasks as mig
+
+        executed = []
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                executed.append(sql)
+
+            def fetchone(self):
+                return (None,)
+
+            def fetchall(self):
+                raise AssertionError(
+                    "the candidate query must not run without migration_session"
+                )
+
+            def close(self):
+                pass
+
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+        monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: conn)
+
+        # The janitor runs in the WORKER container but init_db() only ever runs in
+        # Flask, so a worker that starts first reached this query against a schema
+        # with no migration_session and aborted the whole janitor block.
+        assert mig.recover_provider_migration_restart_handshakes() == 0
+
+        assert len(executed) == 1
+        assert 'to_regclass' in executed[0]
+        conn.close.assert_called_once()
+
+
+class TestMigrationSuccessFinalization:
+    def test_the_committed_success_row_is_replayed_through_save_task_status(
+        self, monkeypatch
+    ):
+        # The SUCCESS row shares the ACK's transaction, so it is written with raw
+        # SQL and bypasses save_task_status - and with it the task_history record
+        # and the end-of-run collapse. Replaying it restores both.
+        import database
+        import tasks.provider_migration_tasks as mig
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                pass
+
+            def fetchone(self):
+                return ('completed', {'restart_request_id': 'req-1'})
+
+            def close(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+
+        saved = {}
+        monkeypatch.setattr(
+            database, 'save_task_status',
+            lambda *a, **k: saved.update({'args': a, 'kwargs': k}),
+        )
+
+        assert mig._finalize_restart_handshake(
+            conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
+        ) is True
+
+        conn.commit.assert_called_once()
+        assert saved['args'][0] == 'root-1'
+        assert saved['args'][2] == mig.TASK_STATUS_SUCCESS
+        assert saved['kwargs']['details']['message'] == 'Provider migration applied.'
+
+    def test_a_failed_replay_never_undoes_the_committed_success(self, monkeypatch):
+        import database
+        import tasks.provider_migration_tasks as mig
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                pass
+
+            def fetchone(self):
+                return ('completed', {'restart_request_id': 'req-1'})
+
+            def close(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+        monkeypatch.setattr(
+            database, 'save_task_status',
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError('db gone')),
+        )
+
+        assert mig._finalize_restart_handshake(
+            conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
+        ) is True
+        conn.rollback.assert_not_called()

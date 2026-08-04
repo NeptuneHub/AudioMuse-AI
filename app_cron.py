@@ -41,6 +41,7 @@ from database import (
 )
 from tasks.task_details import stamp
 from taskqueue import rq_queue_high, rq_queue_default
+from app_helper import ENQUEUE_MISSING, resolve_enqueue_outcome
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_FAILURE,
@@ -527,6 +528,70 @@ def _inline_progress_reporter(job_id, task_type):
     return report
 
 
+def _enqueue_cron_job(job_id, task_type, enqueue, *, main_task=False, conn=None):
+    """Claim and enqueue one cron root under the Cancel/start lock.
+
+    Multiple cron rows may target the same task type in one minute.  Coalescing
+    them here bounds live roots while retaining the already-claimed cron minute.
+    An enqueue exception is ambiguous until the known job id is probed: only a
+    confirmed missing job is failed; an unavailable probe keeps the PENDING
+    claim for the janitor instead of risking a duplicate.
+    """
+    with main_task_start_lock(conn):
+        active = (
+            get_active_main_task(conn=conn)
+            if main_task
+            else get_active_main_task(task_type=task_type, conn=conn)
+        )
+        if active:
+            logger.info(
+                "Cron: skipping %s, task %s is still %s",
+                task_type, active['task_id'], active['status'],
+            )
+            return False
+
+        if main_task:
+            try:
+                clean_up_previous_main_tasks()
+            except Exception:
+                logger.exception(
+                    "Cron: could not archive previous main tasks; enqueueing anyway"
+                )
+
+        save_task_status(
+            job_id,
+            task_type,
+            TASK_STATUS_PENDING,
+            details={"message": _ENQUEUED_BY_CRON},
+            raise_on_error=True,
+        )
+        try:
+            enqueue()
+        except Exception:
+            logger.exception("Cron: enqueue raised for %s", task_type)
+            outcome, rq_status = resolve_enqueue_outcome(job_id)
+            if outcome == ENQUEUE_MISSING:
+                save_task_status(
+                    job_id,
+                    task_type,
+                    TASK_STATUS_FAILURE,
+                    details={
+                        "error": "Could not enqueue the task (is Redis reachable?)"
+                    },
+                    raise_on_error=True,
+                )
+                prune_task_status_history(conn)
+                return False
+            logger.warning(
+                "Cron: enqueue outcome for %s job %s is ambiguous (%s); retaining "
+                "its PENDING claim for janitor reconciliation.",
+                task_type, job_id, rq_status or 'Redis unavailable',
+            )
+            return True
+    logger.info("Cron: enqueued %s job %s", task_type, job_id)
+    return True
+
+
 def run_due_cron_jobs():
     """Start every enabled cron row whose expression matches this minute.
 
@@ -564,42 +629,11 @@ def run_due_cron_jobs():
                 # and without playlists, silently.
                 server_scope = 'all'
                 job_id = str(uuid.uuid4())
-                if task_type in ('analysis', 'clustering'):
-                    # The manual endpoints 409 while any main task is live; cron used
-                    # to enqueue regardless, so a nightly row could start a second
-                    # full run on top of one still in progress. The gate, the
-                    # archival and the claim are taken under one lock so a cron tick
-                    # and a manual Start cannot both pass the gate before either has
-                    # written its row.
-                    with main_task_start_lock():
-                        active = get_active_main_task()
-                        if active:
-                            logger.info(
-                                "Cron: skipping %s, main task %s is still %s",
-                                task_type, active['task_id'], active['status'],
-                            )
-                            continue
-                        # The same archival the manual Start endpoints run. A headless
-                        # install never presses Start, so without this every nightly
-                        # run left its per-album child rows behind for good.
-                        # Best effort on purpose: housekeeping must never be the
-                        # reason tonight's analysis does not run.
-                        try:
-                            clean_up_previous_main_tasks()
-                        except Exception:
-                            logger.exception(
-                                "Cron: could not archive previous main tasks; enqueueing anyway"
-                            )
-                        save_task_status(
-                            job_id,
-                            f"main_{task_type}",
-                            TASK_STATUS_PENDING,
-                            details={"message": _ENQUEUED_BY_CRON},
-                            raise_on_error=True,
-                        )
                 if task_type == 'analysis':
-                    try:
-                        rq_queue_high.enqueue(
+                    _enqueue_cron_job(
+                        job_id,
+                        'main_analysis',
+                        lambda job_id=job_id, server_scope=server_scope: rq_queue_high.enqueue(
                             'tasks.analysis.run_analysis_task',
                             args=(0, TOP_N_MOODS),
                             kwargs={'server_scope': server_scope},
@@ -607,14 +641,10 @@ def run_due_cron_jobs():
                             description='Cron Analysis',
                             job_timeout=-1,
                             retry=Retry(max=3),
-                        )
-                        logger.info(f"Cron: enqueued analysis job {job_id}")
-                    except Exception:
-                        logger.exception("Cron: enqueue failed for analysis")
-                        save_task_status(
-                            job_id, f"main_{task_type}", TASK_STATUS_FAILURE,
-                            details={"error": "Could not enqueue the task (is Redis reachable?)"},
-                        )
+                        ),
+                        main_task=True,
+                        conn=db,
+                    )
                 elif task_type == 'clustering':
                     clustering_kwargs = {
                         "clustering_method": CLUSTER_ALGORITHM,
@@ -667,22 +697,20 @@ def run_due_cron_jobs():
                         "enable_clustering_embeddings_param": bool(ENABLE_CLUSTERING_EMBEDDINGS),
                         "output_server_scope": server_scope,
                     }
-                    try:
-                        rq_queue_high.enqueue(
+                    _enqueue_cron_job(
+                        job_id,
+                        'main_clustering',
+                        lambda job_id=job_id, clustering_kwargs=clustering_kwargs: rq_queue_high.enqueue(
                             'tasks.clustering.run_clustering_task',
                             kwargs=clustering_kwargs,
                             job_id=job_id,
                             description='Cron Clustering',
                             job_timeout=-1,
                             retry=Retry(max=3),
-                        )
-                        logger.info(f"Cron: enqueued clustering job {job_id}")
-                    except Exception:
-                        logger.exception("Cron: enqueue failed for clustering")
-                        save_task_status(
-                            job_id, f"main_{task_type}", TASK_STATUS_FAILURE,
-                            details={"error": "Could not enqueue the task (is Redis reachable?)"},
-                        )
+                        ),
+                        main_task=True,
+                        conn=db,
+                    )
                 elif task_type == 'alchemy_radio':
                     # Radios run INLINE, here in the Flask process, because they are an
                     # online feature: every radio queries the in-memory similarity index,
@@ -728,28 +756,19 @@ def run_due_cron_jobs():
                     # Enqueued, not run inline: this one walks the media server's play
                     # history per user, and doing that on the 60s poll thread let one
                     # unreachable provider swallow whole scheduling windows.
-                    save_task_status(
+                    _enqueue_cron_job(
                         job_id,
                         task_type,
-                        TASK_STATUS_PENDING,
-                        details={"message": _ENQUEUED_BY_CRON},
-                    )
-                    try:
-                        rq_queue_default.enqueue(
+                        lambda job_id=job_id, server_scope=server_scope, task_type=task_type: rq_queue_default.enqueue(
                             'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
                             kwargs={'server_scope': server_scope},
                             job_id=job_id,
                             description=f'Cron {task_type}',
                             job_timeout=-1,
                             retry=Retry(max=3),
-                        )
-                        logger.info(f"Cron: enqueued {task_type} job {job_id}")
-                    except Exception:
-                        logger.exception(f"Cron: enqueue failed for {task_type}")
-                        save_task_status(
-                            job_id, task_type, TASK_STATUS_FAILURE,
-                            details={"error": "Could not enqueue the task (is Redis reachable?)"},
-                        )
+                        ),
+                        conn=db,
+                    )
                 elif task_type.startswith('plugin.'):
                     from plugin.manager import plugin_manager
 
@@ -759,30 +778,28 @@ def run_due_cron_jobs():
                             f"Cron: no registered plugin task for {task_type}; skipping"
                         )
                     else:
-                        save_task_status(
+                        queue = (
+                            rq_queue_high
+                            if cron_task.get('queue') == 'high'
+                            else rq_queue_default
+                        )
+                        _enqueue_cron_job(
                             job_id,
                             task_type,
-                            TASK_STATUS_PENDING,
-                            details={"message": _ENQUEUED_BY_CRON},
-                        )
-                        queue = rq_queue_high if cron_task.get('queue') == 'high' else rq_queue_default
-                        try:
-                            queue.enqueue(
+                            lambda job_id=job_id, server_scope=server_scope, task_type=task_type, queue=queue, cron_task=cron_task: queue.enqueue(
                                 'plugin.manager.run_plugin_task',
                                 args=(cron_task['dotted'],),
-                                kwargs={'server_scope': server_scope},
+                                kwargs={
+                                    'server_scope': server_scope,
+                                    'task_claim_required': True,
+                                },
                                 job_id=job_id,
                                 description=f'Cron {task_type}',
                                 job_timeout=-1,
                                 retry=Retry(max=3),
-                            )
-                            logger.info(f"Cron: enqueued plugin task {task_type} job {job_id}")
-                        except Exception:
-                            logger.exception(f"Cron: enqueue failed for {task_type}")
-                            save_task_status(
-                                job_id, task_type, TASK_STATUS_FAILURE,
-                                details={"error": "Could not enqueue the task (is Redis reachable?)"},
-                            )
+                            ),
+                            conn=db,
+                        )
         except Exception:
             db.rollback()
             logger.exception(f"Error processing cron row {r}")
@@ -794,6 +811,6 @@ def run_due_cron_jobs():
     # minute that actually fired, so a quiet scheduler does no DB work.
     if fired_any:
         try:
-            prune_task_status_history()
+            prune_task_status_history(db)
         except Exception:
             logger.exception("Cron: could not prune task_status history")

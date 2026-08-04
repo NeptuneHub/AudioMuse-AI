@@ -29,6 +29,11 @@ from app_analysis import analysis_bp
 @pytest.fixture(autouse=True)
 def stub_the_start_lock(monkeypatch):
     monkeypatch.setattr(app_analysis, 'main_task_start_lock', nullcontext)
+    monkeypatch.setattr(
+        app_analysis,
+        'resolve_enqueue_outcome',
+        lambda _task_id: (app_analysis.ENQUEUE_MISSING, ''),
+    )
 
 
 @pytest.fixture
@@ -368,6 +373,50 @@ class TestEndpointErrorHandling:
 
         assert response.status_code == 500
         assert mock_save_status.call_args[0][2] == config.TASK_STATUS_FAILURE
+
+    @patch('app_analysis.get_active_main_task', return_value=None)
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
+    def test_lost_enqueue_reply_keeps_the_analysis_claim_recoverable(
+        self, save, _cleanup, queue, _active, client, monkeypatch
+    ):
+        queue.enqueue.side_effect = RuntimeError('reply lost')
+        monkeypatch.setattr(
+            app_analysis,
+            'resolve_enqueue_outcome',
+            lambda _task_id: ('unknown', ''),
+        )
+
+        response = client.post('/api/analysis/start', json={})
+
+        assert response.status_code == 202
+        assert [call.args[2] for call in save.call_args_list] == [config.TASK_STATUS_PENDING]
+
+
+def test_analysis_holds_the_start_lock_through_enqueue(client, monkeypatch):
+    held = {'value': False}
+
+    class _Lock:
+        def __enter__(self):
+            held['value'] = True
+
+        def __exit__(self, *_args):
+            held['value'] = False
+
+    monkeypatch.setattr(app_analysis, 'main_task_start_lock', _Lock)
+    monkeypatch.setattr(app_analysis, 'get_active_main_task', lambda: None)
+    monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_analysis, 'save_task_status', lambda *a, **k: None)
+    job = Mock(id='locked-job')
+
+    def enqueue(*_args, **_kwargs):
+        assert held['value'] is True
+        return job
+
+    monkeypatch.setattr(app_analysis.rq_queue_high, 'enqueue', enqueue)
+
+    assert client.post('/api/analysis/start', json={}).status_code == 202
 
 
 class TestBlueprintIntegration:

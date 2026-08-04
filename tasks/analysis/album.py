@@ -327,7 +327,16 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
         return
     try:
         with app.app_context():
-            statuses = get_task_statuses([current_job.id])
+            ids = [current_job.id]
+            if parent_task_id:
+                ids.append(parent_task_id)
+            statuses = get_task_statuses(ids)
+            if parent_task_id and (
+                parent_task_id not in statuses
+                or statuses.get(parent_task_id)
+                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+            ):
+                return
             if statuses.get(current_job.id) == TASK_STATUS_FAILURE:
                 return
             err = error_manager.from_exception(
@@ -361,6 +370,22 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        if current_job and parent_task_id:
+            parent_statuses = get_task_statuses([parent_task_id])
+            if (
+                parent_task_id not in parent_statuses
+                or parent_statuses.get(parent_task_id)
+                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+            ):
+                logger.info(
+                    "Album task %s will not start because parent %s is missing or terminal.",
+                    current_task_id,
+                    parent_task_id,
+                )
+                return {
+                    "status": TASK_STATUS_REVOKED,
+                    "message": "Parent analysis was cancelled.",
+                }
         tracks_analyzed_count, tracks_skipped_count = 0, 0
         tracks_not_analyzable_count = 0
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}

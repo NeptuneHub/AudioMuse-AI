@@ -68,6 +68,15 @@ class TestPgConnParts:
         url = "postgresql://postgres:@/postgres?host=/tmp/pgserver-3f2a1b/"
         assert env_mod._pg_conn_parts(url)[0] == '/tmp/pgserver-3f2a1b/'
 
+    @pytest.mark.parametrize(
+        'socket_dir',
+        ['/tmp/Audio&Muse', '/tmp/Audio+Muse', '/tmp/Audio#Muse', '/tmp/Audio:Muse'],
+        ids=['ampersand', 'plus', 'hash', 'colon'],
+    )
+    def test_raw_pgserver_socket_query_keeps_special_characters(self, env_mod, socket_dir):
+        url = f'postgresql://postgres:@/postgres?host={socket_dir}'
+        assert env_mod._pg_conn_parts(url) == (socket_dir, '5432')
+
     def test_tcp_url_yields_its_host_and_port(self, env_mod):
         assert env_mod._pg_conn_parts('postgresql://postgres:pw@127.0.0.1:5544/postgres') == (
             '127.0.0.1',

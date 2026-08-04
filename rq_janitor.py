@@ -50,7 +50,14 @@ try:
     from rq.worker_registration import clean_worker_registry
     from app_helper import rq_queue_high, rq_queue_default, redis_conn
     from app_logging import configure_logging
-    from tasks.multiserver_sync import recover_abandoned_sweeps, reap_orphaned_tasks
+    from tasks.multiserver_sync import (
+        janitor_cycle_lock,
+        recover_abandoned_sweeps,
+        reap_orphaned_tasks,
+    )
+    from tasks.provider_migration_tasks import (
+        recover_provider_migration_restart_handshakes,
+    )
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")
@@ -59,112 +66,125 @@ except ImportError as e:
 configure_logging()
 logger = logging.getLogger(__name__)
 
+
+def run_janitor_cycle(queues_to_clean):
+    try:
+        for queue in queues_to_clean:
+            started_registry = queue.started_job_registry
+            started_before = started_registry.count
+            started_registry.cleanup()
+            started_after = started_registry.count
+            started_cleaned = started_before - started_after
+            if started_cleaned > 0:
+                logger.info(
+                    "Janitor cleaned %d orphaned jobs from '%s' started_job_registry.",
+                    started_cleaned,
+                    queue.name,
+                )
+
+            finished_registry = queue.finished_job_registry
+            finished_before = finished_registry.count
+            finished_registry.cleanup()
+            finished_after = finished_registry.count
+            finished_cleaned = finished_before - finished_after
+            if finished_cleaned > 0:
+                logger.info(
+                    "Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.",
+                    finished_cleaned,
+                    queue.name,
+                )
+
+            failed_registry = queue.failed_job_registry
+            failed_before = failed_registry.count
+            failed_registry.cleanup()
+            failed_after = failed_registry.count
+            failed_cleaned = failed_before - failed_after
+            if failed_cleaned > 0:
+                logger.info(
+                    "Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.",
+                    failed_cleaned,
+                    queue.name,
+                )
+
+        workers_before = redis_conn.scard('rq:workers')
+        for queue in queues_to_clean:
+            clean_worker_registry(queue)
+        workers_removed = workers_before - redis_conn.scard('rq:workers')
+        if workers_removed > 0:
+            logger.info("Janitor removed %d dead worker registrations.", workers_removed)
+
+        zombies_removed = 0
+        for worker in Worker.all(connection=redis_conn):
+            try:
+                heartbeat = worker.last_heartbeat
+            except Exception:
+                heartbeat = None
+            if heartbeat is not None:
+                continue
+            try:
+                worker.register_death()
+            except Exception:
+                try:
+                    redis_conn.srem('rq:workers', worker.key)
+                    redis_conn.delete(worker.key)
+                except Exception:
+                    logger.exception("Janitor could not remove zombie worker %s", worker.key)
+                    continue
+            zombies_removed += 1
+        if zombies_removed > 0:
+            logger.info(
+                "Janitor removed %d zombie worker entries (hash without heartbeat).",
+                zombies_removed,
+            )
+
+        ghost_ttls_fixed = 0
+        cursor = 0
+        while True:
+            cursor, worker_keys = redis_conn.scan(
+                cursor, match=Worker.redis_worker_namespace_prefix + '*', count=100
+            )
+            for worker_key in worker_keys:
+                if redis_conn.ttl(worker_key) == -1:
+                    redis_conn.expire(worker_key, DEFAULT_WORKER_TTL + 60)
+                    ghost_ttls_fixed += 1
+            if cursor == 0:
+                break
+        if ghost_ttls_fixed > 0:
+            logger.info(
+                "Janitor gave %d TTL-less worker keys a %ds expiry.",
+                ghost_ttls_fixed,
+                DEFAULT_WORKER_TTL + 60,
+            )
+    except Exception:
+        logger.exception("Error in RQ Janitor loop")
+
+    try:
+        recover_abandoned_sweeps()
+    except Exception:
+        logger.exception("Janitor sweep recovery failed")
+
+    try:
+        recover_provider_migration_restart_handshakes()
+    except Exception:
+        logger.exception("Janitor provider-restart handshake recovery failed")
+
+    try:
+        reap_orphaned_tasks()
+    except Exception:
+        logger.exception("Janitor orphaned-task reaping failed")
+
+
+def run_elected_janitor_cycle(queues_to_clean):
+    with janitor_cycle_lock() as owns_cycle:
+        if not owns_cycle:
+            return False
+        run_janitor_cycle(queues_to_clean)
+        return True
+
+
 if __name__ == '__main__':
     logger.info("RQ Janitor process starting. Cleaning registries every 10 seconds.")
     queues_to_clean = [rq_queue_high, rq_queue_default]
     while True:
-        try:
-            for queue in queues_to_clean:
-                started_registry = queue.started_job_registry
-                started_before = started_registry.count
-                started_registry.cleanup()
-                started_after = started_registry.count
-                started_cleaned = started_before - started_after
-                if started_cleaned > 0:
-                    logger.info(
-                        "Janitor cleaned %d orphaned jobs from '%s' started_job_registry.",
-                        started_cleaned,
-                        queue.name,
-                    )
-
-                finished_registry = queue.finished_job_registry
-                finished_before = finished_registry.count
-                finished_registry.cleanup()
-                finished_after = finished_registry.count
-                finished_cleaned = finished_before - finished_after
-                if finished_cleaned > 0:
-                    logger.info(
-                        "Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.",
-                        finished_cleaned,
-                        queue.name,
-                    )
-
-                failed_registry = queue.failed_job_registry
-                failed_before = failed_registry.count
-                failed_registry.cleanup()
-                failed_after = failed_registry.count
-                failed_cleaned = failed_before - failed_after
-                if failed_cleaned > 0:
-                    logger.info(
-                        "Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.",
-                        failed_cleaned,
-                        queue.name,
-                    )
-
-            workers_before = redis_conn.scard('rq:workers')
-            for queue in queues_to_clean:
-                clean_worker_registry(queue)
-            workers_removed = workers_before - redis_conn.scard('rq:workers')
-            if workers_removed > 0:
-                logger.info(
-                    "Janitor removed %d dead worker registrations.", workers_removed
-                )
-
-            zombies_removed = 0
-            for worker in Worker.all(connection=redis_conn):
-                try:
-                    heartbeat = worker.last_heartbeat
-                except Exception:
-                    heartbeat = None
-                if heartbeat is not None:
-                    continue
-                try:
-                    worker.register_death()
-                except Exception:
-                    try:
-                        redis_conn.srem('rq:workers', worker.key)
-                        redis_conn.delete(worker.key)
-                    except Exception:
-                        logger.exception(
-                            "Janitor could not remove zombie worker %s", worker.key
-                        )
-                        continue
-                zombies_removed += 1
-            if zombies_removed > 0:
-                logger.info(
-                    "Janitor removed %d zombie worker entries (hash without heartbeat).",
-                    zombies_removed,
-                )
-
-            ghost_ttls_fixed = 0
-            cursor = 0
-            while True:
-                cursor, worker_keys = redis_conn.scan(
-                    cursor, match=Worker.redis_worker_namespace_prefix + '*', count=100
-                )
-                for worker_key in worker_keys:
-                    if redis_conn.ttl(worker_key) == -1:
-                        redis_conn.expire(worker_key, DEFAULT_WORKER_TTL + 60)
-                        ghost_ttls_fixed += 1
-                if cursor == 0:
-                    break
-            if ghost_ttls_fixed > 0:
-                logger.info(
-                    "Janitor gave %d TTL-less worker keys a %ds expiry.",
-                    ghost_ttls_fixed,
-                    DEFAULT_WORKER_TTL + 60,
-                )
-        except Exception:
-            logger.exception("Error in RQ Janitor loop")
-
-        try:
-            recover_abandoned_sweeps()
-        except Exception:
-            logger.exception("Janitor sweep recovery failed")
-
-        try:
-            reap_orphaned_tasks()
-        except Exception:
-            logger.exception("Janitor orphaned-task reaping failed")
-
+        run_elected_janitor_cycle(queues_to_clean)
         time.sleep(10)

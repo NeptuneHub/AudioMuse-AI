@@ -167,6 +167,83 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // The restore runs detached and stops Flask on purpose, so a dead poll is the
+    // expected mid-restore state, not an error. Only the runner's recorded outcome
+    // decides whether the database was actually replaced.
+    const RESTORE_POLL_MS = 2000;
+    const RESTORE_POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+    function finishRestore(text, colorVar) {
+        restoreStatus.textContent = text;
+        restoreStatus.style.color = colorVar;
+        restoreBtn.disabled = confirmInput.value !== EXPECTED_PHRASE;
+    }
+
+    function watchRestore(logName) {
+        if (!logName) {
+            finishRestore(
+                'Database restore started. This page cannot follow it: reload once the '
+                + 'application is back and check the restore log.', 'var(--text-sub)');
+            return;
+        }
+        const startedAt = Date.now();
+        const statusUrl = "{{ url_for('backup_bp.restore_status') }}?log=" + encodeURIComponent(logName);
+        let unreachable = false;
+
+        const poll = async () => {
+            if (Date.now() - startedAt > RESTORE_POLL_TIMEOUT_MS) {
+                finishRestore(
+                    'Database restore is still running after 30 minutes. Check the restore '
+                    + 'log and the container logs.', 'var(--color-danger, red)');
+                return;
+            }
+            let state = null;
+            try {
+                const res = await fetch(statusUrl, { cache: 'no-store' });
+                if (res.ok) {
+                    state = await res.json();
+                    unreachable = false;
+                }
+            } catch (err) {
+                unreachable = true;
+            }
+
+            if (!state) {
+                restoreStatus.textContent = unreachable
+                    ? 'Restoring the database. The application is restarting, so this page '
+                      + 'cannot be reached right now - it will reconnect automatically…'
+                    : 'Restoring the database…';
+                restoreStatus.style.color = 'var(--text-sub)';
+                setTimeout(poll, RESTORE_POLL_MS);
+                return;
+            }
+
+            if (state.state === 'running') {
+                restoreStatus.textContent = 'Restoring the database…';
+                restoreStatus.style.color = 'var(--text-sub)';
+                setTimeout(poll, RESTORE_POLL_MS);
+                return;
+            }
+            if (state.state === 'completed') {
+                restoreStatus.textContent = (state.message || 'Database restore completed.')
+                    + ' Redirecting…';
+                restoreStatus.style.color = 'var(--color-success, green)';
+                if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
+                return;
+            }
+            if (state.state === 'completed_degraded') {
+                finishRestore(state.message || 'Database restore completed, but the services '
+                    + 'did not come back. Restart AudioMuse manually.', 'var(--status-warning-text, #7a5c00)');
+                return;
+            }
+            finishRestore(
+                'Restore did not run: ' + (state.message || 'check the restore log and the container logs.'),
+                'var(--color-danger, red)');
+        };
+
+        setTimeout(poll, RESTORE_POLL_MS);
+    }
+
     // Restore backup via chunked file upload (1GB chunks)
     restoreBtn.addEventListener('click', async () => {
         if (!fileInput.files.length || confirmInput.value !== EXPECTED_PHRASE) return;
@@ -209,23 +286,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!res.ok) throw new Error(data.error || `Chunk ${chunkNum} upload failed`);
 
                 if (data.all_chunks_received) {
-                    // All chunks received, restore starting
-                    restoreStatus.style.color = 'var(--color-success, green)';
-                    let countdown = 60;
+                    restoreStatus.style.color = 'var(--text-sub)';
                     restoreStatus.textContent =
-                        'All chunks uploaded. Database restore started. Restarting application - '
-                        + 'redirecting in ' + countdown + ' seconds…';
-                    const countdownInterval = setInterval(() => {
-                        countdown -= 1;
-                        if (countdown > 0) {
-                            restoreStatus.textContent =
-                                'All chunks uploaded. Database restore started. Restarting application - '
-                                + 'redirecting in ' + countdown + ' seconds…';
-                        } else {
-                            clearInterval(countdownInterval);
-                            if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
-                        }
-                    }, 1000);
+                        'All chunks uploaded. Database restore started. Waiting for the restore to finish…';
+                    watchRestore(data.restore_log_name);
                     return;
                 } else {
                     // Chunk received, waiting for more

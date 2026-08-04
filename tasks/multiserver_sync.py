@@ -74,13 +74,20 @@ import json
 import logging
 import time
 import uuid
+from contextlib import contextmanager
 
 from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
 import rq_job_state
 from config import SWEEP_PRUNE_MIN_FETCH_RATIO
-from database import connect_raw, INLINE_FLASK_TASK_TYPES
+from database import (
+    connect_raw,
+    INLINE_FLASK_TASK_TYPES,
+    janitor_cycle_lock as _database_janitor_cycle_lock,
+    main_task_start_lock,
+    prune_task_status_history,
+)
 from sanitization import sanitize_string_for_db
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
@@ -160,6 +167,7 @@ def insert_pending_sweep_row(cur, task_id, message, full_refresh=True):
 
 
 def enqueue_server_alignment(server_id=None, message=None, task_id=None):
+    import config
     from app_helper import rq_queue_high
 
     task_id = task_id or str(uuid.uuid4())
@@ -167,27 +175,55 @@ def enqueue_server_alignment(server_id=None, message=None, task_id=None):
     db = connect_raw()
     db.autocommit = True
     try:
-        target = str(server_id) if server_id else registry.get_default_server_id(db)
-        if not target:
-            return None
-        cur = db.cursor()
-        try:
-            insert_pending_sweep_row(cur, task_id, text)
-        finally:
-            cur.close()
+        with main_task_start_lock(db):
+            target = str(server_id) if server_id else registry.get_default_server_id(db)
+            if not target:
+                return None
+            with db.cursor() as cur:
+                cur.execute(
+                    "SELECT task_id FROM task_status WHERE task_type = %s "
+                    "AND parent_task_id IS NULL AND status NOT IN (%s, %s, %s) "
+                    "ORDER BY timestamp DESC",
+                    (
+                        SWEEP_TASK_TYPE,
+                        config.TASK_STATUS_SUCCESS,
+                        config.TASK_STATUS_FAILURE,
+                        config.TASK_STATUS_REVOKED,
+                    ),
+                )
+                active_ids = [row[0] for row in cur.fetchall()]
+                other_active = [active_id for active_id in active_ids if active_id != task_id]
+                if other_active:
+                    logger.info(
+                        "Alignment %s coalesced into already-live sweep %s",
+                        task_id, other_active[0],
+                    )
+                    return other_active[0]
+                insert_pending_sweep_row(cur, task_id, text)
+            try:
+                rq_queue_high.enqueue(
+                    'tasks.multiserver_sync.sweep_server',
+                    args=(target,),
+                    kwargs={'task_id': task_id},
+                    job_id=task_id,
+                    job_timeout=-1,
+                )
+            except Exception:
+                from app_helper import redis_conn
+
+                state, status = rq_job_state.probe_job(task_id, redis_conn)
+                logger.warning(
+                    "Alignment enqueue for %s raised; RQ probe=%s/%s. Retaining "
+                    "the PENDING claim for sweep recovery.",
+                    task_id, state, status,
+                    exc_info=True,
+                )
+            return task_id
     finally:
         try:
             db.close()
         except Exception:
             logger.debug("Alignment enqueue connection close failed", exc_info=True)
-    rq_queue_high.enqueue(
-        'tasks.multiserver_sync.sweep_server',
-        args=(target,),
-        kwargs={'task_id': task_id},
-        job_id=task_id,
-        job_timeout=-1,
-    )
-    return task_id
 
 
 def recover_abandoned_sweeps():
@@ -256,46 +292,79 @@ def recover_abandoned_sweeps():
             "Alignment was interrupted (worker restarted); "
             "a fresh alignment of all servers was enqueued."
         )
-        details = json.dumps({'message': message, 'status_message': message})
-        # One transaction: revoking the abandoned sweep and inserting its
-        # replacement used to be two autocommits, so a crash in between retired the
-        # alignment and left nothing to take its place.
-        db.autocommit = False
-        cur = db.cursor()
-        try:
-            cur.execute(
-                "UPDATE task_status SET status = %s, progress = 100, details = %s, "
-                "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
-                "WHERE task_id = ANY(%s) "
-                "AND status NOT IN (%s, %s, %s)",
-                (config.TASK_STATUS_REVOKED, details, now, stale,
-                 config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
-                 config.TASK_STATUS_REVOKED),
-            )
-            revoked_count = cur.rowcount
-            if not revoked_count:
+        details = json.dumps({
+            'message': message,
+            'status_message': message,
+            'log': [message],
+        })
+        with main_task_start_lock(db):
+            db.autocommit = False
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    "SELECT task_id FROM task_status WHERE task_type = %s "
+                    "AND parent_task_id IS NULL AND status NOT IN (%s, %s, %s) "
+                    "AND NOT (task_id = ANY(%s)) LIMIT 1 FOR UPDATE",
+                    (
+                        SWEEP_TASK_TYPE,
+                        config.TASK_STATUS_SUCCESS,
+                        config.TASK_STATUS_FAILURE,
+                        config.TASK_STATUS_REVOKED,
+                        stale,
+                    ),
+                )
+                if cur.fetchone():
+                    db.rollback()
+                    return None
+                cur.execute(
+                    "UPDATE task_status SET status = %s, progress = 100, details = %s, "
+                    "timestamp = NOW(), end_time = COALESCE(end_time, %s) "
+                    "WHERE task_id = ANY(%s) "
+                    "AND status NOT IN (%s, %s, %s)",
+                    (config.TASK_STATUS_REVOKED, details, now, stale,
+                     config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
+                     config.TASK_STATUS_REVOKED),
+                )
+                revoked_count = cur.rowcount
+                if not revoked_count:
+                    db.rollback()
+                    return None
+                new_task_id = str(uuid.uuid4())
+                insert_pending_sweep_row(
+                    cur, new_task_id,
+                    'Server alignment queued for all servers.',
+                    full_refresh=full_refresh,
+                )
+                db.commit()
+            except Exception:
                 db.rollback()
-                return None
-            new_task_id = str(uuid.uuid4())
-            insert_pending_sweep_row(
-                cur, new_task_id,
-                'Server alignment queued for all servers.',
-                full_refresh=full_refresh,
-            )
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            cur.close()
-            db.autocommit = True
-        rq_queue_high.enqueue(
-            'tasks.multiserver_sync.sweep_all_secondary_servers',
-            kwargs={'task_id': new_task_id, 'full_refresh': full_refresh},
-            job_id=new_task_id,
-            job_timeout=-1,
-        )
-        _recovery_state['last'] = time.monotonic()
+                raise
+            finally:
+                cur.close()
+                db.autocommit = True
+
+            enqueue_state = 'accepted'
+            try:
+                rq_queue_high.enqueue(
+                    'tasks.multiserver_sync.sweep_all_secondary_servers',
+                    kwargs={'task_id': new_task_id, 'full_refresh': full_refresh},
+                    job_id=new_task_id,
+                    job_timeout=-1,
+                )
+            except Exception:
+                from app_helper import redis_conn
+
+                enqueue_state, rq_status = rq_job_state.probe_job(
+                    new_task_id, redis_conn
+                )
+                logger.warning(
+                    "Recovered sweep enqueue %s raised; RQ probe=%s/%s. The "
+                    "replacement claim remains PENDING for recovery.",
+                    new_task_id, enqueue_state, rq_status,
+                    exc_info=True,
+                )
+        if not rq_job_state.is_missing(enqueue_state):
+            _recovery_state['last'] = time.monotonic()
         logger.warning(
             "Recovered %d interrupted alignment sweep(s); enqueued replacement %s "
             "(full refresh: %s)",
@@ -310,6 +379,23 @@ def recover_abandoned_sweeps():
 
 
 _JANITOR_LOCK_KEY = 6193044728150337
+@contextmanager
+def janitor_cycle_lock():
+    try:
+        db = connect_raw()
+        db.autocommit = True
+    except Exception:
+        logger.exception("Janitor could not connect for its cycle lock; skipping this pass")
+        yield False
+        return
+    try:
+        with _database_janitor_cycle_lock(db, blocking=False) as acquired:
+            yield acquired
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Janitor cycle lock connection close failed", exc_info=True)
 
 _ORPHAN_GRACE_SECONDS = 120
 
@@ -393,11 +479,22 @@ def reap_orphaned_tasks():
     try:
         cur = db.cursor()
         try:
+            cur.execute("SELECT to_regclass('migration_session')")
+            handshake_guard = (
+                "AND NOT (ts.task_type = 'provider_migration' AND EXISTS ("
+                "  SELECT 1 FROM migration_session AS ms "
+                "  WHERE ms.status = 'completed' "
+                "    AND ms.state->>'exec_task_id' = ts.task_id "
+                "    AND lower(COALESCE(ms.state->>'restart_acknowledged', 'false')) "
+                "        NOT IN ('true', '1', 'yes')"
+                "))"
+            ) if cur.fetchone()[0] is not None else ""
             cur.execute(
-                "SELECT task_id FROM task_status "
-                "WHERE parent_task_id IS NULL AND task_type <> ALL(%s) "
-                "AND status NOT IN (%s, %s, %s) "
-                "AND timestamp < NOW() - make_interval(secs => %s)",
+                "SELECT ts.task_id FROM task_status AS ts "
+                "WHERE ts.parent_task_id IS NULL AND ts.task_type <> ALL(%s) "
+                "AND ts.status NOT IN (%s, %s, %s) "
+                "AND ts.timestamp < NOW() - make_interval(secs => %s) "
+                + handshake_guard,
                 (list((SWEEP_TASK_TYPE,) + tuple(INLINE_FLASK_TASK_TYPES)),
                  config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
                  config.TASK_STATUS_REVOKED, _ORPHAN_GRACE_SECONDS),
@@ -529,6 +626,7 @@ def reap_orphaned_tasks():
                     "Janitor failed %d stalled in-process task row(s): %s",
                     inline_changed, ', '.join(stalled_inline),
                 )
+        prune_task_status_history(db)
         return reconciled + inline_changed
     finally:
         try:
@@ -1104,11 +1202,13 @@ def sweep_server(server_id, task_id=None, conn=None):
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = _make_reporter(task_id, server_id, full_refresh=True)
+    report = None
     cancel, close_cancel = _make_cancel_check(task_id)
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
 
+        cancel()
+        report = _make_reporter(task_id, server_id, full_refresh=True)
         server = registry.get_server(server_id, conn=db)
         if server is None:
             report("Server no longer exists; nothing to align.", 100, task_state=TASK_STATUS_SUCCESS)
@@ -1131,8 +1231,9 @@ def sweep_server(server_id, task_id=None, conn=None):
         report(message, 100, task_state=TASK_STATUS_SUCCESS)
         return summary
     except SweepCancelled:
-        report("Alignment cancelled; matches found so far are kept.", 100,
-               task_state=config.TASK_STATUS_REVOKED)
+        if report is not None:
+            report("Alignment cancelled; matches found so far are kept.", 100,
+                   task_state=config.TASK_STATUS_REVOKED)
         return {'server_id': server_id, 'cancelled': True}
     except Exception:
         logger.exception("Multi-server sweep failed for server %s", server_id)
@@ -1169,11 +1270,13 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = _make_reporter(task_id, 'all', full_refresh=full_refresh)
+    report = None
     cancel, close_cancel = _make_cancel_check(task_id)
     try:
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
 
+        cancel()
+        report = _make_reporter(task_id, 'all', full_refresh=full_refresh)
         selected = {str(server_id) for server_id in server_ids} if server_ids is not None else None
         servers = [
             s for s in registry.list_servers(conn=db)
@@ -1223,8 +1326,9 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
         )
         return results
     except SweepCancelled:
-        report("Alignment cancelled; matches found so far are kept.", 100,
-               task_state=config.TASK_STATUS_REVOKED)
+        if report is not None:
+            report("Alignment cancelled; matches found so far are kept.", 100,
+                   task_state=config.TASK_STATUS_REVOKED)
         return []
     except Exception:
         logger.exception("Multi-server alignment failed")

@@ -24,7 +24,7 @@ Main Features:
 import re
 import types
 import requests
-from flask import request, jsonify, render_template, make_response, after_this_request
+from flask import request, jsonify, render_template, make_response
 import config
 from flask_app import app
 from tasks.setup_manager import setup_manager
@@ -698,8 +698,24 @@ def setup_api():
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
 
-        restart_manager.publish_restart_request()
-        restart_requested = True
+        # The configuration is already durable at this point.  A publish return
+        # value is therefore not a rollback signal, but it must not be ignored:
+        # returning an ordinary success while workers still use the old provider
+        # settings is unsafe and makes the operator believe the setup is complete.
+        # Flask is restarted below either way so this process reloads its own
+        # configuration; the response clearly distinguishes a fully applied save
+        # from a durable save which still needs worker recovery.
+        try:
+            worker_restart_acknowledged = bool(
+                restart_manager.publish_restart_request(
+                    timeout_seconds=restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+                )
+            )
+        except Exception:
+            worker_restart_acknowledged = False
+            app.logger.exception(
+                'Configuration was saved, but requesting the worker restart failed'
+            )
     except AudioMuseError as ae:
         app.logger.error('Setup media server check failed: %s', ae, exc_info=ae.cause)
         return jsonify(ae.to_dict()), error_manager.http_status_for_code(ae.code)
@@ -713,22 +729,37 @@ def setup_api():
             {'error': 'Unable to save configuration. Check the server log for details.'}
         ), 500
 
-    response = make_response(
-        jsonify(
-            {
-                'status': 'ok',
-                'saved_keys': list(filtered_values.keys()),
-                'restart_requested': restart_requested,
-            }
-        ),
-        200,
-    )
+    try:
+        # The timer is delayed, so arming it now still lets this response leave
+        # the process before the local Flask service is restarted.
+        flask_restart_scheduled = bool(restart_manager.schedule_flask_restart())
+    except Exception:
+        flask_restart_scheduled = False
+        app.logger.exception(
+            'Configuration was saved, but scheduling the Flask restart failed'
+        )
 
-    @after_this_request
-    def schedule_restart(response):
-        if restart_requested:
-            restart_manager.schedule_flask_restart()
-        return response
+    # schedule_flask_restart() returns False ONLY for deliberate opt-outs
+    # (DISABLE_FLASK_RESTART, or SERVICE_TYPE != flask); a genuine failure raises and
+    # is caught above. Treating those opt-outs as an incomplete restart made a fully
+    # successful save answer 503 forever on those deployments.
+    restart_complete = worker_restart_acknowledged
+    response_payload = {
+        'status': 'ok' if restart_complete else 'partial',
+        'saved_keys': list(filtered_values.keys()),
+        'restart_requested': True,
+        'worker_restart_acknowledged': worker_restart_acknowledged,
+        'flask_restart_scheduled': flask_restart_scheduled,
+    }
+    # The configuration is already durable and the Flask restart timer is already
+    # armed. Answering 503 made setup.js take its error branch, so it never ran the
+    # redirect countdown - and gunicorn then restarted underneath the page anyway.
+    if not restart_complete:
+        response_payload['warning'] = (
+            'Configuration was saved, but the workers did not confirm their '
+            'restart. Restart AudioMuse and check the service logs.'
+        )
+    response = make_response(jsonify(response_payload), 200)
 
     if config.AUTH_ENABLED:
         response.delete_cookie('audiomuse_jwt', samesite='Strict', path='/')

@@ -29,6 +29,11 @@ from app_clustering import clustering_bp
 @pytest.fixture(autouse=True)
 def stub_the_start_lock(monkeypatch):
     monkeypatch.setattr(app_clustering, 'main_task_start_lock', nullcontext)
+    monkeypatch.setattr(
+        app_clustering,
+        'resolve_enqueue_outcome',
+        lambda _task_id: (app_clustering.ENQUEUE_MISSING, ''),
+    )
 
 
 @pytest.fixture
@@ -177,6 +182,25 @@ class TestStartClusteringEndpoint:
         assert data['status'] == 'STARTED'
         mock_cleanup.assert_not_called()
         mock_queue.enqueue.assert_not_called()
+
+    @patch('app_clustering.get_active_main_task', return_value=None)
+    @patch('app_clustering.rq_queue_high')
+    @patch('app_clustering.clean_up_previous_main_tasks')
+    @patch('app_clustering.save_task_status')
+    def test_lost_enqueue_reply_keeps_one_recoverable_clustering_claim(
+        self, save, _cleanup, queue, _active, client, monkeypatch
+    ):
+        queue.enqueue.side_effect = RuntimeError('reply lost')
+        monkeypatch.setattr(
+            app_clustering,
+            'resolve_enqueue_outcome',
+            lambda _task_id: ('unknown', ''),
+        )
+
+        response = client.post('/api/clustering/start', json={})
+
+        assert response.status_code == 202
+        assert [call.args[2] for call in save.call_args_list] == ['PENDING']
 
 
 class TestFailureHandlerRetryAwareness:

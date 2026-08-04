@@ -101,6 +101,8 @@ from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED
 
 from app_helper import (
+    ENQUEUE_MISSING,
+    resolve_enqueue_outcome,
     save_task_status,
     redis_conn,
     get_task_info_from_db,
@@ -112,6 +114,7 @@ from database import (
     prune_playlist_rows_for_missing_servers,
     get_child_tasks_from_db,
     get_recent_playlist_names,
+    main_task_start_lock,
 )
 
 from sanitization import sanitize_for_json
@@ -203,6 +206,19 @@ def batch_task_failure_handler(job, connection, type, value, tb):
             "log": [stamp("Clustering batch sub-task failed permanently after all retries.")],
         }
 
+        parent = get_task_info_from_db(parent_id)
+        if parent is None or parent.get('status') in (
+            TASK_STATUS_SUCCESS,
+            TASK_STATUS_FAILURE,
+            TASK_STATUS_REVOKED,
+        ):
+            app.logger.info(
+                "Suppressing failure callback for clustering batch %s because "
+                "parent %s is missing or terminal.",
+                task_id,
+                parent_id,
+            )
+            return
         save_task_status(
             task_id,
             "clustering_batch",
@@ -270,22 +286,51 @@ def run_clustering_batch_task(
                 **(details or {}),
             }
             db_details["log"] = shape_log(batch_logs, message, state == TASK_STATUS_SUCCESS)
-            if current_job:
-                current_job.meta['progress'] = progress
-                current_job.meta['status_message'] = message
-                current_job.save_meta()
-            save_task_status(
-                current_task_id,
-                "clustering_batch",
-                state,
-                parent_task_id=parent_task_id,
-                sub_type_identifier=batch_id_str,
-                progress=progress,
-                details=db_details,
-            )
+
+            def write_if_parent_live():
+                if current_job:
+                    parent = get_task_info_from_db(parent_task_id)
+                    if parent is None or parent.get('status') in (
+                        TASK_STATUS_SUCCESS,
+                        TASK_STATUS_FAILURE,
+                        TASK_STATUS_REVOKED,
+                    ):
+                        logger.info(
+                            "Suppressing batch status write for %s because parent %s "
+                            "is missing or terminal.",
+                            current_task_id, parent_task_id,
+                        )
+                        return False
+                    current_job.meta['progress'] = progress
+                    current_job.meta['status_message'] = message
+                    current_job.save_meta()
+                return save_task_status(
+                    current_task_id,
+                    "clustering_batch",
+                    state,
+                    parent_task_id=parent_task_id,
+                    sub_type_identifier=batch_id_str,
+                    progress=progress,
+                    details=db_details,
+                )
+
+            return write_if_parent_live()
 
         try:
-            _log_and_update("Batch started.", 0)
+            parent_task_info = get_task_info_from_db(parent_task_id)
+            if current_job and (
+                parent_task_info is None
+                or parent_task_info.get('status')
+                in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]
+            ):
+                logger.info(
+                    "Clustering batch %s will not start because parent %s is "
+                    "missing or terminal.",
+                    current_task_id, parent_task_id,
+                )
+                return {"status": "REVOKED", "message": "Parent task was cancelled."}
+            if not _log_and_update("Batch started.", 0):
+                return {"status": "REVOKED", "message": "Parent task was cancelled."}
             genre_to_lightweight_track_data_map = json.loads(
                 genre_to_lightweight_track_data_map_json
             )
@@ -309,14 +354,14 @@ def run_clustering_batch_task(
                     if (
                         task_info is None
                         or task_info.get('status') == TASK_STATUS_REVOKED
-                        or (
-                            parent_task_info
-                            and parent_task_info.get('status')
-                            in [TASK_STATUS_REVOKED, TASK_STATUS_FAILURE]
-                        )
+                        or parent_task_info is None
+                        or parent_task_info.get('status')
+                        in [TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED, TASK_STATUS_FAILURE]
                     ):
-                        _log_and_update(
-                            "Stopping batch due to revocation.", i, state=TASK_STATUS_REVOKED
+                        logger.info(
+                            "Stopping batch %s due to missing/terminal cancellation "
+                            "state; no task row will be recreated.",
+                            current_task_id,
                         )
                         return {"status": "REVOKED", "message": "Batch task revoked."}
 
@@ -394,12 +439,13 @@ def run_clustering_batch_task(
                 "full_best_result_from_batch": best_result_in_batch,
                 "final_subset_track_ids": current_sampled_track_ids,
             }
-            _log_and_update(
+            if not _log_and_update(
                 f"Batch complete. Best score: {best_score_in_batch:.2f}",
                 100,
                 details=final_details,
                 state=TASK_STATUS_SUCCESS,
-            )
+            ):
+                return {"status": "REVOKED", "message": "Parent task was cancelled."}
             return {
                 "status": "SUCCESS",
                 "iterations_completed_in_batch": iterations_completed,
@@ -412,9 +458,10 @@ def run_clustering_batch_task(
             err = error_manager.record(
                 error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e)
             )
-            _log_and_update(
+            if not _log_and_update(
                 f"Batch failed: {e}", 100, details={"error": err}, state=TASK_STATUS_FAILURE
-            )
+            ):
+                return {"status": "REVOKED", "message": "Parent task was cancelled."}
             return {"status": "FAILURE", "message": str(e)}
 
 
@@ -520,10 +567,18 @@ def run_clustering_task(
 
     with app.app_context():
         task_info = get_task_info_from_db(current_task_id)
+        if current_job and task_info is None:
+            logger.info(
+                "Main clustering task %s has no task row; global Cancel removed "
+                "it before execution, so it will not restart.",
+                current_task_id,
+            )
+            return {
+                "status": TASK_STATUS_REVOKED,
+                "message": "Task was cancelled before execution.",
+            }
         if task_info and task_info.get('status') in [
-            TASK_STATUS_SUCCESS,
-            TASK_STATUS_FAILURE,
-            TASK_STATUS_REVOKED,
+            TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
         ]:
             logger.info(
                 f"Main clustering task {current_task_id} is already in a terminal state ('{task_info.get('status')}'). Skipping execution."
@@ -575,18 +630,28 @@ def run_clustering_task(
             details_for_db.pop('batch_start_times', None)
             details_for_db["log"] = shaped_log
 
-            if current_job:
-                current_job.meta['progress'] = progress
-                current_job.meta['status_message'] = message
-                current_job.save_meta()
+            def write_if_still_claimed():
+                if current_job:
+                    own = get_task_info_from_db(current_task_id)
+                    if own is None or own.get('status') == TASK_STATUS_REVOKED:
+                        logger.info(
+                            "Suppressing main clustering status write for %s: its "
+                            "claim is gone, so the run was cancelled.",
+                            current_task_id,
+                        )
+                        return False
+                    current_job.meta['progress'] = progress
+                    current_job.meta['status_message'] = message
+                    current_job.save_meta()
+                return save_task_status(
+                    current_task_id,
+                    "main_clustering",
+                    task_state,
+                    progress=progress,
+                    details=details_for_db,
+                )
 
-            save_task_status(
-                current_task_id,
-                "main_clustering",
-                task_state,
-                progress=progress,
-                details=details_for_db,
-            )
+            return write_if_still_claimed()
 
         try:
             _log_and_update(
@@ -959,6 +1024,13 @@ def _calibrate_cluster_params(
         return safe_min, safe_max, percentile
 
 
+def _run_claim_is_gone(current_job, task_id):
+    if not current_job:
+        return False
+    info = get_task_info_from_db(task_id)
+    return info is None or info.get('status') == TASK_STATUS_REVOKED
+
+
 def _cluster_one_server(
     target_server,
     state,
@@ -1205,7 +1277,7 @@ def _cluster_one_server(
             and failed_batch_count < CLUSTERING_MAX_FAILED_BATCHES
             and stale_batches < CLUSTERING_EARLY_STOP_BATCHES
         ):
-            _launch_batch_job(
+            launched = _launch_batch_job(
                 state,
                 current_task_id,
                 next_batch_to_launch,
@@ -1236,6 +1308,10 @@ def _cluster_one_server(
                 top_n_moods_for_clustering_param,
                 enable_clustering_embeddings_param,
             )
+            if not launched:
+                report("Task revoked before the next batch could start.", local_pct,
+                       task_state=TASK_STATUS_REVOKED)
+                return 'revoked', None
             next_batch_to_launch += 1
 
         local_pct = (
@@ -1317,6 +1393,13 @@ def _cluster_one_server(
         90,
     )
 
+    if _run_claim_is_gone(current_job, current_task_id):
+        logger.info(
+            "Clustering %s was cancelled before naming; no playlist is created.",
+            current_task_id,
+        )
+        return 'revoked', None
+
     previous_playlist_names = _previous_names_for_naming(
         target_server['server_id'] if target_server else None
     )
@@ -1334,6 +1417,14 @@ def _cluster_one_server(
         mistral_model_name_param,
         previous_playlist_names=previous_playlist_names,
     )
+
+    if _run_claim_is_gone(current_job, current_task_id):
+        logger.info(
+            "Clustering %s was cancelled before playlist creation; the server is "
+            "left untouched.",
+            current_task_id,
+        )
+        return 'revoked', None
 
     report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
     with registry.bind(target_server):
@@ -1682,21 +1773,45 @@ def _launch_batch_job(
         "top_n_playlists_param": batch_top_n,
     }
 
-    new_job = rq_queue_default.enqueue(
-        'tasks.clustering.run_clustering_batch_task',
-        kwargs=job_args,
-        job_id=batch_job_id,
-        job_timeout=CLUSTERING_BATCH_TIMEOUT_MINUTES * 60,
-        retry=Retry(max=3),
-        on_failure=batch_task_failure_handler,
-    )
-    state_dict["active_jobs"][new_job.id] = new_job
+    with main_task_start_lock():
+        parent = get_task_info_from_db(parent_task_id)
+        if parent is None or parent.get('status') in (
+            TASK_STATUS_SUCCESS,
+            TASK_STATUS_FAILURE,
+            TASK_STATUS_REVOKED,
+        ):
+            logger.info(
+                "Not enqueueing batch %s because parent %s is missing or terminal.",
+                batch_job_id, parent_task_id,
+            )
+            return False
+        try:
+            new_job = rq_queue_default.enqueue(
+                'tasks.clustering.run_clustering_batch_task',
+                kwargs=job_args,
+                job_id=batch_job_id,
+                job_timeout=CLUSTERING_BATCH_TIMEOUT_MINUTES * 60,
+                retry=Retry(max=3),
+                on_failure=batch_task_failure_handler,
+            )
+        except Exception:
+            outcome, rq_status = resolve_enqueue_outcome(batch_job_id)
+            if outcome == ENQUEUE_MISSING:
+                raise
+            logger.warning(
+                "Batch enqueue reply was lost for %s (%s); treating its known id "
+                "as active for reconciliation.",
+                batch_job_id, rq_status or 'Redis unavailable',
+            )
+            new_job = None
 
-    state_dict.setdefault("batch_start_times", {})[new_job.id] = time.time()
+    state_dict["active_jobs"][batch_job_id] = new_job
+    state_dict.setdefault("batch_start_times", {})[batch_job_id] = time.time()
 
     logger.info(
-        f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}."
+        f"Enqueued batch job {batch_job_id} for runs {start_run}-{start_run + num_iterations - 1}."
     )
+    return True
 
 
 def _previous_names_for_naming(server_id):

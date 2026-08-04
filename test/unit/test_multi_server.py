@@ -1332,7 +1332,77 @@ class TestEmbeddingCanonicalization:
         assert conn.commits >= 1
 
 
+def _candidate_selects(executed):
+    return [e for e in executed if e[0].startswith('SELECT') and e[1] is not None]
+
+
 class TestSweepAlignment:
+    def test_dequeued_single_sweep_honours_wiped_row_before_any_work(self, monkeypatch):
+        """Cancel may wipe PENDING after RQ dequeues but before task code starts."""
+        from tasks import multiserver_sync as sync
+
+        close = MagicMock()
+
+        def cancelled():
+            raise sync.SweepCancelled()
+
+        reporter_factory = MagicMock()
+        get_server = MagicMock()
+        sweep_one = MagicMock()
+        provider_fetch = MagicMock()
+        monkeypatch.setattr(sync, '_make_cancel_check', lambda _task_id: (cancelled, close))
+        monkeypatch.setattr(sync, '_make_reporter', reporter_factory)
+        monkeypatch.setattr(sync.registry, 'get_server', get_server)
+        monkeypatch.setattr(sync, '_sweep_one', sweep_one)
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', provider_fetch)
+        db = MagicMock()
+
+        result = sync.sweep_server('server-1', task_id='wiped-sweep', conn=db)
+
+        assert result == {'server_id': 'server-1', 'cancelled': True}
+        reporter_factory.assert_not_called()
+        get_server.assert_not_called()
+        sweep_one.assert_not_called()
+        provider_fetch.assert_not_called()
+        db.cursor.assert_not_called()
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        close.assert_called_once_with()
+
+    def test_dequeued_recovery_sweep_honours_wiped_row_before_any_work(self, monkeypatch):
+        """A janitor replacement has the same dequeue-vs-cancel race as a manual root."""
+        from tasks import multiserver_sync as sync
+
+        close = MagicMock()
+
+        def cancelled():
+            raise sync.SweepCancelled()
+
+        reporter_factory = MagicMock()
+        list_servers = MagicMock()
+        sweep_one = MagicMock()
+        provider_fetch = MagicMock()
+        monkeypatch.setattr(sync, '_make_cancel_check', lambda _task_id: (cancelled, close))
+        monkeypatch.setattr(sync, '_make_reporter', reporter_factory)
+        monkeypatch.setattr(sync.registry, 'list_servers', list_servers)
+        monkeypatch.setattr(sync, '_sweep_one', sweep_one)
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', provider_fetch)
+        db = MagicMock()
+
+        result = sync.sweep_all_secondary_servers(
+            task_id='wiped-recovery-replacement', conn=db, server_ids=['server-1']
+        )
+
+        assert result == []
+        reporter_factory.assert_not_called()
+        list_servers.assert_not_called()
+        sweep_one.assert_not_called()
+        provider_fetch.assert_not_called()
+        db.cursor.assert_not_called()
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        close.assert_called_once_with()
+
     def test_iter_unmapped_local_rows_keyset_pagination(self):
         from tasks import multiserver_sync as sync
 
@@ -1748,14 +1818,8 @@ class TestSweepAlignment:
         monkeypatch.setattr(msrv, 'prune_task_status_history', lambda: 0)
         cancelled = []
         monkeypatch.setattr(
-            msrv, '_cancel_active_sweeps', lambda: cancelled.append('old-task') or ['old-task']
-        )
-        saved = {}
-        monkeypatch.setattr(
-            msrv, 'save_task_status',
-            lambda task_id, task_type, status, **kw: saved.update(
-                {'task_id': task_id, 'task_type': task_type, 'status': status}
-            ),
+            msrv, '_claim_replacement_sweep',
+            lambda task_id: cancelled.append('old-task') or ['old-task'],
         )
         enqueued = {}
 
@@ -1768,7 +1832,6 @@ class TestSweepAlignment:
         assert cancelled == ['old-task']
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
         assert enqueued['job_id'] == task_id
-        assert saved['task_type'] == 'server_sweep'
 
     def test_enqueue_sweep_refuses_while_a_cleaning_run_is_live(self, monkeypatch):
         """Both prune track_server_map against a catalogue snapshot taken minutes
@@ -1796,15 +1859,17 @@ class TestSweepAlignment:
         import config
 
         cur = MagicMock()
-        cur.fetchall.return_value = [('t1',), ('t2',)]
+        cur.fetchall.return_value = [('t1', 1.0), ('t2', 2.0)]
+        cur.rowcount = 2
+        cur.__enter__.return_value = cur
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(msrv, 'get_db', lambda: db)
-        revoked = []
+        history = []
         monkeypatch.setattr(
-            msrv, 'save_task_status',
-            lambda task_id, task_type, status, **kw: revoked.append(
-                (task_id, task_type, status)
+            msrv, 'record_task_history',
+            lambda task_id, task_type, status, **kw: history.append(
+                (task_id, task_type, status, kw.get('details'))
             ),
         )
         started_job = MagicMock()
@@ -1824,13 +1889,60 @@ class TestSweepAlignment:
             msrv, 'send_stop_job_command', lambda conn, task_id: stopped.append(task_id)
         )
         assert msrv._cancel_active_sweeps() == ['t1', 't2']
-        assert revoked == [
+        assert [row[:3] for row in history] == [
             ('t1', 'server_sweep', config.TASK_STATUS_REVOKED),
             ('t2', 'server_sweep', config.TASK_STATUS_REVOKED),
         ]
+        assert all(row[3]['status_message'] for row in history)
+        db.commit.assert_called_once()
         assert stopped == ['t1']
         queued_job.cancel.assert_called_once()
         started_job.cancel.assert_not_called()
+
+    def test_sweep_replacement_fails_closed_if_the_whole_old_set_cannot_be_revoked(
+        self, monkeypatch
+    ):
+        import app_music_servers as msrv
+
+        cur = MagicMock()
+        cur.__enter__.return_value = cur
+        cur.fetchall.return_value = [('old-1', 1.0), ('old-2', 2.0)]
+        cur.rowcount = 1
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(msrv, 'get_db', lambda: db)
+        monkeypatch.setattr(msrv, 'main_task_start_lock', nullcontext)
+        monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: None)
+        monkeypatch.setattr(msrv, 'prune_task_status_history', lambda: 0)
+        enqueue = MagicMock()
+        monkeypatch.setattr(msrv.rq_queue_high, 'enqueue', enqueue)
+
+        assert msrv._enqueue_sweep() is None
+        db.rollback.assert_called_once()
+        db.commit.assert_not_called()
+        enqueue.assert_not_called()
+
+    def test_ambiguous_alignment_enqueue_keeps_the_single_pending_claim(self, monkeypatch):
+        import app_music_servers as msrv
+
+        monkeypatch.setattr(msrv, 'main_task_start_lock', nullcontext)
+        monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: None)
+        monkeypatch.setattr(msrv, '_claim_replacement_sweep', lambda task_id: [])
+        monkeypatch.setattr(msrv, 'prune_task_status_history', lambda: 0)
+        monkeypatch.setattr(
+            msrv.rq_queue_high, 'enqueue',
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError('reply lost')),
+        )
+        monkeypatch.setattr(
+            msrv, 'resolve_enqueue_outcome', lambda task_id: ('unknown', '')
+        )
+        saved = []
+        monkeypatch.setattr(
+            msrv, 'save_task_status', lambda *a, **k: saved.append((a, k))
+        )
+
+        assert msrv._enqueue_sweep()
+        assert saved == []
 
     def test_enqueue_server_alignment_targets_the_default_server_with_no_app_context(
         self, monkeypatch
@@ -1843,6 +1955,8 @@ class TestSweepAlignment:
         cur = MagicMock()
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        cur.fetchall.return_value = []
+        cur.__enter__.return_value = cur
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
@@ -1884,6 +1998,29 @@ class TestSweepAlignment:
 
         assert sync.enqueue_server_alignment() is None
         assert called == []
+
+    def test_repeated_automatic_alignment_coalesces_into_one_live_root(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.__enter__.return_value = cur
+        cur.fetchall.return_value = [('already-live',)]
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(
+            sync.registry, 'get_default_server_id', lambda conn=None: 'srv-default'
+        )
+        import app_helper
+        enqueue = MagicMock()
+        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', enqueue)
+
+        assert sync.enqueue_server_alignment() == 'already-live'
+        enqueue.assert_not_called()
+        assert not any(
+            call.args and str(call.args[0]).startswith('INSERT INTO task_status')
+            for call in cur.execute.call_args_list
+        )
 
     def test_a_progress_update_does_not_wipe_the_full_refresh_flag(self, monkeypatch):
         """save_task_status REPLACES details wholesale, and recovery only ever fires
@@ -1950,6 +2087,7 @@ class TestSweepAlignment:
         cur.fetchall.return_value = [
             ('dead-alignment', json.dumps({'message': 'x', 'full_refresh': True})),
         ]
+        cur.fetchone.return_value = None
         cur.execute.side_effect = lambda sql, params=None: None
         db = MagicMock()
         db.cursor.return_value = cur
@@ -1974,6 +2112,7 @@ class TestSweepAlignment:
         cur = MagicMock()
         cur.rowcount = 1
         cur.fetchall.return_value = [('dead-sweep', json.dumps({'message': 'x'}))]
+        cur.fetchone.return_value = None
         cur.execute.side_effect = lambda sql, params=None: None
         db = MagicMock()
         db.cursor.return_value = cur
@@ -2010,6 +2149,8 @@ class TestSweepAlignment:
         cur = MagicMock()
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append(sql)
+        cur.fetchall.return_value = []
+        cur.__enter__.return_value = cur
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
@@ -2023,8 +2164,7 @@ class TestSweepAlignment:
         import app_helper
         monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', _boom)
 
-        with pytest.raises(RuntimeError):
-            sync.enqueue_server_alignment(message='after the migration')
+        assert sync.enqueue_server_alignment(message='after the migration')
 
         assert any(s.startswith('INSERT INTO task_status') for s in executed), (
             "the recoverable row must exist before the enqueue is attempted"
@@ -2037,6 +2177,7 @@ class TestSweepAlignment:
         cur = MagicMock()
         cur.rowcount = 1
         cur.fetchall.return_value = [('dead-sweep', None)]
+        cur.fetchone.return_value = None
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -2078,6 +2219,30 @@ class TestSweepAlignment:
         assert sync.recover_abandoned_sweeps() is None
         assert called == []
 
+    def test_recovery_does_not_create_a_second_root_beside_a_newer_live_sweep(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
+        cur = MagicMock()
+        cur.rowcount = 1
+        cur.fetchall.return_value = [('dead-sweep', None)]
+        cur.fetchone.return_value = ('newer-live',)
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
+        import app_helper
+        enqueue = MagicMock()
+        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', enqueue)
+
+        assert sync.recover_abandoned_sweeps() is None
+        enqueue.assert_not_called()
+        assert not [sql for sql, _params in executed if sql.startswith('UPDATE task_status')]
+
     def test_recover_abandoned_sweeps_recovers_rows_whose_rq_job_vanished(self, monkeypatch):
         """A sweep row whose job is gone from Redis entirely used to be SKIPPED, on
         the theory that the batch-start cleanup would archive it. That cleanup no
@@ -2090,6 +2255,7 @@ class TestSweepAlignment:
         cur = MagicMock()
         cur.rowcount = 1
         cur.fetchall.return_value = [('never-enqueued-sweep', None)]
+        cur.fetchone.return_value = None
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -2139,7 +2305,7 @@ class TestSweepAlignment:
         assert ['ghost-analysis'] in updates[0][1]
 
         # Sweeps are excluded: recover_abandoned_sweeps re-enqueues those instead.
-        select = executed[0]
+        select = _candidate_selects(executed)[0]
         assert sync.SWEEP_TASK_TYPE in select[1][0]
 
     def test_reap_orphaned_tasks_reconciles_terminal_jobs_but_keeps_live_jobs(
@@ -2275,6 +2441,36 @@ class TestSweepAlignment:
         assert sync.reap_orphaned_tasks() == 0
         assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
 
+    def test_generic_reaper_excludes_committed_provider_restart_handshakes(
+        self, monkeypatch
+    ):
+        sync, executed = self._reap_harness(monkeypatch, [])
+
+        assert sync.reap_orphaned_tasks() == 0
+
+        rq_candidate_sql = _candidate_selects(executed)[0][0]
+        assert 'migration_session' in rq_candidate_sql
+        assert "state->>'exec_task_id'" in rq_candidate_sql
+        assert "state->>'restart_acknowledged'" in rq_candidate_sql
+
+    def test_the_reaper_still_runs_when_migration_session_does_not_exist_yet(
+        self, monkeypatch
+    ):
+        sync, executed = self._reap_harness(monkeypatch, [])
+        db = sync.connect_raw()
+        db.cursor.return_value.fetchone.return_value = (None,)
+
+        assert sync.reap_orphaned_tasks() == 0
+
+        probes = [e for e in executed if 'to_regclass' in e[0]]
+        assert len(probes) == 1
+        # init_db runs only in Flask but the janitor lives in the worker container,
+        # so naming migration_session unconditionally aborted the whole reap pass
+        # with UndefinedTable on a worker that started first.
+        candidates = _candidate_selects(executed)
+        assert candidates
+        assert all('migration_session' not in sql for sql, _ in candidates)
+
     def test_reap_orphaned_tasks_updates_nothing_when_the_redis_probe_times_out(
         self, monkeypatch
     ):
@@ -2393,7 +2589,7 @@ class TestSweepAlignment:
         assert sync.reap_orphaned_tasks() == 1
         assert probed == []
 
-        rq_select, inline_select = executed[0], executed[1]
+        rq_select, inline_select = _candidate_selects(executed)[:2]
         assert 'alchemy_radio' in rq_select[1][0]
         assert list(INLINE_FLASK_TASK_TYPES) == inline_select[1][0]
         assert inline_select[1][-1] == sync._INLINE_STALE_SECONDS
@@ -2411,6 +2607,7 @@ class TestSweepAlignment:
         cur = MagicMock()
         cur.rowcount = 1
         cur.fetchall.return_value = [('dead-sweep', None)]
+        cur.fetchone.return_value = None
         db = MagicMock()
         db.cursor.return_value = cur
         connections = []
@@ -2436,6 +2633,7 @@ class TestSweepAlignment:
         cur = MagicMock()
         cur.rowcount = 0
         cur.fetchall.return_value = [('just-finished-sweep', None)]
+        cur.fetchone.return_value = None
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
         db = MagicMock()
@@ -2462,6 +2660,7 @@ class TestSweepAlignment:
         cur = MagicMock()
         cur.rowcount = 1
         cur.fetchall.return_value = [('suspended-sweep', None)]
+        cur.fetchone.return_value = None
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
@@ -2688,7 +2887,7 @@ class TestFirstRunSetupWizardServerApi:
             msrv.registry, 'delete_server',
             lambda sid, conn=None: deleted.append(sid) or True,
         )
-        monkeypatch.setattr(msrv, '_apply_default_to_config', lambda: None)
+        monkeypatch.setattr(msrv, '_apply_default_to_config', lambda: True)
         monkeypatch.setattr(msrv, '_enqueue_sweep', lambda *a, **k: 'sweep-1')
 
         with self._request_context(
@@ -2723,6 +2922,78 @@ class TestFirstRunSetupWizardServerApi:
         assert status == 201
         assert added['make_default'] is False
         assert deleted == []
+
+
+class TestDefaultServerRestartAcknowledgement:
+    def test_default_change_waits_for_restart_before_enqueuing_alignment(self, monkeypatch):
+        import app_music_servers as msrv
+        from flask import Flask
+
+        events = []
+        monkeypatch.setattr(msrv, '_forbid_non_admin', lambda: None)
+        monkeypatch.setattr(
+            msrv.registry, 'get_server',
+            lambda server_id: {'server_id': server_id},
+        )
+        monkeypatch.setattr(
+            msrv.registry, 'set_default', lambda server_id: events.append('registry')
+        )
+        monkeypatch.setattr(
+            msrv, '_apply_default_to_config',
+            lambda: events.append('restart-ack') or True,
+        )
+        monkeypatch.setattr(
+            msrv, '_enqueue_sweep', lambda *a, **k: events.append('sweep') or 'sweep-1'
+        )
+        monkeypatch.setattr(msrv, 'servers_for_ui', lambda: {'servers': []})
+
+        with Flask('default-order').test_request_context(method='POST'):
+            response = msrv.set_default_server('s2')
+
+        assert response.status_code == 200
+        assert events == ['registry', 'restart-ack', 'sweep']
+
+    def test_unacknowledged_restart_still_succeeds_warns_and_sweeps(self, monkeypatch):
+        import app_music_servers as msrv
+        from flask import Flask
+
+        monkeypatch.setattr(msrv, '_forbid_non_admin', lambda: None)
+        monkeypatch.setattr(
+            msrv.registry, 'get_server',
+            lambda server_id: {'server_id': server_id},
+        )
+        monkeypatch.setattr(msrv.registry, 'set_default', lambda server_id: None)
+        monkeypatch.setattr(msrv, '_apply_default_to_config', lambda: False)
+        sweep = MagicMock(return_value='sweep-1')
+        monkeypatch.setattr(msrv, '_enqueue_sweep', sweep)
+        monkeypatch.setattr(msrv, 'servers_for_ui', lambda: {'servers': []})
+
+        with Flask('default-failure').test_request_context(method='POST'):
+            response, status = msrv.set_default_server('s2')
+
+        # The default IS committed and the sweep IS enqueued, so a 503 made the
+        # admin UI print "Save failed." for a change that succeeded.
+        assert status == 200
+        body = response.get_json()
+        assert body['restart_acknowledged'] is False
+        assert body['warning']
+        sweep.assert_called_once()
+
+    def test_the_default_change_never_waits_the_full_background_ack_deadline(
+        self, monkeypatch
+    ):
+        import app_music_servers as msrv
+        import restart_manager
+
+        publish = MagicMock(return_value=True)
+        monkeypatch.setattr(restart_manager, 'publish_restart_request', publish)
+        monkeypatch.setattr(msrv.config, 'refresh_config', lambda: None)
+
+        assert msrv._apply_default_to_config() is True
+
+        waited = publish.call_args.kwargs['timeout_seconds']
+        assert waited == restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+        assert waited <= 5.0
 
 
 class TestSonicFingerprintDefaultsPerServer:

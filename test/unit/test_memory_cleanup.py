@@ -27,7 +27,10 @@ from unittest.mock import MagicMock, patch
 if "jwt" not in sys.modules:
     sys.modules["jwt"] = MagicMock()
 
-_pg_connect_patcher = patch("psycopg2.connect", return_value=MagicMock())
+_pg_conn = MagicMock()
+_pg_conn.cursor.return_value.rowcount = 1
+_pg_conn.cursor.return_value.__enter__.return_value = _pg_conn.cursor.return_value
+_pg_connect_patcher = patch("psycopg2.connect", return_value=_pg_conn)
 _pg_connect_patcher.start()
 
 import pytest

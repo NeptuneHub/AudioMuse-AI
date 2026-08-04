@@ -1250,6 +1250,7 @@ class TestBatchFailureHandlerRetryAwareness:
     ):
         import sys
         import types
+        from contextlib import nullcontext
 
         from flask import Flask
 
@@ -1258,6 +1259,12 @@ class TestBatchFailureHandlerRetryAwareness:
         fake_flask_app = types.ModuleType('flask_app')
         fake_flask_app.app = Flask('batch-failure-handler-test')
         monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+        monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
+        monkeypatch.setattr(
+            clustering,
+            'get_task_info_from_db',
+            lambda _task_id: {'status': 'PROGRESS'},
+        )
 
         writes = []
         monkeypatch.setattr(
@@ -1279,3 +1286,159 @@ class TestBatchFailureHandlerRetryAwareness:
         assert writes == [
             ('parent-1_s0_batch_0', 'clustering_batch', 'FAILURE', 'parent-1')
         ]
+
+    def test_batch_handler_does_not_recreate_child_after_parent_wipe(
+        self, monkeypatch
+    ):
+        import sys
+        import types
+        from contextlib import nullcontext
+
+        from flask import Flask
+
+        import tasks.clustering as clustering
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('cancelled-batch-failure-handler-test')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+        monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
+        monkeypatch.setattr(clustering, 'get_task_info_from_db', lambda _task_id: None)
+        writes = []
+        monkeypatch.setattr(
+            clustering,
+            'save_task_status',
+            lambda *args, **kwargs: writes.append((args, kwargs)),
+        )
+        job = Mock()
+        job.id = 'parent-1_s0_batch_0'
+        job.retries_left = 0
+        job.kwargs = {'parent_task_id': 'parent-1', 'batch_id_str': 'Batch_0'}
+
+        err = RuntimeError('stopped by cancel')
+        clustering.batch_task_failure_handler(
+            job, object(), RuntimeError, err, None
+        )
+
+        assert writes == []
+
+
+def _batch_launch_args():
+    return (
+        'kmeans', 2, 4, 0.1, 0.5, 2, 5, 2, 4, 2, 4, 2, 4, 50,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 5, True,
+    )
+
+
+def _batch_launch_state():
+    return {
+        'active_jobs': {},
+        'batch_start_times': {},
+        'elite_solutions': [],
+        'last_subset_ids': [],
+        'job_prefix': 'parent-1_s0',
+    }
+
+
+def test_cancelled_parent_cannot_enqueue_a_new_clustering_batch(monkeypatch):
+    import tasks.clustering as clustering
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
+    monkeypatch.setattr(clustering, 'get_task_info_from_db', lambda _task_id: None)
+    queue_calls = []
+    monkeypatch.setattr(
+        clustering.rq_queue_default,
+        'enqueue',
+        lambda *a, **k: queue_calls.append((a, k)),
+    )
+
+    launched = clustering._launch_batch_job(
+        _batch_launch_state(), 'parent-1', 0, 10, '{}', 5,
+        *_batch_launch_args(),
+    )
+
+    assert launched is False
+    assert queue_calls == []
+
+
+def test_clustering_batch_parent_check_and_enqueue_share_the_cancel_lock(monkeypatch):
+    import tasks.clustering as clustering
+
+    held = {'value': False}
+
+    class _Lock:
+        def __enter__(self):
+            held['value'] = True
+
+        def __exit__(self, *_args):
+            held['value'] = False
+
+    monkeypatch.setattr(clustering, 'main_task_start_lock', _Lock)
+    monkeypatch.setattr(
+        clustering,
+        'get_task_info_from_db',
+        lambda _task_id: {'status': 'PROGRESS'},
+    )
+
+    def enqueue(*_args, **kwargs):
+        assert held['value'] is True
+        return Mock(id=kwargs['job_id'])
+
+    monkeypatch.setattr(clustering.rq_queue_default, 'enqueue', enqueue)
+
+    assert clustering._launch_batch_job(
+        _batch_launch_state(), 'parent-1', 0, 10, '{}', 5,
+        *_batch_launch_args(),
+    ) is True
+
+
+def test_batch_start_racing_the_cancel_wipe_never_recreates_a_child_row(monkeypatch):
+    import sys
+    import types
+    from contextlib import nullcontext
+    from flask import Flask
+    import tasks.clustering as clustering
+
+    fake_flask_app = types.ModuleType('flask_app')
+    fake_flask_app.app = Flask('cancelled-batch-start')
+    monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+    job = Mock(id='parent-1_s0_batch_0', meta={})
+    monkeypatch.setattr(clustering, 'get_current_job', lambda connection=None: job)
+    # First read is the optimistic pre-check; Cancel commits before the locked
+    # initial status write, whose re-check sees the parent missing.
+    parent_reads = iter([{'status': 'PROGRESS'}, None])
+    monkeypatch.setattr(
+        clustering, 'get_task_info_from_db', lambda _task_id: next(parent_reads)
+    )
+    monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
+    writes = []
+    monkeypatch.setattr(
+        clustering, 'save_task_status', lambda *a, **k: writes.append((a, k))
+    )
+
+    result = clustering.run_clustering_batch_task(
+        batch_id_str='Batch_0',
+        start_run_idx=0,
+        num_iterations_in_batch=1,
+        genre_to_lightweight_track_data_map_json='{}',
+        target_songs_per_genre=1,
+        sampling_percentage_change_per_run=0.1,
+        clustering_method='kmeans',
+        active_mood_labels_for_batch=[],
+        num_clusters_min_max_tuple=(2, 3),
+        dbscan_params_ranges_dict={},
+        gmm_params_ranges_dict={},
+        spectral_params_ranges_dict={},
+        pca_params_ranges_dict={'components_min': 2, 'components_max': 3},
+        max_songs_per_cluster=50,
+        parent_task_id='parent-1',
+        score_weights_dict={},
+        elite_solutions_params_list_json='[]',
+        exploitation_probability=0.0,
+        mutation_config_json='{}',
+        initial_subset_track_ids_json='[]',
+        enable_clustering_embeddings_param=True,
+    )
+
+    assert result['status'] == 'REVOKED'
+    assert writes == []

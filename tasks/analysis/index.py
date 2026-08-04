@@ -103,15 +103,35 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
     release_memory_to_os()
 
 
-def rebuild_all_indexes_task():
+def rebuild_all_indexes_task(parent_task_id=None):
     logger.info("Starting index rebuild task...")
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
+        if current_job and parent_task_id:
+            from app_helper import get_task_statuses
+            from config import TASK_STATUS_REVOKED
+
+            statuses = get_task_statuses([parent_task_id])
+            if parent_task_id not in statuses or statuses.get(parent_task_id) in (
+                TASK_STATUS_SUCCESS,
+                TASK_STATUS_FAILURE,
+                TASK_STATUS_REVOKED,
+            ):
+                logger.info(
+                    "Index rebuild %s will not start because parent %s was cancelled.",
+                    current_task_id,
+                    parent_task_id,
+                )
+                return {
+                    "status": TASK_STATUS_REVOKED,
+                    "message": "Parent analysis was cancelled.",
+                }
         log_and_update = make_task_reporter(
             current_task_id, "index_rebuild", current_job,
-            "Index rebuild started.", prefix=f"IndexRebuild-{current_task_id}",
+            "Index rebuild started.", parent_task_id=parent_task_id,
+            prefix=f"IndexRebuild-{current_task_id}",
         )
         try:
             _run_all_index_builds(

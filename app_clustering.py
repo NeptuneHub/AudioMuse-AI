@@ -75,8 +75,18 @@ from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED
 
 # App helper functions
-from app_helper import rq_queue_high, save_task_status
-from database import clean_up_previous_main_tasks, get_active_main_task, main_task_start_lock
+from app_helper import (
+    ENQUEUE_MISSING,
+    resolve_enqueue_outcome,
+    rq_queue_high,
+    save_task_status,
+)
+from database import (
+    clean_up_previous_main_tasks,
+    get_active_main_task,
+    main_task_start_lock,
+    prune_task_status_history,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -432,25 +442,38 @@ def start_clustering_endpoint():
             details={"message": "Task enqueued."}, raise_on_error=True,
         )
 
-    # A failed enqueue must not leave the committed PENDING row behind: it would
-    # 409 every later start and the prune cannot reclaim a non-terminal row.
-    try:
-        job = rq_queue_high.enqueue(
-            'tasks.clustering.run_clustering_task',  # Enqueue by string path
-            kwargs=clustering_kwargs,
-            job_id=job_id,
-            description="Main Music Clustering",
-            retry=Retry(max=3),
-            job_timeout=-1,  # No timeout
-            on_failure=clustering_task_failure_handler,
-        )
-    except Exception:
-        logger.exception("Could not enqueue the clustering task")
-        save_task_status(
-            job_id, "main_clustering", TASK_STATUS_FAILURE,
-            details={"error": "Could not enqueue the task (is Redis reachable?)"},
-        )
-        return jsonify({"error": "Could not enqueue the clustering. Check the logs."}), 500
+        # Keep the lock through the definitive enqueue result. Otherwise Cancel
+        # can revoke the committed claim before Redis sees the job.
+        try:
+            job = rq_queue_high.enqueue(
+                'tasks.clustering.run_clustering_task',  # Enqueue by string path
+                kwargs=clustering_kwargs,
+                job_id=job_id,
+                description="Main Music Clustering",
+                retry=Retry(max=3),
+                job_timeout=-1,  # No timeout
+                on_failure=clustering_task_failure_handler,
+            )
+        except Exception:
+            logger.exception("Could not enqueue the clustering task")
+            outcome, rq_status = resolve_enqueue_outcome(job_id)
+            if outcome == ENQUEUE_MISSING:
+                save_task_status(
+                    job_id, "main_clustering", TASK_STATUS_FAILURE,
+                    details={"error": "Could not enqueue the task (is Redis reachable?)"},
+                    raise_on_error=True,
+                )
+                prune_task_status_history()
+                return jsonify(
+                    {"error": "Could not enqueue the clustering. Check the logs."}
+                ), 500
+            return jsonify(
+                {
+                    "task_id": job_id,
+                    "task_type": "main_clustering",
+                    "status": rq_status or TASK_STATUS_PENDING,
+                }
+            ), 202
     return jsonify(
-        {"task_id": job.id, "task_type": "main_clustering", "status": job.get_status()}
+        {"task_id": job.id, "task_type": "main_clustering", "status": "queued"}
     ), 202

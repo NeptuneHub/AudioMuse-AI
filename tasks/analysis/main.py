@@ -352,7 +352,20 @@ def _run_analysis_server_task_impl(
             num_recent_albums = 0
 
         task_info = get_task_info_from_db(current_task_id)
-        if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED]:
+        if current_job and task_info is None:
+            logger.info(
+                "Analysis task %s has no live DB claim; treating it as revoked.",
+                current_task_id,
+            )
+            return {
+                "status": TASK_STATUS_REVOKED,
+                "message": "Task was cancelled before execution.",
+            }
+        if task_info and task_info.get('status') in [
+            TASK_STATUS_SUCCESS,
+            TASK_STATUS_FAILURE,
+            TASK_STATUS_REVOKED,
+        ]:
             return {"status": task_info.get('status'), "message": "Task already in terminal state."}
 
         log_and_update_main = make_task_reporter(
@@ -519,6 +532,7 @@ def _run_analysis_server_task_impl(
                 ):
                     rebuild_job = rq_queue_default.enqueue(
                         'tasks.analysis.rebuild_all_indexes_task',
+                        args=(current_task_id,),
                         job_id=str(uuid.uuid4()),
                         job_timeout=-1,
                         retry=Retry(max=3),
@@ -747,13 +761,20 @@ def _enabled_analysis_servers(server_scope):
             return [None]
 
 
-def _run_already_finished(task_id):
+def _run_already_finished(task_id, *, require_claim=False):
     with app.app_context():
         try:
-            status = get_task_statuses([task_id]).get(task_id)
+            statuses = get_task_statuses([task_id])
         except Exception:
             logger.exception("Could not read the run's own status; assuming it is live")
             return None
+    status = statuses.get(task_id)
+    if require_claim and task_id not in statuses:
+        logger.info(
+            "Analysis %s has no live DB claim; treating the dequeued RQ job as revoked.",
+            task_id,
+        )
+        return TASK_STATUS_REVOKED
     if status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
         logger.info(
             "Analysis %s is already %s; refusing to run. A cancelled, failed or "
@@ -768,7 +789,7 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     current_job = get_current_job(redis_conn)
     parent_id = current_job.id if current_job else str(uuid.uuid4())
 
-    already = _run_already_finished(parent_id)
+    already = _run_already_finished(parent_id, require_claim=current_job is not None)
     if already:
         return {'status': already, 'message': 'Task already in terminal state.'}
 

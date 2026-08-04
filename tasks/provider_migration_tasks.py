@@ -32,10 +32,10 @@ Main Features:
   written INSIDE the migration transaction so the intent survives a crash between
   the commit and the enqueue. That sweep rebuilds the artist ids the swap had to
   clear and refreshes the file paths the target may not have reported.
-* SUCCESS is recorded before the worker restart is published, and a retry of an
-  ALREADY APPLIED session reports SUCCESS instead of failing its dry_run_ready
-  gate: that restart can kill this very job, RQ requeues it under the same task
-  id, and the retry used to report FAILURE over a migration that had committed.
+* The root task stays non-terminal until every worker durably acknowledges the
+  restart.  The completed session retains the execute and restart request ids, so
+  a publisher killed by its own restart can retry under the same RQ id, observe
+  the ACK without republishing, and only then report SUCCESS.
 * Reads target metadata from the migration_target_meta side table and builds
   the old->new id mapping via indexed per-album queries; reloads state after commit.
 """
@@ -45,12 +45,15 @@ import logging
 import time
 import uuid
 
-from rq import get_current_job
+from rq import Retry, get_current_job
 
 from config import (
+    TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
+    TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
+    TASK_STATUS_REVOKED,
 )
 from sanitization import sanitize_string_for_db as _sanitize_text
 
@@ -66,6 +69,10 @@ _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 # real total rather than persisting one row per unbound song forever.
 _ORPHAN_REPORT_MAX_ROWS = 5000
 
+# Upper bound on the post-commit restart handshake. The migration itself is
+# already durable by then; this only bounds how long one worker is held.
+_RESTART_HANDSHAKE_MAX_SECONDS = 900
+
 # The restart request is a Redis publish, so the only way it fails is a Redis
 # blip - the same blip that would have failed the alignment enqueue. A few bounded
 # retries ride that out; a persistent outage falls through to the loud log, since
@@ -73,6 +80,13 @@ _ORPHAN_REPORT_MAX_ROWS = 5000
 _RESTART_PUBLISH_ATTEMPTS = 3
 
 _RESTART_PUBLISH_RETRY_SECONDS = 2
+
+# Once the catalogue commit is durable the execute root is the admission barrier.
+# Do not exhaust RQ's finite Retry budget merely because listeners are temporarily
+# unavailable: keep this job STARTED and re-check the durable control request.
+_RESTART_HANDSHAKE_RETRY_SECONDS = 5
+
+_RESTART_RECOVERY_TASK_KEY = 'restart_recovery_task_id'
 
 
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
@@ -166,20 +180,281 @@ def _report_migration(task_id, status, progress, message, details=None):
     a request thread in tests).
     """
     if not task_id:
-        return
+        return True
     try:
         from flask_app import app
-        from database import save_task_status
+        from database import get_db, save_task_status
 
         payload = {'message': message, 'status_message': message}
         if details:
             payload.update(details)
         with app.app_context():
+            db = get_db()
+            with db.cursor() as cur:
+                cur.execute(
+                    "SELECT status FROM task_status WHERE task_id = %s FOR UPDATE",
+                    (task_id,),
+                )
+                existing = cur.fetchone()
+            if not existing:
+                db.rollback()
+                logger.error(
+                    "provider migration: refusing to write %s for job %s; it has no "
+                    "task_status claim, so the run was cancelled",
+                    status,
+                    task_id,
+                )
+                return 'missing'
+            if existing and existing[0] == TASK_STATUS_REVOKED:
+                db.commit()
+                logger.warning(
+                    "provider migration: task %s is REVOKED; refusing %s update",
+                    task_id,
+                    status,
+                )
+                return 'revoked'
+            if (
+                existing
+                and existing[0] == TASK_STATUS_SUCCESS
+                and status != TASK_STATUS_SUCCESS
+            ):
+                db.commit()
+                logger.warning(
+                    "provider migration: preserving SUCCESS for delayed retry %s "
+                    "instead of writing %s",
+                    task_id,
+                    status,
+                )
+                return 'success'
             save_task_status(
                 task_id, MIGRATION_TASK_TYPE, status, progress=progress, details=payload
             )
+        return True
     except Exception:
         logger.exception("Could not record provider-migration task status")
+        return False
+
+
+class _RestartAcknowledgementPending(RuntimeError):
+    pass
+
+
+def _restart_request_id(task_id, session_id):
+    stable = task_id or f'session-{session_id}'
+    return f'provider-migration-restart:{stable}'
+
+
+def _completed_summary(state):
+    post = (state or {}).get('post_migration') or {}
+    return {
+        'ok': True,
+        'matched': int(post.get('matched') or 0),
+        'index_rebuild_needed': False,
+        'already_applied': True,
+    }
+
+
+def _persist_completed_restart_state(conn, session_id, request_id, *, acknowledged=None):
+    cur = conn.cursor()
+    if acknowledged is None:
+        cur.execute(
+            "UPDATE migration_session SET state = jsonb_set("
+            "COALESCE(state, '{}'::jsonb), '{restart_request_id}', %s::jsonb, true) "
+            "WHERE id = %s AND status = 'completed' RETURNING id",
+            (json.dumps(request_id), session_id),
+        )
+    else:
+        cur.execute(
+            "UPDATE migration_session SET state = jsonb_set("
+            "jsonb_set(COALESCE(state, '{}'::jsonb), '{restart_request_id}', "
+            "%s::jsonb, true), '{restart_acknowledged}', %s::jsonb, true) "
+            "WHERE id = %s AND status = 'completed' RETURNING id",
+            (json.dumps(request_id), json.dumps(bool(acknowledged)), session_id),
+        )
+    if cur.fetchone() is None:
+        conn.rollback()
+        raise RuntimeError(
+            f'completed migration session {session_id} disappeared before restart ACK'
+        )
+    conn.commit()
+
+
+def _finalize_restart_handshake(
+    conn,
+    session_id,
+    request_id,
+    task_id,
+    message,
+    *,
+    details=None,
+):
+    if not task_id:
+        _persist_completed_restart_state(
+            conn, session_id, request_id, acknowledged=True
+        )
+        return True
+
+    from database import MAIN_TASK_START_LOCK_KEY
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(%s)", (MAIN_TASK_START_LOCK_KEY,)
+        )
+        cur.execute(
+            "SELECT status, state FROM migration_session WHERE id = %s FOR UPDATE",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        state = _decoded_state(row[1]) if row else {}
+        if (
+            not row
+            or row[0] != 'completed'
+            or state.get('restart_request_id') != request_id
+        ):
+            raise RuntimeError(
+                f'provider migration session {session_id} no longer owns restart '
+                f'request {request_id}'
+            )
+
+        cur.execute(
+            "UPDATE migration_session SET state = jsonb_set("
+            "COALESCE(state, '{}'::jsonb), '{restart_acknowledged}', 'true'::jsonb, true) "
+            "WHERE id = %s AND status = 'completed' "
+            "AND state->>'restart_request_id' = %s RETURNING id",
+            (session_id, request_id),
+        )
+        if cur.fetchone() is None:
+            raise RuntimeError(
+                f'provider migration restart request {request_id} was superseded '
+                'before SUCCESS'
+            )
+
+        payload = {'message': message, 'status_message': message}
+        if details:
+            payload.update(details)
+        now = time.time()
+        cur.execute(
+            "INSERT INTO task_status "
+            "(task_id, task_type, status, progress, details, timestamp, start_time, "
+            "end_time) VALUES (%s, %s, %s, 100, %s, NOW(), %s, %s) "
+            "ON CONFLICT (task_id) DO UPDATE SET task_type = EXCLUDED.task_type, "
+            "status = EXCLUDED.status, progress = 100, details = EXCLUDED.details, "
+            "timestamp = NOW(), end_time = EXCLUDED.end_time",
+            (
+                task_id,
+                MIGRATION_TASK_TYPE,
+                TASK_STATUS_SUCCESS,
+                json.dumps(payload),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    try:
+        from database import save_task_status
+
+        save_task_status(
+            task_id,
+            MIGRATION_TASK_TYPE,
+            TASK_STATUS_SUCCESS,
+            progress=100,
+            details=payload,
+        )
+    except Exception:
+        logger.exception(
+            "Provider migration %s committed SUCCESS but could not finalize its "
+            "task row; history and cleanup will lag until the next run",
+            session_id,
+        )
+    return True
+
+
+def _restart_request_result(request_id):
+    try:
+        import restart_manager
+
+        return restart_manager.get_control_request_result('restart', request_id)
+    except Exception:
+        logger.warning(
+            "provider migration: could not read restart ACK for %s",
+            request_id,
+            exc_info=True,
+        )
+        return None
+
+
+def _await_worker_restart(
+    redis,
+    conn,
+    session_id,
+    request_id,
+    *,
+    alignment_task_id=None,
+):
+    current_request_id = request_id
+    first_attempt = True
+    deadline = time.monotonic() + _RESTART_HANDSHAKE_MAX_SECONDS
+    while True:
+        try:
+            if first_attempt:
+                acknowledged = _post_commit_reload(
+                    redis,
+                    alignment_task_id,
+                    restart_request_id=current_request_id,
+                )
+                first_attempt = False
+            else:
+                acknowledged = _publish_restart_with_retries(current_request_id)
+        except Exception:
+            acknowledged = False
+            logger.exception(
+                "provider migration: restart handshake attempt %s failed",
+                current_request_id,
+            )
+
+        if acknowledged is True:
+            return current_request_id
+
+        if _restart_request_result(current_request_id) is False:
+            try:
+                import restart_manager
+
+                replacement = restart_manager.new_control_request_id()
+                _persist_completed_restart_state(
+                    conn,
+                    session_id,
+                    replacement,
+                    acknowledged=False,
+                )
+                current_request_id = replacement
+            except Exception:
+                logger.exception(
+                    "provider migration: could not rotate failed restart request %s; "
+                    "will retry the durable request",
+                    current_request_id,
+                )
+
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"provider migration session {session_id} was APPLIED and committed, "
+                f"but no worker acknowledged the restart within "
+                f"{_RESTART_HANDSHAKE_MAX_SECONDS}s (request {current_request_id}). "
+                f"THE WORKERS ARE STILL ON THE OLD PROVIDER - restart them by hand. "
+                f"Releasing this worker so other jobs can run."
+            )
+
+        logger.error(
+            "provider migration session %s remains in restart_handshake; retrying "
+            "request %s in %ss",
+            session_id,
+            current_request_id,
+            _RESTART_HANDSHAKE_RETRY_SECONDS,
+        )
+        time.sleep(_RESTART_HANDSHAKE_RETRY_SECONDS)
 
 
 def execute_provider_migration(session_id):
@@ -196,7 +471,15 @@ def execute_provider_migration(session_id):
 
     redis = _get_redis()
     task_id = _migration_task_id()
-    _report_migration(task_id, TASK_STATUS_STARTED, 0, "Provider migration started...")
+    start_claim = _report_migration(
+        task_id, TASK_STATUS_STARTED, 0, "Provider migration started..."
+    )
+    if start_claim in ('missing', 'revoked') or start_claim is False:
+        raise RuntimeError(
+            f'provider migration task {task_id} has no live execution claim '
+            f'({start_claim})'
+        )
+    migration_applied = False
     try:
         conn = _get_dedicated_conn()
         try:
@@ -213,33 +496,39 @@ def execute_provider_migration(session_id):
         target_creds = session['target_creds']
         state = session['state']
 
-        # A retry of an ALREADY APPLIED migration is a success, not a failure. The
-        # restart this job publishes can kill the job itself, and RQ then requeues
-        # it under the SAME task id: raising here made that retry overwrite the
-        # SUCCESS row with FAILURE for a migration that had fully committed.
         if session['status'] == 'completed':
-            summary = {
-                'ok': True,
-                'matched': 0,
-                'index_rebuild_needed': False,
-                'already_applied': True,
-            }
+            migration_applied = True
+            summary = _completed_summary(state)
+            request_id = state.get('restart_request_id') or _restart_request_id(
+                task_id, session_id
+            )
             logger.warning(
                 "provider migration: session %s is already applied; this run is a "
-                "retry of a job that committed before it could report. Reporting "
-                "SUCCESS and re-running the post-commit reload.",
+                "retry of a job that committed before restart acknowledgement",
                 session_id,
             )
-            _report_migration(
-                task_id, TASK_STATUS_SUCCESS, 100,
-                "Provider migration already applied; nothing left to do.",
+            if not state.get('restart_request_id'):
+                _persist_completed_restart_state(conn, session_id, request_id)
+
+            if not state.get('restart_acknowledged'):
+                acknowledged = _restart_request_result(request_id)
+                if acknowledged is not True:
+                    request_id = _await_worker_restart(
+                        redis,
+                        conn,
+                        session_id,
+                        request_id,
+                        alignment_task_id=state.get('alignment_task_id'),
+                    )
+
+            _finalize_restart_handshake(
+                conn,
+                session_id,
+                request_id,
+                task_id,
+                "Provider migration applied and worker restart acknowledged.",
                 details=summary,
             )
-            # The first run may have died of something OTHER than its own restart
-            # (an OOM kill, an evicted pod) and never reached these at all. They
-            # are all idempotent, and skipping them would leave every worker on the
-            # old provider's settings with nothing left to signal otherwise.
-            _post_commit_reload(redis)
             return summary
 
         if session['status'] != 'dry_run_ready':
@@ -263,6 +552,7 @@ def execute_provider_migration(session_id):
         )
 
         alignment_task_id = str(uuid.uuid4())
+        restart_request_id = _restart_request_id(task_id, session_id)
         try:
             index_rebuild_needed = _run_migration_transaction(
                 cur=cur,
@@ -273,8 +563,11 @@ def execute_provider_migration(session_id):
                 session_id=session_id,
                 selected_libraries=selected_libraries,
                 alignment_task_id=alignment_task_id,
+                exec_task_id=task_id,
+                restart_request_id=restart_request_id,
             )
             conn.commit()
+            migration_applied = True
         except Exception:
             try:
                 conn.rollback()
@@ -287,22 +580,42 @@ def execute_provider_migration(session_id):
             'matched': len(mapping),
             'index_rebuild_needed': bool(index_rebuild_needed),
         }
-        # Recorded BEFORE the restart is published: that restart can kill this very
-        # job, and a migration that already committed would then come back as a
-        # retry, fail the dry_run_ready gate, and report FAILURE over a success.
-        _report_migration(
-            task_id, TASK_STATUS_SUCCESS, 100,
-            f"Provider migration complete: {len(mapping)} tracks repointed.",
+        restart_request_id = _await_worker_restart(
+            redis,
+            conn,
+            session_id,
+            restart_request_id,
+            alignment_task_id=alignment_task_id,
+        )
+        _finalize_restart_handshake(
+            conn,
+            session_id,
+            restart_request_id,
+            task_id,
+            f"Provider migration complete: {len(mapping)} tracks repointed; "
+            "worker restart acknowledged.",
             details=summary,
         )
-        _post_commit_reload(redis, alignment_task_id)
         return summary
     except Exception:
-        logger.exception("Provider migration failed for session %s", session_id)
-        _report_migration(
-            task_id, TASK_STATUS_FAILURE, 100,
-            "Provider migration failed; check the container logs.",
-        )
+        if migration_applied:
+            logger.exception(
+                "PROVIDER MIGRATION SESSION %s IS COMMITTED BUT THE WORKER RESTART "
+                "HANDSHAKE DID NOT COMPLETE. The catalogue swap is durable; the "
+                "workers must be restarted by hand so they pick up the new provider.",
+                session_id,
+            )
+            _report_migration(
+                task_id, TASK_STATUS_FAILURE, 100,
+                "Provider migration was APPLIED, but the workers did not confirm "
+                "their restart. Restart AudioMuse, then check the container logs.",
+            )
+        else:
+            logger.exception("Provider migration failed for session %s", session_id)
+            _report_migration(
+                task_id, TASK_STATUS_FAILURE, 100,
+                "Provider migration failed; check the container logs.",
+            )
         raise
 
 
@@ -600,6 +913,58 @@ def _stage_post_migration_alignment(cur, task_id):
     )
 
 
+def _restart_handshake_details(session_id, restart_request_id):
+    message = 'Provider swap committed; waiting for worker restart acknowledgement.'
+    return {
+        'message': message,
+        'status_message': message,
+        'phase': 'restart_handshake',
+        'provider_migration_committed': True,
+        'migration_session_id': session_id,
+        'restart_request_id': restart_request_id,
+    }
+
+
+def _stage_restart_handshake(cur, task_id, session_id, restart_request_id):
+    if not task_id:
+        return
+    from database import MAIN_TASK_START_LOCK_KEY
+
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (MAIN_TASK_START_LOCK_KEY,))
+    cur.execute(
+        "SELECT status FROM task_status WHERE task_id = %s FOR UPDATE",
+        (task_id,),
+    )
+    row = cur.fetchone()
+    live_statuses = (
+        TASK_STATUS_PENDING,
+        TASK_STATUS_STARTED,
+        TASK_STATUS_PROGRESS,
+    )
+    if not row or row[0] not in live_statuses:
+        raise RuntimeError(
+            f'provider migration execution claim {task_id} was cancelled or lost '
+            'before commit'
+        )
+
+    details = _restart_handshake_details(session_id, restart_request_id)
+    cur.execute(
+        "UPDATE task_status SET status = %s, progress = 99, details = %s, "
+        "timestamp = NOW(), end_time = NULL WHERE task_id = %s AND status IN %s "
+        "RETURNING task_id",
+        (
+            TASK_STATUS_STARTED,
+            json.dumps(details),
+            task_id,
+            live_statuses,
+        ),
+    )
+    if cur.fetchone() is None:
+        raise RuntimeError(
+            f'provider migration execution claim {task_id} changed before commit'
+        )
+
+
 def _report_playlists_bound_to_default_server(cur):
     cur.execute("SELECT to_regclass('public.playlist')")
     if cur.fetchone()[0] is None:
@@ -638,6 +1003,8 @@ def _run_migration_transaction(
     session_id,
     selected_libraries=None,
     alignment_task_id=None,
+    exec_task_id=None,
+    restart_request_id=None,
 ):
     """Repoint the DEFAULT server's mappings at a new provider. Nothing else.
 
@@ -733,6 +1100,9 @@ def _run_migration_transaction(
     )
     _purge_media_keys_from_app_config(cur)
     _stage_post_migration_alignment(cur, alignment_task_id)
+    _stage_restart_handshake(
+        cur, exec_task_id, session_id, restart_request_id
+    )
 
     cur.execute(
         "UPDATE migration_session SET status = 'completed', completed_at = NOW(), "
@@ -744,7 +1114,11 @@ def _run_migration_transaction(
                         'orphans': orphan_rows[:_ORPHAN_REPORT_MAX_ROWS],
                         'orphan_total': len(orphan_rows),
                         'matched': len(mapping or {}),
-                    }
+                    },
+                    'exec_task_id': exec_task_id,
+                    'alignment_task_id': alignment_task_id,
+                    'restart_request_id': restart_request_id,
+                    'restart_acknowledged': False,
                 }
             ),
             session_id,
@@ -829,7 +1203,7 @@ def _purge_media_keys_from_app_config(cur):
         )
 
 
-def _post_commit_reload(redis, alignment_task_id=None):
+def _post_commit_reload(redis, alignment_task_id=None, *, restart_request_id=None):
     try:
         from tasks.mediaserver import registry
 
@@ -843,15 +1217,17 @@ def _post_commit_reload(redis, alignment_task_id=None):
     except Exception as e:
         logger.warning("config.refresh_config() failed: %s", e)
     _enqueue_post_migration_alignment(alignment_task_id)
-    _publish_restart_with_retries()
+    return _publish_restart_with_retries(restart_request_id)
 
 
-def _publish_restart_with_retries():
+def _publish_restart_with_retries(request_id):
+    if not request_id:
+        raise ValueError('a durable restart request id is required')
     for attempt in range(1, _RESTART_PUBLISH_ATTEMPTS + 1):
         try:
             import restart_manager
 
-            if restart_manager.publish_restart_request() is not False:
+            if restart_manager.publish_restart_request(request_id=request_id) is True:
                 return True
         except Exception as e:
             logger.warning("restart_manager.publish_restart_request() failed: %s", e)
@@ -863,10 +1239,11 @@ def _publish_restart_with_retries():
             )
             time.sleep(_RESTART_PUBLISH_RETRY_SECONDS)
     logger.error(
-        "PROVIDER MIGRATION: THE WORKER RESTART REQUEST WAS NOT DELIVERED after %d "
+        "PROVIDER MIGRATION: WORKER RESTART %s WAS NOT ACKNOWLEDGED after %d "
         "attempts. The catalogue is migrated and the registry points at the new "
-        "provider, but running workers keep the OLD provider's settings until they "
-        "restart. RESTART AUDIOMUSE MANUALLY to finish the swap.",
+        "provider, but the migration task remains active until workers confirm "
+        "their restart. RESTART AUDIOMUSE MANUALLY if the listeners cannot recover.",
+        request_id,
         _RESTART_PUBLISH_ATTEMPTS,
     )
     return False
@@ -905,15 +1282,240 @@ def _enqueue_post_migration_alignment(alignment_task_id=None):
         )
 
 
+def _decoded_state(raw_state):
+    if isinstance(raw_state, str):
+        try:
+            return json.loads(raw_state) or {}
+        except Exception:
+            return {}
+    return raw_state or {}
+
+
+def recover_provider_migration_restart_handshakes():
+    import rq_job_state
+    from app_helper import (
+        ENQUEUE_ACCEPTED,
+        ENQUEUE_MISSING,
+        resolve_enqueue_outcome,
+        rq_queue_high,
+    )
+    from database import MAIN_TASK_START_LOCK_KEY
+
+    conn = _get_dedicated_conn()
+    try:
+        try:
+            conn.autocommit = False
+        except Exception:
+            pass
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('migration_session')")
+        if cur.fetchone()[0] is None:
+            conn.rollback()
+            return 0
+        cur.execute(
+            "SELECT id, state FROM migration_session WHERE status = 'completed' "
+            "AND state ? 'restart_request_id' "
+            "AND NOT COALESCE((state->>'restart_acknowledged')::boolean, false)"
+        )
+        candidates = cur.fetchall() or []
+        conn.rollback()
+        reserved = 0
+
+        for session_id, raw_state in candidates:
+            state = _decoded_state(raw_state)
+            root_task_id = state.get('exec_task_id')
+            request_id = state.get('restart_request_id')
+            current_recovery_id = state.get(_RESTART_RECOVERY_TASK_KEY)
+            if not root_task_id or not request_id:
+                logger.error(
+                    "provider migration session %s has an incomplete restart tombstone",
+                    session_id,
+                )
+                continue
+
+            authority_id = current_recovery_id or root_task_id
+            probe_state, _status = rq_job_state.probe_job(authority_id, _get_redis())
+            if (
+                rq_job_state.is_alive(probe_state)
+                or rq_job_state.is_abandoned(probe_state)
+                or rq_job_state.is_unknown(probe_state)
+            ):
+                continue
+
+            recovery_id = str(uuid.uuid4())
+            try:
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(%s)", (MAIN_TASK_START_LOCK_KEY,)
+                )
+                cur.execute(
+                    "SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,)
+                )
+                if not cur.fetchone()[0]:
+                    conn.rollback()
+                    continue
+                cur.execute(
+                    "SELECT state FROM migration_session WHERE id = %s "
+                    "AND status = 'completed' FOR UPDATE",
+                    (session_id,),
+                )
+                locked = cur.fetchone()
+                locked_state = _decoded_state(locked[0]) if locked else {}
+                if (
+                    not locked
+                    or locked_state.get('restart_acknowledged') is True
+                    or locked_state.get('exec_task_id') != root_task_id
+                    or locked_state.get('restart_request_id') != request_id
+                    or locked_state.get(_RESTART_RECOVERY_TASK_KEY)
+                    != current_recovery_id
+                ):
+                    conn.rollback()
+                    continue
+
+                details = json.dumps(
+                    _restart_handshake_details(session_id, request_id)
+                )
+                cur.execute(
+                    "INSERT INTO task_status "
+                    "(task_id, task_type, status, progress, details, timestamp, "
+                    "start_time, end_time) VALUES (%s, %s, %s, 99, %s, NOW(), %s, NULL) "
+                    "ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, "
+                    "progress = 99, details = EXCLUDED.details, timestamp = NOW(), "
+                    "end_time = NULL",
+                    (
+                        root_task_id,
+                        MIGRATION_TASK_TYPE,
+                        TASK_STATUS_STARTED,
+                        details,
+                        time.time(),
+                    ),
+                )
+                cur.execute(
+                    "UPDATE migration_session SET state = jsonb_set("
+                    "COALESCE(state, '{}'::jsonb), %s, %s::jsonb, true) "
+                    "WHERE id = %s AND status = 'completed' "
+                    "AND NOT COALESCE((state->>'restart_acknowledged')::boolean, false) "
+                    "RETURNING id",
+                    (
+                        [_RESTART_RECOVERY_TASK_KEY],
+                        json.dumps(recovery_id),
+                        session_id,
+                    ),
+                )
+                if cur.fetchone() is None:
+                    conn.rollback()
+                    continue
+
+                try:
+                    rq_queue_high.enqueue(
+                        'tasks.provider_migration_tasks.resume_provider_migration_restart',
+                        session_id,
+                        root_task_id,
+                        job_id=recovery_id,
+                        job_timeout=-1,
+                        retry=Retry(max=3),
+                    )
+                except Exception:
+                    outcome, _rq_status = resolve_enqueue_outcome(recovery_id)
+                    if outcome == ENQUEUE_MISSING:
+                        conn.rollback()
+                        continue
+                    if outcome != ENQUEUE_ACCEPTED:
+                        logger.warning(
+                            "provider migration recovery enqueue %s is ambiguous; "
+                            "retaining its restart-handshake claim",
+                            recovery_id,
+                        )
+                conn.commit()
+                reserved += 1
+            except Exception:
+                conn.rollback()
+                logger.exception(
+                    "Could not reserve restart recovery for provider session %s",
+                    session_id,
+                )
+        return reserved
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.debug("Could not close provider restart-recovery DB connection", exc_info=True)
+
+
+def resume_provider_migration_restart(session_id, root_task_id):
+    recovery_id = _migration_task_id()
+    conn = _get_dedicated_conn()
+    try:
+        try:
+            conn.autocommit = False
+        except Exception:
+            pass
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+        session = _load_session(cur, session_id)
+        state = session['state']
+        if session['status'] != 'completed':
+            raise RuntimeError(
+                f'provider migration session {session_id} is not completed'
+            )
+        if state.get('exec_task_id') != root_task_id:
+            raise RuntimeError(
+                f'provider migration root {root_task_id} no longer owns session {session_id}'
+            )
+        if recovery_id and state.get(_RESTART_RECOVERY_TASK_KEY) != recovery_id:
+            raise RuntimeError(
+                f'provider restart recovery {recovery_id} was superseded'
+            )
+        request_id = state.get('restart_request_id')
+        if not request_id:
+            raise RuntimeError(
+                f'provider migration session {session_id} has no restart request id'
+            )
+        conn.commit()
+
+        if not state.get('restart_acknowledged'):
+            if _restart_request_result(request_id) is not True:
+                request_id = _await_worker_restart(
+                    _get_redis(),
+                    conn,
+                    session_id,
+                    request_id,
+                    alignment_task_id=state.get('alignment_task_id'),
+                )
+
+        summary = _completed_summary(state)
+        _finalize_restart_handshake(
+            conn,
+            session_id,
+            request_id,
+            root_task_id,
+            'Provider migration applied and worker restart acknowledged.',
+            details=summary,
+        )
+        return summary
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.debug("Could not close provider restart recovery connection", exc_info=True)
+
+
 def dry_run_provider_migration(session_id, allow_title_artist_only=False):
     from app import app
 
     with app.app_context():
         import app_provider_migration
-
-        return app_provider_migration.run_dry_run_core(
-            session_id, allow_title_artist_only=allow_title_artist_only
-        )
+        job_id = _migration_task_id()
+        try:
+            app_provider_migration._validate_planner_worker_claim(
+                session_id, 'dry_run_task_id', job_id
+            )
+            return app_provider_migration.run_dry_run_core(
+                session_id, allow_title_artist_only=allow_title_artist_only
+            )
+        finally:
+            app_provider_migration._clear_planner_claim(
+                session_id, 'dry_run_task_id', job_id
+            )
 
 
 def source_refresh_provider_migration(session_id):
@@ -921,5 +1523,13 @@ def source_refresh_provider_migration(session_id):
 
     with app.app_context():
         import app_provider_migration
-
-        return app_provider_migration.run_source_refresh_core(session_id)
+        job_id = _migration_task_id()
+        try:
+            app_provider_migration._validate_planner_worker_claim(
+                session_id, 'source_refresh_task_id', job_id
+            )
+            return app_provider_migration.run_source_refresh_core(session_id)
+        finally:
+            app_provider_migration._clear_planner_claim(
+                session_id, 'source_refresh_task_id', job_id
+            )

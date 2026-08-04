@@ -287,7 +287,11 @@ def migration_db(pg_dsn):
     mig._get_dedicated_conn = _connect
     mig._get_redis = lambda: MagicMock()
     mig._drain_workers_or_timeout = lambda *a, **k: None
-    mig._post_commit_reload = lambda *a, **k: None
+    # _post_commit_reload now REPORTS the restart ACK instead of fire-and-forget,
+    # and _await_worker_restart tests it with `is True`. A stub returning None means
+    # "not acknowledged", so the handshake span the full 900s deadline and then
+    # raised out of execute_provider_migration.
+    mig._post_commit_reload = lambda *a, **k: True
 
     yield {'dsn': pg_dsn, 'connect': _connect}
 

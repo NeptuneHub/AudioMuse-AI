@@ -41,6 +41,8 @@ def _make_cron_row(task_type='sonic_fingerprint'):
 def _setup_db_mock(task_type='sonic_fingerprint'):
     cur = MagicMock()
     cur.fetchall.return_value = [_make_cron_row(task_type)]
+    cur.fetchone.return_value = None
+    cur.__enter__.return_value = cur
     # The row is claimed for its minute with an UPDATE ... WHERE last_run < %s;
     # rowcount == 1 means this tick won the claim.
     cur.rowcount = 1
@@ -97,6 +99,23 @@ def test_sonic_fingerprint_task_skips_on_empty_results():
     upsert.assert_not_called()
     legacy.assert_not_called()
     assert summary['playlists_created'] == 0
+
+
+def test_dequeued_sonic_task_with_wiped_claim_does_no_work():
+    from tasks.sonic_fingerprint_manager import run_sonic_fingerprint_task
+
+    job = MagicMock(id='sonic-cancelled')
+    with (
+        patch('rq.get_current_job', return_value=job),
+        patch('database.get_task_info_from_db', return_value=None),
+        patch('database.save_task_status') as save,
+        patch('tasks.mediaserver.registry.servers_for_scope') as servers,
+    ):
+        result = run_sonic_fingerprint_task(server_scope='all')
+
+    assert result['status'] == 'REVOKED'
+    save.assert_not_called()
+    servers.assert_not_called()
 
 
 def test_sonic_fingerprint_task_calls_upsert_with_constant_name():
@@ -175,6 +194,7 @@ def test_failed_inline_radio_run_is_recorded_as_failure_without_a_traceback(
 
     with (
         patch('app_cron.save_task_status') as save,
+        patch('app_cron.prune_task_status_history'),
         patch(
             'tasks.radio_manager.run_radio_playlists',
             side_effect=RuntimeError('internal detail that must stay in logs'),
@@ -320,6 +340,10 @@ def test_failed_analysis_enqueue_is_recorded_as_failure_not_left_pending(mock_ge
         patch('app_cron.main_task_start_lock', return_value=nullcontext()),
         patch('app_cron.clean_up_previous_main_tasks'),
         patch('app_cron.prune_task_status_history'),
+        patch(
+            'app_cron.resolve_enqueue_outcome',
+            return_value=('missing', ''),
+        ),
     ):
         run_due_cron_jobs()
 
@@ -358,7 +382,10 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
     assert queue.enqueue.called
     kwargs = queue.enqueue.call_args.kwargs
     assert kwargs['args'] == ('audiomuse_plugins.demo.tasks.sync',)
-    assert kwargs['kwargs'] == {'server_scope': 'all'}
+    assert kwargs['kwargs'] == {
+        'server_scope': 'all',
+        'task_claim_required': True,
+    }
 
 
 @patch('app_cron.cron_matches_now', return_value=True)
@@ -386,4 +413,7 @@ def test_plugin_branch_defaults_to_all_servers(mock_get_db, _matches):
             patch('app_cron.rq_queue_default') as queue:
         run_due_cron_jobs()
 
-    assert queue.enqueue.call_args.kwargs['kwargs'] == {'server_scope': 'all'}
+    assert queue.enqueue.call_args.kwargs['kwargs'] == {
+        'server_scope': 'all',
+        'task_claim_required': True,
+    }

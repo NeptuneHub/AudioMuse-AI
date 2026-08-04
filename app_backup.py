@@ -20,6 +20,9 @@ Main Features:
   reaches argv or the restore log.
 * Serializes restores across containers with a self-releasing Redis lock and
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
+* The restore runs detached, so `/api/backup/restore` answers "started" long
+  before the outcome is known; the runner appends a `RESTORE-RESULT:` marker that
+  `/api/backup/restore-status` reports back to the page.
 * Backups are compressed to .zip; restore accepts .sql or .zip uploads
   (zip detected by magic bytes and extracted before psql).
 """
@@ -60,6 +63,16 @@ RESTORE_LOG_DIR = os.environ.get("RESTORE_LOG_DIR", BACKUP_DIR)
 # TTL self-releases on crash; runner releases explicitly on clean exit.
 RESTORE_LOCK_KEY = 'audiomuse:restore_lock'
 RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
+
+# Machine-readable outcome the detached runner appends to its log. The HTTP
+# request answers "started" long before the runner finishes, so this marker is
+# the only way the page can tell an abort from a completed restore.
+RESTORE_RESULT_MARKER = 'RESTORE-RESULT:'
+RESTORE_RESULT_ABORTED = 'aborted'
+RESTORE_RESULT_FAILED = 'failed'
+RESTORE_RESULT_COMPLETED = 'completed'
+RESTORE_RESULT_COMPLETED_DEGRADED = 'completed_degraded'
+RESTORE_LOG_NAME_PATTERN = re.compile(r'^restore_\d{8}_\d{6}\.log$')
 
 
 def _acquire_restore_lock():
@@ -188,6 +201,36 @@ def _extract_sql_if_zip(dump_file, log):
         return None, None
 
 
+def _publish_worker_start(log=None):
+    """Request worker recovery and report the actual ACK result."""
+    try:
+        started = restart_manager.publish_start_request()
+    except Exception as exc:
+        if log is not None:
+            log.write(f"Failed to request worker start: {exc}\n")
+            log.flush()
+        else:
+            logger.exception("Failed to request worker start")
+        return False
+    if log is not None:
+        if started:
+            log.write("Worker start request completed successfully.\n")
+        else:
+            log.write("Worker start request FAILED or was not acknowledged.\n")
+        log.flush()
+    elif not started:
+        logger.error("Worker start request failed or was not acknowledged")
+    return bool(started)
+
+
+def _write_restore_result(log, result, message):
+    try:
+        log.write(f"{RESTORE_RESULT_MARKER} {result} {message}\n")
+        log.flush()
+    except OSError:
+        logger.exception("Could not record the restore outcome marker")
+
+
 def _run_restore_runner(dump_file, log_file):
     """Run the restore outside the Flask request in a detached process."""
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -201,28 +244,62 @@ def _run_restore_runner(dump_file, log_file):
         except ValueError as exc:
             log.write(f"Restore FAILED: the configured database connection is unusable: {exc}\n")
             log.flush()
+            _publish_worker_start(log)
+            try:
+                os.unlink(dump_file)
+            except OSError:
+                pass
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_FAILED,
+                'The database was NOT touched: the configured database connection is unusable.',
+            )
             _release_restore_lock()
             return 1
 
-        # Worker stop is published by the Flask restore endpoint before this
-        # detached runner starts. The runner only waits briefly to allow
-        # workers to settle before stopping the local Flask service.
-        time.sleep(5)
-        log.write("Wait complete. Proceeding with local Flask shutdown.\n")
-        log.flush()
-
+        flask_stopped = False
         try:
-            if not restart_manager.stop_local_flask_service():
-                log.write("Failed to stop local Flask service. Continuing restore anyway.\n")
-                log.flush()
-            else:
+            flask_stopped = bool(restart_manager.stop_local_flask_service())
+            if flask_stopped:
                 log.write("Stopped local Flask service.\n")
                 log.flush()
+            else:
+                log.write("Restore ABORTED: local Flask service did not confirm it stopped.\n")
+                log.flush()
         except Exception as exc:
-            log.write(f"Failed to stop local Flask service: {exc}\n")
+            log.write(f"Restore ABORTED: failed to stop local Flask service: {exc}\n")
             log.flush()
-            log.write("Continuing restore despite local Flask stop failure.\n")
+
+        if not flask_stopped:
+            # Never run psql while the application may still be writing. The
+            # endpoint already stopped workers, so put them back before exiting.
+            _publish_worker_start(log)
+            try:
+                if restart_manager.start_local_flask_service():
+                    log.write("Ensured local Flask service is started after abort.\n")
+                else:
+                    log.write("Could not confirm local Flask start after abort.\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Failed to request local Flask start after abort: {exc}\n")
+                log.flush()
+            # Keep the uploaded dump. Deleting it forced the user to re-upload a
+            # multi-gigabyte file after an abort they did not cause, and the HTTP
+            # request already answered "restore started".
+            log.write(
+                f"THE DATABASE WAS NOT TOUCHED. The uploaded dump is kept at "
+                f"{dump_file}; retry the restore once the services are healthy.\n"
+            )
             log.flush()
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_ABORTED,
+                'The database was NOT touched: the local Flask service did not '
+                'confirm it stopped. Your uploaded dump was kept - retry once the '
+                'services are healthy.',
+            )
+            _release_restore_lock()
+            return 1
 
         try:
             from tasks.mcp_helper import _ensure_ai_chat_db_user
@@ -332,18 +409,22 @@ def _run_restore_runner(dump_file, log_file):
                 )
                 log.flush()
 
+        workers_started = False
+        flask_started = False
         try:
             try:
-                restart_manager.publish_start_request()
-                log.write("Published worker start request.\n")
-                log.flush()
-            except Exception as exc:
-                log.write(f"Failed to publish worker start request: {exc}\n")
-                log.flush()
+                workers_started = _publish_worker_start(log)
+            except Exception:
+                # Cleanup and the local Flask start must still run if worker
+                # start reporting itself unexpectedly fails.
+                logger.exception("Unexpected worker-start reporting failure")
 
             try:
-                restart_manager.start_local_flask_service()
-                log.write("Started local Flask service.\n")
+                flask_started = restart_manager.start_local_flask_service()
+                if flask_started:
+                    log.write("Started local Flask service.\n")
+                else:
+                    log.write("Local Flask start request FAILED.\n")
                 log.flush()
             except Exception as exc:
                 log.write(f"Failed to start local Flask service: {exc}\n")
@@ -368,7 +449,31 @@ def _run_restore_runner(dump_file, log_file):
                 pass
 
         log.write(f"Restore runner finished at {datetime.now().isoformat()}\n")
-        log.flush()
+        if ret == 0 and not (workers_started and flask_started):
+            log.write(
+                "Database restore completed, but service recovery FAILED; "
+                "the restored database was committed and services require manual recovery.\n"
+            )
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_COMPLETED_DEGRADED,
+                'The database WAS restored, but the services did not come back. '
+                'Restart AudioMuse manually.',
+            )
+            return 2
+        if ret == 0:
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_COMPLETED,
+                'Database restore completed and the services were restarted.',
+            )
+        else:
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_FAILED,
+                'The restore command failed. Check the restore log and the '
+                'container logs; the database may be incomplete.',
+            )
 
     return ret
 
@@ -535,6 +640,62 @@ def download_backup(filename):
     return send_file(filepath, as_attachment=True, download_name=filename)
 
 
+def _read_restore_result_from(log_path):
+    if not os.path.isfile(log_path):
+        return None
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as log:
+            lines = log.readlines()
+    except OSError:
+        logger.exception("Could not read restore log %s", log_path)
+        return None
+    for line in reversed(lines):
+        if not line.startswith(RESTORE_RESULT_MARKER):
+            continue
+        remainder = line[len(RESTORE_RESULT_MARKER):].strip()
+        result, _, message = remainder.partition(' ')
+        return {'result': result, 'message': message.strip()}
+    return None
+
+
+@backup_bp.route('/api/backup/restore-status', methods=['GET'])
+def restore_status():
+    """
+    Report the outcome of a detached restore run.
+    ---
+    tags:
+      - Backup
+    summary: Poll the outcome the detached restore runner recorded in its log.
+    description: |
+      `/api/backup/restore` answers as soon as the detached runner is spawned, so
+      the caller cannot tell an aborted restore from a completed one. The runner
+      appends a machine-readable outcome marker to its log when it exits; this
+      endpoint reports it. While the runner is still working the state is
+      `running`, and during a successful restore this endpoint is unreachable
+      because the local Flask service is stopped on purpose.
+    parameters:
+      - in: query
+        name: log
+        required: true
+        schema:
+          type: string
+        description: The `restore_log_name` returned by /api/backup/restore.
+    responses:
+      200:
+        description: Current restore state.
+      400:
+        description: Missing or malformed log name.
+    """
+    log_name = os.path.basename(request.args.get('log', ''))
+    if not RESTORE_LOG_NAME_PATTERN.fullmatch(log_name):
+        return jsonify({'error': 'Invalid restore log name.'}), 400
+
+    outcome = _read_restore_result_from(os.path.join(RESTORE_LOG_DIR, log_name))
+    if outcome is None:
+        return jsonify({'state': 'running'})
+    return jsonify({'state': outcome['result'], 'message': outcome['message']})
+
+
 @backup_bp.route('/api/backup/restore', methods=['POST'])
 def restore_backup():
     """
@@ -636,6 +797,7 @@ def restore_backup():
     restore_file = None
     restore_log = None
     restore_pid = None
+    workers_require_recovery = False
 
     try:
         if chunk_num and total_chunks:
@@ -812,8 +974,21 @@ def restore_backup():
 
         # Start restore only if all chunks received or single file upload
         if restore_file and all_chunks_received:
+            workers_require_recovery = True
             stop_requested = restart_manager.publish_stop_request()
-            logger.info('Published worker stop request: %s', stop_requested)
+            if not stop_requested:
+                logger.error(
+                    'Restore aborted: worker stop request failed or was not acknowledged'
+                )
+                _publish_worker_start()
+                workers_require_recovery = False
+                if restore_file and os.path.exists(restore_file):
+                    os.unlink(restore_file)
+                _release_restore_lock()
+                return jsonify({
+                    'error': 'Restore was not started because workers did not confirm they stopped.'
+                }), 503
+            logger.info('Worker stop request completed successfully')
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             restore_log = os.path.join(RESTORE_LOG_DIR, f"restore_{timestamp}.log")
@@ -838,6 +1013,8 @@ def restore_backup():
             if sys.platform == 'win32':
                 popen_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
             proc = subprocess.Popen(restore_cmd, **popen_kwargs)
+            # The detached runner now owns worker recovery and lock cleanup.
+            workers_require_recovery = False
             restore_pid = proc.pid
             logger.info("Restore started in detached process %s", restore_pid)
 
@@ -847,12 +1024,15 @@ def restore_backup():
                     'message': 'Database restore started.',
                     'restore_pid': restore_pid,
                     'restore_log': restore_log,
+                    'restore_log_name': os.path.basename(restore_log),
                     'all_chunks_received': True,
                 }
             )
 
     except FileNotFoundError:
         logger.exception("Python executable not found for restore runner")
+        if workers_require_recovery:
+            _publish_worker_start()
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
@@ -860,6 +1040,8 @@ def restore_backup():
         return jsonify({**err, 'error': err['error_message']}), 500
     except Exception:
         logger.exception("Restore failed")
+        if workers_require_recovery:
+            _publish_worker_start()
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()

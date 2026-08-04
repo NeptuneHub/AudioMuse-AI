@@ -36,8 +36,18 @@ from config import (
 from rq import Retry
 
 # App helper functions
-from app_helper import rq_queue_high, save_task_status
-from database import clean_up_previous_main_tasks, get_active_main_task, main_task_start_lock
+from app_helper import (
+    ENQUEUE_MISSING,
+    resolve_enqueue_outcome,
+    rq_queue_high,
+    save_task_status,
+)
+from database import (
+    clean_up_previous_main_tasks,
+    get_active_main_task,
+    main_task_start_lock,
+    prune_task_status_history,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,29 +158,42 @@ def start_analysis_endpoint():
             details={"message": "Task enqueued."}, raise_on_error=True,
         )
 
-    # Enqueue task using a string path to its function.
-    # MODIFIED: The arguments passed to the task are updated to match the new function signature.
-    # The PENDING row is already committed, so a failed enqueue must not leave it:
-    # alive it looks like a running task and 409s every later start, and being
-    # non-terminal the prune can never reclaim it.
-    try:
-        job = rq_queue_high.enqueue(
-            'tasks.analysis.run_analysis_task',
-            args=(num_recent_albums, top_n_moods),
-            job_id=job_id,
-            description="Main Music Analysis",
-            retry=Retry(max=3),
-            job_timeout=-1,  # No timeout
-        )
-    except Exception:
-        logger.exception("Could not enqueue the analysis task")
-        save_task_status(
-            job_id, "main_analysis", TASK_STATUS_FAILURE,
-            details={"error": "Could not enqueue the task (is Redis reachable?)"},
-        )
-        return jsonify({"error": "Could not enqueue the analysis. Check the logs."}), 500
+        # Keep the lock through the definitive enqueue result. Otherwise Cancel can
+        # wipe the committed claim in the small window before Redis sees the job.
+        try:
+            job = rq_queue_high.enqueue(
+                'tasks.analysis.run_analysis_task',
+                args=(num_recent_albums, top_n_moods),
+                job_id=job_id,
+                description="Main Music Analysis",
+                retry=Retry(max=3),
+                job_timeout=-1,  # No timeout
+            )
+        except Exception:
+            logger.exception("Could not enqueue the analysis task")
+            outcome, rq_status = resolve_enqueue_outcome(job_id)
+            if outcome == ENQUEUE_MISSING:
+                save_task_status(
+                    job_id, "main_analysis", TASK_STATUS_FAILURE,
+                    details={"error": "Could not enqueue the task (is Redis reachable?)"},
+                    raise_on_error=True,
+                )
+                prune_task_status_history()
+                return jsonify({"error": "Could not enqueue the analysis. Check the logs."}), 500
+            # Redis may have accepted the transaction and only lost the reply. Keep
+            # the PENDING claim so another start cannot duplicate it; the janitor
+            # resolves an actually-missing job once Redis is reachable again.
+            return jsonify(
+                {
+                    "task_id": job_id,
+                    "task_type": "main_analysis",
+                    "status": rq_status or TASK_STATUS_PENDING,
+                }
+            ), 202
+    # Queue.enqueue returning is the definitive acceptance point. A second Redis
+    # read here can lose its reply and turn an accepted job into an HTTP 500.
     return jsonify(
-        {"task_id": job.id, "task_type": "main_analysis", "status": job.get_status()}
+        {"task_id": job.id, "task_type": "main_analysis", "status": "queued"}
     ), 202
 
 
@@ -237,21 +260,34 @@ def start_cleaning_endpoint():
             raise_on_error=True,
         )
 
-    # Enqueue combined cleaning task
-    try:
-        job = rq_queue_high.enqueue(
-            'tasks.cleaning.identify_and_clean_orphaned_albums_task',
-            clean_catalogue,
-            job_id=job_id,
-            description="Database Cleaning (Identify and Delete Orphaned Albums)",
-            retry=Retry(max=2),
-            job_timeout=-1,  # No timeout
-        )
-    except Exception:
-        logger.exception("Could not enqueue the cleaning task")
-        save_task_status(
-            job_id, "cleaning", TASK_STATUS_FAILURE,
-            details={"error": "Could not enqueue the task (is Redis reachable?)"},
-        )
-        return jsonify({"error": "Could not enqueue the cleaning. Check the logs."}), 500
-    return jsonify({"task_id": job.id, "task_type": "cleaning", "status": job.get_status()}), 202
+        # Enqueue while still serialized with global Cancel.
+        try:
+            job = rq_queue_high.enqueue(
+                'tasks.cleaning.identify_and_clean_orphaned_albums_task',
+                clean_catalogue,
+                job_id=job_id,
+                description="Database Cleaning (Identify and Delete Orphaned Albums)",
+                retry=Retry(max=2),
+                job_timeout=-1,  # No timeout
+            )
+        except Exception:
+            logger.exception("Could not enqueue the cleaning task")
+            outcome, rq_status = resolve_enqueue_outcome(job_id)
+            if outcome == ENQUEUE_MISSING:
+                save_task_status(
+                    job_id, "cleaning", TASK_STATUS_FAILURE,
+                    details={"error": "Could not enqueue the task (is Redis reachable?)"},
+                    raise_on_error=True,
+                )
+                prune_task_status_history()
+                return jsonify({"error": "Could not enqueue the cleaning. Check the logs."}), 500
+            return jsonify(
+                {
+                    "task_id": job_id,
+                    "task_type": "cleaning",
+                    "status": rq_status or TASK_STATUS_PENDING,
+                }
+            ), 202
+    return jsonify(
+        {"task_id": job.id, "task_type": "cleaning", "status": "queued"}
+    ), 202

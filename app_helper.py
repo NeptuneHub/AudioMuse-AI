@@ -78,6 +78,35 @@ from error.error_dictionary import UNKNOWN_ERROR_CODE
 logger = logging.getLogger(__name__)
 
 
+# Cancel waits this long for the janitor cycle lock, then proceeds regardless.
+CANCEL_JANITOR_LOCK_WAIT_SECONDS = 10.0
+
+ENQUEUE_ACCEPTED = 'accepted'
+ENQUEUE_MISSING = 'missing'
+ENQUEUE_UNKNOWN = 'unknown'
+
+
+class CancellationIncompleteError(RuntimeError):
+    """The DB tombstone is durable, but one or more RQ actions were unconfirmed."""
+
+
+def resolve_enqueue_outcome(task_id):
+    """Resolve an exception raised by ``Queue.enqueue`` for a known job id.
+
+    A Redis command can have been accepted even when the client loses the reply.
+    Only a successful Redis probe which says the job is missing makes it safe to
+    turn the PENDING database claim into FAILURE.  An unavailable probe is left
+    PENDING for the janitor to reconcile, preventing a retry from launching a
+    second copy while the first job may already be queued.
+    """
+    state, status = rq_job_state.probe_job(task_id, redis_conn)
+    if rq_job_state.is_missing(state):
+        return ENQUEUE_MISSING, status
+    if rq_job_state.is_unknown(state):
+        return ENQUEUE_UNKNOWN, status
+    return ENQUEUE_ACCEPTED, status
+
+
 # The Flask `app` object is intentionally NOT imported here (circular import);
 # use the module-level `logger` above. The 2D map/artist projection caches live
 # in database.MAP_PROJECTION_CACHE / database.ARTIST_PROJECTION_CACHE, written by
@@ -453,12 +482,129 @@ def cancel_job_and_children_recursive(
     # a starter that had committed its PENDING row but not yet enqueued was invisible
     # to the scan AND had its row deleted, so it enqueued afterwards and ran after the
     # user pressed Cancel.
-    with main_task_start_lock():
-        return _cancel_job_and_children_locked(job_id, reason)
+    db = get_db()
+    # Lock order must match the janitor: cycle lock first, start/cancel lock
+    # second. This prevents a stale janitor retry snapshot from requeueing a job
+    # after the first Cancel, without introducing a cycle-lock/main-lock deadlock.
+    with database.janitor_cycle_lock(
+        db, blocking=True, timeout_seconds=CANCEL_JANITOR_LOCK_WAIT_SECONDS
+    ) as owns_cycle:
+        if not owns_cycle:
+            # Proceed anyway. Cancel is the one operation that must never hang or
+            # fail: refusing here left the user with a 503 and NOTHING cancelled,
+            # while the janitor merely might requeue one abandoned job - which the
+            # deleted rows then stop on its next cooperative check.
+            logger.error(
+                "GLOBAL CANCEL COULD NOT SERIALIZE WITH THE RQ JANITOR within %ss; "
+                "cancelling anyway. A janitor pass may requeue one abandoned job, "
+                "which will stop again as soon as it sees its row is gone.",
+                CANCEL_JANITOR_LOCK_WAIT_SECONDS,
+            )
+        with main_task_start_lock():
+            return _cancel_job_and_children_locked(job_id, reason)
 
 
 def _cancel_job_and_children_locked(job_id, reason):
+    # Publish the cancellation signal before touching Redis.  Every task treats a
+    # missing row (or the surviving REVOKED recap) as cancelled; doing this first
+    # prevents a clustering parent from enqueueing another batch after our queue
+    # snapshot.  DELETE + recap INSERT are one transaction: failure raises to the
+    # endpoint, which must never return a false 200.
+    db = get_db()
+    snapshots = []
+    protected_task_ids = set()
+    now_ts = time.time()
+    recap_type = 'unknown'
+    cur = db.cursor()
+    try:
+        with db.cursor(cursor_factory=DictCursor) as snap_cur:
+            snap_cur.execute(
+                "SELECT task_id, task_type, status, details, start_time, end_time "
+                "FROM task_status WHERE parent_task_id IS NULL"
+            )
+            snapshots = list(snap_cur.fetchall())
+            # Once provider repointing committed, its restart handshake and staged
+            # alignment are recovery obligations, not cancellable work. Removing
+            # either row opens the main-task gate before workers acknowledge the
+            # new provider and can permanently lose the post-migration alignment.
+            snap_cur.execute(
+                """
+                SELECT ms.state->>'exec_task_id', ms.state->>'alignment_task_id'
+                FROM migration_session AS ms
+                WHERE ms.status = 'completed'
+                  AND lower(COALESCE(ms.state->>'restart_acknowledged', 'false'))
+                      NOT IN ('true', '1', 'yes')
+                """
+            )
+            for protected in snap_cur.fetchall():
+                protected_task_ids.update(task_id for task_id in protected if task_id)
+        for row in snapshots:
+            if row['task_id'] == job_id:
+                recap_type = row['task_type'] or 'unknown'
+                break
+        recap_details = json.dumps({
+            "message": reason,
+            "status_message": reason,
+            "log": [reason],
+            "origin": "global_cancel",
+        })
+        if protected_task_ids:
+            protected_list = list(protected_task_ids)
+            cur.execute(
+                # parent_task_id IS NULL on every root row, and NOT (NULL = ANY())
+                # is NULL rather than TRUE - so the unguarded form deleted NO roots
+                # at all, and the recap INSERT below then hit the task_id UNIQUE
+                # constraint and aborted the entire cancellation.
+                "DELETE FROM task_status "
+                "WHERE NOT (task_id = ANY(%s)) "
+                "AND (parent_task_id IS NULL OR NOT (parent_task_id = ANY(%s)))",
+                (protected_list, protected_list),
+            )
+        else:
+            cur.execute("DELETE FROM task_status")
+        deleted = cur.rowcount
+        if job_id not in protected_task_ids:
+            cur.execute(
+                """
+                INSERT INTO task_status
+                    (task_id, task_type, status, progress, details, timestamp,
+                     start_time, end_time)
+                VALUES (%s, %s, %s, 100, %s, NOW(), %s, %s)
+                ON CONFLICT (task_id) DO UPDATE SET
+                    task_type = EXCLUDED.task_type,
+                    parent_task_id = NULL,
+                    status = EXCLUDED.status,
+                    progress = 100,
+                    details = EXCLUDED.details,
+                    timestamp = NOW(),
+                    end_time = EXCLUDED.end_time
+                """,
+                (
+                    job_id,
+                    recap_type,
+                    TASK_STATUS_REVOKED,
+                    recap_details,
+                    now_ts,
+                    now_ts,
+                ),
+            )
+        database.bump_global_cancel_epoch(db)
+        db.commit()
+        logger.info(
+            "Global cancel DB tombstone committed first; replaced %d task rows.",
+            deleted,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Global cancel could not commit its DB tombstone; refusing a false success"
+        )
+        raise
+    finally:
+        cur.close()
+
     cancelled_count = 0
+    rq_errors = []
 
     # --- Scan RQ for job ids to cancel ---
     job_ids = set()
@@ -472,6 +618,7 @@ def _cancel_job_and_children_locked(job_id, reason):
             job_ids.update([str(i) for i in ids if i is not None])
         except Exception as e_q:
             logger.warning(f"Could not read queue {getattr(q, 'name', '<unknown>')}: {e_q}")
+            rq_errors.append(f"could not read queue {getattr(q, 'name', '<unknown>')}")
 
     # Include job ids from RQ job keys (covers started jobs)
     try:
@@ -483,9 +630,12 @@ def _cancel_job_and_children_locked(job_id, reason):
                 job_ids.add(jid)
     except Exception as e_keys:
         logger.warning(f"Could not list rq job keys: {e_keys}")
+        rq_errors.append("could not list RQ jobs")
 
     # Attempt to cancel/stop all discovered jobs
     for jid in job_ids:
+        if jid in protected_task_ids:
+            continue
         try:
             try:
                 j = Job.fetch(jid, connection=redis_conn)
@@ -508,10 +658,29 @@ def _cancel_job_and_children_locked(job_id, reason):
             logger.exception(f"Error cancelling job {jid} during global cancel")
 
     # Try to clear the RQ queues using API (preferred) and fallback to key deletion if necessary
+    if protected_task_ids:
+        # Preserving the migration handshake is the DESIGNED outcome, not an error.
+        # Appending it to rq_errors made every successful cancel raise and answer 503.
+        logger.info(
+            "Global cancel preserved the committed provider-migration restart "
+            "handshake for %s", sorted(protected_task_ids),
+        )
     try:
         for q in (rq_queue_high, rq_queue_default):
             try:
-                if hasattr(q, 'empty'):
+                if protected_task_ids:
+                    # Skipping this block entirely left every queued job in place,
+                    # so work still started after the user pressed Cancel. Drop the
+                    # jobs one by one instead, keeping only the protected ids.
+                    for queued_id in list(getattr(q, 'job_ids', []) or []):
+                        if queued_id in protected_task_ids:
+                            continue
+                        q.remove(queued_id)
+                    logger.info(
+                        "Cleared queue %s except the protected handshake ids",
+                        getattr(q, 'name', '<unknown>'),
+                    )
+                elif hasattr(q, 'empty'):
                     q.empty()
                     logger.info(
                         f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel"
@@ -526,81 +695,46 @@ def _cancel_job_and_children_locked(job_id, reason):
                 logger.warning(
                     f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}"
                 )
+                rq_errors.append(
+                    f"could not empty queue {getattr(q, 'name', '<unknown>')}"
+                )
     except Exception as e_qdel:
         logger.warning(f'Failed to clear queue lists during global cancel: {e_qdel}')
+        rq_errors.append("could not clear queue lists")
 
-    # Consolidate DB: wipe task_status and leave ONE REVOKED recap row for the id the
-    # user cancelled, so the table cannot grow without bound.
-    #
-    # The wipe IS the cancellation signal. Every cooperative check therefore treats a
-    # MISSING row as revoked, never as "carry on": reading absence as "not cancelled"
-    # is what let a cancelled analysis keep enqueuing albums onto the queue the cancel
-    # had just emptied. See revoked()/revoked_now() in tasks/analysis.py,
-    # make_cancel_check in tasks/multiserver_sync.py, and the guards in
-    # tasks/clustering.py.
-    db = get_db()
-    cur = db.cursor()
-    try:
-        # Snapshot the in-flight main tasks into the persistent task_history first,
-        # so the dashboard's history table keeps showing what was running when the
-        # user pressed Cancel.
+    # History is useful but not part of the cancellation signal. Record it only
+    # after the tombstone and RQ stop/cancel work, so a slow history write cannot
+    # delay cooperative cancellation.
+    for row in snapshots:
+        if row['task_id'] in protected_task_ids:
+            continue
         try:
-            with db.cursor(cursor_factory=DictCursor) as snap_cur:
-                snap_cur.execute(
-                    "SELECT task_id, task_type, status, details, start_time, end_time "
-                    "FROM task_status WHERE parent_task_id IS NULL"
-                )
-                now_ts = time.time()
-                for r in snap_cur.fetchall():
-                    duration_s = None
-                    if r['start_time'] is not None:
-                        end = r['end_time'] if r['end_time'] is not None else now_ts
-                        duration_s = max(0.0, float(end) - float(r['start_time']))
+            duration_s = None
+            if row['start_time'] is not None:
+                end = row['end_time'] if row['end_time'] is not None else now_ts
+                duration_s = max(0.0, float(end) - float(row['start_time']))
+            details_obj = None
+            if row['details']:
+                try:
+                    details_obj = json.loads(row['details'])
+                except Exception:
                     details_obj = None
-                    if r['details']:
-                        try:
-                            details_obj = json.loads(r['details'])
-                        except Exception:
-                            details_obj = None
-                    final_status = (
-                        r['status']
-                        if r['status']
-                        in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-                        else TASK_STATUS_REVOKED
-                    )
-                    record_task_history(
-                        r['task_id'],
-                        r['task_type'],
-                        final_status,
-                        duration_s,
-                        details=details_obj,
-                    )
-        except Exception as e_snap:
+            final_status = (
+                row['status']
+                if row['status']
+                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+                else TASK_STATUS_REVOKED
+            )
+            record_task_history(
+                row['task_id'], row['task_type'], final_status, duration_s,
+                details=details_obj,
+            )
+        except Exception:
             logger.warning(
-                f"Global cancel: failed snapshotting task_status into task_history: {e_snap}"
+                "Global cancel: failed snapshotting task %s into task_history",
+                row['task_id'], exc_info=True,
             )
 
-        cur.execute("DELETE FROM task_status")
-        deleted = cur.rowcount
-        db.commit()
-        logger.info(f"Global cancel DB cleanup: deleted {deleted} task_status rows")
-    except Exception:
-        db.rollback()
-        logger.exception("Error deleting task_status rows during global cancel")
-    finally:
-        cur.close()
-
-    try:
-        # The single surviving row: the id the user actually cancelled, so the UI has
-        # one canonical cancelled task to show.
-        save_task_status(
-            job_id,
-            'unknown',
-            TASK_STATUS_REVOKED,
-            progress=100,
-            details={"message": reason, "origin": "global_cancel"},
-        )
-    except Exception:
-        logger.exception(f"Failed to insert REVOKED recap row for {job_id}")
-
+    if rq_errors:
+        raise CancellationIncompleteError('; '.join(dict.fromkeys(rq_errors)))
     return cancelled_count

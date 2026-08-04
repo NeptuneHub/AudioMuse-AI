@@ -193,6 +193,10 @@ class ProcessSupervisor:
         with self._lock:
             if self._state not in ("starting", "running"):
                 return False
+            existing = self._children.get(name)
+            if existing is not None and existing.poll() is None:
+                self._desired.add(name)
+                return True
             self._desired.add(name)
         argv = [sys.executable, f"--role={role}"]
         child_env = env_builder.build_child_env(role, self._database_url, self._redis_url)
@@ -200,17 +204,25 @@ class ProcessSupervisor:
         return True
 
     def stop_child(self, name):
+        if name not in ROLE_OF:
+            return False
         with self._lock:
+            was_desired = name in self._desired
             self._desired.discard(name)
-        self._terminate_named(name)
-        return True
+        stopped = self._terminate_named(name)
+        if not stopped and was_desired:
+            with self._lock:
+                self._desired.add(name)
+        return stopped
 
     def restart_child(self, name):
-        self._terminate_named(name)
+        if name not in ROLE_OF or not self._terminate_named(name):
+            return False
         return self.start_child(name)
 
     def _spawn(self, name, argv, child_env):
-        self._terminate_named(name)
+        if not self._terminate_named(name):
+            raise RuntimeError(f"Could not terminate existing child {name}")
         proc = subprocess.Popen(
             argv,
             env=child_env,
@@ -240,28 +252,47 @@ class ProcessSupervisor:
         with self._lock:
             proc = self._children.pop(name, None)
         if proc is None:
-            return
+            return True
+        terminated = False
         try:
-            if proc.poll() is not None:
-                return
+            try:
+                already_exited = proc.poll() is not None
+            except Exception:
+                logger.exception("Could not inspect %s before termination", name)
+                already_exited = False
+            if already_exited:
+                terminated = True
+                return True
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except ProcessLookupError:
-                return
+                terminated = True
+                return True
             except Exception:
                 logger.exception("SIGTERM failed for %s", name)
             try:
                 proc.wait(timeout=10)
-                return
+                terminated = True
+                return True
             except Exception:
                 pass
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 proc.wait(timeout=5)
+                terminated = True
+                return True
             except Exception:
-                pass
+                logger.exception("SIGKILL failed for %s", name)
+                try:
+                    terminated = proc.poll() is not None
+                except Exception:
+                    terminated = False
+                if not terminated:
+                    with self._lock:
+                        self._children.setdefault(name, proc)
+                return terminated
         finally:
-            if proc.stdout is not None:
+            if terminated and proc.stdout is not None:
                 try:
                     proc.stdout.close()
                 except Exception:
@@ -287,7 +318,10 @@ class ProcessSupervisor:
                     proc = self._children.get(name)
                 if proc is not None and proc.poll() is not None:
                     self._log.warning("%s exited (code %s); restarting", name, proc.returncode)
-                    self.start_child(name)
+                    try:
+                        self.start_child(name)
+                    except Exception:
+                        self._log.exception("Could not restart %s; will retry", name)
 
     def _ensure_postgres_healthy(self):
         if self._database_url is None:
@@ -295,7 +329,14 @@ class ProcessSupervisor:
         try:
             import psycopg2
 
-            conn = psycopg2.connect(self._database_url, connect_timeout=3)
+            pg_host, pg_port = env_builder._pg_conn_parts(self._database_url)
+            conn = psycopg2.connect(
+                host=pg_host,
+                port=pg_port,
+                user='postgres',
+                dbname='postgres',
+                connect_timeout=3,
+            )
             try:
                 cur = conn.cursor()
                 cur.execute("SELECT 1")
@@ -333,15 +374,19 @@ class ProcessSupervisor:
             self._log.exception("Failed to restart embedded Redis")
 
     def dispatch_control(self, action, services):
+        if action not in ("restart", "stop", "start"):
+            return False
+        operation = {
+            "stop": self.stop_child,
+            "start": self.start_child,
+            "restart": self.restart_child,
+        }[action]
         results = []
         for svc in services:
-            if action == "stop":
-                results.append(self.stop_child(svc))
-            elif action == "start":
-                results.append(self.start_child(svc))
-            elif action == "restart":
-                results.append(self.restart_child(svc))
-            else:
+            try:
+                results.append(bool(operation(svc)))
+            except Exception:
+                self._log.exception("Control %s failed for %s", action, svc)
                 results.append(False)
         return all(results) if results else False
 

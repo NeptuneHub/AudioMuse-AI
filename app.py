@@ -60,6 +60,7 @@ from app_helper import (
     get_task_info_from_db,
     revoke_inline_task_row,
     cancel_job_and_children_recursive,
+    CancellationIncompleteError,
     coerce_db_details,
     sanitize_task_details,
 )
@@ -557,9 +558,22 @@ def cancel_task_endpoint(task_id):
         ), 200
 
     # Always perform cancel when the endpoint is invoked. No early returns.
-    cancelled_count = cancel_job_and_children_recursive(
-        task_id, reason=f"Cancellation requested for task {task_id} via API."
-    )
+    try:
+        cancelled_count = cancel_job_and_children_recursive(
+            task_id, reason=f"Cancellation requested for task {task_id} via API."
+        )
+    except Exception as exc:
+        logger.exception("Cancellation of task %s could not be fully confirmed", task_id)
+        return jsonify(
+            {
+                "error": (
+                    "Cancellation could not be fully applied or confirmed; "
+                    "recovery tasks may remain active."
+                ),
+                "task_id": task_id,
+                "details": str(exc) if isinstance(exc, CancellationIncompleteError) else None,
+            }
+        ), 503
     return jsonify(
         {
             "message": f"Task {task_id} cancellation requested. {cancelled_count} cancellation actions attempted.",
@@ -621,10 +635,25 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
         ), 404
 
     cancelled_main_task_ids = [r['task_id'] for r in tasks_to_cancel]
-    total_cancelled_jobs = cancel_job_and_children_recursive(
-        cancelled_main_task_ids[0],
-        reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
-    )
+    try:
+        total_cancelled_jobs = cancel_job_and_children_recursive(
+            cancelled_main_task_ids[0],
+            reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
+        )
+    except Exception as exc:
+        logger.exception(
+            "Bulk cancellation for %s could not be fully confirmed", task_type_prefix
+        )
+        return jsonify(
+            {
+                "error": (
+                    "Cancellation could not be fully applied or confirmed; "
+                    "recovery tasks may remain active."
+                ),
+                "cancelled_main_tasks": cancelled_main_task_ids,
+                "details": str(exc) if isinstance(exc, CancellationIncompleteError) else None,
+            }
+        ), 503
 
     return jsonify(
         {

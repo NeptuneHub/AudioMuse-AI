@@ -139,6 +139,33 @@ class TestCronTaskFallback:
         assert mgr.get_cron_task('plugin.jobber.daily') is None
 
 
+def test_dequeued_cron_plugin_with_wiped_claim_does_not_import_plugin(monkeypatch):
+    import rq
+
+    job = type('Job', (), {'id': 'plugin-cancelled'})()
+    monkeypatch.setattr(rq, 'get_current_job', lambda: job)
+    monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
+    monkeypatch.setattr(database, 'get_task_info_from_db', lambda _task_id: None)
+    import_module = pytest.MonkeyPatch()
+    try:
+        import_module.setattr(
+            manager.importlib,
+            'import_module',
+            lambda _name: (_ for _ in ()).throw(
+                AssertionError('cancelled plugin must not be imported')
+            ),
+        )
+        result = manager.run_plugin_task(
+            'audiomuse_plugins.demo.tasks.daily',
+            server_scope='all',
+            task_claim_required=True,
+        )
+    finally:
+        import_module.undo()
+
+    assert result['status'] == config.TASK_STATUS_REVOKED
+
+
 class TestRequirementPinning:
     def _lib_with(self, tmp_path, name, version):
         dist = tmp_path / '_lib' / f'{name}-{version}.dist-info'
@@ -1154,3 +1181,38 @@ class TestPluginTaskRunsPerServer:
         _run_per_server(plugin_task, 'all', ('x',), {'y': 1})
         assert captured['args'] == ('x',)
         assert captured['kwargs'] == {'y': 1}
+
+
+def test_a_successful_plugin_run_records_a_one_line_recap(monkeypatch):
+    import types
+
+    import rq
+
+    job = type('Job', (), {'id': 'plugin-ok'})()
+    monkeypatch.setattr(rq, 'get_current_job', lambda: job)
+    monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
+    monkeypatch.setattr(
+        database, 'get_task_info_from_db',
+        lambda _task_id: {'task_type': 'plugin.demo.daily', 'status': 'STARTED'},
+    )
+    module = types.ModuleType('audiomuse_plugins.demo.tasks')
+    module.daily = lambda *a, **k: {'ok': True}
+    monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)
+    monkeypatch.setattr(
+        manager, '_run_per_server', lambda func, scope, args, kwargs: {'ok': True}
+    )
+
+    saved = {}
+    monkeypatch.setattr(
+        database, 'save_task_status',
+        lambda *a, **k: saved.update({'args': a, 'kwargs': k}),
+    )
+
+    manager.run_plugin_task('audiomuse_plugins.demo.tasks.daily', server_scope='all')
+
+    # Omitting details wrote NULL over the row, so a successful plugin cron run
+    # ended with no recap at all instead of one line.
+    assert saved['args'][2] == config.TASK_STATUS_SUCCESS
+    details = saved['kwargs'].get('details')
+    assert details is not None
+    assert details.get('message')

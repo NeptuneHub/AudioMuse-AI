@@ -54,13 +54,15 @@ Main Features:
   the job instead of vanishing.
 * HeartbeatSimpleWorker: runs perform_job on the main thread while a daemon thread
   calls maintain_heartbeats, giving SimpleWorker the liveness signal the forking
-  worker gets for free; also carries the re-registration mixin.
+  worker gets for free; a stop-job command terminates that in-process worker so
+  CPU-bound work is really cancelled and the native supervisor can respawn it.
 * The beat thread is serialized with execution setup and cleanup, keeps the worker key
   alive across both, and logs genuine Redis failures instead of dying.
 * WorkerClass: HeartbeatSimpleWorker on win32, a re-registering forking Worker elsewhere.
 """
 
 import logging
+import os
 import sys
 import threading
 
@@ -102,6 +104,17 @@ class ReregisteringWorker(ReregisterOnHeartbeatMixin, Worker):
 
 
 class HeartbeatSimpleWorker(ReregisterOnHeartbeatMixin, SimpleWorker):
+    def kill_horse(self, sig=None):
+        job_id = self.get_current_job_id()
+        if not job_id:
+            return super().kill_horse(sig)
+        self.log.warning(
+            "Stopping in-process RQ job %s by terminating SimpleWorker %s",
+            job_id,
+            self.name,
+        )
+        os._exit(1)
+
     def _refresh_job_heartbeat(self, job, stop, heartbeat_lock):
         with heartbeat_lock:
             if stop.is_set():

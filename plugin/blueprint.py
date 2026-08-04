@@ -526,7 +526,9 @@ def api_install():
         manifest, deps_ok, deps_error = plugin_manager.install_package(
             package, install_meta, source_url=source_url, source_repo=source_repo,
             expected_checksum=checksum,
-            on_registered=lambda _pid: restart_manager.publish_plugin_sync_request(),
+            on_registered=lambda _pid: restart_manager.publish_plugin_sync_request(
+                timeout_seconds=restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+            ),
         )
         response = {
             'status': 'ok',
@@ -630,7 +632,9 @@ def api_repos():
 @plugins_bp.route('/api/plugins/apply', methods=['POST'])
 def api_apply():
     try:
-        workers_published = restart_manager.publish_restart_request()
+        workers_published = restart_manager.publish_restart_request(
+            timeout_seconds=restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+        )
         flask_scheduled = restart_manager.schedule_flask_restart()
         if workers_published and flask_scheduled:
             return jsonify({'status': 'ok'})

@@ -39,6 +39,8 @@ from rq import Retry
 # anything in.
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 from database import (
+    GLOBAL_CANCEL_EPOCH_KEY,
+    get_app_config_value,
     get_db,
     get_active_main_task,
     save_task_status,
@@ -90,32 +92,114 @@ provider_probe = _LazyProbe()
 
 _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex'})
 
-# Completed sessions are the already-applied markers a restart-killed execute
-# reads on its retry. Their bulk is discarded at completion, so each is a single
-# small row; keeping only the newest let a delayed retry of an earlier migration
-# find nothing and report FAILURE for work that had committed.
-_COMPLETED_SESSIONS_KEPT = 10
+# A planner id in session state is a durable reservation, not just a cache of an
+# RQ job's current status.  Redis uncertainty keeps it live.  Planner enqueue and
+# the claim share the migration DB lock/transaction, so a later authoritative
+# ``missing`` result can safely reconcile it without a pre-enqueue race.
+_PLANNER_TASK_KEYS = ('dry_run_task_id', 'source_refresh_task_id')
+_MIGRATION_TASK_KEYS = _PLANNER_TASK_KEYS + ('exec_task_id',)
 
 
-def _migration_job_in_flight(cur, keys=('dry_run_task_id', 'source_refresh_task_id',
-                                        'exec_task_id')):
-    # Dry-run and source-refresh write no task row and hold no lock, so their only
-    # durable trace is the RQ job id parked on the session. Without this a second
-    # and third session start would prune the session out from under a running dry
-    # run, and the job would fail or silently update nothing.
+class _PlanningClaimError(RuntimeError):
+    """A planner could not reserve the current, mutable migration session."""
+
+    def __init__(self, message, status_code=409):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _PlanningEnqueueUncertain(RuntimeError):
+    """The durable planner reservation exists but Redis acceptance is unknown."""
+
+    def __init__(self, job_id):
+        super().__init__(f'planner enqueue outcome is unknown for job {job_id}')
+        self.job_id = job_id
+
+
+class _PlanningEnqueueRejected(RuntimeError):
+    """Redis authoritatively reported that the planner job does not exist."""
+
+
+def _rq_jobs_by_id(job_ids):
+    """Return ``{id: Job | None}``, propagating Redis errors to fail closed."""
+    from rq.job import Job
+
+    ids = [str(job_id) for job_id in job_ids if job_id]
+    jobs = Job.fetch_many(ids, connection=redis_conn) if ids else []
+    return {job_id: job for job_id, job in zip(ids, jobs)}
+
+
+def _rq_job_is_alive(job):
+    if job is None:
+        return False
+    import rq_job_state
+
+    return rq_job_state.is_alive_status(job.get_status(refresh=False))
+
+
+def _clear_stale_planner_reservation(cur, session_id, key, job_id):
+    try:
+        cur.execute("SAVEPOINT planner_reconcile")
+        cur.execute(
+            "UPDATE migration_session SET state = state - %s "
+            "WHERE id = %s AND state->>%s = %s",
+            (key, session_id, key, job_id),
+        )
+        cur.execute("RELEASE SAVEPOINT planner_reconcile")
+    except Exception:
+        logger.exception(
+            "Could not clear the stale %s reservation on migration session %s; "
+            "the next control retries it",
+            key, session_id,
+        )
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT planner_reconcile")
+            cur.execute("RELEASE SAVEPOINT planner_reconcile")
+        except Exception:
+            logger.exception(
+                "Could not roll back the planner reconcile savepoint for session %s",
+                session_id,
+            )
+
+
+def _migration_job_in_flight(cur, keys=_MIGRATION_TASK_KEYS):
+    # Dry-run and source-refresh write no task row and hold no long-lived DB lock,
+    # so their durable reservation on the session is what closes the DB/Redis
+    # enqueue gap.  Redis errors keep the reservation live; a successful missing
+    # result is reconciled only after this control acquired the same advisory lock
+    # that covered claim plus enqueue.
     cur.execute(
-        "SELECT " + ", ".join("state->>'%s'" % k for k in keys)
+        "SELECT id, " + ", ".join("state->>'%s'" % k for k in keys)
         + " FROM migration_session"  # nosec B608 - keys are module constants
     )
-    job_ids = [j for row in (cur.fetchall() or []) for j in row if j]
+    reservations = [
+        (row[0], key, job_id)
+        for row in (cur.fetchall() or [])
+        for key, job_id in zip(keys, row[1:])
+        if job_id
+    ]
+    job_ids = [reservation[2] for reservation in reservations]
     if not job_ids:
         return False
     try:
-        from rq.job import Job
-        import rq_job_state
-
-        for job in Job.fetch_many(job_ids, connection=redis_conn):
-            if job is not None and rq_job_state.is_alive_status(job.get_status(refresh=False)):
+        jobs = _rq_jobs_by_id(job_ids)
+        for session_id, key, job_id in reservations:
+            job = jobs.get(job_id)
+            stale_planner = key in _PLANNER_TASK_KEYS and (
+                job is None or not _rq_job_is_alive(job)
+            )
+            if stale_planner:
+                # This predicate runs on the CALLER's cursor, inside transactions
+                # that may end in a 409 and be rolled back. A SAVEPOINT keeps a
+                # failed reconciliation from poisoning that transaction, and the
+                # clear is retried on the next control either way.
+                _clear_stale_planner_reservation(cur, session_id, key, job_id)
+                continue
+            # Execute has a task_status PENDING/STARTED claim as its second
+            # authority; a successful missing probe is reconciled by that gate,
+            # while a completed missing job is exactly what makes its compact
+            # tombstone safe to prune.
+            if job is not None and _rq_job_is_alive(job):
                 return True
     except Exception:
         logger.exception(
@@ -126,6 +210,55 @@ def _migration_job_in_flight(cur, keys=('dry_run_task_id', 'source_refresh_task_
     return False
 
 
+def _completed_sessions_safe_to_prune(cur):
+    """Return completed-session ids whose execute job can no longer retry.
+
+    Completion rows are tiny tombstones used by a self-restarted RQ worker.  A
+    fixed "last N" policy can delete the exact tombstone a delayed retry needs;
+    tying deletion to the persisted ``exec_task_id`` and RQ's terminal state
+    makes retention lifecycle-based instead.  A missing RQ job is safe *here*
+    because the completion transaction necessarily ran after enqueue: once the
+    Redis job record is gone, RQ has nothing left that can retry it.  Redis errors
+    keep every tombstone.  Legacy tombstones without an exec id are also kept;
+    that is a finite upgrade baseline and new code never creates another one.
+    """
+    cur.execute(
+        "SELECT id, state->>'exec_task_id', "
+        "COALESCE((state->>'restart_acknowledged')::boolean, false) "
+        "FROM migration_session "
+        "WHERE status = 'completed'"
+    )
+    rows = cur.fetchall() or []
+    job_ids = [row[1] for row in rows if row[1]]
+    if not job_ids:
+        return []
+    try:
+        jobs = _rq_jobs_by_id(job_ids)
+    except Exception:
+        logger.exception(
+            "COULD NOT CHECK COMPLETED MIGRATION RETRIES. Keeping every completion "
+            "tombstone so a delayed retry can still prove the swap was applied"
+        )
+        return []
+    return [
+        session_id
+        for session_id, job_id, restart_acknowledged in rows
+        if restart_acknowledged
+        and job_id
+        and (jobs.get(job_id) is None or not _rq_job_is_alive(jobs[job_id]))
+    ]
+
+
+def _restart_handshake_pending(cur):
+    """Whether a committed provider swap still lacks durable worker restart ACK."""
+    cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM migration_session "
+        "WHERE status = 'completed' AND state ? 'restart_request_id' "
+        "AND NOT COALESCE((state->>'restart_acknowledged')::boolean, false))"
+    )
+    return bool(cur.fetchone()[0])
+
+
 def _no_migration_executing(cur):
     # The advisory lock only covers the window in which a WORKER is running. An
     # execute that is merely QUEUED holds nothing, so the session it is about to
@@ -134,8 +267,258 @@ def _no_migration_executing(cur):
     # lock, so that row is the missing half of the guard.
     if get_active_main_task(task_type=MIGRATION_TASK_TYPE):
         return False
+    # The task row is normally the admission barrier, but this transactionally
+    # committed session marker is the final authority if an external janitor or
+    # operator incorrectly terminalized that row.  Legacy completed rows have no
+    # restart_request_id and do not participate in the new handshake.
     cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
-    return bool(cur.fetchone()[0])
+    if not cur.fetchone()[0]:
+        return False
+    if _restart_handshake_pending(cur):
+        return False
+    return True
+
+
+def _global_cancel_epoch(db):
+    """Monotonic counter bumped by every global cancel (zero before any).
+
+    Derived from a durable app_config counter rather than from the REVOKED recap
+    row: that row is a normal terminal root, so the end-of-run collapse deletes it
+    as soon as a newer task of the same type finishes, which made the epoch move
+    backwards and raise spurious "a global cancellation completed" errors. It also
+    cost a sequential scan of every details blob on each planner request.
+    """
+    raw = get_app_config_value(GLOBAL_CANCEL_EPOCH_KEY, default='0', conn=db)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _claim_and_enqueue_planner(
+    session_id,
+    state_key,
+    func_name,
+    job_args,
+    *,
+    job_timeout=3600,
+    claim_status='in_progress',
+):
+    db = get_db()
+    cancel_epoch = _global_cancel_epoch(db)
+    with main_task_start_lock():
+        if _global_cancel_epoch(db) != cancel_epoch:
+            raise _PlanningClaimError(
+                'A global cancellation completed while this planner was waiting. '
+                'Start the planner again if you still want to run it.'
+            )
+        return _claim_and_enqueue_planner_locked(
+            db,
+            session_id,
+            state_key,
+            func_name,
+            job_args,
+            job_timeout=job_timeout,
+            claim_status=claim_status,
+        )
+
+
+def _claim_and_enqueue_planner_locked(
+    db,
+    session_id,
+    state_key,
+    func_name,
+    job_args,
+    *,
+    job_timeout=3600,
+    claim_status='in_progress',
+):
+    """Atomically reserve the current session and enqueue one planner job.
+
+    The migration advisory lock serializes this transition with Start, Discard,
+    and Execute.  Redis enqueue happens while the DB row and advisory lock are
+    still held, so a fast worker cannot race the claim commit.  On an enqueue
+    exception the claim is deliberately COMMITTED: Redis may have accepted the
+    job before losing its response.  Repeating the same endpoint adopts that id
+    when it is missing, while every destructive control continues to treat it as
+    live in the meantime.
+    """
+    if state_key not in _PLANNER_TASK_KEYS:
+        raise ValueError(f'unsupported planner state key: {state_key}')
+
+    with db.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+        if not cur.fetchone()[0]:
+            raise _PlanningClaimError(
+                'A migration is already running. Wait for it to finish.'
+            )
+        cur.execute(
+            "SELECT status, (id = (SELECT MAX(id) FROM migration_session)), "
+            "state->>'dry_run_task_id', state->>'source_refresh_task_id' "
+            "FROM migration_session WHERE id = %s FOR UPDATE",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise _PlanningClaimError('session not found', 404)
+        status, is_current, dry_run_id, refresh_id = row
+        if status in ('completed', 'failed'):
+            raise _PlanningClaimError('cannot plan against a finished migration session')
+        if not is_current:
+            raise _PlanningClaimError(
+                'This is not the current migration session. Start again from the wizard.'
+            )
+        if get_active_main_task(task_type=MIGRATION_TASK_TYPE):
+            raise _PlanningClaimError(
+                'A provider migration is queued or running. Wait for it to finish.'
+            )
+        if _restart_handshake_pending(cur):
+            raise _PlanningClaimError(
+                'The previous provider swap is still waiting for worker restart '
+                'acknowledgement.'
+            )
+
+        claims = {
+            'dry_run_task_id': dry_run_id,
+            'source_refresh_task_id': refresh_id,
+        }
+        existing_ids = [job_id for job_id in claims.values() if job_id]
+        try:
+            jobs = _rq_jobs_by_id(existing_ids)
+        except Exception as exc:
+            # With a persisted claim and no authoritative Redis answer, allowing
+            # another planner would create two writers for the same plan.
+            if existing_ids:
+                raise _PlanningClaimError(
+                    'Could not verify the existing migration planner job. Try again '
+                    'when Redis is available.',
+                    503,
+                ) from exc
+            jobs = {}
+
+        for key, existing_id in claims.items():
+            if not existing_id or key == state_key:
+                continue
+            other_job = jobs.get(existing_id)
+            if other_job is None or _rq_job_is_alive(other_job):
+                raise _PlanningClaimError(
+                    'Another migration planner job is reserved or running. Wait for '
+                    'it to finish.',
+                )
+
+        existing_id = claims[state_key]
+        existing_job = jobs.get(existing_id) if existing_id else None
+        if existing_id and existing_job is not None and _rq_job_is_alive(existing_job):
+            db.commit()
+            return existing_id, True
+
+        # A missing same-kind job is the recoverable ambiguous-enqueue case: reuse
+        # its deterministic id.  A conclusively terminal job gets a fresh id.
+        job_id = (
+            existing_id
+            if existing_id and existing_job is None
+            else str(uuid.uuid4())
+        )
+        # A DRY RUN rebuilds the plan, so demoting to in_progress is right. A
+        # SOURCE-PATH REFRESH only fills in overrides; demoting it threw away a
+        # finalized dry_run_ready and Execute then refused the migration, forcing
+        # the user to redo the whole dry run.
+        cur.execute(
+            "UPDATE migration_session SET "
+            "state = jsonb_set(COALESCE(state, '{}'::jsonb), %s, %s::jsonb, true), "
+            "status = COALESCE(%s, status) "
+            "WHERE id = %s AND status NOT IN ('completed', 'failed') "
+            "AND id = (SELECT MAX(id) FROM migration_session) RETURNING id",
+            ([state_key], json.dumps(job_id), claim_status, session_id),
+        )
+        if cur.fetchone() is None:
+            raise _PlanningClaimError(
+                'The migration session changed before the planner could be reserved.'
+            )
+
+        try:
+            job = rq_queue_high.enqueue(
+                func_name,
+                *job_args,
+                job_id=job_id,
+                job_timeout=job_timeout,
+            )
+        except Exception as exc:
+            # Resolve the known id before deciding what to do with the DB claim.
+            # A successful "missing" probe is authoritative because enqueue ran
+            # while this transaction held the global migration lock: no control
+            # can observe the uncommitted claim and there is no pre-enqueue window.
+            # An unavailable probe remains ambiguous and commits the reservation.
+            try:
+                from app_helper import (
+                    ENQUEUE_ACCEPTED,
+                    ENQUEUE_MISSING,
+                    resolve_enqueue_outcome,
+                )
+
+                outcome, _rq_status = resolve_enqueue_outcome(job_id)
+            except Exception:
+                logger.exception(
+                    "Could not resolve planner enqueue outcome for %s", job_id
+                )
+                outcome = None
+                ENQUEUE_ACCEPTED = 'accepted'
+                ENQUEUE_MISSING = 'missing'
+            if outcome == ENQUEUE_ACCEPTED:
+                db.commit()
+                return job_id, False
+            if outcome == ENQUEUE_MISSING:
+                db.rollback()
+                raise _PlanningEnqueueRejected(
+                    f'Redis did not accept planner job {job_id}'
+                ) from exc
+            db.commit()
+            raise _PlanningEnqueueUncertain(job_id) from exc
+
+    db.commit()
+    return getattr(job, 'id', None) or job_id, False
+
+
+def _validate_planner_worker_claim(session_id, state_key, job_id):
+    """Refuse orphaned/late workers whose durable reservation no longer matches."""
+    if not job_id:
+        return
+    db = get_db()
+    with db.cursor() as cur:
+        # The enqueueing request holds this transaction lock until its claim
+        # commits.  A very fast RQ worker must wait here rather than read the old
+        # MVCC snapshot and incorrectly reject a valid just-enqueued job.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+        cur.execute(
+            "SELECT status, (id = (SELECT MAX(id) FROM migration_session)), "
+            "state->>%s FROM migration_session WHERE id = %s",
+            (state_key, session_id),
+        )
+        row = cur.fetchone()
+    if not row:
+        db.rollback()
+        raise RuntimeError(f'migration session {session_id} no longer exists')
+    status, is_current, claimed_job_id = row
+    if status in ('completed', 'failed') or not is_current or claimed_job_id != job_id:
+        db.rollback()
+        raise RuntimeError(
+            f'migration planner job {job_id} no longer owns current session {session_id}'
+        )
+    db.commit()
+
+
+def _clear_planner_claim(session_id, state_key, job_id):
+    """Release only this worker's reservation; never erase a newer planner id."""
+    if not job_id:
+        return
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE migration_session SET state = state - %s "
+            "WHERE id = %s AND state->>%s = %s",
+            (state_key, session_id, state_key, job_id),
+        )
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +759,11 @@ def session_start():
         # Refusing beats the old behaviour of creating a session anyway: that one
         # could not be used while a migration held the provider, and every repeated
         # click added another row plus its staging metadata.
-        if _migration_job_in_flight(guard) or not _no_migration_executing(guard):
+        # Acquire the shared migration lock BEFORE reconciling reservations.  A
+        # retried ambiguous planner may be re-enqueueing the same id under that
+        # lock; inspecting/clearing it first could otherwise erase the fresh claim
+        # immediately after its transaction commits.
+        if not _no_migration_executing(guard) or _migration_job_in_flight(guard):
             return jsonify(
                 {
                     'error': 'A migration job is queued or running. Wait for it to '
@@ -384,30 +771,24 @@ def session_start():
                 }
             ), 409
     with db.cursor() as cur:
-        # Starting a session discards every earlier one, and the ON DELETE CASCADE
-        # takes their migration_target_meta rows (one per target track, so a 190k
-        # library left a 190k-row table behind) with it. Pruning only terminal rows
-        # was not enough: 'failed' is never actually written, so a wizard abandoned
-        # at 'dry_run_ready' survived forever, and the page only ever resumes the
-        # newest session, so older ones were unreachable and could not even be
-        # discarded by hand.
-        #
-        # Two rows are spared. The NEWEST is the only one the wizard ever resumes,
-        # so it is the one any queued or running dry-run / source-refresh belongs
-        # to; those jobs write no task row and hold no lock, so nothing else would
-        # stop this from deleting the session out from under them. The newest
-        # 'completed' is the already-applied marker a restart-killed execute needs
-        # on its retry. Both are single small rows whose bulk is already gone, and
-        # each is replaced by the next run of its kind, so this stays bounded.
-        cur.execute(
-            "DELETE FROM migration_session "
-            "WHERE id IS DISTINCT FROM (SELECT MAX(id) FROM migration_session) "
-            "AND id NOT IN ("
-            "  SELECT id FROM migration_session WHERE status = 'completed' "
-            "  ORDER BY id DESC LIMIT %s"
-            ")",
-            (_COMPLETED_SESSIONS_KEPT,),
-        )
+        # Starting a session discards every idle/abandoned session, and ON DELETE
+        # CASCADE takes its potentially huge migration_target_meta rows with it.
+        # Completed rows are different: they are compact retry tombstones.  Delete
+        # those only after RQ conclusively has no live/scheduled retry for the
+        # persisted exec id.  This is bounded by live retry jobs rather than an
+        # arbitrary "last N" that could erase the marker a delayed self-restart
+        # retry needs.
+        prunable_completed = _completed_sessions_safe_to_prune(cur)
+        if prunable_completed:
+            cur.execute(
+                "DELETE FROM migration_session WHERE status <> 'completed' "
+                "OR id = ANY(%s)",
+                (prunable_completed,),
+            )
+        else:
+            cur.execute(
+                "DELETE FROM migration_session WHERE status <> 'completed'"
+            )
         cur.execute(
             "INSERT INTO migration_session "
             "(source_type, target_type, target_creds, state, status) "
@@ -572,7 +953,7 @@ def session_discard(session_id):
         # A session stays 'dry_run_ready' throughout the execute, so the status
         # check above cannot tell a running migration from an idle wizard. Deleting
         # it mid-execute strands a repointed catalogue with no completion marker.
-        if _migration_job_in_flight(cur) or not _no_migration_executing(cur):
+        if not _no_migration_executing(cur) or _migration_job_in_flight(cur):
             return jsonify(
                 {
                     'error': 'A migration job is currently running against this '
@@ -936,29 +1317,56 @@ def source_paths_refresh():
             }
         ), 400
 
-    # Claim BEFORE enqueueing. Enqueued first, the id lived only in RQ for a moment,
-    # and a session start landing in that window saw no live job and pruned the
-    # session out from under the worker about to read it.
-    job_id = str(uuid.uuid4())
-    _patch_state_keys(session_id, source_refresh_task_id=job_id)
     try:
-        job = rq_queue_high.enqueue(
-            'tasks.provider_migration_tasks.source_refresh_provider_migration',
+        job_id, reused = _claim_and_enqueue_planner(
             session_id,
-            job_id=job_id,
+            'source_refresh_task_id',
+            'tasks.provider_migration_tasks.source_refresh_provider_migration',
+            (session_id,),
             job_timeout=3600,
+            claim_status=None,
         )
-    except Exception:
-        logger.exception("Could not enqueue the source-path refresh")
-        _patch_state_keys(session_id, source_refresh_task_id=None)
+    except _PlanningClaimError as exc:
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+        return jsonify({'error': str(exc)}), exc.status_code
+    except _PlanningEnqueueUncertain as exc:
+        logger.exception(
+            "Source-path refresh enqueue returned an ambiguous error; keeping "
+            "durable reservation %s",
+            exc.job_id,
+        )
+        return jsonify(
+            {
+                'error': 'Could not confirm whether Redis accepted the refresh.',
+                'task_id': exc.job_id,
+                'recoverable': True,
+            }
+        ), 503
+    except _PlanningEnqueueRejected:
+        logger.exception("Redis did not accept the source-path refresh")
         return jsonify({'error': 'Could not enqueue the refresh. Check the logs.'}), 500
-    return jsonify({'task_id': job.id, 'async': True})
+    except Exception:
+        logger.exception("Could not reserve or enqueue the source-path refresh")
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Could not enqueue the refresh. Check the logs.'}), 500
+    return jsonify({'task_id': job_id, 'async': True, 'reused': reused})
 
 
 def run_source_refresh_core(session_id):
     """Heavy source-path refresh, run in an RQ worker (see
     :func:`source_paths_refresh`). Re-probes the current provider, builds the
     {item_id -> real_path} override map, and stores it in ``state``."""
+    # Revalidate in the worker.  The route's claim is authoritative for mutual
+    # exclusion, but a queued job must still fail closed if its session was
+    # deleted or superseded before this process started.
+    if _fetch_session_creds(session_id, require_plannable=True) is None:
+        raise RuntimeError(f'migration session {session_id} is no longer plannable')
     source_type, creds = _current_provider_creds()
     if not source_type:
         raise RuntimeError('The current provider does not support path refresh.')
@@ -979,7 +1387,11 @@ def run_source_refresh_core(session_id):
             'also proceed with metadata-only matching.'
         )
 
-    _update_state(session_id, source_path_overrides=overrides, source_refresh_task_id=None)
+    # Persist WITHOUT flagging in_progress. A refresh only fills in overrides, so
+    # demoting a finalized 'dry_run_ready' session threw the finalization away and
+    # Execute then refused the migration. Only finalize_dry_run writes that status
+    # back, so the user had to redo the whole dry run.
+    _patch_state_keys(session_id, source_path_overrides=overrides)
     return {
         'ok': True,
         'source_type': source_type,
@@ -1049,7 +1461,7 @@ def dry_run():
     bypass_source_check = bool(payload.get('bypass_source_check'))
     allow_title_artist_only = bool(payload.get('allow_title_artist_only'))
 
-    session = _fetch_session_creds(session_id)
+    session = _fetch_session_creds(session_id, require_plannable=True)
     if session is None:
         return jsonify({'error': 'session not found'}), 404
 
@@ -1079,21 +1491,44 @@ def dry_run():
     # The heavy work (fetch the whole target catalog + match every score row +
     # persist) can take minutes on 100k+ libraries - far past the gunicorn
     # request timeout - so it runs in an RQ worker; the UI polls the status.
-    job_id = str(uuid.uuid4())
-    _patch_state_keys(session_id, dry_run_task_id=job_id)
     try:
-        job = rq_queue_high.enqueue(
-            'tasks.provider_migration_tasks.dry_run_provider_migration',
+        job_id, reused = _claim_and_enqueue_planner(
             session_id,
-            allow_title_artist_only,
-            job_id=job_id,
+            'dry_run_task_id',
+            'tasks.provider_migration_tasks.dry_run_provider_migration',
+            (session_id, allow_title_artist_only),
             job_timeout=3600,
         )
-    except Exception:
-        logger.exception("Could not enqueue the dry run")
-        _patch_state_keys(session_id, dry_run_task_id=None)
+    except _PlanningClaimError as exc:
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+        return jsonify({'error': str(exc)}), exc.status_code
+    except _PlanningEnqueueUncertain as exc:
+        logger.exception(
+            "Dry-run enqueue returned an ambiguous error; keeping durable "
+            "reservation %s",
+            exc.job_id,
+        )
+        return jsonify(
+            {
+                'error': 'Could not confirm whether Redis accepted the dry run.',
+                'task_id': exc.job_id,
+                'recoverable': True,
+            }
+        ), 503
+    except _PlanningEnqueueRejected:
+        logger.exception("Redis did not accept the dry run")
         return jsonify({'error': 'Could not enqueue the dry run. Check the logs.'}), 500
-    return jsonify({'task_id': job.id, 'async': True})
+    except Exception:
+        logger.exception("Could not reserve or enqueue the dry run")
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Could not enqueue the dry run. Check the logs.'}), 500
+    return jsonify({'task_id': job_id, 'async': True, 'reused': reused})
 
 
 def run_dry_run_core(session_id, allow_title_artist_only=False):
@@ -1104,7 +1539,7 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
     into the ``migration_target_meta`` side table). Returns the summary dict the
     wizard renders, or ``{'error': ...}`` for a controlled abort.
     """
-    session = _fetch_session_creds(session_id)
+    session = _fetch_session_creds(session_id, require_plannable=True)
     if session is None:
         raise RuntimeError(f'migration session {session_id} not found')
     target_type, creds = session
@@ -1123,7 +1558,6 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
             target_type,
             session_id,
         )
-        _patch_state_keys(session_id, dry_run_task_id=None)
         return {
             'error': (
                 'The new provider returned 0 tracks. Aborting so your library is '
@@ -1172,7 +1606,6 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
         manual_matches={},
         manual_unmatches=[],
         final_counts=None,
-        dry_run_task_id=None,
     )
 
     return {
@@ -1504,6 +1937,140 @@ def finalize_dry_run():
 # ---------------------------------------------------------------------------
 
 
+def _execute_locked(db, session_id, confirmation_text):
+    """Validate, reserve, and enqueue execute while main-task lock is held."""
+    with db.cursor() as cur:
+        # Lock order is main-task -> migration for every admission endpoint.
+        # TRY avoids tying up a web worker behind the long migration transaction.
+        cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+        if not cur.fetchone()[0]:
+            return jsonify(
+                {'error': 'A migration is already running. Wait for it to finish.'}
+            ), 409
+        if _restart_handshake_pending(cur):
+            return jsonify(
+                {
+                    'error': 'The committed provider swap is still waiting for '
+                    'worker restart acknowledgement.'
+                }
+            ), 409
+        cur.execute(
+            "SELECT target_type, status, "
+            "(id = (SELECT MAX(id) FROM migration_session)) "
+            "FROM migration_session WHERE id = %s",
+            (session_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return jsonify({'error': 'session not found'}), 404
+    target_type, status, is_current_session = row[0], row[1], row[2]
+
+    with db.cursor() as planning:
+        if _migration_job_in_flight(planning, keys=_PLANNER_TASK_KEYS):
+            return jsonify(
+                {
+                    'error': 'A dry run is still building the plan. Wait for it to '
+                    'finish, then confirm the numbers again.'
+                }
+            ), 409
+    if not is_current_session:
+        return jsonify(
+            {
+                'error': 'This is not the current migration session. Start again from '
+                'the wizard so the plan matches what you reviewed.'
+            }
+        ), 409
+
+    expected = f"I want to migrate to {target_type} and unbind unmatched tracks"
+    if confirmation_text != expected:
+        return jsonify(
+            {'error': f'Confirmation text does not match. Expected exactly: "{expected}"'}
+        ), 400
+    if status != 'dry_run_ready':
+        return jsonify(
+            {
+                'error': f'Dry run must be finalized first. Session status is "{status}", '
+                f'expected "dry_run_ready".'
+            }
+        ), 400
+
+    active = get_active_main_task(exclude_task_types=())
+    if active:
+        return jsonify(
+            {
+                'error': 'Another task is running. Wait for it to finish before migrating.',
+                'task_id': active['task_id'],
+                'task_type': active['task_type'],
+                'status': active['status'],
+            }
+        ), 409
+
+    job_id = str(uuid.uuid4())
+    save_task_status(
+        job_id,
+        MIGRATION_TASK_TYPE,
+        TASK_STATUS_PENDING,
+        details={'message': 'Provider migration enqueued.'},
+        raise_on_error=True,
+    )
+    try:
+        _patch_state_keys(session_id, exec_task_id=job_id)
+    except Exception:
+        logger.exception(
+            "Could not persist provider-migration execute reservation %s", job_id
+        )
+        save_task_status(
+            job_id,
+            MIGRATION_TASK_TYPE,
+            TASK_STATUS_FAILURE,
+            details={'error': 'Could not persist the migration reservation.'},
+        )
+        return jsonify({'error': 'Could not reserve the migration task.'}), 500
+
+    try:
+        rq_queue_high.enqueue(
+            'tasks.provider_migration_tasks.execute_provider_migration',
+            session_id,
+            job_id=job_id,
+            job_timeout=-1,
+            retry=Retry(max=3),
+        )
+    except Exception:
+        logger.exception("Provider-migration enqueue raised for %s", job_id)
+        from app_helper import (
+            ENQUEUE_ACCEPTED,
+            ENQUEUE_MISSING,
+            resolve_enqueue_outcome,
+        )
+
+        enqueue_outcome, _rq_status = resolve_enqueue_outcome(job_id)
+        if enqueue_outcome == ENQUEUE_MISSING:
+            _patch_state_keys(session_id, exec_task_id=None)
+            save_task_status(
+                job_id,
+                MIGRATION_TASK_TYPE,
+                TASK_STATUS_FAILURE,
+                details={'error': 'Redis did not accept the migration task.'},
+            )
+            return jsonify(
+                {'error': 'Could not enqueue the migration. Check the logs.'}
+            ), 500
+        if enqueue_outcome != ENQUEUE_ACCEPTED:
+            return jsonify(
+                {
+                    'error': 'Could not confirm whether Redis accepted the migration.',
+                    'task_id': job_id,
+                    'recoverable': True,
+                }
+            ), 503
+
+    try:
+        prune_task_status_history()
+    except Exception:
+        logger.exception("Could not prune task_status history after the migration enqueue")
+    return jsonify({'task_id': job_id})
+
+
 @migration_bp.route('/api/migration/execute', methods=['POST'])
 def execute():
     """
@@ -1558,138 +2125,20 @@ def execute():
     if not backup_confirmed:
         return jsonify({'error': 'You must confirm the backup checkbox'}), 400
 
-    # Look up session target_type + current status for the gate check
     db = get_db()
-    with db.cursor() as cur:
-        # Claim the migration for this whole request. The lock releases on the same
-        # commit that publishes the PENDING task row, so there is no instant in
-        # which the session is neither locked nor visibly claimed - which is what
-        # let a concurrent session start delete it between validation and enqueue.
-        # TRY, never block: the execute job holds this same key for the whole run,
-        # which is minutes to hours on a large library. A blocking acquire here tied
-        # up a web worker for that entire time instead of answering the 409 this
-        # endpoint already knows how to give.
-        cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
-        if not cur.fetchone()[0]:
-            return jsonify(
-                {'error': 'A migration is already running. Wait for it to finish.'}
-            ), 409
-        cur.execute(
-            "SELECT target_type, status, "
-            "(id = (SELECT MAX(id) FROM migration_session)) "
-            "FROM migration_session WHERE id = %s",
-            (session_id,),
-        )
-        row = cur.fetchone()
-    if not row:
-        return jsonify({'error': 'session not found'}), 404
-    target_type, status, is_current_session = row[0], row[1], row[2]
-
-    # Refuse while a dry run or source refresh is still producing a plan: the
-    # finalized numbers this request confirmed would be applied against a mapping
-    # another worker is in the middle of rewriting.
-    with db.cursor() as planning:
-        if _migration_job_in_flight(
-            planning, keys=('dry_run_task_id', 'source_refresh_task_id')
-        ):
-            return jsonify(
-                {
-                    'error': 'A dry run is still building the plan. Wait for it to '
-                             'finish, then confirm the numbers again.'
-                }
-            ), 409
-
-    # A session kept alive by the prune is still reachable by id. Executing an older
-    # one would repoint the catalogue using a superseded plan.
-    if not is_current_session:
-        return jsonify(
-            {
-                'error': 'This is not the current migration session. Start again from '
-                         'the wizard so the plan matches what you reviewed.'
-            }
-        ), 409
-
-    expected = f"I want to migrate to {target_type} and unbind unmatched tracks"
-    if confirmation_text != expected:
-        return jsonify(
-            {'error': f'Confirmation text does not match. Expected exactly: "{expected}"'}
-        ), 400
-    if status != 'dry_run_ready':
-        return jsonify(
-            {
-                'error': f'Dry run must be finalized first. Session status is "{status}", '
-                f'expected "dry_run_ready".'
-            }
-        ), 400
-
-    # The migration DELETEs orphan score rows, drops the embedding FKs and rewrites
-    # every item_id. Nothing may be writing the catalogue while it does, and a sweep
-    # counts: it writes track_server_map, which the migration is busy repointing.
-    job_id = str(uuid.uuid4())
-    # The same lock the analysis/cleaning/clustering starts take. Without it this
-    # gate and its claim are separate acts, so an analysis could start alongside a
-    # migration - and its clean_up_previous_main_tasks would archive the migration
-    # row to REVOKED while the worker was still repointing the catalogue.
+    cancel_epoch = _global_cancel_epoch(db)
     with main_task_start_lock():
-        active = get_active_main_task(exclude_task_types=())
-        if active:
+        # A request that was already waiting when a global Cancel held this lock
+        # must not publish an invisible post-cancel root.  Requests begun after the
+        # cancellation are intentional and snapshot its new tombstone id.
+        if _global_cancel_epoch(db) != cancel_epoch:
             return jsonify(
                 {
-                    'error': 'Another task is running. Wait for it to finish before migrating.',
-                    'task_id': active['task_id'],
-                    'task_type': active['task_type'],
-                    'status': active['status'],
+                    'error': 'A global cancellation completed while this migration '
+                    'was waiting. Start it again if you still want to run it.'
                 }
             ), 409
-
-        save_task_status(
-            job_id,
-            MIGRATION_TASK_TYPE,
-            TASK_STATUS_PENDING,
-            details={'message': 'Provider migration enqueued.'},
-            raise_on_error=True,
-        )
-    try:
-        job = rq_queue_high.enqueue(
-            'tasks.provider_migration_tasks.execute_provider_migration',
-            session_id,
-            job_id=job_id,
-            job_timeout=-1,
-            retry=Retry(max=3),
-        )
-    except Exception:
-        logger.exception("Could not enqueue the provider migration")
-        save_task_status(
-            job_id, MIGRATION_TASK_TYPE, TASK_STATUS_FAILURE,
-            details={'error': 'Could not enqueue the task (is Redis reachable?)'},
-        )
-        return jsonify({'error': 'Could not enqueue the migration. Check the logs.'}), 500
-    # Persist the RQ task id on the session so a page refresh can resume
-    # polling this job rather than losing track of it.
-    try:
-        _patch_state_keys(session_id, exec_task_id=job.id)
-    except Exception as e:
-        # Non-fatal: the execute job is already enqueued. Losing exec_task_id
-        # only means the UI cannot auto-resume polling after a page refresh.
-        logger.warning(
-            "provider_migration execute: failed to persist exec_task_id "
-            "for session %s (job %s): %s",
-            session_id,
-            job.id,
-            e,
-            exc_info=True,
-        )
-        try:
-            db.rollback()
-        except Exception:
-            pass
-    # provider_migration roots are the one main-task type with no cleanup path of
-    # its own: it never runs through clean_up_previous_main_tasks.
-    try:
-        prune_task_status_history()
-    except Exception:
-        logger.exception("Could not prune task_status history after the migration enqueue")
-    return jsonify({'task_id': job.id})
+        return _execute_locked(db, session_id, confirmation_text)
 
 
 # Track which finished migration jobs have already triggered a Flask restart,
@@ -2076,13 +2525,16 @@ def matched_albums(session_id):
 # ---------------------------------------------------------------------------
 
 
-def _fetch_session_creds(session_id):
+def _fetch_session_creds(session_id, *, require_plannable=False):
     db = get_db()
     with db.cursor() as cur:
-        cur.execute(
-            "SELECT target_type, target_creds FROM migration_session WHERE id = %s",
-            (session_id,),
-        )
+        query = "SELECT target_type, target_creds FROM migration_session WHERE id = %s"
+        if require_plannable:
+            query += (
+                " AND status NOT IN ('completed', 'failed') "
+                "AND id = (SELECT MAX(id) FROM migration_session)"
+            )
+        cur.execute(query, (session_id,))
         row = cur.fetchone()
     if not row:
         return None
@@ -2181,6 +2633,25 @@ def _store_target_meta(session_id, new_meta):
     """
     db = get_db()
     with db.cursor() as cur:
+        # Serialize with the execute transaction's completion UPDATE.  If execute
+        # wins the row lock, this worker observes ``completed`` and writes nothing;
+        # if the dry run wins, execute waits and then deletes these rows in its own
+        # commit.  There is therefore no ordering in which late bulk metadata can
+        # repopulate an already-completed session.
+        cur.execute(
+            "SELECT status, (id = (SELECT MAX(id) FROM migration_session)) "
+            "FROM migration_session WHERE id = %s FOR UPDATE",
+            (session_id,),
+        )
+        session = cur.fetchone()
+        if not session:
+            raise RuntimeError(f'migration session {session_id} no longer exists')
+        status, is_current = session
+        if status in ('completed', 'failed') or not is_current:
+            raise RuntimeError(
+                f'migration session {session_id} is no longer mutable; refusing '
+                'late target metadata'
+            )
         cur.execute("DELETE FROM migration_target_meta WHERE session_id = %s", (session_id,))
         rows = [
             (

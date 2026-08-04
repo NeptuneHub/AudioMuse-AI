@@ -55,17 +55,16 @@ from config import (
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
-# Terminal top-level rows are not only history: _run_already_finished and the
-# clustering entry guard read them to refuse a delayed RQ retry of a completed or
-# cancelled run. Keeping several per type means a tombstone always outlives the
-# retry budget that could resurrect its job, while still bounding the table.
-TASK_STATUS_MAX_ROOTS_PER_TYPE = 20
-
 # Serializes the whole check-cleanup-claim sequence every main-task start runs.
 # Session scoped rather than transaction scoped on purpose: clean_up_previous_main_tasks
 # commits in the middle of that sequence, and a transaction lock would be released
 # by that commit - reopening the very gap this closes.
 MAIN_TASK_START_LOCK_KEY = 5512740318664902
+# Serializes every StartedJobRegistry.cleanup/retry reconciliation cycle with
+# global Cancel. Lock order is always JANITOR_CYCLE -> MAIN_TASK_START.
+JANITOR_CYCLE_LOCK_KEY = 6193044728150338
+
+GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 
 SELF_MANAGED_TASK_TYPES = ('server_sweep', 'alchemy_radio')
 
@@ -314,6 +313,55 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
     record_task_history(task_id, task_type, status, duration_s, details=details)
 
 
+def _collapse_finished_task(db, task_id, task_type, parent_task_id, status):
+    if parent_task_id is not None or not task_type:
+        return 0
+    if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
+        return 0
+    terminal_statuses = (
+        TASK_STATUS_SUCCESS,
+        TASK_STATUS_FAILURE,
+        TASK_STATUS_REVOKED,
+    )
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                SELECT task_id FROM task_status
+                WHERE parent_task_id IS NULL
+                  AND task_type = %s
+                  AND task_id <> %s
+                  AND status IN %s
+                """,
+                (task_type, task_id, terminal_statuses),
+            )
+            superseded = [row[0] for row in cur.fetchall()]
+            cur.execute(
+                "DELETE FROM task_status WHERE parent_task_id = ANY(%s)",
+                ([task_id] + superseded,),
+            )
+            deleted = cur.rowcount
+            if superseded:
+                cur.execute(
+                    "DELETE FROM task_status WHERE task_id = ANY(%s)", (superseded,)
+                )
+                deleted += cur.rowcount
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after a failed task collapse failed", exc_info=True)
+        logger.exception("Could not collapse finished task %s", task_id)
+        return 0
+    if deleted:
+        logger.info(
+            "Task %s finished (%s); dropped %d rows, keeping only its one-line recap.",
+            task_id, status, deleted,
+        )
+    return deleted
+
+
 def save_task_status(
     task_id,
     task_type,
@@ -335,12 +383,20 @@ def save_task_status(
 
     details_json = json.dumps(details) if details is not None else None
 
+    written = False
     cur = db.cursor()
     try:
         cur.execute(
             """
             INSERT INTO task_status (task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, timestamp, start_time, end_time)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, CASE WHEN %s IN ('SUCCESS', 'FAILURE', 'REVOKED') THEN %s ELSE NULL END)
+            SELECT %s, %s, %s, %s, %s, %s, %s, NOW(), %s, CASE WHEN %s IN ('SUCCESS', 'FAILURE', 'REVOKED') THEN %s ELSE NULL END
+            WHERE %s IS NULL
+               OR EXISTS (
+                    SELECT 1 FROM task_status AS parent
+                    WHERE parent.task_id = %s
+                      AND parent.status NOT IN ('SUCCESS', 'FAILURE', 'REVOKED')
+               )
+               OR EXISTS (SELECT 1 FROM task_status AS existing WHERE existing.task_id = %s)
             ON CONFLICT (task_id) DO UPDATE SET
                 status = EXCLUDED.status,
                 parent_task_id = EXCLUDED.parent_task_id,
@@ -367,12 +423,17 @@ def save_task_status(
                 current_unix_time,
                 status,
                 current_unix_time,
+                parent_task_id,
+                parent_task_id,
+                task_id,
                 current_unix_time,
                 current_unix_time,
             ),
         )
+        written = cur.rowcount > 0
         db.commit()
     except psycopg2.Error:
+        written = False
         logger.exception(f"DB Error saving task status for {task_id}")
         try:
             db.rollback()
@@ -387,12 +448,23 @@ def save_task_status(
     finally:
         cur.close()
 
+    if not written:
+        logger.info(
+            "Discarded the %s report for task %s (parent %s): the row is REVOKED, or "
+            "it does not exist and its parent is missing or already terminal.",
+            status, task_id, parent_task_id,
+        )
+        return False
+
     try:
         _maybe_record_task_history(
             db, task_id, task_type, status, parent_task_id, details, current_unix_time
         )
     except Exception as e_hist:
         logger.debug(f"history record skipped for {task_id}: {e_hist}")
+
+    _collapse_finished_task(db, task_id, task_type, parent_task_id, status)
+    return True
 
 
 def get_task_info_from_db(task_id):
@@ -2095,6 +2167,23 @@ def get_app_config_value(key, default=None, conn=None):
         cur.close()
 
 
+def bump_global_cancel_epoch(conn=None):
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO app_config (key, value) VALUES (%s, '1') "
+            "ON CONFLICT (key) DO UPDATE SET "
+            "value = (COALESCE(NULLIF(app_config.value, ''), '0')::bigint + 1)::text, "
+            "updated_at = CURRENT_TIMESTAMP RETURNING value",
+            (GLOBAL_CANCEL_EPOCH_KEY,),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        cur.close()
+
+
 def set_app_config_value(key, value, conn=None):
     """Upsert a single app_config key/value pair."""
     db = conn or get_db()
@@ -2150,8 +2239,8 @@ def drop_plugin_data_tables(plugin_id, conn=None):
 
 
 @contextmanager
-def main_task_start_lock():
-    db = get_db()
+def main_task_start_lock(conn=None):
+    db = conn or get_db()
     with db.cursor() as cur:
         cur.execute("SELECT pg_advisory_lock(%s)", (MAIN_TASK_START_LOCK_KEY,))
     try:
@@ -2165,6 +2254,53 @@ def main_task_start_lock():
                 "Could not release the main-task start lock; it will clear when the "
                 "connection closes"
             )
+
+
+@contextmanager
+def janitor_cycle_lock(conn=None, *, blocking=False, timeout_seconds=None):
+    db = conn or get_db()
+    acquired = False
+    try:
+        if blocking and timeout_seconds is None:
+            with db.cursor() as cur:
+                cur.execute("SELECT pg_advisory_lock(%s)", (JANITOR_CYCLE_LOCK_KEY,))
+            acquired = True
+        elif blocking:
+            deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+            while True:
+                with db.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_try_advisory_lock(%s)", (JANITOR_CYCLE_LOCK_KEY,)
+                    )
+                    acquired = bool(cur.fetchone()[0])
+                if acquired or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.1)
+        else:
+            with db.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_try_advisory_lock(%s)", (JANITOR_CYCLE_LOCK_KEY,)
+                )
+                acquired = bool(cur.fetchone()[0])
+    except Exception:
+        if blocking and timeout_seconds is None:
+            raise
+        logger.exception("Could not acquire janitor cycle lock; skipping this pass")
+        yield False
+        return
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                with db.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_advisory_unlock(%s)", (JANITOR_CYCLE_LOCK_KEY,)
+                    )
+            except Exception:
+                logger.exception(
+                    "Could not release janitor cycle lock; connection close will clear it"
+                )
 
 
 def _parents_with_live_jobs(parent_ids):
@@ -2194,8 +2330,8 @@ def _parents_with_live_jobs(parent_ids):
         return set(parent_ids)
 
 
-def prune_task_status_history():
-    db = get_db()
+def prune_task_status_history(conn=None):
+    db = None
     live_statuses = (
         TASK_STATUS_PENDING,
         TASK_STATUS_STARTED,
@@ -2207,6 +2343,7 @@ def prune_task_status_history():
         TASK_STATUS_REVOKED,
     )
     try:
+        db = conn or get_db()
         children_deleted = 0
         with db.cursor() as cur:
             cur.execute(
@@ -2223,7 +2360,8 @@ def prune_task_status_history():
                 (live_statuses,),
             )
             candidates = [r[0] for r in cur.fetchall()]
-            dead = [p for p in candidates if p not in _parents_with_live_jobs(candidates)]
+            live_parents = _parents_with_live_jobs(candidates)
+            dead = [p for p in candidates if p not in live_parents]
             if dead:
                 cur.execute(
                     "DELETE FROM task_status WHERE parent_task_id = ANY(%s)", (dead,)
@@ -2232,22 +2370,27 @@ def prune_task_status_history():
 
             cur.execute(
                 """
-                DELETE FROM task_status
-                WHERE task_id IN (
-                    SELECT task_id FROM (
-                        SELECT task_id, status,
-                               row_number() OVER (
-                                   PARTITION BY task_type ORDER BY id DESC
-                               ) AS rank
-                        FROM task_status
-                        WHERE parent_task_id IS NULL
-                    ) ranked
-                    WHERE ranked.rank > %s AND ranked.status IN %s
-                )
+                SELECT old.task_id FROM task_status AS old
+                WHERE old.parent_task_id IS NULL
+                  AND old.status IN %s
+                  AND EXISTS (
+                      SELECT 1 FROM task_status AS newer
+                      WHERE newer.parent_task_id IS NULL
+                        AND newer.task_type = old.task_type
+                        AND newer.id > old.id
+                  )
                 """,
-                (TASK_STATUS_MAX_ROOTS_PER_TYPE, terminal_statuses),
+                (terminal_statuses,),
             )
-            parents_deleted = cur.rowcount
+            superseded = [r[0] for r in cur.fetchall()]
+            live_roots = _parents_with_live_jobs(superseded)
+            dead_roots = [t for t in superseded if t not in live_roots]
+            parents_deleted = 0
+            if dead_roots:
+                cur.execute(
+                    "DELETE FROM task_status WHERE task_id = ANY(%s)", (dead_roots,)
+                )
+                parents_deleted = cur.rowcount
         db.commit()
         if children_deleted or parents_deleted:
             logger.info(
@@ -2256,10 +2399,13 @@ def prune_task_status_history():
             )
         return children_deleted + parents_deleted
     except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            logger.debug("Rollback after a failed task_status prune also failed", exc_info=True)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                logger.debug(
+                    "Rollback after a failed task_status prune also failed", exc_info=True
+                )
         logger.exception("Error pruning task_status history")
         return 0
 
@@ -2374,8 +2520,10 @@ def clean_up_previous_main_tasks():
         prune_task_status_history()
 
 
-def get_active_main_task(task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES):
-    db = get_db()
+def get_active_main_task(
+    task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES, conn=None
+):
+    db = conn or get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
 

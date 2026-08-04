@@ -180,6 +180,10 @@ class ProcessSupervisor:
         with self._lock:
             if self._state not in ("starting", "running"):
                 return False
+            existing = self._children.get(name)
+            if existing is not None and existing.poll() is None:
+                self._desired.add(name)
+                return True
             self._desired.add(name)
         self._log.info("Starting %s (role=%s)", name, role)
         db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())
@@ -208,9 +212,28 @@ class ProcessSupervisor:
     def _stop_child(self, name):
         with self._lock:
             popen = self._children.pop(name, None)
+            was_desired = name in self._desired
             self._desired.discard(name)
         if popen is None:
-            return
+            return True
+
+        def _stopped_or_restore():
+            try:
+                stopped = popen.poll() is not None
+            except Exception:
+                stopped = False
+            if not stopped:
+                with self._lock:
+                    self._children.setdefault(name, popen)
+                    if was_desired:
+                        self._desired.add(name)
+            return stopped
+
+        try:
+            if popen.poll() is not None:
+                return True
+        except Exception:
+            self._log.exception("Could not inspect %s before termination", name)
         self._log.info("Stopping %s (pid=%d)", name, popen.pid)
         try:
             if sys.platform == "win32":
@@ -218,11 +241,29 @@ class ProcessSupervisor:
             else:
                 popen.send_signal(signal.SIGTERM)
             popen.wait(timeout=15)
+            return True
         except Exception:
             try:
                 popen.kill()
             except Exception:
-                pass
+                self._log.exception("Could not kill %s", name)
+                return _stopped_or_restore()
+            try:
+                popen.wait(timeout=5)
+                return True
+            except Exception:
+                self._log.exception("Timed out waiting for killed child %s", name)
+                return _stopped_or_restore()
+
+    def stop_child(self, name):
+        if name not in ROLE_OF:
+            return False
+        return self._stop_child(name)
+
+    def restart_child(self, name):
+        if name not in ROLE_OF or not self._stop_child(name):
+            return False
+        return self.start_child(name)
 
     def _pump(self, name, popen):
         for line in popen.stdout:
@@ -243,27 +284,22 @@ class ProcessSupervisor:
     def dispatch_control(self, action, services):
         if action not in ("restart", "stop", "start"):
             return False
-        threading.Thread(
-            target=self._apply_control,
-            args=(action, list(services)),
-            name=f"control-{action}",
-            daemon=True,
-        ).start()
-        return True
+        return self._apply_control(action, list(services))
 
     def _apply_control(self, action, services):
+        operation = {
+            "stop": self.stop_child,
+            "start": self.start_child,
+            "restart": self.restart_child,
+        }[action]
+        results = []
         for svc in services:
             try:
-                if action == "restart":
-                    if svc in self._children:
-                        self._stop_child(svc)
-                        self.start_child(svc)
-                elif action == "stop":
-                    self._stop_child(svc)
-                elif action == "start" and svc not in self._children:
-                    self.start_child(svc)
+                results.append(bool(operation(svc)))
             except Exception:
                 self._log.exception("Control %s failed for %s", action, svc)
+                results.append(False)
+        return all(results) if results else False
 
     def _start_redis(self):
         redis_bin = paths.redis_binary()

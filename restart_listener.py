@@ -6,7 +6,7 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Long-running worker-side listener for restart/stop/start control signals.
+"""Long-running worker-side listener for restart/stop/start control requests.
 
 Subscribes to the Redis restart channel and, on worker containers only, drives
 the supervisor actions defined in ``restart_manager`` in response to published
@@ -17,10 +17,13 @@ worker's own volume so the apply restart reloads fast.
 Main Features:
 * Redis pub/sub loop with automatic reconnect, keepalive and health checks
   via the shared taskqueue connection factory.
-* Acts only when ``SERVICE_TYPE`` is ``worker``, ignoring other roles.
-* Pre-installs plugin dependencies on ``plugin-sync`` in a background thread.
+* Only worker-role processes subscribe, so a Redis publish count identifies
+  listeners that can actually perform the requested supervisor action.
+* Records a durable, per-listener result after supervisor actions complete;
+  plugin-sync records acceptance once its long-running background thread starts.
 """
 
+import json
 import logging
 import os
 import socket
@@ -30,8 +33,11 @@ import time
 from app_logging import configure_logging
 from taskqueue import new_redis_connection
 from restart_manager import (
+    CONTROL_RESULT_TTL_SECONDS,
     RESTART_CHANNEL,
-    WORKER_PRESENCE_PREFIX,
+    control_attempt_result_key,
+    control_request_key,
+    control_result_key,
     restart_supervisor_workers,
     stop_supervisor_workers,
     start_supervisor_workers,
@@ -40,20 +46,14 @@ from restart_manager import (
 logger = logging.getLogger(__name__)
 configure_logging()
 
-PRESENCE_REFRESH_SECONDS = 15
-
-PRESENCE_TTL_SECONDS = 60
-
-
-def presence_key():
-    return f"{WORKER_PRESENCE_PREFIX}{socket.gethostname()}:{os.getpid()}"
-
-
-def announce_presence(redis_conn):
-    try:
-        redis_conn.set(presence_key(), '1', ex=PRESENCE_TTL_SECONDS)
-    except Exception:
-        logger.exception('Could not refresh the worker restart-listener presence key')
+_PERSIST_RESULT_LUA = """
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+redis.call('EXPIRE', KEYS[3], ARGV[3])
+return 1
+"""
 
 try:
     from plugin.manager import worker_presync
@@ -64,8 +64,8 @@ except Exception:
 
 def _dispatch_plugin_sync():
     if worker_presync is None:
-        logger.warning('plugin-sync received but the plugin subsystem is unavailable; ignoring')
-        return
+        logger.warning('plugin-sync received but the plugin subsystem is unavailable')
+        return False
 
     def _run():
         try:
@@ -73,12 +73,165 @@ def _dispatch_plugin_sync():
         except Exception:
             logger.exception('Plugin-sync handling on this worker failed')
 
-    threading.Thread(target=_run, name='plugin-sync', daemon=True).start()
+    try:
+        threading.Thread(target=_run, name='plugin-sync', daemon=True).start()
+    except Exception:
+        logger.exception('Could not start plugin-sync background thread')
+        return False
+    return True
+
+
+def listener_id():
+    hostname = socket.gethostname()
+    configured = os.environ.get('AUDIO_MUSE_WORKER_ID') or os.environ.get('WORKER_ID')
+    return f'{configured}:{hostname}' if configured else hostname
+
+
+def _execute_action(action):
+    if action == 'restart':
+        logger.info('Restart request received, restarting worker processes...')
+        return bool(restart_supervisor_workers())
+    if action == 'stop':
+        logger.info('Stop request received, stopping worker processes...')
+        return bool(stop_supervisor_workers())
+    if action == 'start':
+        logger.info('Start request received, starting worker processes...')
+        return bool(start_supervisor_workers())
+    if action == 'plugin-sync':
+        logger.info('Plugin sync request received; syncing plugins for this worker...')
+        return _dispatch_plugin_sync()
+    logger.error('Unknown worker control action %r', action)
+    return False
+
+
+def _persist_pending_result(redis_conn, pending):
+    redis_conn.eval(
+        _PERSIST_RESULT_LUA,
+        3,
+        pending['canonical_result_key'],
+        pending['attempt_result_key'],
+        pending['request_key'],
+        pending['worker_id'],
+        pending['result'],
+        CONTROL_RESULT_TTL_SECONDS,
+    )
+
+
+def flush_pending_results(redis_conn, pending_results):
+    for pending_id, pending in list(pending_results.items()):
+        _persist_pending_result(redis_conn, pending)
+        del pending_results[pending_id]
+        logger.info(
+            'Persisted delayed %s ACK for request %s after Redis reconnected',
+            pending['action'],
+            pending['request_id'],
+        )
+
+
+def handle_control_message(redis_conn, payload, pending_results=None):
+    if pending_results is None:
+        pending_results = {}
+    if isinstance(payload, bytes):
+        payload = payload.decode('utf-8', errors='replace')
+    try:
+        request = json.loads(payload)
+    except (TypeError, ValueError):
+        return _execute_action(payload)
+
+    if not isinstance(request, dict):
+        logger.error('Invalid worker control payload: %r', request)
+        return False
+    action = request.get('action')
+    request_id = request.get('request_id')
+    if not action or not request_id:
+        logger.error('Worker control payload lacks action/request_id: %r', request)
+        return False
+
+    worker_id = listener_id()
+    request_key = control_request_key(request_id)
+    request_meta = redis_conn.hgetall(request_key)
+
+    def _meta_value(name):
+        return request_meta.get(name, request_meta.get(name.encode('utf-8')))
+
+    recorded_action = _meta_value('action')
+    if isinstance(recorded_action, bytes):
+        recorded_action = recorded_action.decode('utf-8', errors='replace')
+    raw_attempt = _meta_value('attempt')
+    if recorded_action != action or raw_attempt is None:
+        logger.error(
+            'Control request %s metadata is missing or does not match action %r',
+            request_id,
+            action,
+        )
+        return False
+    attempt = int(raw_attempt)
+    canonical_result_key = control_result_key(request_id)
+    attempt_result_key = control_attempt_result_key(request_id, attempt)
+    pending_id = (str(request_id), worker_id, attempt)
+    if pending_id in pending_results:
+        pending = pending_results[pending_id]
+        _persist_pending_result(redis_conn, pending)
+        del pending_results[pending_id]
+        return bool(pending['ok'])
+    existing = redis_conn.hget(canonical_result_key, worker_id)
+    if existing is not None:
+        logger.info(
+            'Control request %s was already handled by listener %s; copying its ACK to attempt %s',
+            request_id,
+            worker_id,
+            attempt,
+        )
+        try:
+            if isinstance(existing, bytes):
+                existing = existing.decode('utf-8', errors='replace')
+            existing_result = json.loads(existing)
+            ok = existing_result.get('action') == action and existing_result.get('ok') is True
+        except (TypeError, ValueError):
+            ok = False
+        result = existing
+    else:
+        try:
+            ok = _execute_action(action)
+        except Exception:
+            logger.exception('Unhandled failure processing %s request %s', action, request_id)
+            ok = False
+
+        result = json.dumps({
+            'action': action,
+            'listener_id': worker_id,
+            'ok': bool(ok),
+        })
+    pending = {
+        'action': action,
+        'attempt': attempt,
+        'attempt_result_key': attempt_result_key,
+        'canonical_result_key': canonical_result_key,
+        'ok': bool(ok),
+        'request_id': request_id,
+        'request_key': request_key,
+        'result': result,
+        'worker_id': worker_id,
+    }
+    pending_results[pending_id] = pending
+    _persist_pending_result(redis_conn, pending)
+    del pending_results[pending_id]
+    if ok:
+        logger.info('Worker %s completed %s request %s', worker_id, action, request_id)
+    else:
+        logger.error('Worker %s failed %s request %s', worker_id, action, request_id)
+    return bool(ok)
 
 
 def main():
     channel = os.environ.get('AUDIO_MUSE_CONFIG_RESTART_CHANNEL', RESTART_CHANNEL)
+    if os.environ.get('SERVICE_TYPE', '').lower() != 'worker':
+        logger.info('SERVICE_TYPE is not worker; restart listener will remain idle')
+        while True:
+            time.sleep(3600)
+
     logger.info('Starting restart listener on channel: %s', channel)
+    pending_results = {}
 
     while True:
         redis_conn = None
@@ -91,48 +244,18 @@ def main():
             )
             pubsub = redis_conn.pubsub(ignore_subscribe_messages=True)
             pubsub.subscribe(channel)
+            flush_pending_results(redis_conn, pending_results)
             logger.info('Subscribed to restart channel. Waiting for restart messages...')
 
-            # get_message with a timeout instead of listen(): the presence key below
-            # has to be refreshed on a schedule, and listen() blocks forever between
-            # messages. Only a WORKER-role listener registers, because only it acts
-            # on a signal - the Flask container subscribes and ignores, which is why
-            # counting PUBLISH subscribers could never prove delivery.
             while True:
-                service_type = os.environ.get('SERVICE_TYPE', '').lower()
-                if service_type == 'worker':
-                    announce_presence(redis_conn)
-                message = pubsub.get_message(timeout=PRESENCE_REFRESH_SECONDS)
+                message = pubsub.get_message(timeout=1.0)
                 if not message:
                     continue
                 if message.get('type') != 'message':
                     continue
                 payload = message.get('data')
-                logger.info('Control listener received signal: %s', payload)
-                if service_type != 'worker':
-                    logger.info('Control signal received, but SERVICE_TYPE is not worker; skipping')
-                    continue
-                if payload == 'restart':
-                    logger.info('Restart signal received, restarting worker processes...')
-                    if restart_supervisor_workers():
-                        logger.info('Worker restart completed successfully')
-                    else:
-                        logger.warning('Worker restart failed; will continue listening')
-                elif payload == 'stop':
-                    logger.info('Stop signal received, stopping worker processes...')
-                    if stop_supervisor_workers():
-                        logger.info('Worker stop completed successfully')
-                    else:
-                        logger.warning('Worker stop failed; will continue listening')
-                elif payload == 'start':
-                    logger.info('Start signal received, starting worker processes...')
-                    if start_supervisor_workers():
-                        logger.info('Worker start completed successfully')
-                    else:
-                        logger.warning('Worker start failed; will continue listening')
-                elif payload == 'plugin-sync':
-                    logger.info('Plugin sync signal received; syncing plugins for this worker...')
-                    _dispatch_plugin_sync()
+                logger.info('Control listener received request: %s', payload)
+                handle_control_message(redis_conn, payload, pending_results)
         except Exception:
             logger.exception('Restart listener connection error, retrying in 5 seconds')
             time.sleep(5)

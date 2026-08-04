@@ -193,6 +193,10 @@ class ProcessSupervisor:
         with self._lock:
             if self._state not in ("starting", "running"):
                 return False
+            existing = self._children.get(name)
+            if existing is not None and existing.poll() is None:
+                self._desired.add(name)
+                return True
             self._desired.add(name)
         argv = [sys.executable, f"--role={role}"]
         child_env = env_builder.build_child_env(role, self._database_url, self._redis_url)
@@ -200,17 +204,25 @@ class ProcessSupervisor:
         return True
 
     def stop_child(self, name):
+        if name not in ROLE_OF:
+            return False
         with self._lock:
+            was_desired = name in self._desired
             self._desired.discard(name)
-        self._terminate_named(name)
-        return True
+        stopped = self._terminate_named(name)
+        if not stopped and was_desired:
+            with self._lock:
+                self._desired.add(name)
+        return stopped
 
     def restart_child(self, name):
-        self._terminate_named(name)
+        if name not in ROLE_OF or not self._terminate_named(name):
+            return False
         return self.start_child(name)
 
     def _spawn(self, name, argv, child_env):
-        self._terminate_named(name)
+        if not self._terminate_named(name):
+            raise RuntimeError(f"Could not terminate existing child {name}")
         proc = subprocess.Popen(
             argv,
             env=child_env,
@@ -239,24 +251,38 @@ class ProcessSupervisor:
     def _terminate_named(self, name):
         with self._lock:
             proc = self._children.pop(name, None)
-        if proc is None or proc.poll() is not None:
-            return
+        if proc is None:
+            return True
+        try:
+            if proc.poll() is not None:
+                return True
+        except Exception:
+            logger.exception("Could not inspect %s before termination", name)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except ProcessLookupError:
-            return
+            return True
         except Exception:
             logger.exception("SIGTERM failed for %s", name)
         try:
             proc.wait(timeout=10)
-            return
+            return True
         except Exception:
             pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             proc.wait(timeout=5)
+            return True
         except Exception:
-            pass
+            logger.exception("SIGKILL failed for %s", name)
+            try:
+                terminated = proc.poll() is not None
+            except Exception:
+                terminated = False
+            if not terminated:
+                with self._lock:
+                    self._children.setdefault(name, proc)
+            return terminated
 
     def _start_health_loop(self):
         self._health_stop.clear()
@@ -274,7 +300,10 @@ class ProcessSupervisor:
                     proc = self._children.get(name)
                 if proc is not None and proc.poll() is not None:
                     self._log.warning("%s exited (code %s); restarting", name, proc.returncode)
-                    self.start_child(name)
+                    try:
+                        self.start_child(name)
+                    except Exception:
+                        self._log.exception("Could not restart %s; will retry", name)
 
     def _ensure_postgres_healthy(self):
         if self._database_url is None:
@@ -282,7 +311,14 @@ class ProcessSupervisor:
         try:
             import psycopg2
 
-            conn = psycopg2.connect(self._database_url, connect_timeout=3)
+            pg_host, pg_port = env_builder._pg_conn_parts(self._database_url)
+            conn = psycopg2.connect(
+                host=pg_host,
+                port=pg_port,
+                user='postgres',
+                dbname='postgres',
+                connect_timeout=3,
+            )
             try:
                 cur = conn.cursor()
                 cur.execute("SELECT 1")
@@ -322,25 +358,22 @@ class ProcessSupervisor:
     def dispatch_control(self, action, services):
         if action not in ("restart", "stop", "start"):
             return False
-        threading.Thread(
-            target=self._apply_control,
-            args=(action, list(services)),
-            name=f"control-{action}",
-            daemon=True,
-        ).start()
-        return True
+        return self._apply_control(action, list(services))
 
     def _apply_control(self, action, services):
+        operation = {
+            "stop": self.stop_child,
+            "start": self.start_child,
+            "restart": self.restart_child,
+        }[action]
+        results = []
         for svc in services:
             try:
-                if action == "stop":
-                    self.stop_child(svc)
-                elif action == "start":
-                    self.start_child(svc)
-                elif action == "restart":
-                    self.restart_child(svc)
+                results.append(bool(operation(svc)))
             except Exception:
-                logger.exception("Control %s failed for %s", action, svc)
+                self._log.exception("Control %s failed for %s", action, svc)
+                results.append(False)
+        return all(results) if results else False
 
     def _wait_http(self, url, timeout):
         deadline = time.time() + timeout

@@ -166,6 +166,58 @@ def test_union_analysis_treats_a_wiped_parent_row_as_revoked(monkeypatch):
     assert ran == [], "no phase may run after the cancel wiped the row"
 
 
+def test_dequeued_analysis_with_wiped_claim_stops_before_listing_servers(monkeypatch):
+    """A job already dequeued during Cancel must not recreate its root row."""
+    import tasks.analysis.main as analysis
+
+    job = Mock(id='analysis-cancelled')
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: job)
+    monkeypatch.setattr(analysis, 'get_task_statuses', lambda ids: {})
+    list_servers = Mock(side_effect=AssertionError('cancelled job must not do work'))
+    monkeypatch.setattr(analysis, '_enabled_analysis_servers', list_servers)
+    save = Mock(side_effect=AssertionError('cancelled job must not recreate its row'))
+    monkeypatch.setattr(analysis, 'save_task_status', save)
+
+    result = analysis.run_analysis_task(0, 5)
+
+    assert result['status'] == 'REVOKED'
+    list_servers.assert_not_called()
+    save.assert_not_called()
+
+
+def test_dequeued_album_with_wiped_parent_stops_before_creating_child(monkeypatch):
+    import tasks.analysis.album as album
+
+    job = Mock(id='album-cancelled')
+    monkeypatch.setattr(album, 'get_current_job', lambda connection=None: job)
+    monkeypatch.setattr(album, 'get_task_statuses', lambda ids: {})
+    tracks = Mock(side_effect=AssertionError('cancelled album must not fetch tracks'))
+    monkeypatch.setattr(album, 'get_tracks_from_album', tracks)
+    save = Mock(side_effect=AssertionError('cancelled album must not create a row'))
+    monkeypatch.setattr(album, 'save_task_status', save)
+
+    result = album._analyze_album_task_impl('a1', 'Cancelled', 5, 'parent-1')
+
+    assert result['status'] == 'REVOKED'
+    tracks.assert_not_called()
+    save.assert_not_called()
+
+
+def test_dequeued_index_rebuild_with_wiped_parent_does_no_build(monkeypatch):
+    import tasks.analysis.index as index
+
+    job = Mock(id='index-cancelled')
+    monkeypatch.setattr(index, 'get_current_job', lambda connection=None: job)
+    monkeypatch.setattr('app_helper.get_task_statuses', lambda ids: {})
+    build = Mock(side_effect=AssertionError('cancelled rebuild must not run'))
+    monkeypatch.setattr(index, '_run_all_index_builds', build)
+
+    result = index.rebuild_all_indexes_task('parent-1')
+
+    assert result['status'] == 'REVOKED'
+    build.assert_not_called()
+
+
 def test_union_analysis_stops_when_a_phase_is_revoked(monkeypatch):
     result, _ = _union_harness(monkeypatch, [('Jellyfin', 'REVOKED'), ('Plex', 'SUCCESS')])
 
@@ -771,8 +823,12 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     )
 
     assert result['status'] == 'SUCCESS'
-    assert len(status_calls) == 1
-    assert status_calls[0] == ['job-1', 'parent1']
+    # Two queries for the whole album, and neither scales with the track count:
+    # one claim check before the album starts (a job dequeued after a Cancel must
+    # not run, nor recreate its row), then ONE revocation check for the loop.
+    assert len(status_calls) == 2
+    assert status_calls[0] == ['parent1']
+    assert status_calls[1] == ['job-1', 'parent1']
 
 
 def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
@@ -2379,3 +2435,29 @@ def test_chromaprint_backfill_covers_every_server_when_nothing_is_revoked(monkey
     )
 
     assert {server_id for server_id, _ in processed} == {'srv-a', 'srv-c'}
+
+
+def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkeypatch):
+    import tasks.analysis.index as index
+
+    job = Mock(id='index-1')
+    monkeypatch.setattr(index, 'get_current_job', lambda connection=None: job)
+    monkeypatch.setattr('app_helper.get_task_statuses', lambda ids: {ids[0]: 'PROGRESS'})
+    monkeypatch.setattr(index, '_run_all_index_builds', lambda **kwargs: None)
+
+    captured = {}
+
+    def fake_reporter(task_id, task_type, current_job, message, **kwargs):
+        captured['task_type'] = task_type
+        captured['parent_task_id'] = kwargs.get('parent_task_id')
+        return lambda *a, **k: None
+
+    monkeypatch.setattr(index, 'make_task_reporter', fake_reporter)
+
+    index.rebuild_all_indexes_task('parent-1')
+
+    # Without the parent link every mid-analysis rebuild landed as its own ROOT
+    # row: it piled up, and while non-terminal get_active_main_task could return
+    # it and 409 an unrelated Start.
+    assert captured['task_type'] == 'index_rebuild'
+    assert captured['parent_task_id'] == 'parent-1'

@@ -49,6 +49,32 @@
         node.style.color = ok ? '' : '#c0392b';
     }
 
+    // The save paths reload the page, so a warning rendered before the reload is
+    // thrown away. Park it and render it once the new page is up.
+    var PENDING_WARNING_KEY = 'audiomuse_music_servers_warning';
+
+    function parkWarning(body) {
+        if (!body || !body.warning) { return; }
+        try {
+            window.sessionStorage.setItem(PENDING_WARNING_KEY, body.warning);
+        } catch (e) {
+            window.alert(body.warning);
+        }
+    }
+
+    function showParkedWarning() {
+        var parked = null;
+        try {
+            parked = window.sessionStorage.getItem(PENDING_WARNING_KEY);
+            window.sessionStorage.removeItem(PENDING_WARNING_KEY);
+        } catch (e) {
+            return;
+        }
+        if (parked) {
+            feedback(el('music-servers-error'), parked, false);
+        }
+    }
+
     function showRegistryForm() {
         var editor = el('default-server-editor');
         if (editor) { editor.style.display = 'none'; }
@@ -381,6 +407,7 @@
                     feedback(el('ms-feedback'), (res.d && res.d.error) || 'Save failed.', false);
                     return;
                 }
+                parkWarning(res.d);
                 if (res.d && res.d.is_default) {
                     // The default server IS what the setup form edits. Reload so
                     // that form shows the new default instead of re-saving the
@@ -391,6 +418,7 @@
                 hideRegistryForm();
                 resetForm();
                 loadServers();
+                showParkedWarning();
                 if (res.d && res.d.sweep_task_id) {
                     renderSweepProgress(0, 'Matching sweep queued...', true, false);
                     pollSweep(res.d.sweep_task_id);
@@ -425,6 +453,7 @@
                     feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not set the default server.', false);
                     return;
                 }
+                parkWarning(res.d);
                 // Same reason as in save(): the setup form edits the default
                 // server, so it must be re-read from the new one.
                 window.location.reload();
@@ -496,4 +525,5 @@
     resetForm();
     hideRegistryForm();
     loadServers();
+    showParkedWarning();
 })();

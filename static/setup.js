@@ -1045,14 +1045,19 @@ setupForm.addEventListener('submit', function(event) {
             return data;
         });
     }).then(function(data) {
-        saveFeedback.className = 'status-success inline-feedback';
+        var savedNotice = data.warning
+            ? 'Configuration saved. ' + data.warning
+            : 'Configuration saved.';
+        saveFeedback.className = data.warning
+            ? 'status-warning inline-feedback'
+            : 'status-success inline-feedback';
         saveFeedback.style.display = 'block';
         var countdown = 20;
-        saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
+        saveFeedback.textContent = savedNotice + ' Redirecting in ' + countdown + ' seconds...';
         var countdownInterval = setInterval(function() {
             countdown -= 1;
             if (countdown > 0) {
-                saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
+                saveFeedback.textContent = savedNotice + ' Redirecting in ' + countdown + ' seconds...';
             } else {
                 clearInterval(countdownInterval);
                 if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }

@@ -201,6 +201,7 @@ class TestLiveParentProtection:
 
         conn, _ = task_db
         monkeypatch.setattr(database, 'get_db', lambda: conn)
+        monkeypatch.setattr(database, '_parents_with_live_jobs', lambda _ids: set())
 
         _insert(task_db, 'parent-live', live_status)
         _insert(task_db, 'child-live', 'SUCCESS', parent='parent-live',
@@ -256,33 +257,34 @@ class TestLiveParentProtection:
 
 
 class TestSupersededParentRows:
-    def test_terminal_roots_are_capped_per_task_type(self, task_db, monkeypatch):
+    def test_only_the_newest_terminal_root_per_task_type_survives(
+        self, task_db, monkeypatch
+    ):
         import database
 
         conn, _ = task_db
         monkeypatch.setattr(database, 'get_db', lambda: conn)
+        monkeypatch.setattr(database, '_parents_with_live_jobs', lambda _ids: set())
 
-        cap = database.TASK_STATUS_MAX_ROOTS_PER_TYPE
-        for i in range(cap + 5):
+        for i in range(25):
             _insert(task_db, f'radio-{i:03d}', 'SUCCESS', task_type='alchemy_radio')
 
         database.prune_task_status_history()
 
         surviving = _committed_ids(task_db)
-        assert len(surviving) == cap
-        assert surviving[-1] == f'radio-{cap + 4:03d}'
-        assert 'radio-000' not in surviving
+        assert surviving == ['radio-024']
 
-    def test_a_recent_tombstone_survives_so_a_delayed_retry_still_finds_it(
+    def test_the_newest_tombstone_survives_so_a_delayed_retry_still_finds_it(
         self, task_db, monkeypatch
     ):
-        # _run_already_finished and the clustering entry guard read these rows to
+        # _run_already_finished and the clustering entry guard read this row to
         # refuse a requeued job for a run that already finished. Deleting the
         # newest one would let a delayed RQ retry resurrect completed work.
         import database
 
         conn, _ = task_db
         monkeypatch.setattr(database, 'get_db', lambda: conn)
+        monkeypatch.setattr(database, '_parents_with_live_jobs', lambda _ids: set())
 
         _insert(task_db, 'run-old', 'SUCCESS', task_type='main_analysis')
         _insert(task_db, 'run-new', 'REVOKED', task_type='main_analysis')
@@ -291,16 +293,16 @@ class TestSupersededParentRows:
 
         surviving = _committed_ids(task_db)
         assert 'run-new' in surviving
-        assert 'run-old' in surviving
+        assert 'run-old' not in surviving
 
-    def test_each_task_type_is_capped_independently(self, task_db, monkeypatch):
+    def test_every_task_type_keeps_its_own_recap(self, task_db, monkeypatch):
         import database
 
         conn, _ = task_db
         monkeypatch.setattr(database, 'get_db', lambda: conn)
+        monkeypatch.setattr(database, '_parents_with_live_jobs', lambda _ids: set())
 
-        cap = database.TASK_STATUS_MAX_ROOTS_PER_TYPE
-        for i in range(cap + 3):
+        for i in range(5):
             _insert(task_db, f'sweep-{i:03d}', 'SUCCESS', task_type='server_sweep')
         _insert(task_db, 'clean-only', 'SUCCESS', task_type='cleaning')
 
@@ -308,7 +310,7 @@ class TestSupersededParentRows:
 
         surviving = _committed_ids(task_db)
         assert 'clean-only' in surviving
-        assert len([s for s in surviving if s.startswith('sweep-')]) == cap
+        assert [s for s in surviving if s.startswith('sweep-')] == ['sweep-004']
 
     def test_a_live_parent_is_never_dropped_even_with_a_newer_row(
         self, task_db, monkeypatch
@@ -324,6 +326,28 @@ class TestSupersededParentRows:
         database.prune_task_status_history()
 
         assert 'run-live' in _committed_ids(task_db)
+
+    def test_a_superseded_root_is_kept_while_its_rq_job_is_still_live(
+        self, task_db, monkeypatch
+    ):
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+        for i in range(3):
+            _insert(task_db, f'guarded-{i:03d}', 'FAILURE', task_type='main_analysis')
+        # The janitor stamps FAILURE on a live root when Redis blips, so a
+        # terminal status is not proof the worker stopped.
+        monkeypatch.setattr(
+            database, '_parents_with_live_jobs', lambda _ids: {'guarded-000'}
+        )
+
+        database.prune_task_status_history()
+
+        surviving = _committed_ids(task_db)
+        assert 'guarded-000' in surviving
+        assert 'guarded-001' not in surviving
+        assert 'guarded-002' in surviving
 
 
 class TestDurability:
@@ -380,3 +404,220 @@ class TestRqLivenessGuard:
         monkeypatch.setitem(sys.modules, 'rq_job_state', None)
 
         assert database._parents_with_live_jobs([]) == set()
+
+
+class TestEndOfTaskCollapse:
+    """A finished root keeps its one-line recap and nothing else.
+
+    The rule the owner requires is: START of a task wipes the previous run, END of
+    a task leaves ONE line and drops the rest. This is the END half, and it fires
+    the moment the root writes SUCCESS/FAILURE/REVOKED - no timeout, no cap.
+    """
+
+    def test_a_finished_root_drops_its_children_immediately(self, task_db, monkeypatch):
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+        _insert(task_db, 'parent-run', 'PROGRESS', task_type='main_analysis')
+        _insert(task_db, 'album-1', 'SUCCESS', parent='parent-run',
+                task_type='album_analysis')
+        _insert(task_db, 'album-2', 'SUCCESS', parent='parent-run',
+                task_type='album_analysis')
+
+        database.save_task_status(
+            'parent-run', 'main_analysis', database.TASK_STATUS_SUCCESS,
+            progress=100, details={'message': 'done'},
+        )
+
+        surviving = _committed_ids(task_db)
+        assert surviving == ['parent-run']
+
+    def test_finishing_also_drops_the_previous_run_of_the_same_type(
+        self, task_db, monkeypatch
+    ):
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+        _insert(task_db, 'old-run', 'SUCCESS', task_type='main_analysis')
+        _insert(task_db, 'old-album', 'SUCCESS', parent='old-run',
+                task_type='album_analysis')
+        _insert(task_db, 'new-run', 'PROGRESS', task_type='main_analysis')
+        _insert(task_db, 'other-type', 'SUCCESS', task_type='cleaning')
+
+        database.save_task_status(
+            'new-run', 'main_analysis', database.TASK_STATUS_SUCCESS,
+            progress=100, details={'message': 'done'},
+        )
+
+        surviving = _committed_ids(task_db)
+        assert 'new-run' in surviving
+        assert 'other-type' in surviving
+        assert 'old-run' not in surviving
+        assert 'old-album' not in surviving
+
+    def test_history_is_written_before_the_children_are_deleted(
+        self, task_db, monkeypatch
+    ):
+        # _build_task_note sums each child's tracks_analyzed to produce the
+        # "Songs analyzed: N" note. It runs from record_task_history inside the very
+        # save_task_status call that deletes those children, so reordering the two
+        # silently degrades every analysis note. Nothing else pins this.
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+        seen = {}
+        real_record = database.record_task_history
+
+        def spy(task_id, task_type, status, duration_seconds=None, note=None,
+                details=None):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM task_status WHERE parent_task_id = %s",
+                    (task_id,),
+                )
+                seen['children_at_history_time'] = cur.fetchone()[0]
+            return real_record(task_id, task_type, status, duration_seconds, note,
+                               details)
+
+        monkeypatch.setattr(database, 'record_task_history', spy)
+
+        _insert(task_db, 'hist-run', 'PROGRESS', task_type='main_analysis')
+        _insert(task_db, 'hist-album', 'SUCCESS', parent='hist-run',
+                task_type='album_analysis',
+                details=json.dumps({'tracks_analyzed': 7}))
+
+        database.save_task_status(
+            'hist-run', 'main_analysis', database.TASK_STATUS_SUCCESS,
+            progress=100, details={'message': 'done'},
+        )
+
+        assert seen['children_at_history_time'] == 1
+        assert _committed_ids(task_db) == ['hist-run']
+
+    def test_a_child_write_costs_no_extra_queries_and_touches_no_rows(
+        self, task_db, monkeypatch
+    ):
+        # An analysis writes thousands of album_analysis rows. Without the
+        # parent_task_id early-out every one of them would run the superseded-root
+        # SELECT plus a DELETE, against the table the run is still writing.
+        import database
+
+        conn, _ = task_db
+        cursors = {'n': 0}
+
+        class _CountingConn:
+            def __getattr__(self, name):
+                return getattr(conn, name)
+
+            def cursor(self, *a, **kw):
+                cursors['n'] += 1
+                return conn.cursor(*a, **kw)
+
+        monkeypatch.setattr(database, 'get_db', lambda: _CountingConn())
+
+        _insert(task_db, 'live-parent', 'PROGRESS', task_type='main_analysis')
+        _insert(task_db, 'sibling', 'PROGRESS', parent='live-parent',
+                task_type='album_analysis')
+
+        database.save_task_status(
+            'batch-1', 'album_analysis', database.TASK_STATUS_SUCCESS,
+            parent_task_id='live-parent', progress=100,
+        )
+
+        assert cursors['n'] == 1
+
+        surviving = _committed_ids(task_db)
+        assert 'live-parent' in surviving
+        assert 'sibling' in surviving
+
+    def test_a_straggler_child_cannot_resurrect_a_row_after_the_recap(
+        self, task_db, monkeypatch
+    ):
+        # The parent can fail while album jobs are still in flight. The UPSERT's
+        # REVOKED guard sits on the UPDATE arm only, so without an INSERT guard the
+        # straggler's next report re-created the row the recap had just dropped.
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+        _insert(task_db, 'dying-parent', 'PROGRESS', task_type='main_analysis')
+        _insert(task_db, 'inflight', 'PROGRESS', parent='dying-parent',
+                task_type='album_analysis')
+
+        database.save_task_status(
+            'dying-parent', 'main_analysis', database.TASK_STATUS_FAILURE,
+            progress=100, details={'message': 'boom'},
+        )
+        assert _committed_ids(task_db) == ['dying-parent']
+
+        database.save_task_status(
+            'inflight', 'album_analysis', database.TASK_STATUS_SUCCESS,
+            parent_task_id='dying-parent', progress=100,
+        )
+
+        assert _committed_ids(task_db) == ['dying-parent']
+
+    def test_a_child_of_a_live_parent_is_still_inserted_normally(
+        self, task_db, monkeypatch
+    ):
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+        _insert(task_db, 'live-root', 'PROGRESS', task_type='main_analysis')
+
+        database.save_task_status(
+            'fresh-album', 'album_analysis', database.TASK_STATUS_PROGRESS,
+            parent_task_id='live-root', progress=10,
+        )
+
+        assert 'fresh-album' in _committed_ids(task_db)
+
+    def test_an_existing_child_can_still_write_its_terminal_status(
+        self, task_db, monkeypatch
+    ):
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+        _insert(task_db, 'terminal-parent', 'SUCCESS', task_type='main_clustering')
+        _insert(task_db, 'straggler', 'PROGRESS', parent='terminal-parent',
+                task_type='clustering_batch')
+
+        assert database.save_task_status(
+            'straggler', 'clustering_batch', database.TASK_STATUS_SUCCESS,
+            parent_task_id='terminal-parent', progress=100,
+        ) is True
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM task_status WHERE task_id = 'straggler'")
+            assert cur.fetchone()[0] == 'SUCCESS'
+
+    def test_save_task_status_reports_whether_it_actually_wrote(
+        self, task_db, monkeypatch
+    ):
+        import database
+
+        conn, _ = task_db
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+        _insert(task_db, 'gone-parent', 'REVOKED', task_type='main_analysis')
+
+        assert database.save_task_status(
+            'never-existed', 'album_analysis', database.TASK_STATUS_PROGRESS,
+            parent_task_id='gone-parent', progress=10,
+        ) is False
+        assert 'never-existed' not in _committed_ids(task_db)
+
+        assert database.save_task_status(
+            'a-root', 'main_analysis', database.TASK_STATUS_PROGRESS, progress=1,
+        ) is True

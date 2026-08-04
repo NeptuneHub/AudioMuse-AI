@@ -44,7 +44,8 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   reverse_by_server, db_track_ids, author_by_id=None,
                   prune_results=None, stored_counts=None, mark_refused=None,
                   clean_catalogue=True, rebuild_calls=None,
-                  chromaprint_split_result=None):
+                  chromaprint_split_result=None, current_job=None,
+                  task_info=None):
     from tasks import cleaning
     from tasks import multiserver_sync
 
@@ -105,13 +106,14 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     fake_app_helper = types.ModuleType('app_helper')
     fake_app_helper.redis_conn = object()
     fake_app_helper.get_db = lambda: get_db_cm
+    fake_app_helper.get_task_info_from_db = lambda _task_id: task_info
     fake_app_helper.save_task_status = (
         lambda task_id, task_type, status, progress=None, details=None:
         statuses.append((status, progress, details))
     )
     monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
 
-    monkeypatch.setattr(cleaning, 'get_current_job', lambda *a, **k: None)
+    monkeypatch.setattr(cleaning, 'get_current_job', lambda *a, **k: current_job)
     monkeypatch.setattr(
         cleaning.registry, 'servers_for_scope', lambda scope, conn=None: servers
     )
@@ -189,6 +191,24 @@ class TestCleaningRefreshesTrackCounts:
             stored_counts=stored,
         )
         assert stored == [('s2', 1)]
+
+
+def test_dequeued_cleaning_with_wiped_claim_stops_before_writing(monkeypatch):
+    job = MagicMock(id='cleaning-cancelled')
+
+    result, statuses, pruned = _run_cleaning(
+        monkeypatch,
+        servers=[_server('s1', 'One', default=True)],
+        tracks_by_server={'s1': [{'id': 'a1'}]},
+        reverse_by_server={'s1': {'a1': 'fp_1'}},
+        db_track_ids={'fp_1'},
+        current_job=job,
+        task_info=None,
+    )
+
+    assert result['status'] == config.TASK_STATUS_REVOKED
+    assert statuses == []
+    assert pruned == []
 
 
 class TestCleaningSkipsUnreadableServers:

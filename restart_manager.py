@@ -14,6 +14,9 @@ that actually stop, start, and restart the managed services.
 
 Main Features:
 * ``publish_*`` helpers broadcast restart/stop/start and plugin-sync requests to workers.
+* The ACK wait runs on the caller's thread; request handlers whose restart is only
+  advisory pass ``CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS`` so they cannot occupy a
+  gunicorn thread for the full background deadline.
 * supervisorctl-driven actions over the known Flask and worker service names.
 * On native builds (control socket/host:port set), dispatches there instead of supervisorctl.
 """
@@ -24,6 +27,8 @@ import os
 import socket
 import subprocess
 import threading
+import time
+import uuid
 
 import config
 from taskqueue import new_redis_connection
@@ -33,60 +38,298 @@ SUPERVISORCTL_CMD = os.environ.get('SUPERVISORCTL_CMD', '/usr/bin/supervisorctl'
 SUPERVISOR_CONF = os.environ.get('SUPERVISOR_CONF', '/etc/supervisor/conf.d/supervisord.conf')
 logger = logging.getLogger(__name__)
 
-WORKER_PRESENCE_PREFIX = 'audiomuse:worker_restart_listener:'
+CONTROL_REQUEST_PREFIX = 'audiomuse:worker_control:request:'
+CONTROL_RESULT_PREFIX = 'audiomuse:worker_control:result:'
+CONTROL_RESULT_TTL_SECONDS = max(
+    60, int(os.environ.get('AUDIO_MUSE_CONTROL_RESULT_TTL_SECONDS', '86400'))
+)
+CONTROL_ACK_TIMEOUT_SECONDS = max(
+    5.0, float(os.environ.get('AUDIO_MUSE_CONTROL_ACK_TIMEOUT_SECONDS', '15'))
+)
+CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS = min(5.0, CONTROL_ACK_TIMEOUT_SECONDS)
+_configured_ipc_timeout = float(
+    os.environ.get('AUDIO_MUSE_CONTROL_IPC_TIMEOUT_SECONDS', CONTROL_ACK_TIMEOUT_SECONDS - 2)
+)
+CONTROL_IPC_TIMEOUT_SECONDS = max(
+    3.0, min(_configured_ipc_timeout, CONTROL_ACK_TIMEOUT_SECONDS - 2)
+)
+CONTROL_RETRY_LEASE_SECONDS = max(
+    CONTROL_ACK_TIMEOUT_SECONDS,
+    float(os.environ.get('AUDIO_MUSE_CONTROL_RETRY_LEASE_SECONDS', '90')),
+)
+CONTROL_MAX_DELIVERY_ATTEMPTS = max(
+    1, int(os.environ.get('AUDIO_MUSE_CONTROL_MAX_DELIVERY_ATTEMPTS', '3'))
+)
+
+_ACK_POLL_START_SECONDS = 0.1
+
+_ACK_POLL_MAX_SECONDS = 2.0
+
+_REGISTER_CONTROL_REQUEST_LUA = """
+local now = tonumber(redis.call('TIME')[1])
+if redis.call('EXISTS', KEYS[1]) == 1 then
+    local recorded_action = redis.call('HGET', KEYS[1], 'action')
+    if recorded_action ~= ARGV[3] then
+        return -2
+    end
+    local outcome = redis.call('HGET', KEYS[1], 'outcome')
+    if outcome == '1' then
+        return -4
+    elseif outcome == '0' then
+        return -3
+    end
+    local previous_expected = tonumber(redis.call('HGET', KEYS[1], 'expected') or '-1')
+    local lease_until = tonumber(redis.call('HGET', KEYS[1], 'lease_until') or '0')
+    if previous_expected > 0 and now < lease_until then
+        return previous_expected
+    end
+    local delivery_attempts = tonumber(redis.call('HGET', KEYS[1], 'delivery_attempts') or '0')
+    if previous_expected > 0 and delivery_attempts >= tonumber(ARGV[6]) then
+        redis.call('HSET', KEYS[1], 'outcome', '0')
+        redis.call('EXPIRE', KEYS[1], ARGV[4])
+        return -3
+    end
+
+    local next_attempt = tonumber(redis.call('HGET', KEYS[1], 'attempt') or '1') + 1
+    redis.call('HSET', KEYS[1], 'attempt', next_attempt)
+    local retry_expected = redis.call('PUBLISH', ARGV[1], ARGV[2])
+    local expected_floor = tonumber(redis.call('HGET', KEYS[1], 'expected_floor') or '0')
+    if retry_expected > expected_floor then
+        expected_floor = retry_expected
+    end
+    if previous_expected == 0 and retry_expected > 0 then
+        delivery_attempts = 1
+    elseif previous_expected > 0 then
+        delivery_attempts = delivery_attempts + 1
+    end
+    redis.call('HSET', KEYS[1],
+        'expected', expected_floor,
+        'expected_floor', expected_floor,
+        'delivery_attempts', delivery_attempts,
+        'lease_until', now + tonumber(ARGV[5]))
+    redis.call('EXPIRE', KEYS[1], ARGV[4])
+    return expected_floor
+end
+redis.call('HSET', KEYS[1], 'action', ARGV[3], 'attempt', 1)
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+local expected = redis.call('PUBLISH', ARGV[1], ARGV[2])
+local delivery_attempts = 0
+if expected > 0 then
+    delivery_attempts = 1
+end
+redis.call('HSET', KEYS[1],
+    'expected', expected,
+    'expected_floor', expected,
+    'delivery_attempts', delivery_attempts,
+    'lease_until', now + tonumber(ARGV[5]))
+return expected
+"""
 
 FLASK_SERVICE = ['flask']
 WORKER_SERVICES = ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
 
 
-def publish_control_request(action):
+def new_control_request_id():
+    return uuid.uuid4().hex
+
+
+def control_request_key(request_id):
+    return f'{CONTROL_REQUEST_PREFIX}{{{request_id}}}:meta'
+
+
+def control_result_key(request_id):
+    return f'{CONTROL_RESULT_PREFIX}{{{request_id}}}:listeners'
+
+
+def control_attempt_result_key(request_id, attempt):
+    return f'{CONTROL_RESULT_PREFIX}{{{request_id}}}:attempt:{attempt}'
+
+
+def _hash_value(values, key):
+    return values.get(key, values.get(key.encode('utf-8')))
+
+
+def get_control_request_result(action, request_id, redis_conn=None):
+    owns_connection = redis_conn is None
+    try:
+        if owns_connection:
+            redis_conn = new_redis_connection(
+                socket_connect_timeout=5,
+                socket_timeout=5,
+                decode_responses=True,
+            )
+
+        request = redis_conn.hgetall(control_request_key(request_id))
+        if not request:
+            return None
+        recorded_action = _hash_value(request, 'action')
+        if isinstance(recorded_action, bytes):
+            recorded_action = recorded_action.decode('utf-8', errors='replace')
+        if recorded_action != action:
+            logger.error(
+                'Control request ID %s belongs to action %r, not %r',
+                request_id,
+                recorded_action,
+                action,
+            )
+            return False
+
+        outcome = _hash_value(request, 'outcome')
+        if isinstance(outcome, bytes):
+            outcome = outcome.decode('utf-8', errors='replace')
+        if outcome == '1':
+            return True
+        if outcome == '0':
+            return False
+
+        raw_expected = _hash_value(request, 'expected')
+        if raw_expected is None:
+            return None
+        expected = int(raw_expected)
+        if expected <= 0:
+            return False
+
+        raw_attempt = _hash_value(request, 'attempt')
+        if raw_attempt is None:
+            return None
+        attempt = int(raw_attempt)
+        results = redis_conn.hgetall(control_attempt_result_key(request_id, attempt))
+        if len(results) < expected:
+            return None
+
+        completed_ok = True
+        for raw_result in results.values():
+            if isinstance(raw_result, bytes):
+                raw_result = raw_result.decode('utf-8', errors='replace')
+            try:
+                result = json.loads(raw_result)
+            except (TypeError, ValueError):
+                logger.exception(
+                    'Invalid ACK for control request %s: %r', request_id, raw_result
+                )
+                completed_ok = False
+                break
+            if result.get('action') != action or result.get('ok') is not True:
+                completed_ok = False
+                break
+        try:
+            redis_conn.hset(
+                control_request_key(request_id),
+                'outcome',
+                '1' if completed_ok else '0',
+            )
+            redis_conn.expire(control_request_key(request_id), CONTROL_RESULT_TTL_SECONDS)
+        except Exception:
+            logger.warning(
+                'Could not cache outcome for control request %s', request_id, exc_info=True
+            )
+        return completed_ok
+    except Exception:
+        logger.exception('Could not read %s request %s result from Redis', action, request_id)
+        return None
+    finally:
+        if owns_connection and redis_conn is not None:
+            try:
+                redis_conn.close()
+            except Exception:
+                pass
+
+
+def publish_control_request(action, request_id=None, timeout_seconds=CONTROL_ACK_TIMEOUT_SECONDS):
+    supplied_request_id = request_id is not None
+    request_id = request_id or new_control_request_id()
+    redis_conn = None
     try:
         redis_conn = new_redis_connection(
             socket_connect_timeout=5,
             socket_timeout=5,
             decode_responses=True,
         )
-        # Subscriber COUNT proves nothing: the Flask container also subscribes and
-        # then ignores every signal, so publish() returns >= 1 even when the worker
-        # listener - the only one that acts - is dead. Worker listeners announce
-        # themselves with a TTL key instead, so absence is a real answer.
-        listeners = 0
-        try:
-            for _ in redis_conn.scan_iter(match=f'{WORKER_PRESENCE_PREFIX}*', count=100):
-                listeners += 1
-                break
-        except Exception:
-            logger.exception('Could not check for live worker restart listeners')
-            listeners = -1
-        redis_conn.publish(RESTART_CHANNEL, action)
-        if listeners == 0:
+        if supplied_request_id:
+            existing_result = get_control_request_result(
+                action, request_id, redis_conn=redis_conn
+            )
+            if existing_result is True:
+                return True
+            if existing_result is False:
+                request = redis_conn.hgetall(control_request_key(request_id))
+                recorded_action = _hash_value(request, 'action') if request else None
+                if isinstance(recorded_action, bytes):
+                    recorded_action = recorded_action.decode('utf-8', errors='replace')
+                raw_expected = _hash_value(request, 'expected') if request else None
+                if recorded_action == action and raw_expected is not None and int(raw_expected) > 0:
+                    return False
+
+        payload = json.dumps({'action': action, 'request_id': request_id})
+        expected = int(redis_conn.eval(
+            _REGISTER_CONTROL_REQUEST_LUA,
+            1,
+            control_request_key(request_id),
+            RESTART_CHANNEL,
+            payload,
+            action,
+            CONTROL_RESULT_TTL_SECONDS,
+            CONTROL_RETRY_LEASE_SECONDS,
+            CONTROL_MAX_DELIVERY_ATTEMPTS,
+        ))
+        if expected == -2:
+            logger.error('Control request ID %s was reused for a different action', request_id)
+            return False
+        if expected == -4:
+            return True
+        if expected == -3:
+            logger.error('Control request %s has a durable negative outcome', request_id)
+            return False
+        if expected <= 0:
             logger.error(
-                'PUBLISHED %s BUT NO WORKER RESTART-LISTENER IS ALIVE. The workers are '
-                'STILL ON THE OLD CONFIGURATION. Check that the worker container (or '
-                'the native worker role) is running its restart listener.',
+                'Could not deliver %s request %s: no worker restart listener is subscribed',
                 action,
+                request_id,
             )
             return False
-        return True
+
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        poll_interval = _ACK_POLL_START_SECONDS
+        while True:
+            result = get_control_request_result(action, request_id, redis_conn=redis_conn)
+            if result is not None:
+                return result
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.error(
+                    'Timed out waiting for %d worker ACK(s) for %s request %s',
+                    expected,
+                    action,
+                    request_id,
+                )
+                return False
+            poll_interval = min(poll_interval * 2, _ACK_POLL_MAX_SECONDS)
+            time.sleep(min(poll_interval, remaining))
     except Exception:
-        logger.exception('Could not publish %s request to Redis', action)
+        logger.exception('Could not publish or confirm %s request %s', action, request_id)
         return False
+    finally:
+        if redis_conn is not None:
+            try:
+                redis_conn.close()
+            except Exception:
+                pass
 
 
-def publish_restart_request():
-    return publish_control_request('restart')
+def publish_restart_request(request_id=None, timeout_seconds=CONTROL_ACK_TIMEOUT_SECONDS):
+    return publish_control_request('restart', request_id=request_id, timeout_seconds=timeout_seconds)
 
 
-def publish_plugin_sync_request():
-    return publish_control_request('plugin-sync')
+def publish_plugin_sync_request(request_id=None, timeout_seconds=CONTROL_ACK_TIMEOUT_SECONDS):
+    return publish_control_request('plugin-sync', request_id=request_id, timeout_seconds=timeout_seconds)
 
 
-def publish_stop_request():
-    return publish_control_request('stop')
+def publish_stop_request(request_id=None, timeout_seconds=CONTROL_ACK_TIMEOUT_SECONDS):
+    return publish_control_request('stop', request_id=request_id, timeout_seconds=timeout_seconds)
 
 
-def publish_start_request():
-    return publish_control_request('start')
+def publish_start_request(request_id=None, timeout_seconds=CONTROL_ACK_TIMEOUT_SECONDS):
+    return publish_control_request('start', request_id=request_id, timeout_seconds=timeout_seconds)
 
 
 def _control_endpoint():
@@ -122,7 +365,7 @@ def _send_control(arguments):
     payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
     try:
         with socket.socket(family, socket.SOCK_STREAM) as sock:
-            sock.settimeout(15)
+            sock.settimeout(CONTROL_IPC_TIMEOUT_SECONDS)
             sock.connect(address)
             sock.sendall(payload + b'\n')
             response = sock.recv(1024).strip()
@@ -145,6 +388,20 @@ def _run_supervisorctl(arguments):
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
         if result.returncode != 0:
+            lines = [line.strip().lower() for line in (stdout + '\n' + stderr).splitlines()
+                     if line.strip()]
+            action = arguments[0] if arguments else ''
+            idempotent = (
+                action == 'start' and lines and all('started' in line for line in lines)
+            ) or (
+                action == 'stop' and lines
+                and all(('stopped' in line or 'not running' in line) for line in lines)
+            )
+            if idempotent:
+                logger.info(
+                    'supervisorctl %s was already satisfied: %s', action, stdout or stderr
+                )
+                return True
             logger.error('supervisorctl failed (%s): %s', result.returncode, stderr or stdout)
             return False
         logger.info('supervisorctl succeeded: %s', stdout)
