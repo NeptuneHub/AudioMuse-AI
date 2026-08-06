@@ -29,24 +29,16 @@ import time
 import uuid
 
 from flask import Blueprint, g, jsonify, request
-from rq.job import Job
 
 import config
-import rq_job_state
+import taskqueue
 from app_helper import (
-    ENQUEUE_MISSING,
     coerce_db_details,
-    redis_conn,
-    resolve_enqueue_outcome,
-    rq_queue_high,
-    save_task_status,
-    send_stop_job_command,
 )
 from database import (
     get_db,
     missing_required_creds,
     get_active_main_task,
-    prune_task_status_history,
     main_task_start_lock,
     record_task_history,
 )
@@ -76,14 +68,6 @@ def _superseded_sweep_details():
 
 
 def _setup_in_progress():
-    """True while the first-run setup wizard is the caller.
-
-    Set by the auth barrier when the install still needs setup: no admin
-    account exists yet, so there is nobody to authenticate as, and the whole
-    /api/setup surface (which writes these same credentials) is already open in
-    that window. It closes the moment setup completes, after which every
-    mutation here is admin-only again.
-    """
     return bool(getattr(g, 'setup_needed', False))
 
 
@@ -106,21 +90,12 @@ def _validate_type(server_type):
 
 
 def _as_bool(value):
-    """Parse a JSON flag. A non-UI caller may send the STRING "false", which is
-    truthy in Python - and would silently promote its server to default."""
     if isinstance(value, str):
         return value.strip().lower() in ('true', '1', 'yes', 'on')
     return bool(value)
 
 
 def _apply_default_to_config():
-    """Propagate a default-server change to every process.
-
-    The registry row that just changed IS the source of truth; the config module
-    globals are only its projection. Reload them here for this process and
-    request a restart so workers re-import config and re-project the row. No
-    values are written anywhere - the registry was already updated by the caller.
-    """
     import restart_manager
 
     try:
@@ -150,15 +125,17 @@ def _restart_partial_failure(body, status_code=200):
 
 
 def _revoke_active_sweeps(cur):
-    """Lock and revoke every live sweep in the caller's DB transaction."""
     terminal = (
         config.TASK_STATUS_SUCCESS,
         config.TASK_STATUS_FAILURE,
         config.TASK_STATUS_REVOKED,
     )
     cur.execute(
+        # Any live sweep, root or child. The provider migration queues its
+        # alignment as its own child so it does not take the start path, and a
+        # root-only filter left it running while a new sweep started over it.
         "SELECT task_id, start_time FROM task_status WHERE task_type = 'server_sweep' "
-        "AND parent_task_id IS NULL AND status NOT IN (%s, %s, %s) FOR UPDATE",
+        "AND status NOT IN (%s, %s, %s) FOR UPDATE",
         terminal,
     )
     rows = cur.fetchall()
@@ -207,40 +184,14 @@ def _record_superseded_sweep_history(records):
 
 
 def _cleanup_superseded_sweep_jobs(task_ids):
-    """Best-effort RQ cleanup after the durable DB tombstones are committed."""
     for stale_task_id in task_ids:
         try:
-            job = Job.fetch(stale_task_id, connection=redis_conn)
-            status = job.get_status(refresh=False)
-            if rq_job_state.is_running_status(status):
-                send_stop_job_command(redis_conn, stale_task_id)
-            elif rq_job_state.is_alive_status(status):
-                job.cancel()
+            taskqueue.request_cancel(stale_task_id)
         except Exception:
-            # The job still observes the REVOKED row cooperatively. Redis cleanup
-            # must not undo the all-or-nothing database supersession.
-            logger.exception("RQ cleanup failed for superseded sweep %s", stale_task_id)
-
-
-def _cancel_active_sweeps():
-    """Atomically revoke all active sweeps, failing closed on any DB error."""
-    db = get_db()
-    try:
-        with db.cursor() as cur:
-            records = _revoke_active_sweeps(cur)
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.exception("Could not atomically revoke active sweeps")
-        raise
-    _record_superseded_sweep_history(records)
-    cancelled = [task_id for task_id, _duration in records]
-    _cleanup_superseded_sweep_jobs(cancelled)
-    return cancelled
+            logger.exception("Could not signal the superseded sweep %s", stale_task_id)
 
 
 def _claim_replacement_sweep(task_id):
-    """Atomically revoke the old sweep set and insert its replacement claim."""
     db = get_db()
     try:
         with db.cursor() as cur:
@@ -256,20 +207,37 @@ def _claim_replacement_sweep(task_id):
                     config.TASK_STATUS_PENDING,
                     json.dumps({
                         'message': 'Server alignment queued for all servers.',
-                        'full_refresh': True,
                     }),
                     time.time(),
                 ),
             )
-        db.commit()
+        # NO commit here. The staged row only becomes runnable once the enqueue
+        # writes its func, and committing between the two published a func-less
+        # PENDING row that a crash left stranded for the 30-minute stale sweep.
+        # The caller enqueues on this same connection and commits both together.
     except Exception:
         db.rollback()
         logger.exception("Could not atomically claim replacement sweep %s", task_id)
         raise
-    _record_superseded_sweep_history(records)
-    cancelled = [task_id for task_id, _duration in records]
-    _cleanup_superseded_sweep_jobs(cancelled)
-    return cancelled
+    return records
+
+
+def _live_sweep_row():
+    # get_active_main_task only looks at parentless rows, by design: it answers
+    # "is a MAIN task running". The provider migration queues its alignment as its
+    # own CHILD so it does not take the start path, so that question misses it and
+    # a manual align would start a second sweep straight over the top of it.
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT task_id, status FROM task_status WHERE task_type = 'server_sweep' "
+            "AND status = ANY(%s) ORDER BY timestamp DESC LIMIT 1",
+            (list(config.TASK_STATUS_LIVE),),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {'task_id': row[0], 'status': row[1]}
 
 
 def _task_blocking_a_sweep():
@@ -284,16 +252,6 @@ def _task_blocking_a_sweep():
 
 
 def _enqueue_sweep(at_front=False):
-    """Replace any queued/running sweep with one alignment of every server.
-
-    Adding several servers back to back cancels the previous alignment each time
-    and starts a fresh one, so the newest sweep always covers every not-yet-aligned
-    server and no stale sweep for an outdated server set keeps running.
-
-    Refuses while a cleaning run is live: both prune track_server_map against a
-    catalogue snapshot taken minutes earlier, so an overlap lets one delete the
-    mappings the other just wrote.
-    """
     task_id = str(uuid.uuid4())
     try:
         # Cleaning's own gate sees sweeps (exclude_task_types=()), so without the
@@ -312,32 +270,26 @@ def _enqueue_sweep(at_front=False):
             # Revoking only some old sweeps and then continuing would permit two
             # incompatible catalogue snapshots. Revoke the complete set and
             # insert the replacement in one transaction.
-            superseded = _claim_replacement_sweep(task_id)
+            db = get_db()
+            records = _claim_replacement_sweep(task_id)
             try:
-                rq_queue_high.enqueue(
+                taskqueue.enqueue(
                     'tasks.multiserver_sync.sweep_all_secondary_servers',
                     kwargs={'task_id': task_id},
-                    job_id=task_id,
-                    job_timeout=-1,
-                    at_front=at_front,
+                    task_id=task_id,
+                    task_type='server_sweep',
+                    queue=taskqueue.QUEUE_HIGH,
+                    priority=taskqueue.PRIORITY_FRONT if at_front else 0,
+                    details={'message': 'Server alignment queued.'},
+                    conn=db,
                 )
+                db.commit()
             except Exception:
-                outcome, _rq_status = resolve_enqueue_outcome(task_id)
-                if outcome == ENQUEUE_MISSING:
-                    save_task_status(
-                        task_id, 'server_sweep', config.TASK_STATUS_FAILURE,
-                        details={
-                            'error': 'Could not enqueue the alignment (is Redis reachable?)'
-                        },
-                        raise_on_error=True,
-                    )
-                    task_id = None
-                else:
-                    logger.warning(
-                        "Alignment enqueue reply was lost for %s; retaining its "
-                        "PENDING claim for RQ/janitor reconciliation.",
-                        task_id,
-                    )
+                db.rollback()
+                raise
+        _record_superseded_sweep_history(records)
+        superseded = [stale_id for stale_id, _duration in records]
+        _cleanup_superseded_sweep_jobs(superseded)
         if superseded:
             logger.info(
                 "Superseded %d active sweep(s) with consolidated alignment %s",
@@ -347,11 +299,6 @@ def _enqueue_sweep(at_front=False):
     except Exception:
         logger.exception("Failed to enqueue the server alignment")
         return None
-    finally:
-        try:
-            prune_task_status_history()
-        except Exception:
-            logger.exception("Could not prune task_status history after the alignment")
 
 
 def _latest_sweep_task():
@@ -387,19 +334,10 @@ def _name_taken(name, exclude_server_id=None):
 
 
 def _missing_cred_keys(server_type, creds):
-    """Required-but-empty cred keys for ``server_type`` (url/token/... style keys)."""
     return missing_required_creds(server_type, creds)
 
 
 def _placeholder_default():
-    """The default server row when it is only init_db's credential-less seed.
-
-    A fresh install always carries one (seeded from an unconfigured config), and
-    it is not a server anybody can reach: the first real server added has to
-    take its place, or setup could never complete. Returns None when the default
-    is a properly configured server (or when there is no default at all, which
-    the registry already resolves by making the new server the default).
-    """
     try:
         default = registry.get_default_server()
     except Exception:
@@ -413,12 +351,6 @@ def _placeholder_default():
 
 
 def _drop_unused_placeholder(placeholder):
-    """Delete the seed row once a real server has replaced it as the default.
-
-    Kept when it owns track mappings: that would mean a once-working server
-    whose credentials were cleared, and its catalogue bindings are not ours to
-    throw away - it just stays as a secondary for the admin to fix or remove.
-    """
     try:
         if registry.mapped_count(placeholder['server_id']):
             return False
@@ -435,11 +367,6 @@ def _drop_unused_placeholder(placeholder):
 
 @music_servers_bp.route('/api/servers', methods=['GET'])
 def list_servers():
-    """List configured media servers plus the default id.
-
-    Admins receive each server's masked credentials (to prefill the setup editor);
-    non-admins receive only the fields the menu dropdown needs, with no creds.
-    """
     payload = servers_for_ui()
     payload['sweep_task'] = _latest_sweep_task()
     if not _is_admin_caller():
@@ -638,7 +565,6 @@ def server_libraries():
 
 @music_servers_bp.route('/api/servers/align', methods=['POST'])
 def align_servers():
-    """Align every secondary server against the default (no-op when aligned)."""
     forbidden = _forbid_non_admin()
     if forbidden:
         return forbidden
@@ -669,7 +595,7 @@ def sweep_server(server_id):
                         "task_id": active['task_id'],
                     }
                 ), 409
-            active_sweep = get_active_main_task(task_type='server_sweep')
+            active_sweep = _live_sweep_row()
             if active_sweep:
                 return jsonify(
                     {
@@ -678,61 +604,21 @@ def sweep_server(server_id):
                         "status": active_sweep['status'],
                     }
                 ), 409
-            save_task_status(
-                task_id, 'server_sweep', config.TASK_STATUS_PENDING,
+            taskqueue.enqueue(
+                'tasks.multiserver_sync.sweep_server',
+                args=(server_id,),
+                kwargs={'task_id': task_id},
+                task_id=task_id,
+                task_type='server_sweep',
+                queue=taskqueue.QUEUE_HIGH,
                 details={
                     'message': 'Server matching sweep queued.',
-                    'full_refresh': True,
+                    'status_message': 'Server matching sweep queued.',
                 },
-                raise_on_error=True,
             )
-            try:
-                rq_queue_high.enqueue(
-                    'tasks.multiserver_sync.sweep_server',
-                    args=(server_id,),
-                    kwargs={'task_id': task_id},
-                    job_id=task_id,
-                    job_timeout=-1,
-                )
-            except Exception:
-                outcome, _rq_status = resolve_enqueue_outcome(task_id)
-                if outcome == ENQUEUE_MISSING:
-                    save_task_status(
-                        task_id, 'server_sweep', config.TASK_STATUS_FAILURE,
-                        details={'error': 'Could not enqueue the sweep (is Redis reachable?)'},
-                        raise_on_error=True,
-                    )
-                    prune_task_status_history()
-                    return jsonify(
-                        {"error": "Could not enqueue the sweep; check container logs."}
-                    ), 500
-                logger.warning(
-                    "Sweep enqueue reply was lost for %s; retaining its PENDING "
-                    "claim for RQ/janitor reconciliation.",
-                    task_id,
-                )
+    except taskqueue.TaskAlreadyRunning as exc:
+        return jsonify({"error": exc.user_message}), exc.status_code
     except Exception:
-        logger.exception("Failed to enqueue matching sweep for server %s", server_id)
-        # The claim is already committed. Left PENDING it looks like a running
-        # sweep, so every later start 409s against a job that does not exist - and
-        # being non-terminal, the prune can never reclaim it.
-        try:
-            save_task_status(
-                task_id, 'server_sweep', config.TASK_STATUS_FAILURE,
-                details={'error': 'Could not enqueue the sweep (is Redis reachable?)'},
-            )
-        except Exception:
-            logger.exception("Could not mark the failed sweep claim as FAILURE")
-        try:
-            prune_task_status_history()
-        except Exception:
-            logger.exception("Could not prune task_status history after failed sweep")
-        return jsonify({"error": "Could not enqueue the sweep; check container logs."}), 500
-    # This endpoint writes its own server_sweep root and never goes through
-    # _enqueue_sweep, so without this an install that only ever re-syncs single
-    # servers kept every one of those rows.
-    try:
-        prune_task_status_history()
-    except Exception:
-        logger.exception("Could not prune task_status history after the sweep")
+        logger.exception("Failed to queue the matching sweep for server %s", server_id)
+        return jsonify({"error": "Could not queue the sweep; check container logs."}), 500
     return jsonify({"enqueued": True, "task_id": task_id, "job_id": task_id, "server_id": server_id}), 202

@@ -209,19 +209,15 @@ async function checkActiveTasks() {
         if (mainActiveTask && mainActiveTask.task_id) {
             currentTaskId = mainActiveTask.task_id;
             const currentStatusUpper = (mainActiveTask.status || mainActiveTask.state || 'UNKNOWN').toUpperCase();
-            const terminalStates = ['SUCCESS', 'FINISHED', 'FAILURE', 'FAILED', 'REVOKED', 'CANCELED'];
 
-            displayTaskStatus(mainActiveTask); 
-            
-            const previousStateWasTerminal = lastPolledTaskDetails[currentTaskId]?.state && terminalStates.includes(lastPolledTaskDetails[currentTaskId].state.toUpperCase());
+            displayTaskStatus(mainActiveTask);
 
-            if (terminalStates.includes(currentStatusUpper) && !previousStateWasTerminal) {
-                let alertTitle = 'Task Update';
-                let alertMessage = `Task ${mainActiveTask.task_id} (${mainActiveTask.task_type_from_db || 'Unknown Type'}) has ${currentStatusUpper.toLowerCase()}.`;
-                if (['SUCCESS', 'FINISHED'].includes(currentStatusUpper)) alertTitle = 'Task Completed';
-                else if (['FAILURE', 'FAILED'].includes(currentStatusUpper)) alertTitle = 'Task Failed';
-                else if (['REVOKED', 'CANCELED'].includes(currentStatusUpper)) alertTitle = 'Task Canceled';
-                
+            const previousStateWasTerminal = AudioMuseTaskStatus.isTerminal(lastPolledTaskDetails[currentTaskId]?.state);
+
+            if (AudioMuseTaskStatus.isTerminal(currentStatusUpper) && !previousStateWasTerminal) {
+                const alertTitle = AudioMuseTaskStatus.title(currentStatusUpper);
+                const alertMessage = `Task ${mainActiveTask.task_id} (${mainActiveTask.task_type_from_db || 'Unknown Type'}) has ${currentStatusUpper.toLowerCase()}.`;
+
                 showMessageBox(alertTitle, alertMessage);
             }
             lastPolledTaskDetails[currentTaskId] = { state: currentStatusUpper, ...mainActiveTask };
@@ -238,24 +234,20 @@ async function checkActiveTasks() {
                 if (finalStatusResponse.ok) {
                     const finalStatusData = await finalStatusResponse.json();
                     const upperFinalStatus = (finalStatusData.state || 'UNKNOWN').toUpperCase();
-                    const terminalStates = ['SUCCESS', 'FINISHED', 'FAILURE', 'FAILED', 'REVOKED', 'CANCELED'];
-                    
-                    const finalStatusIsTerminal = terminalStates.includes(upperFinalStatus);
-                    const previousStateWasTerminal = previousDetails && previousDetails.state && terminalStates.includes(previousDetails.state.toUpperCase());
+
+                    const finalStatusIsTerminal = AudioMuseTaskStatus.isTerminal(upperFinalStatus);
+                    const previousStateWasTerminal = previousDetails && AudioMuseTaskStatus.isTerminal(previousDetails.state);
 
                     if (finalStatusIsTerminal && !previousStateWasTerminal) {
-                        let alertTitle = 'Task Finished';
-                        let alertMessage = `Task ${finalStatusData.task_id} (${finalStatusData.task_type_from_db || 'Unknown Type'}) has ${upperFinalStatus.toLowerCase()}.`;
-                        if (['SUCCESS', 'FINISHED'].includes(upperFinalStatus)) alertTitle = 'Task Completed';
-                        else if (['FAILURE', 'FAILED'].includes(upperFinalStatus)) alertTitle = 'Task Failed';
-                        else if (['REVOKED', 'CANCELED'].includes(upperFinalStatus)) alertTitle = 'Task Canceled';
-                        
+                        const alertTitle = AudioMuseTaskStatus.title(upperFinalStatus);
+                        const alertMessage = `Task ${finalStatusData.task_id} (${finalStatusData.task_type_from_db || 'Unknown Type'}) has ${upperFinalStatus.toLowerCase()}.`;
+
                         showMessageBox(alertTitle, alertMessage);
                     }
                     displayTaskStatus(finalStatusData);
                 } else {
                     showMessageBox('Task Finished', `Task ${finishedTaskId} is no longer active. Final status could not be retrieved.`);
-                    displayTaskStatus({ task_id: finishedTaskId, state: 'FINISHED', progress: 100 });
+                    displayTaskStatus({ task_id: finishedTaskId, state: 'UNKNOWN', progress: 100 });
                 }
             } catch (e) {
                  console.error(`Error fetching final status for ${finishedTaskId}:`, e);
@@ -305,19 +297,11 @@ function displayTaskStatus(task) {
     progressBar.setAttribute('aria-valuenow', progressValue);
 
     statusStatus.className = 'status-text'; // Reset classes
-    let statusClass = 'status-pending';
-    if (['SUCCESS', 'FINISHED'].includes(stateUpper)) {
-        statusClass = 'status-success';
-    } else if (['FAILURE', 'FAILED', 'REVOKED', 'CANCELED'].includes(stateUpper)) {
-        statusClass = 'status-failure';
-    } else if (stateUpper === 'IDLE') {
-        statusClass = 'status-idle';
-    }
-    statusStatus.classList.add('status-status', statusClass);
+    statusStatus.classList.add('status-status', AudioMuseTaskStatus.statusClass(stateUpper));
 
 
-    if (['SUCCESS', 'FINISHED'].includes(stateUpper) && (task.task_type_from_db || task.task_type || '').toLowerCase().includes('clustering')) {
-        fetchPlaylists(); 
+    if (AudioMuseTaskStatus.isSuccess(stateUpper) && (task.task_type_from_db || task.task_type || '').toLowerCase().includes('clustering')) {
+        fetchPlaylists();
     }
 
     let statusMessage = 'N/A';
@@ -404,8 +388,8 @@ async function startTask(taskType) {
         const result = await response.json();
         if (response.ok && result.task_id) {
             currentTaskId = result.task_id;
-            displayTaskStatus({ task_id: result.task_id, task_type: result.task_type, state: 'PENDING', progress: 0, details: 'Task enqueued.' });
-            lastPolledTaskDetails[result.task_id] = { state: 'PENDING', task_type: result.task_type, task_id: result.task_id };
+            displayTaskStatus({ task_id: result.task_id, task_type: result.task_type, state: 'NEW', progress: 0, details: 'Task enqueued.' });
+            lastPolledTaskDetails[result.task_id] = { state: 'NEW', task_type: result.task_type, task_id: result.task_id };
             updateCancelButtonState(false);
         } else {
             const structured = (typeof formatErrorText === 'function' && result?.error_code) ? formatErrorText(result) : '';

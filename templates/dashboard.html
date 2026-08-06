@@ -258,7 +258,7 @@
         <h2>Queue Workers
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each worker container spins up two RQ workers: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
+                <span class="tooltip-text">Each worker container runs two queue worker processes: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="workers-updated">Loading…</p>
@@ -268,8 +268,8 @@
                     <th>Hostname</th>
                     <th class="col-narrow">State</th>
                     <th>Queues</th>
-                    <th class="col-narrow">OK</th>
-                    <th class="col-narrow">Fail</th>
+                    <th>Started</th>
+                    <th>Current Task</th>
                     <th>Current Job</th>
                 </tr></thead>
                 <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
@@ -390,15 +390,7 @@
     const tickColor = () => isDark() ? '#D1D5DB' : '#374151';
 
     function statusBadgeClass(status) {
-        if (!status) return 'badge-unknown';
-        const s = status.toUpperCase();
-        if (s === 'SUCCESS' || s === 'OK') return 'badge-success';
-        if (s === 'FAILURE' || s === 'DOWN') return 'badge-failure';
-        if (s === 'PENDING') return 'badge-pending';
-        if (s === 'STARTED') return 'badge-started';
-        if (s === 'PROGRESS') return 'badge-progress';
-        if (s === 'REVOKED') return 'badge-revoked';
-        return 'badge-unknown';
+        return AudioMuseTaskStatus.badgeClass(status);
     }
 
     function fmtDuration(secs) {
@@ -595,14 +587,15 @@
 
     function renderWorkers(workers) {
         const tbody = document.querySelector('#workers-table tbody');
+        const columns = document.querySelectorAll('#workers-table thead th').length;
         tbody.innerHTML = '';
         if (!workers || workers.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="muted">No active workers detected.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + columns
+                + '" class="muted">No active workers detected.</td></tr>';
             return;
         }
         workers.forEach(w => {
-            const cls = w.state === 'busy' ? 'badge-progress'
-                : (w.state === 'idle' ? 'badge-ok' : 'badge-unknown');
+            const cls = AudioMuseTaskStatus.workerStateClass(w.state);
             const jobTd = document.createElement('td');
             if (w.current_job_id) {
                 const code = document.createElement('code');
@@ -615,8 +608,8 @@
             tr.appendChild(textCell(w.hostname || '-'));
             tr.appendChild(badgeCell(w.state || 'unknown', cls));
             tr.appendChild(textCell((w.queues || []).join(', ') || '-'));
-            tr.appendChild(textCell(w.successful_jobs ?? 0));
-            tr.appendChild(textCell(w.failed_jobs ?? 0));
+            tr.appendChild(textCell(w.started_at ? fmtTime(w.started_at) : '-'));
+            tr.appendChild(textCell(w.current_task_type || '-'));
             tr.appendChild(jobTd);
             tbody.appendChild(tr);
         });

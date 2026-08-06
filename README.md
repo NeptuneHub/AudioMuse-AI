@@ -80,7 +80,7 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 Get AudioMuse-AI running in minutes with Docker Compose. For more deployment examples see the [DEPLOYMENT](docs/DEPLOYMENT.md) page.
 
-From `v1.0.0`, only PostgreSQL, Redis and `TZ` are configured via environment variables. Everything else is managed through the browser Setup Wizard and persisted in the database (legacy environment variables are imported automatically on first startup). The Setup Wizard is the landing page of a clean installation and stays available under Administration > Setup Wizard.
+From `v1.0.0`, only PostgreSQL and `TZ` are configured via environment variables. Everything else is managed through the browser Setup Wizard and persisted in the database (legacy environment variables are imported automatically on first startup). The Setup Wizard is the landing page of a clean installation and stays available under Administration > Setup Wizard.
 
 **Prerequisites:**
 * Docker and Docker Compose installed
@@ -94,7 +94,7 @@ From `v1.0.0`, only PostgreSQL, Redis and `TZ` are configured via environment va
    cp deployment/.env.example deployment/.env
    ```
 
-   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database user and password, but you can also override other PostgreSQL and Redis connection parameters if needed:
+   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database user and password, but you can also override other PostgreSQL connection parameters if needed:
 
    ```env
    POSTGRES_PASSWORD=your-secure-password
@@ -125,7 +125,7 @@ docker compose -f deployment/docker-compose.yaml down
 
 ## Native Deployment
 
-Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows**, attached to each [release](https://github.com/NeptuneHub/AudioMuse-AI/releases). Each bundles the whole stack (embedded PostgreSQL, Redis, web UI and workers), so you don't need Docker or an external database. Once started, open **http://127.0.0.1:8000**.
+Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows**, attached to each [release](https://github.com/NeptuneHub/AudioMuse-AI/releases). Each bundles the whole stack (embedded PostgreSQL, web UI and workers), so you don't need Docker or an external database. Once started, open **http://127.0.0.1:8000**.
 
 > The apps are not signed, so your OS may warn you on first launch, see the per-platform notes below for how to allow them.
 
@@ -138,7 +138,7 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
   - **No Terminal:** double-click and dismiss the warning, then System Settings → Privacy & Security → "Open Anyway", authenticate, and launch again.
 - Runs only on Apple Silicon (ARM) on recent macOS (tested on macOS 15.3.1, Mac Mini M4 / 16 GB).
 
-**Files:** data (database, Redis, temp audio) in `~/Library/AudioMuse-AI`, log at `~/Library/Logs/AudioMuse-AI/audiomuse.log`
+**Files:** data (database, temp audio) in `~/Library/AudioMuse-AI`, log at `~/Library/Logs/AudioMuse-AI/audiomuse.log`
 </details>
 
 <details>
@@ -151,7 +151,7 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
   - `audiomuse-ai start` (stop with `audiomuse-ai stop`), or auto-start on login with `systemctl --user enable --now audiomuse-ai`.
 - Verified on **Debian 12 (bookworm)** (glibc 2.36). The `.rpm` is the same payload, expected to work on recent Fedora / RHEL 9, but too old for RHEL/Rocky/Alma 8 (glibc 2.28). Feedback on RPM-based distros is welcome.
 
-**Files** (under the launching user's home): data (database, Redis, temp audio) in `~/.local/share/AudioMuse-AI`, log at `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first)
+**Files** (under the launching user's home): data (database, temp audio) in `~/.local/share/AudioMuse-AI`, log at `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first)
 </details>
 
 <details>
@@ -161,7 +161,7 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 - From a terminal you can start with `AudioMuse-AI.exe start` and stop with `AudioMuse-AI.exe stop`.
 - Runs only on x86_64 (Intel/AMD) on Windows 10/11.
 
-**Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
+**Files:** data (database, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
 </details>
 
 > [!IMPORTANT]

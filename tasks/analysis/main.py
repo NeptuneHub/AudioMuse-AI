@@ -16,13 +16,30 @@ analyzed not one song (error codes 2005/2006/2007); a wiped task_status row IS
 the cancellation signal at every level.
 
 Main Features:
-* run_analysis_task / run_analysis_server_task: the RQ entry points.
+* run_analysis_task / run_analysis_server_task: the queue entry points.
 * _run_analysis_server_task_impl: work map -> skip-or-enqueue -> drain -> final
   index rebuild, with revocation polls and DB reconciliation throttled to
   ANALYSIS_MONITOR_DB_INTERVAL.
 * _verify_media_server_reachable: pre-flight probe so an unreachable or
   unauthenticated server aborts early with 1101/1104 instead of failing every
   child job.
+* _inflight_children: the one read of this task's live children, used both to
+  decide whether TEMP_DIR may be wiped and to adopt what a previous attempt left
+  running.
+* _carried_over_tracks: a reclaim requeues the parent by setting its own row back
+  to NEW and leaves the children alone, so an earlier attempt's rows are still
+  there when the retry starts. Its FAILURES must not be counted - doing so made
+  `failed_count >= albums_launched` true and reported a fully successful retry as
+  a failed phase - but its analysed songs are real work, so they are carried into
+  this attempt's total rather than dropped with them.
+
+TEMP_DIR is SHARED by every worker process in a container and clean_temp empties
+it wholesale, so the start-of-run wipe is gated on this task provably having no
+live children. A parent whose worker died is requeued and restarts within
+seconds while the album children it is about to adopt are still decoding audio
+into that directory; wiping it there destroyed the work of the very jobs the
+adoption pass exists to preserve. If the children cannot be read at all the wipe
+is skipped, because leaking temp files is the cheaper mistake.
 """
 
 import os
@@ -31,17 +48,15 @@ import time
 import logging
 import uuid
 
-from rq import get_current_job, Retry
-from rq.job import Job
-from rq.exceptions import NoSuchJobError
+import taskqueue
 
-import rq_job_state
 
 from config import (
     TEMP_DIR,
     MAX_QUEUED_ANALYSIS_JOBS,
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
+    QUEUE_MAX_ERRORS_KEPT,
     REBUILD_INDEX_BATCH_SIZE,
     CHROMAPRINT_COLLECTION_ENABLED,
     CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN,
@@ -59,8 +74,6 @@ from .. import chromaprint
 
 from flask_app import app
 from app_helper import (
-    redis_conn,
-    rq_queue_default,
     save_task_status,
     get_task_info_from_db,
     get_task_statuses,
@@ -70,13 +83,9 @@ from app_helper import (
     TASK_STATUS_REVOKED,
 )
 from database import (
-    count_terminal_children,
-    get_child_tasks_from_db,
-    get_failed_child_summary,
     persist_chromaprint,
     get_db,
 )
-from redis.exceptions import TimeoutError as RedisTimeoutError
 from psycopg2 import InterfaceError, OperationalError
 
 from error import error_manager
@@ -102,6 +111,53 @@ def _run_all_index_builds(*args, **kwargs):
 
 
 logger = logging.getLogger(__name__)
+
+
+def _carried_over_tracks(parent_task_id):
+    try:
+        finished = taskqueue.reap_finished_children(parent_task_id)
+    except Exception:
+        logger.exception(
+            "Could not clear the finished album jobs of a previous attempt; this "
+            "run's failure tally may include theirs"
+        )
+        return 0
+    if not finished:
+        return 0
+    carried = 0
+    failed = 0
+    for child in finished:
+        if not child.get('sub_type_identifier'):
+            continue
+        if child.get('status') != TASK_STATUS_SUCCESS:
+            failed += 1
+            continue
+        details = child.get('details')
+        if not isinstance(details, dict):
+            continue
+        summary = details.get('final_summary_details')
+        counted = summary.get('tracks_analyzed') if isinstance(summary, dict) else None
+        if counted is None:
+            counted = details.get('tracks_analyzed')
+        if isinstance(counted, (int, float)):
+            carried += int(counted)
+    logger.info(
+        "A previous attempt of this task had finished %d album job(s): carrying %d "
+        "analyzed song(s) into this attempt's total and dropping %d failure(s).",
+        len(finished), carried, failed,
+    )
+    return carried
+
+
+def _inflight_children(parent_task_id):
+    try:
+        return taskqueue.live_children(parent_task_id)
+    except Exception:
+        logger.exception(
+            "Could not check for a previous attempt's in-flight album jobs; "
+            "any still running will be re-enqueued and deduplicated per track"
+        )
+        return None
 
 
 def clean_temp(temp_dir):
@@ -223,17 +279,6 @@ def _run_chromaprint_backfill(server_ids, log_fn=None, should_stop=None):
     return False
 
 
-def _rq_job_still_pending(job_id):
-    try:
-        job = Job.fetch(job_id, connection=redis_conn)
-    except NoSuchJobError:
-        return False
-    except Exception:
-        logger.debug("Could not fetch job %s while reconciling; assuming done.", job_id)
-        return False
-    return rq_job_state.is_alive_status(job.get_status(refresh=False))
-
-
 def _task_revoked_in_db(task_id):
     try:
         statuses = get_task_statuses([task_id])
@@ -343,8 +388,8 @@ def _run_analysis_server_task_impl(
 ):
     from ..clap_analyzer import is_clap_available
 
-    current_job = get_current_job(redis_conn)
-    current_task_id = task_id or (current_job.id if current_job else str(uuid.uuid4()))
+    claimed_task_id = taskqueue.current_task_id()
+    current_task_id = task_id or claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
         if num_recent_albums < 0:
@@ -352,7 +397,7 @@ def _run_analysis_server_task_impl(
             num_recent_albums = 0
 
         task_info = get_task_info_from_db(current_task_id)
-        if current_job and task_info is None:
+        if claimed_task_id and task_info is None:
             logger.info(
                 "Analysis task %s has no live DB claim; treating it as revoked.",
                 current_task_id,
@@ -369,14 +414,17 @@ def _run_analysis_server_task_impl(
             return {"status": task_info.get('status'), "message": "Task already in terminal state."}
 
         log_and_update_main = make_task_reporter(
-            current_task_id, "main_analysis", current_job,
+            current_task_id, "main_analysis",
             "Starting main analysis process...",
             prefix=f"MainAnalysisTask-{current_task_id}",
             progress_base=progress_base, progress_span=progress_span,
             downgrade_terminal=not final_phase,
         )
         try:
-            clean_temp(TEMP_DIR)
+            carried_over_tracks = _carried_over_tracks(current_task_id)
+            inflight_children = _inflight_children(current_task_id)
+            if inflight_children is not None and not inflight_children:
+                clean_temp(TEMP_DIR)
             all_albums = albums if albums is not None else get_recent_albums(num_recent_albums)
             if not all_albums:
                 _verify_media_server_reachable()
@@ -410,9 +458,30 @@ def _run_analysis_server_task_impl(
                 len(work_map),
                 "" if work_map_bulk_ok else " (bulk scan FAILED; per-album fallback)",
             )
-            baseline_failed_count, _baseline_errors = get_failed_child_summary(current_task_id)
+            failed_count = 0
+            failed_errors = []
+
+            def _remember_album_error(child):
+                nonlocal failed_count
+                failed_count += 1
+                if len(failed_errors) >= QUEUE_MAX_ERRORS_KEPT:
+                    return
+                album = child.get('sub_type_identifier') or child.get('task_id')
+                detail = child.get('details') or {}
+                reason = (
+                    detail.get('error', {}).get('error_message')
+                    if isinstance(detail.get('error'), dict) else detail.get('error')
+                ) or detail.get('message') or 'analysis failed'
+                failed_errors.append(f"Album {album}: {reason}")
+
             active_jobs = set()
             albums_skipped, albums_launched, albums_completed = 0, 0, 0
+            # Seeded, not reset: the songs a previous attempt analysed are real
+            # work and stay in the recap. Only its FAILURES are dropped, which is
+            # the baseline main took before dispatch. albums_completed is left at
+            # zero on purpose - it drives this attempt's progress bar and the index
+            # rebuild threshold, and seeding it would push both past their range.
+            tracks_analyzed_total = [carried_over_tracks]
             last_rebuild_count = 0
             albums_no_tracks = 0
             albums_work_check_failed = 0
@@ -424,47 +493,18 @@ def _run_analysis_server_task_impl(
             last_monitor_db_check = float('-inf')
             last_status_report = float('-inf')
             last_revocation_poll = float('-inf')
-            try:
-                completed_baseline = count_terminal_children(current_task_id)
-                reconcile_from_db = True
-            except Exception:
-                logger.exception(
-                    "Could not read the completed-children baseline; disabling DB "
-                    "reconcile for this phase so a retry's prior work is not counted twice"
-                )
-                completed_baseline = 0
-                reconcile_from_db = False
-
             adopted_albums = set()
-            try:
-                stale_children = [
-                    c for c in get_child_tasks_from_db(current_task_id)
-                    if c['status'] not in (
-                        TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
-                    )
-                ]
-                if stale_children:
-                    fetched = Job.fetch_many(
-                        [c['task_id'] for c in stale_children], connection=redis_conn
-                    )
-                    for child, job in zip(stale_children, fetched):
-                        if job is not None and rq_job_state.is_alive_status(
-                            job.get_status(refresh=False)
-                        ):
-                            active_jobs.add(child['task_id'])
-                            adopted_albums.add(str(child['sub_type_identifier']))
-                    if active_jobs:
-                        albums_launched += len(active_jobs)
-                        logger.info(
-                            "Adopted %d still-running album job(s) from a previous "
-                            "attempt of this task; their albums will not be enqueued "
-                            "again.",
-                            len(active_jobs),
-                        )
-            except Exception:
-                logger.exception(
-                    "Could not check for a previous attempt's in-flight album jobs; "
-                    "any still running will be re-enqueued and deduplicated per track"
+            for child in (inflight_children or ()):
+                if not child['sub_type_identifier']:
+                    continue
+                active_jobs.add(child['task_id'])
+                adopted_albums.add(str(child['sub_type_identifier']))
+            if active_jobs:
+                albums_launched += len(active_jobs)
+                logger.info(
+                    "Adopted %d still-running album job(s) from a previous "
+                    "attempt of this task; their albums will not be enqueued again.",
+                    len(active_jobs),
                 )
 
             def revoked_now():
@@ -477,69 +517,47 @@ def _run_analysis_server_task_impl(
 
             def monitor_and_clear_jobs():
                 nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
-                ids = list(active_jobs)
-                if ids:
-                    try:
-                        fetched = Job.fetch_many(ids, connection=redis_conn)
-                    except RedisTimeoutError:
-                        logger.warning("Redis timeout fetching jobs; retry next loop.")
-                        fetched = []
-                    except Exception as e:
-                        logger.warning(
-                            f"Error fetching jobs: {e}; retry next loop.", exc_info=True
-                        )
-                        fetched = []
-                    removed = 0
-                    for job_id, job in zip(ids, fetched):
-                        if job is None:
-                            logger.debug(f"Job {job_id} not in RQ; will reconcile via DB.")
-                        elif rq_job_state.is_terminal_status(job.get_status(refresh=False)):
-                            active_jobs.discard(job_id)
-                            removed += 1
-                    if removed:
-                        albums_completed += removed
-
                 now = time.monotonic()
                 if now - last_monitor_db_check >= ANALYSIS_MONITOR_DB_INTERVAL:
                     last_monitor_db_check = now
                     try:
-                        terminal = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
-                        in_flight = list(active_jobs)
-                        if in_flight:
-                            statuses = get_task_statuses(in_flight)
-                            for job_id in in_flight:
-                                if (
-                                    statuses.get(job_id) in terminal
-                                    and not _rq_job_still_pending(job_id)
-                                ):
-                                    active_jobs.discard(job_id)
-                                    if not reconcile_from_db:
-                                        albums_completed += 1
-                        if reconcile_from_db:
-                            db_done = count_terminal_children(current_task_id) - completed_baseline
-                            reconciled = min(max(0, db_done), albums_launched)
-                            if reconciled != albums_completed:
-                                logger.info(
-                                    f"Reconciling albums_completed: RQ={albums_completed} DB={db_done} clamped={reconciled} (of {albums_launched} launched)"
+                        for child in taskqueue.reap_finished_children(current_task_id):
+                            active_jobs.discard(child['task_id'])
+                            if not child.get('sub_type_identifier'):
+                                continue
+                            albums_completed += 1
+                            child_details = child.get('details') or {}
+                            if isinstance(child_details, dict):
+                                child_summary = child_details.get('final_summary_details')
+                                counted = (
+                                    child_summary.get('tracks_analyzed')
+                                    if isinstance(child_summary, dict) else None
                                 )
-                                albums_completed = reconciled
+                                if counted is None:
+                                    counted = child_details.get('tracks_analyzed')
+                                if isinstance(counted, (int, float)):
+                                    tracks_analyzed_total[0] += int(counted)
+                            if child['status'] == TASK_STATUS_FAILURE:
+                                _remember_album_error(child)
                     except Exception:
-                        logger.exception("Failed to reconcile child tasks from DB")
+                        logger.exception("Failed to reap finished album tasks")
 
                 if (
                     finalize_indexes
                     and albums_completed - last_rebuild_count >= REBUILD_INDEX_BATCH_SIZE
                 ):
-                    rebuild_job = rq_queue_default.enqueue(
+                    rebuild_task_id = str(uuid.uuid4())
+                    taskqueue.enqueue(
                         'tasks.analysis.rebuild_all_indexes_task',
                         args=(current_task_id,),
-                        job_id=str(uuid.uuid4()),
-                        job_timeout=-1,
-                        retry=Retry(max=3),
+                        task_id=rebuild_task_id,
+                        task_type='index_rebuild',
+                        queue=taskqueue.QUEUE_DEFAULT,
+                        parent_task_id=current_task_id,
                     )
                     log_and_update_main(
                         f"Batch of {albums_completed - last_rebuild_count} albums complete; "
-                        f"index rebuild {rebuild_job.id} enqueued.",
+                        f"index rebuild {rebuild_task_id} enqueued.",
                         log_and_update_main.state['progress'],
                     )
                     last_rebuild_count = albums_completed
@@ -559,6 +577,7 @@ def _run_analysis_server_task_impl(
                     f"Albums {min(albums_offset + done, reported_total)}/{reported_total}",
                     progress,
                     albums_completed=albums_completed,
+                    tracks_analyzed=tracks_analyzed_total[0],
                 )
 
             all_albums = list({a['Id']: a for a in all_albums}.values())
@@ -627,14 +646,17 @@ def _run_analysis_server_task_impl(
                     report_progress()
                     continue
 
-                job = rq_queue_default.enqueue(
+                album_task_id = str(uuid.uuid4())
+                taskqueue.enqueue(
                     'tasks.analysis.analyze_album_task',
                     args=(album['Id'], album['Name'], top_n_moods, current_task_id, server_id),
-                    job_id=str(uuid.uuid4()),
-                    job_timeout=-1,
-                    retry=Retry(max=3),
+                    task_id=album_task_id,
+                    task_type='album_analysis',
+                    queue=taskqueue.QUEUE_DEFAULT,
+                    parent_task_id=current_task_id,
+                    sub_type_identifier=album['Id'],
                 )
-                active_jobs.add(job.id)
+                active_jobs.add(album_task_id)
                 albums_launched += 1
                 albums_needing_musicnn += int(needs_musicnn_analysis)
                 albums_needing_clap += int(needs_clap_analysis)
@@ -685,10 +707,6 @@ def _run_analysis_server_task_impl(
                 ):
                     logger.info("Analysis revoked during the Chromaprint backfill.")
                     return {'status': TASK_STATUS_REVOKED}
-            total_failed_count, failed_errors = get_failed_child_summary(current_task_id)
-            failed_count = max(0, total_failed_count - baseline_failed_count)
-            if not failed_count:
-                failed_errors = []
             logger.info(
                 "Phase complete. Albums: %d launched, %d skipped of %d, %d failed. "
                 "Songs: %d sent for analysis, %d already analyzed of %d. "
@@ -702,22 +720,23 @@ def _run_analysis_server_task_impl(
                 reported_total, albums_launched, failed_count, failed_errors,
                 albums_work_check_failed,
             )
-            log_and_update_main(final_message, 100, **final_kwargs)
+            log_and_update_main(
+                final_message, 100,
+                albums_completed=albums_completed,
+                tracks_analyzed=tracks_analyzed_total[0],
+                **final_kwargs,
+            )
             clean_temp(TEMP_DIR)
             return {
                 "status": phase_status,
                 "message": final_message,
                 "failed_albums": failed_count,
+                "albums_completed": albums_completed,
+                "tracks_analyzed": tracks_analyzed_total[0],
             }
 
         except OperationalError as e:
-            err = error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
-            log_and_update_main(
-                "X Main analysis failed due to a database connection error. The task may be retried.",
-                log_and_update_main.state['progress'],
-                task_state=TASK_STATUS_FAILURE,
-                error=err,
-            )
+            error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
         except Exception as e:
             err = error_manager.from_exception(
@@ -771,7 +790,7 @@ def _run_already_finished(task_id, *, require_claim=False):
     status = statuses.get(task_id)
     if require_claim and task_id not in statuses:
         logger.info(
-            "Analysis %s has no live DB claim; treating the dequeued RQ job as revoked.",
+            "Analysis %s has no live DB claim; treating the dequeued queue job as revoked.",
             task_id,
         )
         return TASK_STATUS_REVOKED
@@ -786,10 +805,10 @@ def _run_already_finished(task_id, *, require_claim=False):
 
 
 def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
-    current_job = get_current_job(redis_conn)
-    parent_id = current_job.id if current_job else str(uuid.uuid4())
+    claimed_task_id = taskqueue.current_task_id()
+    parent_id = claimed_task_id or str(uuid.uuid4())
 
-    already = _run_already_finished(parent_id, require_claim=current_job is not None)
+    already = _run_already_finished(parent_id, require_claim=claimed_task_id is not None)
     if already:
         return {'status': already, 'message': 'Task already in terminal state.'}
 
@@ -908,7 +927,15 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
 
         analyzed_servers = len(servers) - len(failed)
         run_failed = analyzed_servers == 0
-        details = {"failed_servers": failed}
+        details = {
+            "failed_servers": failed,
+            "tracks_analyzed": sum(
+                int(s.get('tracks_analyzed') or 0) for s in summaries
+            ),
+            "albums_completed": sum(
+                int(s.get('albums_completed') or 0) for s in summaries
+            ),
+        }
         if not failed:
             message = f"Analysis complete across all {len(servers)} music servers."
         elif run_failed:
@@ -935,7 +962,7 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
             details=details,
         )
     return {
-        'status': 'FAILURE' if run_failed else 'SUCCESS',
+        'status': TASK_STATUS_FAILURE if run_failed else TASK_STATUS_SUCCESS,
         'message': message,
         'servers': summaries,
         'failed_servers': failed,

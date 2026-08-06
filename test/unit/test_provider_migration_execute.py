@@ -44,16 +44,11 @@ def _load_tasks_mod():
 @pytest.fixture
 def mig():
     mod = _load_tasks_mod()
-    # Production waits between restart-publish attempts; the suite must not. The
-    # retry tests assert the attempt COUNT, which this does not touch.
     mod._RESTART_PUBLISH_RETRY_SECONDS = 0
     mod._RESTART_HANDSHAKE_RETRY_SECONDS = 0
-    # Core SQL tests run outside an RQ/supervisor topology.  Exercise the
-    # unbounded ACK loop explicitly in dedicated tests below; ordinary migration
-    # tests treat the already-verified handoff as acknowledged.
     mod._real_await_worker_restart = mod._await_worker_restart
     mod._await_worker_restart = MagicMock(
-        side_effect=lambda _redis, _conn, _session_id, request_id, **_kw: request_id
+        side_effect=lambda _conn, _session_id, request_id, **_kw: request_id
     )
     return mod
 
@@ -144,8 +139,6 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
             lambda up: _matches(up, 'TO_REGCLASS', 'MIGRATION_TARGET_META'),
             lambda up, params: _set_one((None,)),
         ),
-        # The registry and the legacy config table both exist in a real install:
-        # the migration repoints music_servers and purges app_config's copies.
         (
             lambda up: _matches(up, 'TO_REGCLASS', 'MUSIC_SERVERS'),
             lambda up, params: _set_one((True,)),
@@ -172,7 +165,7 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
         ),
         (
             lambda up: up.startswith('SELECT STATUS FROM TASK_STATUS'),
-            lambda up, params: _set_one(('STARTED',)),
+            lambda up, params: _set_one(('RUNNING',)),
         ),
         (
             lambda up: up.startswith('UPDATE TASK_STATUS') and 'RETURNING TASK_ID' in up,
@@ -260,10 +253,6 @@ def _install_fake_psycopg2(
 
     mig._get_dedicated_conn = MagicMock(return_value=mock_conn)
 
-    fake_redis = MagicMock()
-    fake_redis.get.return_value = None
-    mig._get_redis = MagicMock(return_value=fake_redis)
-
     return mock_conn, mock_cur, executed
 
 
@@ -280,29 +269,14 @@ class TestExecuteProviderMigration:
         joined = '\n'.join(executed).upper()
         assert 'PG_ADVISORY_XACT_LOCK' in joined
         assert 'CREATE TEMP TABLE ITEM_ID_MIGRATION_MAP' in joined
-        # The migration, in one statement: the song keeps its canonical id and only
-        # the provider id it is reachable by on the default server changes.
         assert 'UPDATE TRACK_SERVER_MAP' in joined
-        # Artist ids are the one thing the matcher cannot repoint, so they are cleared.
         assert 'DELETE FROM ARTIST_SERVER_MAP' in joined
-        # The registry is the only home of media-server settings: the default
-        # row is repointed and the legacy app_config copies are cleared, never
-        # rewritten (they would keep serving the OLD provider on the next boot).
         assert 'UPDATE MUSIC_SERVERS' in joined
         assert 'DELETE FROM APP_CONFIG' in joined
         assert 'INSERT INTO APP_CONFIG' not in joined
         assert 'UPDATE MIGRATION_SESSION' in joined
 
     def test_the_centralized_catalogue_is_never_touched(self, mig):
-        """`score` holds one row per distinct recording, keyed by the fp_2 hash of its
-        own AUDIO. That id is a property of the song, not of any server, so a provider
-        swap can neither delete it nor rewrite it. A song's analysis is expensive and
-        irreplaceable; where the file happens to live is not.
-
-        This used to DELETE unmatched score rows (taking their embeddings with them via
-        ON DELETE CASCADE) and rewrite score.item_id into the target provider's track
-        id - the pre-canonicalization design, where item_id WAS the provider id.
-        """
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -312,21 +286,16 @@ class TestExecuteProviderMigration:
         assert not any(s.startswith('DELETE FROM SCORE') for s in upper), (
             "a migration must never delete a song from the catalogue"
         )
-        # score is only ever UPDATEd for metadata, never for item_id.
         for stmt in upper:
             if stmt.startswith('UPDATE SCORE'):
                 assert 'SET ITEM_ID' not in stmt, "canonical ids must never be rewritten"
         for table in ('EMBEDDING', 'CLAP_EMBEDDING', 'LYRICS_EMBEDDING', 'PLAYLIST'):
             assert not any(s.startswith(f'UPDATE {table} ') for s in upper)
-        # No item_id moves, so the FKs never need dropping and the similarity indexes
-        # stay valid: a provider swap no longer forces a full re-index.
         assert not any('DROP CONSTRAINT' in s for s in upper)
         assert not any(s.startswith('DELETE FROM IVF_CELL') for s in upper)
         assert not any(s.startswith('DELETE FROM IVF_DIR') for s in upper)
 
     def test_unmatched_songs_are_unbound_from_the_server_not_deleted(self, mig):
-        """An unmatched song loses its mapping to THIS server and nothing else: its
-        score row, its embeddings and its mappings to any other server survive."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -341,11 +310,6 @@ class TestExecuteProviderMigration:
         assert 'IS_DEFAULT' in unbind[0].upper(), "only the migrated server is unbound"
 
     def test_chromaprints_are_carried_onto_the_target_ids_not_left_under_dead_ones(self, mig):
-        """`chromaprint` is keyed by the (server_id, provider_track_id) pair the
-        migration rewrites. Left alone, every fingerprint on the server becomes
-        unreachable AND a target that recycles one of those ids inherits the wrong
-        one - analysis reads the stored print back and never recomputes it. The
-        audio did not change, so the print follows the song."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -359,8 +323,6 @@ class TestExecuteProviderMigration:
         )
 
     def test_the_carry_is_staged_before_the_ids_it_reads_are_overwritten(self, mig):
-        """The staging join reads the OLD provider ids out of track_server_map. Run
-        it after the repoint and it reads the new ids and carries nothing."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -379,9 +341,6 @@ class TestExecuteProviderMigration:
         )
 
     def test_fingerprints_that_carry_nothing_are_deleted_not_orphaned(self, mig):
-        """A row keyed by an id the server no longer has is unreachable through
-        track_server_map and is exactly what lets a recycled id serve a stale
-        fingerprint later. It goes; the backfill recomputes if the song comes back."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -398,9 +357,6 @@ class TestExecuteProviderMigration:
         )
 
     def test_the_fingerprint_rewrite_is_two_pass_like_the_mapping_rewrite(self, mig):
-        """A re-point onto the SAME provider (a Navidrome id rotation) permutes ids
-        rather than replacing them, so a one-pass UPDATE trips the primary key the
-        moment it assigns an id another row still holds."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -419,10 +375,6 @@ class TestExecuteProviderMigration:
         )
 
     def test_the_unsignable_analysis_tier_survives_the_repoint(self, mig):
-        """'analysis' is not provenance: it is the only record that a catalogue row
-        yields no usable signature and can never be relabelled. Flatten it and the
-        startup canonicalizer counts the row as legacy again and re-hashes the whole
-        catalogue on the next boot, relabelling nothing."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -446,12 +398,6 @@ class TestExecuteProviderMigration:
         assert 'dry_run_ready' in str(exc.value).lower() or 'status' in str(exc.value).lower()
 
     def test_migration_reports_its_task_status_instead_of_faking_a_worker_pause(self, mig, monkeypatch):
-        """The old code claimed to "pause and drain the workers" and did nothing at
-        all: send_stop_signal does not exist in RQ 2.x, the drain loop broke out
-        after one second, and the migration:paused key had no reader anywhere. The
-        migration is now VISIBLE in task_status instead, so get_active_main_task can
-        keep an analysis or a sweep from running through its destructive transaction.
-        """
         session_row = _make_session_row(state=_session_state({'a': 'b'}))
         _install_fake_psycopg2(mig, session_row)
 
@@ -473,13 +419,39 @@ class TestExecuteProviderMigration:
 
         mig.execute_provider_migration(1)
 
-        assert [s for _t, s in reported] == ['STARTED', 'SUCCESS']
+        assert [s for _t, s in reported] == ['RUNNING', 'SUCCESS', 'SUCCESS'], (
+            'SUCCESS is recorded the moment the catalogue transaction commits, and '
+            'again once the workers acknowledge the restart: the swap is durable at '
+            'the first one, so nothing after it may report the run as failed'
+        )
         assert {t for t, _s in reported} == {'mig-1'}
 
+    def test_a_committed_migration_is_never_reported_as_failed(self, mig, monkeypatch):
+        session_row = _make_session_row(state=_session_state({'a': 'b'}))
+        _install_fake_psycopg2(mig, session_row)
+
+        reported = []
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
+        monkeypatch.setattr(
+            mig, '_report_migration',
+            lambda task_id, status, progress, message, details=None: reported.append(status),
+        )
+
+        def _handshake_never_completes(*_args, **_kwargs):
+            raise RuntimeError('no worker acknowledged the restart')
+
+        monkeypatch.setattr(mig, '_await_worker_restart', _handshake_never_completes)
+
+        mig.execute_provider_migration(1)
+
+        assert 'FAIL' not in reported and 'FAILURE' not in reported, (
+            'the catalogue swap is already durable, so telling the user the '
+            'migration failed and their database is unchanged is a lie - and the '
+            'handshake guard then refuses the re-run that message asks for'
+        )
+        assert reported[-1] == 'SUCCESS'
+
     def test_index_id_maps_are_left_alone_because_ids_never_move(self, mig):
-        """The similarity indexes are keyed by the canonical item_id. A migration no
-        longer rewrites item_ids, so the indexes stay valid across a provider swap and
-        need neither relabelling nor a rebuild - which is what this used to do."""
         ivf_rows = [('ivf_main', json.dumps({'0': 'old_1'}))]
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row, ivf_rows=ivf_rows)
@@ -493,13 +465,6 @@ class TestExecuteProviderMigration:
 
 
 class TestMigrationWritesTheRegistryOnly:
-    """The music_servers registry is the ONLY home of media-server settings.
-
-    The migration points its default row at the target provider and clears any
-    legacy app_config copies, instead of maintaining a second one that would
-    keep serving the OLD provider (config projects the registry row) and leave
-    stale credentials behind until the next restart.
-    """
 
     def _write(self, mig, selected_libraries):
         cur = MagicMock()
@@ -607,13 +572,6 @@ class TestExecuteProviderMigrationForwardsSelectedLibraries:
 
 
 class TestMigrationClearsStaleArtistIds:
-    """The default server's artist ids belong to the OLD provider after a migration.
-
-    Track ids are repointed (the matcher produced a new id for each), but artists
-    have no such mapping, so the default server's artist_server_map rows are
-    cleared and rebuilt by the next analysis. Secondary servers did not migrate
-    and keep theirs.
-    """
 
     def test_default_servers_artist_rows_are_deleted(self, mig):
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
@@ -623,7 +581,6 @@ class TestMigrationClearsStaleArtistIds:
 
         deletes = [s for s in executed if 'DELETE FROM artist_server_map' in s]
         assert len(deletes) == 1
-        # Scoped to the default server only.
         assert 'music_servers s' in deletes[0]
         assert 's.is_default' in deletes[0]
 
@@ -640,7 +597,6 @@ class TestMigrationClearsStaleArtistIds:
 
 class TestTheMigrationSurvivesTheRestartItTriggers:
     def test_success_is_recorded_only_after_restart_ack(self, mig, monkeypatch):
-        """The root remains an admission barrier until every worker ACKs restart."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _install_fake_psycopg2(mig, session_row)
 
@@ -655,7 +611,7 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         monkeypatch.setattr(
             mig,
             '_await_worker_restart',
-            lambda _redis, _conn, _session, request_id, **_kw: (
+            lambda _conn, _session, request_id, **_kw: (
                 order.append('restart_ack') or request_id
             ),
         )
@@ -672,11 +628,6 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
     def test_a_retry_of_an_applied_migration_reports_success_not_failure(
         self, mig, monkeypatch
     ):
-        """RQ requeues an abandoned job under the SAME task id, so a migration that
-        committed and was then killed by its own restart comes back here. Raising on
-        the dry_run_ready gate made that retry overwrite the SUCCESS row with
-        FAILURE (save_task_status protects only REVOKED), telling the user a
-        completed migration had failed."""
         completed_state = {
             'post_migration': {'matched': 1},
             'exec_task_id': 'mig-1',
@@ -725,8 +676,6 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         )
 
     def test_a_retry_does_not_queue_a_second_alignment(self, mig, monkeypatch):
-        """Its first run already committed an alignment row; the janitor revives
-        that one. Queueing another would run the same full-refresh sweep twice."""
         from tasks import multiserver_sync as sync
 
         calls = []
@@ -741,9 +690,6 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
     def test_a_blip_in_the_restart_publish_is_retried_not_abandoned(
         self, mig, monkeypatch
     ):
-        """The request is a Redis publish, so a failure is a Redis blip. Giving up on
-        the first one leaves the registry pointing at the new provider while every
-        running worker still holds the old one."""
         import types
 
         monkeypatch.setattr(mig, '_RESTART_PUBLISH_RETRY_SECONDS', 0)
@@ -761,8 +707,6 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         assert len(attempts) == 2
 
     def test_an_undelivered_restart_request_is_reported_loudly(self, mig, monkeypatch, caplog):
-        """The swap is only half applied until the workers restart: the registry
-        points at the new provider while running workers still hold the old one."""
         import types
 
         monkeypatch.setattr(mig, '_RESTART_PUBLISH_RETRY_SECONDS', 0)
@@ -784,7 +728,7 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
 
         def _boom(request_id=None):
             calls.append(1)
-            raise RuntimeError('redis is down')
+            raise RuntimeError('the control plane is down')
 
         fake_restart.publish_restart_request = _boom
         monkeypatch.setitem(sys.modules, 'restart_manager', fake_restart)
@@ -795,10 +739,6 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
         assert len(calls) == mig._RESTART_PUBLISH_ATTEMPTS
 
     def test_the_alignment_row_is_committed_with_the_migration(self, mig):
-        """A crash between the commit and the enqueue would otherwise leave no
-        record that an alignment is owed, and the artist ids the swap cleared stay
-        empty forever. The row rides the migration's own transaction, so the janitor
-        can always find it."""
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
 
@@ -836,7 +776,7 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
 class TestRestartHandshakeStateMachine:
     def test_commit_marker_is_written_under_cancel_start_lock(self, mig):
         cur = MagicMock()
-        cur.fetchone.side_effect = [('STARTED',), ('mig-1',)]
+        cur.fetchone.side_effect = [('RUNNING',), ('mig-1',)]
 
         mig._stage_restart_handshake(cur, 'mig-1', 7, 'restart-7')
 
@@ -876,7 +816,7 @@ class TestRestartHandshakeStateMachine:
         monkeypatch.setattr(
             mig,
             '_await_worker_restart',
-            lambda _redis, _conn, _session, request_id, **_kw: request_id,
+            lambda _conn, _session, request_id, **_kw: request_id,
         )
 
         mig.execute_provider_migration(1)
@@ -905,14 +845,10 @@ class TestRestartHandshakeStateMachine:
         )
         monkeypatch.setattr(mig.time, 'sleep', lambda seconds: sleeps.append(seconds))
 
-        result = mig._real_await_worker_restart(
-            MagicMock(), MagicMock(), 7, 'restart-7'
-        )
+        result = mig._real_await_worker_restart(MagicMock(), 7, 'restart-7')
 
         assert result == 'restart-7'
         assert sleeps == [0]
-        # ACK is deliberately left false until the caller can commit it together
-        # with root SUCCESS under the global main-task lock.
         assert persisted == []
 
     def test_definitive_negative_rotates_persisted_id_before_republish(
@@ -934,9 +870,7 @@ class TestRestartHandshakeStateMachine:
         )
         monkeypatch.setattr(mig.time, 'sleep', lambda _seconds: None)
 
-        result = mig._real_await_worker_restart(
-            MagicMock(), MagicMock(), 7, 'restart-7'
-        )
+        result = mig._real_await_worker_restart(MagicMock(), 7, 'restart-7')
 
         assert result == 'restart-8'
         assert persisted == [
@@ -962,7 +896,7 @@ class TestRestartHandshakeStateMachine:
         monkeypatch.setattr(database, 'save_task_status', save)
 
         result = mig._report_migration(
-            'mig-1', 'FAILURE', 100, 'late retry failed'
+            'mig-1', 'FAIL', 100, 'late retry failed'
         )
 
         assert result == 'success'
@@ -988,7 +922,7 @@ class TestRestartHandshakeStateMachine:
         monkeypatch.setattr(database, 'get_db', lambda: db)
         monkeypatch.setattr(database, 'save_task_status', save)
 
-        assert mig._report_migration('mig-1', 'STARTED', 0, 'start') == result
+        assert mig._report_migration('mig-1', 'RUNNING', 0, 'start') == result
         save.assert_not_called()
 
     def test_revoked_root_aborts_before_opening_migration_connection(self, mig, monkeypatch):
@@ -1004,9 +938,6 @@ class TestRestartHandshakeStateMachine:
 
 
 class TestPlaylistReportIsInformationalOnly:
-    """Counting stored playlists is a log line. A schema where that query fails must
-    not abort an otherwise good migration, and in Postgres a failed statement
-    poisons the whole transaction unless it is fenced by a savepoint."""
 
     def test_a_failing_count_cannot_abort_the_migration(self, mig):
         cur = MagicMock()
@@ -1063,12 +994,6 @@ class TestChromaprintCarryTolerance:
 
 
 class TestPostMigrationAlignment:
-    """A provider swap CLEARS the server's artist ids (the matcher maps tracks, not
-    artists) and cannot refresh a path the target did not report. Only an alignment
-    rebuilds those, and the migration is the one default-server change that never
-    queued one - so the ids stayed empty until the user happened to re-analyze.
-    The artist lookup has no fallback: it returns nothing at all meanwhile.
-    """
 
     def test_the_alignment_is_queued_before_the_restart_that_kills_the_worker(
         self, mig, monkeypatch
@@ -1112,7 +1037,7 @@ class TestPostMigrationAlignment:
         from tasks import multiserver_sync as sync
 
         def _boom(**kwargs):
-            raise RuntimeError("redis is down")
+            raise RuntimeError("the alignment enqueue is down")
 
         monkeypatch.setattr(sync, 'enqueue_server_alignment', _boom)
 
@@ -1179,9 +1104,6 @@ class TestRestartHandshakeRecoverySchemaGuard:
         conn.cursor.return_value = _Cursor()
         monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: conn)
 
-        # The janitor runs in the WORKER container but init_db() only ever runs in
-        # Flask, so a worker that starts first reached this query against a schema
-        # with no migration_session and aborted the whole janitor block.
         assert mig.recover_provider_migration_restart_handshakes() == 0
 
         assert len(executed) == 1
@@ -1190,12 +1112,9 @@ class TestRestartHandshakeRecoverySchemaGuard:
 
 
 class TestMigrationSuccessFinalization:
-    def test_the_committed_success_row_is_replayed_through_save_task_status(
+    def test_the_committed_success_row_is_finalized_on_the_same_raw_connection(
         self, monkeypatch
     ):
-        # The SUCCESS row shares the ACK's transaction, so it is written with raw
-        # SQL and bypasses save_task_status - and with it the task_history record
-        # and the end-of-run collapse. Replaying it restores both.
         import database
         import tasks.provider_migration_tasks as mig
 
@@ -1205,6 +1124,9 @@ class TestMigrationSuccessFinalization:
 
             def fetchone(self):
                 return ('completed', {'restart_request_id': 'req-1'})
+
+            def fetchall(self):
+                return []
 
             def close(self):
                 pass
@@ -1218,10 +1140,19 @@ class TestMigrationSuccessFinalization:
         conn = MagicMock()
         conn.cursor.return_value = _Cursor()
 
-        saved = {}
+        recorded = {}
+        collapsed = {}
+        monkeypatch.setattr(
+            database, 'record_task_history',
+            lambda *a, **k: recorded.update({'args': a, 'kwargs': k}),
+        )
+        monkeypatch.setattr(
+            database, '_collapse_finished_task',
+            lambda *a: collapsed.update({'args': a}),
+        )
         monkeypatch.setattr(
             database, 'save_task_status',
-            lambda *a, **k: saved.update({'args': a, 'kwargs': k}),
+            lambda *a, **k: pytest.fail('save_task_status needs an app context here'),
         )
 
         mig._finalize_restart_handshake(
@@ -1229,20 +1160,28 @@ class TestMigrationSuccessFinalization:
         )
 
         conn.commit.assert_called_once()
-        assert saved['args'][0] == 'root-1'
-        assert saved['args'][2] == mig.TASK_STATUS_SUCCESS
-        assert saved['kwargs']['details']['message'] == 'Provider migration applied.'
+        assert recorded['args'][0] == 'root-1'
+        assert recorded['args'][2] == mig.TASK_STATUS_SUCCESS
+        assert recorded['kwargs']['conn'] is conn
+        assert recorded['kwargs']['details']['message'] == 'Provider migration applied.'
+        assert collapsed['args'][0] is conn
+        assert collapsed['args'][1] == 'root-1'
 
     def test_a_failed_replay_never_undoes_the_committed_success(self, monkeypatch):
         import database
         import tasks.provider_migration_tasks as mig
 
         class _Cursor:
+            rowcount = 0
+
             def execute(self, sql, params=None):
                 pass
 
             def fetchone(self):
                 return ('completed', {'restart_request_id': 'req-1'})
+
+            def fetchall(self):
+                return []
 
             def close(self):
                 pass

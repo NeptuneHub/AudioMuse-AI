@@ -27,7 +27,7 @@ Main Features:
   ``refresh_dashboard_stats()`` every 60s; the CHARTS block (Genres, Moods
   Coverage, Tempo) via ``refresh_dashboard_charts_stats()`` hourly, carrying its
   own ``charts_updated_at`` stamp so the UI can label it honestly.
-* LIVE tier: workers (Redis), recent tasks and cron (tiny tables) only.
+* LIVE tier: workers (pg_stat_activity), recent tasks and cron (tiny tables) only.
 * Both distribution pies count each song ONCE under its winning label. Summing
   the raw per-song scores instead makes every slice converge on the same value
   as the library grows, because the CLAP-derived mood scores share a large
@@ -43,7 +43,6 @@ from psycopg2.extras import DictCursor
 
 import config
 from database import get_db, like_contains_pattern
-from taskqueue import redis_conn
 from tasks.mediaserver import registry
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 
@@ -323,8 +322,6 @@ def browse_api():
 
 
 def _safe_rollback(cur):
-    """Best-effort rollback on the connection backing this cursor so the next
-    query doesn't fail with 'current transaction is aborted'."""
     try:
         cur.connection.rollback()
     except Exception:
@@ -359,40 +356,16 @@ def _table_exists(cur, name):
 
 
 def _collect_workers():
-    """Return basic info about RQ workers. Only the columns rendered in
-    the Workers table of the dashboard are populated."""
-    workers_info = []
-    try:
-        from rq import Worker
+    import taskqueue
 
-        workers = Worker.all(connection=redis_conn)
-        for w in workers:
-            try:
-                state = w.get_state()
-            except Exception:
-                state = 'unknown'
-            try:
-                current_job = w.get_current_job()
-                current_job_id = current_job.id if current_job else None
-            except Exception:
-                current_job_id = None
-            workers_info.append(
-                {
-                    'hostname': getattr(w, 'hostname', None),
-                    'queues': [q.name for q in getattr(w, 'queues', [])],
-                    'state': state,
-                    'current_job_id': current_job_id,
-                    'successful_jobs': getattr(w, 'successful_job_count', 0),
-                    'failed_jobs': getattr(w, 'failed_job_count', 0),
-                }
-            )
-    except Exception as e:
-        logger.warning(f"dashboard: failed to enumerate RQ workers: {e}")
-    return workers_info
+    try:
+        return taskqueue.worker_snapshot()
+    except Exception:
+        logger.warning("dashboard: could not enumerate workers", exc_info=True)
+        return []
 
 
 def _collect_task_metrics(cur):
-    """Return the 10 most recent main tasks for the Recent Activity table."""
     recent = []
     if _table_exists(cur, 'task_history'):
         try:
@@ -708,12 +681,6 @@ def _dominant_label(scores):
 
 
 def _parse_keyval(s):
-    """Parse a ``key:value,key:value`` string (as stored in the ``score``
-    table's ``mood_vector`` / ``other_features`` columns) into a dict of
-    ``{label: float}``. Invalid pairs are silently skipped. Designed to
-    be fast on large libraries: no JSON parsing, no per-pair try/except
-    on the hot path for well-formed values.
-    """
     out = {}
     if not s:
         return out
@@ -735,9 +702,6 @@ def _parse_keyval(s):
 
 
 def _collect_cron(cur):
-    """Scheduled rows. Every schedule is CATALOGUE scope: batch work always runs
-    against every configured music server, one server at a time, so there is no
-    per-row target to report."""
     rows = []
     try:
         cur.execute("""
@@ -838,7 +802,6 @@ def dashboard_summary():
 
 
 def _load_dashboard_stats(cur):
-    """Read the singleton dashboard_stats row. Returns (content, updated_at_iso)."""
     try:
         cur.execute("SELECT updated_at, content FROM dashboard_stats WHERE id = 1")
         row = cur.fetchone()

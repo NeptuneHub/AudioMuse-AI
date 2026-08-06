@@ -6,13 +6,13 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Similarity index rebuilds: the visible RQ task and the eight build steps.
+"""Similarity index rebuilds: the visible queue task and the eight build steps.
 
 Main Features:
 * _run_all_index_builds: audio IVF (fatal), CLAP text, lyrics, lyrics axes,
   SemGrove, artist similarity, song map and artist map; non-fatal failures are
   recorded through the central error registry at WARNING and the run continues.
-* rebuild_all_indexes_task: the RQ entry point, reporting into task_status and
+* rebuild_all_indexes_task: the queue entry point, reporting into task_status and
   re-raising on failure so its enqueue-time Retry policy actually fires.
 """
 
@@ -20,11 +20,10 @@ import gc
 import logging
 import uuid
 
-from rq import get_current_job
+import taskqueue
 
 from flask_app import app
 from app_helper import (
-    redis_conn,
     get_db,
     build_and_store_map_projection,
     build_and_store_artist_projection,
@@ -96,7 +95,7 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
         finally:
             gc.collect()
     try:
-        redis_conn.publish('index-updates', 'reload')
+        taskqueue.publish_event('index-reload')
     except Exception as e:
         logger.warning(f'Could not publish reload message: {e}')
 
@@ -105,11 +104,11 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
 
 def rebuild_all_indexes_task(parent_task_id=None):
     logger.info("Starting index rebuild task...")
-    current_job = get_current_job(redis_conn)
-    current_task_id = current_job.id if current_job else str(uuid.uuid4())
+    claimed_task_id = taskqueue.current_task_id()
+    current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
-        if current_job and parent_task_id:
+        if claimed_task_id and parent_task_id:
             from app_helper import get_task_statuses
             from config import TASK_STATUS_REVOKED
 
@@ -129,7 +128,7 @@ def rebuild_all_indexes_task(parent_task_id=None):
                     "message": "Parent analysis was cancelled.",
                 }
         log_and_update = make_task_reporter(
-            current_task_id, "index_rebuild", current_job,
+            current_task_id, "index_rebuild",
             "Index rebuild started.", parent_task_id=parent_task_id,
             prefix=f"IndexRebuild-{current_task_id}",
         )

@@ -22,6 +22,8 @@ import os
 import sys
 import importlib.util
 import pytest
+import config
+import taskqueue
 from contextlib import contextmanager, nullcontext
 from unittest.mock import MagicMock, patch
 
@@ -104,10 +106,8 @@ class TestSessionStart:
 
     def test_creates_session_row(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        # First fetchone answers the advisory-lock probe: True means nothing holds
-        # the migration lock, so it is safe to prune the older sessions.
         cur._fetchone_queue.append((True,))
-        cur._fetchone_queue.append((False,))  # no committed restart handshake
+        cur._fetchone_queue.append((False,))
         cur._fetchone_queue.append((123,))
         import config
 
@@ -228,12 +228,6 @@ class TestApplySourcePathOverrides:
 
 
 class TestOverridesAreRekeyedOntoCatalogueIds:
-    """The probe hands back the PROVIDER's ids; the rows these paths patch are
-    catalogue rows keyed by the canonical fp_ content id. Stored as probed, the map
-    was looked up with ids it could never contain, so "Refresh source paths"
-    reported N overrides and changed nothing on every canonicalized install - and
-    the matcher fell back to weaker metadata tiers with the stale path.
-    """
 
     def test_provider_ids_are_translated_to_canonical_ids(self, bp_mod, monkeypatch):
         from tasks.mediaserver import registry
@@ -275,9 +269,6 @@ class TestOverridesAreRekeyedOntoCatalogueIds:
     def test_duplicate_files_of_one_song_collapse_deterministically(
         self, bp_mod, monkeypatch
     ):
-        """Two files of one song share a canonical id. Left to dict order the
-        provider's listing order decides which path survives, so the refreshed path
-        could flip between runs for no reason the user can see."""
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(
@@ -596,24 +587,25 @@ class TestExecuteGate:
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
         cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
-        fake_queue = MagicMock()
-        fake_job = MagicMock()
-        fake_job.id = 'job-xyz'
-        fake_queue.enqueue.return_value = fake_job
-        bp_mod.rq_queue_high = fake_queue
+        queued = []
 
         with (
             patch.object(bp_mod, 'get_active_main_task', return_value=None),
             patch.object(bp_mod, 'save_task_status'),
-            patch.object(bp_mod, 'prune_task_status_history'),
             patch.object(bp_mod, '_patch_state_keys'),
+            patch.object(
+                bp_mod.taskqueue, 'enqueue',
+                side_effect=lambda func, **kw: queued.append({'func': func, **kw}),
+            ),
         ):
             resp = client.post('/api/migration/execute', json=self._base_payload())
 
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data['task_id'] == fake_queue.enqueue.call_args.kwargs['job_id']
-        assert fake_queue.enqueue.called
+        assert resp.get_json()['task_id'] == queued[0]['task_id']
+        assert queued[0]['func'] == (
+            'tasks.provider_migration_tasks.execute_provider_migration'
+        )
+        assert queued[0]['queue'] == taskqueue.QUEUE_HIGH
 
 
 class TestPlannerReservationProtocol:
@@ -648,17 +640,14 @@ class TestPlannerReservationProtocol:
                 return original_execute(sql, params)
 
         cur.execute.side_effect = execute
-        queue = MagicMock()
 
-        def enqueue(*args, **kwargs):
-            events.append(('enqueue', kwargs['job_id']))
+        def enqueue(func, **kwargs):
+            events.append(('enqueue', kwargs['task_id']))
             assert held['main'] is True
             assert db.commit.call_count == 0
-            return MagicMock(id=kwargs['job_id'])
 
-        queue.enqueue.side_effect = enqueue
         monkeypatch.setattr(bp_mod, 'get_db', lambda: db)
-        monkeypatch.setattr(bp_mod, 'rq_queue_high', queue)
+        monkeypatch.setattr(bp_mod.taskqueue, 'enqueue', enqueue)
         monkeypatch.setattr(bp_mod, 'get_active_main_task', lambda **_kw: None)
         monkeypatch.setattr(bp_mod, 'main_task_start_lock', start_lock)
 
@@ -691,63 +680,6 @@ class TestPlannerReservationProtocol:
 
         locked.assert_not_called()
 
-    def test_definitive_missing_enqueue_rolls_back_reservation(self, bp_mod, monkeypatch):
-        db, _cur = self._claim_db()
-        queue = MagicMock()
-        queue.enqueue.side_effect = RuntimeError('lost reply')
-        monkeypatch.setattr(bp_mod, 'get_db', lambda: db)
-        monkeypatch.setattr(bp_mod, 'rq_queue_high', queue)
-        monkeypatch.setattr(bp_mod, 'get_active_main_task', lambda **_kw: None)
-
-        with (
-            patch('app_helper.resolve_enqueue_outcome', return_value=('missing', None)),
-            pytest.raises(bp_mod._PlanningEnqueueRejected),
-        ):
-            bp_mod._claim_and_enqueue_planner(
-                9, 'dry_run_task_id', 'tasks.fake', (9,)
-            )
-
-        db.rollback.assert_called_once()
-        db.commit.assert_not_called()
-
-    def test_unknown_enqueue_blocks_then_authoritative_missing_reconciles(
-        self, bp_mod, monkeypatch
-    ):
-        db, _cur = self._claim_db()
-        queue = MagicMock()
-        queue.enqueue.side_effect = RuntimeError('redis unavailable')
-        monkeypatch.setattr(bp_mod, 'get_db', lambda: db)
-        monkeypatch.setattr(bp_mod, 'rq_queue_high', queue)
-        monkeypatch.setattr(bp_mod, 'get_active_main_task', lambda **_kw: None)
-
-        with (
-            patch('app_helper.resolve_enqueue_outcome', return_value=('unknown', None)),
-            pytest.raises(bp_mod._PlanningEnqueueUncertain) as exc,
-        ):
-            bp_mod._claim_and_enqueue_planner(
-                9, 'dry_run_task_id', 'tasks.fake', (9,)
-            )
-        assert exc.value.job_id
-        db.commit.assert_called_once()
-
-        blocked = MagicMock()
-        blocked.fetchall.return_value = [(9, {'dry_run_task_id': exc.value.job_id})]
-        with patch.object(bp_mod, '_rq_jobs_by_id', side_effect=RuntimeError('still down')):
-            assert bp_mod._migration_job_in_flight(blocked) is True
-        assert not any(
-            'state = state -' in call.args[0] for call in blocked.execute.call_args_list
-        )
-
-        reconciled = MagicMock()
-        reconciled.fetchall.return_value = [(9, {'dry_run_task_id': exc.value.job_id})]
-        with patch.object(
-            bp_mod, '_rq_jobs_by_id', return_value={exc.value.job_id: None}
-        ):
-            assert bp_mod._migration_job_in_flight(reconciled) is False
-        assert any(
-            'state = state -' in call.args[0] for call in reconciled.execute.call_args_list
-        )
-
     @pytest.mark.parametrize(
         ('session_row', 'status_code'),
         [
@@ -762,7 +694,7 @@ class TestPlannerReservationProtocol:
         db, cur = self._claim_db(session_row)
         queue = MagicMock()
         monkeypatch.setattr(bp_mod, 'get_db', lambda: db)
-        monkeypatch.setattr(bp_mod, 'rq_queue_high', queue)
+        monkeypatch.setattr(taskqueue, 'enqueue', queue.enqueue)
         monkeypatch.setattr(bp_mod, 'get_active_main_task', lambda **_kw: None)
 
         with pytest.raises(bp_mod._PlanningClaimError) as exc:
@@ -807,20 +739,22 @@ class TestMigrationMetadataCompletionFence:
         assert not any(statement.startswith('DELETE FROM migration_target_meta') for statement in sql)
         db.commit.assert_not_called()
 
-    def test_completion_pruning_requires_ack_and_terminal_rq_job(self, bp_mod):
+    def test_completion_pruning_requires_ack_and_a_terminal_queue_row(self, bp_mod):
         cur = MagicMock()
         cur.fetchall.return_value = [
-            (1, 'alive', True),
-            (2, 'dead', True),
+            (1, 'live', True),
+            (2, 'done', True),
             (3, 'unacked', False),
             (4, None, False),
             (5, 'missing', True),
         ]
-        jobs = {'alive': 'alive', 'dead': 'dead', 'unacked': 'dead', 'missing': None}
-        with (
-            patch.object(bp_mod, '_rq_jobs_by_id', return_value=jobs),
-            patch.object(bp_mod, '_rq_job_is_alive', side_effect=lambda job: job == 'alive'),
-        ):
+        statuses = {
+            'live': config.TASK_STATUS_RUNNING,
+            'done': config.TASK_STATUS_SUCCESS,
+            'unacked': config.TASK_STATUS_SUCCESS,
+            'missing': None,
+        }
+        with patch.object(bp_mod, '_task_statuses_by_id', return_value=statuses):
             assert bp_mod._completed_sessions_safe_to_prune(cur) == [2, 5]
 
 
@@ -830,67 +764,6 @@ class TestExecuteEnqueueResolution:
         cur._fetchone_queue.extend(
             [(0,), (0,), (True,), (False,), ('navidrome', 'dry_run_ready', True)]
         )
-
-    @pytest.mark.parametrize(
-        ('outcome', 'expected_status'),
-        [('accepted', 200), ('missing', 500), ('unknown', 503)],
-    )
-    def test_execute_enqueue_exception_is_resolved_under_start_lock(
-        self, bp_mod, client, fake_db, monkeypatch, outcome, expected_status
-    ):
-        db, cur = fake_db
-        self._prime_execute(cur)
-        held = {'value': False}
-
-        @contextmanager
-        def start_lock():
-            held['value'] = True
-            try:
-                yield
-            finally:
-                held['value'] = False
-
-        queue = MagicMock()
-
-        def enqueue(*_args, **_kwargs):
-            assert held['value'] is True
-            raise RuntimeError('enqueue reply lost')
-
-        queue.enqueue.side_effect = enqueue
-        monkeypatch.setattr(bp_mod, 'rq_queue_high', queue)
-        monkeypatch.setattr(bp_mod, 'main_task_start_lock', start_lock)
-        saves = MagicMock()
-
-        with (
-            patch.object(bp_mod, 'get_active_main_task', return_value=None),
-            patch.object(bp_mod, 'save_task_status', saves),
-            patch.object(bp_mod, 'prune_task_status_history'),
-            patch.object(bp_mod, '_patch_state_keys') as patch_state,
-            patch('app_helper.resolve_enqueue_outcome', return_value=(outcome, None)),
-        ):
-            resp = client.post(
-                '/api/migration/execute',
-                json={
-                    'session_id': 1,
-                    'backup_confirmed': True,
-                    'confirmation_text': (
-                        'I want to migrate to navidrome and unbind unmatched tracks'
-                    ),
-                },
-            )
-
-        assert resp.status_code == expected_status
-        assert held['value'] is False
-        first_claim = patch_state.call_args_list[0].kwargs['exec_task_id']
-        if outcome == 'missing':
-            assert patch_state.call_args_list[-1].kwargs['exec_task_id'] is None
-            assert any(call.args[2] == 'FAILURE' for call in saves.call_args_list)
-        else:
-            assert all(
-                call.kwargs.get('exec_task_id', first_claim) is not None
-                for call in patch_state.call_args_list
-            )
-            assert not any(call.args[2] == 'FAILURE' for call in saves.call_args_list)
 
     def test_cancel_that_wins_the_lock_prevents_execute_enqueue(
         self, bp_mod, client, fake_db, monkeypatch
@@ -935,9 +808,8 @@ class TestProbeUrlValidation:
         'http://',
         'not-a-url',
         'file:///etc/passwd',
-        'gopher://10.0.0.1:6379/',
+        'gopher://10.0.0.1:70/',
         'ftp://1.2.3.4/',
-        'redis://1.2.3.4:6379',
     ]
 
     @pytest.mark.parametrize('url', ACCEPTED)
@@ -984,27 +856,19 @@ class TestProbeUrlValidation:
 
 
 class TestPlannerClaimStatus:
-    """A source-path refresh must not demote a finalized dry run.
-
-    ``status = COALESCE(%s, status)`` with a NULL parameter leaves the session
-    exactly as it was.  Passing 'in_progress' unconditionally threw away a
-    dry_run_ready session, and Execute then refused the migration outright, so the
-    user had to redo the entire dry run just to correct one source path.
-    """
 
     @staticmethod
     def _claim(bp_mod, fake_db, state_key, claim_status):
         db, cur = fake_db
-        cur._fetchone_queue.append((True,))                 # advisory xact lock
+        cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append(('dry_run_ready', True, None, None))
-        cur._fetchone_queue.append((False,))                # no pending handshake
-        cur._fetchone_queue.append((7,))                    # UPDATE ... RETURNING id
+        cur._fetchone_queue.append((False,))
+        cur._fetchone_queue.append((7,))
         with (
             patch.object(bp_mod, 'get_active_main_task', return_value=None),
-            patch.object(bp_mod, '_rq_jobs_by_id', return_value={}),
-            patch.object(bp_mod, 'rq_queue_high') as queue,
+            patch.object(bp_mod, '_task_statuses_by_id', return_value={}),
+            patch.object(bp_mod.taskqueue, 'enqueue'),
         ):
-            queue.enqueue.return_value = MagicMock()
             bp_mod._claim_and_enqueue_planner_locked(
                 db, 1, state_key, 'tasks.x', (1,), claim_status=claim_status,
             )

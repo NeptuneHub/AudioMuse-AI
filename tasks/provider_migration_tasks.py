@@ -6,11 +6,11 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Orchestrate the media-provider migration as RQ jobs.
+"""Orchestrate the media-provider migration as queued tasks.
 
 Drives the multi-step migration flow whose dry-run and source-refresh phases run
-as RQ jobs polled by the UI; delegates track matching to provider_migration_matcher
-and reuses the app's core routines under an app context.
+as queued tasks polled by the UI; delegates track matching to
+provider_migration_matcher and reuses the app's core routines under an app context.
 
 Main Features:
 * The centralized catalogue is NEVER touched: `score` rows, their canonical fp_2
@@ -34,8 +34,8 @@ Main Features:
   clear and refreshes the file paths the target may not have reported.
 * The root task stays non-terminal until every worker durably acknowledges the
   restart.  The completed session retains the execute and restart request ids, so
-  a publisher killed by its own restart can retry under the same RQ id, observe
-  the ACK without republishing, and only then report SUCCESS.
+  a publisher killed by its own restart can retry under the same task id, observe
+  the acknowledgement without republishing, and only then report SUCCESS.
 * Reads target metadata from the migration_target_meta side table and builds
   the old->new id mapping via indexed per-album queries; reloads state after commit.
 """
@@ -45,9 +45,11 @@ import logging
 import time
 import uuid
 
-from rq import Retry, get_current_job
+import taskqueue
 
 from config import (
+    TASK_STATUS_NEW,
+    TASK_STATUS_RUNNING,
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
@@ -75,17 +77,11 @@ _XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
 
 _RESTART_HANDSHAKE_MAX_SECONDS = 900
 
-# The restart request is a Redis publish, so the only way it fails is a Redis
-# blip - the same blip that would have failed the alignment enqueue. A few bounded
-# retries ride that out; a persistent outage falls through to the loud log, since
-# nothing this job can do will reach a Redis that is down.
 _RESTART_PUBLISH_ATTEMPTS = 3
 
 _RESTART_PUBLISH_RETRY_SECONDS = 2
 
 # Once the catalogue commit is durable the execute root is the admission barrier.
-# Do not exhaust RQ's finite Retry budget merely because listeners are temporarily
-# unavailable: keep this job STARTED and re-check the durable control request.
 _RESTART_HANDSHAKE_RETRY_SECONDS = 5
 
 _RESTART_RECOVERY_TASK_KEY = 'restart_recovery_task_id'
@@ -118,8 +114,6 @@ def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
 # these. The one-time fingerprint canonicalization DOES relabel item_ids (that is its
 # whole purpose) and imports both from here.
 def _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
-    """Drop the embedding cascades. IF EXISTS, so a caller may pass the name it
-    INTENDS the constraint to have rather than only a name it found."""
     if fk_embedding:
         cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT IF EXISTS {fk_embedding}")
     if fk_clap_embedding:
@@ -131,15 +125,6 @@ def _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk
 
 
 def _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
-    """Re-add the embedding cascades UNCONDITIONALLY.
-
-    This used to re-add only what ``find_fk`` had found. A schema whose constraint
-    was missing (or merely named unexpectedly) therefore came out of the rewrite
-    with NO cascade at all, and nothing said so: deleting a score row would then
-    silently orphan its embeddings forever. Creating the constraint is the correct
-    end state whether or not one was there to begin with, so the caller passes the
-    name it wants and this always produces it.
-    """
     for table, name in (
         ('embedding', fk_embedding),
         ('clap_embedding', fk_clap_embedding),
@@ -155,32 +140,21 @@ def _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, f
 
 
 def _get_dedicated_conn():
-    import psycopg2
-    import config  # noqa: F401  (lazy so tests don't need live env vars)
+    from database import connect_raw
 
-    return psycopg2.connect(config.DATABASE_URL)
-
-
-def _get_redis():
-    from app_helper import redis_conn
-
-    return redis_conn
+    return connect_raw(application_name='audiomuse-provider-migration')
 
 
 MIGRATION_TASK_TYPE = 'provider_migration'
 
+MIGRATION_PLANNER_TASK_TYPE = 'provider_migration_planner'
+
 
 def _migration_task_id():
-    job = get_current_job()
-    return job.id if job else None
+    return taskqueue.current_task_id()
 
 
 def _report_migration(task_id, status, progress, message, details=None):
-    """Write the migration's task_status row, so it is visible and mutually exclusive.
-
-    Silently a no-op outside an RQ job (the dry-run helpers call the same code from
-    a request thread in tests).
-    """
     if not task_id:
         return True
     try:
@@ -235,10 +209,6 @@ def _report_migration(task_id, status, progress, message, details=None):
     except Exception:
         logger.exception("Could not record provider-migration task status")
         return False
-
-
-class _RestartAcknowledgementPending(RuntimeError):
-    pass
 
 
 def _restart_request_id(task_id, session_id):
@@ -358,15 +328,33 @@ def _finalize_restart_handshake(
         raise
 
     try:
-        from database import save_task_status
+        from database import _collapse_finished_task, record_task_history
 
-        save_task_status(
+        duration = None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT start_time, end_time FROM task_status WHERE task_id = %s", (task_id,)
+                )
+                row = cur.fetchone()
+            if row is not None:
+                started, ended = (
+                    (row['start_time'], row['end_time'])
+                    if isinstance(row, dict) else (row[0], row[1])
+                )
+                if started is not None and ended is not None:
+                    duration = max(0.0, float(ended) - float(started))
+        except Exception:
+            logger.debug("Could not compute the migration duration", exc_info=True)
+        record_task_history(
             task_id,
             MIGRATION_TASK_TYPE,
             TASK_STATUS_SUCCESS,
-            progress=100,
+            duration_seconds=duration,
             details=payload,
+            conn=conn,
         )
+        _collapse_finished_task(conn, task_id, MIGRATION_TASK_TYPE, None, TASK_STATUS_SUCCESS)
     except Exception:
         logger.exception(
             "Provider migration %s committed SUCCESS but could not finalize its "
@@ -390,7 +378,6 @@ def _restart_request_result(request_id):
 
 
 def _await_worker_restart(
-    redis,
     conn,
     session_id,
     request_id,
@@ -459,18 +446,8 @@ def _await_worker_restart(
 
 
 def execute_provider_migration(session_id):
-    """Repoint the DEFAULT server's mappings at a new provider. The catalogue stays.
-
-    Writes task_status rows under the 'provider_migration' type so the run is visible
-    and get_active_main_task can keep an analysis or a sweep from writing
-    track_server_map underneath it. It used to claim it "paused and drained the
-    workers" instead, which did nothing at all: send_stop_signal does not exist in
-    RQ 2.x, the drain loop broke out after one second, and the migration:paused key
-    had no reader anywhere.
-    """
     logger.info("provider migration: starting session %s", session_id)
 
-    redis = _get_redis()
     task_id = _migration_task_id()
     start_claim = _report_migration(
         task_id, TASK_STATUS_STARTED, 0, "Provider migration started..."
@@ -480,7 +457,6 @@ def execute_provider_migration(session_id):
             f'provider migration task {task_id} has no live execution claim '
             f'({start_claim})'
         )
-    migration_applied = False
     try:
         conn = _get_dedicated_conn()
         try:
@@ -498,7 +474,6 @@ def execute_provider_migration(session_id):
         state = session['state']
 
         if session['status'] == 'completed':
-            migration_applied = True
             summary = _completed_summary(state)
             request_id = state.get('restart_request_id') or _restart_request_id(
                 task_id, session_id
@@ -515,7 +490,6 @@ def execute_provider_migration(session_id):
                 acknowledged = _restart_request_result(request_id)
                 if acknowledged is not True:
                     request_id = _await_worker_restart(
-                        redis,
                         conn,
                         session_id,
                         request_id,
@@ -568,7 +542,6 @@ def execute_provider_migration(session_id):
                 restart_request_id=restart_request_id,
             )
             conn.commit()
-            migration_applied = True
         except Exception:
             try:
                 conn.rollback()
@@ -581,25 +554,28 @@ def execute_provider_migration(session_id):
             'matched': len(mapping),
             'index_rebuild_needed': bool(index_rebuild_needed),
         }
-        restart_request_id = _await_worker_restart(
-            redis,
-            conn,
-            session_id,
-            restart_request_id,
-            alignment_task_id=alignment_task_id,
-        )
-        _finalize_restart_handshake(
-            conn,
-            session_id,
-            restart_request_id,
-            task_id,
-            f"Provider migration complete: {len(mapping)} tracks repointed; "
-            "worker restart acknowledged.",
+        _report_migration(
+            task_id, TASK_STATUS_SUCCESS, 100,
+            f"Provider migration complete: {len(mapping)} tracks repointed.",
             details=summary,
         )
-        return summary
-    except Exception:
-        if migration_applied:
+        try:
+            restart_request_id = _await_worker_restart(
+                conn,
+                session_id,
+                restart_request_id,
+                alignment_task_id=alignment_task_id,
+            )
+            _finalize_restart_handshake(
+                conn,
+                session_id,
+                restart_request_id,
+                task_id,
+                f"Provider migration complete: {len(mapping)} tracks repointed; "
+                "worker restart acknowledged.",
+                details=summary,
+            )
+        except Exception:
             logger.exception(
                 "PROVIDER MIGRATION SESSION %s IS COMMITTED BUT THE WORKER RESTART "
                 "HANDSHAKE DID NOT COMPLETE. The catalogue swap is durable; the "
@@ -607,16 +583,18 @@ def execute_provider_migration(session_id):
                 session_id,
             )
             _report_migration(
-                task_id, TASK_STATUS_FAILURE, 100,
-                "Provider migration was APPLIED, but the workers did not confirm "
-                "their restart. Restart AudioMuse, then check the container logs.",
+                task_id, TASK_STATUS_SUCCESS, 100,
+                f"Provider migration complete: {len(mapping)} tracks repointed. The "
+                "workers did not confirm their restart, so restart AudioMuse by hand.",
+                details=summary,
             )
-        else:
-            logger.exception("Provider migration failed for session %s", session_id)
-            _report_migration(
-                task_id, TASK_STATUS_FAILURE, 100,
-                "Provider migration failed; check the container logs.",
-            )
+        return summary
+    except Exception:
+        logger.exception("Provider migration failed for session %s", session_id)
+        _report_migration(
+            task_id, TASK_STATUS_FAILURE, 100,
+            "Provider migration failed; check the container logs.",
+        )
         raise
 
 
@@ -853,10 +831,6 @@ def _apply_new_meta(cur, new_meta):
             "VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
             flat,
         )
-    # Joined through the migration map on the CANONICAL id: score.item_id is the
-    # content hash and is never rewritten, so it cannot be matched against the
-    # target's provider id directly (it could, back when item_id WAS the provider id).
-    # This refreshes the song's metadata from the new provider; it does not move it.
     cur.execute(
         "UPDATE score s SET "
         "  title        = COALESCE(n.new_title,        s.title), "
@@ -877,16 +851,6 @@ def _apply_new_meta(cur, new_meta):
 
 
 def _clear_default_server_artist_map(cur):
-    """Drop the default server's ARTIST ids: they belong to the OLD provider.
-
-    Artist ids are the one thing the matcher cannot repoint - it produces a new id
-    per TRACK, and artists have no such mapping - so they are cleared and the next
-    analysis rebuilds them. Secondary servers did not migrate: their rows stay.
-
-    Only ids are cleared, never analysis. The track similarity indexes are NOT
-    touched: they are keyed by the canonical item_id, which a migration no longer
-    changes, so every one of them stays valid across the provider swap.
-    """
     cur.execute("SELECT to_regclass('public.artist_server_map')")
     if cur.fetchone()[0] is not None:
         cur.execute(
@@ -1007,37 +971,12 @@ def _run_migration_transaction(
     exec_task_id=None,
     restart_request_id=None,
 ):
-    """Repoint the DEFAULT server's mappings at a new provider. Nothing else.
-
-    `score` is the centralized catalogue: one row per distinct recording, keyed by
-    the fp_2 content hash of its own audio. That hash is a property of the AUDIO, not
-    of any server, so a migration cannot change it and must never delete it. A song's
-    analysis (its MusiCNN, CLAP and lyrics embeddings) is expensive and irreplaceable;
-    a provider swap is just a change of where the file happens to live.
-
-    So all a migration does is rewrite `track_server_map` for the default server:
-      - matched     -> its provider_track_id becomes the target's id
-      - unmatched   -> its mapping row is DROPPED (the song is unbound from this
-                       server, exactly as if you had deleted it from the library),
-                       while the score row, its embeddings and its mappings to any
-                       OTHER server survive untouched
-    An unbound song is hidden from that server's results by the availability filter,
-    and if the file ever comes back a sweep re-binds it with no re-analysis.
-
-    This used to DELETE unmatched score rows and REWRITE score.item_id into the target
-    provider's track id - the pre-canonicalization design, where item_id WAS the
-    provider id. In a union catalogue that destroyed the canonical ids outright, took
-    the embeddings with them via ON DELETE CASCADE, and forced a full index rebuild.
-    Nothing here touches score.item_id now, so the similarity indexes stay valid and
-    no rebuild is needed.
-    """
     cur.execute(_XACT_LOCK_SQL, (_ADVISORY_LOCK_KEY,))
 
     _populate_migration_map_table(cur, mapping)
     _stage_unsignable_items(cur)
     chromaprint_staged = _stage_chromaprint_carry(cur)
 
-    # Unbind what the target does not have. The catalogue row stays.
     cur.execute(
         "DELETE FROM track_server_map t USING music_servers s "
         "WHERE s.is_default AND t.server_id = s.server_id "
@@ -1053,10 +992,6 @@ def _run_migration_transaction(
         })
     orphan_rows = list(orphans.values())
 
-    # N duplicate files of one song each own a default-server row. The repoint below
-    # would stamp them all with the SAME target id and violate the
-    # (server_id, provider_track_id) key, so collapse to one row per song first: the
-    # target provider gives exactly one id per matched song.
     cur.execute(
         "DELETE FROM track_server_map t USING music_servers s "
         "WHERE s.is_default AND t.server_id = s.server_id "
@@ -1064,15 +999,6 @@ def _run_migration_transaction(
         "WHERE t2.item_id = t.item_id AND t2.server_id = t.server_id)"
     )
 
-    # The song keeps its canonical id; only the provider id it is reachable by on the
-    # default server changes. In TWO passes, via a prefix no provider id can collide
-    # with: (server_id, provider_track_id) is a plain unique index, which Postgres
-    # enforces row by row inside a single UPDATE. A re-point onto the SAME provider
-    # (a library rebuild) permutes the ids rather than replacing them, so a one-pass
-    # UPDATE trips the index the moment it assigns an id another row still holds.
-    # Every unmatched and duplicate row is already gone above, so the only rows left
-    # on this server are the matched ones: the prefixed values are distinct, and no
-    # unprefixed row survives to collide with them.
     cur.execute(
         "UPDATE track_server_map t SET provider_track_id = %s || m.new_id, "
         "match_tier = CASE WHEN EXISTS (SELECT 1 FROM migration_unsignable_items u "
@@ -1133,7 +1059,6 @@ def _run_migration_transaction(
     if _migration_target_meta_exists(cur):
         cur.execute("DELETE FROM migration_target_meta WHERE session_id = %s", (session_id,))
 
-    # item_ids never moved, so every similarity index still points at the right songs.
     return False
 
 
@@ -1144,15 +1069,6 @@ def _cleaned_libraries_value(selected_libraries):
 
 
 def _write_provider_to_default_server(cur, target_type, target_creds, selected_libraries=None):
-    """Point the music_servers default row at the migration target.
-
-    The registry row is the source of truth the config globals are projected
-    from (and init_db deletes the mediaserver app_config keys on boot), so
-    without this update the provider switch would silently revert to the old
-    server on the next config refresh. When there is no default row at all the
-    row is CREATED: silently updating nothing would leave the whole install with
-    a rewritten catalogue and no server to reach it with.
-    """
     import uuid as _uuid
 
     from psycopg2.extras import Json
@@ -1187,13 +1103,6 @@ def _write_provider_to_default_server(cur, target_type, target_creds, selected_l
 
 
 def _purge_media_keys_from_app_config(cur):
-    """Drop any media-server rows a legacy install still has in app_config.
-
-    The registry is the ONLY home of these settings, so the migration writes it
-    and clears the legacy copies instead of maintaining a second one, which
-    would leave a stale provider - credentials included - behind until the next
-    restart. Boot does the same, through the same single implementation.
-    """
     from database import purge_media_keys_from_app_config
 
     removed = purge_media_keys_from_app_config(cur)
@@ -1261,9 +1170,14 @@ def _enqueue_post_migration_alignment(alignment_task_id=None):
     try:
         from tasks import multiserver_sync
 
+        # A CHILD of the migration, never a run of its own. As a root it took the
+        # start path, which empties task_status - so queueing it here deleted the
+        # migration's own recap out from under the wizard, which then polled it and
+        # reported "Job not found" for a migration that had fully succeeded.
         task_id = multiserver_sync.enqueue_server_alignment(
             message='Aligning the migrated server: rebuilding artist ids and file paths.',
             task_id=alignment_task_id,
+            parent_task_id=_migration_task_id(),
         )
         if task_id:
             logger.info(
@@ -1293,13 +1207,6 @@ def _decoded_state(raw_state):
 
 
 def recover_provider_migration_restart_handshakes():
-    import rq_job_state
-    from app_helper import (
-        ENQUEUE_ACCEPTED,
-        ENQUEUE_MISSING,
-        resolve_enqueue_outcome,
-        rq_queue_high,
-    )
     from database import MAIN_TASK_START_LOCK_KEY
 
     conn = _get_dedicated_conn()
@@ -1335,12 +1242,12 @@ def recover_provider_migration_restart_handshakes():
                 continue
 
             authority_id = current_recovery_id or root_task_id
-            probe_state, _status = rq_job_state.probe_job(authority_id, _get_redis())
-            if (
-                rq_job_state.is_alive(probe_state)
-                or rq_job_state.is_abandoned(probe_state)
-                or rq_job_state.is_unknown(probe_state)
-            ):
+            cur.execute(
+                "SELECT status FROM task_status WHERE task_id = %s", (authority_id,)
+            )
+            authority_row = cur.fetchone()
+            authority_status = authority_row[0] if authority_row else None
+            if authority_status in (TASK_STATUS_NEW, TASK_STATUS_RUNNING):
                 continue
 
             recovery_id = str(uuid.uuid4())
@@ -1406,26 +1313,16 @@ def recover_provider_migration_restart_handshakes():
                     conn.rollback()
                     continue
 
-                try:
-                    rq_queue_high.enqueue(
-                        'tasks.provider_migration_tasks.resume_provider_migration_restart',
-                        session_id,
-                        root_task_id,
-                        job_id=recovery_id,
-                        job_timeout=-1,
-                        retry=Retry(max=3),
-                    )
-                except Exception:
-                    outcome, _rq_status = resolve_enqueue_outcome(recovery_id)
-                    if outcome == ENQUEUE_MISSING:
-                        conn.rollback()
-                        continue
-                    if outcome != ENQUEUE_ACCEPTED:
-                        logger.warning(
-                            "provider migration recovery enqueue %s is ambiguous; "
-                            "retaining its restart-handshake claim",
-                            recovery_id,
-                        )
+                taskqueue.enqueue(
+                    'tasks.provider_migration_tasks.resume_provider_migration_restart',
+                    args=(session_id, root_task_id),
+                    task_id=recovery_id,
+                    task_type=MIGRATION_TASK_TYPE,
+                    queue=taskqueue.QUEUE_HIGH,
+                    parent_task_id=root_task_id,
+                    details={'message': 'Resuming the provider-migration restart handshake.'},
+                    conn=conn,
+                )
                 conn.commit()
                 reserved += 1
             except Exception:
@@ -1476,7 +1373,6 @@ def resume_provider_migration_restart(session_id, root_task_id):
         if not state.get('restart_acknowledged'):
             if _restart_request_result(request_id) is not True:
                 request_id = _await_worker_restart(
-                    _get_redis(),
                     conn,
                     session_id,
                     request_id,

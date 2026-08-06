@@ -124,34 +124,61 @@ class TestEarlyStopCounting:
             },
         }
 
-    def _run_monitor(self, monkeypatch, batch_results, initial_check=False, top_n=10):
+    @staticmethod
+    def _state(top_n=10):
+        return {
+            'runs_completed': 0, 'total_runs': 100, 'best_score': -1.0,
+            'best_result': None, 'elite_solutions': [], 'last_subset_ids': [],
+            'failed_batches': 0, 'stale_batches': 0, 'job_prefix': 'p',
+            'top_n_clustering_playlist': top_n, 'batches_launched': 0,
+        }
+
+    def _run_monitor(self, monkeypatch, batch_results, top_n=10):
         from tasks import clustering
         import config
 
-        children = []
-        results = {}
+        reaped = []
         for i, result in enumerate(batch_results):
             status = config.TASK_STATUS_SUCCESS if result else config.TASK_STATUS_FAILURE
-            children.append({
+            details = {}
+            if result:
+                details = {
+                    'iterations_completed_in_batch': result['iterations_completed_in_batch'],
+                    'full_best_result_from_batch': result['best_result_from_batch'],
+                }
+            reaped.append({
                 'task_id': f'p_batch_{i}', 'status': status,
-                'sub_type_identifier': f'Batch_{i}', 'details': None,
+                'sub_type_identifier': f'Batch_{i}', 'details': details,
             })
-            results[f'p_batch_{i}'] = result
-        monkeypatch.setattr(clustering, 'get_child_tasks_from_db', lambda pid: children)
         monkeypatch.setattr(
-            clustering, 'get_job_result_safely',
-            lambda job_id, pid, task_type: results[job_id],
+            clustering.taskqueue, 'reap_finished_children', lambda _pid: reaped
         )
-        state = {
-            'runs_completed': 0, 'total_runs': 100, 'best_score': -1.0,
-            'best_result': None, 'active_jobs': {}, 'elite_solutions': [],
-            'last_subset_ids': [], 'processed_job_ids': set(),
-            'batch_start_times': {}, 'failed_batches': set(),
-            'timed_out_batches': set(), 'job_prefix': 'p',
-            'stale_batches': 0, 'top_n_clustering_playlist': top_n,
-        }
-        clustering._monitor_and_process_batches(state, 'p', initial_check=initial_check)
+        state = self._state(top_n)
+        clustering._absorb_finished_batches(state, 'p')
         return state
+
+    def test_a_batch_from_another_server_phase_is_not_credited_to_this_one(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+        import config
+
+        monkeypatch.setattr(
+            clustering.taskqueue, 'reap_finished_children',
+            lambda _pid: [{
+                'task_id': 'p_s9_batch_0', 'status': config.TASK_STATUS_SUCCESS,
+                'sub_type_identifier': 'Batch_0',
+                'details': {'iterations_completed_in_batch': 20},
+            }],
+        )
+        state = self._state()
+
+        clustering._absorb_finished_batches(state, 'p')
+
+        assert state['runs_completed'] == 0, (
+            'reap returns every finished child of the parent, so a batch belonging to '
+            'a different server phase must not be counted into this one'
+        )
 
     def test_three_batches_without_a_better_result_mark_the_search_stale(self, monkeypatch):
         state = self._run_monitor(
@@ -178,14 +205,32 @@ class TestEarlyStopCounting:
         )
         assert state['stale_batches'] == 2
 
-    def test_recovery_scans_do_not_count_stale_batches(self, monkeypatch):
-        state = self._run_monitor(
-            monkeypatch,
-            [self._batch_result(10), self._batch_result(9),
-             self._batch_result(8), self._batch_result(7)],
-            initial_check=True,
+    def test_a_batch_is_credited_exactly_once_because_reaping_deletes_its_row(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+        import config
+
+        rows = [{
+            'task_id': 'p_batch_0', 'status': config.TASK_STATUS_SUCCESS,
+            'sub_type_identifier': 'Batch_0',
+            'details': {'iterations_completed_in_batch': 20},
+        }]
+
+        def reap(_pid):
+            drained, rows[:] = list(rows), []
+            return drained
+
+        monkeypatch.setattr(clustering.taskqueue, 'reap_finished_children', reap)
+        state = self._state()
+
+        clustering._absorb_finished_batches(state, 'p')
+        clustering._absorb_finished_batches(state, 'p')
+
+        assert state['runs_completed'] == 20, (
+            'the row is deleted as it is reaped, so there is no processed-id set to '
+            'keep and nothing to double count'
         )
-        assert state['stale_batches'] == 0
 
     def test_an_explicit_zero_keep_all_target_is_not_coerced_to_the_default(self, monkeypatch):
         from tasks import clustering
@@ -1221,107 +1266,6 @@ class TestClusterNaming:
         assert isinstance(details, dict)
 
 
-class TestBatchFailureHandlerRetryAwareness:
-    def test_batch_handler_leaves_the_row_live_when_rq_still_has_retries(
-        self, monkeypatch
-    ):
-        import tasks.clustering as clustering
-        from rq.exceptions import AbandonedJobError
-
-        writes = []
-        monkeypatch.setattr(
-            clustering, 'save_task_status',
-            lambda *a, **k: writes.append((a, k)),
-        )
-        job = Mock()
-        job.id = 'parent-1_s0_batch_0'
-        job.retries_left = 2
-        job.kwargs = {'parent_task_id': 'parent-1', 'batch_id_str': 'Batch_0'}
-
-        err = AbandonedJobError('worker died')
-        clustering.batch_task_failure_handler(
-            job, object(), AbandonedJobError, err, None
-        )
-
-        assert writes == []
-
-    def test_batch_handler_fails_the_row_only_once_retries_are_exhausted(
-        self, monkeypatch
-    ):
-        import sys
-        import types
-        from contextlib import nullcontext
-
-        from flask import Flask
-
-        import tasks.clustering as clustering
-
-        fake_flask_app = types.ModuleType('flask_app')
-        fake_flask_app.app = Flask('batch-failure-handler-test')
-        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
-        monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
-        monkeypatch.setattr(
-            clustering,
-            'get_task_info_from_db',
-            lambda _task_id: {'status': 'PROGRESS'},
-        )
-
-        writes = []
-        monkeypatch.setattr(
-            clustering, 'save_task_status',
-            lambda task_id, task_type, status, **k: writes.append(
-                (task_id, task_type, status, k.get('parent_task_id'))
-            ),
-        )
-        job = Mock()
-        job.id = 'parent-1_s0_batch_0'
-        job.retries_left = None
-        job.kwargs = {'parent_task_id': 'parent-1', 'batch_id_str': 'Batch_0'}
-
-        err = RuntimeError('boom')
-        clustering.batch_task_failure_handler(
-            job, object(), RuntimeError, err, None
-        )
-
-        assert writes == [
-            ('parent-1_s0_batch_0', 'clustering_batch', 'FAILURE', 'parent-1')
-        ]
-
-    def test_batch_handler_does_not_recreate_child_after_parent_wipe(
-        self, monkeypatch
-    ):
-        import sys
-        import types
-        from contextlib import nullcontext
-
-        from flask import Flask
-
-        import tasks.clustering as clustering
-
-        fake_flask_app = types.ModuleType('flask_app')
-        fake_flask_app.app = Flask('cancelled-batch-failure-handler-test')
-        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
-        monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
-        monkeypatch.setattr(clustering, 'get_task_info_from_db', lambda _task_id: None)
-        writes = []
-        monkeypatch.setattr(
-            clustering,
-            'save_task_status',
-            lambda *args, **kwargs: writes.append((args, kwargs)),
-        )
-        job = Mock()
-        job.id = 'parent-1_s0_batch_0'
-        job.retries_left = 0
-        job.kwargs = {'parent_task_id': 'parent-1', 'batch_id_str': 'Batch_0'}
-
-        err = RuntimeError('stopped by cancel')
-        clustering.batch_task_failure_handler(
-            job, object(), RuntimeError, err, None
-        )
-
-        assert writes == []
-
-
 def _batch_launch_args():
     return (
         'kmeans', 2, 4, 0.1, 0.5, 2, 5, 2, 4, 2, 4, 2, 4, 50,
@@ -1339,6 +1283,139 @@ def _batch_launch_state():
     }
 
 
+def test_a_batch_row_left_by_a_previous_attempt_is_left_to_finish(monkeypatch):
+    import tasks.clustering as clustering
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
+    monkeypatch.setattr(
+        clustering, 'get_task_info_from_db', lambda _task_id: {'status': 'RUNNING'}
+    )
+
+    def enqueue(_func, **_kwargs):
+        raise clustering.taskqueue.TaskNotQueued('already exists')
+
+    monkeypatch.setattr(clustering.taskqueue, 'enqueue', enqueue)
+
+    assert clustering._launch_batch_job(
+        _batch_launch_state(), 'parent-1', 0, 10, 'genre-token', 5,
+        *_batch_launch_args(),
+    ) is True, (
+        'the row is already queued, so the launch has nothing left to do and the '
+        'parent tracks it through live_children like any other batch'
+    )
+
+
+def test_a_run_resumes_from_its_own_row_instead_of_rescanning_its_children():
+    import tasks.clustering as clustering
+    import json
+
+    task_info = {'details': json.dumps({
+        'total_runs': 100, 'runs_completed': 40, 'batches_launched': 3,
+        'server_idx': 1, 'elite_solutions': [{'score': 7.5}],
+    })}
+
+    resumed = clustering._resumable_progress(task_info, 100)
+
+    assert resumed['runs_completed'] == 40
+    assert resumed['batches_launched'] == 3
+    assert resumed['server_idx'] == 1
+    assert resumed['elite_solutions'] == [{'score': 7.5}]
+
+
+def test_a_crashed_run_resumes_with_the_winning_result_it_had_found():
+    import tasks.clustering as clustering
+    import json
+
+    task_info = {'details': json.dumps({
+        'total_runs': 100, 'runs_completed': 80, 'batches_launched': 4,
+        'best_score': 9.1, 'best_result': {'named_playlists': {'P1': ['a', 'b']}},
+    })}
+
+    resumed = clustering._resumable_progress(task_info, 100)
+
+    assert resumed['best_score'] == 9.1
+    assert resumed['best_result']['named_playlists'] == {'P1': ['a', 'b']}, (
+        'without it a crashed main task would have to redo the whole search'
+    )
+
+
+def test_the_persisted_result_drops_the_blobs_nothing_reads():
+    import tasks.clustering as clustering
+
+    kept = clustering._persistable_best_result({
+        'named_playlists': {'P1': ['a']},
+        'playlist_centroids': {'P1': [0.1]},
+        'playlist_to_centroid_vector_map': {'P1': [0.2]},
+        'playlist_primary_genres': {'P1': 'rock'},
+        'parameters': {'method': 'kmeans'},
+        'fitness_score': 9.1,
+        'scaler_details': {'mean': [0.0] * 200, 'scale': [1.0] * 200},
+        'pca_model_details': {'components': [[0.0] * 200] * 4},
+    })
+
+    assert 'scaler_details' not in kept
+    assert 'pca_model_details' not in kept, (
+        'the PCA matrix is n_components x EMBEDDING_DIMENSION floats and nothing '
+        'reads it once the run is over'
+    )
+    assert kept['named_playlists'] == {'P1': ['a']}
+    assert kept['playlist_to_centroid_vector_map'] == {'P1': [0.2]}, (
+        'clustering_postprocessing does read this one'
+    )
+
+
+def test_a_run_whose_size_changed_does_not_resume_stale_progress():
+    import tasks.clustering as clustering
+    import json
+
+    task_info = {'details': json.dumps({
+        'total_runs': 100, 'runs_completed': 40, 'batches_launched': 3,
+    })}
+
+    assert clustering._resumable_progress(task_info, 200) is None, (
+        'the persisted counters are meaningless against a different run size'
+    )
+
+
+def test_a_first_attempt_has_nothing_to_resume():
+    import tasks.clustering as clustering
+    import json
+
+    task_info = {'details': json.dumps({
+        'total_runs': 100, 'runs_completed': 0, 'batches_launched': 0,
+    })}
+
+    assert clustering._resumable_progress(task_info, 100) is None
+
+
+def test_batches_from_an_earlier_server_phase_are_revoked_not_left_to_fail(monkeypatch):
+    import tasks.clustering as clustering
+
+    revoked = []
+    monkeypatch.setattr(
+        clustering, 'save_task_status',
+        lambda job_id, *_a, **_k: revoked.append(job_id),
+    )
+    monkeypatch.setattr(clustering.taskqueue, 'request_cancel', lambda _job_id: None)
+    monkeypatch.setattr(
+        clustering.taskqueue, 'live_children',
+        lambda _parent: [
+            {'task_id': 'p_s0_batch_1'},
+            {'task_id': 'p_s1_batch_7'},
+            {'task_id': 'p_s2_batch_2'},
+        ],
+    )
+
+    count = clustering._revoke_foreign_batches('p', 'p_s0')
+
+    assert count == 2
+    assert revoked == ['p_s1_batch_7', 'p_s2_batch_2'], (
+        'there is one shared payload slot per parent, so a batch queued for another '
+        'server phase can only fail once this phase overwrites the genre map'
+    )
+
+
 def test_cancelled_parent_cannot_enqueue_a_new_clustering_batch(monkeypatch):
     import tasks.clustering as clustering
     from contextlib import nullcontext
@@ -1347,13 +1424,12 @@ def test_cancelled_parent_cannot_enqueue_a_new_clustering_batch(monkeypatch):
     monkeypatch.setattr(clustering, 'get_task_info_from_db', lambda _task_id: None)
     queue_calls = []
     monkeypatch.setattr(
-        clustering.rq_queue_default,
-        'enqueue',
-        lambda *a, **k: queue_calls.append((a, k)),
+        clustering.taskqueue, 'enqueue',
+        lambda func, **kwargs: queue_calls.append((func, kwargs)),
     )
 
     launched = clustering._launch_batch_job(
-        _batch_launch_state(), 'parent-1', 0, 10, '{}', 5,
+        _batch_launch_state(), 'parent-1', 0, 10, 'genre-token', 5,
         *_batch_launch_args(),
     )
 
@@ -1377,17 +1453,16 @@ def test_clustering_batch_parent_check_and_enqueue_share_the_cancel_lock(monkeyp
     monkeypatch.setattr(
         clustering,
         'get_task_info_from_db',
-        lambda _task_id: {'status': 'PROGRESS'},
+        lambda _task_id: {'status': 'RUNNING'},
     )
 
-    def enqueue(*_args, **kwargs):
+    def enqueue(_func, **kwargs):
         assert held['value'] is True
-        return Mock(id=kwargs['job_id'])
 
-    monkeypatch.setattr(clustering.rq_queue_default, 'enqueue', enqueue)
+    monkeypatch.setattr(clustering.taskqueue, 'enqueue', enqueue)
 
     assert clustering._launch_batch_job(
-        _batch_launch_state(), 'parent-1', 0, 10, '{}', 5,
+        _batch_launch_state(), 'parent-1', 0, 10, 'genre-token', 5,
         *_batch_launch_args(),
     ) is True
 
@@ -1403,10 +1478,8 @@ def test_batch_start_racing_the_cancel_wipe_never_recreates_a_child_row(monkeypa
     fake_flask_app.app = Flask('cancelled-batch-start')
     monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
     job = Mock(id='parent-1_s0_batch_0', meta={})
-    monkeypatch.setattr(clustering, 'get_current_job', lambda connection=None: job)
-    # First read is the optimistic pre-check; Cancel commits before the locked
-    # initial status write, whose re-check sees the parent missing.
-    parent_reads = iter([{'status': 'PROGRESS'}, None])
+    monkeypatch.setattr(clustering.taskqueue, 'current_task_id', lambda: job.id)
+    parent_reads = iter([{'status': 'RUNNING'}, None])
     monkeypatch.setattr(
         clustering, 'get_task_info_from_db', lambda _task_id: next(parent_reads)
     )

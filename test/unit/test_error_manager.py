@@ -119,14 +119,14 @@ class TestClassify:
         assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_CONNECTION
 
     def test_module_prefix_prevents_name_collision(self):
-        # A library that reuses the name 'ConnectionError' (e.g. redis) must NOT be
+        # A third-party library that reuses the name 'ConnectionError' must NOT be
         # classified as a media-server refusal; it falls through to the caller default.
         class ConnectionError(Exception):  # noqa: A001
             pass
 
-        ConnectionError.__module__ = 'redis.exceptions'
+        ConnectionError.__module__ = 'someclient.exceptions'
         assert (
-            em.classify(ConnectionError('redis down'), ed.ERR_CLUSTERING_FAILED)
+            em.classify(ConnectionError('backend down'), ed.ERR_CLUSTERING_FAILED)
             == ed.ERR_CLUSTERING_FAILED
         )
 

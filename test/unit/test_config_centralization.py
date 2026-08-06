@@ -6,7 +6,7 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Config-default centralization for RQ and instrumentation settings.
+"""Config-default centralization for queue and instrumentation settings.
 
 Asserts each tunable exists in config with its default, honors its environment
 variable, and that importer modules reference config rather than re-reading env.
@@ -39,9 +39,6 @@ import config
 
 
 _DEFAULTS = (
-    ('RQ_MAX_JOBS', 50, 'RQ_MAX_JOBS', '7', 7),
-    ('RQ_MAX_JOBS_HIGH', 100, 'RQ_MAX_JOBS_HIGH', '13', 13),
-    ('RQ_LOGGING_LEVEL', 'INFO', 'RQ_LOGGING_LEVEL', 'debug', 'DEBUG'),
     ('RADIUS_INSTRUMENTATION', False, 'RADIUS_INSTRUMENTATION', 'True', True),
 )
 
@@ -114,8 +111,6 @@ class TestDatabaseUrlCompatibility:
         assert reloaded.DATABASE_URL == 'postgresql://myuser:mypass@myhost:5433/mydb'
 
     def test_a_database_url_in_the_environment_is_ignored(self, monkeypatch):
-        # Two config sources for one connection is what broke pg_dump when only
-        # one of them was set (#832). The five POSTGRES_* parts are the only input.
         explicit = (
             'postgresql://someone:else@elsewhere:1/other'
             '?sslmode=require&application_name=AudioMuse'
@@ -180,8 +175,6 @@ class TestDatabaseUrlCompatibility:
         'bare', ['::1', '2001:db8::1', 'fe80::1'], ids=['loopback', 'global', 'link_local']
     )
     def test_an_unbracketed_ipv6_host_is_bracketed_for_us(self, monkeypatch, bare):
-        # Its own colons would otherwise be read as the port separator, so the URI
-        # resolved to a nonsense host and port instead of failing loudly.
         env = dict(_PG_PARTS, POSTGRES_HOST=bare)
         reloaded = _reload_config_with(monkeypatch, env)
         parsed = parse_dsn(reloaded.DATABASE_URL)
@@ -189,8 +182,6 @@ class TestDatabaseUrlCompatibility:
         assert parsed['port'] == '5433'
 
     def test_a_socket_directory_containing_a_colon_keeps_its_port(self, monkeypatch):
-        # ':' used to be left unescaped in the host, so this path split into
-        # host "/run/pg" and port "1" and the real port was silently discarded.
         env = dict(_PG_PARTS, POSTGRES_HOST='/run/pg:1')
         reloaded = _reload_config_with(monkeypatch, env)
         parsed = parse_dsn(reloaded.DATABASE_URL)
@@ -234,10 +225,10 @@ def _read_source(relative_path):
 
 
 _IMPORTERS = {
-    'rq_worker.py': ('RQ_MAX_JOBS', 'RQ_LOGGING_LEVEL'),
-    'rq_worker_high_priority.py': ('RQ_MAX_JOBS_HIGH', 'RQ_LOGGING_LEVEL'),
     'tasks/radius_walk_helper.py': ('RADIUS_INSTRUMENTATION',),
     'tasks/ivf_manager.py': ('RADIUS_INSTRUMENTATION',),
+    'taskqueue/worker.py': ('QUEUE_MAX_JOBS', 'QUEUE_MAX_JOBS_HIGH'),
+    'taskqueue/maintenance.py': ('QUEUE_ORPHAN_SCAN_SECONDS', 'QUEUE_RETENTION_SCAN_SECONDS'),
 }
 
 
@@ -414,4 +405,31 @@ def test_no_module_uses_getattr_config_fallback():
         'getattr(config, ..., default) fallbacks re-specify a default outside '
         'config.py; config always defines the attribute, so access it directly:\n  '
         + '\n  '.join(sorted(violations))
+    )
+
+
+def test_config_never_reads_database_url_from_the_environment():
+    """The user configures the five POSTGRES_* parts and nothing else.
+
+    config.py is excluded from the scan above because it is where env reading
+    legitimately happens - which left the one file the rule is really about
+    unchecked. DATABASE_URL is DERIVED from the parts; honouring an env override
+    would give the connection string two sources that can disagree, and the one
+    that loses is silent.
+    """
+    src = _read_source('config.py')
+    tree = ast.parse(src)
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_os_environ_get(node):
+            first = node.args[0] if node.args else None
+            if isinstance(first, ast.Constant) and first.value == 'DATABASE_URL':
+                offenders.append(node.lineno)
+        elif _is_os_environ_subscript(node) and isinstance(node.slice, ast.Constant):
+            if node.slice.value == 'DATABASE_URL':
+                offenders.append(node.lineno)
+    assert not offenders, (
+        'config.py reads DATABASE_URL from the environment at line(s) '
+        + ', '.join(str(line) for line in offenders)
+        + '; it must be derived from POSTGRES_USER/PASSWORD/HOST/PORT/DB only'
     )

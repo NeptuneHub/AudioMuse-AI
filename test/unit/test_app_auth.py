@@ -421,7 +421,6 @@ class TestAdminPathEnforcement:
             ('/api/cron', True),
             ('/api/backup', True),
             ('/api/cancel/abc-123', True),
-            ('/api/cancel_all/main_analysis', True),
             ('/api/rebuild_map_cache', True),
             ('/api/clap/cache/refresh', True),
             ('/api/lyrics/cache/refresh', True),
@@ -460,7 +459,6 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             ('/api/status/task-1', True),
             ('/api/cancel/task-1', True),
             ('/api/analysis/start', False),
-            ('/api/cancel_all/analysis', False),
             ('/api/playlists', False),
         ],
     )

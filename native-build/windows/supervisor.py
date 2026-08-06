@@ -9,14 +9,14 @@
 """Process supervisor for the Windows standalone build.
 
 Boots and monitors the full local stack in dependency order: embedded
-PostgreSQL (via ``windows.db_backend``), Redis, the Flask/waitress server and
-the RQ worker/janitor/restart-listener children (each re-spawned from
+PostgreSQL (via ``windows.db_backend``), the Flask/waitress server and the
+queue worker/maintenance/control-listener children (each re-spawned from
 ``windows.launcher`` with a ``--role=``). It restarts crashed children, serves
 the loopback TCP control server, and tears everything down on shutdown. The
 Linux/macOS supervisors are the platform-specific siblings.
 
 Main Features:
-* Ordered boot, health polling and automatic restart of Flask + RQ children.
+* Ordered boot, health polling and automatic restart of Flask + queue children.
 * Runs the TCP control server and writes newest-first rotating logs.
 """
 
@@ -31,36 +31,30 @@ import time
 import urllib.error
 import urllib.request
 
-import redis as redis_lib
 
+import service_roles
 from windows import db_backend
 from windows import env as env_builder
 from windows import paths
 from macos.reverse_log import NewestFirstFileHandler
+from native_common.supervisor_health import HealthLoopMixin
 from windows.control_server import ControlServer
 
 logger = logging.getLogger("audiomuse.supervisor")
 
 FLASK_URL = "http://127.0.0.1:8000/"
 
-ROLE_OF = {
-    "flask": "flask",
-    "rq-worker-high": "worker-high",
-    "rq-worker-default": "worker-default",
-    "rq-janitor": "janitor",
-    "restart-listener": "restart-listener",
-}
+ROLE_OF = service_roles.ROLE_OF
 
-BOOT_ORDER = ["flask", "rq-worker-high", "rq-worker-default", "rq-janitor", "restart-listener"]
+BOOT_ORDER = service_roles.BOOT_ORDER
 
 
-class ProcessSupervisor:
+class ProcessSupervisor(HealthLoopMixin):
     def __init__(self):
         self._lock = threading.RLock()
         self._children = {}
         self._desired = set()
         self._db_conn = None
-        self._redis_url = None
         self._state = "stopped"
         self._control = ControlServer(
             host="127.0.0.1",
@@ -121,13 +115,11 @@ class ProcessSupervisor:
             self._log.info("Embedded PostgreSQL ready")
             if self._stop_requested.is_set():
                 return
-            self._start_redis()
-            self._log.info("Embedded Redis ready")
             for name in BOOT_ORDER:
                 if self._stop_requested.is_set():
                     return
                 self.start_child(name)
-                if name == "flask":
+                if name == service_roles.SERVICE_FLASK:
                     self._wait_http(FLASK_URL, timeout=180)
             self._write_pidfile()
             with self._lock:
@@ -154,7 +146,6 @@ class ProcessSupervisor:
         for name in list(self._children.keys()):
             self._stop_child(name)
         db_backend.stop_embedded()
-        self._stop_redis()
         self._reap_orphans()
         self._remove_pidfile()
         with self._lock:
@@ -185,29 +176,33 @@ class ProcessSupervisor:
                 self._desired.add(name)
                 return True
             self._desired.add(name)
-        self._log.info("Starting %s (role=%s)", name, role)
-        db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())
-        redis_url = self._ensure_redis_running()
-        env = env_builder.build_child_env(role, db_conn, redis_url)
-        exe = sys.executable if not getattr(sys, "frozen", False) else sys.argv[0]
-        cmd = [exe, f"--role={role}"]
-        popen = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        with self._lock:
-            self._children[name] = popen
-        threading.Thread(
-            target=self._pump, args=(name, popen), name=f"pump-{name}", daemon=True
-        ).start()
-        return True
+        if not self._claim_start(name):
+            return True
+        try:
+            self._log.info("Starting %s (role=%s)", name, role)
+            db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())
+            env = env_builder.build_child_env(role, db_conn)
+            exe = sys.executable if not getattr(sys, "frozen", False) else sys.argv[0]
+            cmd = [exe, f"--role={role}"]
+            popen = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            with self._lock:
+                self._children[name] = popen
+            threading.Thread(
+                target=self._pump, args=(name, popen), name=f"pump-{name}", daemon=True
+            ).start()
+            return True
+        finally:
+            self._release_start(name)
 
     def _stop_child(self, name):
         with self._lock:
@@ -301,71 +296,6 @@ class ProcessSupervisor:
                 results.append(False)
         return all(results) if results else False
 
-    def _start_redis(self):
-        redis_bin = paths.redis_binary()
-        redis_dir = paths.redis_dir()
-        os.makedirs(redis_dir, exist_ok=True)
-        redis_password = paths.redis_password()
-        cmd = [
-            redis_bin,
-            "--port",
-            str(paths.redis_port()),
-            "--bind",
-            "127.0.0.1",
-            "--requirepass",
-            redis_password,
-            "--dir",
-            redis_dir,
-            "--save",
-            "",
-            "--appendonly",
-            "no",
-            "--loglevel",
-            "warning",
-        ]
-        self._redis_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
-        )
-        self._redis_url = paths.redis_url()
-        for _ in range(60):
-            try:
-                r = redis_lib.Redis(
-                    host="127.0.0.1",
-                    port=paths.redis_port(),
-                    password=redis_password,
-                    socket_connect_timeout=1,
-                )
-                r.ping()
-                break
-            except Exception:
-                time.sleep(0.5)
-        else:
-            raise RuntimeError("Redis did not start within 30 seconds")
-
-    def _ensure_redis_running(self):
-        proc = getattr(self, "_redis_proc", None)
-        if self._redis_url is None or proc is None or proc.poll() is not None:
-            self._start_redis()
-        return self._redis_url
-
-    def _stop_redis(self):
-        proc = getattr(self, "_redis_proc", None)
-        if proc is None:
-            return
-        try:
-            proc.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM)
-            proc.wait(timeout=10)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        self._redis_proc = None
-        self._redis_url = None
-
     def _wait_http(self, url, timeout=180):
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -380,19 +310,35 @@ class ProcessSupervisor:
                 time.sleep(1)
         raise RuntimeError(f"Timed out waiting for {url}")
 
-    def _start_health_loop(self):
-        self._health_stop.clear()
+    def _ensure_postgres_healthy(self):
+        if not self._db_conn:
+            return
+        try:
+            import psycopg2
 
-        def _loop():
-            while not self._health_stop.is_set():
-                self._health_stop.wait(30)
-                try:
-                    urllib.request.urlopen(FLASK_URL, timeout=5)
-                except Exception:
-                    self._log.warning("Health check failed")
-
-        self._health_thread = threading.Thread(target=_loop, name="health", daemon=True)
-        self._health_thread.start()
+            conn = psycopg2.connect(
+                host=self._db_conn["host"],
+                port=self._db_conn["port"],
+                user=self._db_conn["user"],
+                password=self._db_conn["password"],
+                dbname=self._db_conn["dbname"],
+                connect_timeout=3,
+            )
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            finally:
+                conn.close()
+            return
+        except Exception:
+            pass
+        self._log.warning("Embedded PostgreSQL unhealthy; restarting it")
+        try:
+            self._db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())
+            self._log.info("Embedded PostgreSQL restarted")
+        except Exception:
+            self._log.exception("Failed to restart embedded PostgreSQL")
 
     def _reap_orphans(self):
         try:
@@ -400,7 +346,6 @@ class ProcessSupervisor:
         except Exception:
             return
         me = os.getpid()
-        redis_marker = paths.redis_dir().lower()
         pg_marker = paths.pgdata_dir().lower()
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
@@ -409,9 +354,8 @@ class ProcessSupervisor:
                 cmd = " ".join(proc.info.get("cmdline") or []).lower()
                 if not cmd:
                     continue
-                stale_redis = "redis-server" in cmd and redis_marker in cmd
                 stale_pg = ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd
-                if stale_redis or stale_pg:
+                if stale_pg:
                     self._log.info(
                         "Reaping orphan %s (pid=%d) referencing our data dir",
                         proc.info.get("name"),

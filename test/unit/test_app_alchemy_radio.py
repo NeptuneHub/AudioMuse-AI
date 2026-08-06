@@ -16,7 +16,7 @@ Main Features:
 * Update, delete, and unknown-radio 404 handling.
 * Run generates playlists for enabled radios only, upserts, and isolates failures.
 * Run scope: the endpoint targets the selected server, and the similarity index
-  is loaded on demand so a run on an RQ worker still finds tracks.
+  is loaded on demand so a run on a queue worker still finds tracks.
 """
 
 import pytest
@@ -437,9 +437,9 @@ class TestRunRadioPlaylists:
     def test_reports_progress_before_the_index_load_and_per_radio(
         self, mock_alchemy, _mock_upsert, mock_get_radios
     ):
-        """The cron run has no RQ job behind it, so its only proof of life is this
-        callback: the janitor fails an in-process row that stops reporting. The first
-        beat lands BEFORE the index load, the slowest step of the whole run."""
+        """The cron run has no queued job behind it, so its only proof of life is this
+        callback: the maintenance pass fails an in-process row that stops reporting. The
+        first beat lands BEFORE the index load, the slowest step of the whole run."""
         from tasks.radio_manager import run_radio_playlists
 
         mock_get_radios.return_value = [

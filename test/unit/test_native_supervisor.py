@@ -14,6 +14,8 @@ children, focusing on its threading guards and start/stop state machine.
 Main Features:
 * join_workers returns promptly from the boot thread and skips the main thread on Windows
 * The health loop clears a preset stop flag and spawns a live watcher thread
+* All three platforms share one health loop, and none keeps a private copy
+* A stop requested during the database probe restarts no child
 * start_child refuses to spawn while stopping but is allowed while starting
 * start_in_background owns the boot thread and invokes start_all
 """
@@ -68,7 +70,6 @@ def _bare_supervisor(mod):
     sup._health_thread = None
     sup._boot_thread = None
     sup._database_url = 'postgresql://unused'
-    sup._redis_url = 'redis://unused'
     sup._db_conn = 'postgresql://unused'
 
     class _Log:
@@ -158,9 +159,8 @@ class TestStartHealthLoopClearsStop:
             body_ran.set()
             sup._health_stop.set()
 
-        for name in ('_ensure_postgres_healthy', '_ensure_redis_healthy'):
-            if hasattr(sup, name):
-                monkeypatch.setattr(sup, name, _record_and_stop)
+        if hasattr(sup, '_ensure_postgres_healthy'):
+            monkeypatch.setattr(sup, '_ensure_postgres_healthy', _record_and_stop)
         if hasattr(mod, 'urllib'):
             monkeypatch.setattr(mod.urllib.request, 'urlopen', _record_and_stop)
 
@@ -235,8 +235,6 @@ class TestSpawnRefusedWhileStopping:
             )
         if hasattr(mod, 'env_builder'):
             monkeypatch.setattr(mod.env_builder, 'build_child_env', lambda *a, **k: {})
-        if hasattr(sup, '_ensure_redis_running'):
-            monkeypatch.setattr(sup, '_ensure_redis_running', lambda *a, **k: 'redis://x')
 
         sup._state = 'starting'
         result = sup.start_child('flask')
@@ -253,13 +251,13 @@ class TestSpawnRefusedWhileStopping:
                 return None
 
         live = _Live()
-        sup._children['rq-worker-default'] = live
+        sup._children['queue-worker-default'] = live
         popen = MagicMock(side_effect=AssertionError('must not spawn a duplicate child'))
         monkeypatch.setattr(mod.subprocess, 'Popen', popen)
 
-        assert sup.start_child('rq-worker-default') is True
-        assert sup._children['rq-worker-default'] is live
-        assert 'rq-worker-default' in sup._desired
+        assert sup.start_child('queue-worker-default') is True
+        assert sup._children['queue-worker-default'] is live
+        assert 'queue-worker-default' in sup._desired
         popen.assert_not_called()
 
 
@@ -298,15 +296,15 @@ def test_control_reply_waits_for_all_services_and_aggregates_failure(
 
     def restart(service):
         completed.append(service)
-        return service != 'rq-worker-high'
+        return service != 'queue-worker-high'
 
     monkeypatch.setattr(sup, 'restart_child', restart)
 
     result = sup.dispatch_control(
-        'restart', ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
+        'restart', ['queue-worker-default', 'queue-worker-high', 'queue-maintenance']
     )
 
-    assert completed == ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
+    assert completed == ['queue-worker-default', 'queue-worker-high', 'queue-maintenance']
     assert result is False
 
 
@@ -320,14 +318,14 @@ def test_control_service_exception_is_a_negative_result_and_later_services_run(
 
     def stop(service):
         completed.append(service)
-        if service == 'rq-worker-default':
+        if service == 'queue-worker-default':
             raise RuntimeError('stop failed')
         return True
 
     monkeypatch.setattr(sup, 'stop_child', stop)
 
-    assert sup.dispatch_control('stop', ['rq-worker-default', 'rq-janitor']) is False
-    assert completed == ['rq-worker-default', 'rq-janitor']
+    assert sup.dispatch_control('stop', ['queue-worker-default', 'queue-maintenance']) is False
+    assert completed == ['queue-worker-default', 'queue-maintenance']
 
 
 @pytest.mark.parametrize('platform_name', PLATFORMS)
@@ -352,15 +350,15 @@ def test_unstoppable_child_returns_false_and_remains_tracked(platform_name, monk
             return None
 
     proc = _StubbornProcess()
-    sup._children['rq-worker-default'] = proc
-    sup._desired.add('rq-worker-default')
+    sup._children['queue-worker-default'] = proc
+    sup._desired.add('queue-worker-default')
     if platform_name != 'windows':
         monkeypatch.setattr(mod.os, 'getpgid', lambda _pid: 4321, raising=False)
         monkeypatch.setattr(mod.os, 'killpg', lambda *_args: None, raising=False)
 
-    assert sup.stop_child('rq-worker-default') is False
-    assert sup._children['rq-worker-default'] is proc
-    assert 'rq-worker-default' in sup._desired
+    assert sup.stop_child('queue-worker-default') is False
+    assert sup._children['queue-worker-default'] is proc
+    assert 'queue-worker-default' in sup._desired
 
 
 @pytest.mark.parametrize('platform_name', ['linux', 'macos'])
@@ -407,3 +405,71 @@ def test_postgres_health_uses_lossless_socket_kwargs(platform_name, monkeypatch)
     assert seen['sql'] == 'SELECT 1'
     assert seen['closed'] is True
     restart.assert_not_called()
+
+
+class TestTheHealthLoopHasOneImplementationForEveryPlatform:
+    def test_each_supervisor_inherits_the_shared_loop(self, supervisor_case):
+        from native_common.supervisor_health import HealthLoopMixin
+
+        _platform, mod = supervisor_case
+
+        assert issubclass(mod.ProcessSupervisor, HealthLoopMixin)
+
+    def test_no_platform_keeps_its_own_copy(self, supervisor_case):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+
+        assert (mod.ProcessSupervisor._health_loop
+                is supervisor_health.HealthLoopMixin._health_loop)
+        assert (mod.ProcessSupervisor._start_health_loop
+                is supervisor_health.HealthLoopMixin._start_health_loop)
+
+    def test_a_stop_during_the_database_probe_restarts_nothing(
+        self, supervisor_case, monkeypatch
+    ):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+        monkeypatch.setattr(supervisor_health, 'HEALTH_INTERVAL_SECONDS', 0.01)
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+        dead = MagicMock()
+        dead.poll.return_value = 1
+        sup._children = {'flask': dead}
+        sup._desired = {'flask'}
+        started = []
+        monkeypatch.setattr(sup, 'start_child', lambda name: started.append(name))
+        monkeypatch.setattr(
+            sup, '_ensure_postgres_healthy', lambda: sup._health_stop.set()
+        )
+
+        sup._health_loop()
+
+        assert started == []
+
+    def test_a_dead_child_is_restarted_while_the_supervisor_runs(
+        self, supervisor_case, monkeypatch
+    ):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+        monkeypatch.setattr(supervisor_health, 'HEALTH_INTERVAL_SECONDS', 0.01)
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+        dead = MagicMock()
+        dead.poll.return_value = 1
+        sup._children = {'flask': dead}
+        sup._desired = {'flask'}
+        started = []
+
+        def _restart(name):
+            started.append(name)
+            sup._health_stop.set()
+
+        monkeypatch.setattr(sup, 'start_child', _restart)
+        monkeypatch.setattr(sup, '_ensure_postgres_healthy', lambda: None)
+
+        sup._health_loop()
+
+        assert started == ['flask']

@@ -22,28 +22,23 @@ Main Features:
 * Each row is claimed atomically for its wall-clock minute, so a restart or a
   second web process cannot double-fire it.
 * An inline run can never wedge the app: its task type is self-managed (no Start
-  ever 409s behind it), it heartbeats progress so the RQ janitor does not mistake
-  it for an orphan, and `reap_interrupted_inline_runs` fails at cron-thread startup
-  whatever a restart left non-terminal.
+  ever 409s behind it), it has no queue func so the maintenance reclaim cannot
+  mistake it for a dead worker's orphan, and `reap_interrupted_inline_runs` fails
+  at cron-thread startup whatever a restart left non-terminal.
 """
 
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor, Json
-from rq import Retry
 from database import (
     get_db,
     save_task_status,
     get_active_main_task,
     clean_up_previous_main_tasks,
-    prune_task_status_history,
     main_task_start_lock,
     INLINE_FLASK_TASK_TYPES,
 )
-from tasks.task_details import stamp
-from taskqueue import rq_queue_high, rq_queue_default
-from app_helper import ENQUEUE_MISSING, resolve_enqueue_outcome
+import taskqueue
 from config import (
-    TASK_STATUS_PENDING,
     TASK_STATUS_FAILURE,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
@@ -378,14 +373,6 @@ _CRON_FIELD_DOMAINS = (
 
 
 def _cron_expr_problem(expr):
-    """A human-readable reason ``expr`` can never fire, or None when it is valid.
-
-    Decided by running each field over its real domain through the SAME matcher the
-    scheduler uses, so the validator cannot drift from the thing it validates. Names
-    like MON or @daily are not supported: int() raises on them and _field_matches
-    swallows the error, so such a row would be stored, shown as active, and silently
-    never run.
-    """
     if not expr or not str(expr).strip():
         return "Enter a cron expression, or disable the schedule."
     parts = str(expr).strip().split()
@@ -436,13 +423,6 @@ def cron_matches_now(expr, ts=None):
 
 
 def _claim_cron_minute(db, row_id, minute_start):
-    """Claim ``row_id`` for the wall-clock minute starting at ``minute_start``.
-
-    True exactly once per row per minute, however many processes or restarts race
-    for it: the predicate on last_run makes the claim atomic. The row is marked run
-    BEFORE the work is enqueued, so a crash in between drops that occurrence rather
-    than duplicating it - the right trade for a batch task.
-    """
     cur = db.cursor()
     try:
         cur.execute(
@@ -458,15 +438,6 @@ def _claim_cron_minute(db, row_id, minute_start):
 
 
 def reap_interrupted_inline_runs():
-    """Fail every inline cron row left non-terminal by a web-process restart.
-
-    An inline run lives in the Flask process and nothing else writes its final
-    status, so a restart mid-run used to leave a STARTED row that no code path
-    ever resolved. Called once as the cron thread starts, where a live inline run
-    cannot exist: this process is the only one that runs them, and it is starting.
-    Skipping the interrupted occurrence is the accepted outcome - the row must not
-    outlive the process that owned it.
-    """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     try:
@@ -516,11 +487,7 @@ def _inline_progress_reporter(job_id, task_type):
         try:
             save_task_status(
                 job_id, task_type, TASK_STATUS_PROGRESS, progress=pct,
-                details={
-                    'message': message,
-                    'status_message': message,
-                    'log': [stamp(message)],
-                },
+                details={'message': message, 'status_message': message},
             )
         except Exception:
             logger.debug("Cron: inline progress update failed (ignored)", exc_info=True)
@@ -529,76 +496,56 @@ def _inline_progress_reporter(job_id, task_type):
 
 
 def _enqueue_cron_job(job_id, task_type, enqueue, *, main_task=False, conn=None):
-    """Claim and enqueue one cron root under the Cancel/start lock.
-
-    Multiple cron rows may target the same task type in one minute.  Coalescing
-    them here bounds live roots while retaining the already-claimed cron minute.
-    An enqueue exception is ambiguous until the known job id is probed: only a
-    confirmed missing job is failed; an unavailable probe keeps the PENDING
-    claim for the janitor instead of risking a duplicate.
-    """
-    with main_task_start_lock(conn):
-        active = (
-            get_active_main_task(conn=conn)
-            if main_task
-            else get_active_main_task(task_type=task_type, conn=conn)
-        )
-        if active:
-            logger.info(
-                "Cron: skipping %s, task %s is still %s",
-                task_type, active['task_id'], active['status'],
+    if main_task:
+        with main_task_start_lock(conn=conn):
+            return _admit_and_enqueue_cron_job(
+                job_id, task_type, enqueue, main_task=True, conn=conn
             )
-            return False
+    return _admit_and_enqueue_cron_job(
+        job_id, task_type, enqueue, main_task=False, conn=conn
+    )
 
-        if main_task:
-            try:
-                clean_up_previous_main_tasks()
-            except Exception:
-                logger.exception(
-                    "Cron: could not archive previous main tasks; enqueueing anyway"
-                )
 
-        save_task_status(
-            job_id,
-            task_type,
-            TASK_STATUS_PENDING,
-            details={"message": _ENQUEUED_BY_CRON},
-            raise_on_error=True,
+def _admit_and_enqueue_cron_job(job_id, task_type, enqueue, *, main_task, conn):
+    active = (
+        get_active_main_task(conn=conn)
+        if main_task
+        else get_active_main_task(task_type=task_type, conn=conn)
+    )
+    if active:
+        logger.info(
+            "Cron: skipping %s, task %s is still %s",
+            task_type, active['task_id'], active['status'],
         )
+        return False
+
+    if main_task:
         try:
-            enqueue()
+            clean_up_previous_main_tasks()
         except Exception:
-            logger.exception("Cron: enqueue raised for %s", task_type)
-            outcome, rq_status = resolve_enqueue_outcome(job_id)
-            if outcome == ENQUEUE_MISSING:
-                save_task_status(
-                    job_id,
-                    task_type,
-                    TASK_STATUS_FAILURE,
-                    details={
-                        "error": "Could not enqueue the task (is Redis reachable?)"
-                    },
-                    raise_on_error=True,
-                )
-                prune_task_status_history(conn)
-                return False
-            logger.warning(
-                "Cron: enqueue outcome for %s job %s is ambiguous (%s); retaining "
-                "its PENDING claim for janitor reconciliation.",
-                task_type, job_id, rq_status or 'Redis unavailable',
-            )
-            return True
-    logger.info("Cron: enqueued %s job %s", task_type, job_id)
+            logger.exception("Cron: could not archive previous main tasks; queueing anyway")
+
+    try:
+        enqueue()
+        # Commit before returning. The enqueue runs on the request connection so
+        # that the claim read and the queue row are one atomic act, which means
+        # nothing has committed it yet: a later cron row in the same tick raising
+        # into `db.rollback()` would otherwise throw this job away while last_run
+        # stayed advanced - the schedule fires, nothing runs, and the next
+        # occurrence is a minute later.
+        if conn is not None:
+            conn.commit()
+    except taskqueue.TaskAlreadyRunning:
+        logger.info("Cron: %s lost the race to another live main task.", task_type)
+        return False
+    except Exception:
+        logger.exception("Cron: could not queue %s", task_type)
+        return False
+    logger.info("Cron: queued %s job %s", task_type, job_id)
     return True
 
 
 def run_due_cron_jobs():
-    """Start every enabled cron row whose expression matches this minute.
-
-    Batch rows are enqueued so a slow media server cannot swallow a scheduling
-    window; the alchemy radio runs inline in this process, which is the only one
-    holding the in-memory similarity index it needs.
-    """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute(
@@ -608,7 +555,6 @@ def run_due_cron_jobs():
     rows = cur.fetchall()
     now_ts = time.time()
     minute_start = now_ts - (now_ts % 60)
-    fired_any = False
     for r in rows:
         try:
             if cron_matches_now(r['cron_expr'], now_ts):
@@ -621,7 +567,6 @@ def run_due_cron_jobs():
                 # dashboard's Last-run display.
                 if not _claim_cron_minute(db, r['id'], minute_start):
                     continue
-                fired_any = True
                 task_type = r['task_type']
                 # Batch work always covers every configured server, one server at
                 # a time. There is no per-schedule scope: a "default server only"
@@ -633,14 +578,15 @@ def run_due_cron_jobs():
                     _enqueue_cron_job(
                         job_id,
                         'main_analysis',
-                        lambda job_id=job_id, server_scope=server_scope: rq_queue_high.enqueue(
+                        lambda job_id=job_id, server_scope=server_scope: taskqueue.enqueue(
                             'tasks.analysis.run_analysis_task',
                             args=(0, TOP_N_MOODS),
                             kwargs={'server_scope': server_scope},
-                            job_id=job_id,
-                            description='Cron Analysis',
-                            job_timeout=-1,
-                            retry=Retry(max=3),
+                            task_id=job_id,
+                            task_type='main_analysis',
+                            queue=taskqueue.QUEUE_HIGH,
+                            details={"message": _ENQUEUED_BY_CRON},
+                            conn=db,
                         ),
                         main_task=True,
                         conn=db,
@@ -662,7 +608,6 @@ def run_due_cron_jobs():
                         "pca_components_max": int(PCA_COMPONENTS_MAX),
                         "num_clustering_runs": int(CLUSTERING_RUNS),
                         "max_songs_per_cluster_val": int(MAX_SONGS_PER_CLUSTER),
-                        # Legacy RQ kwarg keeps rolling web/worker deploys compatible.
                         "top_n_playlists_param": int(TOP_N_CLUSTERING_PLAYLIST),
                         "min_songs_per_genre_for_stratification_param": int(
                             MIN_SONGS_PER_GENRE_FOR_STRATIFICATION
@@ -700,13 +645,14 @@ def run_due_cron_jobs():
                     _enqueue_cron_job(
                         job_id,
                         'main_clustering',
-                        lambda job_id=job_id, clustering_kwargs=clustering_kwargs: rq_queue_high.enqueue(
+                        lambda job_id=job_id, clustering_kwargs=clustering_kwargs: taskqueue.enqueue(
                             'tasks.clustering.run_clustering_task',
                             kwargs=clustering_kwargs,
-                            job_id=job_id,
-                            description='Cron Clustering',
-                            job_timeout=-1,
-                            retry=Retry(max=3),
+                            task_id=job_id,
+                            task_type='main_clustering',
+                            queue=taskqueue.QUEUE_HIGH,
+                            details={"message": _ENQUEUED_BY_CRON},
+                            conn=db,
                         ),
                         main_task=True,
                         conn=db,
@@ -759,13 +705,14 @@ def run_due_cron_jobs():
                     _enqueue_cron_job(
                         job_id,
                         task_type,
-                        lambda job_id=job_id, server_scope=server_scope, task_type=task_type: rq_queue_default.enqueue(
+                        lambda job_id=job_id, server_scope=server_scope, task_type=task_type: taskqueue.enqueue(
                             'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
                             kwargs={'server_scope': server_scope},
-                            job_id=job_id,
-                            description=f'Cron {task_type}',
-                            job_timeout=-1,
-                            retry=Retry(max=3),
+                            task_id=job_id,
+                            task_type=task_type,
+                            queue=taskqueue.QUEUE_DEFAULT,
+                            details={"message": _ENQUEUED_BY_CRON},
+                            conn=db,
                         ),
                         conn=db,
                     )
@@ -779,24 +726,25 @@ def run_due_cron_jobs():
                         )
                     else:
                         queue = (
-                            rq_queue_high
+                            taskqueue.QUEUE_HIGH
                             if cron_task.get('queue') == 'high'
-                            else rq_queue_default
+                            else taskqueue.QUEUE_DEFAULT
                         )
                         _enqueue_cron_job(
                             job_id,
                             task_type,
-                            lambda job_id=job_id, server_scope=server_scope, task_type=task_type, queue=queue, cron_task=cron_task: queue.enqueue(
+                            lambda job_id=job_id, server_scope=server_scope, task_type=task_type, queue=queue, cron_task=cron_task: taskqueue.enqueue(
                                 'plugin.manager.run_plugin_task',
                                 args=(cron_task['dotted'],),
                                 kwargs={
                                     'server_scope': server_scope,
                                     'task_claim_required': True,
                                 },
-                                job_id=job_id,
-                                description=f'Cron {task_type}',
-                                job_timeout=-1,
-                                retry=Retry(max=3),
+                                task_id=job_id,
+                                task_type=task_type,
+                                queue=queue,
+                                details={"message": _ENQUEUED_BY_CRON},
+                                conn=db,
                             ),
                             conn=db,
                         )
@@ -804,13 +752,3 @@ def run_due_cron_jobs():
             db.rollback()
             logger.exception(f"Error processing cron row {r}")
     cur.close()
-
-    # Every cron task type writes a top-level task_status row, and the ones that
-    # never reach clean_up_previous_main_tasks (alchemy_radio, sonic_fingerprint,
-    # plugin tasks) would otherwise leave one behind per tick, for good. Only on a
-    # minute that actually fired, so a quiet scheduler does no DB work.
-    if fired_any:
-        try:
-            prune_task_status_history(db)
-        except Exception:
-            logger.exception("Cron: could not prune task_status history")

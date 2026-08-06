@@ -5,9 +5,6 @@ Native binaries the Windows standalone build bundles but does not pull from PyPI
 exists before PyInstaller runs and aborts the build with the missing path if not.
 Layout is `vendor/<component>/<arch>/...` (arch is `amd64` or `arm64`).
 
-## redis/<arch>/redis-server.exe
-Embedded Redis used as the RQ broker. Built locally with `build-redis.bat`.
-
 ## pg-contrib/<arch>/
 `unaccent` and `pg_trgm` contrib modules (`.dll` + `.control` + `.sql` + the
 `unaccent.rules` dictionary), compiled against the PostgreSQL minor that the

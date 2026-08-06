@@ -16,7 +16,7 @@ Main Features:
 * String normalization, same-song matching, and mood-feature parsing
 * Vector lookup prefers primed f32 over the index; load and neighbor queries raise
   when the index or id maps are unloaded
-* On-demand loading for processes that never preload (RQ workers), including the
+* On-demand loading for processes that never preload (queue workers), including the
   retry cooldown that keeps a missing index from being re-read per call
 * create_playlist_from_ids error paths and the LRU/TTL _ResultCache behavior
 """

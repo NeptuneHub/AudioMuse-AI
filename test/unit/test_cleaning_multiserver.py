@@ -82,9 +82,6 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     get_db_cm.__enter__.return_value = conn
     get_db_cm.__exit__.return_value = False
 
-    # Cleaning finishes by running the shared final rebuild inline (the same one
-    # analysis runs). Stub it with a fake tasks.analysis.index module so the unit
-    # test records the call without touching the real builders or a live index.
     rebuilds = rebuild_calls if rebuild_calls is not None else []
 
     def _fake_run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
@@ -96,15 +93,12 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     fake_index._run_all_index_builds = _fake_run_all_index_builds
     monkeypatch.setitem(sys.modules, 'tasks.analysis.index', fake_index)
 
-    # Chromaprint dedup (Path B) is invoked inline before the rebuild; stub it so the
-    # unit test controls the split count without a real fpcalc/DB round trip.
     cp_result = chromaprint_split_result or {'split': 0, 'removed': 0}
     fake_dup_repair = types.ModuleType('tasks.duplicate_repair')
     fake_dup_repair.split_chromaprint_false_merges = lambda conn=None: cp_result
     monkeypatch.setitem(sys.modules, 'tasks.duplicate_repair', fake_dup_repair)
 
     fake_app_helper = types.ModuleType('app_helper')
-    fake_app_helper.redis_conn = object()
     fake_app_helper.get_db = lambda: get_db_cm
     fake_app_helper.get_task_info_from_db = lambda _task_id: task_info
     fake_app_helper.save_task_status = (
@@ -113,7 +107,10 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     )
     monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
 
-    monkeypatch.setattr(cleaning, 'get_current_job', lambda *a, **k: current_job)
+    monkeypatch.setattr(
+        cleaning.taskqueue, 'current_task_id',
+        lambda: current_job.id if current_job is not None else None,
+    )
     monkeypatch.setattr(
         cleaning.registry, 'servers_for_scope', lambda scope, conn=None: servers
     )
@@ -131,7 +128,6 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     from tasks.mediaserver import context as ms_context
 
     def fake_fetch(stype, creds, apply_filter=False):
-        # The cleaning loop must have bound this server's context before fetching.
         sid = ms_context.active_server_id()
         result = tracks_by_server[sid]
         if isinstance(result, Exception):
@@ -224,7 +220,7 @@ class TestCleaningSkipsUnreadableServers:
             db_track_ids={'fp_1', 'fp_2'},
             prune_results={'s2': 3},
         )
-        assert result['status'] == 'FAILURE'
+        assert result['status'] == 'FAIL'
         assert result['deleted_count'] == 0
         assert 'One' in result['failed_servers']
         assert pruned == [('s2', ['n1'])]
@@ -271,8 +267,6 @@ class TestCleaningOrphanHandling:
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
 
     def test_tracks_on_no_server_are_deleted_when_view_is_complete(self, monkeypatch):
-        # Both servers were read completely, so the tracks bound to no server
-        # (fp_3, fp_4) are gone from every library and get deleted from the catalogue.
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
@@ -301,10 +295,6 @@ class TestCleaningOrphanHandling:
         assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
 
     def test_index_rebuild_runs_inline_before_a_cleaning_run_completes(self, monkeypatch):
-        # Cleaning changes what each server maps and can remove catalogue rows, so it
-        # runs the SAME final rebuild analysis runs INLINE - the task is not reported
-        # complete until every server's similarity results reflect the cleaned
-        # catalogue and the reload has been published.
         rebuilds = []
         result, _statuses, _pruned = _run_cleaning(
             monkeypatch,
@@ -318,8 +308,6 @@ class TestCleaningOrphanHandling:
         assert len(rebuilds) == 1
 
     def test_chromaprint_false_merge_splits_are_reported(self, monkeypatch):
-        # Cleaning runs the Chromaprint dedup (Path B) and surfaces how many false
-        # merges it split, so the user sees the benefit in the run summary.
         result, _statuses, _pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True)],
@@ -332,8 +320,6 @@ class TestCleaningOrphanHandling:
         assert result['chromaprint_splits'] == 3
 
     def test_orphans_are_kept_when_catalogue_cleaning_is_disabled(self, monkeypatch):
-        # Same complete view as above, but the per-run flag is off (the default): the
-        # orphans are reported, never deleted, and the catalogue is left untouched.
         result, _statuses, _pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
@@ -355,9 +341,6 @@ class TestCleaningOrphanHandling:
         assert result['catalogue_deletion'] is False
 
     def test_refused_partial_listing_reports_orphans_but_deletes_nothing(self, monkeypatch):
-        # A server that returned a partial listing (prune refused) means the view is
-        # unreliable, so orphans are reported but NOT deleted - an unbound-but-present
-        # track must never be dropped on incomplete data.
         result, _statuses, _pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
@@ -371,8 +354,6 @@ class TestCleaningOrphanHandling:
         assert result['deleted_count'] == 0
 
     def test_implausibly_many_orphans_are_not_deleted(self, monkeypatch):
-        # More than half the catalogue looking orphaned on a complete view is a bogus
-        # listing, so the guard reports them and deletes nothing.
         result, _statuses, _pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True)],

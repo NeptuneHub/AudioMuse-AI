@@ -69,6 +69,7 @@ def test_setup_success_requires_worker_ack_and_local_restart(monkeypatch):
 
 
 def test_the_setup_save_never_waits_the_full_background_ack_deadline(monkeypatch):
+    import config
     import restart_manager
 
     response, publish, _schedule = _save_setup(monkeypatch)
@@ -76,7 +77,8 @@ def test_the_setup_save_never_waits_the_full_background_ack_deadline(monkeypatch
     assert response.status_code == 200
     waited = publish.call_args.kwargs['timeout_seconds']
     assert waited <= 5.0
-    assert waited <= restart_manager.CONTROL_ACK_TIMEOUT_SECONDS
+    assert waited == restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+    assert waited < config.QUEUE_CONTROL_TIMEOUT_SECONDS
 
 
 def test_setup_reports_partial_with_a_warning_when_workers_do_not_ack(monkeypatch):
@@ -87,14 +89,10 @@ def test_setup_reports_partial_with_a_warning_when_workers_do_not_ack(monkeypatc
     assert body['status'] == 'partial'
     assert body['worker_restart_acknowledged'] is False
     assert 'saved' in body['warning'].lower()
-    # The committed config must still be reloaded by the local Flask process.
     schedule.assert_called_once_with()
 
 
 def test_a_declined_flask_restart_is_an_opt_out_not_a_failed_save(monkeypatch):
-    # schedule_flask_restart returns False only for DISABLE_FLASK_RESTART or a
-    # non-flask SERVICE_TYPE; a real failure raises. Treating the opt-out as an
-    # incomplete restart made those deployments answer 503 on every save.
     response, _publish, _schedule = _save_setup(monkeypatch, flask_result=False)
 
     assert response.status_code == 200

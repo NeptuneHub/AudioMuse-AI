@@ -34,9 +34,8 @@ class TestValidateOutboundUrlSchemes:
         'url',
         [
             'file:///etc/passwd',
-            'gopher://10.0.0.1:6379/',
+            'gopher://10.0.0.1:70/',
             'ftp://1.2.3.4/',
-            'redis://1.2.3.4:6379',
             'ws://1.2.3.4/',
             'not-a-url',
         ],

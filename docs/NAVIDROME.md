@@ -22,10 +22,11 @@ Two repositories are involved:
 
 ## Step 1 - Deploy AudioMuse-AI
 
-AudioMuse-AI runs as a small stack: the Flask app, a worker, PostgreSQL and
-Redis. It needs only three things set by environment variable: **PostgreSQL**,
-**Redis** and the timezone (**TZ**). In the Docker Compose example, Postgres and
-Redis are already included as services and wired for you, so in `.env` you
+AudioMuse-AI runs as a small stack: the Flask app, a worker and PostgreSQL.
+There is no broker: the task queue lives in PostgreSQL itself. It needs only two
+things set by environment variable: **PostgreSQL**
+and the timezone (**TZ**). In the Docker Compose example, Postgres is already
+included as a service and wired for you, so in `.env` you
 normally set just the database user, password and TZ. Everything else is
 configured later in the Setup Wizard.
 
@@ -53,7 +54,7 @@ docker compose up -d
 
 > Prefer not to use Docker? There are native builds for macOS, Windows and Linux
 > on the releases page: https://github.com/NeptuneHub/AudioMuse-AI/releases .
-> They bundle PostgreSQL and Redis, so you just download and run. Always grab the
+> They bundle PostgreSQL, so you just download and run. Always grab the
 > latest release.
 
 Open `http://<your-host>:8000`. On first start the Setup Wizard appears:

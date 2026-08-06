@@ -13,7 +13,7 @@ the local ``PLUGINS_DIR`` cache, optionally pip-installs declared requirements,
 imports each plugin through the ``audiomuse_plugins`` namespace package, and
 invokes ``register(ctx)`` with per-plugin failure isolation so a bad plugin can
 never stop the app from booting. Also installs/uninstalls packages and dispatches
-plugin cron/RQ tasks inside a Flask app context.
+plugin cron/queue tasks inside a Flask app context.
 
 Main Features:
 * ``sync`` + ``ensure_requirements`` + ``load`` boot sequence shared by web and workers.
@@ -115,12 +115,6 @@ def _resolve_extract_root(staging):
 
 
 def _plugin_path(plugin_id):
-    """Resolve a plugin's directory under PLUGINS_DIR, rejecting any path escape.
-
-    ``plugin_id`` is already constrained by ``valid_plugin_id`` at install time;
-    this realpath + commonpath check is defense-in-depth so a crafted id can never
-    resolve outside PLUGINS_DIR before the loader extracts or imports community code.
-    """
     if not valid_plugin_id(plugin_id):
         raise ValueError(f'Invalid plugin id: {plugin_id!r}')
     base = os.path.realpath(config.PLUGINS_DIR)
@@ -131,12 +125,6 @@ def _plugin_path(plugin_id):
 
 
 def _replace_dir(root, target):
-    """Swap a freshly extracted directory into place without deleting the live target first.
-
-    The old directory is renamed aside (with a short retry, because on Windows an
-    antivirus or indexer handle can briefly block the rename) and removed only after
-    the swap succeeds, so a locked file can never leave a half-deleted plugin behind.
-    """
     if not os.path.isdir(target):
         os.replace(root, target)
         return
@@ -191,7 +179,6 @@ _LOADED_STATUSES = ('ok', 'deps_failed')
 
 
 def _analysis_provider_entry(value):
-    """Normalize a stored analysis provider to ``{'factory': ..., 'cache': bool}``."""
     if isinstance(value, dict) and 'factory' in value:
         return {'factory': value['factory'], 'cache': bool(value.get('cache', True))}
     return {'factory': value, 'cache': True}
@@ -222,14 +209,6 @@ def _download_url(url, max_bytes):
 
 
 def _acquire_install_lock():
-    """Take an OS-level lock file that serializes plugin writers across processes.
-
-    The web process, both RQ workers, and the restart listener can all share one
-    PLUGINS_DIR volume; a threading.Lock only guards a single interpreter. This
-    file lock (fcntl on POSIX, msvcrt on Windows) serializes concurrent code
-    extraction and pip installs into that shared directory across every process on
-    the host, so two `pip install --target _lib` runs can never interleave.
-    """
     os.makedirs(config.PLUGINS_DIR, exist_ok=True)
     fh = open(os.path.join(config.PLUGINS_DIR, '.install.lock'), 'a+')
     try:
@@ -375,13 +354,6 @@ class PluginManager:
         self._materialize_one(plugin_id, checksum or got, package)
 
     def _prune_stale_dist_info(self, lib_dir, specs):
-        """Remove old .dist-info dirs for the distributions about to be (re)installed.
-
-        pip --target has no uninstall step: --upgrade replaces the package dir but
-        leaves the previous version's differently-named dist-info behind, which
-        would make the installed-version scan nondeterministic and re-trigger pip
-        on every boot.
-        """
         names = set()
         for spec in specs:
             try:
@@ -451,14 +423,6 @@ class PluginManager:
         return versions
 
     def _missing_specs(self, specs, have=None):
-        """Return the specs whose distribution is absent OR whose version pin is unmet in _lib.
-
-        Unlike a name-only presence check, this parses each spec with packaging so a
-        changed pin (matplotlib==3.7 -> matplotlib==3.9) is correctly seen as missing
-        and reinstalled, instead of being silently satisfied by any matplotlib on disk.
-        ``have`` lets a caller share one _lib scan across several checks; when omitted
-        the directory is re-read, which the in-lock re-check relies on.
-        """
         if have is None:
             have = self._installed_dist_versions()
         missing = []
@@ -487,15 +451,6 @@ class PluginManager:
         return missing
 
     def _install_specs(self, requirements, plugin_ids=None):
-        """Install the pip specs not already satisfied (by name AND version pin) in _lib.
-
-        Satisfaction is checked against the distributions really installed in _lib,
-        so a dependency is (re)installed only when genuinely missing or version-
-        mismatched. The pip install runs under a cross-process file lock so the two
-        RQ workers and the restart listener sharing one PLUGINS_DIR volume can never
-        run overlapping installs into _lib. _lib is appended to the END of sys.path
-        so a plugin dependency can never shadow a core AudioMuse-AI package.
-        """
         specs = sorted({str(s) for s in (requirements or []) if _valid_requirement(s)})
         self._ensure_lib_on_path()
         if not specs:
@@ -516,7 +471,6 @@ class PluginManager:
             return self._pip_install(missing)
 
     def ensure_requirements(self, role=None):
-        """Install pip requirements for enabled plugins that run on this role (missing ones only)."""
         if not self.enabled():
             return
         frozen = getattr(sys, 'frozen', False)
@@ -675,14 +629,6 @@ class PluginManager:
 
     def install_package(self, package_bytes, manifest, source_url, source_repo=None,
                         expected_checksum=None, on_registered=None):
-        """Install a code-only plugin zip using the manifest resolved from the catalog.
-
-        The package holds only code; its metadata (id, name, version,
-        min_core_version, requirements, targets) comes from ``manifest`` - the
-        plugin.json the catalog pointed at - not from a file inside the zip. The
-        download is size-capped and its md5 verified against ``expected_checksum``
-        before anything is written.
-        """
         max_bytes = config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024
         if len(package_bytes) > max_bytes:
             raise ValueError(f'Plugin package exceeds {config.PLUGIN_MAX_DOWNLOAD_MB} MB limit')
@@ -804,12 +750,6 @@ class PluginManager:
             record['enabled'] = bool(enabled)
 
     def get_cron_task(self, task_type):
-        """Resolve a plugin cron task, falling back to the declarations persisted at install.
-
-        The web process dispatches cron but never imports a worker-only plugin, so its
-        in-memory cron_tasks stay empty for those; the mapping stored in the manifest
-        by run_install_hooks keeps them dispatchable.
-        """
         if not task_type or not task_type.startswith('plugin.'):
             return None
         remainder = task_type[len('plugin.'):]
@@ -825,12 +765,6 @@ class PluginManager:
         return task if isinstance(task, dict) and task.get('dotted') else None
 
     def available_cron_tasks(self):
-        """Return every schedulable plugin cron task for the Scheduled Tasks page.
-
-        Merges the in-memory registrations with the declarations persisted in the
-        manifest at install time, so worker-only plugins are listed on the web
-        process too.
-        """
         items = []
         for plugin_id, record in self.records.items():
             if not record.get('enabled'):
@@ -868,16 +802,6 @@ class PluginManager:
         return providers
 
     def get_analysis_provider(self, component):
-        """Return the first loaded plugin's replacement for ``component``, or None.
-
-        Resolves ``factory`` to the actual implementation (calling it when it is a
-        zero-arg callable) and reuses that result unless the plugin registered with
-        ``cache=False``, so a model is not rebuilt on every call. Used by core to
-        let a plugin swap out a whole analysis step such as the ASR/Whisper backend.
-
-        A plugin whose factory raises or returns None is logged by id and skipped,
-        so core falls back to the built-in component with a trace of why.
-        """
         if component in self._analysis_provider_cache:
             return self._analysis_provider_cache[component]
         owners = [
@@ -905,8 +829,6 @@ class PluginManager:
                 )
                 continue
             if provider is None:
-                # A factory returning None is a plugin opting out at runtime (no
-                # GPU found, say). Say so, or the built-in silently stays in use.
                 logger.warning(
                     'Plugin %s: its analysis provider factory for %r returned None; '
                     'falling back to the next provider or the built-in one',
@@ -936,7 +858,6 @@ class PluginManager:
         return hooks
 
     def run_song_analyzed(self, payload):
-        """Call every registered on_song_analyzed hook with per-plugin isolation; a no-op when none."""
         for hook in self.song_analyzed_hooks():
             try:
                 hook(payload)
@@ -969,14 +890,6 @@ class PluginManager:
         return summary
 
     def restart_pending(self, db_plugins):
-        """True when this process no longer matches the DB registry it booted with.
-
-        Compares the (checksum, enabled) snapshot captured at load time against the
-        current rows, so the restart-required state survives page reloads and shows
-        for every admin, not only the one who clicked. The dirty flag covers changes
-        the snapshot cannot see, like uninstall + reinstall of the same version.
-        None (unknown) before load().
-        """
         if self._boot_snapshot is None:
             return None
         if self._runtime_dirty:
@@ -994,33 +907,12 @@ plugin_manager = PluginManager()
 def run_plugin_task(
     dotted, *args, server_scope=None, task_claim_required=False, **kwargs
 ):
-    """RQ entrypoint: import a plugin task by dotted path and run it in an app context.
-
-    When the plugin code is missing on this worker's volume (fresh pod, plugin-sync
-    missed), a throwaway manager re-materializes the enabled plugins once and the
-    import is retried - the global manager's in-memory registrations (hooks, ONNX
-    providers, cron tasks) are never touched, which matters on Windows where
-    SimpleWorker runs jobs inside the long-lived worker process.
-    Cron-enqueued jobs have a task_status row (created by the dispatcher); that row
-    is transitioned to SUCCESS/FAILURE here so it can never sit PENDING forever.
-
-    ``server_scope`` (from the schedule, never forwarded to the plugin) runs the
-    task once per media server in that scope, each inside that server's context,
-    exactly like the built-in scheduled tasks: servers hold different catalogues,
-    so a plugin creating playlists or reading listening history must see the one
-    it is running against. Unset (a plugin's own ``api.enqueue``) means one run
-    against the default server, as before.
-    """
     from flask_app import app
-    from rq import get_current_job
+    import taskqueue
 
     plugin_manager.setup_namespace()
     module_path, _, fn_name = dotted.rpartition('.')
-    try:
-        job = get_current_job()
-    except Exception:
-        job = None
-    task_id = job.id if job is not None else None
+    task_id = taskqueue.current_task_id()
     with app.app_context():
         row = database.get_task_info_from_db(task_id) if task_id else None
         if task_claim_required and row is None:
@@ -1069,13 +961,6 @@ def run_plugin_task(
 
 
 def _run_per_server(func, server_scope, args, kwargs):
-    """Call ``func`` once per server in ``server_scope``, bound to that server.
-
-    No scope means a single unbound run (the default server), byte-identical to
-    the historical behaviour. A single-server install resolves to the default
-    server, whose context is None, so that run is unbound too. Returns the lone
-    result when only one server ran, else the list of results.
-    """
     from tasks.mediaserver import registry as ms_registry
 
     if not server_scope:
@@ -1090,7 +975,6 @@ def _run_per_server(func, server_scope, args, kwargs):
             with ms_registry.bind(server):
                 results.append(func(*args, **kwargs))
         except Exception as exc:
-            # One unreachable server must not cancel the run on the others.
             logger.exception('Plugin task failed on %s; continuing', name)
             failures.append(f'{name}: {exc}')
     if failures and not results:
@@ -1107,13 +991,6 @@ _presync_lock = threading.Lock()
 
 
 def _wait_for_db():
-    """Block until the database accepts a connection, bounded by config.
-
-    The RQ worker entrypoints boot the plugin subsystem before the Postgres pod is
-    guaranteed to be up. Without this wait a startup 'connection refused' is caught
-    by boot() and permanently disables plugins on that worker until it restarts. A
-    no-op for the web process, which has already run init_db by the time it boots.
-    """
     deadline = time.monotonic() + config.PLUGIN_BOOT_DB_WAIT_SECONDS
     attempt = 0
     while True:
@@ -1135,7 +1012,6 @@ def _wait_for_db():
 
 
 def boot(role, flask_app=None):
-    """Run the full boot sequence for a process role ('web' or 'worker')."""
     if not plugin_manager.enabled():
         return
     try:
@@ -1150,15 +1026,6 @@ def boot(role, flask_app=None):
 
 
 def worker_presync():
-    """Download plugin code and pip-install deps into this worker's own volume.
-
-    Triggered by the Redis 'plugin-sync' broadcast at plugin install time so every
-    worker container populates its PLUGINS_DIR (code) and _lib (dependencies)
-    immediately, in parallel with the web process, instead of only at the next
-    restart. The apply restart then reloads fast because ensure_requirements finds
-    the dependencies already present. Serialized so overlapping broadcasts cannot
-    run two pip installs into _lib at once.
-    """
     if not plugin_manager.enabled():
         return
     with _presync_lock:

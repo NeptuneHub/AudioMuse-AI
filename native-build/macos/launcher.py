@@ -10,24 +10,24 @@
 
 Single frozen executable that runs as the menu-bar supervisor by default or,
 with ``--role=``, as one of its child processes: the Flask/waitress server or
-an RQ worker/janitor/restart-listener. It also applies the scipy longdouble
-warmup before the RQ fork to avoid the macOS newlocale crash. The
+a queue worker/maintenance/control-listener. It also applies the scipy longdouble
+warmup before the first analysis job to avoid the macOS newlocale crash. The
 Linux/Windows launchers are the platform-specific siblings.
 
 Main Features:
-* Runs Flask via waitress or launches a named RQ role in-process.
+* Runs Flask via waitress or launches a named queue role in-process.
 * Pins the numeric locale early and warms up scipy longdouble for every role
-  except janitor and restart-listener (macOS newlocale crash fix).
+  except maintenance and restart-listener (macOS newlocale crash fix).
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
   and rejects any other unknown argv rather than starting a second menu bar.
 """
 
 import os
-import runpy
 import subprocess
 import sys
 import threading
 
+import service_roles
 from native_common import frozen_children
 
 
@@ -59,7 +59,10 @@ def _run_flask():
     )
 
 
-_NO_LONGDOUBLE_WARMUP_ROLES = {"janitor", "restart-listener"}
+_NO_LONGDOUBLE_WARMUP_ROLES = {
+    service_roles.ROLE_MAINTENANCE,
+    service_roles.ROLE_RESTART_LISTENER,
+}
 
 
 def _run_role(role):
@@ -70,20 +73,7 @@ def _run_role(role):
             numeric_bootstrap.warmup_scipy_longdouble()
         except Exception:
             pass
-    if role == "flask":
-        _run_flask()
-    elif role == "worker-high":
-        runpy.run_module("rq_worker_high_priority", run_name="__main__")
-    elif role == "worker-default":
-        runpy.run_module("rq_worker", run_name="__main__")
-    elif role == "janitor":
-        runpy.run_module("rq_janitor", run_name="__main__")
-    elif role == "restart-listener":
-        import restart_listener
-
-        restart_listener.main()
-    else:
-        raise SystemExit(f"Unknown role: {role}")
+    service_roles.run_role(role, _run_flask)
 
 
 _INSTANCE_LOCK = None

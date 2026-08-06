@@ -5,14 +5,13 @@
 # `strategy` block and the per-arch build steps below.
 #
 # Mirrors build-macos.yml. The package bundles EVERYTHING (Python runtime,
-# onnxruntime, PyAV/ffmpeg, the ONNX models, an embedded PostgreSQL via pgserver
-# and an embedded Redis), so an installed package needs no Docker and no
-# separately-installed database/broker. See native-build/linux/README.md for why Postgres and
-# Redis are bundled rather than declared as system dependencies (pgvector +
-# unaccent/pg_trgm against an exact PG minor, plus the per-distro package-name /
-# version skew, make a portable single .deb/.rpm "hard dependency" infeasible).
+# onnxruntime, PyAV/ffmpeg, the ONNX models, an embedded PostgreSQL via pgserver),
+# so an installed package needs no Docker and no separately-installed database.
+# Postgres is bundled rather than declared as a system dependency because pgvector
+# + unaccent/pg_trgm must match an exact PG minor, and the per-distro package-name
+# / version skew makes a portable single .deb/.rpm "hard dependency" infeasible.
 #
-# The small native build inputs (redis-server, the unaccent/pg_trgm contrib
+# The small native build inputs (the unaccent/pg_trgm contrib
 # modules) are built from source in this workflow (native-build/linux/vendor/*) rather than
 # committed, then baked into the bundle by the shared AudioMuse-AI.spec.
 #
@@ -96,8 +95,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # build-essential + zlib headers: redis and the PG contrib modules
-          # compile against these. bison/flex: required to build PostgreSQL from
+          # build-essential + zlib headers: the PG contrib modules compile
+          # against these. bison/flex: required to build PostgreSQL from
           # source (aarch64 leg). rpm: so nfpm can emit an .rpm.
           sudo apt-get install -y --no-install-recommends \
             build-essential curl ca-certificates pkg-config \
@@ -125,9 +124,6 @@ jobs:
           source .venv-linux/bin/activate
           pip install --upgrade pip
           pip install -r requirements/linux.txt
-
-      - name: Build vendored redis-server
-        run: bash native-build/linux/vendor/build-redis.sh
 
       # x86_64: compile unaccent/pg_trgm against the installed pgserver's PG.
       - name: Build vendored PostgreSQL contrib (x86_64, against pgserver)

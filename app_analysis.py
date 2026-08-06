@@ -9,7 +9,7 @@
 """Flask blueprint for launching library analysis and database cleaning.
 
 Thin route layer that enqueues the long-running main tasks onto the high
-priority RQ queue and returns their job id for the UI to poll via the generic
+priority task queue and returns their job id for the UI to poll via the generic
 status routes in `app.py`.
 
 Main Features:
@@ -27,26 +27,19 @@ import logging
 from config import (
     NUM_RECENT_ALBUMS,
     TOP_N_MOODS,
-    TASK_STATUS_PENDING,
-    TASK_STATUS_FAILURE,
+    TASK_STATUS_NEW,
     CLEANING_CATALOGUE,
 )
 
-# RQ import
-from rq import Retry
+# Task queue
+import taskqueue
 
 # App helper functions
-from app_helper import (
-    ENQUEUE_MISSING,
-    resolve_enqueue_outcome,
-    rq_queue_high,
-    save_task_status,
-)
 from database import (
+    NON_BLOCKING_TASK_TYPES,
     clean_up_previous_main_tasks,
     get_active_main_task,
     main_task_start_lock,
-    prune_task_status_history,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,7 +117,7 @@ def start_analysis_endpoint():
       500:
         description: Server error during task enqueue.
     """
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.
     # The task now gets these details from the central config.
     num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
@@ -135,12 +128,21 @@ def start_analysis_endpoint():
 
     job_id = str(uuid.uuid4())
 
-    # The gate, the archival and the claim are one atomic act. Checked separately,
-    # two starts (a double click, or a cron tick landing on a manual start) could
-    # both see "nothing running" before either had written its row, and then both
-    # launch - or one archival could revoke the row the other had just created.
+    # The gate and the claim are one INSERT. A partial unique index allows exactly
+    # one live main task, so a double click or a cron tick landing on a manual
+    # start loses the race in Postgres rather than in application code, and the
+    # advisory lock that used to serialize check-then-act is gone with it.
+    # The gate MUST come before the archive. clean_up_previous_main_tasks
+    # REVOKES any live root, so archiving first cancelled the task that was
+    # running and then let this one straight through - the unique index could
+    # never fire because the row it would have collided with was just retired.
+    # Session-scoped and held across the archive's internal commit: the gate,
+    # clean_up_previous_main_tasks and the enqueue must be one critical section,
+    # or this start's archive can REVOKE a main task another caller (a cron
+    # tick, a second tab) enqueued between our gate read and our archive. The
+    # unique index only prevents two LIVE rows; it cannot stop an archive from
+    # retiring a row that was legitimately accepted first.
     with main_task_start_lock():
-        # Check for any existing active main task to prevent parallel batch runs.
         active_task = get_active_main_task()
         if active_task:
             return jsonify(
@@ -151,49 +153,30 @@ def start_analysis_endpoint():
                 }
             ), 409
 
-        # Clean up details of previously successful or stale tasks before starting a new one
         clean_up_previous_main_tasks()
-        save_task_status(
-            job_id, "main_analysis", TASK_STATUS_PENDING,
-            details={"message": "Task enqueued."}, raise_on_error=True,
-        )
-
-        # Keep the lock through the definitive enqueue result. Otherwise Cancel can
-        # wipe the committed claim in the small window before Redis sees the job.
         try:
-            job = rq_queue_high.enqueue(
+            taskqueue.enqueue(
                 'tasks.analysis.run_analysis_task',
                 args=(num_recent_albums, top_n_moods),
-                job_id=job_id,
-                description="Main Music Analysis",
-                retry=Retry(max=3),
-                job_timeout=-1,  # No timeout
+                task_id=job_id,
+                task_type="main_analysis",
+                queue=taskqueue.QUEUE_HIGH,
+                details={"message": "Task queued."},
             )
-        except Exception:
-            logger.exception("Could not enqueue the analysis task")
-            outcome, rq_status = resolve_enqueue_outcome(job_id)
-            if outcome == ENQUEUE_MISSING:
-                save_task_status(
-                    job_id, "main_analysis", TASK_STATUS_FAILURE,
-                    details={"error": "Could not enqueue the task (is Redis reachable?)"},
-                    raise_on_error=True,
-                )
-                prune_task_status_history()
-                return jsonify({"error": "Could not enqueue the analysis. Check the logs."}), 500
-            # Redis may have accepted the transaction and only lost the reply. Keep
-            # the PENDING claim so another start cannot duplicate it; the janitor
-            # resolves an actually-missing job once Redis is reachable again.
+        except taskqueue.TaskAlreadyRunning as exc:
+            active_task = get_active_main_task()
             return jsonify(
                 {
-                    "task_id": job_id,
-                    "task_type": "main_analysis",
-                    "status": rq_status or TASK_STATUS_PENDING,
+                    "error": exc.user_message,
+                    "task_id": active_task['task_id'] if active_task else None,
+                    "status": active_task['status'] if active_task else None,
                 }
-            ), 202
-    # Queue.enqueue returning is the definitive acceptance point. A second Redis
-    # read here can lose its reply and turn an accepted job into an HTTP 500.
+            ), exc.status_code
+        except Exception:
+            logger.exception("Could not queue the analysis task")
+            return jsonify({"error": "Could not queue the analysis. Check the logs."}), 500
     return jsonify(
-        {"task_id": job.id, "task_type": "main_analysis", "status": "queued"}
+        {"task_id": job_id, "task_type": "main_analysis", "status": TASK_STATUS_NEW}
     ), 202
 
 
@@ -239,8 +222,14 @@ def start_cleaning_endpoint():
 
     job_id = str(uuid.uuid4())
 
+    # Cleaning is the one start that also refuses while a SWEEP runs, because the
+    # two write the same mappings; that stricter check stays a read, while the
+    # unique index enforces the one-live-main-task rule itself.
+    # Same critical section as the analysis start: gate, archive and enqueue
+    # under the session start lock, so this start's archive cannot REVOKE a main
+    # task another caller enqueued between our gate read and our archive.
     with main_task_start_lock():
-        active_task = get_active_main_task(exclude_task_types=())
+        active_task = get_active_main_task(exclude_task_types=NON_BLOCKING_TASK_TYPES)
         if active_task:
             return jsonify(
                 {
@@ -250,44 +239,32 @@ def start_cleaning_endpoint():
                 }
             ), 409
 
-        # Clean up any previous cleaning tasks
         clean_up_previous_main_tasks()
-        save_task_status(
-            job_id,
-            "cleaning",
-            TASK_STATUS_PENDING,
-            details={"message": "Database cleaning task enqueued."},
-            raise_on_error=True,
-        )
-
-        # Enqueue while still serialized with global Cancel.
         try:
-            job = rq_queue_high.enqueue(
+            taskqueue.enqueue(
                 'tasks.cleaning.identify_and_clean_orphaned_albums_task',
-                clean_catalogue,
-                job_id=job_id,
-                description="Database Cleaning (Identify and Delete Orphaned Albums)",
-                retry=Retry(max=2),
-                job_timeout=-1,  # No timeout
+                args=(clean_catalogue,),
+                task_id=job_id,
+                task_type="cleaning",
+                queue=taskqueue.QUEUE_HIGH,
+                details={"message": "Database cleaning task queued."},
             )
-        except Exception:
-            logger.exception("Could not enqueue the cleaning task")
-            outcome, rq_status = resolve_enqueue_outcome(job_id)
-            if outcome == ENQUEUE_MISSING:
-                save_task_status(
-                    job_id, "cleaning", TASK_STATUS_FAILURE,
-                    details={"error": "Could not enqueue the task (is Redis reachable?)"},
-                    raise_on_error=True,
-                )
-                prune_task_status_history()
-                return jsonify({"error": "Could not enqueue the cleaning. Check the logs."}), 500
+        except taskqueue.TaskAlreadyRunning as exc:
+            # The INSERT lost the admission race and its savepoint rolled back, so
+            # ``job_id`` names a row that was never written. Re-read the task that
+            # actually holds the gate - the same contract analysis and clustering use -
+            # so an API consumer polling the returned id does not get a 404.
+            active_task = get_active_main_task(exclude_task_types=NON_BLOCKING_TASK_TYPES)
             return jsonify(
                 {
-                    "task_id": job_id,
-                    "task_type": "cleaning",
-                    "status": rq_status or TASK_STATUS_PENDING,
+                    "error": exc.user_message,
+                    "task_id": active_task['task_id'] if active_task else None,
+                    "status": active_task['status'] if active_task else None,
                 }
-            ), 202
+            ), exc.status_code
+        except Exception:
+            logger.exception("Could not queue the cleaning task")
+            return jsonify({"error": "Could not queue the cleaning. Check the logs."}), 500
     return jsonify(
-        {"task_id": job.id, "task_type": "cleaning", "status": "queued"}
+        {"task_id": job_id, "task_type": "cleaning", "status": TASK_STATUS_NEW}
     ), 202

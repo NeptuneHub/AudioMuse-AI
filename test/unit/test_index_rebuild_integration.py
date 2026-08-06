@@ -171,8 +171,11 @@ class TestRunAllIndexBuilds:
             mocks = {}
             for name, module in _BUILDER_SOURCE_MODULES.items():
                 mocks[name] = stack.enter_context(patch(f"{module}.{name}"))
-            for name in ("get_db", "redis_conn", "release_memory_to_os"):
+            for name in ("get_db", "release_memory_to_os"):
                 mocks[name] = stack.enter_context(patch.object(analysis_mod, name))
+            mocks["publish_event"] = stack.enter_context(
+                patch.object(analysis_mod.taskqueue, "publish_event")
+            )
             yield mocks
 
     def test_all_eight_builders_run_with_log_fn_none(self):
@@ -180,7 +183,7 @@ class TestRunAllIndexBuilds:
             analysis_mod._run_all_index_builds(log_fn=None)
         for name in _BUILDER_NAMES:
             assert mocks[name].called, f"{name} was not invoked by the orchestrator"
-        assert mocks["redis_conn"].publish.called
+        assert mocks["publish_event"].call_args.args == ('index-reload',)
         assert mocks["release_memory_to_os"].called
 
     def test_non_fatal_failure_does_not_abort_remaining_builders(self):

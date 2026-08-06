@@ -23,7 +23,7 @@ Main Features:
   track-duration agreement and settled against the DB so concurrent workers
   converge on one catalogue row per recording.
 * make_task_reporter: the one task_status reporter every analysis task uses
-  (capped log, job.meta mirror, optional progress rescaling and DB throttling).
+  (one status_message, optional progress rescaling and DB throttling).
 * flush_pending_track_maps: per-track map-row flush, so a killed worker cannot
   strand an analyzed track without its server mapping.
 """
@@ -36,10 +36,9 @@ import numpy as np
 
 from config import (
     ANALYSIS_MONITOR_DB_INTERVAL,
-    TASK_STATUS_STARTED,
-    TASK_STATUS_PROGRESS,
+    TASK_STATUS_RUNNING,
     TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
+    TASK_STATUS_FAIL,
 )
 from database import get_db, save_task_status
 from psycopg2 import OperationalError
@@ -48,8 +47,6 @@ from sanitization import sanitize_string_for_db
 
 from error import error_manager
 from error.error_dictionary import ERR_DB_CONNECTION
-
-from ..task_details import DEFAULT_LOG_CAP, shape_log, stamp
 
 _SONG_EXPORTS = frozenset((
     'analysis_server_identity', 'catalog_item_id', 'provider_item_id',
@@ -85,22 +82,21 @@ def _bind_server_context(server_id):
 logger = logging.getLogger(__name__)
 
 
-def make_task_reporter(task_id, task_type, job, initial_message,
+def make_task_reporter(task_id, task_type, initial_message,
                         parent_task_id=None, sub_type_identifier=None,
-                        base_details=None, log_cap=DEFAULT_LOG_CAP, prefix=None,
+                        base_details=None, prefix=None,
                         progress_base=0.0, progress_span=100.0,
                         downgrade_terminal=False, min_db_interval=0.0):
-    logs = [stamp(initial_message)]
     base = dict(base_details or {})
     state = {'progress': 0, 'last_db': float('-inf')}
     label = prefix or f"{task_type}-{task_id}"
 
     try:
         save_task_status(
-            task_id, task_type, TASK_STATUS_STARTED,
+            task_id, task_type, TASK_STATUS_RUNNING,
             parent_task_id=parent_task_id, sub_type_identifier=sub_type_identifier,
-            progress=int(progress_base), details={**base, "message": initial_message,
-                                                  "log": list(logs)},
+            progress=int(progress_base),
+            details={**base, "message": initial_message, "status_message": initial_message},
         )
     except OperationalError as e:
         error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
@@ -109,23 +105,15 @@ def make_task_reporter(task_id, task_type, job, initial_message,
     def report(message, progress, **kwargs):
         state['progress'] = progress
         logger.info(f"[{label}] {message}")
-        task_state = kwargs.get('task_state', TASK_STATUS_PROGRESS)
+        task_state = kwargs.get('task_state', TASK_STATUS_RUNNING)
         details = {**base, **kwargs, "message": message, "status_message": message}
-        if downgrade_terminal and task_state in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE):
-            task_state = TASK_STATUS_PROGRESS
+        if downgrade_terminal and task_state in (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL):
+            task_state = TASK_STATUS_RUNNING
         scaled = int(progress_base + (progress or 0) * progress_span / 100.0)
-        details["log"] = shape_log(
-            logs, message, task_state == TASK_STATUS_SUCCESS, cap=log_cap
-        )
-        if job:
-            job.meta.update(
-                {'progress': scaled, 'status_message': message, 'details': details}
-            )
-            job.save_meta()
         now = time.monotonic()
         throttled = (
             min_db_interval
-            and task_state == TASK_STATUS_PROGRESS
+            and task_state == TASK_STATUS_RUNNING
             and 'task_state' not in kwargs
             and now - state['last_db'] < min_db_interval
         )
@@ -310,13 +298,13 @@ def top_moods_from(musicnn_analysis, top_n_moods):
     return dict(ranked[:top_n_moods])
 
 
-def _album_clap_label_embeddings(track_total, existing_ids, missing_clap_ids, redis_conn):
+def _album_clap_label_embeddings(track_total, existing_ids, missing_clap_ids):
     from .. import clap_analyzer
 
     any_track_needs_musicnn = len(existing_ids) < track_total
     if (any_track_needs_musicnn or missing_clap_ids) and clap_analyzer.is_clap_available():
         try:
-            labels = clap_analyzer.get_or_cache_other_feature_text_embeddings(redis_conn)
+            labels = clap_analyzer.get_or_cache_other_feature_text_embeddings()
             if labels:
                 logger.info(f"OK CLAP other feature text embeddings ready ({len(labels)} labels)")
             else:
@@ -349,7 +337,7 @@ def _prior_moods_for_lyrics(track_ids, existing_ids, missing_lyrics_ids, top_n_m
     return prior
 
 
-def build_album_plan(album_name, tracks, top_n_moods, redis_conn, lyrics_enabled):
+def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
     from .. import clap_analyzer
 
     attach_catalog_item_ids(tracks)
@@ -374,7 +362,7 @@ def build_album_plan(album_name, tracks, top_n_moods, redis_conn, lyrics_enabled
         len(tracks),
     )
     clap_label_embeddings = _album_clap_label_embeddings(
-        len(tracks), existing_ids, missing_clap_ids, redis_conn
+        len(tracks), existing_ids, missing_clap_ids
     )
     prior_moods = _prior_moods_for_lyrics(
         track_ids, existing_ids, missing_lyrics_ids, top_n_moods, lyrics_enabled, album_name

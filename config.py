@@ -13,22 +13,33 @@ module-level constant with a baked-in default, so other modules import the
 resolved value instead of re-reading the environment or re-specifying defaults.
 
 Main Features:
-* Centralizes app/media-server/database/Redis/task and index defaults in one place.
+* Centralizes app/media-server/database/task-queue and index defaults in one place.
 * Keeps the section and per-parameter comments that document each setting.
 * At import, ``_apply_db_overrides`` layers persisted setup-wizard values from the
-  DB over the env defaults (skipping Redis/Postgres/admin/precomputed keys).
+  DB over the env defaults (skipping Postgres/admin/precomputed keys).
 """
 
 import os
 import tempfile
 
 # --- Task Status Constants ---
-TASK_STATUS_PENDING = 'PENDING'
-TASK_STATUS_STARTED = 'STARTED'
-TASK_STATUS_PROGRESS = 'PROGRESS'
+# A task starts, runs, and ends. Five values, one vocabulary, no others.
+TASK_STATUS_NEW = 'NEW'
+TASK_STATUS_RUNNING = 'RUNNING'
 TASK_STATUS_SUCCESS = 'SUCCESS'
-TASK_STATUS_FAILURE = 'FAILURE'
+TASK_STATUS_FAIL = 'FAIL'
 TASK_STATUS_REVOKED = 'REVOKED'
+
+# Deprecated spellings kept as aliases so plugin/api.py re-exports and any
+# third-party plugin comparing against them keep working. They are the SAME
+# values, not extra states.
+TASK_STATUS_PENDING = TASK_STATUS_NEW
+TASK_STATUS_STARTED = TASK_STATUS_RUNNING
+TASK_STATUS_PROGRESS = TASK_STATUS_RUNNING
+TASK_STATUS_FAILURE = TASK_STATUS_FAIL
+
+TASK_STATUS_TERMINAL = (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL, TASK_STATUS_REVOKED)
+TASK_STATUS_LIVE = (TASK_STATUS_NEW, TASK_STATUS_RUNNING)
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
@@ -166,7 +177,6 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'POSTGRES_HOST',
     'POSTGRES_PORT',
     'POSTGRES_DB',
-    'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
@@ -190,7 +200,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.1.2"
+APP_VERSION = "v3.2.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -269,25 +279,22 @@ CLUSTERING_MAX_PLAYLIST_SONGS = int(os.environ.get("CLUSTERING_MAX_PLAYLIST_SONG
 CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MAX_TRIES", "3")) # Quick single-iteration probes per server before the real run
 CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact per-iteration sample cap; all per-genre quotas are calculated before selecting tracks, and smaller libraries contribute every clusterable song
 CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches without a better result; in-flight batches still drain
-MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in RQ queue (reduced from 100 to prevent resource exhaustion)
+MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in task queue (reduced from 100 to prevent resource exhaustion)
 
 # --- Batching Constants for Clustering Runs ---
-ITERATIONS_PER_BATCH_JOB = int(os.environ.get("ITERATIONS_PER_BATCH_JOB", "20")) # Number of clustering iterations per RQ batch job
+ITERATIONS_PER_BATCH_JOB = int(os.environ.get("ITERATIONS_PER_BATCH_JOB", "20")) # Number of clustering iterations per queued batch job
 MAX_CONCURRENT_BATCH_JOBS = int(os.environ.get("MAX_CONCURRENT_BATCH_JOBS", "10")) # Max number of batch jobs to run concurrently
-DB_FETCH_CHUNK_SIZE = int(os.environ.get("DB_FETCH_CHUNK_SIZE", "1000")) # Chunk size for fetching full track data from DB in batch jobs
 
 # IMPORTANT: Lower MAX_QUEUED_ANALYSIS_JOBS if experiencing resource exhaustion or server crashes
 # Recommended values: 10-25 for servers with limited resources, 50-100 for powerful servers
 
 # --- Clustering Batch Timeout and Failure Recovery ---
-CLUSTERING_BATCH_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_BATCH_TIMEOUT_MINUTES", "60")) # Max time a batch can run before being considered failed
 CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Max number of failed batches before stopping
-CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS = int(os.environ.get("CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS", "30")) # How often to check batch status
 
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
-ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via RQ every poll regardless).
+ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via the queue every poll regardless).
 
 # --- Guided Evolutionary Clustering Constants ---
 TOP_N_ELITES = int(os.environ.get("CLUSTERING_TOP_N_ELITES", "10")) # Number of best solutions to keep as elites
@@ -422,15 +429,139 @@ AI_NAMING_CANDIDATES = int(os.environ.get("AI_NAMING_CANDIDATES", "10"))
 # parts first, and a low cap makes them return nothing at all.
 AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
 
-REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+# Loopback URL the app answers on. Used by anything that has to wait for Flask to
+# come back after restarting it (the restore runner, the native supervisors).
+# NOT env-tunable: every actual bind (gunicorn in supervisord.conf, app.run, the
+# native supervisors' health URL) is fixed at 8000, so an env override here could
+# only point the readiness poll at a port Flask never answers on.
+FLASK_BIND_PORT = 8000
+FLASK_LOCAL_URL = f"http://127.0.0.1:{FLASK_BIND_PORT}/"
+# How long that wait may take before giving up and continuing anyway.
+FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "180"))
 
-# RQ worker tuning: restart-after-N-jobs (memory-leak guard) and log level.
-RQ_MAX_JOBS = int(os.getenv('RQ_MAX_JOBS', '50'))
-RQ_MAX_JOBS_HIGH = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
-RQ_LOGGING_LEVEL = os.getenv('RQ_LOGGING_LEVEL', 'INFO').upper()
-# Seconds a 'started' RQ job's heartbeat may go stale before the janitor treats the
-# job as abandoned (worker died mid-run) and requeues it within its retry budget.
-RQ_JOB_ABANDONED_SECONDS = int(os.getenv('RQ_JOB_ABANDONED_SECONDS', '300'))
+# --- Postgres task queue (taskqueue/) ---
+# The two queue names ('high' carries the user-facing coordinators so a fan-out
+# of album children on 'default' can never starve them) and the jump-the-queue
+# priority live in queue_names.py, NOT here. They are wire identifiers rather
+# than tunables - supervisord's --queue argument has to match them - and this
+# module is layer 0 at the MAX_CHAIN ceiling, so it cannot import them either.
+# The queue lives in task_status itself: one row is both the job and its status,
+# so the two can never drift. LISTEN/NOTIFY wakes an idle worker instantly and
+# this poll is only the fallback for a notification lost to a dropped connection.
+QUEUE_POLL_INTERVAL_SECONDS = float(os.getenv('QUEUE_POLL_INTERVAL_SECONDS', '15'))
+
+# Kwargs that must NEVER be written into task_status.payload. A queue row is a
+# durable database row: it is WAL-logged, replicated, and lands verbatim in every
+# pg_dump the user downloads from the Backup page. Clustering is enqueued with the
+# configured OpenAI/Gemini/Mistral keys as ordinary kwargs, so without this the
+# user's API keys sat on up to 20 completed roots and shipped inside their backups.
+# The queue strips these at enqueue and the worker re-reads them from config by the
+# same name at run time, so the job still receives them and the row never holds one.
+# Both queue connections spend most of their life blocked: the LISTEN socket
+# sits in select() indefinitely, and the claim connection sits idle for the
+# whole job whose advisory lock it is holding. The OS is the only thing that can
+# tell either one that the peer is gone, and the app-wide 600s default meant a
+# dropped link went unnoticed for over ten minutes on the two connections that
+# carry cancels, reclaim notices and liveness itself.
+# The same schedule is pushed to the SERVER side in database.py, and that half is
+# the load-bearing one: the advisory lock that proves a worker is alive is
+# released by Postgres, not by the client. A worker whose host vanished without a
+# FIN/RST - a powered-off VM, a partitioned network - kept that lock for the
+# Linux default of 7200 + 9*75 seconds, and for those two hours every reclaim
+# cycle silently skipped the task. That is the one path that never recovered.
+# Distinguishes multiple worker containers on ONE host in the control-plane ack
+# rows; empty means the hostname alone is the listener identity.
+AUDIO_MUSE_LISTENER_ID = os.environ.get('AUDIO_MUSE_LISTENER_ID', '')
+QUEUE_KEEPALIVE_IDLE_SECONDS = int(os.getenv('QUEUE_KEEPALIVE_IDLE_SECONDS', '20'))
+QUEUE_KEEPALIVE_INTERVAL_SECONDS = int(os.getenv('QUEUE_KEEPALIVE_INTERVAL_SECONDS', '10'))
+QUEUE_KEEPALIVE_COUNT = int(os.getenv('QUEUE_KEEPALIVE_COUNT', '2'))
+
+
+# A shared payload is cached in the worker so sibling jobs of one fan-out read it
+# once instead of once each - but ONLY while it is small enough that holding it
+# is cheaper than re-reading it. The clustering genre map is over a gigabyte of
+# JSON on a large library and the batch parses it into an even larger dict, so
+# caching that would pin both at once for the whole run. Above this size the body
+# is read per job and freed with the job, which is exactly what the queue did
+# before the shared slot existed.
+QUEUE_SHARED_CACHE_MAX_BYTES = int(os.getenv('QUEUE_SHARED_CACHE_MAX_BYTES', str(8 * 1024 * 1024)))
+
+
+# How long a RUNNING row must have gone without any write before reclaim will
+# even probe its advisory lock. It is a tiebreak, not the signal: the authority
+# is the advisory lock, which Postgres drops the instant the worker's connection
+# does. This was 120s, which is most of why a dead worker took 2-3 minutes to
+# notice, and it measured the wrong thing - `timestamp` is bumped by every
+# progress write, so the more often a task reported the SLOWER its death was
+# found, while a quiet task (a clustering batch, a migration fetch) sat past the
+# grace for its whole run and got no protection from it at all.
+QUEUE_ORPHAN_GRACE_SECONDS = int(os.getenv('QUEUE_ORPHAN_GRACE_SECONDS', '5'))
+
+QUEUE_SECRET_KWARGS = (
+    'openai_api_key_param',
+    'gemini_api_key_param',
+    'mistral_api_key_param',
+)
+
+# Worker-death restarts, then the task fails for good. The ONLY retry knob: a task
+# that fails on its own merits is never retried, whatever the number here.
+# It counts WORKER DEATHS, not claims. The counter used to be incremented by the
+# claim itself, so the first, healthy claim already spent one: a long root task
+# that had merely been restarted twice was failed for good on the third restart,
+# and a FAIL row is unreachable afterwards because the claim only looks at NEW
+# rows and the reclaim only at RUNNING ones. That is one of the two ways a main
+# task could "never get re-enqueued".
+QUEUE_MAX_ATTEMPTS = max(1, int(os.getenv('QUEUE_MAX_ATTEMPTS', '3')))
+# Jobs a worker runs before recycling itself, bounding native-extension leaks the
+# same way the queue worker's max_jobs did.
+QUEUE_MAX_JOBS = int(os.getenv('QUEUE_MAX_JOBS', '50'))
+QUEUE_MAX_JOBS_HIGH = int(os.getenv('QUEUE_MAX_JOBS_HIGH', '100'))
+# How often the elected maintenance process reclaims tasks whose worker died.
+# One indexed scan plus one pg_try_advisory_lock per RUNNING candidate, so this
+# is cheap enough to run every few seconds. It used to be 60s AND to drag the
+# slow passes below along with it, which is why it could not be lowered.
+QUEUE_ORPHAN_SCAN_SECONDS = float(os.getenv('QUEUE_ORPHAN_SCAN_SECONDS', '5'))
+# How often the same elected process runs the slow half: failing stale
+# in-process rows, resuming a migration handshake, and dropping the shared
+# payload a terminal row still holds. Nothing here prunes; see below.
+QUEUE_RETENTION_SCAN_SECONDS = float(os.getenv('QUEUE_RETENTION_SCAN_SECONDS', '300'))
+# How long a worker or listener waits before retrying a dropped Postgres
+# connection. One definition for both halves; it used to be a literal 2.0 in
+# each file.
+QUEUE_RECONNECT_DELAY_SECONDS = float(os.getenv('QUEUE_RECONNECT_DELAY_SECONDS', '2'))
+# How long a row written by an in-process owner (inline alchemy radio, a staged
+# migration alignment) must sit untouched before maintenance fails it. Worker
+# rows are reclaimed by advisory lock instead and never reach this.
+QUEUE_INLINE_STALE_SECONDS = float(os.getenv('QUEUE_INLINE_STALE_SECONDS', '1800'))
+# Retention needs NO knob and has no code. A starting run empties the table, a
+# Cancel empties it, and a finishing run empties it apart from its own one-line
+# recap - so task_status holds the run happening now or the recap of the last
+# one, and never more than that. There is nothing to cap, age, rank or prune.
+# SIGTERM to SIGKILL window when a worker kills its own process tree, long enough
+# for loky to release its /dev/shm segments.
+QUEUE_KILL_GRACE_SECONDS = float(os.getenv('QUEUE_KILL_GRACE_SECONDS', '5'))
+# One budget for ask-and-confirm on a worker restart/stop/start request.
+QUEUE_CONTROL_TIMEOUT_SECONDS = float(os.getenv('QUEUE_CONTROL_TIMEOUT_SECONDS', '30'))
+# A restart that is only ADVISORY - saving the wizard, changing the default
+# server, installing a plugin - is answered on a request thread, so it must not
+# hold that thread for the full deadline above just to report an acknowledgement
+# the user is not waiting on.
+QUEUE_CONTROL_ADVISORY_TIMEOUT_SECONDS = min(
+    5.0, float(os.getenv('QUEUE_CONTROL_ADVISORY_TIMEOUT_SECONDS', '5'))
+)
+# How often the publisher re-counts acknowledgements while it waits.
+QUEUE_CONTROL_POLL_INTERVAL_SECONDS = float(
+    os.getenv('QUEUE_CONTROL_POLL_INTERVAL_SECONDS', '0.25')
+)
+# Native builds drive the tray supervisor over a unix socket / loopback port.
+# This is the LOCAL IPC action timeout - the analogue of the hardcoded
+# subprocess timeout run_supervisorctl_detail uses for supervisorctl - NOT the
+# queue's ask-and-confirm budget above, so the two must not be aliased.
+CONTROL_IPC_TIMEOUT_SECONDS = max(
+    5.0, float(os.getenv('AUDIO_MUSE_CONTROL_IPC_TIMEOUT_SECONDS', '30'))
+)
+# Errors kept on a failed root row. The user needs a sample, not a transcript.
+QUEUE_MAX_ERRORS_KEPT = max(1, int(os.getenv('QUEUE_MAX_ERRORS_KEPT', '5')))
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
@@ -469,7 +600,6 @@ _DERIVED_DATABASE_URL = (
 )
 
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE", "postgres").lower()
-QUEUE_TYPE = os.environ.get("QUEUE_TYPE", "redis").lower()
 APP_DATA_DIR = os.environ.get("APP_DATA_DIR", "")
 AUDIOMUSE_PLATFORM = os.environ.get("AUDIOMUSE_PLATFORM", "").lower()
 AUDIOMUSE_CONTROL_SOCKET = os.environ.get("AUDIOMUSE_CONTROL_SOCKET", "")
@@ -857,7 +987,7 @@ PLUGIN_CATALOG_CACHE_TTL = int(os.environ.get("PLUGIN_CATALOG_CACHE_TTL", "900")
 # opens the Catalog tab. Opening the Catalog tab or clicking Refresh also triggers it.
 PLUGIN_CATALOG_REFRESH_INTERVAL = int(os.environ.get("PLUGIN_CATALOG_REFRESH_INTERVAL", "3600"))
 # How long plugin boot waits for the database to accept connections before giving
-# up (the RQ workers boot plugins before the Postgres pod is guaranteed ready; a
+# up (the queue workers boot plugins before the Postgres pod is guaranteed ready; a
 # transient 'connection refused' would otherwise disable plugins until restart).
 PLUGIN_BOOT_DB_WAIT_SECONDS = int(os.environ.get("PLUGIN_BOOT_DB_WAIT_SECONDS", "60"))
 PLUGIN_BOOT_DB_WAIT_INTERVAL = float(os.environ.get("PLUGIN_BOOT_DB_WAIT_INTERVAL", "2"))
@@ -876,8 +1006,16 @@ AI_FALLBACK_GENRES = (
     "hard rock, heavy metal, hip-hop, funk, country, soul"
 )
 
-# Redis cache key for CLAP text embeddings
-CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", "audiomuse:clap_other_feature_text_embeddings")
+# The fixed CLAP label set is encoded once per container and cached beside the
+# models - NOT in TEMP_DIR, which every analysis run empties at its start, so the
+# cache was thrown away and re-encoded on each run for nothing. It is a model
+# artefact, not scratch space, and the whisper/gte caches already live here.
+CLAP_OTHER_FEATURES_CACHE_DIR = os.environ.get(
+    "CLAP_OTHER_FEATURES_CACHE_DIR", os.environ.get("LYRICS_MODEL_DIR", "/app/model")
+)
+CLAP_OTHER_FEATURES_CACHE_FILE = os.environ.get(
+    "CLAP_OTHER_FEATURES_CACHE_FILE", "clap_other_feature_text_embeddings.npz"
+)
 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
@@ -951,8 +1089,9 @@ CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "Tr
 CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "1000"))
 # Seconds between progress writes (and cancellation polls) inside the backfill loop. The loop
 # downloads and fingerprints one track at a time, so a 1000-album run is hours of work: without
-# a periodic write the task row's timestamp freezes, the UI looks hung at 99%, Cancel is ignored,
-# and the janitor sees a stale row it must not reap.
+# a periodic write the task row's timestamp freezes, the UI looks hung at 99% and Cancel is
+# ignored. Reclaim is advisory-lock based, so this cadence no longer affects whether the row is
+# reaped - it only drives the UI and the cancellation poll.
 CHROMAPRINT_BACKFILL_REPORT_SECONDS = int(os.getenv("CHROMAPRINT_BACKFILL_REPORT_SECONDS", "15"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
@@ -1067,7 +1206,7 @@ def _apply_db_overrides():
             _overrides = _setup_manager.get_raw_overrides()
         _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
         for _key, _value in _overrides.items():
-            # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)
+            # Skip any keys that are explicitly excluded from overrides (Postgres)
             if _key in _excluded_override_keys:
                 continue
             # Read the value from the db and override the variable

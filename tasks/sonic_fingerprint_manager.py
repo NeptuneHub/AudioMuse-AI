@@ -31,18 +31,6 @@ logger = logging.getLogger(__name__)
 
 
 def run_sonic_fingerprint_task(server_scope="all"):
-    """RQ entrypoint for the sonic_fingerprint cron row.
-
-    Cron used to run this inline on the Flask poll thread, so one unreachable
-    media server blocked every other scheduled job for the length of its timeout
-    and the run had no task_status row: invisible in the task list and impossible
-    to cancel. It runs on a worker now. The alchemy radio is the one cron task
-    that still runs inline, because it needs the index only Flask loads; it pays
-    for that with a heartbeat and a startup reap so it can never wedge a Start.
-
-    The playlist name is stable across runs so client-side "online first" sync
-    keeps tracking the same server playlist (issue #336).
-    """
     import time
 
     from flask_app import app
@@ -54,13 +42,12 @@ def run_sonic_fingerprint_task(server_scope="all"):
         TASK_STATUS_FAILURE,
         TASK_STATUS_REVOKED,
     )
-    from rq import get_current_job
+    import taskqueue
 
     from .mediaserver import create_or_replace_playlist, registry
     from .ivf_manager import create_playlist_from_ids
 
-    job = get_current_job()
-    task_id = job.id if job else None
+    task_id = taskqueue.current_task_id()
     with app.app_context():
         if task_id:
             task_info = get_task_info_from_db(task_id)
@@ -170,10 +157,6 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     canonical_by_provider = canonical_input_ids(
         provider_ids, ms_context.active_server_id()
     )
-    # Two provider FILES of one song now resolve to the SAME canonical id, so the
-    # top-played list can carry it twice: weighting it once per copy double-counted
-    # it in the centroid. Dedupe in play-count order and keep the FIRST (highest
-    # ranked) provider id for it, not the last.
     provider_by_canonical = {}
     for pid in provider_ids:
         provider_by_canonical.setdefault(canonical_by_provider.get(pid, pid), pid)

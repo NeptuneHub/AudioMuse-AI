@@ -8,7 +8,7 @@
 
 """Child-process environment builder for the macOS standalone build.
 
-Assembles the environment variables each supervised child (Flask, RQ workers)
+Assembles the environment variables each supervised child (Flask, queue workers)
 inherits: embedded database/queue selection, per-user data and model paths,
 offline-model flags and the macOS fork-safety setting. The Windows/Linux
 ``env`` modules build the equivalent environments for their platforms.
@@ -24,16 +24,13 @@ Main Features:
 import os
 from urllib.parse import unquote, urlsplit
 
+import service_roles
 from macos import paths
 
-_WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
+_WORKER_ROLES = service_roles.WORKER_ROLES
 
 
 def _socket_dir_from_url(database_url):
-    # Read host= from the RAW url, not urlsplit(...).query: urlsplit drops anything
-    # after a '#', and parse_qs would form-decode so a '+' in the path came back as
-    # a space. A socket directory is the LAST parameter pgserver emits, so take the
-    # rest of the string rather than splitting on '&', which a path may contain.
     marker = "?host="
     at = (database_url or "").find(marker)
     if at < 0:
@@ -53,7 +50,7 @@ def _pg_conn_parts(database_url):
     )
 
 
-def build_child_env(role, database_url, redis_url):
+def build_child_env(role, database_url):
     env = dict(os.environ)
     model_dir = paths.model_dir()
     pg_host, pg_port = _pg_conn_parts(database_url)
@@ -65,9 +62,7 @@ def build_child_env(role, database_url, redis_url):
             "APP_DATA_DIR": paths.app_support_dir(),
             "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
             "DATABASE_TYPE": "embedded",
-            "QUEUE_TYPE": "embedded",
             "DATABASE_URL": database_url,
-            "REDIS_URL": redis_url,
             "TEMP_DIR": paths.temp_audio_dir(),
             "NUMBA_CACHE_DIR": paths.numba_cache_dir(),
             "HF_HOME": os.path.join(model_dir, "huggingface"),

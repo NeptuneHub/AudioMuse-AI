@@ -18,7 +18,7 @@ Main Features:
   free them independently to keep worker RSS low between jobs.
 * analyze_audio_file: segment audio, build mel spectrograms, and embed each track.
 * get_text_embedding(_batch) plus other-feature label embeddings for CLAP-derived
-  scalar features, cached in Redis to avoid re-encoding fixed label sets.
+  scalar features, cached on disk to avoid re-encoding fixed label sets.
 """
 
 import os
@@ -70,8 +70,6 @@ def _static_shape_providers():
 
 
 def _prepared_model_bytes(model_path):
-    """Return the audio model with its symbolic time axis pinned to a static
-    shape, or None when the model has no symbolic dims. See _PREPARED_MODEL_PROVIDERS."""
     import onnx
     from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
 
@@ -212,7 +210,7 @@ def _load_text_model():
     sess_options = _clap_session_options("Text")
 
     session = None
-    _is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
+    _is_worker = (os.environ.get('AUDIOMUSE_ROLE') or '').lower() == 'worker'
 
     if not _is_worker:
         provider_options = [('CPUExecutionProvider', {})]
@@ -604,7 +602,11 @@ def is_clap_available() -> bool:
     )
 
 
-def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
+def _other_feature_cache_path() -> str:
+    return os.path.join(config.CLAP_OTHER_FEATURES_CACHE_DIR, config.CLAP_OTHER_FEATURES_CACHE_FILE)
+
+
+def get_or_cache_other_feature_text_embeddings() -> Optional[dict]:
     if not config.CLAP_ENABLED:
         logger.warning("CLAP is disabled, cannot compute other feature text embeddings")
         return None
@@ -614,28 +616,24 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         logger.debug("Using in-process cached CLAP text embeddings")
         return _label_text_embeddings_cache
 
-    cache_key = config.CLAP_OTHER_FEATURES_REDIS_KEY
-
+    cache_path = _other_feature_cache_path()
     try:
-        cached_blob = redis_conn.get(cache_key)
-        if cached_blob is not None:
-            import io
-
-            buf = io.BytesIO(cached_blob)
-            npz = np.load(buf)
+        if os.path.exists(cache_path):
+            npz = np.load(cache_path)
             result = {label: npz[label] for label in npz.files}
             missing = [lbl for lbl in config.OTHER_FEATURE_LABELS if lbl not in result]
             if not missing:
-                logger.info(f"Loaded CLAP text embeddings from Redis cache ({len(result)} labels)")
+                logger.info(
+                    "Loaded CLAP text embeddings from %s (%d labels)", cache_path, len(result)
+                )
                 _label_text_embeddings_cache = result
                 return result
-            else:
-                logger.warning(f"Cached embeddings missing labels: {missing}. Recomputing...")
-    except Exception as e:
-        logger.warning(f"Failed to read CLAP text embeddings from Redis: {e}")
+            logger.warning("Cached embeddings missing labels: %s. Recomputing...", missing)
+    except Exception:
+        logger.warning("Could not read the CLAP text embedding cache", exc_info=True)
 
     logger.info(
-        f"Computing CLAP text embeddings for config.OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}"
+        "Computing CLAP text embeddings for %s", config.OTHER_FEATURE_LABELS
     )
     try:
         embeddings = get_text_embeddings_batch(config.OTHER_FEATURE_LABELS)
@@ -646,15 +644,14 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         result = {label: embeddings[i] for i, label in enumerate(config.OTHER_FEATURE_LABELS)}
         _label_text_embeddings_cache = result
         try:
-            import io
-
-            buf = io.BytesIO()
-            np.savez_compressed(buf, **result)
-            buf.seek(0)
-            redis_conn.set(cache_key, buf.read())
-            logger.info(f"Cached CLAP text embeddings in Redis ({buf.tell()} bytes)")
-        except Exception as e:
-            logger.warning(f"Failed to write text embeddings to Redis: {e}")
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            tmp_path = cache_path + '.tmp'
+            with open(tmp_path, 'wb') as cache_file:
+                np.savez_compressed(cache_file, **result)
+            os.replace(tmp_path, cache_path)
+            logger.info("Cached CLAP text embeddings at %s", cache_path)
+        except Exception:
+            logger.warning("Could not write the CLAP text embedding cache", exc_info=True)
         return result
     except Exception:
         logger.exception("Failed to compute CLAP text embeddings for other features")

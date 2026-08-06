@@ -49,13 +49,6 @@ _catalog_refresh_lock = threading.Lock()
 
 
 def _store_catalog_cache(plugins, errors):
-    """Persist the resolved catalog so the UI is served from the DB, never from a live fetch.
-
-    A resolution that came back empty WITH fetch errors keeps the previously cached
-    plugins (a transient outage never wipes the last known-good catalog); an empty
-    result with no errors means every repo answered and truly lists nothing, so the
-    cache clears and delisted plugins disappear.
-    """
     if not plugins and errors:
         plugins = _load_catalog_cache()[0]
     payload = {'at': time.time(), 'plugins': plugins or [], 'errors': errors or []}
@@ -86,7 +79,6 @@ def _cached_latest_versions():
 
 
 def _is_newer_version(latest, installed):
-    """True when ``latest`` is numerically newer than ``installed`` (1.0 == 1.0.0)."""
     if not latest:
         return False
     latest_v = _parse_version(latest)
@@ -96,13 +88,6 @@ def _is_newer_version(latest, installed):
 
 
 def _refresh_catalog_cache_async(force=False):
-    """Refresh the catalog cache in a background daemon thread.
-
-    Every user-facing endpoint serves the cached catalog instantly and calls this;
-    the actual GitHub fetches (which can be slow on clusters with broken pod DNS or
-    filtered CDN routes) never block a request. Returns True when a refresh thread
-    is running (freshly started or already in flight).
-    """
     _plugins, _errors, cached_at = _load_catalog_cache()
     if not force and time.time() - cached_at < config.PLUGIN_CATALOG_CACHE_TTL:
         return _catalog_refresh_lock.locked()
@@ -135,10 +120,6 @@ _auto_refresh_started = False
 
 
 def start_catalog_auto_refresh():
-    """Refresh the catalog cache at web startup and then every
-    PLUGIN_CATALOG_REFRESH_INTERVAL seconds (default hourly), so new plugin
-    versions surface on the Installed tab even if nobody opens the Catalog tab.
-    """
     global _auto_refresh_started
     if _auto_refresh_started or not config.PLUGINS_ENABLED:
         return
@@ -196,14 +177,6 @@ def _pick_version(versions, requested=None):
 
 
 def _versions_from_doc(doc):
-    """Return the version list offered by a fetched ``plugin.json``.
-
-    The current format is a ``plugin.json`` whose ``versions`` list holds every
-    release (each entry carries ``version``/``min_core_version``/``changelog``/
-    ``imageUrl``/``sourceUrl``/``checksum``), returned as-is. A ``plugin.json`` that
-    instead describes a single release with flat top-level fields is wrapped into a
-    one-item list for backward compatibility.
-    """
     versions = doc.get('versions')
     if versions:
         return versions
@@ -220,15 +193,6 @@ def _versions_from_doc(doc):
 
 
 def _resolve_versions(entry, errors):
-    """Return (detail, versions) for a catalog entry.
-
-    A catalog entry carries the stable identity (``id``/``name``/``author``/
-    ``description``) plus a ``pluginUrl`` pointing at the plugin's own
-    ``plugin.json`` (``manifestUrl`` and an inline ``versions`` list are still
-    accepted). That file is fetched (SSRF-guarded) and holds the full ``versions``
-    list with each release's download url, checksum, min_core_version and image,
-    so there is no separate per-plugin manifest to keep in sync.
-    """
     versions = entry.get('versions')
     if versions:
         return entry, versions
@@ -249,11 +213,6 @@ def _resolve_versions(entry, errors):
 
 
 def _build_catalog_entry(repo_url, entry, installed):
-    """Resolve one catalog entry to its best version. Runs in a worker thread.
-
-    Returns ``(plugin_id, merged_dict_or_None, local_errors)``. Never raises: any
-    failure is recorded in ``local_errors`` so one bad plugin cannot abort the fan-out.
-    """
     plugin_id = entry.get('id')
     local_errors = []
     try:
@@ -395,12 +354,6 @@ def api_installed():
 
 @plugins_bp.route('/api/plugins/catalog', methods=['GET'])
 def api_catalog():
-    """Serve the cached catalog instantly; the network refresh always runs in background.
-
-    ``?refresh=1`` (the Refresh button) forces a background refresh regardless of the
-    cache age. The response carries ``refreshing`` so the UI can poll until the
-    background fetch lands, and ``cached_at`` for transparency.
-    """
     force = request.args.get('refresh') in ('1', 'true')
     try:
         refreshing = _refresh_catalog_cache_async(force=force)
@@ -421,11 +374,6 @@ def api_catalog():
 
 
 def _install_manifest(match):
-    """Build the manifest stored for an install from a resolved catalog entry.
-
-    The zip is code-only, so this is the sole source of the plugin's metadata: the
-    plugin.json top-level identity plus the fields of the chosen release.
-    """
     return {
         'id': match['id'],
         'name': match.get('name') or match['id'],
@@ -441,21 +389,10 @@ def _install_manifest(match):
 
 
 class VersionUnavailableError(Exception):
-    """The specific plugin version an install requested cannot be resolved right now."""
+    pass
 
 
 def _resolve_install_source(plugin_id, requested_version=None):
-    """Return (source_url, checksum, source_repo, manifest) for a plugin to install.
-
-    Resolves from the cached catalog first (instant - the user typically clicks
-    Install right after seeing the catalog), falling back to a live fetch only when
-    the cache does not know the plugin. If neither works, falls back to the
-    source_url and manifest already stored for an installed plugin so a reinstall
-    still works during an upstream outage. Returns all-None when nothing yields a
-    source. With ``requested_version`` the matching release is resolved from the
-    entry's compatible versions list (install a specific version / rollback);
-    raises VersionUnavailableError when that exact release cannot be served.
-    """
     catalog, _errors, _at = _load_catalog_cache()
     match = next((p for p in catalog if p.get('id') == plugin_id), None)
     if not match or not match.get('source_url'):
@@ -632,8 +569,12 @@ def api_repos():
 @plugins_bp.route('/api/plugins/apply', methods=['POST'])
 def api_apply():
     try:
+        # The FULL budget, not the advisory cap. "Apply now (restart)" is a button
+        # the user is sitting in front of, and the cap is hard-limited to 5s while
+        # a real fleet restart takes longer than that - so the ack never arrived in
+        # time and the page reported a failed restart that had actually worked.
         workers_published = restart_manager.publish_restart_request(
-            timeout_seconds=restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+            timeout_seconds=config.QUEUE_CONTROL_TIMEOUT_SECONDS
         )
         flask_scheduled = restart_manager.schedule_flask_restart()
         if workers_published and flask_scheduled:

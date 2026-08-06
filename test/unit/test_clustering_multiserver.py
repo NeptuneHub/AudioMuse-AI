@@ -105,7 +105,7 @@ def _run_clustering(monkeypatch, servers, results_by_server, fail_persist_for=()
     fake_flask_app.app = Flask('clustering-test')
     monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
 
-    monkeypatch.setattr(clustering, 'get_current_job', lambda conn=None: None)
+    monkeypatch.setattr(clustering.taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(clustering, 'get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(clustering, 'error_manager', MagicMock())
     monkeypatch.setattr(

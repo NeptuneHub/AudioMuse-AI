@@ -9,10 +9,11 @@
 """Shared logging setup for every AudioMuse-AI entry point.
 
 Call ``configure_logging()`` exactly once per process, as early as possible,
-before any module that emits log records is imported. Workers that don't import
-``app`` (the high-priority worker, the janitor) call this instead of setting up
-logging inline, so formats stay uniform and no ``logger.info`` silently falls
-through to Python's ``lastResort`` handler during long jobs.
+before any module that emits log records is imported. Processes that don't import
+``app`` (the queue workers, the maintenance loop, the control listener) call this
+instead of setting up logging inline, so formats stay uniform and no
+``logger.info`` silently falls through to Python's ``lastResort`` handler during
+long jobs.
 
 Main Features:
 * One shared format and a re-entrant setup (``basicConfig`` is a no-op once the

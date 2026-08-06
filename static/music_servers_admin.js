@@ -299,7 +299,6 @@
 
     var sweepTimer = null;
     var currentSweepTaskId = null;
-    var ACTIVE_STATES = ['PENDING', 'STARTED', 'PROGRESS', 'queued', 'started', 'deferred', 'scheduled'];
 
     function renderSweepProgress(pct, message, active, failed) {
         var box = el('sweep-progress');
@@ -334,8 +333,8 @@
                     consecutiveErrors = 0;
                     var msg = (d.details && (d.details.status_message || d.details.message)) || d.status_message || d.state || '';
                     var state = d.state || '';
-                    var terminal = ['SUCCESS', 'FAILURE', 'REVOKED', 'finished', 'failed', 'canceled'].indexOf(state) !== -1;
-                    var failed = state === 'FAILURE' || state === 'failed';
+                    var terminal = AudioMuseTaskStatus.isTerminal(state);
+                    var failed = AudioMuseTaskStatus.isFailure(state);
                     renderSweepProgress(terminal ? 100 : (d.progress || 0), msg, !terminal, failed);
                     if (terminal) {
                         stopSweepPolling();
@@ -361,7 +360,7 @@
     function maybeResumeSweep(data) {
         var t = data && data.sweep_task;
         if (!t || !t.task_id) { return; }
-        if (ACTIVE_STATES.indexOf(t.status) !== -1) {
+        if (AudioMuseTaskStatus.isLive(t.status)) {
             renderSweepProgress(t.progress || 0, t.message || 'Sweep in progress...', true, false);
             pollSweep(t.task_id);
         }

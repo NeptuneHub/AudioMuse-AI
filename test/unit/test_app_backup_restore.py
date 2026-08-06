@@ -315,7 +315,10 @@ class TestPgConnectionArgs:
         monkeypatch.setattr(
             app_backup.config, 'DATABASE_URL', 'postgresql://u:p@db:5432/music'
         )
-        monkeypatch.setattr(app_backup.restart_manager, 'stop_local_flask_service', lambda: False)
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'stop_local_flask_service_detail',
+            lambda: (False, 'exit 7: flask: ERROR (abnormal termination)'),
+        )
         monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
         monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', worker_start)
         monkeypatch.setattr(app_backup.subprocess, 'Popen', psql)
@@ -325,16 +328,11 @@ class TestPgConnectionArgs:
         psql.assert_not_called()
         worker_start.assert_called_once_with()
         assert released == [True]
-        # Deleting the dump forced the user to re-upload a multi-gigabyte file
-        # after an abort they did not cause, and the HTTP request had already
-        # answered "restore started".
         assert dump_file.exists()
         log_text = log_file.read_text()
         assert 'Restore ABORTED' in log_text
         assert 'THE DATABASE WAS NOT TOUCHED' in log_text
-        # The HTTP request already answered 200 "restore started", so the abort is
-        # invisible unless the runner records a machine-readable outcome the page
-        # can poll for.
+        assert 'abnormal termination' in log_text
         assert app_backup._read_restore_result_from(str(log_file))['result'] == (
             app_backup.RESTORE_RESULT_ABORTED
         )
@@ -356,7 +354,9 @@ class TestPgConnectionArgs:
         monkeypatch.setattr(
             app_backup.config, 'DATABASE_URL', 'postgresql://u:p@db:5432/music'
         )
-        monkeypatch.setattr(app_backup.restart_manager, 'stop_local_flask_service', lambda: True)
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'stop_local_flask_service_detail', lambda: (True, '')
+        )
         monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', lambda: False)
         monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
         monkeypatch.setattr(app_backup.subprocess, 'Popen', lambda *_a, **_k: _PsqlProcess())

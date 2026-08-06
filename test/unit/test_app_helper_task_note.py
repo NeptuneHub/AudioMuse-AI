@@ -19,7 +19,6 @@ Main Features:
   unknown task types and non-dict details yield an empty string
 """
 
-import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -36,42 +35,6 @@ def make_db(rows):
 
 
 class TestAnalysisNote:
-    def test_sums_tracks_analyzed_from_subtasks(self):
-        db, cur = make_db(
-            [
-                (json.dumps({'tracks_analyzed': 10}),),
-                (json.dumps({'tracks_analyzed': 5}),),
-            ]
-        )
-        result = _build_task_note('main_analysis', {'_task_id': 'task-1'}, db)
-        assert result == 'Songs analyzed: 15'
-        assert cur.execute.call_args[0][1] == ('task-1',)
-
-    def test_queries_with_empty_string_when_task_id_missing(self):
-        db, cur = make_db([])
-        _build_task_note('main_analysis', {}, db)
-        assert cur.execute.call_args[0][1] == ('',)
-
-    def test_skips_invalid_subtask_details(self):
-        db, _ = make_db(
-            [
-                (None,),
-                ('not json',),
-                (json.dumps({'tracks_analyzed': '3'}),),
-                (json.dumps([1, 2]),),
-                (json.dumps({'tracks_analyzed': 4}),),
-            ]
-        )
-        assert _build_task_note('main_analysis', {}, db) == 'Songs analyzed: 4'
-
-    def test_float_track_counts_are_truncated_per_row(self):
-        db, _ = make_db(
-            [
-                (json.dumps({'tracks_analyzed': 2.0}),),
-                (json.dumps({'tracks_analyzed': 3.5}),),
-            ]
-        )
-        assert _build_task_note('main_analysis', {}, db) == 'Songs analyzed: 5'
 
     def test_falls_back_to_albums_completed(self):
         db, _ = make_db([])
@@ -183,3 +146,38 @@ class TestGeneralBehavior:
 
     def test_non_dict_details_treated_as_empty(self):
         assert _build_task_note('main_cleaning', 'notadict', MagicMock()) == ''
+
+
+class TestAnalysisNoteReadsTheParentsOwnTally:
+
+    def test_the_parents_own_track_count_is_reported(self):
+        note = _build_task_note(
+            'main_analysis', {'tracks_analyzed': 4211}, MagicMock()
+        )
+
+        assert note == 'Songs analyzed: 4211'
+
+    def test_no_child_query_is_issued_at_all(self):
+        db = MagicMock()
+
+        _build_task_note('main_analysis', {'tracks_analyzed': 7}, db)
+
+        assert not db.cursor.called, (
+            'the note must not query for children that no longer exist'
+        )
+
+    def test_a_zero_tally_falls_back_to_the_album_line(self):
+        note = _build_task_note(
+            'main_analysis',
+            {'tracks_analyzed': 0, 'albums_completed': 12},
+            MagicMock(),
+        )
+
+        assert 'Songs analyzed' not in (note or '')
+
+    def test_a_float_tally_is_truncated(self):
+        note = _build_task_note(
+            'main_analysis', {'tracks_analyzed': 9.9}, MagicMock()
+        )
+
+        assert note == 'Songs analyzed: 9'

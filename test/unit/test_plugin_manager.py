@@ -75,7 +75,7 @@ def _record(plugin_id, enabled=True, requirements=None, manifest=None):
 
 class _DummyConn:
     def close(self):
-        """No-op close; the fake connection holds no resources."""
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -140,10 +140,9 @@ class TestCronTaskFallback:
 
 
 def test_dequeued_cron_plugin_with_wiped_claim_does_not_import_plugin(monkeypatch):
-    import rq
+    import taskqueue
 
-    job = type('Job', (), {'id': 'plugin-cancelled'})()
-    monkeypatch.setattr(rq, 'get_current_job', lambda: job)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-cancelled')
     monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
     monkeypatch.setattr(database, 'get_task_info_from_db', lambda _task_id: None)
     import_module = pytest.MonkeyPatch()
@@ -624,7 +623,6 @@ class TestInstallFromManifest:
         manifest = {'id': 'demo', 'name': 'Demo', 'version': '2.0.0',
                     'min_core_version': '2.5.0', 'requirements': []}
         mgr.install_package(pkg, manifest, source_url='https://e/demo.zip')
-        # upsert_plugin(plugin_id, name, version, manifest, ...)
         assert stored['args'][0] == 'demo'
         assert stored['args'][2] == '2.0.0'
         assert stored['args'][3] is manifest
@@ -797,7 +795,7 @@ class TestApiSurface:
 
     def test_dotted_path(self):
         def f():
-            """Stub; the test only inspects its __module__ and __name__."""
+            pass
         f.__module__ = 'audiomuse_plugins.demo.tasks'
         assert api.dotted_path(f) == 'audiomuse_plugins.demo.tasks.f'
         assert api.dotted_path('a.b.c') == 'a.b.c'
@@ -806,7 +804,7 @@ class TestApiSurface:
         ctx = api.PluginContext('demo', 'worker')
 
         def task():
-            """Stub; the test only inspects its __module__ and __name__."""
+            pass
         task.__module__ = 'audiomuse_plugins.demo.tasks'
         task.__name__ = 'task'
 
@@ -855,10 +853,10 @@ class TestSongAnalyzedHooks:
 
     def test_aggregates_ok_records_only(self):
         def a(payload):
-            """Stub listener."""
+            pass
 
         def b(payload):
-            """Stub listener."""
+            pass
 
         mgr = self._mgr({'a': [a], 'b': [b]})
         mgr.records['b']['load_status'] = 'error'
@@ -906,7 +904,7 @@ class TestSongAnalyzedHooks:
 
     def test_deps_failed_plugin_hooks_stay_active(self):
         def a(payload):
-            """Stub listener."""
+            pass
 
         mgr = self._mgr({'a': [a]})
         mgr.records['a']['load_status'] = 'deps_failed'
@@ -1098,13 +1096,6 @@ class TestRunSongAnalyzedHookHelper:
 
 
 class TestPluginTaskRunsPerServer:
-    """A scheduled plugin task runs once per server in its schedule's scope.
-
-    Servers hold different catalogues, so a plugin creating playlists or reading
-    listening history has to see the server it is running against - the same rule
-    the built-in scheduled tasks follow. Without a scope (a plugin's own
-    api.enqueue) it stays a single unbound run against the default server.
-    """
 
     @staticmethod
     def _servers(monkeypatch, servers):
@@ -1146,10 +1137,6 @@ class TestPluginTaskRunsPerServer:
         results = _run_per_server(
             lambda: seen.append(context.active_server_id()) or 'ran', 'all', (), {}
         )
-        # Every bound server reports its own id, the DEFAULT included. Binding the
-        # default to a None context (its provider calls still fall back to config)
-        # left active_server_id() empty, which every availability-scoped reader
-        # takes to mean "search the whole union catalogue".
         assert seen == ['d1', 's2']
         assert results == ['ran', 'ran']
 
@@ -1186,10 +1173,9 @@ class TestPluginTaskRunsPerServer:
 def test_a_successful_plugin_run_records_a_one_line_recap(monkeypatch):
     import types
 
-    import rq
+    import taskqueue
 
-    job = type('Job', (), {'id': 'plugin-ok'})()
-    monkeypatch.setattr(rq, 'get_current_job', lambda: job)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-ok')
     monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
     monkeypatch.setattr(
         database, 'get_task_info_from_db',
@@ -1210,8 +1196,6 @@ def test_a_successful_plugin_run_records_a_one_line_recap(monkeypatch):
 
     manager.run_plugin_task('audiomuse_plugins.demo.tasks.daily', server_scope='all')
 
-    # Omitting details wrote NULL over the row, so a successful plugin cron run
-    # ended with no recap at all instead of one line.
     assert saved['args'][2] == config.TASK_STATUS_SUCCESS
     details = saved['kwargs'].get('details')
     assert details is not None

@@ -350,9 +350,8 @@ var ADVANCED_SECTIONS = [
             'ENABLE_CLUSTERING_EMBEDDINGS', 'CLUSTER_ALGORITHM', 'MAX_SONGS_PER_CLUSTER',
             'MAX_SONGS_PER_ARTIST', 'MAX_DISTANCE', 'CLUSTERING_RUNS', 'TOP_N_CLUSTERING_PLAYLIST',
             'MIN_PLAYLIST_SIZE_FOR_TOP_N', 'USE_GPU_CLUSTERING', 'CLUSTERING_CLEANING',
-            'ITERATIONS_PER_BATCH_JOB', 'MAX_CONCURRENT_BATCH_JOBS', 'DB_FETCH_CHUNK_SIZE',
+            'ITERATIONS_PER_BATCH_JOB', 'MAX_CONCURRENT_BATCH_JOBS',
             'CLUSTERING_BATCH_TIMEOUT_MINUTES', 'CLUSTERING_MAX_FAILED_BATCHES',
-            'CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS',
             'TOP_N_ELITES', 'EXPLOITATION_START_FRACTION', 'EXPLOITATION_PROBABILITY_CONFIG',
             'MUTATION_INT_ABS_DELTA', 'MUTATION_FLOAT_ABS_DELTA', 'MUTATION_KMEANS_COORD_FRACTION',
             'TOP_K_MOODS_FOR_PURITY_CALCULATION', 'SCORE_WEIGHT_DIVERSITY', 'SCORE_WEIGHT_PURITY',
@@ -1033,7 +1032,7 @@ setupForm.addEventListener('submit', function(event) {
     if (mlValue !== null) {
         config.MUSIC_LIBRARIES = mlValue;
     }
-    fetch('/api/setup', {
+    var saved = fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: config })
@@ -1044,26 +1043,21 @@ setupForm.addEventListener('submit', function(event) {
             }
             return data;
         });
-    }).then(function(data) {
-        var savedNotice = data.warning
-            ? 'Configuration saved. ' + data.warning
-            : 'Configuration saved.';
-        saveFeedback.className = data.warning
-            ? 'status-warning inline-feedback'
-            : 'status-success inline-feedback';
-        saveFeedback.style.display = 'block';
-        var countdown = 20;
-        saveFeedback.textContent = savedNotice + ' Redirecting in ' + countdown + ' seconds...';
-        var countdownInterval = setInterval(function() {
-            countdown -= 1;
-            if (countdown > 0) {
-                saveFeedback.textContent = savedNotice + ' Redirecting in ' + countdown + ' seconds...';
-            } else {
-                clearInterval(countdownInterval);
-                if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
-            }
-        }, 1000);
-    }).catch(function(err) {
+    });
+
+    // Started HERE, not in the success handler: /api/setup is held open for the
+    // whole worker restart, so counting down only once it answered meant the page
+    // froze and the countdown appeared when there was nothing left to wait for.
+    saveFeedback.className = 'status-success inline-feedback';
+    saveFeedback.style.display = 'block';
+    window.AudioMuseRestart.waitAndGo({
+        element: saveFeedback,
+        prefix: 'Configuration saved.',
+        target: '/',
+        until: saved
+    });
+
+    saved.catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
         var message = err.message || 'Unable to save configuration.';

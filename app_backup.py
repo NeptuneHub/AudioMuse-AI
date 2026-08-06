@@ -18,7 +18,8 @@ Main Features:
 * Connects exactly like the rest of the app: `pg_dump`/`psql` are handed
   `config.DATABASE_URL`, with the password moved into PGPASSWORD so it never
   reaches argv or the restore log.
-* Serializes restores across containers with a self-releasing Redis lock and
+* Serializes restores with a self-releasing lock FILE (a restore replaces the
+  database, so the lock cannot live in it) and
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
 * The restore runs detached, so `/api/backup/restore` answers "started" long
   before the outcome is known; the runner appends a `RESTORE-RESULT:` marker that
@@ -39,13 +40,13 @@ import tempfile
 import zipfile
 from datetime import datetime
 from functools import lru_cache
+import urllib.error
+import urllib.request
 from urllib.parse import unquote, urlsplit, urlunsplit
 from flask import Blueprint, render_template, jsonify, request, send_file
-from redis.exceptions import RedisError
 import config
 from sanitization import sanitize_for_log
 import restart_manager
-from taskqueue import new_redis_connection
 from error import error_manager
 from error.error_dictionary import (
     ERR_BACKUP_VERSION_MISMATCH,
@@ -60,9 +61,10 @@ backup_bp = Blueprint('backup_bp', __name__)
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/app/backup")
 RESTORE_LOG_DIR = os.environ.get("RESTORE_LOG_DIR", BACKUP_DIR)
 
-# Cross-container restore lock. Only one restore may run at a time.
-# TTL self-releases on crash; runner releases explicitly on clean exit.
-RESTORE_LOCK_KEY = 'audiomuse:restore_lock'
+# Only one restore may run at a time. The lock is a FILE, deliberately not a row:
+# a restore replaces the whole database, so a lock held in there would be wiped
+# by the very operation it guards. The timestamp inside makes it self-releasing,
+# so a crash mid-restore cannot block every later attempt forever.
 RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
 
 # Machine-readable outcome the detached runner appends to its log. The HTTP
@@ -76,39 +78,57 @@ RESTORE_RESULT_COMPLETED_DEGRADED = 'completed_degraded'
 RESTORE_LOG_NAME_PATTERN = re.compile(r'^restore_\d{8}_\d{6}\.log$')
 
 
-def _acquire_restore_lock():
-    """SET NX EX. Returns True if we got the lock, False if held or Redis is down."""
+def _restore_lock_path():
+    return os.path.join(BACKUP_DIR, '.restore.lock')
+
+
+def _restore_lock_age():
     try:
-        client = new_redis_connection(
-            socket_connect_timeout=5, socket_timeout=5, decode_responses=True
-        )
-        return bool(client.set(RESTORE_LOCK_KEY, '1', nx=True, ex=RESTORE_LOCK_TTL_SECONDS))
-    except RedisError:
-        logger.exception("Redis unavailable while acquiring restore lock; failing closed.")
+        with open(_restore_lock_path(), encoding='utf-8') as fh:
+            raw = fh.read().strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logger.exception("Could not read the restore lock; treating it as expired.")
+        return float('inf')
+    try:
+        return time.time() - float(raw)
+    except ValueError:
+        logger.warning("The restore lock has no usable timestamp; treating it as expired.")
+        return float('inf')
+
+
+def _acquire_restore_lock():
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        age = _restore_lock_age()
+        if age is not None and age > RESTORE_LOCK_TTL_SECONDS:
+            logger.warning("Clearing a restore lock left behind %.0fs ago.", age)
+            _release_restore_lock()
+        fd = os.open(_restore_lock_path(), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(str(time.time()))
+        return True
+    except FileExistsError:
+        logger.warning("Refusing the restore: another one holds the lock.")
+        return False
+    except OSError:
+        logger.exception("Could not take the restore lock; failing closed.")
         return False
 
 
 def _release_restore_lock():
     try:
-        new_redis_connection(socket_connect_timeout=5, socket_timeout=5).delete(RESTORE_LOCK_KEY)
-    except RedisError:
-        logger.exception("Redis unavailable while releasing restore lock; relying on TTL.")
+        os.unlink(_restore_lock_path())
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("Could not release the restore lock; it expires on its own.")
 
 
 def _restore_lock_held():
-    """Returns True if a restore lock is currently set in Redis.
-
-    On Redis errors, returns True to fail closed - better to refuse a chunk
-    than to let it write into a possibly-orphaned chunks_dir.
-    """
-    try:
-        client = new_redis_connection(
-            socket_connect_timeout=5, socket_timeout=5, decode_responses=True
-        )
-        return bool(client.exists(RESTORE_LOCK_KEY))
-    except RedisError:
-        logger.exception("Redis unavailable while checking restore lock; failing closed.")
-        return True
+    age = _restore_lock_age()
+    return age is not None and age <= RESTORE_LOCK_TTL_SECONDS
 
 
 @lru_cache(maxsize=1)
@@ -127,7 +147,6 @@ def _pg_conninfo():
 
 
 def _pg_env():
-    """Return a copy of os.environ with PGPASSWORD set."""
     _, password = _pg_conninfo()
     env = os.environ.copy()
     env['PGPASSWORD'] = password
@@ -135,7 +154,6 @@ def _pg_env():
 
 
 def _pg_cmd(tool, *extra_args):
-    """Build a pg command list with the connection string."""
     conninfo, _ = _pg_conninfo()
     return [tool, '-d', conninfo, *extra_args]
 
@@ -165,7 +183,6 @@ def _is_contained(path, *allowed_dirs):
 
 
 def _unlink_restore_artifact(path):
-    """Delete a restore working file, refusing anything outside our own dirs."""
     if not path:
         return
     if not _is_contained(path, BACKUP_DIR, RESTORE_LOG_DIR, tempfile.gettempdir()):
@@ -181,7 +198,6 @@ def _unlink_restore_artifact(path):
 
 
 def _feed_dump(stdin, dump_file, result):
-    """Stream the dump into psql; record delivery in result so a short feed isn't reported as success."""
     try:
         with open(dump_file, 'rb') as src:
             head = _TXN_TIMEOUT_RE.sub(b'', src.read(1024 * 1024), count=1)
@@ -233,8 +249,29 @@ def _extract_sql_if_zip(dump_file, log):
         return None, None
 
 
+def _wait_for_flask(log=None):
+    deadline = time.monotonic() + config.FLASK_READY_TIMEOUT_SECONDS
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(config.FLASK_LOCAL_URL, timeout=3) as resp:
+                if resp.status < 500:
+                    return True
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500:
+                return True
+        except Exception as exc:
+            last_error = exc
+        time.sleep(1)
+    if log is not None:
+        log.write(
+            f"Flask did not answer within {config.FLASK_READY_TIMEOUT_SECONDS}s"
+            f"{f' (last error: {last_error})' if last_error else ''}\n"
+        )
+    return False
+
+
 def _publish_worker_start(log=None):
-    """Request worker recovery and report the actual ACK result."""
     try:
         started = restart_manager.publish_start_request()
     except Exception as exc:
@@ -264,7 +301,6 @@ def _write_restore_result(log, result, message):
 
 
 def _run_restore_runner(dump_file, log_file):
-    """Run the restore outside the Flask request in a detached process."""
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     with open(log_file, 'a', encoding='utf-8', errors='ignore') as log:
         log.write(f"Restore runner started at {datetime.now().isoformat()}\n")
@@ -288,13 +324,15 @@ def _run_restore_runner(dump_file, log_file):
 
         flask_stopped = False
         try:
-            flask_stopped = bool(restart_manager.stop_local_flask_service())
+            flask_stopped, stop_detail = restart_manager.stop_local_flask_service_detail()
             if flask_stopped:
                 log.write("Stopped local Flask service.\n")
-                log.flush()
             else:
-                log.write("Restore ABORTED: local Flask service did not confirm it stopped.\n")
-                log.flush()
+                log.write(
+                    "Restore ABORTED: local Flask service did not confirm it stopped. "
+                    f"supervisorctl said: {stop_detail}\n"
+                )
+            log.flush()
         except Exception as exc:
             log.write(f"Restore ABORTED: failed to stop local Flask service: {exc}\n")
             log.flush()
@@ -441,13 +479,12 @@ def _run_restore_runner(dump_file, log_file):
         workers_started = False
         flask_started = False
         try:
-            try:
-                workers_started = _publish_worker_start(log)
-            except Exception:
-                # Cleanup and the local Flask start must still run if worker
-                # start reporting itself unexpectedly fails.
-                logger.exception("Unexpected worker-start reporting failure")
-
+            # FLASK FIRST, THEN THE WORKERS. init_db() runs only in Flask, so it is
+            # the only process that migrates the schema the dump just restored -
+            # which may be older than this build. Starting the workers first let
+            # them hydrate their config and open their queues against an
+            # un-migrated database, so they ran on whatever the dump happened to
+            # contain until something restarted them again.
             try:
                 flask_started = restart_manager.start_local_flask_service()
                 if flask_started:
@@ -458,6 +495,22 @@ def _run_restore_runner(dump_file, log_file):
             except Exception as exc:
                 log.write(f"Failed to start local Flask service: {exc}\n")
                 log.flush()
+
+            if flask_started:
+                if _wait_for_flask(log):
+                    log.write("Flask is serving again; the restored schema is migrated.\n")
+                else:
+                    log.write(
+                        "WARNING: Flask did not answer within "
+                        f"{config.FLASK_READY_TIMEOUT_SECONDS}s; starting the workers anyway.\n"
+                    )
+                log.flush()
+
+            try:
+                workers_started = _publish_worker_start(log)
+            except Exception:
+                # Cleanup must still run if worker start reporting itself fails.
+                logger.exception("Unexpected worker-start reporting failure")
 
             for path in (dump_file, extracted):
                 if not path:
@@ -739,7 +792,7 @@ def restore_backup():
       - Backup
     summary: Upload a backup (.sql or .zip, single file or chunked) and replay it via psql.
     description: |
-      Acquires a 1-hour Redis lock (`audiomuse:restore_lock`) to prevent
+      Acquires a 1-hour file lock (`BACKUP_DIR/.restore.lock`) to prevent
       concurrent restores. The endpoint accepts either:
 
       - A single full upload (no `chunk_num`/`total_chunks` form fields).
@@ -809,11 +862,11 @@ def restore_backup():
       400:
         description: Confirmation phrase missing or chunk numbers invalid.
       409:
-        description: A restore is already in progress (Redis lock held), or the chunked-upload session was overtaken / expired mid-upload.
+        description: A restore is already in progress (restore lock file held), or the chunked-upload session was overtaken / expired mid-upload.
       500:
         description: Server-side failure during chunk save, reassembly, or runner spawn.
       503:
-        description: Lock service (Redis) unreachable.
+        description: The restore was not started because the workers did not confirm they stopped.
     """
     confirmation = request.form.get('confirmation', '')
     expected = "I want to restore the database from the backup. This action is not reversible"

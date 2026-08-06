@@ -10,7 +10,7 @@
 
 Resolves the bundle resource root (PyInstaller ``_MEIPASS`` or the source
 repo) and the per-user data locations under ``~/Library``, so the macOS
-launcher, supervisor and control-socket modules agree on where pgdata, redis,
+launcher, supervisor and control-socket modules agree on where pgdata,
 logs, models and the control socket live. The Linux/Windows ``paths`` modules
 are the platform-specific siblings.
 
@@ -53,10 +53,6 @@ def pgdata_dir():
     return _ensure(os.path.join(app_support_dir(), "pgdata"))
 
 
-def redis_dir():
-    return _ensure(os.path.join(app_support_dir(), "redis"))
-
-
 def temp_audio_dir():
     return _ensure(os.path.join(app_support_dir(), "temp_audio"))
 
@@ -67,10 +63,6 @@ def numba_cache_dir():
 
 def backup_dir():
     return _ensure(os.path.join(app_support_dir(), "backup"))
-
-
-def redis_socket_path():
-    return os.path.join(redis_dir(), "redis.sock")
 
 
 def control_socket_path():
@@ -91,18 +83,6 @@ def model_dir():
 
 def menubar_icon():
     return os.path.join(resource_root(), "assets", "menubar-icon.png")
-
-
-def redis_binary():
-    if getattr(sys, "frozen", False):
-        return os.path.join(resource_root(), "redis-server")
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "vendor",
-        "redis",
-        platform.machine(),
-        "redis-server",
-    )
 
 
 def fpcalc_binary():

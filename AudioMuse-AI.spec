@@ -50,7 +50,6 @@ for _pkg in ("librosa", "resampy", "flasgger", "wn", "langdetect"):
 datas += collect_data_files("transformers", include_py_files=False)
 
 binaries = [
-    (os.path.join(ROOT, cfg["vendor_dir"], "redis", arch, cfg["redis_bin"]), "."),
 ]
 for _pkg in ("av", "psycopg2"):
     binaries += collect_dynamic_libs(_pkg)
@@ -85,11 +84,10 @@ if USE_PGSERVER:
 
 hiddenimports = [
     "app",
-    "rq_worker",
-    "rq_worker_high_priority",
-    "rq_heartbeat_worker",
-    "rq_janitor",
-    "restart_listener",
+    "taskqueue",
+    "taskqueue.worker",
+    "taskqueue.maintenance",
+    "taskqueue.control",
     "waitress",
     "flasgger",
     "numkong",

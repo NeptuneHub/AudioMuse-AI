@@ -16,8 +16,8 @@ that would have gone unnoticed.
 KNOWN LIMITATION, do not read the fixture list as a claim of the opposite: 16
 modules under test/integration still define their own module-level `pg_dsn`,
 which SHADOWS the one here, so each of them starts its own pgserver. Only
-modules that do not define it - currently the orphan-reap and task-status ones -
-share this instance. Until the rest are converted, a full `pytest test/unit
+modules that do not define it share this instance. Until the rest are
+converted, a full `pytest test/unit
 test/integration` in one process starts many servers at once and has been seen
 to take WSL down with E_UNEXPECTED; running the two suites separately is
 reliable.
@@ -30,8 +30,6 @@ Main Features:
 * Session-scoped `shared_pg_dsn` backed by AUDIOMUSE_TEST_DATABASE_URL or an ephemeral
   pgserver instance, for modules that do not shadow it
 * `task_status_ddl` / `task_status_jsonb_ddl` expose the one canonical schema
-* `task_status_db` yields a work connection plus a separate verifier connection,
-  so tests assert on committed state rather than an open transaction
 """
 
 import os
@@ -60,13 +58,6 @@ TASK_STATUS_DDL = (
 
 TASK_STATUS_JSONB_DDL = TASK_STATUS_DDL.replace("details TEXT,", "details JSONB,")
 
-TASK_HISTORY_DDL = (
-    "CREATE TABLE task_history ("
-    "id SERIAL PRIMARY KEY, recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
-    "task_id TEXT, task_type TEXT, status TEXT, "
-    "duration_seconds DOUBLE PRECISION, note TEXT)"
-)
-
 
 @pytest.fixture(scope='session')
 def task_status_ddl():
@@ -76,36 +67,6 @@ def task_status_ddl():
 @pytest.fixture(scope='session')
 def task_status_jsonb_ddl():
     return TASK_STATUS_JSONB_DDL
-
-
-@pytest.fixture
-def task_status_db(shared_pg_dsn):
-    setup = psycopg2.connect(shared_pg_dsn)
-    setup.autocommit = True
-    with setup.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS task_status CASCADE")
-        cur.execute("DROP TABLE IF EXISTS task_history CASCADE")
-        cur.execute(TASK_STATUS_DDL)
-        cur.execute(TASK_HISTORY_DDL)
-    setup.close()
-
-    # The code under test runs on `conn`; assertions read through `verifier` so
-    # an uncommitted DELETE cannot pass. A read issued on `conn` would see its
-    # own open transaction and prove nothing about durability.
-    conn = psycopg2.connect(shared_pg_dsn)
-    conn.autocommit = False
-    verifier = psycopg2.connect(shared_pg_dsn)
-    verifier.autocommit = True
-    yield conn, verifier
-    conn.close()
-    verifier.close()
-
-    teardown = psycopg2.connect(shared_pg_dsn)
-    teardown.autocommit = True
-    with teardown.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS task_status CASCADE")
-        cur.execute("DROP TABLE IF EXISTS task_history CASCADE")
-    teardown.close()
 
 
 @pytest.fixture(scope='session')

@@ -9,7 +9,7 @@
 """Native library-path handling and child-env builder for the Linux standalone build.
 
 PyInstaller sets ``LD_LIBRARY_PATH`` to the bundle so the frozen app finds its
-own libraries; that same path breaks child processes (postgres, redis) that
+own libraries; that same path breaks child processes (postgres) that
 need the system loader. This module restores the original
 ``LD_LIBRARY_PATH_ORIG`` for child environments and also assembles the full
 per-child environment (embedded DB/queue selection, model/cache/temp/backup
@@ -19,7 +19,7 @@ Main Features:
 * ``restore_native_lib_path`` rewrites a child env dict to the system loader path;
   ``native_lib_path_restored`` applies the same fix in-process (no-op when not frozen).
 * ``build_child_env`` points model/cache/temp/backup paths at ``linux.paths`` and
-  forces offline HuggingFace/Transformers for supervised Flask/RQ children.
+  forces offline HuggingFace/Transformers for supervised Flask/queue children.
 * It derives POSTGRES_HOST/POSTGRES_PORT from the URL the embedded server
   reported, so the children reach the socket it actually opened rather than a
   guess: ``config.py`` builds every connection string from those two.
@@ -30,16 +30,13 @@ import os
 import sys
 from urllib.parse import unquote, urlsplit
 
+import service_roles
 from linux import paths
 
-_WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
+_WORKER_ROLES = service_roles.WORKER_ROLES
 
 
 def _socket_dir_from_url(database_url):
-    # Read host= from the RAW url, not urlsplit(...).query: urlsplit drops anything
-    # after a '#', and parse_qs would form-decode so a '+' in the path came back as
-    # a space. A socket directory is the LAST parameter pgserver emits, so take the
-    # rest of the string rather than splitting on '&', which a path may contain.
     marker = "?host="
     at = (database_url or "").find(marker)
     if at < 0:
@@ -86,7 +83,7 @@ def native_lib_path_restored():
             os.environ["LD_LIBRARY_PATH"] = saved
 
 
-def build_child_env(role, database_url, redis_url):
+def build_child_env(role, database_url):
     env = dict(os.environ)
     model_dir = paths.model_dir()
     pg_host, pg_port = _pg_conn_parts(database_url)
@@ -96,9 +93,7 @@ def build_child_env(role, database_url, redis_url):
             "APP_DATA_DIR": paths.app_support_dir(),
             "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
             "DATABASE_TYPE": "embedded",
-            "QUEUE_TYPE": "embedded",
             "DATABASE_URL": database_url,
-            "REDIS_URL": redis_url,
             "TEMP_DIR": paths.temp_audio_dir(),
             "NUMBA_CACHE_DIR": paths.numba_cache_dir(),
             "HF_HOME": os.path.join(model_dir, "huggingface"),

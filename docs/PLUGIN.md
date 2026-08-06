@@ -295,7 +295,7 @@ def rebuild():
     return render_page("<p>Rebuild started. Check the worker logs.</p>", title="My Plugin")
 ```
 
-Keyword arguments work too: `enqueue(rebuild_report, days=30)`. Use `queue='high'` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
+Keyword arguments work too: `enqueue(rebuild_report, days=30)`. Arguments must be JSON-serializable (str, int, float, bool, None, list, dict): pass an ISO string instead of a `datetime` and a list instead of a set, or `enqueue` raises a `TypeError` telling you which argument cannot be stored. It returns the queued task id (a string that also exposes `.id` for code written against the old job object). Use `queue='high'` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
 
 One important rule: the job runs on the worker, so the worker must have your plugin's code - do not set `targets` to `["flask"]` (see "Choose where the plugin runs").
 
@@ -559,7 +559,7 @@ Nearly everything a plugin can do works the same on Docker, Kubernetes and the W
 | Per-plugin settings | Yes | Yes |
 | Create playlists on the media server | Yes | Yes |
 | Cron tasks and worker tasks | Yes | Yes |
-| Built-in libraries (Flask, numpy, psycopg2, onnxruntime, redis, rq, standard library) | Yes | Yes |
+| Built-in libraries (Flask, numpy, psycopg2, onnxruntime, standard library) | Yes | Yes |
 | Extra pip packages (`requirements`) | Yes, when `PLUGIN_ALLOW_PIP` is true (the default) | No, the plugin is marked "incompatible" |
 
 ## Configuration for admins

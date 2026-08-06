@@ -9,13 +9,13 @@
 """The analysis package: FOR EACH SERVER -> FOR EACH ALBUM -> FOR EACH SONG.
 
 A lazy facade: every attribute resolves on first use, so importing
-``tasks.analysis`` stays free of heavy dependencies. RQ job strings
+``tasks.analysis`` stays free of heavy dependencies. queue job strings
 (``tasks.analysis.run_analysis_task``, ``tasks.analysis.analyze_album_task``,
 ``tasks.analysis.rebuild_all_indexes_task``) resolve here.
 
 Main Features:
 * main: the orchestrator (per-server phases, album dispatch, drain).
-* album: the per-album RQ job and its per-song stage sequence.
+* album: the per-album queue job and its per-song stage sequence.
 * song: audio decode, the MusiCNN/CLAP/lyrics models and their persistence.
 * helper: planning, fingerprint identity, work map and the task reporter.
 * index: the similarity-index rebuild task.
@@ -31,7 +31,6 @@ _HOMES = {
     '_phase_outcome': 'main',
     '_albums_per_server': 'main',
     '_enabled_analysis_servers': 'main',
-    '_rq_job_still_pending': 'main',
     'clean_temp': 'main',
     'analyze_album_task': 'album',
     '_analyze_album_task_impl': 'album',

@@ -30,11 +30,17 @@ if "jwt" not in sys.modules:
 _pg_conn = MagicMock()
 _pg_conn.cursor.return_value.rowcount = 1
 _pg_conn.cursor.return_value.__enter__.return_value = _pg_conn.cursor.return_value
-_pg_connect_patcher = patch("psycopg2.connect", return_value=_pg_conn)
-_pg_connect_patcher.start()
 
 import pytest
 import numpy as np
+
+
+@pytest.fixture(autouse=True, scope='module')
+def _fake_pg_connect():
+    patcher = patch("psycopg2.connect", return_value=_pg_conn)
+    patcher.start()
+    yield
+    patcher.stop()
 
 
 class _FakeSession:
@@ -193,12 +199,10 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.memory_utils.cleanup_cuda_memory')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
-    @patch('app_helper.redis_conn')
-    @patch('tasks.analysis.album.get_current_job')
+    @patch('tasks.analysis.album.taskqueue.current_task_id')
     def test_cleanup_on_database_error(
         self,
         mock_get_job,
-        mock_redis,
         mock_get_task_info,
         mock_save_task,
         mock_cuda_cleanup,
@@ -231,7 +235,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.album.comprehensive_memory_cleanup')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
-    @patch('tasks.analysis.album.get_current_job')
+    @patch('tasks.analysis.album.taskqueue.current_task_id')
     @patch('app_helper.get_db')
     @patch('tasks.clap_analyzer.unload_clap_model')
     @patch('tasks.clap_analyzer.is_clap_model_loaded')
@@ -268,7 +272,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.album.cleanup_cuda_memory')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
-    @patch('tasks.analysis.album.get_current_job')
+    @patch('tasks.analysis.album.taskqueue.current_task_id')
     @patch('app_helper.save_track_analysis_and_embedding')
     @patch('tasks.analysis.album.os.remove')
     def test_cleanup_onnx_sessions_on_success(

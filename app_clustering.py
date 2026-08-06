@@ -10,19 +10,16 @@
 
 Thin route layer that validates the many clustering parameters (algorithm,
 cluster-count ranges, scoring weights) and enqueues the main clustering job on
-the high priority RQ queue for the UI to poll via the generic status routes.
+the high priority task queue for the UI to poll via the generic status routes.
 
 Main Features:
 * Route: `/api/clustering/start` (enqueues `tasks.clustering.run_clustering_task`
   as a `main_clustering` task).
-* Registers an RQ failure handler that records the task as FAILURE so a crashed
-  job still surfaces in the UI.
 """
 
 from flask import Blueprint, jsonify, request
 import uuid
 import logging
-import traceback
 
 # Import all necessary configuration variables
 from config import (
@@ -64,28 +61,18 @@ from config import (
     TOP_N_CLUSTERING_PLAYLIST,
     MISTRAL_API_KEY,
     MISTRAL_MODEL_NAME,
-    TASK_STATUS_PENDING,
-    TASK_STATUS_FAILURE,
 )
 
-# RQ import
-from rq import Retry
+# Task queue
+import taskqueue
+from config import TASK_STATUS_NEW
 
-from error import error_manager
-from error.error_dictionary import ERR_CLUSTERING_FAILED
 
 # App helper functions
-from app_helper import (
-    ENQUEUE_MISSING,
-    resolve_enqueue_outcome,
-    rq_queue_high,
-    save_task_status,
-)
 from database import (
     clean_up_previous_main_tasks,
     get_active_main_task,
     main_task_start_lock,
-    prune_task_status_history,
 )
 
 
@@ -93,48 +80,6 @@ logger = logging.getLogger(__name__)
 
 # Create a Blueprint for clustering-related routes
 clustering_bp = Blueprint('clustering_bp', __name__)
-
-
-def clustering_task_failure_handler(job, connection, type, value, tb):
-    """A failure handler for the main clustering task, executed by the worker.
-
-    Also fired by RQ's registry cleanup with AbandonedJobError for a job it is
-    about to REQUEUE (the callback runs before the retry check, so the budget is
-    still intact). Writing FAILURE then makes the requeued run see a terminal row
-    and skip itself, turning every worker-death restart into a permanent FAILURE.
-    """
-    retries_left = getattr(job, 'retries_left', None)
-    if retries_left:
-        logger.warning(
-            "Main clustering task %s failed but RQ will requeue it (%s attempt(s) "
-            "left); leaving its task row live.",
-            getattr(job, 'id', None), retries_left,
-        )
-        return
-    from flask_app import app
-
-    with app.app_context():
-        task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
-
-        # --- FIX: Handle different traceback types, especially from rq-janitor ---
-        tb_formatted = ""
-        if isinstance(tb, traceback.StackSummary):
-            tb_formatted = "".join(tb.format())
-        else:
-            tb_formatted = "".join(traceback.format_exception(type, value, tb))
-
-        error_details = {
-            "message": "Clustering task failed permanently after all retries.",
-            "error": error_manager.build(ERR_CLUSTERING_FAILED, str(value)),
-            "error_type": str(type.__name__),
-            "error_value": str(value),
-        }
-        save_task_status(
-            task_id, "main_clustering", TASK_STATUS_FAILURE, progress=100, details=error_details
-        )
-        app.logger.error(
-            f"Main clustering task {task_id} failed permanently. DB status updated.\n{tb_formatted}"
-        )
 
 
 @clustering_bp.route('/api/clustering/start', methods=['POST'])
@@ -365,7 +310,10 @@ def start_clustering_endpoint():
         "pca_components_max": int(data.get('pca_components_max', PCA_COMPONENTS_MAX)),
         "num_clustering_runs": int(data.get('clustering_runs', CLUSTERING_RUNS)),
         "max_songs_per_cluster_val": int(data.get('max_songs_per_cluster', MAX_SONGS_PER_CLUSTER)),
-        # Keep the legacy RQ kwarg while workers roll across versions.
+        # min_clustering_top and top_n_playlists are the two legacy spellings of the
+        # same field and are still what older saved cron jobs and external callers
+        # send; dropping them silently sent those callers the default instead of the
+        # number they asked for. config.py resolves the same three for the env var.
         "top_n_playlists_param": int(
             data.get(
                 'top_n_clustering_playlist',
@@ -421,10 +369,17 @@ def start_clustering_endpoint():
         ),
     }
 
-    # The gate, the archival and the claim are one atomic act, so two starts cannot
-    # both see "nothing running" before either has written its row.
+    # The gate and the claim are one INSERT: the partial unique index allows a
+    # single live main task, so two starts cannot both see "nothing running".
+    # The gate MUST come before the archive. clean_up_previous_main_tasks
+    # REVOKES any live root, so archiving first cancelled the task that was
+    # running and then let this one straight through - the unique index could
+    # never fire because the row it would have collided with was just retired.
+    # Session-scoped and held across the archive's internal commit: the gate,
+    # clean_up_previous_main_tasks and the enqueue must be one critical section,
+    # or this start's archive can REVOKE a main task another caller enqueued
+    # between our gate read and our archive.
     with main_task_start_lock():
-        # Check for any existing active main task to prevent parallel batch runs
         active_task = get_active_main_task()
         if active_task:
             return jsonify(
@@ -435,45 +390,28 @@ def start_clustering_endpoint():
                 }
             ), 409
 
-        # Clean up details of previously successful or stale tasks before starting a new one
         clean_up_previous_main_tasks()
-        save_task_status(
-            job_id, "main_clustering", TASK_STATUS_PENDING,
-            details={"message": "Task enqueued."}, raise_on_error=True,
-        )
-
-        # Keep the lock through the definitive enqueue result. Otherwise Cancel
-        # can revoke the committed claim before Redis sees the job.
         try:
-            job = rq_queue_high.enqueue(
-                'tasks.clustering.run_clustering_task',  # Enqueue by string path
+            taskqueue.enqueue(
+                'tasks.clustering.run_clustering_task',
                 kwargs=clustering_kwargs,
-                job_id=job_id,
-                description="Main Music Clustering",
-                retry=Retry(max=3),
-                job_timeout=-1,  # No timeout
-                on_failure=clustering_task_failure_handler,
+                task_id=job_id,
+                task_type="main_clustering",
+                queue=taskqueue.QUEUE_HIGH,
+                details={"message": "Task queued."},
             )
-        except Exception:
-            logger.exception("Could not enqueue the clustering task")
-            outcome, rq_status = resolve_enqueue_outcome(job_id)
-            if outcome == ENQUEUE_MISSING:
-                save_task_status(
-                    job_id, "main_clustering", TASK_STATUS_FAILURE,
-                    details={"error": "Could not enqueue the task (is Redis reachable?)"},
-                    raise_on_error=True,
-                )
-                prune_task_status_history()
-                return jsonify(
-                    {"error": "Could not enqueue the clustering. Check the logs."}
-                ), 500
+        except taskqueue.TaskAlreadyRunning as exc:
+            active_task = get_active_main_task()
             return jsonify(
                 {
-                    "task_id": job_id,
-                    "task_type": "main_clustering",
-                    "status": rq_status or TASK_STATUS_PENDING,
+                    "error": exc.user_message,
+                    "task_id": active_task['task_id'] if active_task else None,
+                    "status": active_task['status'] if active_task else None,
                 }
-            ), 202
+            ), exc.status_code
+        except Exception:
+            logger.exception("Could not queue the clustering task")
+            return jsonify({"error": "Could not queue the clustering. Check the logs."}), 500
     return jsonify(
-        {"task_id": job.id, "task_type": "main_clustering", "status": "queued"}
+        {"task_id": job_id, "task_type": "main_clustering", "status": TASK_STATUS_NEW}
     ), 202
