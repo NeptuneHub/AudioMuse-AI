@@ -177,15 +177,6 @@ class TestQueueEntrypointsDeclareTheirRoleBeforeConfigIsImported:
             f"below the config import at line {config_line}"
         )
 
-    def test_the_worker_entrypoint_declares_its_role_through_the_shared_shim(self):
-        body, lines = _statements(WORKER_MODULE_PATH)
-        declared = [
-            _source_of(stmt, lines) for stmt in body
-            if 'declare_worker_role' in _source_of(stmt, lines)
-        ]
-
-        assert declared
-
     def test_the_worker_entrypoint_forces_the_role_instead_of_trusting_service_type(self):
         calls = _declaration_calls(WORKER_MODULE_PATH)
 

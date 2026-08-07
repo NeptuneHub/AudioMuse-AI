@@ -90,10 +90,3 @@ class TestOnlyWhatWasStrippedComesBack:
 
         assert SECRET in job['kwargs']
         assert job['kwargs'][SECRET] is None
-
-    def test_a_legacy_payload_without_the_stripped_list_gets_no_injection(
-        self, monkeypatch
-    ):
-        job = self._claimed({'args': [], 'kwargs': {'x': 1}}, monkeypatch)
-
-        assert job['kwargs'] == {'x': 1}

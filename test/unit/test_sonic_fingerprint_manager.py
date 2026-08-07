@@ -21,6 +21,7 @@ Main Features:
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
+from config import SONIC_FINGERPRINT_NEIGHBORS
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 
 
@@ -208,7 +209,9 @@ class TestGenerateSonicFingerprint:
 
         result = generate_sonic_fingerprint()
 
-        assert isinstance(result, list)
+        mock_ivf.assert_called_once()
+        assert mock_ivf.call_args[1]['n'] == SONIC_FINGERPRINT_NEIGHBORS - 1
+        assert result == [{'item_id': 's1', 'distance': 0.0}]
 
 
 class TestWeightedAverageCalculation:
@@ -271,59 +274,54 @@ class TestWeightedAverageCalculation:
 
 
 class TestTimestampParsing:
-    def test_parse_iso_format_with_z(self):
-        timestamp_str = "2024-01-15T10:30:00Z"
+    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
+    @patch('app_helper.get_tracks_by_ids')
+    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
+    @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
+    def test_over_six_microsecond_digits_yields_decay_weight_not_parse_fallback(
+        self, mock_ivf, mock_last_played, mock_get_tracks, mock_top_songs
+    ):
+        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
+        mock_get_tracks.return_value = [
+            {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0])},
+            {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0])},
+        ]
+        ten_days_ago = datetime.now(timezone.utc) - timedelta(days=10, hours=12)
+        long_micro = ten_days_ago.strftime('%Y-%m-%dT%H:%M:%S') + '.12345678901234Z'
+        mock_last_played.side_effect = lambda song_id, user_creds=None: (
+            long_micro if song_id == 's1' else None
+        )
+        mock_ivf.return_value = []
 
-        parsed = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        generate_sonic_fingerprint(num_neighbors=5)
 
-        assert parsed.year == 2024
-        assert parsed.month == 1
-        assert parsed.day == 15
+        query_vector = mock_ivf.call_args[1]['query_vector']
+        np.testing.assert_allclose(
+            query_vector, [0.760467688024, 0.239532311976], rtol=1e-9
+        )
 
-    def test_parse_iso_format_with_microseconds(self):
-        timestamp_str = "2024-01-15T10:30:00.123456Z"
+    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
+    @patch('app_helper.get_tracks_by_ids')
+    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
+    @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
+    def test_future_last_played_date_is_clamped_to_a_weight_of_one(
+        self, mock_ivf, mock_last_played, mock_get_tracks, mock_top_songs
+    ):
+        mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
+        mock_get_tracks.return_value = [
+            {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0])},
+            {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0])},
+        ]
+        five_days_ahead = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+        mock_last_played.side_effect = lambda song_id, user_creds=None: (
+            five_days_ahead if song_id == 's1' else None
+        )
+        mock_ivf.return_value = []
 
-        parsed = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        generate_sonic_fingerprint(num_neighbors=5)
 
-        assert parsed.microsecond == 123456
-
-    def test_truncate_long_microseconds(self):
-        timestamp_str = "2024-01-15T10:30:00.1234567890Z"
-
-        if '.' in timestamp_str and timestamp_str.endswith('Z'):
-            dot_index = timestamp_str.rfind('.')
-            z_index = timestamp_str.rfind('Z')
-            if z_index > dot_index and (z_index - dot_index - 1) > 6:
-                timestamp_str = timestamp_str[: dot_index + 7] + 'Z'
-
-        assert timestamp_str == "2024-01-15T10:30:00.123456Z"
-
-        parsed = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-        assert parsed.microsecond == 123456
-
-    def test_calculate_days_since_played(self):
-        now = datetime.now(timezone.utc)
-        last_played = now - timedelta(days=15)
-
-        days_since = (now - last_played).days
-
-        assert days_since == 15
-
-    def test_days_calculation_fractional(self):
-        now = datetime.now(timezone.utc)
-        last_played = now - timedelta(days=15, hours=18)
-
-        days_since = (now - last_played).days
-
-        assert days_since == 15
-
-    def test_future_date_negative_days(self):
-        now = datetime.now(timezone.utc)
-        last_played = now + timedelta(days=5)
-
-        days_since = (now - last_played).days
-
-        assert days_since == -5
+        query_vector = mock_ivf.call_args[1]['query_vector']
+        np.testing.assert_allclose(query_vector, [0.8, 0.2], rtol=1e-9)
 
 
 class TestIVFIntegration:
@@ -410,34 +408,6 @@ class TestEdgeCases:
         assert len(result) == 2
         item_ids = {r['item_id'] for r in result}
         assert item_ids == {'s1', 's3'}
-
-    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
-    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
-    def test_handles_empty_embedding_vectors(
-        self, mock_last_played, mock_get_tracks, mock_top_songs
-    ):
-        mock_top_songs.return_value = [{'Id': 's1'}]
-        mock_get_tracks.return_value = [{'item_id': 's1', 'embedding_vector': np.array([])}]
-        mock_last_played.return_value = None
-
-        result = generate_sonic_fingerprint(num_neighbors=5)
-
-        assert result == []
-
-    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
-    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
-    def test_handles_microseconds_truncation(
-        self, mock_last_played, mock_get_tracks, mock_top_songs
-    ):
-        mock_top_songs.return_value = [{'Id': 's1'}]
-        mock_get_tracks.return_value = [{'item_id': 's1', 'embedding_vector': np.array([1.0])}]
-        mock_last_played.return_value = "2024-01-15T10:30:00.12345678901234Z"
-
-        result = generate_sonic_fingerprint(num_neighbors=1)
-
-        assert len(result) == 1
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
     @patch('app_helper.get_tracks_by_ids')

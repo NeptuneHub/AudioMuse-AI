@@ -876,17 +876,27 @@ class TestTheReclaimNoticeNamesTheGenerationItTookTheTaskFrom:
         assert second['attempts'] > first['attempts']
 
 
-class TestReclaimLeavesTheChildrenOfDeadParentsAlone:
-    def test_a_child_of_a_terminal_parent_is_never_requeued(self, queue_db, shared_pg_dsn):
+class TestReclaimFailsTheChildrenOfTerminalParentsInsteadOfRequeueingThem:
+    def test_an_orphaned_child_of_a_terminal_parent_fails_with_attempts_still_left(
+        self, queue_db, shared_pg_dsn
+    ):
         from taskqueue import maintenance
 
         _enqueue(queue_db, 'parent-x', task_type='main_clustering')
-        _enqueue(queue_db, 'kid-x', task_type='clustering_batch', parent_task_id='parent-x')
+        _enqueue(
+            queue_db, 'kid-x', task_type='clustering_batch',
+            queue=sql.QUEUE_HIGH, parent_task_id='parent-x',
+        )
         dead = _fresh(shared_pg_dsn)
         with dead.cursor() as cur:
-            sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='dead')
+            claimed = sql.claim(cur, sql.QUEUE_HIGH, time.time(), worker_id='dead')
+            sql.hold(cur, 'kid-x')
         dead.commit()
         dead.close()
+
+        assert claimed['task_id'] == 'kid-x'
+        assert claimed['attempts'] + 1 <= claimed['max_attempts']
+
         with queue_db.cursor() as cur:
             cur.execute(
                 "UPDATE task_status SET status = %s WHERE task_id = 'parent-x'",
@@ -897,9 +907,15 @@ class TestReclaimLeavesTheChildrenOfDeadParentsAlone:
 
         conn = _fresh(shared_pg_dsn)
         try:
-            assert maintenance.reclaim_orphans(conn) == []
+            reclaimed = maintenance.reclaim_orphans(conn)
         finally:
             conn.close()
+
+        assert reclaimed == [('kid-x', config.TASK_STATUS_FAIL)]
+        status, attempts = _row(queue_db, 'kid-x')[:2]
+        queue_db.commit()
+        assert status == config.TASK_STATUS_FAIL
+        assert attempts == claimed['attempts'] + 1
 
 
 class TestOneLargeInputIsStoredOnceForTheWholeFanOut:

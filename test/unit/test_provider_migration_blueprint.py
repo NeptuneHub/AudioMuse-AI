@@ -199,27 +199,33 @@ class TestProbeTest:
 
 
 class TestApplySourcePathOverrides:
-    def test_noop_when_overrides_empty(self, bp_mod):
-        rows = [{'item_id': 'a', 'file_path': '/old/a.mp3'}]
-        bp_mod._apply_source_path_overrides(rows, {})
-        assert rows[0]['file_path'] == '/old/a.mp3'
-
-    def test_patches_matching_ids_only(self, bp_mod):
+    def test_patches_matching_ids_only_and_an_empty_map_rewrites_nothing(self, bp_mod):
         rows = [
             {'item_id': 'a', 'file_path': ''},
             {'item_id': 'b', 'file_path': ''},
             {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
         ]
-        bp_mod._apply_source_path_overrides(
+        patched = bp_mod._apply_source_path_overrides(
             rows,
             {
                 'a': '/music/a.mp3',
                 'b': '/music/b.mp3',
             },
         )
-        assert rows[0]['file_path'] == '/music/a.mp3'
-        assert rows[1]['file_path'] == '/music/b.mp3'
-        assert rows[2]['file_path'] == '/unchanged/c.mp3'
+        assert patched is rows
+        assert rows == [
+            {'item_id': 'a', 'file_path': '/music/a.mp3'},
+            {'item_id': 'b', 'file_path': '/music/b.mp3'},
+            {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
+        ]
+
+        untouched = bp_mod._apply_source_path_overrides(rows, {})
+        assert untouched is rows
+        assert rows == [
+            {'item_id': 'a', 'file_path': '/music/a.mp3'},
+            {'item_id': 'b', 'file_path': '/music/b.mp3'},
+            {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
+        ]
 
     def test_skips_empty_override_values(self, bp_mod):
         rows = [{'item_id': 'a', 'file_path': '/old/a.mp3'}]

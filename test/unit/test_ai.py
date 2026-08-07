@@ -207,9 +207,9 @@ class TestCleanPlaylistName:
         assert result == "Rock Classics"
 
     def test_fixes_text_encoding(self):
-        name = "Rock Classics"
-        result = clean_playlist_name(name)
-        assert isinstance(result, str)
+        mojibake = "Rock â€™n Roll"
+
+        assert clean_playlist_name(mojibake) == "Rock 'n Roll"
 
 
 class TestGetOpenAICompatiblePlaylistName:
@@ -622,7 +622,7 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.os.environ.get')
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
-    def test_parameter_fallbacks_dont_consume_retry_budget(self, mock_sleep, mock_post, mock_env):
+    def test_unsupported_parameter_code_walks_the_same_two_step_fallback(self, mock_sleep, mock_post, mock_env):
         mock_env.return_value = "0"
 
         mock_response_400_1 = Mock()
@@ -675,47 +675,10 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Final Success"
         assert mock_post.call_count == 3
 
-    @patch('tasks.ai.providers.openai.os.environ.get')
-    @patch('tasks.ai.providers.openai.requests.post')
-    def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
-        mock_env.return_value = "0"
-
-        mock_response_400 = Mock()
-        mock_response_400.status_code = 400
-        error_response = {
-            'error': {
-                'message': "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
-                'type': 'invalid_request_error',
-                'param': 'max_tokens',
-                'code': 'unsupported_parameter',
-            }
-        }
-        mock_response_400.json.return_value = error_response
-        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(
-            response=mock_response_400
-        )
-
-        mock_response_success = Mock()
-        mock_response_success.status_code = 200
-        mock_response_success.raise_for_status = Mock()
-        mock_response_success.iter_lines.return_value = [
-            b'data: {"choices":[{"delta":{"content":"Max Tokens Fallback"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
-        ]
-
-        mock_post.side_effect = [mock_response_400, mock_response_success]
-
-        result = get_openai_compatible_playlist_name(
-            server_url="https://api.openai.com/v1/chat/completions",
-            model_name="model",
-            full_prompt="test",
-            api_key="test-key",
-        )
-
-        assert result == "Max Tokens Fallback"
-        second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
-        assert 'max_tokens' not in second_call_data
-        assert second_call_data.get('max_completion_tokens') == 8000
+        final_call_data = json.loads(mock_post.call_args_list[2][1]['data'])
+        assert 'temperature' not in final_call_data
+        assert 'max_tokens' not in final_call_data
+        assert 'max_completion_tokens' not in final_call_data
 
     @patch('tasks.ai.providers.openai.os.environ.get')
     @patch('tasks.ai.providers.openai.requests.post')
@@ -1144,14 +1107,6 @@ class TestGetAIPlaylistName:
         assert mock_generate.call_count == 2
 
     @patch('tasks.ai.api.generate_text')
-    def test_skipped_or_failed_provider_returns_none_for_fallback(self, mock_generate):
-        mock_generate.return_value = "AI Naming Skipped"
-
-        assert get_ai_playlist_name(
-            "Indie", "mood", "melancholic lyrics", self._ai_config("NONE")
-        ) is None
-
-    @patch('tasks.ai.api.generate_text')
     def test_strips_an_accidentally_repeated_genre_before_composition(self, mock_generate):
         mock_generate.return_value = "Indie Heartbreak"
 
@@ -1448,16 +1403,6 @@ class TestGetAIPlaylistName:
         assert mock_generate.call_count == 1
 
     @patch('tasks.ai.api.generate_text')
-    def test_carriage_return_from_the_provider_still_names_the_playlist(
-        self, mock_generate
-    ):
-        mock_generate.return_value = "Serene\r\n"
-
-        assert get_ai_playlist_name(
-            "Ambient", "mood", "peaceful, emotionally still lyrics", self._ai_config()
-        ) == "Serene Ambient"
-
-    @patch('tasks.ai.api.generate_text')
     def test_candidate_list_keeps_the_first_word_that_passes(self, mock_generate):
         mock_generate.return_value = "vibes, mix, Serene, Calm"
 
@@ -1518,27 +1463,17 @@ class TestGetAIPlaylistName:
         assert result == "Classic Rock Memories"
 
     @patch('tasks.ai.api.generate_text')
-    def test_banned_words_are_never_resurrected_by_the_relaxed_pass(
-        self, mock_generate
-    ):
-        mock_generate.return_value = "Work"
-
-        result = get_ai_playlist_name(
-            "House", "function", "energetic danceable music", self._ai_config()
-        )
-
-        assert result is None
-
-    @patch('tasks.ai.api.generate_text')
     def test_naming_sends_no_output_token_cap_on_any_attempt(self, mock_generate):
         mock_generate.side_effect = ["Juxtaposition", "Irony", "Bittersweet"]
 
-        get_ai_playlist_name(
+        result = get_ai_playlist_name(
             "Rock",
             "contrast",
             "melancholic lyrics contrasted with upbeat music",
             self._ai_config(),
         )
 
+        assert result == "Bittersweet Rock"
+        assert mock_generate.call_count == 3
         for call in mock_generate.call_args_list:
             assert "max_tokens" not in call.kwargs

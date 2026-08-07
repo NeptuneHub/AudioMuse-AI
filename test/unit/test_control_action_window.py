@@ -51,7 +51,6 @@ Main Features:
 * An unconfigured deployment gets 150s, and no environment shrinks it below 105s
 * The wizard's advisory acknowledgement budget stays deliberately short
 * Restore's stop and start requests wait the action window, not the ack budget
-* A pre-migration dump leaves no live task row behind
 """
 
 import ast
@@ -72,6 +71,7 @@ REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file
 SQL_MODULE_PATH = os.path.join(REPO_ROOT, 'taskqueue', 'sql.py')
 
 WINDOW = config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+LIVE_ACTION_BUDGET_SECONDS = config.CONTROL_IPC_TIMEOUT_SECONDS
 
 THREE_WORKER_STOP_SECONDS = 60.0
 
@@ -129,10 +129,6 @@ class _GuardCursor:
             return
         if self._age is not None and self._age < bound[-1]:
             self._answer = (1,)
-
-    @property
-    def windows(self):
-        return [bound[-1] for _statement, bound in self.stand_down_calls]
 
     @property
     def stand_down_statement(self):
@@ -302,12 +298,6 @@ class _PublishConn:
 
 
 class TestEveryConsumerMeasuresTheSameWindow:
-    def test_the_reclaim_stand_down_asks_for_the_action_window(self, charged):
-        conn = _GuardConn(1.0)
-        maintenance.reclaim_orphans(conn, grace_seconds=0)
-
-        assert conn.cur.windows == [WINDOW]
-
     def test_the_publisher_spares_a_running_handshake_for_that_same_window(self):
         conn = _PublishConn()
 
@@ -325,9 +315,6 @@ class TestEveryConsumerMeasuresTheSameWindow:
 class TestTheWindowOutlastsTheActionItCovers:
     def test_it_covers_a_whole_three_worker_fleet_shutdown(self):
         assert WINDOW >= THREE_WORKER_STOP_SECONDS
-
-    def test_it_covers_the_native_control_budget_the_action_itself_is_capped_at(self):
-        assert WINDOW >= config.CONTROL_IPC_TIMEOUT_SECONDS
 
     def test_it_leaves_room_for_the_handshake_round_trip_after_the_action_ends(self):
         assert WINDOW > config.CONTROL_IPC_TIMEOUT_SECONDS
@@ -385,24 +372,20 @@ class TestTheWindowIsTheDocumentedNumberAndNotMerelyWideEnough:
 
         assert _window_resolved_from_source() == DOCUMENTED_DEFAULT_WINDOW_SECONDS
 
-    def test_an_action_budget_forced_to_one_second_still_leaves_the_floor_plus_the_ack(
+    def test_an_action_budget_forced_to_one_second_leaves_the_floor_plus_the_ack_and_the_live_budgets_alone(
         self, monkeypatch
     ):
         monkeypatch.setenv(IPC_TIMEOUT_ENV, '1')
         monkeypatch.delenv(ACK_TIMEOUT_ENV, raising=False)
 
         assert _window_resolved_from_source() == DOCUMENTED_FLOOR_WINDOW_SECONDS
+        assert config.CONTROL_IPC_TIMEOUT_SECONDS == LIVE_ACTION_BUDGET_SECONDS
+        assert config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS == WINDOW
 
     def test_that_floor_still_outlasts_the_fleet_stop_and_the_ack_budget_together(self):
         assert DOCUMENTED_FLOOR_WINDOW_SECONDS > (
             THREE_WORKER_STOP_SECONDS + config.QUEUE_CONTROL_TIMEOUT_SECONDS
         )
-
-    def test_resolving_those_budgets_never_moves_the_live_window(self, monkeypatch):
-        monkeypatch.setenv(IPC_TIMEOUT_ENV, '1')
-        _window_resolved_from_source()
-
-        assert config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS == WINDOW
 
 
 class TestRestoreWaitsForTheWorkersInsteadOfDeclaringThemBroken:

@@ -222,19 +222,6 @@ class TestRegistryPureHelpers:
         result = registry.translate_ids(['A', 'B'], 'sec', conn=conn)
         assert result == {'A': 'provA'}
 
-    def test_default_never_leaks_unmapped_canonical_id(self, monkeypatch):
-        from tasks.mediaserver import registry
-
-        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
-        cursor = MagicMock()
-        cursor.fetchall.return_value = []
-        conn = MagicMock()
-        conn.cursor.return_value = cursor
-
-        assert registry.translate_ids(['fp_deadbeef', 'legacy-provider-id'], None, conn=conn) == {
-            'legacy-provider-id': 'legacy-provider-id'
-        }
-
 
 class TestDefaultServerContextSelfHeal:
     DEFAULT_ROW = {
@@ -670,18 +657,59 @@ class TestCanonicalInputIds:
 
 
 class TestSonicFingerprintProviderRecency:
-    def test_last_played_uses_provider_id_for_canonical_song(self, monkeypatch):
+    @staticmethod
+    def _patch_fingerprint_sources(monkeypatch, top_songs, canonical_by_provider, tracks):
+        import app_helper
+        from tasks import sonic_fingerprint_manager as sfm
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(
-            registry,
-            'reverse_translate_ids',
-            lambda ids, server_id=None, conn=None: {'jelly1': 'fp_a'},
+            sfm, 'get_top_played_songs',
+            lambda limit=None, user_creds=None: list(top_songs),
         )
-        mapping = registry.canonical_input_ids(['jelly1'], None)
-        provider_by_canonical = {c: p for p, c in mapping.items()}
-        assert provider_by_canonical.get('fp_a', 'fp_a') == 'jelly1'
-        assert provider_by_canonical.get('fp_unknown', 'fp_unknown') == 'fp_unknown'
+        monkeypatch.setattr(
+            registry, 'canonical_input_ids',
+            lambda ids, server_id=None, conn=None: dict(canonical_by_provider),
+        )
+        monkeypatch.setattr(app_helper, 'get_tracks_by_ids', lambda ids: list(tracks))
+        asked = []
+
+        def fake_last_played(item_id, user_creds=None):
+            asked.append(item_id)
+            return None
+
+        monkeypatch.setattr(sfm, 'get_last_played_time', fake_last_played)
+        return sfm, asked
+
+    def test_last_played_is_asked_with_the_provider_id_never_the_canonical_id(self, monkeypatch):
+        import numpy as np
+
+        sfm, asked = self._patch_fingerprint_sources(
+            monkeypatch,
+            [{'Id': 'jelly1'}],
+            {'jelly1': 'fp_a'},
+            [{'item_id': 'fp_a', 'embedding_vector': np.array([1.0, 0.0])}],
+        )
+
+        results = sfm.generate_sonic_fingerprint(num_neighbors=1)
+
+        assert asked == ['jelly1']
+        assert results == [{'item_id': 'fp_a', 'distance': 0.0}]
+
+    def test_unmapped_provider_id_stays_its_own_seed_and_recency_key(self, monkeypatch):
+        import numpy as np
+
+        sfm, asked = self._patch_fingerprint_sources(
+            monkeypatch,
+            [{'Id': 'legacy9'}],
+            {},
+            [{'item_id': 'legacy9', 'embedding_vector': np.array([0.0, 1.0])}],
+        )
+
+        results = sfm.generate_sonic_fingerprint(num_neighbors=1)
+
+        assert asked == ['legacy9']
+        assert results == [{'item_id': 'legacy9', 'distance': 0.0}]
 
 
 class TestAnalysisCanonicalResolution:
@@ -1845,17 +1873,44 @@ class TestSweepAlignment:
         assert enqueued['conn'] is db
         assert db.commit.called
 
-    def test_enqueue_sweep_refuses_while_a_cleaning_run_is_live(self, monkeypatch):
+    @pytest.mark.parametrize(
+        'blocking_type,consulted_before_refusal',
+        [
+            ('cleaning', ['cleaning']),
+            ('provider_migration', ['cleaning', 'provider_migration']),
+        ],
+    )
+    def test_enqueue_sweep_refuses_while_a_track_map_rewriter_is_live(
+        self, monkeypatch, blocking_type, consulted_before_refusal
+    ):
         import app_music_servers as msrv
 
-        active = {'task_id': 'clean-1', 'task_type': 'cleaning', 'status': 'RUNNING'}
-        monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: active)
+        active = {'task_id': 'blocker-1', 'task_type': blocking_type, 'status': 'RUNNING'}
+        consulted = []
+
+        def fake_active(task_type=None):
+            consulted.append(task_type)
+            return active if task_type == blocking_type else None
+
+        monkeypatch.setattr(msrv, 'get_active_main_task', fake_active)
+        monkeypatch.setattr(msrv, 'main_task_start_lock', nullcontext)
+        db = MagicMock()
+        monkeypatch.setattr(msrv, 'get_db', lambda: db)
+        claimed = []
+        monkeypatch.setattr(
+            msrv, '_claim_replacement_sweep',
+            lambda task_id: claimed.append(task_id) or [],
+        )
         enqueued = []
         monkeypatch.setattr(
             taskqueue, 'enqueue', lambda *a, **k: enqueued.append(a)
         )
+
         assert msrv._enqueue_sweep() is None
+        assert consulted == consulted_before_refusal
+        assert claimed == []
         assert enqueued == []
+        assert not db.commit.called
 
     def test_sweep_replacement_fails_closed_if_the_whole_old_set_cannot_be_revoked(
         self, monkeypatch
@@ -2598,18 +2653,26 @@ class TestLyrionFolderFilterIsAnchored:
 
 
 class TestServerParamCoercion:
-    def test_non_string_server_id_is_a_clean_400_not_a_crash(self, monkeypatch):
+    def test_int_server_id_reaches_the_registry_as_text_then_a_clean_400(self, monkeypatch):
         from flask import Flask
         import app_server_context as ctx
         from tasks.mediaserver import registry
 
-        monkeypatch.setattr(registry, 'get_server', lambda sid, conn=None: None)
-        monkeypatch.setattr(registry, 'get_server_by_name', lambda name, conn=None: None)
+        seen = []
+
+        def record(value, conn=None):
+            seen.append(value)
+            return None
+
+        monkeypatch.setattr(registry, 'get_server', record)
+        monkeypatch.setattr(registry, 'get_server_by_name', record)
 
         app = Flask('server-param-test')
         with app.test_request_context('/api/x', method='POST', json={'server': 12345}):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Unknown server '12345'"):
                 ctx.resolve_request_server_id()
+
+        assert seen == ['12345', '12345']
 
     def test_structured_server_value_is_rejected(self):
         from flask import Flask

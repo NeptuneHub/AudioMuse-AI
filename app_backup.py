@@ -24,8 +24,9 @@ Main Features:
   that cannot be read counts as held. It also
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
 * The restore runs detached, so `/api/backup/restore` answers "started" long
-  before the outcome is known; the runner appends a `RESTORE-RESULT:` marker that
-  `/api/backup/restore-status` reports back to the page.
+  before the outcome is known. The runner appends a `RESTORE-RESULT:` marker to
+  its log for whoever reads it; nothing polls it. The page counts down and
+  reloads, because a restart is a restart and not a state to poll.
 * A dump is restored exactly as it was taken. The backup saves everything and the
   restore restores everything, including the task rows, because the queue IS
   `task_status`: nothing here filters, rewrites or finishes what came back.
@@ -747,67 +748,6 @@ def download_backup(filename):
     if not os.path.isfile(filepath):
         return jsonify({'error': 'Backup file not found. Create a new backup first.'}), 404
     return send_file(filepath, as_attachment=True, download_name=filename)
-
-
-def _read_restore_result_from(log_path):
-    if not os.path.isfile(log_path):
-        return None
-    try:
-        with open(log_path, 'r', encoding='utf-8', errors='ignore') as log:
-            lines = log.readlines()
-    except OSError:
-        logger.exception("Could not read restore log %s", log_path)
-        return None
-    for line in reversed(lines):
-        if not line.startswith(RESTORE_RESULT_MARKER):
-            continue
-        remainder = line[len(RESTORE_RESULT_MARKER):].strip()
-        result, _, message = remainder.partition(' ')
-        return {'result': result, 'message': message.strip()}
-    return None
-
-
-@backup_bp.route('/api/backup/restore-status', methods=['GET'])
-def restore_status():
-    """
-    Report the outcome of a detached restore run.
-    ---
-    tags:
-      - Backup
-    summary: Poll the outcome the detached restore runner recorded in its log.
-    description: |
-      `/api/backup/restore` answers as soon as the detached runner is spawned, so
-      the caller cannot tell an aborted restore from a completed one. The runner
-      appends a machine-readable outcome marker to its log when it exits; this
-      endpoint reports it. While the runner is still working the state is
-      `running`, and during a successful restore this endpoint is unreachable
-      because the local Flask service is stopped on purpose.
-    parameters:
-      - in: query
-        name: log
-        required: true
-        schema:
-          type: string
-        description: The `restore_log_name` returned by /api/backup/restore.
-    responses:
-      200:
-        description: Current restore state.
-      400:
-        description: Missing or malformed log name.
-    """
-    log_name = os.path.basename(request.args.get('log', ''))
-    if not RESTORE_LOG_NAME_PATTERN.fullmatch(log_name):
-        return jsonify({'error': 'Invalid restore log name.'}), 400
-
-    base_dir_real = os.path.realpath(RESTORE_LOG_DIR)
-    log_path_real = os.path.realpath(os.path.join(base_dir_real, log_name))
-    if os.path.commonpath([base_dir_real, log_path_real]) != base_dir_real:
-        return jsonify({'error': 'Invalid restore log name.'}), 400
-
-    outcome = _read_restore_result_from(log_path_real)
-    if outcome is None:
-        return jsonify({'state': 'running'})
-    return jsonify({'state': outcome['result'], 'message': outcome['message']})
 
 
 @backup_bp.route('/api/backup/restore', methods=['POST'])

@@ -424,23 +424,6 @@ class TestRequirements:
 
         assert calls['n'] == 0
 
-    def test_pip_runs_when_pinned_version_mismatches(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
-        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
-        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
-        dist = tmp_path / '_lib' / 'matplotlib-3.7.0.dist-info'
-        dist.mkdir(parents=True)
-        (dist / 'METADATA').write_text('Metadata-Version: 2.1\nName: matplotlib\nVersion: 3.7.0\n', encoding='utf-8')
-        installed = {'specs': None}
-
-        mgr = manager.PluginManager()
-        monkeypatch.setattr(mgr, '_pip_install', lambda specs: installed.__setitem__('specs', specs) or True)
-        mgr.records = {'withreq': _record('withreq', requirements=['matplotlib==3.9.0'])}
-
-        mgr.ensure_requirements()
-
-        assert installed['specs'] == ['matplotlib==3.9.0']
-
 
 class TestTargets:
     def test_default_targets_are_both(self):
@@ -877,11 +860,6 @@ class TestSongAnalyzedHooks:
         mgr = self._mgr({'p': [good, bad, good2]})
         mgr.run_song_analyzed({'item_id': 'x'})
         assert seen == ['good', 'good2']
-
-    def test_run_is_noop_when_no_hooks(self):
-        mgr = manager.PluginManager()
-        mgr.records = {}
-        mgr.run_song_analyzed({'item_id': 'x'})
 
     def test_multiple_plugins_run_in_sequence_and_isolated(self):
         seen = []

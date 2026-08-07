@@ -56,17 +56,7 @@ def _make_lock_unreadable(patcher, backup_dir):
 
 
 class TestRestoreLockFailsClosed:
-    def test_unreadable_lock_blocks_a_new_restore(self, backup_dir, monkeypatch):
-        _write_lock(backup_dir, age_seconds=5)
-        held_by = _lock_file(backup_dir).read_text(encoding='utf-8')
-
-        with monkeypatch.context() as unreadable:
-            _make_lock_unreadable(unreadable, backup_dir)
-            assert app_backup._acquire_restore_lock() is False
-
-        assert _lock_file(backup_dir).read_text(encoding='utf-8') == held_by
-
-    def test_unreadable_lock_older_than_the_ttl_still_blocks_a_new_restore(
+    def test_unreadable_lock_blocks_a_new_restore_and_never_expires_on_the_ttl(
         self, backup_dir, monkeypatch
     ):
         _write_lock(backup_dir, age_seconds=app_backup.RESTORE_LOCK_TTL_SECONDS * 10)
@@ -75,6 +65,8 @@ class TestRestoreLockFailsClosed:
         with monkeypatch.context() as unreadable:
             _make_lock_unreadable(unreadable, backup_dir)
             assert app_backup._acquire_restore_lock() is False
+            assert app_backup._restore_lock_age() == app_backup.RESTORE_LOCK_UNREADABLE_AGE
+            assert app_backup.RESTORE_LOCK_UNREADABLE_AGE <= app_backup.RESTORE_LOCK_TTL_SECONDS
 
         assert _lock_file(backup_dir).read_text(encoding='utf-8') == held_by
 

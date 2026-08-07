@@ -74,6 +74,23 @@ def conn():
     return connection
 
 
+def _index_of(statements, needle):
+    for index, statement in enumerate(statements):
+        if needle in statement:
+            return index
+    raise AssertionError(f'{needle!r} never executed; got {statements}')
+
+
+def _unique_violation(cur, **kwargs):
+    import psycopg2
+
+    raise psycopg2.errors.UniqueViolation()
+
+
+def _no_row(cur, **kwargs):
+    return False
+
+
 class TestATerminalRootDropsItsSharedPayload:
     def test_the_sweep_clears_shared_columns_only_on_terminal_rows(self, conn):
         maintenance.clear_terminal_shared_payloads(conn)
@@ -198,26 +215,48 @@ class TestTaskStatusHoldsOneRunAtATime:
 
 
 class TestARefusedStartLeavesTheTableAlone:
-    def test_the_wipe_is_inside_the_savepoint_the_insert_rolls_back_to(self):
-        with open(
-            os.path.join(_REPO_ROOT, 'taskqueue', '__init__.py'), encoding='utf-8'
-        ) as handle:
-            source = handle.read()
+    _FUNC = 'tasks.clustering.run_clustering_task'
 
-        savepoint = source.index('SAVEPOINT audiomuse_enqueue')
-        wipe = source.index('sql.clear_task_status(cur)')
-        rollback = source.index('ROLLBACK TO SAVEPOINT audiomuse_enqueue')
-        release = source.index('RELEASE SAVEPOINT audiomuse_enqueue')
+    def _refused(self, conn, monkeypatch, failure, expected):
+        import taskqueue
 
-        assert savepoint < wipe < rollback, (
-            'a start refused by the unique index must undo its own wipe; with the '
-            'wipe outside the savepoint the DELETE stayed pending on a borrowed '
-            'connection and the next caller committed it'
+        monkeypatch.setattr(sql, 'insert_job', failure)
+        monkeypatch.setattr(sql, 'notify_job', lambda *a, **k: None)
+        with pytest.raises(expected):
+            taskqueue.enqueue(
+                self._FUNC, task_id='t-1', task_type='main_clustering', conn=conn
+            )
+        return conn.statements
+
+    def test_a_start_refused_by_the_unique_index_rolls_its_wipe_back(
+        self, conn, monkeypatch
+    ):
+        import taskqueue
+
+        statements = self._refused(
+            conn, monkeypatch, _unique_violation, taskqueue.TaskAlreadyRunning
         )
-        assert source.index('raise TaskNotQueued') < release, (
-            'the other refusal has to undo the wipe too, so the savepoint may only '
-            'be released once the row is provably in'
+        savepoint = _index_of(statements, 'SAVEPOINT audiomuse_enqueue')
+        wipe = _index_of(statements, 'DELETE FROM task_status')
+        rollback = _index_of(statements, 'ROLLBACK TO SAVEPOINT audiomuse_enqueue')
+
+        assert savepoint < wipe < rollback
+        assert not any('RELEASE SAVEPOINT' in s for s in statements)
+
+    def test_a_start_refused_because_the_row_exists_rolls_its_wipe_back_too(
+        self, conn, monkeypatch
+    ):
+        import taskqueue
+
+        statements = self._refused(
+            conn, monkeypatch, _no_row, taskqueue.TaskNotQueued
         )
+        savepoint = _index_of(statements, 'SAVEPOINT audiomuse_enqueue')
+        wipe = _index_of(statements, 'DELETE FROM task_status')
+        rollback = _index_of(statements, 'ROLLBACK TO SAVEPOINT audiomuse_enqueue')
+
+        assert savepoint < wipe < rollback
+        assert not any('RELEASE SAVEPOINT' in s for s in statements)
 
 
 class TestNothingElsePrunesTheTable:

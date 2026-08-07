@@ -170,17 +170,11 @@ def _setup_ids(cur, tracks=None):
 
 
 class TestEnvelope:
-    def test_envelope_keys_present(self, bp_mod, client, fake_db):
+    def test_payload_envelope_has_exactly_the_five_sync_keys(self, bp_mod, client, fake_db):
         _, cur = fake_db
         _setup_payload(cur, tracks=[], total=0)
         body = client.get('/api/sync?limit=1').get_json()
-        for key in ('tracks', 'total_tracks', 'provider_type', 'has_more', 'next_page'):
-            assert key in body, f"missing {key}"
-
-    def test_no_deleted_ids_key(self, bp_mod, client, fake_db):
-        _, cur = fake_db
-        _setup_payload(cur, tracks=[], total=0)
-        assert 'deleted_ids' not in client.get('/api/sync?limit=1').get_json()
+        assert set(body) == {'tracks', 'total_tracks', 'provider_type', 'has_more', 'next_page'}
 
     def test_provider_type_from_config(self, bp_mod, client, fake_db):
         import config
@@ -309,13 +303,11 @@ class TestManifest:
         track = client.get('/api/sync?fields=index&limit=1').get_json()['tracks'][0]
         assert track == {'id': 'track-X', 'fp': 'ffffffff00000000'}
 
-    def test_envelope_no_deleted_ids(self, bp_mod, client, fake_db):
+    def test_manifest_envelope_has_exactly_the_five_sync_keys(self, bp_mod, client, fake_db):
         _, cur = fake_db
         _setup_manifest(cur, total=0, rows=[])
         body = client.get('/api/sync?fields=index').get_json()
-        assert 'deleted_ids' not in body
-        for key in ('tracks', 'total_tracks', 'provider_type', 'has_more', 'next_page'):
-            assert key in body
+        assert set(body) == {'tracks', 'total_tracks', 'provider_type', 'has_more', 'next_page'}
 
     def test_paginates_at_1000(self, bp_mod, client, fake_db):
         _, cur = fake_db

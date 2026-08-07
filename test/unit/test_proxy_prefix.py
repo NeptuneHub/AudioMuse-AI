@@ -18,9 +18,10 @@ Main Features:
 * Root redirect targets stay prefixed under the recommended config
 """
 
-from flask import Flask, request, redirect, url_for, jsonify
+from flask import Flask
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import app_auth
 from proxy_prefix import StripDuplicatedScriptName
 
 
@@ -66,7 +67,9 @@ class TestStripDuplicatedScriptName:
         assert out['PATH_INFO'] == '/amazing'
 
 
-def _barrier_app(with_fix):
+def _barrier_app(with_fix, monkeypatch):
+    monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: True)
+
     app = Flask(__name__)
 
     @app.route('/')
@@ -77,13 +80,7 @@ def _barrier_app(with_fix):
     def setup_page():
         return 'SETUP'
 
-    @app.before_request
-    def barrier():
-        if request.path in ('/setup', '/api/setup'):
-            return
-        if request.path.startswith('/api/'):
-            return jsonify(error='Setup required'), 403
-        return redirect(url_for('setup_page'))
+    app.before_request(app_auth.auth_setup_barrier)
 
     inner = StripDuplicatedScriptName(app.wsgi_app) if with_fix else app.wsgi_app
     app.wsgi_app = ProxyFix(inner, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -98,26 +95,28 @@ _PROXY_HEADERS = {
 
 
 class TestBarrierUnderMisconfiguredProxy:
-    def test_loop_without_fix(self):
-        app = _barrier_app(with_fix=False)
+    def test_real_setup_barrier_redirects_the_setup_page_onto_itself_without_the_middleware(
+        self, monkeypatch
+    ):
+        app = _barrier_app(with_fix=False, monkeypatch=monkeypatch)
         rv = app.test_client().get('/audiomuseai/setup', headers=_PROXY_HEADERS)
         assert rv.status_code == 302
         assert rv.headers['Location'] == '/audiomuseai/setup'
 
-    def test_no_loop_with_fix(self):
-        app = _barrier_app(with_fix=True)
+    def test_middleware_lets_the_duplicated_prefix_reach_the_exempt_setup_page(self, monkeypatch):
+        app = _barrier_app(with_fix=True, monkeypatch=monkeypatch)
         rv = app.test_client().get('/audiomuseai/setup', headers=_PROXY_HEADERS)
         assert rv.status_code == 200
         assert rv.get_data(as_text=True) == 'SETUP'
 
-    def test_recommended_config_still_works_with_fix(self):
-        app = _barrier_app(with_fix=True)
+    def test_recommended_config_still_works_with_fix(self, monkeypatch):
+        app = _barrier_app(with_fix=True, monkeypatch=monkeypatch)
         rv = app.test_client().get('/setup', headers=_PROXY_HEADERS)
         assert rv.status_code == 200
         assert rv.get_data(as_text=True) == 'SETUP'
 
-    def test_root_redirect_target_is_prefixed_with_fix(self):
-        app = _barrier_app(with_fix=True)
+    def test_root_redirect_target_is_prefixed_with_fix(self, monkeypatch):
+        app = _barrier_app(with_fix=True, monkeypatch=monkeypatch)
         rv = app.test_client().get('/audiomuseai/', headers=_PROXY_HEADERS)
         assert rv.status_code == 302
         assert rv.headers['Location'] == '/audiomuseai/setup'

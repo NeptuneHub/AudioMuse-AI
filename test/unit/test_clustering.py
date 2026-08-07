@@ -1408,20 +1408,6 @@ class TestClusterNaming:
 
         assert len(details) == 3
 
-    def test_name_cluster_returns_correct_structure(self):
-        from tasks.clustering_helper import _name_cluster
-
-        centroid = np.array([0.5, 0.5, 0.4, 0.4, 0.3])
-        mood_labels = ['mood1', 'mood2', 'mood3']
-
-        result = _name_cluster(centroid, None, False, mood_labels, None)
-
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        name, details = result
-        assert isinstance(name, str)
-        assert isinstance(details, dict)
-
 
 def _batch_launch_args():
     return (

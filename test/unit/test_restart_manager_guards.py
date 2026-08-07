@@ -342,7 +342,11 @@ class TestPerContainerPlumbingNeverBecomesADatabaseWideGlobal:
         'DISABLE_FLASK_RESTART',
     ])
     def test_it_is_neither_bootstrapped_into_app_config_nor_overridden_from_it(self, name):
-        assert name in config.SETUP_BOOTSTRAP_EXCLUDED_KEYS
+        assert name in config.SETUP_BOOTSTRAP_EXCLUDED_KEYS, (
+            '%s is per-container plumbing: one database-wide value collapses two worker '
+            'containers on the same host onto a single ack row while pg_stat_activity '
+            'still counts two listeners, so no handshake ever ends' % name
+        )
 
     @pytest.mark.parametrize('name', [
         'AUDIO_MUSE_LISTENER_ID',
@@ -353,12 +357,6 @@ class TestPerContainerPlumbingNeverBecomesADatabaseWideGlobal:
     def test_the_setup_wizard_neither_renders_nor_accepts_it(self, name):
         assert name in app_setup.HIDDEN_ADVANCED_FIELDS
         assert app_setup.should_show_advanced(name) is False
-
-    def test_two_worker_containers_on_one_host_keep_distinct_listener_identities(self):
-        assert 'AUDIO_MUSE_LISTENER_ID' in config.SETUP_BOOTSTRAP_EXCLUDED_KEYS, (
-            'a database-wide value collapses both containers onto one ack row while '
-            'pg_stat_activity still counts two listeners, so no handshake ever ends'
-        )
 
 
 class TestTheRecordedActionIsDecodedFromEitherDetailsShape:

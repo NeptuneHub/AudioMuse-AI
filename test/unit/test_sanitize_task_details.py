@@ -14,6 +14,9 @@ well-formed structured error regardless of which endpoint produced it.
 
 Main Features:
 * Traceback and analysis-only keys are stripped; logs collapse to the last 10.
+* A response with no log is given a one-entry one from its own status message, so
+  the `details.log` array survives on the wire without any task writing it to the
+  task_status row.
 * Failed tasks always gain a structured error dict plus a mirrored error_message.
 """
 
@@ -48,6 +51,40 @@ class TestSanitizeTaskDetails:
         assert len(out['log']) == 11
         assert 'truncated' in out['log'][0]
         assert out['log'][-1] == 'line 24'
+
+    def test_a_running_task_without_a_log_gets_one_from_its_status_message(self):
+        out = sanitize_task_details(
+            {'status_message': 'Analysing album 12 of 40.'}, 'RUNNING', 'main_analysis'
+        )
+        assert out['log'] == ['Analysing album 12 of 40.']
+
+    def test_a_failed_task_without_a_log_gets_one_from_its_message(self):
+        out = sanitize_task_details({'message': 'It broke.'}, 'FAIL', 'main_clustering')
+        assert out['log'] == ['It broke.']
+
+    def test_status_message_wins_over_message_when_both_are_present(self):
+        out = sanitize_task_details(
+            {'status_message': 'live', 'message': 'stale'}, 'RUNNING', 'cleaning'
+        )
+        assert out['log'] == ['live']
+
+    def test_an_existing_log_is_never_replaced_by_the_status_message(self):
+        out = sanitize_task_details(
+            {'log': ['kept'], 'status_message': 'ignored'}, 'RUNNING', 'x'
+        )
+        assert out['log'] == ['kept']
+
+    def test_an_empty_log_list_is_refilled_from_the_status_message(self):
+        out = sanitize_task_details({'log': [], 'status_message': 'live'}, 'RUNNING', 'x')
+        assert out['log'] == ['live']
+
+    def test_details_with_no_message_at_all_stay_without_a_log(self):
+        out = sanitize_task_details({'progress': 40}, 'RUNNING', 'x')
+        assert 'log' not in out
+
+    def test_a_non_string_message_is_coerced_into_a_string_log_entry(self):
+        out = sanitize_task_details({'message': 42}, 'RUNNING', 'x')
+        assert out['log'] == ['42']
 
     def test_failure_without_error_backfills_unknown(self):
         out = sanitize_task_details({}, 'FAILURE', 'main_analysis')

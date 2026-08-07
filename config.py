@@ -202,6 +202,12 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # would pin the reclaim stand-down while the action budget moved underneath it,
     # which is the deliberate-restart-charges-an-attempt bug all over again.
     'QUEUE_CONTROL_ACTION_WINDOW_SECONDS',
+    # The floor below is a correctness bound, not a preference: it was raised after
+    # a native restore reported failure because the control socket gave up while the
+    # supervisor was still legitimately stopping three workers. max() applies it at
+    # import, so a persisted app_config row would replace the floored value with a
+    # smaller one and re-open that incident. Excluded so the floor always wins.
+    'CONTROL_IPC_TIMEOUT_SECONDS',
     # Per-container process plumbing, NOT install-wide preferences. app_config is
     # shared by every container, so persisting one container's value forces it on
     # all of them at the next boot. AUDIO_MUSE_LISTENER_ID is the worst case: it

@@ -20,6 +20,7 @@ Main Features:
 import json
 import logging
 import os
+import re
 import sys
 import importlib.util
 import pytest
@@ -70,6 +71,19 @@ class TestFindFk:
         assert name is None
 
 
+_META_ROWS = [
+    (
+        'new_1',
+        '/target/music/new_1.flac',
+        'Target Title',
+        'Target Artist',
+        'Target Album',
+        'Target Album Artist',
+        2024,
+    ),
+]
+
+
 def _session_state(mapping, meta=None):
     return {
         'dry_run': {'matches': mapping},
@@ -90,13 +104,7 @@ def _make_session_row(
     )
 
 
-def _id_map_lookup(rows, params):
-    name = params[0] if params else None
-    match = next((r for r in (rows or []) if r[0] == name), None)
-    return (match[1],) if match else None
-
-
-def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, lyrics_exists):
+def _build_sql_handlers(mock_cur, session_row, meta_rows):
     session_snapshot = {'row': session_row}
 
     def _matches(up, *needles):
@@ -126,18 +134,18 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
 
     return [
         (
-            lambda up: _matches(up, 'INFORMATION_SCHEMA', 'FOREIGN KEY'),
+            lambda up: _matches(up, 'TO_REGCLASS', 'MIGRATION_TARGET_META'),
             lambda up, params: _set_one(
-                ('{}_item_id_fkey'.format(params[0] if params else 'embedding'),)
+                ('migration_target_meta',) if meta_rows is not None else (None,)
             ),
         ),
         (
-            lambda up: _matches(up, 'TO_REGCLASS', 'LYRICS_EMBEDDING'),
-            lambda up, params: _set_one((lyrics_exists,)),
+            lambda up: up.startswith('SELECT NEW_ID') and 'MIGRATION_TARGET_META' in up,
+            lambda up, params: _set_all(list(meta_rows or [])),
         ),
         (
-            lambda up: _matches(up, 'TO_REGCLASS', 'MIGRATION_TARGET_META'),
-            lambda up, params: _set_one((None,)),
+            lambda up: up.startswith('DELETE FROM TRACK_SERVER_MAP') and 'RETURNING' in up,
+            lambda up, params: _set_all([]),
         ),
         (
             lambda up: _matches(up, 'TO_REGCLASS', 'MUSIC_SERVERS'),
@@ -192,45 +200,13 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
             lambda up: _matches(up, 'FROM MIGRATION_SESSION', 'SELECT'),
             lambda up, params: _set_one(session_snapshot['row']),
         ),
-        (
-            lambda up: up.startswith('SELECT DISTINCT INDEX_NAME FROM VOYAGER_INDEX_DATA'),
-            lambda up, params: _set_all([(r[0],) for r in (ivf_rows or [])]),
-        ),
-        (
-            lambda up: up.startswith('SELECT ID_MAP_JSON FROM VOYAGER_INDEX_DATA'),
-            lambda up, params: _set_one(_id_map_lookup(ivf_rows, params)),
-        ),
-        (
-            lambda up: up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM VOYAGER_INDEX_DATA'),
-            lambda up, params: _set_all([]),
-        ),
-        (
-            lambda up: up.startswith('SELECT DISTINCT INDEX_NAME FROM MAP_PROJECTION_DATA'),
-            lambda up, params: _set_all([(r[0],) for r in (mproj_rows or [])]),
-        ),
-        (
-            lambda up: up.startswith('SELECT ID_MAP_JSON FROM MAP_PROJECTION_DATA'),
-            lambda up, params: _set_one(_id_map_lookup(mproj_rows, params)),
-        ),
-        (
-            lambda up: up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM MAP_PROJECTION_DATA'),
-            lambda up, params: _set_all([]),
-        ),
-        (
-            lambda up: _matches(up, 'SELECT DISTINCT', 'SCORE'),
-            lambda up, params: _set_all([(a,) for a in (authors or [])]),
-        ),
     ]
 
 
-def _install_fake_psycopg2(
-    mig, session_row, ivf_rows=None, mproj_rows=None, authors=None, lyrics_exists=False
-):
+def _install_fake_psycopg2(mig, session_row, meta_rows=None):
     mock_cur = MagicMock()
     executed = []
-    handlers = _build_sql_handlers(
-        mock_cur, session_row, ivf_rows, mproj_rows, authors, lyrics_exists
-    )
+    handlers = _build_sql_handlers(mock_cur, session_row, meta_rows)
 
     def _execute(sql, params=None):
         sql_str = sql.strip() if isinstance(sql, str) else str(sql).strip()
@@ -276,9 +252,47 @@ class TestExecuteProviderMigration:
         assert 'INSERT INTO APP_CONFIG' not in joined
         assert 'UPDATE MIGRATION_SESSION' in joined
 
-    def test_the_centralized_catalogue_is_never_touched(self, mig):
+    def test_the_target_tags_are_written_onto_the_catalogue_rows(self, mig):
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row, meta_rows=_META_ROWS)
+
+        mig.execute_provider_migration(1)
+
+        upper = [s.upper() for s in executed]
+        score_updates = [s for s in upper if s.startswith('UPDATE SCORE')]
+        assert len(score_updates) == 1, (
+            "the target's tags must reach the catalogue exactly once"
+        )
+        set_clause = score_updates[0].split(' SET ', 1)[1].split(' FROM ', 1)[0]
+        assert re.findall(r'(?:^|,)\s*([A-Z_]+)\s*=', set_clause) == [
+            'TITLE', 'AUTHOR', 'ALBUM', 'ALBUM_ARTIST', 'YEAR'
+        ], "only the display tags move; item_id and everything else stay put"
+
+        path_updates = [
+            s for s in upper
+            if s.startswith('UPDATE TRACK_SERVER_MAP') and 'SET FILE_PATH' in s
+        ]
+        assert len(path_updates) == 1, "the new file path must be written on the binding"
+        assert 'S.IS_DEFAULT' in path_updates[0], (
+            "another server's file paths are none of this migration's business"
+        )
+
+    def test_no_target_metadata_leaves_the_catalogue_rows_alone(self, mig):
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        upper = [s.upper() for s in executed]
+        assert not any(s.startswith('UPDATE SCORE') for s in upper)
+        assert not any(
+            s.startswith('UPDATE TRACK_SERVER_MAP') and 'SET FILE_PATH' in s
+            for s in upper
+        )
+
+    def test_only_the_tags_move_never_the_ids_vectors_or_indexes(self, mig):
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row, meta_rows=_META_ROWS)
 
         mig.execute_provider_migration(1)
 
@@ -291,6 +305,8 @@ class TestExecuteProviderMigration:
                 assert 'SET ITEM_ID' not in stmt, "canonical ids must never be rewritten"
         for table in ('EMBEDDING', 'CLAP_EMBEDDING', 'LYRICS_EMBEDDING', 'PLAYLIST'):
             assert not any(s.startswith(f'UPDATE {table} ') for s in upper)
+        assert not any(s.startswith('UPDATE VOYAGER_INDEX_DATA') for s in upper)
+        assert not any(s.startswith('UPDATE MAP_PROJECTION_DATA') for s in upper)
         assert not any('DROP CONSTRAINT' in s for s in upper)
         assert not any(s.startswith('DELETE FROM IVF_CELL') for s in upper)
         assert not any(s.startswith('DELETE FROM IVF_DIR') for s in upper)
@@ -453,17 +469,17 @@ class TestExecuteProviderMigration:
         assert 'FAILURE' not in reported, swap_is_durable
         assert reported[-1] == 'SUCCESS'
 
-    def test_index_id_maps_are_left_alone_because_ids_never_move(self, mig):
-        ivf_rows = [('ivf_main', json.dumps({'0': 'old_1'}))]
+    def test_a_rebuild_signalled_by_the_transaction_reaches_the_summary(self, mig):
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
-        _, _, executed = _install_fake_psycopg2(mig, session_row, ivf_rows=ivf_rows)
+        _install_fake_psycopg2(mig, session_row)
 
-        result = mig.execute_provider_migration(1)
+        with patch.object(mig, '_run_migration_transaction', return_value=True):
+            rebuilt = mig.execute_provider_migration(1)
+        with patch.object(mig, '_run_migration_transaction', return_value=False):
+            untouched = mig.execute_provider_migration(1)
 
-        upper = [s.upper() for s in executed]
-        assert not any(s.startswith('UPDATE VOYAGER_INDEX_DATA') for s in upper)
-        assert not any(s.startswith('UPDATE MAP_PROJECTION_DATA') for s in upper)
-        assert result['index_rebuild_needed'] is False
+        assert rebuilt['index_rebuild_needed'] is True
+        assert untouched['index_rebuild_needed'] is False
 
 
 class TestMigrationWritesTheRegistryOnly:

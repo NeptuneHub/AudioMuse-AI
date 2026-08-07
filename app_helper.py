@@ -133,7 +133,11 @@ def sanitize_task_details(details, state, task_type=None):
                     track.pop('item_id', None)
 
     log_entries = details.get('log')
-    if isinstance(log_entries, list) and len(log_entries) > 10:
+    if not isinstance(log_entries, list) or not log_entries:
+        recap = details.get('status_message') or details.get('message')
+        if recap:
+            details['log'] = [str(recap)]
+    elif len(log_entries) > 10:
         details['log'] = [
             f"... ({len(log_entries) - 10} earlier log entries truncated)",
             *log_entries[-10:],

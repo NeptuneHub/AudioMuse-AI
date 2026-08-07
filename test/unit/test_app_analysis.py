@@ -273,8 +273,14 @@ class TestCleaningPage:
 
 
 class TestBlueprintWiring:
-    def test_the_blueprint_is_registered(self, client):
-        assert 'analysis_bp' in str(analysis_bp)
+    def test_the_endpoint_names_the_templates_call_url_for_on_map_to_their_paths(self, client):
+        assert 'analysis_bp' in client.application.blueprints
+        rules = {
+            rule.endpoint: rule.rule for rule in client.application.url_map.iter_rules()
+        }
+        assert rules['analysis_bp.cleaning_page'] == '/cleaning'
+        assert rules['analysis_bp.start_analysis_endpoint'] == '/api/analysis/start'
+        assert rules['analysis_bp.start_cleaning_endpoint'] == '/api/cleaning/start'
 
     @pytest.mark.parametrize('path', ['/api/analysis/start', '/api/cleaning/start'])
     def test_the_start_endpoints_accept_post_only(self, client, path):

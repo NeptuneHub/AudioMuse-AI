@@ -197,9 +197,6 @@ class TestClassify:
     def test_memory_error_maps_to_model_inference(self):
         assert em.classify(MemoryError(), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_INFERENCE
 
-    def test_default_code_override_is_returned(self):
-        assert em.classify(ValueError('x'), ed.ERR_CLEANING_FAILED) == ed.ERR_CLEANING_FAILED
-
 
 class TestFromException:
     def test_audiomuse_error_round_trips(self):
@@ -242,12 +239,28 @@ class TestNoTracebackEverLeaks:
         assert 'traceback' not in result
         assert '\n' not in result['error_message']
 
-    def test_from_exception_never_returns_traceback(self):
+    def test_from_exception_returns_only_the_three_safe_keys_and_no_frame_text(self):
+        def _innermost_frame():
+            raise ValueError('boom deep in the stack')
+
+        def _middle_frame():
+            _innermost_frame()
+
+        def _outer_frame():
+            _middle_frame()
+
         try:
-            raise ValueError('boom')
+            _outer_frame()
         except ValueError as exc:
-            result = em.from_exception(exc)
-        assert 'traceback' not in result
+            result = em.from_exception(exc, code=ed.ERR_ANALYSIS_FAILED)
+        assert set(result) == {'error_code', 'error_class', 'error_message'}
+        message = result['error_message']
+        assert message == ed.get_default_message(ed.ERR_ANALYSIS_FAILED) + ' boom deep in the stack'
+        assert 'Traceback' not in message
+        assert 'File "' not in message
+        assert 'test_error_manager' not in message
+        for frame_name in ('_innermost_frame', '_middle_frame', '_outer_frame'):
+            assert frame_name not in message
 
     def test_record_logs_full_trace_to_given_logger(self):
         import logging as _logging

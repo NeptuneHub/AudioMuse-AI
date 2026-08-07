@@ -96,7 +96,6 @@
                 <input type="text" id="restore-confirm-input" placeholder="Type the phrase above..." autocomplete="off">
                 <button id="restore-btn" class="btn btn-danger" disabled>Restore</button>
                 <div id="restore-status" style="margin-top:0.75rem; font-size:0.95rem; white-space:pre-line;"></div>
-                <div id="restore-outcome" style="margin-top:0.4rem; font-size:0.9rem; white-space:pre-line; color:var(--text-sub);"></div>
             </div>
         </div>
     </section>
@@ -115,7 +114,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const confirmInput = document.getElementById('restore-confirm-input');
     const restoreBtn = document.getElementById('restore-btn');
     const restoreStatus = document.getElementById('restore-status');
-    const restoreOutcome = document.getElementById('restore-outcome');
 
     const EXPECTED_PHRASE = "I want to restore the database from the backup. This action is not reversible";
 
@@ -130,7 +128,6 @@ document.addEventListener('DOMContentLoaded', () => {
             confirmInput.value = '';
             restoreBtn.disabled = true;
             restoreStatus.textContent = '';
-            restoreOutcome.textContent = '';
         } else {
             fileNameDisplay.textContent = 'No file selected';
             confirmArea.classList.remove('visible');
@@ -174,76 +171,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // differs here: a restore stops Flask, replaces the database and brings the
     // services back, which can take far longer than any other restart.
     const RESTORE_MAX_WAIT_SECONDS = 30 * 60;
-    const RESTORE_POLL_INTERVAL_MS = 2000;
-
-    function elapsedSince(startedAt) {
-        const total = Math.round((Date.now() - startedAt) / 1000);
-        const minutes = Math.floor(total / 60);
-        return minutes > 0 ? `${minutes}m ${total % 60}s` : `${total}s`;
-    }
-
-    function restoreDidNotWork(message) {
-        restoreStatus.style.color = 'var(--color-danger, red)';
-        restoreOutcome.textContent = 'Reload this page before trying another restore.';
-        return new Error(message);
-    }
-
-    function readRestoreOutcome(logName) {
-        const url = "{{ url_for('backup_bp.restore_status') }}" + '?log=' + encodeURIComponent(logName);
-        return fetch(url, { cache: 'no-store' })
-            .then(res => res.json()
-                .then(data => ({ status: res.status, data: data }))
-                .catch(() => ({ status: res.status, data: null })))
-            .catch(() => ({ status: 0, data: null }));
-    }
-
-    // Flask answering again proves nothing: the runner restarts it after an abort
-    // too, and a slow supervisorctl stop means the very first answer can still be
-    // the pre-restore process. Only the outcome the runner recorded decides, and
-    // an unreadable one keeps the page waiting instead of assuming the best.
-    function awaitRestoreOutcome(logName) {
-        const startedAt = Date.now();
-        const deadline = startedAt + RESTORE_MAX_WAIT_SECONDS * 1000;
-        restoreOutcome.textContent = 'Waiting for the restore to report its outcome...';
-        return new Promise((resolve, reject) => {
-            (function attempt() {
-                readRestoreOutcome(logName).then(answer => {
-                    const state = answer.data && answer.data.state;
-                    const message = (answer.data && answer.data.message) || '';
-                    if (state === 'completed') {
-                        restoreOutcome.textContent = message || 'The restore completed.';
-                        resolve();
-                        return;
-                    }
-                    if (state && state !== 'running') {
-                        reject(restoreDidNotWork(message || 'The restore did not complete. Check the container logs.'));
-                        return;
-                    }
-                    if (answer.status === 401 || answer.status === 403) {
-                        reject(restoreDidNotWork(
-                            'The restored database no longer accepts this session. Sign in again, '
-                            + 'then check the container logs for the restore outcome.'));
-                        return;
-                    }
-                    if (answer.status === 400) {
-                        reject(restoreDidNotWork(
-                            'The restore outcome cannot be read back. Check the container logs '
-                            + 'before using the app.'));
-                        return;
-                    }
-                    if (Date.now() >= deadline) {
-                        reject(restoreDidNotWork(
-                            'The restore did not report an outcome in time. Check the container logs '
-                            + 'before using the app.'));
-                        return;
-                    }
-                    restoreOutcome.textContent =
-                        `Waiting for the restore to report its outcome... (${elapsedSince(startedAt)})`;
-                    window.setTimeout(attempt, RESTORE_POLL_INTERVAL_MS);
-                });
-            })();
-        });
-    }
 
     // Restore backup via chunked file upload (1GB chunks)
     restoreBtn.addEventListener('click', async () => {
@@ -288,23 +215,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (data.all_chunks_received) {
                     // Countdown from the instant the upload lands, exactly like the
-                    // setup wizard, so it always runs to completion. The recorded
-                    // outcome then gates the redirect: `until` is only awaited once
-                    // the countdown is over, and a rejection leaves the user here
-                    // with the runner's own message instead of on the home page.
-                    // The second line carries the wait so the countdown never freezes.
+                    // setup wizard, then redirect. Nothing is waited on here.
                     restoreStatus.style.color = 'var(--color-success, green)';
-                    const outcome = data.restore_log_name
-                        ? awaitRestoreOutcome(data.restore_log_name) : null;
-                    // An abort settles in seconds, long before waitAndGo attaches its
-                    // own handlers, so claim the rejection now to keep it reported once.
-                    if (outcome) outcome.catch(() => {});
                     window.AudioMuseRestart.waitAndGo({
                         element: restoreStatus,
                         prefix: 'All chunks uploaded. Database restore started.',
                         target: '/',
-                        maxSeconds: RESTORE_MAX_WAIT_SECONDS,
-                        until: outcome
+                        maxSeconds: RESTORE_MAX_WAIT_SECONDS
                     });
                     return;
                 } else {

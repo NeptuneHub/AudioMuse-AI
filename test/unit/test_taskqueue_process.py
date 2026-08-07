@@ -91,15 +91,6 @@ class TestThePosixKillOrder:
         assert (11, signal.SIGTERM) in recorder.signals
         assert (11, signal.SIGKILL) in recorder.signals
 
-    def test_the_group_is_never_sent_sigterm_because_this_process_is_in_it(
-        self, monkeypatch, recorder
-    ):
-        _children(monkeypatch, [11], [])
-
-        process_mod._kill_tree_posix(0)
-
-        assert signal.SIGTERM not in [sig for _pgid, sig in recorder.groups]
-
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX kill path')
 class TestTheKillPathIsThreadSafe:

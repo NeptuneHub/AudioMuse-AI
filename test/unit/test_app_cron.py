@@ -20,7 +20,7 @@ Main Features:
 * Non-empty results upsert under the constant cron playlist name via item_ids
 * NotImplementedError from the backend falls back to a timestamped legacy playlist
 * A live main task blocks a cron analysis/clustering start, as the manual endpoints do
-* A failed enqueue leaves FAILURE, never a PENDING row that would 409 every later start
+* A failed enqueue leaves no row at all, never a PENDING row that would 409 every later start
 """
 
 from unittest.mock import MagicMock, patch
@@ -77,6 +77,61 @@ def test_sonic_fingerprint_row_enqueues_instead_of_running_inline(mock_get_db, _
         == 'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task'
     )
     assert enqueue.call_args[1]['kwargs'] == {'server_scope': 'all'}
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_a_minute_already_claimed_by_another_web_process_fires_nothing(mock_get_db, _matches):
+    from app_cron import run_due_cron_jobs
+
+    cur = MagicMock()
+    cur.fetchall.return_value = [
+        _make_cron_row('sonic_fingerprint'),
+        _make_cron_row('alchemy_radio'),
+    ]
+    cur.fetchone.return_value = None
+    cur.__enter__.return_value = cur
+    cur.rowcount = 0
+    db = MagicMock()
+    db.cursor.return_value = cur
+    mock_get_db.return_value = db
+
+    with (
+        patch('app_cron.save_task_status') as save,
+        patch('app_cron.taskqueue.enqueue') as enqueue,
+        patch('tasks.radio_manager.run_radio_playlists') as run,
+    ):
+        run_due_cron_jobs()
+
+    enqueue.assert_not_called()
+    run.assert_not_called()
+    save.assert_not_called()
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_the_minute_claim_writes_last_run_only_when_it_is_older_than_this_minute(
+    mock_get_db, _matches
+):
+    from app_cron import run_due_cron_jobs
+
+    db, cur = _setup_db_mock()
+    mock_get_db.return_value = db
+
+    with (
+        patch('app_cron.save_task_status'),
+        patch('app_cron.taskqueue.enqueue'),
+    ):
+        run_due_cron_jobs()
+
+    updates = [c for c in cur.execute.call_args_list if c[0][0].startswith('UPDATE cron')]
+    assert len(updates) == 1
+    sql, params = updates[0][0]
+    assert 'last_run IS NULL OR last_run < %s' in sql
+    minute_start, row_id, guard = params
+    assert row_id == 1
+    assert guard == minute_start
+    assert minute_start % 60 == 0
 
 
 def test_sonic_fingerprint_task_skips_on_empty_results():
@@ -312,12 +367,19 @@ def test_a_failed_queue_write_leaves_no_row_behind(mock_get_db, _matches):
     with (
         patch('app_cron.get_active_main_task', return_value=None),
         patch('app_cron.save_task_status') as save,
-        patch('app_cron.taskqueue.enqueue', side_effect=RuntimeError("database is down")),
+        patch(
+            'app_cron.taskqueue.enqueue', side_effect=RuntimeError("database is down")
+        ) as enqueue,
         patch('app_cron.clean_up_previous_main_tasks'),
     ):
         run_due_cron_jobs()
 
+    enqueue.assert_called_once()
+    assert enqueue.call_args[0][0] == 'tasks.analysis.run_analysis_task'
+    assert enqueue.call_args[1]['task_type'] == 'main_analysis'
     assert not save.call_args_list, 'a failed queue write must leave no task row'
+    db.rollback.assert_not_called()
+    db.commit.assert_called_once()
 
 
 @patch('app_cron.cron_matches_now', return_value=True)
@@ -350,37 +412,6 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
     kwargs = queue.call_args.kwargs
     assert kwargs['args'] == ('audiomuse_plugins.demo.tasks.sync',)
     assert kwargs['kwargs'] == {
-        'server_scope': 'all',
-        'task_claim_required': True,
-    }
-
-
-@patch('app_cron.cron_matches_now', return_value=True)
-@patch('app_cron.get_db')
-def test_plugin_branch_defaults_to_all_servers(mock_get_db, _matches):
-    from app_cron import run_due_cron_jobs
-
-    row = _make_cron_row(task_type='plugin.demo.sync')
-    cur = MagicMock()
-    cur.fetchall.return_value = [row]
-    cur.rowcount = 1
-    db = MagicMock()
-    db.cursor.return_value = cur
-    mock_get_db.return_value = db
-
-    plugin_manager = MagicMock()
-    plugin_manager.get_cron_task.return_value = {
-        'dotted': 'audiomuse_plugins.demo.tasks.sync', 'queue': 'default',
-    }
-    fake_plugin_module = MagicMock()
-    fake_plugin_module.plugin_manager = plugin_manager
-
-    with patch.dict('sys.modules', {'plugin.manager': fake_plugin_module}), \
-            patch('app_cron.save_task_status'), \
-            patch('app_cron.taskqueue.enqueue') as queue:
-        run_due_cron_jobs()
-
-    assert queue.call_args.kwargs['kwargs'] == {
         'server_scope': 'all',
         'task_claim_required': True,
     }

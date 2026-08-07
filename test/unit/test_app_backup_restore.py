@@ -337,9 +337,11 @@ class TestPgConnectionArgs:
         assert 'Restore ABORTED' in log_text
         assert 'THE DATABASE WAS NOT TOUCHED' in log_text
         assert 'abnormal termination' in log_text
-        assert app_backup._read_restore_result_from(str(log_file))['result'] == (
-            app_backup.RESTORE_RESULT_ABORTED
+        marker = next(
+            line for line in log_text.splitlines()
+            if line.startswith(app_backup.RESTORE_RESULT_MARKER)
         )
+        assert marker.split()[1] == app_backup.RESTORE_RESULT_ABORTED
 
     def test_successful_database_restore_returns_nonzero_when_services_do_not_recover(
         self, monkeypatch, tmp_path
@@ -480,53 +482,3 @@ class TestRestoreChunkProgress:
         assert body['missing_chunks'] == [3]
         assert (chunks_dir / 'backup_1_of_3.sql').exists()
         assert (chunks_dir / 'backup_2_of_3.sql').exists()
-
-
-class TestRestoreStatusEndpoint:
-    _LOG = 'restore_20260804_120000.log'
-
-    def test_a_restore_still_running_reports_running(self, client, monkeypatch, tmp_path):
-        monkeypatch.setattr(app_backup, 'RESTORE_LOG_DIR', str(tmp_path))
-        (tmp_path / self._LOG).write_text('Restore runner started\n')
-        resp = client.get('/api/backup/restore-status', query_string={'log': self._LOG})
-        assert resp.status_code == 200
-        assert resp.get_json() == {'state': 'running'}
-
-    def test_a_missing_log_is_still_running_not_an_error(self, client, monkeypatch, tmp_path):
-        monkeypatch.setattr(app_backup, 'RESTORE_LOG_DIR', str(tmp_path))
-        resp = client.get('/api/backup/restore-status', query_string={'log': self._LOG})
-        assert resp.status_code == 200
-        assert resp.get_json()['state'] == 'running'
-
-    def test_an_aborted_restore_tells_the_page_the_database_was_untouched(
-        self, client, monkeypatch, tmp_path
-    ):
-        monkeypatch.setattr(app_backup, 'RESTORE_LOG_DIR', str(tmp_path))
-        (tmp_path / self._LOG).write_text(
-            'Restore ABORTED: local Flask service did not confirm it stopped.\n'
-            f'{app_backup.RESTORE_RESULT_MARKER} {app_backup.RESTORE_RESULT_ABORTED} '
-            'The database was NOT touched.\n'
-        )
-        resp = client.get('/api/backup/restore-status', query_string={'log': self._LOG})
-        body = resp.get_json()
-        assert body['state'] == app_backup.RESTORE_RESULT_ABORTED
-        assert 'NOT touched' in body['message']
-
-    def test_the_last_marker_wins_when_a_log_is_reused(self, client, monkeypatch, tmp_path):
-        monkeypatch.setattr(app_backup, 'RESTORE_LOG_DIR', str(tmp_path))
-        (tmp_path / self._LOG).write_text(
-            f'{app_backup.RESTORE_RESULT_MARKER} {app_backup.RESTORE_RESULT_ABORTED} first\n'
-            f'{app_backup.RESTORE_RESULT_MARKER} {app_backup.RESTORE_RESULT_COMPLETED} second\n'
-        )
-        resp = client.get('/api/backup/restore-status', query_string={'log': self._LOG})
-        assert resp.get_json()['state'] == app_backup.RESTORE_RESULT_COMPLETED
-
-    @pytest.mark.parametrize(
-        'log_name',
-        ['', '../../etc/passwd', 'restore_20260804_120000.log.bak', 'anything.log',
-         '/etc/passwd', 'restore_2026_120000.log'],
-    )
-    def test_only_a_generated_restore_log_name_is_accepted(self, client, monkeypatch, tmp_path, log_name):
-        monkeypatch.setattr(app_backup, 'RESTORE_LOG_DIR', str(tmp_path))
-        resp = client.get('/api/backup/restore-status', query_string={'log': log_name})
-        assert resp.status_code == 400

@@ -91,18 +91,6 @@ class TestAxisColumns:
                 idx += 1
         assert idx == len(cols)
 
-    def test_returns_tuples_of_two_strings(self, lt):
-        for axis_name, label in lt.axis_columns():
-            assert isinstance(axis_name, str) and axis_name
-            assert isinstance(label, str) and label
-
-    def test_no_duplicates(self, lt):
-        cols = lt.axis_columns()
-        assert len(cols) == len(set(cols))
-
-    def test_is_pure_function_stable_across_calls(self, lt):
-        assert lt.axis_columns() == lt.axis_columns()
-
 
 class TestScoreAxes:
     @staticmethod

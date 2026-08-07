@@ -324,25 +324,18 @@ class ProcessSupervisor(HealthLoopMixin):
         if not self._db_conn:
             return
         try:
-            import psycopg2
-
-            conn = psycopg2.connect(
+            healthy = self._probe_postgres(
                 host=self._db_conn["host"],
                 port=self._db_conn["port"],
                 user=self._db_conn["user"],
                 password=self._db_conn["password"],
                 dbname=self._db_conn["dbname"],
-                connect_timeout=3,
             )
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT 1")
-                cur.fetchone()
-            finally:
-                conn.close()
-            return
         except Exception:
-            pass
+            healthy = False
+        if healthy:
+            return
+        self._close_probe_conn()
         self._log.warning("Embedded PostgreSQL unhealthy; restarting it")
         try:
             self._db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())

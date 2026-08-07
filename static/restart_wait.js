@@ -47,16 +47,19 @@
  * does not cost twenty. Only the ceiling is ever overridden, by the restore,
  * which replaces the whole database before the services come back.
  *
- * ``until`` is watched from the moment ``waitAndGo`` is called, not from the
- * end of the countdown. A request that fails usually fails while the countdown
- * is still ticking, and the tick then painted a reassuring "restarting in N
- * seconds" straight over the error - the caller's error, or this module's -
- * once per second until the floor expired, so the user was told everything was
- * fine right up to the redirect that never came. A rejection therefore stops
- * the countdown dead and nothing renders over the failure afterwards; a caller
- * that renders its own, better-worded message is free to do so and it stays.
- * Resolution still changes nothing until the floor is over: the countdown
- * always runs to completion on the success path.
+ * NOTHING IS EVER WAITED ON. The countdown runs, and then the page redirects.
+ * No flow polls an endpoint for an outcome, and none of them holds the user on
+ * a "waiting for X" line with a ticking elapsed counter: the request that
+ * triggers a restart is held open across that restart and may never come back,
+ * so waiting on it means waiting forever with nothing to show.
+ *
+ * ``until`` is therefore an ERROR channel and nothing more. It is watched from
+ * the moment ``waitAndGo`` is called, because a request that fails usually fails
+ * while the countdown is still ticking, and the tick would otherwise paint a
+ * reassuring "restarting in N seconds" straight over the error once per second.
+ * A rejection stops the countdown dead and leaves the message on screen; a
+ * caller that renders its own, better-worded one is free to do so and it stays.
+ * Resolution changes nothing at all.
  */
 (function () {
     var DEFAULT_FLOOR_SECONDS = 20;
@@ -125,28 +128,21 @@
             redirect(target);
         }
 
-        var untilResolved = false;
         var untilFailed = false;
-        var floorReached = false;
-
-        function untilSucceeded() {
-            untilResolved = true;
-            if (floorReached) { finish(); }
-        }
 
         function untilRejected(err) {
             untilFailed = true;
             render(err?.message || 'That did not work. Check the logs.');
         }
 
-        // `until` lets the countdown start the INSTANT the user acts, instead of
-        // after the request that triggers the restart comes back. That request is
-        // held open for the whole restart, so waiting for it meant the page sat
-        // frozen for minutes and the countdown only appeared once there was nothing
-        // left to count. Nothing is redirected until it resolves, so a request that
-        // fails still reports its error instead of navigating away.
+        // `until` is an ERROR channel only. The countdown starts the instant the
+        // user acts and always ends in the redirect: nothing is ever waited on,
+        // because the request that triggers a restart is held open for the whole
+        // restart and may never come back at all. A rejection is the one thing that
+        // changes the outcome - it stops the countdown dead and leaves the caller's
+        // message on screen instead of navigating away from a failure.
         if (opts.until) {
-            opts.until.then(untilSucceeded, untilRejected);
+            opts.until.then(function () {}, untilRejected);
         }
 
         function tick() {
@@ -163,10 +159,7 @@
                 window.setTimeout(tick, 1000);
                 return;
             }
-            floorReached = true;
-            if (!opts.until || untilResolved) {
-                finish();
-            }
+            finish();
         }
 
         tick();

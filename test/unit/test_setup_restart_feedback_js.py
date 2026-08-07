@@ -204,7 +204,7 @@ def test_until_is_observed_when_wait_and_go_is_called_not_when_the_floor_expires
     watcher, _watcher_end = _guarded(outer, 'opts.until')
     tick, _tick_end = _body(outer, 'function tick() {')
 
-    assert 'opts.until.then(untilSucceeded, untilRejected);' in watcher
+    assert 'untilRejected' in watcher
     assert 'opts.until.then' not in tick
     assert outer.index('opts.until.then') < outer.index('function tick() {')
 
@@ -218,17 +218,42 @@ def test_a_rejected_until_stops_the_countdown_instead_of_overwriting_it():
     assert tick.index('untilFailed') < tick.index('render(')
 
 
-def test_a_resolved_until_still_waits_for_the_whole_countdown():
+def test_the_countdown_ends_in_the_redirect_and_never_waits_for_anything():
     code = _restart_wait_code()
-    resolved, _resolved_end = _body(code, 'function untilSucceeded() {')
-    floor_guard, _floor_end = _guarded(resolved, 'floorReached')
-    tick, _tick_end = _body(code, 'function tick() {')
-    late_guard, _late_end = _guarded(tick, 'untilResolved')
+    outer, _outer_end = _body(code, 'function waitAndGo(options) {')
+    tick, _tick_end = _body(outer, 'function tick() {')
+    countdown_guard, guard_end = _guarded(tick, 'remaining > 0')
+    after_countdown = tick[guard_end:]
 
-    assert 'finish();' in floor_guard
-    assert resolved.count('finish()') == 1
-    assert 'finish();' in late_guard
-    assert tick.index('floorReached = true') < tick.index('untilResolved')
+    assert 'finish();' in after_countdown
+    assert 'until' not in after_countdown
+    assert 'untilSucceeded' not in code
+    assert 'untilResolved' not in code
+    assert 'floorReached' not in code
+
+
+def test_a_resolved_until_changes_nothing_at_all():
+    outer, _outer_end = _body(_restart_wait_code(), 'function waitAndGo(options) {')
+    watcher, _watcher_end = _guarded(outer, 'opts.until')
+
+    resolution_handler = watcher[watcher.index('opts.until.then(') + len('opts.until.then('):]
+    resolution_handler = resolution_handler[:resolution_handler.index(',')]
+
+    assert resolution_handler.strip() == 'function () {}'
+
+
+def test_no_flow_polls_an_endpoint_to_learn_how_a_restart_went():
+    for rel_path in ('static/restart_wait.js', 'static/setup.js'):
+        code = _read(rel_path)
+
+        assert 'setInterval' not in code
+
+    backup_page = _read('templates/backup.html')
+
+    assert '/api/backup/restore-status' not in backup_page
+    assert 'backup_bp.restore_status' not in backup_page
+    assert 'Waiting for the restore' not in backup_page
+    assert 'restore_status' not in _read('app_backup.py')
 
 
 def test_a_false_restart_scheduled_skips_only_the_probe():

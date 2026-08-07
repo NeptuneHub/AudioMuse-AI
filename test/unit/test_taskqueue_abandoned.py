@@ -470,12 +470,22 @@ class TestTheAbandonedRowIsPutBackWithoutChargingAnAttempt:
         assert instance._abandoned == ['boom-1']
         assert notified == [sql.QUEUE_HIGH, sql.QUEUE_DEFAULT]
 
-    def test_a_worker_with_nothing_abandoned_never_touches_the_database(self):
+    def test_a_worker_with_nothing_abandoned_never_touches_the_database(self, monkeypatch):
         instance = _worker()
+        slept = []
+        monkeypatch.setattr(worker_mod.time, 'sleep', lambda seconds: slept.append(seconds))
+        notified = []
+        monkeypatch.setattr(
+            worker_mod.sql, 'notify_job', lambda _cur, queue: notified.append(queue)
+        )
 
         instance.requeue_abandoned()
 
         instance._conn.cursor.assert_not_called()
+        instance._conn.commit.assert_not_called()
+        instance._conn.rollback.assert_not_called()
+        assert slept == []
+        assert notified == []
 
 
 class TestTheFreeRetryIsBoundedPerRow:

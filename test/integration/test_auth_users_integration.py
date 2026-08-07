@@ -53,7 +53,7 @@ def pg_dsn():
         try:
             psycopg2.connect(dsn).close()
         except Exception as e:
-            pytest.skip(f"AUDIOMUSE_TEST_DATABASE_URL not reachable: {e}")
+            pytest.fail(f"AUDIOMUSE_TEST_DATABASE_URL is set but not reachable, refusing to skip: {e}")
         yield dsn
         return
     try:
@@ -166,10 +166,17 @@ def _age_stamp(conn, username, seconds=60):
 class TestPasswordChangeStampRealDb:
     def test_create_stamps_password_changed_at(self, users_db):
         _, app_auth = users_db
+        before = datetime.datetime.now(datetime.timezone.utc).replace(
+            microsecond=0, tzinfo=None
+        )
         app_auth.create_additional_user('dave', 'pw', 'user')
         row = app_auth.get_session_user('dave')
-        assert row is not None
-        assert row['password_changed_at'] is not None
+        after = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+        assert row['username'] == 'dave'
+        stamp = row['password_changed_at']
+        assert stamp.microsecond == 0
+        assert before <= stamp <= after
 
     def test_update_password_advances_changed_at(self, users_db):
         conn, app_auth = users_db

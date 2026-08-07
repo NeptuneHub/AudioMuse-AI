@@ -703,20 +703,35 @@ def test_persist_musicnn_results_never_writes_a_path_to_the_shared_row(monkeypat
     import tasks.analysis.helper as helper
     import tasks.analysis.song as song
 
-    saved = {}
-    monkeypatch.setattr(
-        song,
-        'save_track_analysis_and_embedding',
-        lambda *args, **kwargs: saved.update(kwargs),
-    )
+    calls = []
+
+    def _capture(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(song, 'save_track_analysis_and_embedding', _capture)
     item = {
         'Id': 'p1', 'Name': 'Song', 'AlbumArtist': 'Artist',
         'FilePath': '/music/song.flac', '_catalog_item_id': 'fp_2abc',
     }
-    analysis = {'tempo': 120.0, 'energy': 0.5, 'key': 'C', 'scale': 'major'}
+    analysis = {
+        'tempo': 120.0, 'energy': 0.5, 'key': 'C', 'scale': 'major',
+        'duration_seconds': 231.4,
+    }
+    top_moods = {'happy': 0.9}
 
-    helper.persist_musicnn_results(item, analysis, {}, b'', '')
-    assert 'file_path' not in saved
+    helper.persist_musicnn_results(item, analysis, top_moods, b'emb', 'happy:0.90')
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == (
+        'fp_2abc', 'Song', 'Artist', 120.0, 'C', 'major', top_moods, b'emb',
+    )
+    assert kwargs['energy'] == 0.5
+    assert kwargs['other_features'] == 'happy:0.90'
+    assert kwargs['duration'] == analysis['duration_seconds']
+    assert 'file_path' not in kwargs
+    assert item['FilePath'] not in args
+    assert item['FilePath'] not in kwargs.values()
 
 
 def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tmp_path):
@@ -757,7 +772,7 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
 
 
 def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
-                      terminal_children=None, status_calls=None,
+                      baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
                       extra_jobs=None):
     import importlib
@@ -813,7 +828,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
             'task_id': row['task_id'],
             'status': row['status'],
             'sub_type_identifier': row['sub_type_identifier'],
-            'details': {},
+            'details': row.get('details') or {},
         }
         for row in (child_rows or [])
         if row['status'] not in (config.TASK_STATUS_NEW, config.TASK_STATUS_RUNNING)
@@ -823,6 +838,8 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     def _fake_reap(parent_task_id, conn=None):
         if not carried_over_read_done:
             carried_over_read_done.append(True)
+            if baseline_read_error is not None:
+                raise baseline_read_error
             return already_terminal_rows
         pending_ids.extend(queued_ids)
         queued_ids.clear()
@@ -831,7 +848,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                 'task_id': task_id,
                 'status': config.TASK_STATUS_SUCCESS,
                 'sub_type_identifier': f'album-for-{task_id}',
-                'details': {},
+                'details': {'tracks_analyzed': 1},
             }
             for task_id in pending_ids
         ]
@@ -961,46 +978,55 @@ def test_retry_with_stale_child_rows_counts_each_album_once(monkeypatch):
     albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
     tracks_by_album = {f'al{i}': [{'Id': f'p{i}', 'Name': 't'}] for i in range(3)}
     work_map = {}
-
-    counts = iter([0])
-
-    def terminal_children(task_id):
-        return next(counts, 999)
+    child_rows = [
+        {
+            'task_id': 'stale-done-1', 'status': 'SUCCESS',
+            'sub_type_identifier': 'al0', 'details': {'tracks_analyzed': 4},
+        }
+    ]
 
     status_calls = []
     result, enqueued = _run_parent_phase(
         monkeypatch, albums, tracks_by_album, work_map,
-        terminal_children=terminal_children, status_calls=status_calls,
+        child_rows=child_rows, status_calls=status_calls,
     )
 
     assert result['status'] == 'SUCCESS'
     assert result['message'] == 'Albums 3/3'
+    assert result['albums_completed'] == 3
+    assert [args[0] for args in enqueued] == ['al0', 'al1', 'al2']
+    assert result['tracks_analyzed'] == 7
     reported = [d['albums_completed'] for d in status_calls if 'albums_completed' in d]
     assert reported
     assert max(reported) <= 3
 
 
-def test_baseline_read_failure_does_not_double_count_on_retry(monkeypatch):
+def test_baseline_read_failure_is_absorbed_and_does_not_inflate_the_track_tally(
+    monkeypatch, caplog
+):
+    import logging
+
     albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
     tracks_by_album = {f'al{i}': [{'Id': f'p{i}', 'Name': 't'}] for i in range(3)}
     work_map = {}
 
-    calls = {'n': 0}
-
-    def terminal_children(task_id):
-        calls['n'] += 1
-        if calls['n'] == 1:
-            raise RuntimeError('db blip while reading the baseline')
-        return 999
-
     status_calls = []
-    result, _ = _run_parent_phase(
-        monkeypatch, albums, tracks_by_album, work_map,
-        terminal_children=terminal_children, status_calls=status_calls,
-    )
+    with caplog.at_level(logging.ERROR, logger='tasks.analysis.main'):
+        result, enqueued = _run_parent_phase(
+            monkeypatch, albums, tracks_by_album, work_map,
+            baseline_read_error=RuntimeError('db blip while reading the baseline'),
+            status_calls=status_calls,
+        )
 
+    assert any(
+        'Could not clear the finished album jobs' in record.getMessage()
+        for record in caplog.records
+    )
     assert result['status'] == 'SUCCESS'
     assert result['message'] == 'Albums 3/3'
+    assert result['albums_completed'] == 3
+    assert [args[0] for args in enqueued] == ['al0', 'al1', 'al2']
+    assert result['tracks_analyzed'] == 3
     reported = [d['albums_completed'] for d in status_calls if 'albums_completed' in d]
     assert reported
     assert max(reported) <= 3
@@ -2088,11 +2114,15 @@ class TestMediaServerProbe:
             _probe_looks_like_auth_failure({'ok': False, 'error': 'connection timed out'}) is False
         )
 
-    def test_verify_returns_silently_when_reachable(self):
+    def test_verify_consults_the_media_server_and_returns_silently_when_reachable(self):
         from tasks.analysis import _verify_media_server_reachable
 
-        with patch('tasks.analysis.main.mediaserver_test_connection', return_value={'ok': True}):
-            _verify_media_server_reachable()
+        with patch(
+            'tasks.analysis.main.mediaserver_test_connection', return_value={'ok': True}
+        ) as probe:
+            assert _verify_media_server_reachable() is None
+
+        probe.assert_called_once_with()
 
     def test_verify_raises_auth_error_on_bad_credentials(self):
         from tasks.analysis import _verify_media_server_reachable

@@ -172,17 +172,34 @@ class TestPerServerPersistence:
             ('persist', 's2'),
         ]
 
-    def test_stored_playlist_names_keep_their_bare_media_server_names(self, monkeypatch):
-        _result, events, _statuses, _raised = _run_clustering(
+    def test_names_built_bare_are_stored_verbatim_under_each_server_id(self, monkeypatch):
+        from tasks import clustering
+
+        built = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {'Rock': [('song-1', 'Song', 'Artist')]},
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'NONE', '', '', '', '', '', '', '', '', '',
+        )
+        assert list(built) == ['Rock_automatic']
+
+        _result, events, _statuses, raised = _run_clustering(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
             results_by_server={
-                's1': ('success', _payload(['Rock_automatic'])),
-                's2': ('success', _payload(['Rock_automatic'])),
+                's1': ('success', _payload(list(built))),
+                's2': ('success', _payload(list(built))),
             },
         )
-        for _kind, _server_id, playlists in _persists(events):
-            assert list(playlists.keys()) == ['Rock_automatic']
+        assert raised is None
+        assert [
+            (server_id, sorted(playlists)) for _kind, server_id, playlists in _persists(events)
+        ] == [
+            ('s1', ['Rock_automatic']),
+            ('s2', ['Rock_automatic']),
+        ]
 
     def test_legacy_none_server_persists_under_null_server_id_without_pruning(self, monkeypatch):
         result, events, _statuses, _raised = _run_clustering(
