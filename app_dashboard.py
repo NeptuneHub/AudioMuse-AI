@@ -365,6 +365,16 @@ def _collect_workers():
         return []
 
 
+def _collect_queue_backlog():
+    import taskqueue
+
+    try:
+        return taskqueue.queue_backlog()
+    except Exception:
+        logger.warning("dashboard: could not compute the queue backlog", exc_info=True)
+        return []
+
+
 def _collect_task_metrics(cur):
     recent = []
     if _table_exists(cur, 'task_history'):
@@ -744,9 +754,10 @@ def dashboard_summary():
       Two tiers, and only two. SNAPSHOT: the whole `content` block (every
       CATALOG aggregate plus the per-SERVER alignment counts) is read from the
       precomputed `dashboard_stats` singleton and is NEVER recomputed on a
-      request; `stats_updated_at` says when it was taken. LIVE: workers, recent
-      tasks and cron are cheap enough to recompute per request; `generated_at`
-      says when. A client must not present a LIVE timestamp over SNAPSHOT data.
+      request; `stats_updated_at` says when it was taken. LIVE: workers, the
+      per-queue backlog, recent tasks and cron are cheap enough to recompute per
+      request; `generated_at` says when. A client must not present a LIVE
+      timestamp over SNAPSHOT data.
     responses:
       200:
         description: Dashboard payload.
@@ -760,6 +771,10 @@ def dashboard_summary():
                 stats_updated_at:
                   type: string
                 workers:
+                  type: array
+                  items:
+                    type: object
+                queue_backlog:
                   type: array
                   items:
                     type: object
@@ -777,10 +792,11 @@ def dashboard_summary():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     try:
-        # LIVE tier only: three cheap reads. Everything heavy (every CATALOG
-        # aggregate and the per-SERVER alignment counts) comes precomputed out of
-        # the dashboard_stats singleton, so no scan of `score` can ever land on
-        # the request path.
+        # LIVE tier only: three cheap reads on this cursor, plus workers and the
+        # queue backlog below on their own connection. Everything heavy (every
+        # CATALOG aggregate and the per-SERVER alignment counts) comes precomputed
+        # out of the dashboard_stats singleton, so no scan of `score` can ever
+        # land on the request path.
         recent = _collect_task_metrics(cur)
         cron_rows = _collect_cron(cur)
         content, stats_updated_at = _load_dashboard_stats(cur)
@@ -788,12 +804,14 @@ def dashboard_summary():
         cur.close()
 
     workers = _collect_workers()
+    queue_backlog = _collect_queue_backlog()
 
     return jsonify(
         {
             'generated_at': time.strftime(LOCAL_TZ_FMT),
             'stats_updated_at': stats_updated_at,
             'workers': workers,
+            'queue_backlog': queue_backlog,
             'recent_tasks': recent,
             'content': content,
             'cron': cron_rows,

@@ -21,6 +21,7 @@ Main Features:
 * A cancelled row cannot be claimed, and a claimed row cannot be claimed twice
 * A finished root keeps one recap row with no func and no payload
 * A fan-out stores its shared body once, counted on the driver, not on a stand-in
+* The backlog counts only NEW rows and drops a row the moment it is claimed
 """
 
 import json
@@ -1117,3 +1118,48 @@ class TestTheSharedBodyIsWrittenOnceNotOncePerChild:
         with queue_db.cursor() as cur:
             assert sql.get_shared(cur, 'parent-w', second) == 'body-two'
         queue_db.commit()
+
+
+class TestQueueBacklogCountsWhatIsActuallyWaiting:
+    def test_an_empty_queue_reports_zero_and_no_age(self, queue_db):
+        with queue_db.cursor() as cur:
+            backlog = sql.queue_backlog(cur)
+
+        by_name = {row['queue_name']: row for row in backlog}
+        assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 0
+        assert by_name[sql.QUEUE_DEFAULT]['oldest_pending_seconds'] is None
+
+    def test_pending_rows_are_counted_per_queue(self, queue_db):
+        _enqueue(queue_db, 'a-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        _enqueue(queue_db, 'a-2', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        _enqueue(queue_db, 'h-1', task_type='main_analysis', queue=sql.QUEUE_HIGH)
+
+        with queue_db.cursor() as cur:
+            backlog = sql.queue_backlog(cur)
+
+        by_name = {row['queue_name']: row for row in backlog}
+        assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 2
+        assert by_name[sql.QUEUE_HIGH]['pending_count'] == 1
+
+    def test_the_oldest_pending_age_is_the_oldest_new_rows_timestamp(self, queue_db):
+        _enqueue(queue_db, 'a-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        _enqueue(queue_db, 'a-2', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        _age_row(queue_db, 'a-1', seconds=300)
+
+        with queue_db.cursor() as cur:
+            backlog = sql.queue_backlog(cur)
+
+        by_name = {row['queue_name']: row for row in backlog}
+        assert by_name[sql.QUEUE_DEFAULT]['oldest_pending_seconds'] >= 300
+
+    def test_a_claimed_row_no_longer_counts_toward_the_backlog(self, queue_db):
+        _enqueue(queue_db, 'a-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        with queue_db.cursor() as cur:
+            sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w-1')
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            backlog = sql.queue_backlog(cur)
+
+        by_name = {row['queue_name']: row for row in backlog}
+        assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 0

@@ -61,7 +61,7 @@ _QUEUE_PRIMITIVES = (
 _PUBLIC_API = frozenset((
     'enqueue', 'cancel', 'request_cancel', 'request_cancel_all', 'publish_event',
     'current_task_id', 'set_current_task_id', 'resolve_func',
-    'reap_finished_children', 'live_children', 'worker_snapshot',
+    'reap_finished_children', 'live_children', 'worker_snapshot', 'queue_backlog',
     # Cancel has to be ordered against a Start, and which key does that is the
     # queue's business, not a blueprint's - so it is exposed here rather than
     # letting app_helper reach into taskqueue.sql for the lock id.

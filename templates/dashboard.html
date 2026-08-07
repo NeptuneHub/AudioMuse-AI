@@ -133,6 +133,10 @@
        theirs, so it stays readable on phones. */
     #music-servers-status-table { min-width: 640px; }
 
+    /* Two tiles, one per queue, above the workers table - reuses .dash-grid /
+       .dash-stat-card so it already wraps to one column on narrow phones. */
+    #queue-backlog { margin-bottom: 1rem; }
+
     /* Workers table: force hostname and current-job cells to wrap onto new
        lines instead of bleeding into the next column. */
     .workers-table td, .workers-table th { white-space: normal; }
@@ -224,7 +228,6 @@
         </div>
         <p class="muted dash-updated" id="keynumbers-updated">Loading…</p>
         <div class="dash-grid" id="key-numbers"></div>
-        <p class="dash-clickhint">Click any underlined number to open the full list.</p>
     </section>
 
     <!-- Music Server Status (shown when at least one server is configured) -->
@@ -237,7 +240,6 @@
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
-        <p class="dash-clickhint">Click any underlined count to open the full list of those songs.</p>
         <div class="dash-table-wrap">
             <table class="dash-table" id="music-servers-status-table">
                 <thead><tr>
@@ -262,6 +264,7 @@
             </span>
         </h2>
         <p class="muted dash-updated" id="workers-updated">Loading…</p>
+        <div class="dash-grid" id="queue-backlog"></div>
         <div class="dash-table-wrap">
             <table class="dash-table workers-table" id="workers-table">
                 <thead><tr>
@@ -585,6 +588,25 @@
         return td;
     }
 
+    const QUEUE_LABELS = { high: 'High-priority queue', default: 'Default queue' };
+
+    function renderQueueBacklog(rows) {
+        const host = document.getElementById('queue-backlog');
+        host.innerHTML = '';
+        (rows || []).forEach(q => {
+            const count = q.pending_count || 0;
+            const waiting = count > 0
+                ? 'Oldest waiting: ' + fmtDuration(q.oldest_pending_seconds)
+                : 'Nothing waiting';
+            const div = document.createElement('div');
+            div.className = 'dash-stat-card';
+            div.innerHTML = `<h3>${QUEUE_LABELS[q.queue_name] || q.queue_name}</h3>
+                             <div class="dash-stat">${count.toLocaleString()}</div>
+                             <div class="dash-substat">${waiting}</div>`;
+            host.appendChild(div);
+        });
+    }
+
     function renderWorkers(workers) {
         const tbody = document.querySelector('#workers-table tbody');
         const columns = document.querySelectorAll('#workers-table thead th').length;
@@ -816,6 +838,7 @@
             const servers = Array.isArray(content.music_servers) ? content.music_servers : [];
             renderKeyNumbers(d);
             renderWorkers(d.workers);
+            renderQueueBacklog(d.queue_backlog);
             renderRecentTasks(d.recent_tasks);
             renderTopGenre(content.top_genre);
             renderMoodsCoverage(content.moods_coverage);

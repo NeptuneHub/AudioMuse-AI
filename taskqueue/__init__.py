@@ -236,6 +236,10 @@ def worker_snapshot(conn=None):
     return _with_cursor(lambda sql, cur: sql.worker_snapshot(cur), conn)
 
 
+def queue_backlog(conn=None):
+    return _with_cursor(lambda sql, cur: sql.queue_backlog(cur), conn)
+
+
 def request_cancel(task_id, conn=None):
     _with_cursor(lambda sql, cur: sql.notify_cancel(cur, str(task_id)), conn)
 
