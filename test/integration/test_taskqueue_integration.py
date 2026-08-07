@@ -20,11 +20,14 @@ Main Features:
 * A second live main task is refused by the unique index, and a sweep still fits
 * A cancelled row cannot be claimed, and a claimed row cannot be claimed twice
 * A finished root keeps one recap row with no func and no payload
+* A fan-out stores its shared body once, counted on the driver, not on a stand-in
 """
 
 import json
 import os
+import select
 import sys
+import threading
 import time
 
 import pytest
@@ -72,8 +75,17 @@ def queue_db(shared_pg_dsn):
     with conn.cursor() as cur:
         sql.ensure_schema(cur)
     conn.commit()
-    yield conn
-    conn.close()
+    try:
+        yield conn
+    finally:
+        try:
+            conn.rollback()
+            conn.cursor_factory = None
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS task_status CASCADE")
+        finally:
+            conn.close()
 
 
 def _fresh(shared_pg_dsn, application_name='audiomuse-test'):
@@ -120,6 +132,33 @@ def _age_row(conn, task_id, seconds=600):
             (seconds, task_id),
         )
     conn.commit()
+
+
+NOTIFY_TIMEOUT_SECONDS = 15.0
+
+
+def _bare_worker(shared_pg_dsn):
+    from taskqueue.worker import Worker
+
+    worker = Worker.__new__(Worker)
+    worker._shared_cache = {}
+    worker._claim_txn = threading.Lock()
+    worker._conn = _fresh(shared_pg_dsn)
+    return worker
+
+
+def _count_statement(conn, statement):
+    executions = []
+    base = conn.cursor_factory or psycopg2.extensions.cursor
+
+    class _CountingCursor(base):
+        def execute(self, query, params=None):
+            if query == statement:
+                executions.append(params)
+            return super().execute(query, params)
+
+    conn.cursor_factory = _CountingCursor
+    return executions
 
 
 class TestOnlyOneWorkerEverClaimsAJob:
@@ -345,7 +384,8 @@ class TestAFinishedRootIsOneRow:
         assert written == config.TASK_STATUS_SUCCESS
         status, _attempts, _max, func, payload, _worker = _row(queue_db, 'done-1')
         assert status == config.TASK_STATUS_SUCCESS
-        assert func is None and payload is None
+        assert func is None
+        assert payload is None
 
     def test_a_row_claimed_by_someone_else_is_not_overwritten(
         self, queue_db, shared_pg_dsn
@@ -716,9 +756,21 @@ class TestTheReclaimNoticeNamesTheGenerationItTookTheTaskFrom:
             cur.execute('LISTEN ' + sql.CHANNEL_RECLAIM)
         return conn
 
-    def _drain(self, conn):
-        conn.poll()
-        return [n.payload for n in conn.notifies]
+    def _await_reclaim(self, conn, task_id):
+        deadline = time.monotonic() + NOTIFY_TIMEOUT_SECONDS
+        notices = []
+        while True:
+            conn.poll()
+            while conn.notifies:
+                decoded = sql.decode_reclaim(conn.notifies.pop(0).payload)
+                if decoded and decoded['task_id'] == task_id:
+                    notices.append(decoded)
+            if notices:
+                return notices
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return notices
+            select.select([conn], [], [], remaining)
 
     def test_the_claim_hands_back_the_attempts_the_row_now_carries(
         self, queue_db, shared_pg_dsn
@@ -757,13 +809,14 @@ class TestTheReclaimNoticeNamesTheGenerationItTookTheTaskFrom:
             finally:
                 conn.close()
 
-            payloads = self._drain(listener)
+            notices = self._await_reclaim(listener, 'gen-2')
         finally:
             listener.close()
 
-        notices = [sql.decode_reclaim(p) for p in payloads]
-        notices = [n for n in notices if n and n['task_id'] == 'gen-2']
-        assert notices, 'a requeue must announce itself'
+        assert notices, (
+            'a requeue must announce itself, and nothing arrived on '
+            f'{sql.CHANNEL_RECLAIM} within {NOTIFY_TIMEOUT_SECONDS} seconds'
+        )
         assert notices[0]['worker_id'] == 'worker-A'
         assert notices[0]['attempts'] == job['attempts']
 
@@ -787,13 +840,15 @@ class TestTheReclaimNoticeNamesTheGenerationItTookTheTaskFrom:
             finally:
                 conn.close()
 
-            notices = [sql.decode_reclaim(p) for p in self._drain(listener)]
+            notices = self._await_reclaim(listener, 'gen-3')
         finally:
             listener.close()
 
-        assert any(
-            n and n['task_id'] == 'gen-3' and n['worker_id'] == 'worker-B' for n in notices
+        assert notices, (
+            'a give-up must announce itself too, and nothing arrived on '
+            f'{sql.CHANNEL_RECLAIM} within {NOTIFY_TIMEOUT_SECONDS} seconds'
         )
+        assert any(n['worker_id'] == 'worker-B' for n in notices)
 
     def test_the_next_claim_gets_an_attempt_no_stale_notice_can_address(
         self, queue_db, shared_pg_dsn
@@ -860,7 +915,7 @@ class TestOneLargeInputIsStoredOnceForTheWholeFanOut:
             task_id='kid-s',
             task_type='clustering_batch',
             parent_task_id='parent-s',
-            shared_kwargs=('genre_to_lightweight_track_data_map_json',),
+            shared={'genre_to_lightweight_track_data_map_json': None},
             conn=queue_db,
         )
         queue_db.commit()
@@ -886,7 +941,7 @@ class TestOneLargeInputIsStoredOnceForTheWholeFanOut:
                 task_id=f'kid-{index}',
                 task_type='clustering_batch',
                 parent_task_id='parent-s',
-                shared_kwargs=('genre_to_lightweight_track_data_map_json',),
+                shared={'genre_to_lightweight_track_data_map_json': None},
                 conn=queue_db,
             )
         queue_db.commit()
@@ -902,7 +957,6 @@ class TestOneLargeInputIsStoredOnceForTheWholeFanOut:
 
     def test_the_child_receives_the_byte_identical_body(self, queue_db, shared_pg_dsn):
         import taskqueue
-        from taskqueue.worker import Worker
 
         body = 'z' * 150000
         _enqueue(queue_db, 'parent-s', task_type='main_clustering')
@@ -913,14 +967,12 @@ class TestOneLargeInputIsStoredOnceForTheWholeFanOut:
             task_type='clustering_batch',
             parent_task_id='parent-s',
             queue=sql.QUEUE_HIGH,
-            shared_kwargs=('genre_to_lightweight_track_data_map_json',),
+            shared={'genre_to_lightweight_track_data_map_json': None},
             conn=queue_db,
         )
         queue_db.commit()
 
-        worker = Worker.__new__(Worker)
-        worker._shared_cache = {}
-        worker._conn = _fresh(shared_pg_dsn)
+        worker = _bare_worker(shared_pg_dsn)
         try:
             with worker._conn.cursor() as cur:
                 job = sql.claim(cur, sql.QUEUE_HIGH, time.time(), worker_id='w1')
@@ -934,10 +986,9 @@ class TestOneLargeInputIsStoredOnceForTheWholeFanOut:
         assert taskqueue.SHARED_KWARG_REF not in restored
 
     def test_a_worker_reads_the_body_once_for_every_sibling_batch(
-        self, queue_db, shared_pg_dsn
+        self, queue_db, shared_pg_dsn, monkeypatch
     ):
         import taskqueue
-        from taskqueue.worker import Worker
 
         body = 'w' * 50000
         _enqueue(queue_db, 'parent-s', task_type='main_clustering')
@@ -949,20 +1000,18 @@ class TestOneLargeInputIsStoredOnceForTheWholeFanOut:
                 task_type='clustering_batch',
                 parent_task_id='parent-s',
                 queue=sql.QUEUE_HIGH,
-                shared_kwargs=('genre_to_lightweight_track_data_map_json',),
+                shared={'genre_to_lightweight_track_data_map_json': None},
                 conn=queue_db,
             )
         queue_db.commit()
 
-        worker = Worker.__new__(Worker)
-        worker._shared_cache = {}
-        worker._conn = _fresh(shared_pg_dsn)
+        worker = _bare_worker(shared_pg_dsn)
         reads = []
         original = sql.get_shared
+        monkeypatch.setattr(sql, 'get_shared', lambda cur, task_id, token: (
+            reads.append(token) or original(cur, task_id, token)
+        ))
         try:
-            sql.get_shared = lambda cur, task_id, token: (
-                reads.append(token) or original(cur, task_id, token)
-            )
             for _ in range(4):
                 with worker._conn.cursor() as cur:
                     job = sql.claim(cur, sql.QUEUE_HIGH, time.time(), worker_id='w1')
@@ -971,7 +1020,6 @@ class TestOneLargeInputIsStoredOnceForTheWholeFanOut:
                     'genre_to_lightweight_track_data_map_json'
                 ] == body
         finally:
-            sql.get_shared = original
             worker._conn.close()
 
         assert len(reads) == 1, 'sibling batches share one token, so one read serves them all'
@@ -1006,30 +1054,8 @@ class TestTheSharedBodyIsWrittenOnceNotOncePerChild:
 
         body = 'q' * 120000
         _enqueue(queue_db, 'parent-w', task_type='main_clustering')
-        writes = []
-        original = sql._PUT_SHARED
-
-        def counting_execute(cur, statement, params):
-            if statement is original:
-                writes.append(params[0])
-            return cur.execute(statement, params)
-
-        real_put = sql.put_shared
-
-        def traced(cur, task_id, payload_body, token=None):
-            before = len(writes)
-            token = token or sql.shared_token_for(payload_body)
-            cur.execute(sql._SHARED_TOKEN, (task_id,))
-            existing = cur.fetchone()
-            if existing is not None and existing[0] == token:
-                return token
-            writes.append(token)
-            assert len(writes) == before + 1
-            cur.execute(sql._PUT_SHARED, (token, payload_body, task_id))
-            cur.fetchone()
-            return token
-
-        sql.put_shared = traced
+        original_factory = queue_db.cursor_factory
+        writes = _count_statement(queue_db, sql._PUT_SHARED)
         try:
             for index in range(5):
                 taskqueue.enqueue(
@@ -1039,16 +1065,28 @@ class TestTheSharedBodyIsWrittenOnceNotOncePerChild:
                     task_type='clustering_batch',
                     parent_task_id='parent-w',
                     queue=sql.QUEUE_HIGH,
-                    shared_kwargs=('genre_to_lightweight_track_data_map_json',),
+                    shared={'genre_to_lightweight_track_data_map_json': None},
                     conn=queue_db,
                 )
             queue_db.commit()
         finally:
-            sql.put_shared = real_put
+            queue_db.cursor_factory = original_factory
 
         assert len(writes) == 1, (
             f"the body must be stored once for the whole fan-out, not {len(writes)} times"
         )
+        token, _stored_body, owner = writes[0]
+        assert owner == 'parent-w'
+        assert token == sql.shared_token_for(body)
+
+        with queue_db.cursor() as cur:
+            cur.execute("SELECT shared_token FROM task_status WHERE task_id = 'parent-w'")
+            assert cur.fetchone()[0] == token
+            cur.execute(
+                "SELECT count(*) FROM task_status WHERE parent_task_id = 'parent-w'"
+            )
+            assert cur.fetchone()[0] == 5
+        queue_db.commit()
 
     def test_a_changed_body_does_replace_the_stored_one(self, queue_db):
         _enqueue(queue_db, 'parent-w', task_type='main_clustering')

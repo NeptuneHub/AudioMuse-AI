@@ -119,8 +119,6 @@ class TestClassify:
         assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_CONNECTION
 
     def test_module_prefix_prevents_name_collision(self):
-        # A third-party library that reuses the name 'ConnectionError' must NOT be
-        # classified as a media-server refusal; it falls through to the caller default.
         class ConnectionError(Exception):  # noqa: A001
             pass
 
@@ -141,7 +139,6 @@ class TestClassify:
         )
 
     def test_builtin_connection_reset_is_not_media_server(self):
-        # Builtin ConnectionResetError from local I/O must not become a media-server code.
         assert (
             em.classify(ConnectionResetError('pipe'), ed.ERR_ANALYSIS_FAILED)
             == ed.ERR_ANALYSIS_FAILED

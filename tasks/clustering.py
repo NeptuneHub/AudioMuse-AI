@@ -34,11 +34,24 @@ are REAPED - the row is deleted as its result is read - so a batch cannot be
 counted twice and there is no processed-id set, no adoption pass and no
 start-time table to keep in step. The single exit is "nothing live left, and
 either every batch has been launched or something told us to stop launching",
-which cannot hang: a child either finishes, or its worker dies and the queue
-requeues it within seconds. There is deliberately NO watchdog and NO timeout
-anywhere in this loop: slow hardware must never be mistaken for a hang, and the
-one escape hatch is the user's Cancel, which revokes the whole run and its
-children in one stroke.
+which cannot hang while anything is still moving: a child either finishes, or its
+worker dies and the queue requeues it within seconds. There is deliberately NO
+per-batch timeout, because slow hardware must never be mistaken for a hang.
+
+That guarantee has exactly one hole, and CLUSTERING_STALL_TIMEOUT_MINUTES is the
+bound for it: a child wedged inside native code that never returns keeps its
+worker process alive, so the worker still holds the advisory lock, reclaim
+correctly leaves the row alone, the live set never drains and an unattended cron
+run waits at a frozen generation count with nobody there to press Cancel. The
+valve is NOT a per-batch budget and cannot fire on a batch that is merely slow:
+its clock is reset by any change at all anywhere in the run - a batch finishing,
+failing, being launched, or entering or leaving the live set - and by a pass that
+could not read the queue at all, so neither a long database outage nor a slow
+child is ever mistaken for a wedged one, and the valve expires only when nothing
+whatsoever has happened for hours. When it does, the parent cancels the batches
+it is still waiting on through the same revoke the user's Cancel uses, records on
+its own row how long it waited and how many batches it gave up on, and finishes
+with the best result it already holds.
 
 That is only possible because the parent persists its own progress on its own
 row (_resumable_progress). It used to start every attempt at zero and rebuild
@@ -50,6 +63,23 @@ fields nothing reads and by writing only when something CHANGED, which is once
 per batch, the rate at which that same payload was written before. runs_completed
 is now a progress figure ONLY: it is no longer the loop's exit condition, so a
 failed batch no longer has to fake progress to keep the parent from starving.
+
+The reap and the launch are part of the very write that records them. Both run
+on the parent's own connection WITHOUT committing, and the status write that
+carries the absorbed result - or the incremented batches_launched - is what
+commits them, so a parent that dies mid-pass either keeps a finished batch's
+result or keeps its row, and either has a batch queued and counted or has
+neither. Committing them on their own was the whole failure: a finished batch
+vanished between the delete and the parent's next report, and a launch counter
+that reached the row a pass late let a resumed parent re-enqueue - under the
+same deterministic id, against a row the recovery reap had just deleted - a
+batch that had already run, then count its iterations and its elite a second
+time. A write can fail to land by two routes and both roll the transaction back:
+the parent suppresses it here when its claim is already gone, and save_task_status
+rolls back itself when the row refuses the write - a Cancel that landed between
+the two checks. Either way the in-memory counters are restored to the values
+still on the row, so the next pass credits that batch exactly once and no reaped
+result is ever committed away with nothing recording it.
 * Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
   so playlists span the library rather than one dominant genre.
 * _calibrate_cluster_params: per-server auto-tuning for EVERY algorithm via up
@@ -83,6 +113,7 @@ import uuid
 import taskqueue
 
 
+from psycopg2 import OperationalError
 from psycopg2.extras import DictCursor
 
 from config import (
@@ -107,6 +138,7 @@ from config import (
     CLUSTERING_MAX_PLAYLIST_SONGS,
     CLUSTERING_CALIBRATION_MAX_TRIES,
     CLUSTERING_EARLY_STOP_BATCHES,
+    CLUSTERING_STALL_TIMEOUT_MINUTES,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
@@ -115,7 +147,7 @@ from config import (
 )
 
 from error import error_manager
-from error.error_dictionary import ERR_CLUSTERING_FAILED
+from error.error_dictionary import ERR_CLUSTERING_FAILED, ERR_DB_CONNECTION
 
 from app_helper import (
     save_task_status,
@@ -398,6 +430,14 @@ def run_clustering_batch_task(
                 "final_subset_track_ids": current_sampled_track_ids,
             }
 
+        except OperationalError as e:
+            logger.exception(
+                "Database connection error during clustering batch %s; leaving the "
+                "row for the queue to requeue rather than failing it here.",
+                batch_id_str,
+            )
+            error_manager.record(ERR_DB_CONNECTION, str(e))
+            raise
         except Exception as e:
             logger.exception(f"Clustering batch {batch_id_str} failed")
             err = error_manager.record(
@@ -802,7 +842,7 @@ def _make_server_reporter(log_and_update, server_label, base_progress, span):
     def report(message, local_pct, task_state=TASK_STATUS_PROGRESS):
         scoped = f"[{server_label}] {message}" if server_label else message
         pct = base_progress + (max(0.0, min(100.0, float(local_pct))) / 100.0) * span
-        log_and_update(scoped, pct, task_state=task_state)
+        return log_and_update(scoped, pct, task_state=task_state)
 
     return report
 
@@ -1138,8 +1178,13 @@ def _cluster_one_server(
     )
     next_batch_to_launch = int(state.get("batches_launched") or 0)
 
+    local_pct = 5
+
+    def persist_progress(message):
+        return report(message, local_pct)
+
     if child_tasks_from_db or next_batch_to_launch:
-        _absorb_finished_batches(state, current_task_id)
+        _absorb_finished_batches(state, current_task_id, persist_progress)
         logger.info(
             "Resuming '%s' from its own persisted progress: %d/%d runs, %d batches "
             "already launched.",
@@ -1150,10 +1195,9 @@ def _cluster_one_server(
         initial_subset_data = _get_stratified_song_subset(genre_map, target_songs_per_genre)
         state["last_subset_ids"] = [t['item_id'] for t in initial_subset_data]
 
-    local_pct = 5
-
     stop_launching = False
     last_progress_signature = None
+    last_progress_at = time.time()
 
     while True:
         task_info = get_task_info_from_db(current_task_id)
@@ -1163,12 +1207,13 @@ def _cluster_one_server(
             report("Task revoked, stopping.", local_pct, task_state=TASK_STATUS_REVOKED)
             return 'revoked', None
 
-        _absorb_finished_batches(state, current_task_id)
+        _absorb_finished_batches(state, current_task_id, persist_progress)
 
         try:
             live = _live_batches(state, current_task_id)
         except Exception:
             logger.exception("Could not list the live clustering batches; retrying")
+            last_progress_at = time.time()
             time.sleep(3)
             continue
 
@@ -1193,6 +1238,7 @@ def _cluster_one_server(
             and len(live) < MAX_CONCURRENT_BATCH_JOBS
             and next_batch_to_launch < num_total_batches
         ):
+            launch_conn = get_db()
             launched = _launch_batch_job(
                 state,
                 current_task_id,
@@ -1223,14 +1269,27 @@ def _cluster_one_server(
                 score_weight_other_feature_purity_param,
                 top_n_moods_for_clustering_param,
                 enable_clustering_embeddings_param,
+                conn=launch_conn,
             )
             if not launched:
+                _rollback_quietly(launch_conn)
                 report("Task revoked before the next batch could start.", local_pct,
                        task_state=TASK_STATUS_REVOKED)
                 return 'revoked', None
+            state["batches_launched"] = next_batch_to_launch + 1
+            if not persist_progress(
+                f"Started batch {next_batch_to_launch + 1}/{num_total_batches}."
+            ):
+                state["batches_launched"] = next_batch_to_launch
+                _rollback_quietly(launch_conn)
+                logger.warning(
+                    "Could not record batch %d of %s as launched; its enqueue was "
+                    "rolled back with it so the next pass launches it exactly once.",
+                    next_batch_to_launch, current_task_id,
+                )
+                break
             live.append(f"{state.get('job_prefix') or current_task_id}_batch_{next_batch_to_launch}")
             next_batch_to_launch += 1
-            state["batches_launched"] = next_batch_to_launch
 
         local_pct = (
             5 + int(75 * min(state["runs_completed"], num_clustering_runs) / num_clustering_runs)
@@ -1243,8 +1302,23 @@ def _cluster_one_server(
         )
         if progress_signature != last_progress_signature:
             last_progress_signature = progress_signature
+            last_progress_at = time.time()
             report(
                 f"Progress: {state['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(live)}. Best score: {state['best_score']:.2f}",
+                local_pct,
+            )
+        elif live and _stall_valve_expired(last_progress_at):
+            stalled_minutes = (time.time() - last_progress_at) / 60.0
+            last_progress_at = time.time()
+            stop_launching = True
+            abandoned = _give_up_on_stalled_batches(
+                live, current_task_id, stalled_minutes
+            )
+            report(
+                f"No progress of any kind for {stalled_minutes:.0f} min (limit: "
+                f"{CLUSTERING_STALL_TIMEOUT_MINUTES} min). Gave up on {abandoned} of "
+                f"{len(live)} unfinished batch(es) and finishing with the best result "
+                f"from {state['runs_completed']}/{num_clustering_runs} runs.",
                 local_pct,
             )
 
@@ -1257,7 +1331,7 @@ def _cluster_one_server(
 
         time.sleep(3)
 
-    _absorb_finished_batches(state, current_task_id)
+    _absorb_finished_batches(state, current_task_id, persist_progress)
 
     try:
         taskqueue.clear_shared_payload(current_task_id, shared_genre_map_token)
@@ -1422,6 +1496,31 @@ def _revoke_batch(job_id, parent_task_id, message):
         return False
 
 
+def _stall_valve_expired(last_progress_at):
+    if CLUSTERING_STALL_TIMEOUT_MINUTES <= 0:
+        return False
+    return (time.time() - last_progress_at) >= CLUSTERING_STALL_TIMEOUT_MINUTES * 60
+
+
+def _give_up_on_stalled_batches(live, parent_task_id, stalled_minutes):
+    abandoned = 0
+    for job_id in live:
+        if _revoke_batch(
+            job_id, parent_task_id,
+            'The parent clustering task gave up on this batch: nothing anywhere in '
+            f'the run changed for {stalled_minutes:.0f} minutes, so it stopped '
+            'waiting rather than hang the whole run on it.',
+        ):
+            abandoned += 1
+    logger.warning(
+        "Clustering %s made no progress of any kind for %.0f minutes (limit: %d "
+        "minutes); gave up on %d of %d unfinished batch(es).",
+        parent_task_id, stalled_minutes, CLUSTERING_STALL_TIMEOUT_MINUTES,
+        abandoned, len(live),
+    )
+    return abandoned
+
+
 def _revoke_foreign_batches(parent_task_id, job_prefix):
     try:
         live = taskqueue.live_children(parent_task_id)
@@ -1526,32 +1625,71 @@ def _absorb_batch_result(state_dict, job_id, status, details):
     state_dict["stale_batches"] = 0 if improved else state_dict.get("stale_batches", 0) + 1
 
 
-def _absorb_finished_batches(state_dict, parent_task_id):
+_ABSORBED_KEYS = (
+    "runs_completed", "best_score", "best_result", "elite_solutions",
+    "failed_batches", "stale_batches", "last_subset_ids",
+)
+
+
+def _absorbed_snapshot(state_dict):
+    snapshot = {key: state_dict.get(key) for key in _ABSORBED_KEYS}
+    snapshot["elite_solutions"] = list(snapshot["elite_solutions"] or [])
+    return snapshot
+
+
+def _rollback_quietly(db):
+    if db is None:
+        return
     try:
-        reaped = taskqueue.reap_finished_children(parent_task_id)
+        db.rollback()
+    except Exception:
+        logger.exception("Could not roll back the clustering parent transaction")
+
+
+def _discard_reap(db, state_dict, snapshot):
+    _rollback_quietly(db)
+    state_dict.update(snapshot)
+
+
+def _absorb_finished_batches(state_dict, parent_task_id, persist):
+    snapshot = _absorbed_snapshot(state_dict)
+    mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
+    absorbed = 0
+    db = None
+    try:
+        db = get_db()
+        reaped = taskqueue.reap_finished_children(parent_task_id, conn=db)
+        for child in reaped:
+            job_id = str(child.get('task_id') or '')
+            if not job_id.startswith(mine):
+                continue
+            details = child.get('details')
+            _absorb_batch_result(
+                state_dict, job_id, child.get('status'),
+                details if isinstance(details, dict) else {},
+            )
+            absorbed += 1
+
+        if not absorbed:
+            db.commit()
+            return 0
+
+        state_dict["elite_solutions"].sort(key=lambda x: x["score"], reverse=True)
+        state_dict["elite_solutions"] = state_dict["elite_solutions"][:TOP_N_ELITES]
+        persisted = persist(
+            f"Absorbed {absorbed} finished batch(es): "
+            f"{state_dict['runs_completed']} runs completed."
+        )
     except Exception:
         logger.exception(
             "Could not reap the finished clustering batches of %s; retrying next pass",
             parent_task_id,
         )
+        persisted = False
+
+    if not persisted:
+        _discard_reap(db, state_dict, snapshot)
         return 0
-
-    mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
-    absorbed = 0
-    for child in reaped:
-        job_id = str(child.get('task_id') or '')
-        if not job_id.startswith(mine):
-            continue
-        details = child.get('details')
-        _absorb_batch_result(
-            state_dict, job_id, child.get('status'),
-            details if isinstance(details, dict) else {},
-        )
-        absorbed += 1
-
-    if absorbed:
-        state_dict["elite_solutions"].sort(key=lambda x: x["score"], reverse=True)
-        state_dict["elite_solutions"] = state_dict["elite_solutions"][:TOP_N_ELITES]
     return absorbed
 
 
@@ -1566,7 +1704,7 @@ def _live_batches(state_dict, parent_task_id):
 
 def _launch_batch_job(
     state_dict, parent_task_id, batch_idx, total_runs, shared_genre_map_token,
-    target_per_genre, *args
+    target_per_genre, *args, conn=None
 ):
     (
         clustering_method,
@@ -1684,10 +1822,10 @@ def _launch_batch_job(
                 task_type='clustering_batch',
                 queue=taskqueue.QUEUE_DEFAULT,
                 parent_task_id=parent_task_id,
-                shared_kwargs=('genre_to_lightweight_track_data_map_json',),
-                shared_tokens={
+                shared={
                     'genre_to_lightweight_track_data_map_json': shared_genre_map_token,
                 },
+                conn=conn,
             )
         except (taskqueue.TaskNotQueued, taskqueue.TaskAlreadyRunning):
             logger.info(

@@ -197,6 +197,22 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # Excluded so it is never written to app_config, never overrides from the DB,
     # and any stale row from an older version is pruned on the next boot.
     'DURATION_TOLERANCE_SECONDS',
+    # Derived from CONTROL_IPC_TIMEOUT_SECONDS, not chosen: it must always track
+    # the action budget it exists to cover. A row persisted from an older version
+    # would pin the reclaim stand-down while the action budget moved underneath it,
+    # which is the deliberate-restart-charges-an-attempt bug all over again.
+    'QUEUE_CONTROL_ACTION_WINDOW_SECONDS',
+    # Per-container process plumbing, NOT install-wide preferences. app_config is
+    # shared by every container, so persisting one container's value forces it on
+    # all of them at the next boot. AUDIO_MUSE_LISTENER_ID is the worst case: it
+    # exists precisely to tell two worker containers on ONE host apart, so a
+    # database-wide value collapses their acknowledgement rows onto a single
+    # identity while pg_stat_activity still counts two LISTEN connections, and
+    # every restart or stop handshake then times out reporting failure.
+    'AUDIO_MUSE_LISTENER_ID',
+    'SUPERVISORCTL_CMD',
+    'SUPERVISOR_CONF',
+    'DISABLE_FLASK_RESTART',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
@@ -290,6 +306,18 @@ MAX_CONCURRENT_BATCH_JOBS = int(os.environ.get("MAX_CONCURRENT_BATCH_JOBS", "10"
 
 # --- Clustering Batch Timeout and Failure Recovery ---
 CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Max number of failed batches before stopping
+# Last-resort safety valve for the clustering parent's drain loop, NOT a per-batch
+# budget: it measures the wall time during which NOTHING in the whole run changed
+# (no batch finished, none failed, none was launched, no live batch appeared or
+# disappeared). A batch wedged in non-returning native code keeps its worker alive,
+# so the worker still holds the advisory lock, reclaim correctly leaves it alone and
+# an unattended cron run would wait at a frozen generation count forever. When this
+# expires the parent cancels the batches it is still waiting on and finishes with the
+# best result it already has. The predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES was 60
+# and killed a batch on ITS OWN elapsed time, which a merely slow batch trips; this
+# one only fires when the entire run is frozen, so it is set to four times that to
+# stay far above any legitimate single-batch duration on slow hardware. 0 disables it.
+CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "240")) # Minutes without ANY change anywhere in a clustering run before the parent gives up on the batches it is waiting for (0 = never give up)
 
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
@@ -540,7 +568,13 @@ QUEUE_INLINE_STALE_SECONDS = float(os.getenv('QUEUE_INLINE_STALE_SECONDS', '1800
 # SIGTERM to SIGKILL window when a worker kills its own process tree, long enough
 # for loky to release its /dev/shm segments.
 QUEUE_KILL_GRACE_SECONDS = float(os.getenv('QUEUE_KILL_GRACE_SECONDS', '5'))
-# One budget for ask-and-confirm on a worker restart/stop/start request.
+# One budget for ask-and-confirm on a worker restart/stop/start request. It is how
+# long a CALLER waits for the acknowledgement and nothing else: a caller may stop
+# waiting long before the action itself ends, the request row is left RUNNING on
+# purpose, and the late acknowledgements still land on it. How long the ACTION may
+# legitimately RUN is QUEUE_CONTROL_ACTION_WINDOW_SECONDS below, and the two must
+# never be aliased again - reclaim used to stand down for this ack-wait budget, so
+# a restart that legitimately took 45s charged a worker-loss attempt from t=30.
 QUEUE_CONTROL_TIMEOUT_SECONDS = float(os.getenv('QUEUE_CONTROL_TIMEOUT_SECONDS', '30'))
 # A restart that is only ADVISORY - saving the wizard, changing the default
 # server, installing a plugin - is answered on a request thread, so it must not
@@ -557,8 +591,43 @@ QUEUE_CONTROL_POLL_INTERVAL_SECONDS = float(
 # This is the LOCAL IPC action timeout - the analogue of the hardcoded
 # subprocess timeout run_supervisorctl_detail uses for supervisorctl - NOT the
 # queue's ask-and-confirm budget above, so the two must not be aliased.
+# The control server answers only AFTER synchronously stopping and starting all
+# three worker children, and a worst-case stop is 15s TERM plus kill plus 5s per
+# child on Windows (10 plus 5 elsewhere), so three busy workers need 45-60s. A
+# timeout below that makes a CORRECT restart report failure, the listener records
+# a FAIL and skips the uncharged requeue, and the tasks this deliberate restart
+# killed are reclaimed WITH an attempt charge - three wizard saves during one long
+# analysis then exhaust QUEUE_MAX_ATTEMPTS and fail the run for good. The floor is
+# not negotiable downwards; it was already raised once after that incident.
 CONTROL_IPC_TIMEOUT_SECONDS = max(
-    5.0, float(os.getenv('AUDIO_MUSE_CONTROL_IPC_TIMEOUT_SECONDS', '30'))
+    75.0, float(os.getenv('AUDIO_MUSE_CONTROL_IPC_TIMEOUT_SECONDS', '120'))
+)
+# The ONE truth about how long a DELIBERATE control action can still be running,
+# and therefore the only window in which a task whose worker is being restarted on
+# purpose must not be charged a worker-loss attempt. The listener runs the
+# supervisor action SYNCHRONOUSLY - bounded by the IPC budget above, which is the
+# 45-60s a three-worker stop really costs - and only then requeues the stopped
+# workers' tasks and records its acknowledgement, so the request row is in flight
+# for the action plus one handshake round trip.
+# Three consumers read this and they MUST read the same number: maintenance's
+# reclaim stand-down, the exemption that spares a handshake somebody is still
+# waiting on from the next publisher's cleanup, and the restore's stop request. A
+# stand-down shorter than the action lets the first worker back charge attempts for
+# workers that are still being restarted; an exemption shorter than the stand-down
+# lets a second publisher delete the very request row the stand-down reads; a
+# restore stop shorter than the action answers 503 while the fleet is still
+# legitimately stopping.
+# DERIVED, deliberately not a knob of its own: a window an operator could set below
+# the action it has to cover would silently reopen exactly that bug, and widening
+# the IPC budget widens this with it.
+# It still EXPIRES, and this is precisely what bounds it: the request row's
+# timestamp is written once when the action is published and is never refreshed
+# while it runs, so a control row a crashed listener left RUNNING suspends reclaim
+# for this long and not one second longer. Refreshing that timestamp as the action
+# progressed would need a heartbeat thread in the listener, and a heartbeat that
+# outlived a wedged action is the unbounded stand-down this must never have.
+QUEUE_CONTROL_ACTION_WINDOW_SECONDS = (
+    CONTROL_IPC_TIMEOUT_SECONDS + QUEUE_CONTROL_TIMEOUT_SECONDS
 )
 # Errors kept on a failed root row. The user needs a sample, not a transcript.
 QUEUE_MAX_ERRORS_KEPT = max(1, int(os.getenv('QUEUE_MAX_ERRORS_KEPT', '5')))
@@ -605,6 +674,15 @@ AUDIOMUSE_PLATFORM = os.environ.get("AUDIOMUSE_PLATFORM", "").lower()
 AUDIOMUSE_CONTROL_SOCKET = os.environ.get("AUDIOMUSE_CONTROL_SOCKET", "")
 AUDIOMUSE_CONTROL_HOST = os.environ.get("AUDIOMUSE_CONTROL_HOST", "")
 AUDIOMUSE_CONTROL_PORT = os.environ.get("AUDIOMUSE_CONTROL_PORT", "")
+
+# Container builds drive supervisord instead of the native control endpoint above:
+# where its client binary and its config file live, plus the escape hatch that
+# stops Flask from restarting itself at all (for a process supervised by something
+# that has no supervisorctl). All three are per-container plumbing, so they stay
+# in SETUP_BOOTSTRAP_EXCLUDED_KEYS and are never mirrored into app_config.
+SUPERVISORCTL_CMD = os.environ.get("SUPERVISORCTL_CMD", "/usr/bin/supervisorctl")
+SUPERVISOR_CONF = os.environ.get("SUPERVISOR_CONF", "/etc/supervisor/conf.d/supervisord.conf")
+DISABLE_FLASK_RESTART = os.environ.get("DISABLE_FLASK_RESTART", "false").lower() == "true"
 
 # DATABASE_URL is DERIVED, never configured. Every deployment sets the five
 # POSTGRES_* parts and this is the single place that assembles them, so a
@@ -668,14 +746,16 @@ LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0
 LYRICS_ASR_BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "5"))
 LYRICS_ASR_MIN_AVG_LOGPROB = float(os.environ.get("LYRICS_ASR_MIN_AVG_LOGPROB", "-1.0"))
 LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB = float(os.environ.get("LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB", "-0.85"))
+# Root the image unpacks its model bundles under. Every model directory below
+# defaults inside it, so the path is written here once and referenced after.
+LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 # Where the Whisper-small ONNX bundle (encoder + merged decoder +
 # tokenizer files) is extracted. Pre-bundled in the official Docker
 # image from lyrics_model_whisper.tar.gz (project release).
 LYRICS_WHISPER_MODEL_DIR = os.environ.get(
     "LYRICS_WHISPER_MODEL_DIR",
-    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "whisper-small-onnx"),
+    os.path.join(LYRICS_MODEL_DIR, "whisper-small-onnx"),
 )
-LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 LYRICS_MAX_SONGS_TO_ANALYZE = 1000
 LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
     '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
@@ -1011,7 +1091,7 @@ AI_FALLBACK_GENRES = (
 # cache was thrown away and re-encoded on each run for nothing. It is a model
 # artefact, not scratch space, and the whisper/gte caches already live here.
 CLAP_OTHER_FEATURES_CACHE_DIR = os.environ.get(
-    "CLAP_OTHER_FEATURES_CACHE_DIR", os.environ.get("LYRICS_MODEL_DIR", "/app/model")
+    "CLAP_OTHER_FEATURES_CACHE_DIR", LYRICS_MODEL_DIR
 )
 CLAP_OTHER_FEATURES_CACHE_FILE = os.environ.get(
     "CLAP_OTHER_FEATURES_CACHE_FILE", "clap_other_feature_text_embeddings.npz"

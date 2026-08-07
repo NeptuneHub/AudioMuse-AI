@@ -36,6 +36,7 @@ from psycopg2 import sql as pgsql
 # App-level singletons (the DB connection and the task queue). Importing here keeps
 # the blueprint file self-contained - the rest of the app doesn't need to hand
 # anything in.
+from app_logging import sanitize_log_value
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 from database import (
     GLOBAL_CANCEL_EPOCH_KEY,
@@ -109,6 +110,7 @@ class _PlanningClaimError(RuntimeError):
 
 
 def _task_is_the_execute_job(task_id):
+    safe_task_id = sanitize_log_value(task_id)
     for attempt in (1, 2):
         try:
             db = get_db()
@@ -128,10 +130,10 @@ def _task_is_the_execute_job(task_id):
             if attempt == 1:
                 logger.warning(
                     "Could not classify migration task %s; retrying once",
-                    task_id, exc_info=True,
+                    safe_task_id, exc_info=True,
                 )
                 continue
-            logger.exception("Retry also failed for migration task %s", task_id)
+            logger.exception("Retry also failed for migration task %s", safe_task_id)
     return False
 
 
@@ -2018,6 +2020,20 @@ def execute():
 # so repeated status polls don't schedule the restart multiple times.
 _restart_scheduled_for_tasks = set()
 
+# The dry-run and source-refresh jobs return their payload to the worker, which
+# parks it under `final_summary_details`. The execute job never gets there: it
+# writes its own SUCCESS row through `_report_migration`, which merges the
+# summary into the TOP LEVEL of `details`, and the worker's finalize then
+# early-returns because the row is no longer RUNNING. Reading only the worker's
+# key therefore reported `result: null` for every execute job, so the page could
+# never tell the user their similarity / map index had been reset.
+_EXECUTE_SUMMARY_KEYS = ('ok', 'matched', 'index_rebuild_needed', 'already_applied')
+
+
+def _execute_summary_from_details(details):
+    summary = {key: details[key] for key in _EXECUTE_SUMMARY_KEYS if key in details}
+    return summary or None
+
 
 @migration_bp.route('/api/migration/status/<task_id>', methods=['GET'])
 def job_status(task_id):
@@ -2099,7 +2115,11 @@ def job_status(task_id):
             {
                 'id': task_id,
                 'status': status,
-                'result': details.get('final_summary_details') or details.get('result'),
+                'result': (
+                    details.get('final_summary_details')
+                    or details.get('result')
+                    or _execute_summary_from_details(details)
+                ),
                 'error': 'Job failed. Check the container logs for details.'
                 if status == config.TASK_STATUS_FAIL
                 else None,

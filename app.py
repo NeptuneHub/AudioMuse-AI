@@ -60,6 +60,8 @@ from app_helper import (
     sanitize_task_details,
 )
 from database import init_db
+from taskqueue.sql import CONTROL_TASK_TYPE
+from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
@@ -78,6 +80,12 @@ from error.error_manager import AudioMuseError
 from error.error_dictionary import UNKNOWN_ERROR_CODE
 
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
+
+# Queue rows the user never started. Both spellings come from the module that
+# WRITES them, because a rename that moved only one side left these filters
+# matching nothing: the handshake reappeared as a phantom dashboard task, and a
+# pending restart 409-blocked the next analysis or cleaning start.
+NON_USER_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
 
 logger = logging.getLogger(__name__)
 
@@ -597,10 +605,30 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
         ), 404
 
     cancelled_main_task_ids = [r['task_id'] for r in tasks_to_cancel]
-    total_cancelled_jobs = cancel_job_and_children_recursive(
-        cancelled_main_task_ids[0],
-        reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
-    )
+    # cancel_job_and_children_recursive re-raises when the tombstone commit fails.
+    # Without this the generic handler answered UNKNOWN 500 with no
+    # cancelled_main_tasks, so the caller could not tell a partially applied
+    # cancel from an unknown failure. The sibling /api/cancel/<task_id> answers 503.
+    try:
+        total_cancelled_jobs = cancel_job_and_children_recursive(
+            cancelled_main_task_ids[0],
+            reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
+        )
+    except Exception:
+        logger.exception(
+            "Bulk cancellation for %s could not be fully confirmed",
+            sanitize_for_log(task_type_prefix),
+        )
+        return jsonify(
+            {
+                "error": (
+                    "Cancellation could not be fully applied or confirmed; "
+                    "recovery tasks may remain active."
+                ),
+                "cancelled_main_tasks": cancelled_main_task_ids,
+                "details": None,
+            }
+        ), 503
 
     return jsonify(
         {
@@ -660,10 +688,11 @@ def get_last_overall_task_status_endpoint():
         SELECT task_id, task_type, status, progress, details, start_time, end_time
         FROM task_status
         WHERE parent_task_id IS NULL
-          AND task_type NOT IN ('worker_control', 'provider_migration_planner')
+          AND task_type NOT IN %s
         ORDER BY timestamp DESC
         LIMIT 1
-    """
+    """,
+        (NON_USER_TASK_TYPES,),
     )
     last_task_row = cur.fetchone()
     cur.close()
@@ -736,11 +765,11 @@ def get_active_tasks_endpoint():
         SELECT task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, start_time, end_time
         FROM task_status
         WHERE parent_task_id IS NULL AND status IN %s
-          AND task_type NOT IN ('worker_control', 'provider_migration_planner')
+          AND task_type NOT IN %s
         ORDER BY timestamp DESC
         LIMIT 1
     """,
-        (non_terminal_statuses,),
+        (non_terminal_statuses, NON_USER_TASK_TYPES),
     )
     active_main_task_row = cur.fetchone()
     cur.close()

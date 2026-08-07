@@ -486,24 +486,38 @@ def execute_provider_migration(session_id):
             if not state.get('restart_request_id'):
                 _persist_completed_restart_state(conn, session_id, request_id)
 
-            if not state.get('restart_acknowledged'):
-                acknowledged = _restart_request_result(request_id)
-                if acknowledged is not True:
-                    request_id = _await_worker_restart(
-                        conn,
-                        session_id,
-                        request_id,
-                        alignment_task_id=state.get('alignment_task_id'),
-                    )
+            try:
+                if not state.get('restart_acknowledged'):
+                    acknowledged = _restart_request_result(request_id)
+                    if acknowledged is not True:
+                        request_id = _await_worker_restart(
+                            conn,
+                            session_id,
+                            request_id,
+                            alignment_task_id=state.get('alignment_task_id'),
+                        )
 
-            _finalize_restart_handshake(
-                conn,
-                session_id,
-                request_id,
-                task_id,
-                "Provider migration applied and worker restart acknowledged.",
-                details=summary,
-            )
+                _finalize_restart_handshake(
+                    conn,
+                    session_id,
+                    request_id,
+                    task_id,
+                    "Provider migration applied and worker restart acknowledged.",
+                    details=summary,
+                )
+            except Exception:
+                logger.exception(
+                    "PROVIDER MIGRATION SESSION %s IS COMMITTED BUT THE WORKER RESTART "
+                    "HANDSHAKE DID NOT COMPLETE. The catalogue swap is durable; the "
+                    "workers must be restarted by hand so they pick up the new provider.",
+                    session_id,
+                )
+                _report_migration(
+                    task_id, TASK_STATUS_SUCCESS, 100,
+                    "Provider migration was applied. The workers did not confirm their "
+                    "restart, so restart AudioMuse by hand.",
+                    details=summary,
+                )
             return summary
 
         if session['status'] != 'dry_run_ready':
@@ -1170,10 +1184,6 @@ def _enqueue_post_migration_alignment(alignment_task_id=None):
     try:
         from tasks import multiserver_sync
 
-        # A CHILD of the migration, never a run of its own. As a root it took the
-        # start path, which empties task_status - so queueing it here deleted the
-        # migration's own recap out from under the wizard, which then polled it and
-        # reported "Job not found" for a migration that had fully succeeded.
         task_id = multiserver_sync.enqueue_server_alignment(
             message='Aligning the migrated server: rebuilding artist ids and file paths.',
             task_id=alignment_task_id,

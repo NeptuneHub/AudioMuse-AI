@@ -998,10 +998,35 @@ function testConnection() {
     });
 }
 
+// /api/setup answers 200 even when the workers never acknowledged their restart:
+// the configuration is durable and Flask restarts either way, so the save is not
+// an error. The response says so with `worker_restart_acknowledged: false` plus
+// the warning text to show, and that used to be dropped on the floor - the page
+// said "Configuration saved" and redirected as if everything had applied. The
+// warning goes in its OWN element: the countdown owns `save-feedback` and
+// rewrites it every second, so anything written there is erased.
+var saveRestartWarning = null;
+
+function showSaveRestartWarning(text) {
+    if (!saveRestartWarning) {
+        saveRestartWarning = document.createElement('p');
+        saveRestartWarning.id = 'save-restart-warning';
+        saveRestartWarning.className = 'inline-feedback status-pending';
+        saveRestartWarning.style.margin = '0.5rem 0 0';
+        saveRestartWarning.style.width = '100%';
+        saveFeedback.parentNode.insertBefore(saveRestartWarning, saveFeedback.nextSibling);
+    }
+    saveRestartWarning.textContent = text;
+    saveRestartWarning.style.display = 'block';
+}
+
 setupForm.addEventListener('submit', function(event) {
     event.preventDefault();
     saveButton.disabled = true;
     saveFeedback.style.display = 'none';
+    if (saveRestartWarning) {
+        saveRestartWarning.style.display = 'none';
+    }
     var passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
     var confirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
     var passwordValue = '';
@@ -1057,7 +1082,14 @@ setupForm.addEventListener('submit', function(event) {
         until: saved
     });
 
-    saved.catch(function(err) {
+    saved.then(function(data) {
+        if (data && data.worker_restart_acknowledged === false) {
+            showSaveRestartWarning(
+                data.warning
+                || 'The workers did not confirm their restart. Check the service logs.'
+            );
+        }
+    }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';
         var message = err.message || 'Unable to save configuration.';

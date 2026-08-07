@@ -16,7 +16,9 @@ task surfaces as TaskAlreadyRunning rather than as a check-then-act race.
 Main Features:
 * A successful start returns 202 with the task id it queued, at status NEW
 * Request parameters and config defaults reach the queued kwargs unchanged
-* A second live main task answers 409 with the running task's id
+* A live main task the gate can already see answers 409 and queues nothing
+* A start that passed the gate and lost the INSERT answers 409, never 500, and
+  names the task that actually won, even when that task has since finished
 * Cleaning also refuses while a sweep runs, which analysis deliberately does not
 * A queue failure answers 500 rather than leaving a half-claimed row
 """
@@ -51,6 +53,24 @@ def client():
     app.register_blueprint(analysis_bp)
     app.config['TESTING'] = True
     return app.test_client()
+
+
+def _lose_the_admission_race(monkeypatch, winner):
+    reads = []
+    attempted = []
+
+    def _active(**kwargs):
+        reads.append(kwargs)
+        return winner if len(reads) > 1 else None
+
+    def _reject(func, **kwargs):
+        attempted.append(func)
+        raise taskqueue.TaskAlreadyRunning()
+
+    monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_analysis, 'get_active_main_task', _active)
+    monkeypatch.setattr(app_analysis.taskqueue, 'enqueue', _reject)
+    return attempted
 
 
 class TestStartAnalysis:
@@ -101,7 +121,7 @@ class TestStartAnalysis:
 
         assert order == ['cleanup', 'enqueue']
 
-    def test_a_second_live_main_task_answers_409_with_the_running_task(
+    def test_a_live_main_task_the_gate_sees_answers_409_and_queues_nothing(
         self, client, monkeypatch
     ):
         monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
@@ -109,11 +129,10 @@ class TestStartAnalysis:
             app_analysis, 'get_active_main_task',
             lambda **_kw: {'task_id': 'live-1', 'status': config.TASK_STATUS_RUNNING},
         )
-
-        def _reject(func, **kwargs):
-            raise taskqueue.TaskAlreadyRunning()
-
-        monkeypatch.setattr(app_analysis.taskqueue, 'enqueue', _reject)
+        calls = []
+        monkeypatch.setattr(
+            app_analysis.taskqueue, 'enqueue', lambda func, **kw: calls.append(func)
+        )
 
         response = client.post('/api/analysis/start', json={})
 
@@ -122,6 +141,39 @@ class TestStartAnalysis:
         assert body['task_id'] == 'live-1'
         assert body['status'] == config.TASK_STATUS_RUNNING
         assert 'already in progress' in body['error'].lower()
+        assert calls == [], 'nothing may be queued once the gate has refused'
+
+    def test_a_start_that_passed_the_gate_then_lost_the_insert_answers_409_not_500(
+        self, client, monkeypatch
+    ):
+        attempted = _lose_the_admission_race(
+            monkeypatch, {'task_id': 'winner-1', 'status': config.TASK_STATUS_RUNNING}
+        )
+
+        response = client.post('/api/analysis/start', json={})
+
+        assert attempted == ['tasks.analysis.run_analysis_task'], (
+            'the gate has to let this start through, or the INSERT race is never run'
+        )
+        assert response.status_code == 409
+        body = response.get_json()
+        assert body['task_id'] == 'winner-1', (
+            'the losing id names a row the savepoint rolled back, so the answer has '
+            'to carry the task that actually holds the gate'
+        )
+        assert body['status'] == config.TASK_STATUS_RUNNING
+        assert 'already running' in body['error'].lower()
+
+    def test_losing_the_insert_to_a_task_that_has_since_finished_still_answers_409(
+        self, client, monkeypatch
+    ):
+        attempted = _lose_the_admission_race(monkeypatch, None)
+
+        response = client.post('/api/analysis/start', json={})
+
+        assert attempted, 'the gate has to let this start through'
+        assert response.status_code == 409
+        assert response.get_json()['task_id'] is None
 
     def test_a_queue_failure_answers_500(self, client, monkeypatch):
         monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
@@ -186,6 +238,24 @@ class TestStartCleaning:
             'had just asked for'
         )
         assert response.get_json()['task_id'] == 'sweep-1'
+
+    def test_a_cleaning_that_passed_the_gate_then_lost_the_insert_answers_409_not_500(
+        self, client, monkeypatch
+    ):
+        attempted = _lose_the_admission_race(
+            monkeypatch, {'task_id': 'winner-2', 'status': config.TASK_STATUS_RUNNING}
+        )
+
+        response = client.post('/api/cleaning/start', json={})
+
+        assert attempted == ['tasks.cleaning.identify_and_clean_orphaned_albums_task'], (
+            'the gate has to let this start through, or the INSERT race is never run'
+        )
+        assert response.status_code == 409
+        body = response.get_json()
+        assert body['task_id'] == 'winner-2'
+        assert body['status'] == config.TASK_STATUS_RUNNING
+        assert 'already running' in body['error'].lower()
 
 
 class TestCleaningPage:

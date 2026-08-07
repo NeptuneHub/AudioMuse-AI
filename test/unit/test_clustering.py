@@ -18,10 +18,13 @@ Main Features:
   by tempo and top moods
 * sanitize_for_json unwraps numpy types; postprocessing applies min-size filter,
   title/artist dedup, and top-N diverse playlist selection
+* Finished batches are absorbed on the parent connection that also writes the
+  progress, and a failed write rolls the reap and every absorbed key back
+  together, the two stop counters and the evolving subset included
 """
 
 import numpy as np
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from collections import defaultdict
 
 
@@ -133,11 +136,11 @@ class TestEarlyStopCounting:
             'top_n_clustering_playlist': top_n, 'batches_launched': 0,
         }
 
-    def _run_monitor(self, monkeypatch, batch_results, top_n=10):
-        from tasks import clustering
+    @staticmethod
+    def _reaped_rows(batch_results):
         import config
 
-        reaped = []
+        rows = []
         for i, result in enumerate(batch_results):
             status = config.TASK_STATUS_SUCCESS if result else config.TASK_STATUS_FAILURE
             details = {}
@@ -146,15 +149,32 @@ class TestEarlyStopCounting:
                     'iterations_completed_in_batch': result['iterations_completed_in_batch'],
                     'full_best_result_from_batch': result['best_result_from_batch'],
                 }
-            reaped.append({
+            rows.append({
                 'task_id': f'p_batch_{i}', 'status': status,
                 'sub_type_identifier': f'Batch_{i}', 'details': details,
             })
-        monkeypatch.setattr(
-            clustering.taskqueue, 'reap_finished_children', lambda _pid: reaped
-        )
+        return rows
+
+    @staticmethod
+    def _patch_reap(monkeypatch, reap):
+        from tasks import clustering
+
+        db = MagicMock()
+        monkeypatch.setattr(clustering, 'get_db', lambda: db)
+        monkeypatch.setattr(clustering.taskqueue, 'reap_finished_children', reap)
+        return db
+
+    @staticmethod
+    def _persisted(_message):
+        return True
+
+    def _run_monitor(self, monkeypatch, batch_results, top_n=10):
+        from tasks import clustering
+
+        rows = self._reaped_rows(batch_results)
+        self._patch_reap(monkeypatch, lambda _pid, conn=None: rows)
         state = self._state(top_n)
-        clustering._absorb_finished_batches(state, 'p')
+        clustering._absorb_finished_batches(state, 'p', self._persisted)
         return state
 
     def test_a_batch_from_another_server_phase_is_not_credited_to_this_one(
@@ -163,9 +183,9 @@ class TestEarlyStopCounting:
         from tasks import clustering
         import config
 
-        monkeypatch.setattr(
-            clustering.taskqueue, 'reap_finished_children',
-            lambda _pid: [{
+        self._patch_reap(
+            monkeypatch,
+            lambda _pid, conn=None: [{
                 'task_id': 'p_s9_batch_0', 'status': config.TASK_STATUS_SUCCESS,
                 'sub_type_identifier': 'Batch_0',
                 'details': {'iterations_completed_in_batch': 20},
@@ -173,7 +193,7 @@ class TestEarlyStopCounting:
         )
         state = self._state()
 
-        clustering._absorb_finished_batches(state, 'p')
+        clustering._absorb_finished_batches(state, 'p', self._persisted)
 
         assert state['runs_completed'] == 0, (
             'reap returns every finished child of the parent, so a batch belonging to '
@@ -217,15 +237,15 @@ class TestEarlyStopCounting:
             'details': {'iterations_completed_in_batch': 20},
         }]
 
-        def reap(_pid):
+        def reap(_pid, conn=None):
             drained, rows[:] = list(rows), []
             return drained
 
-        monkeypatch.setattr(clustering.taskqueue, 'reap_finished_children', reap)
+        self._patch_reap(monkeypatch, reap)
         state = self._state()
 
-        clustering._absorb_finished_batches(state, 'p')
-        clustering._absorb_finished_batches(state, 'p')
+        clustering._absorb_finished_batches(state, 'p', self._persisted)
+        clustering._absorb_finished_batches(state, 'p', self._persisted)
 
         assert state['runs_completed'] == 20, (
             'the row is deleted as it is reaped, so there is no processed-id set to '
@@ -246,6 +266,143 @@ class TestEarlyStopCounting:
         self._run_monitor(monkeypatch, [self._batch_result(10)], top_n=0)
         assert seen_targets
         assert all(target == 0 for target in seen_targets)
+
+    def test_the_child_row_is_deleted_on_the_same_connection_the_progress_is_written_on(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        seen = {}
+        rows = self._reaped_rows([self._batch_result(10)])
+
+        def reap(_pid, conn=None):
+            seen['conn'] = conn
+            return rows
+
+        db = self._patch_reap(monkeypatch, reap)
+        state = self._state()
+
+        absorbed = clustering._absorb_finished_batches(state, 'p', self._persisted)
+
+        assert absorbed == 1
+        assert seen['conn'] is db, (
+            'the reap must run on the parent connection that also writes the absorbed '
+            'runs, so a parent that dies between the two cannot lose a finished batch '
+            'whose row is already gone'
+        )
+
+    def test_a_progress_write_that_fails_rolls_the_reap_back_and_forgets_the_batch(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        rows = self._reaped_rows([self._batch_result(10)])
+        db = self._patch_reap(monkeypatch, lambda _pid, conn=None: rows)
+        state = self._state()
+
+        absorbed = clustering._absorb_finished_batches(state, 'p', lambda _message: False)
+
+        assert absorbed == 0
+        assert db.rollback.called, (
+            'the reaped row must come back so the next pass can absorb it again'
+        )
+        assert state['runs_completed'] == 0
+        assert state['best_score'] == -1.0
+        assert state['best_result'] is None
+        assert state['elite_solutions'] == [], (
+            'in-memory state that was never persisted must be rolled back with the '
+            'row, otherwise the batch is counted but its result is lost'
+        )
+
+    def test_a_rolled_back_reap_restores_the_stop_counters_and_the_subset_too(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+        import config
+
+        resumed_result = {
+            'fitness_score': 5.0, 'parameters': {'method': 'kmeans'},
+            'named_playlists': {f'P{i}': list(range(25)) for i in range(8)},
+        }
+        rows = [
+            {
+                'task_id': 'p_batch_0', 'status': config.TASK_STATUS_FAILURE,
+                'sub_type_identifier': 'Batch_0', 'details': {},
+            },
+            {
+                'task_id': 'p_batch_1', 'status': config.TASK_STATUS_SUCCESS,
+                'sub_type_identifier': 'Batch_1',
+                'details': {
+                    'iterations_completed_in_batch': 20,
+                    'final_subset_track_ids': ['x', 'y'],
+                    'full_best_result_from_batch': {
+                        'fitness_score': 10.0, 'parameters': {'method': 'kmeans'},
+                        'named_playlists': {
+                            f'P{i}': list(range(25)) for i in range(8)
+                        },
+                    },
+                },
+            },
+        ]
+        db = self._patch_reap(monkeypatch, lambda _pid, conn=None: rows)
+        state = self._state()
+        state.update({
+            'runs_completed': 40,
+            'best_score': 5.0,
+            'best_result': resumed_result,
+            'elite_solutions': [{'score': 5.0, 'params': {'method': 'kmeans'}}],
+            'failed_batches': 2,
+            'stale_batches': 1,
+            'last_subset_ids': ['a'],
+        })
+
+        absorbed = clustering._absorb_finished_batches(state, 'p', lambda _message: False)
+
+        assert absorbed == 0
+        assert db.rollback.called
+        assert state['runs_completed'] == 40
+        assert state['best_score'] == 5.0
+        assert state['best_result'] is resumed_result
+        assert state['elite_solutions'] == [
+            {'score': 5.0, 'params': {'method': 'kmeans'}}
+        ]
+        assert state['failed_batches'] == 2, (
+            'the failure was never recorded anywhere, so keeping its increment would '
+            'double count it toward CLUSTERING_MAX_FAILED_BATCHES and stop the '
+            'launches of a run that has not failed that often'
+        )
+        assert state['stale_batches'] == 1, (
+            'the better result that reset this counter was rolled back with it, so a '
+            'kept value trips CLUSTERING_EARLY_STOP_BATCHES against evidence that no '
+            'longer exists and truncates the search'
+        )
+        assert state['last_subset_ids'] == ['a'], (
+            'the subset the discarded batch ended on was never persisted, so the next '
+            'batch must keep evolving from the one that was'
+        )
+
+    def test_a_reap_that_finds_nothing_ends_its_transaction_without_writing_progress(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        messages = []
+
+        def persist(message):
+            messages.append(message)
+            return True
+
+        db = self._patch_reap(monkeypatch, lambda _pid, conn=None: [])
+        state = self._state()
+
+        absorbed = clustering._absorb_finished_batches(state, 'p', persist)
+
+        assert absorbed == 0
+        assert messages == []
+        assert db.commit.called, (
+            'the drain loop reaps every few seconds, so a pass with nothing to absorb '
+            'must not leave the parent connection idle in transaction'
+        )
 
 
 class TestSubsetExactSize:

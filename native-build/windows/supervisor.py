@@ -184,6 +184,8 @@ class ProcessSupervisor(HealthLoopMixin):
             env = env_builder.build_child_env(role, db_conn)
             exe = sys.executable if not getattr(sys, "frozen", False) else sys.argv[0]
             cmd = [exe, f"--role={role}"]
+            if not self._terminate_named(name):
+                raise RuntimeError(f"Could not terminate existing child {name}")
             popen = subprocess.Popen(
                 cmd,
                 env=env,
@@ -206,11 +208,27 @@ class ProcessSupervisor(HealthLoopMixin):
 
     def _stop_child(self, name):
         with self._lock:
-            popen = self._children.pop(name, None)
             was_desired = name in self._desired
             self._desired.discard(name)
-        if popen is None:
-            return True
+        stopped = self._terminate_named(name)
+        if not stopped and was_desired:
+            with self._lock:
+                self._desired.add(name)
+        return stopped
+
+    def _terminate_named(self, name):
+        with self._lock:
+            popen = self._children.get(name)
+            if popen is None:
+                return True
+            try:
+                already_exited = popen.poll() is not None
+            except Exception:
+                self._log.exception("Could not inspect %s before termination", name)
+                already_exited = False
+            if already_exited:
+                return True
+            self._children.pop(name, None)
 
         def _stopped_or_restore():
             try:
@@ -220,15 +238,8 @@ class ProcessSupervisor(HealthLoopMixin):
             if not stopped:
                 with self._lock:
                     self._children.setdefault(name, popen)
-                    if was_desired:
-                        self._desired.add(name)
             return stopped
 
-        try:
-            if popen.poll() is not None:
-                return True
-        except Exception:
-            self._log.exception("Could not inspect %s before termination", name)
         self._log.info("Stopping %s (pid=%d)", name, popen.pid)
         try:
             if sys.platform == "win32":
@@ -267,7 +278,6 @@ class ProcessSupervisor(HealthLoopMixin):
         with self._lock:
             if self._children.get(name) is not popen:
                 return
-            self._children.pop(name, None)
             restart = name in self._desired and self._state == "running"
         if restart:
             self._log.warning("%s exited unexpectedly -- restarting", name)
@@ -368,7 +378,8 @@ class ProcessSupervisor(HealthLoopMixin):
                 continue
 
     def _write_pidfile(self):
-        pids = {name: proc.pid for name, proc in self._children.items()}
+        with self._lock:
+            pids = {name: proc.pid for name, proc in self._children.items() if proc.poll() is None}
         with open(paths.pid_file(), "w") as fh:
             json.dump(pids, fh)
 

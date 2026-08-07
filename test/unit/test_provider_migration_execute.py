@@ -444,11 +444,13 @@ class TestExecuteProviderMigration:
 
         mig.execute_provider_migration(1)
 
-        assert 'FAIL' not in reported and 'FAILURE' not in reported, (
+        swap_is_durable = (
             'the catalogue swap is already durable, so telling the user the '
             'migration failed and their database is unchanged is a lie - and the '
             'handshake guard then refuses the re-run that message asks for'
         )
+        assert 'FAIL' not in reported, swap_is_durable
+        assert 'FAILURE' not in reported, swap_is_durable
         assert reported[-1] == 'SUCCESS'
 
     def test_index_id_maps_are_left_alone_because_ids_never_move(self, mig):

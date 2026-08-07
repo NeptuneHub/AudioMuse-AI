@@ -24,13 +24,85 @@ The listener is its own process, not a thread inside a worker, for one specific
 reason: the ``stop`` action stops the workers, and something has to still be
 listening afterwards to hear the ``start`` that brings them back.
 
+The wait is a poll rather than a notification, because the answer is a row and
+not a message: a listener that acknowledges between two checks is acknowledged
+all the same, while a lost notification would mean a restart nobody could
+confirm. Its cadence widens as the wait goes on - it starts at
+``QUEUE_CONTROL_POLL_INTERVAL_SECONDS`` and doubles up to a tenth of the budget -
+because a supervisor restart resolves in whole seconds while the interval is a
+quarter of one, so the flat cadence spent about 120 round trips per restart
+learning nothing. That fraction alone bought a blind tail proportional to the
+budget, which is why ``POLL_INTERVAL_CEILING_SECONDS`` caps it as well: the
+restore waits a whole action window, a tenth of which is fifteen seconds, so an
+acknowledgement that landed at t=17s went unnoticed until t=30s - once on the
+stop request and again on the start request, about half a minute added to every
+restore. The cap holds that dead time to a few seconds whatever the budget and
+still costs a small fraction of the flat loop. The deadline itself does not move:
+each sleep is clamped to the time left, so the last count still happens exactly
+when the budget runs out.
+
+The ``service_roles.declare_worker_role()`` call above the imports is ordering,
+not configuration; ``service_roles`` explains why, and why it stays conditional on
+``SERVICE_TYPE`` here rather than forcing the role as a real queue entrypoint
+does. It has to run before ``import config``, which is why the imports below it
+carry ``noqa: E402``.
+
+Two different budgets meet here and neither may stand in for the other.
+``QUEUE_CONTROL_TIMEOUT_SECONDS`` is how long a CALLER waits for the answer, and a
+caller that stops waiting changes nothing about the action: the request row is
+left RUNNING so the late acknowledgements still land on it.
+``QUEUE_CONTROL_ACTION_WINDOW_SECONDS`` is how long the ACTION itself may still be
+running, so it is what bounds the exemption below - and it is the same number
+``taskqueue.maintenance`` stands its reclaim down for, deliberately. An exemption
+shorter than that stand-down lets a second publisher delete the request row the
+stand-down is reading, which turns the guard off in the middle of the restart it
+exists to cover.
+
+A verdict answers the CALLER; it is not a report on the fleet. The wait ends on
+the first FAIL because whoever asked has to hear about it at once, and the row it
+then finishes is also the marker maintenance reads, so one listener's failure
+used to retract the protection from every listener still working: two replicas,
+one ``supervisorctl restart`` that returns non-zero AFTER it has already killed
+its workers, and the other pod's tasks were charged a worker loss they never
+suffered. The verdict is therefore still written the instant it is known - the
+provider-migration handshake reads it to decide whether to rotate its request -
+but only SUCCESS retracts the marker, because SUCCESS is the one answer that
+means every listener has finished. The finish deliberately does not rewrite
+``timestamp``: the marker expires one action window after the PUBLISH, and a
+refusal must not push that instant out.
+
+Only an action that STOPS workers suspends the reclaim, and
+``WORKER_STOPPING_ACTIONS`` is the same tuple that decides which actions requeue
+the stopped workers' tasks below - so reclaim stands down exactly where something
+else has taken responsibility for those rows. A plugin pre-sync stops nothing and
+used to suspend it anyway: a pre-sync outrunning the five-second advisory budget
+left its row RUNNING, and a worker that genuinely died in the window that
+followed was never reclaimed. The action travels in ``sub_type_identifier`` on
+the request row, which is what maintenance filters on.
+
+The statuses these statements write are interpolated from the
+``config.TASK_STATUS_*`` constants, as ``taskqueue.sql`` and
+``taskqueue.maintenance`` build theirs. The request row is the row maintenance
+looks for before it stands its reclaim down, so a spelling hardcoded here and
+renamed in config would leave the two halves of that handshake matching
+different strings and silently charge a deliberate restart as a worker loss.
+
 Main Features:
 * ``publish_control_request`` asks, waits for every live listener, and returns a real verdict
+* The acknowledgement wait polls on a widening but capped cadence and still ends on the deadline
+* A refusal is recorded at once and still leaves the marker standing for the rest of the window
 * ``control_listener`` performs the supervisor action and records its own acknowledgement
 * Expected listener count read from ``pg_stat_activity``, needing no registry
 * A new handshake deletes the previous request row and its acks, exactly as a
   new task run clears the last one. Nothing else ever removed them, so repeated
-  wizard saves accumulated one set of rows per save.
+  wizard saves accumulated one set of rows per save. A handshake somebody is
+  still waiting on is spared: publishers run in different processes - the wizard
+  in Flask, the provider migration in a worker - so a second save used to delete
+  the first request's rows out from under its poll loop, which then timed out
+  and reported a restart nobody had failed to do. The exemption is bounded by
+  ``QUEUE_CONTROL_ACTION_WINDOW_SECONDS``, because a request that times out is
+  never moved off RUNNING and an unbounded exemption would leak one set of rows
+  per abandoned handshake.
 * A restart or stop the CONTROL PLANE performed requeues the stopped workers'
   tasks itself, without charging a worker-loss attempt - the same warm-shutdown
   contract rq's SIGTERM gave. A wizard save is a deliberate restart, not a
@@ -46,8 +118,9 @@ import os
 import time
 import uuid
 
-if os.environ.get('SERVICE_TYPE', '').lower() == 'worker':
-    os.environ.setdefault('AUDIOMUSE_ROLE', 'worker')
+import service_roles
+
+service_roles.declare_worker_role()
 
 import config  # noqa: E402
 from . import sql  # noqa: E402
@@ -62,17 +135,24 @@ ACTION_PLUGIN_SYNC = 'plugin-sync'
 
 VALID_ACTIONS = (ACTION_RESTART, ACTION_STOP, ACTION_START, ACTION_PLUGIN_SYNC)
 
+WORKER_STOPPING_ACTIONS = (ACTION_RESTART, ACTION_STOP)
+
 WORKER_LISTENER_PREFIX = 'audiomuse-control-worker-'
+
+POLL_INTERVAL_CEILING_FRACTION = 0.1
+POLL_INTERVAL_CEILING_SECONDS = 3.0
+
+_RUNNING = config.TASK_STATUS_RUNNING
 
 _COUNT_LISTENERS = """
     SELECT count(*) FROM pg_stat_activity
     WHERE application_name LIKE %s AND datname = current_database()
 """
 
-_INSERT_REQUEST = """
-    INSERT INTO task_status (task_id, parent_task_id, task_type, status, progress,
-                             details, timestamp, start_time)
-    VALUES (%s, NULL, %s, 'RUNNING', 0, %s, NOW(), %s)
+_INSERT_REQUEST = f"""
+    INSERT INTO task_status (task_id, parent_task_id, task_type, sub_type_identifier,
+                             status, progress, details, timestamp, start_time)
+    VALUES (%s, NULL, %s, %s, '{_RUNNING}', 0, %s, NOW(), %s)
     ON CONFLICT (task_id) DO UPDATE SET timestamp = NOW()
 """
 
@@ -83,11 +163,17 @@ _INSERT_ACK = """
     ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, details = EXCLUDED.details
 """
 
-_CLEAR_PREVIOUS_CONTROL_ROWS = """
-    DELETE FROM task_status
-    WHERE task_type = %s
-      AND task_id <> %s
-      AND (parent_task_id IS NULL OR parent_task_id <> %s)
+_CLEAR_PREVIOUS_CONTROL_ROWS = f"""
+    DELETE FROM task_status AS t
+    WHERE t.task_type = %s
+      AND t.task_id <> %s
+      AND (t.parent_task_id IS NULL OR t.parent_task_id <> %s)
+      AND NOT EXISTS (
+            SELECT 1 FROM task_status AS r
+            WHERE r.task_id = COALESCE(t.parent_task_id, t.task_id)
+              AND r.task_type = %s
+              AND r.status = '{_RUNNING}'
+              AND r.timestamp > NOW() - make_interval(secs => %s))
 """
 
 _COUNT_ACKS = """
@@ -96,7 +182,7 @@ _COUNT_ACKS = """
 """
 
 _FINISH_REQUEST = """
-    UPDATE task_status SET status = %s, progress = 100, end_time = %s, timestamp = NOW()
+    UPDATE task_status SET status = %s, progress = 100, end_time = %s
     WHERE task_id = %s
 """
 
@@ -139,13 +225,17 @@ def publish_control_request(action, request_id=None, timeout_seconds=None, conn=
             now = time.time()
             cur.execute(
                 _CLEAR_PREVIOUS_CONTROL_ROWS,
-                (sql.CONTROL_TASK_TYPE, request_id, request_id),
+                (
+                    sql.CONTROL_TASK_TYPE, request_id, request_id,
+                    sql.CONTROL_TASK_TYPE, config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS,
+                ),
             )
             cur.execute(
                 _INSERT_REQUEST,
                 (
                     request_id,
                     sql.CONTROL_TASK_TYPE,
+                    action,
                     json.dumps({'action': action, 'expected': expected}),
                     now,
                 ),
@@ -183,8 +273,17 @@ def publish_control_request(action, request_id=None, timeout_seconds=None, conn=
                 logger.debug("Control request connection close failed", exc_info=True)
 
 
+def poll_interval_ceiling(timeout):
+    return max(
+        config.QUEUE_CONTROL_POLL_INTERVAL_SECONDS,
+        min(timeout * POLL_INTERVAL_CEILING_FRACTION, POLL_INTERVAL_CEILING_SECONDS),
+    )
+
+
 def _await_acks(conn, request_id, expected, timeout):
     deadline = time.monotonic() + timeout
+    interval = config.QUEUE_CONTROL_POLL_INTERVAL_SECONDS
+    ceiling = poll_interval_ceiling(timeout)
     while True:
         with conn.cursor() as cur:
             cur.execute(_COUNT_ACKS, (request_id,))
@@ -199,14 +298,16 @@ def _await_acks(conn, request_id, expected, timeout):
             return False, True
         if succeeded >= expected:
             return True, True
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             logger.warning(
                 "Still waiting on control request %s after %.0fs: %d of %d listener(s) "
                 "acknowledged. Leaving it open for the late acknowledgements.",
                 request_id, timeout, succeeded, expected,
             )
             return False, False
-        time.sleep(config.QUEUE_CONTROL_POLL_INTERVAL_SECONDS)
+        time.sleep(min(interval, remaining))
+        interval = min(interval * 2, ceiling)
 
 
 def get_control_request_result(request_id, conn=None):
@@ -282,7 +383,7 @@ class ControlListener:
             )
         logger.info("Control request %s received: %s", request_id, action)
         ok = self._execute(action)
-        if ok and action in (ACTION_RESTART, ACTION_STOP) and conn is not None:
+        if ok and action in WORKER_STOPPING_ACTIONS and conn is not None:
             self._requeue_tasks_of_stopped_workers(conn)
         self._close_ack_conn(self._record_ack(conn, request_id, action, ok))
 
@@ -391,6 +492,13 @@ class ControlListener:
             return False
         return True
 
+    def _discard_ack_conn(self, conn):
+        try:
+            conn.rollback()
+        except Exception:
+            logger.debug("Rollback before the ack retry failed", exc_info=True)
+        self._close_ack_conn(conn)
+
     def _record_ack(self, conn, request_id, action, ok):
         status = config.TASK_STATUS_SUCCESS if ok else config.TASK_STATUS_FAIL
         now = time.time()
@@ -407,27 +515,24 @@ class ControlListener:
         for attempt in (1, 2):
             if conn is None:
                 conn = self._open_ack_conn()
-            if conn is not None:
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(_INSERT_ACK, params)
-                    conn.commit()
-                    return conn
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        logger.debug("Rollback before the ack retry failed", exc_info=True)
-                    self._close_ack_conn(conn)
-                    conn = None
-                    if attempt == 1:
-                        logger.warning(
-                            "Could not record the acknowledgement for %s; retrying once "
-                            "on a fresh connection", request_id, exc_info=True,
-                        )
-                        continue
-                    logger.exception("Could not record the acknowledgement for %s", request_id)
-                    return conn
+            if conn is None:
+                continue
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(_INSERT_ACK, params)
+                conn.commit()
+                return conn
+            except Exception:
+                self._discard_ack_conn(conn)
+                conn = None
+                if attempt == 1:
+                    logger.warning(
+                        "Could not record the acknowledgement for %s; retrying once "
+                        "on a fresh connection", request_id, exc_info=True,
+                    )
+                    continue
+                logger.exception("Could not record the acknowledgement for %s", request_id)
+                return conn
         logger.error("No connection to record acknowledgement for %s", request_id)
         return conn
 
@@ -436,7 +541,6 @@ def main():
     from app_logging import configure_logging
 
     configure_logging()
-    os.environ.setdefault('AUDIOMUSE_ROLE', 'worker')
     service_type = os.environ.get('SERVICE_TYPE', '').lower()
     if service_type != 'worker':
         logger.info(

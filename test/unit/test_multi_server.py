@@ -28,13 +28,17 @@ Main Features:
 """
 
 import gc
+import inspect
 import json
 import logging
+import sys
+import types
 import weakref
 from contextlib import nullcontext
 
 import pytest
 import taskqueue
+from flask import Flask
 from unittest.mock import MagicMock
 
 
@@ -1904,9 +1908,123 @@ class TestSweepAlignment:
         assert task_id
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_server'
         assert enqueued['args'] == ('srv-default',)
-        assert enqueued['kwargs'] == {'task_id': task_id}
+        assert enqueued['kwargs'] == {'task_id': task_id, 'parent_task_id': None}
         assert enqueued['task_type'] == sync.SWEEP_TASK_TYPE
         assert enqueued['conn'] is db
+
+    def test_alignment_enqueued_as_a_child_carries_its_parent_into_the_sweep_kwargs(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        cur.__enter__.return_value = cur
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(
+            sync.registry, 'get_default_server_id', lambda conn=None: 'srv-default'
+        )
+        enqueued = {}
+
+        def fake_enqueue(func, **kwargs):
+            enqueued['func'] = func
+            enqueued.update(kwargs)
+
+        monkeypatch.setattr(taskqueue, 'enqueue', fake_enqueue)
+
+        task_id = sync.enqueue_server_alignment(
+            server_id='srv-1',
+            message='after the migration',
+            parent_task_id='migration-1',
+        )
+
+        assert task_id
+        assert enqueued['parent_task_id'] == 'migration-1'
+        assert enqueued['kwargs'] == {
+            'task_id': task_id, 'parent_task_id': 'migration-1',
+        }
+        bound = inspect.signature(sync.sweep_server).bind(
+            *enqueued['args'], **enqueued['kwargs']
+        )
+        assert bound.arguments['parent_task_id'] == 'migration-1'
+
+    def test_sweep_progress_write_keeps_the_parent_instead_of_promoting_the_child_to_a_root(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+        import config
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('sweep-parent-test')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        saved = []
+        fake_app_helper = types.ModuleType('app_helper')
+        fake_app_helper.save_task_status = (
+            lambda task_id, task_type, status, **kwargs: saved.append(
+                (task_id, status, kwargs)
+            )
+        )
+        monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
+        monkeypatch.setattr(
+            sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
+        )
+        monkeypatch.setattr(
+            sync.registry, 'get_server',
+            lambda server_id, conn=None: {
+                'server_id': server_id, 'name': 'Nav', 'server_type': 'navidrome',
+                'creds': {}, 'music_libraries': '',
+            },
+        )
+
+        def fake_sweep_one(server, db, report, base, span, cancel, full_refresh=False):
+            report(f"Aligning {server['name']}: 3 tracks to match...", 50)
+            return {
+                'server_id': server['server_id'], 'matched': 2, 'unmapped': 3,
+                'tier_counts': {},
+            }
+
+        monkeypatch.setattr(sync, '_sweep_one', fake_sweep_one)
+
+        sync.sweep_server(
+            'srv-1', task_id='sweep-1', conn=MagicMock(), parent_task_id='migration-1',
+        )
+
+        assert [status for _tid, status, _kw in saved] == [
+            config.TASK_STATUS_STARTED,
+            config.TASK_STATUS_PROGRESS,
+            config.TASK_STATUS_SUCCESS,
+        ]
+        assert all(task_id == 'sweep-1' for task_id, _status, _kw in saved)
+        assert [kw.get('parent_task_id') for _tid, _status, kw in saved] == [
+            'migration-1', 'migration-1', 'migration-1',
+        ]
+
+    def test_root_sweep_reports_a_null_parent_so_it_stays_its_own_root(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('sweep-root-test')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        saved = []
+        fake_app_helper = types.ModuleType('app_helper')
+        fake_app_helper.save_task_status = (
+            lambda task_id, task_type, status, **kwargs: saved.append(kwargs)
+        )
+        monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
+
+        report = sync._make_reporter('sweep-1', 'srv-1')
+        report('Aligning...', 40)
+
+        assert len(saved) == 1
+        assert saved[0].get('parent_task_id') is None
+        assert saved[0]['progress'] == 40
+        assert saved[0]['details'] == {
+            'status_message': 'Aligning...', 'message': 'Aligning...',
+        }
 
     def test_enqueue_server_alignment_queues_nothing_without_a_server(self, monkeypatch):
         from tasks import multiserver_sync as sync

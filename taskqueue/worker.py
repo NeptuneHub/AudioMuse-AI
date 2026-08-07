@@ -45,6 +45,14 @@ import is deferred into ``main``. The frozen launchers import only stdlib and
 ``native_common.frozen_children`` before dispatching here, so this ordering
 holds in the native builds too.
 
+``service_roles.declare_worker_role`` sits in that same block for the same kind
+of reason: ``config`` decides at IMPORT time whether it is running Flask-side
+and bootstraps the schema when it decides that it is, so the role has to be
+declared before the ``import config`` below it or a worker container runs
+Flask's DDL. It is the shared shim rather than a fourth local spelling of it,
+and it is FORCED here because this module is never anything but a worker, with
+or without a ``SERVICE_TYPE`` in the environment.
+
 Main Features:
 * Claim/drain loop that keeps pulling while work exists, and blocks on LISTEN when it does not
 * A cancel notification for the task this worker holds ends the process tree in about 50ms
@@ -52,10 +60,48 @@ Main Features:
 * Boot reclaims tasks whose worker died, bounded by QUEUE_MAX_ATTEMPTS
 * Schema bootstrap runs under the SAME advisory lock init_db takes, so a worker
   and Flask booting together cannot run the DDL migration concurrently
-* A database connectivity error never becomes a terminal row: the tasks re-raise
-  those deliberately, the row stays RUNNING, and reclaim requeues it once the
-  advisory lock drops. Writing FAIL there let a two-second Postgres blip kill a
-  job for good, because nothing ever claims or reclaims a FAIL row again.
+* A LOST DATABASE CONNECTION never becomes a terminal row: the tasks re-raise
+  those deliberately, and THIS worker puts the row back on the queue itself as
+  soon as it has a healthy connection again, without charging a worker-loss
+  attempt. Writing FAIL there let a two-second Postgres blip kill a job for good,
+  because nothing ever claims or reclaims a FAIL row again.
+
+"Lost connection" is a much narrower thing than ``psycopg2.OperationalError``,
+which is why ``_is_connectivity_error`` enumerates instead of matching the base
+class. psycopg2's error hierarchy is FLAT - ``ConnectionFailure`` is not a
+subclass of ``ConnectionException``, every SQLSTATE gets its own class hung
+directly off the DBAPI base - so ``OperationalError`` is also the base of
+``QueryCanceled`` (57014), ``DeadlockDetected``, ``SerializationFailure``,
+``DiskFull`` and ``OutOfMemory``. Those are the database REFUSING this unit of
+work, not the socket dying, and the free retry must not cover them: every app
+connection carries ``statement_timeout=600000``, so a query that outgrows ten
+minutes arrives as ``QueryCanceled`` and would otherwise be requeued with no
+attempt charged, for ever, ten minutes at a time. A lost connection is instead
+SQLSTATE class 08, the 57Pxx shutdown codes, 53300, ``InterfaceError``,
+``database.ConnectionLostError``, and a bare ``OperationalError`` with no
+SQLSTATE at all - which is what libpq raises for "server closed the connection
+unexpectedly", "could not connect to server" and an SSL EOF.
+
+Even a genuinely lost connection only gets ``UNCHARGED_REQUEUE_LIMIT`` free
+passes per row. After that the same requeue goes through ``requeue_or_fail``,
+which charges a worker-loss attempt and writes FAIL once QUEUE_MAX_ATTEMPTS is
+spent, so a database that is permanently unhappy ends the run instead of
+spinning the row for ever while QUEUE_MAX_JOBS recycles the process. Each repeat
+pass also waits, doubling from QUEUE_RECONNECT_DELAY_SECONDS and capped at
+QUEUE_POLL_INTERVAL_SECONDS, because nothing else on this path sleeps: a failure
+that reproduces in milliseconds would otherwise hammer Postgres and wake every
+worker in the fleet twice per iteration.
+
+Leaving that abandoned row for reclaim instead is not an option, and it is worth
+being explicit about why. Reclaim reads liveness from ``pg_stat_activity``: a
+RUNNING row is a candidate only when no session is named after its worker. The
+process that abandoned the row is still running under the same identity, so its
+own row is excluded from every recovery path - maintenance, another worker's boot
+reclaim, the control plane's uncharged requeue - for as long as the container
+lives. The run would sit at a frozen percentage and the one-live-main index would
+answer 409 to every new start until somebody cancelled by hand. The worker that
+walks away from a row therefore owns putting it back, and it retries on each loop
+until the requeue lands or the row is no longer its own RUNNING row.
 
 The boot reclaim passes a grace of zero on purpose. A process that has just
 started is provably not the one that abandoned any RUNNING row, and the advisory
@@ -71,6 +117,7 @@ import threading
 import time
 
 import queue_names
+import service_roles
 
 _QUEUE_FLAG = '--queue'
 
@@ -110,7 +157,7 @@ if _UNPARSED_QUEUE not in queue_names.QUEUE_NAMES:
         f"Unknown queue {_UNPARSED_QUEUE!r}; expected one of {queue_names.QUEUE_NAMES}"
     )
 QUEUE = _UNPARSED_QUEUE
-os.environ['AUDIOMUSE_ROLE'] = 'worker'
+service_roles.declare_worker_role(force=True)
 THREAD_CAP = _apply_thread_caps(QUEUE)
 print(f"{QUEUE} worker CPU thread cap = {THREAD_CAP}")
 
@@ -124,12 +171,13 @@ logger = logging.getLogger(__name__)
 
 APPLICATION_NAME_LIMIT = 63
 
+UNCHARGED_REQUEUE_LIMIT = 3
 
-def build_identity(queue, hostname, pid, suffix_len=None, token=None):
-    if suffix_len is None:
-        suffix_len = len(sql.WORKER_LISTEN_SUFFIX)
+
+def build_identity(queue, hostname, pid):
+    suffix_len = len(sql.WORKER_LISTEN_SUFFIX)
     prefix = f"{sql.WORKER_IDENTITY_PREFIX}{queue}-"
-    tail = f"-{pid}-{token or os.urandom(2).hex()}"
+    tail = f"-{pid}-{os.urandom(2).hex()}"
     budget = APPLICATION_NAME_LIMIT - suffix_len - len(prefix) - len(tail)
     if budget < 1:
         return f"{prefix}{tail.lstrip('-')}"[:APPLICATION_NAME_LIMIT - suffix_len]
@@ -152,6 +200,8 @@ class Worker:
         self._listener = None
         self._jobs_done = 0
         self._shared_cache = {}
+        self._abandoned = []
+        self._uncharged = {}
         self._claim_txn = threading.Lock()
 
     def reconnect(self):
@@ -211,11 +261,11 @@ class Worker:
             if held is None:
                 return
             with conn.cursor() as cur:
-                owner = sql.owner_of(cur, held)
-            if owner is None:
+                row = sql.current_row(cur, held)
+            if row is None:
                 stop_hard(f"task {held} no longer exists; this worker must not continue it")
                 return
-            if owner['worker_id'] != self.identity or owner['status'] == config.TASK_STATUS_NEW:
+            if row['worker_id'] != self.identity or row['status'] == config.TASK_STATUS_NEW:
                 stop_hard(f"task {held} was taken from this worker while it was not listening")
                 return
             self.ensure_hold(held)
@@ -281,8 +331,113 @@ class Worker:
         self._held_parent_id = None
         self._held_attempts = None
 
+    def _forget_abandoned(self, task_id):
+        self._uncharged.pop(task_id, None)
+        logger.info(
+            "Abandoned task %s is no longer this worker's RUNNING row; "
+            "leaving it exactly as it is.", task_id,
+        )
+        return False
+
+    def _requeue_charging_an_attempt(self, cur, task_id):
+        row = sql.current_row(cur, task_id)
+        if (
+            row is None
+            or row['status'] != config.TASK_STATUS_RUNNING
+            or row['worker_id'] not in (None, self.identity)
+        ):
+            return self._forget_abandoned(task_id)
+        status = sql.requeue_or_fail(
+            cur, task_id, time.time(),
+            _terminal_details(config.TASK_STATUS_FAIL, _LOST_CONNECTION_SUMMARY, None),
+        )
+        if status == config.TASK_STATUS_NEW:
+            logger.error(
+                "Task %s has already been put back %d times for a lost database "
+                "connection; this retry costs a worker-loss attempt.",
+                task_id, UNCHARGED_REQUEUE_LIMIT,
+            )
+            return True
+        self._uncharged.pop(task_id, None)
+        if status is not None:
+            logger.error(
+                "Task %s ran out of worker-loss attempts while the database stayed "
+                "unreachable; its row is now %s.", task_id, status,
+            )
+            return False
+        return self._forget_abandoned(task_id)
+
+    def _put_abandoned_back(self, cur, task_id):
+        free_passes_used = self._uncharged.get(task_id, 0)
+        if free_passes_used >= UNCHARGED_REQUEUE_LIMIT:
+            return self._requeue_charging_an_attempt(cur, task_id)
+        if not sql.requeue_uncharged(cur, task_id, worker_id=self.identity):
+            return self._forget_abandoned(task_id)
+        self._uncharged[task_id] = free_passes_used + 1
+        logger.warning(
+            "Task %s was abandoned to a lost database connection; it is queued "
+            "again with no worker-loss attempt charged (%d of %d free retries).",
+            task_id, free_passes_used + 1, UNCHARGED_REQUEUE_LIMIT,
+        )
+        return True
+
+    def _wait_out_repeated_loss(self):
+        already_lost = max(
+            (self._uncharged.get(task_id, 0) for task_id in self._abandoned), default=0
+        )
+        if already_lost < 1:
+            return
+        delay = min(
+            config.QUEUE_RECONNECT_DELAY_SECONDS * (2 ** (already_lost - 1)),
+            config.QUEUE_POLL_INTERVAL_SECONDS,
+        )
+        logger.warning(
+            "Waiting %.1fs before putting %d abandoned row(s) back; the database "
+            "connection has already been lost %d time(s) on the same work.",
+            delay, len(self._abandoned), already_lost,
+        )
+        time.sleep(delay)
+
+    def requeue_abandoned(self):
+        if not self._abandoned:
+            return
+        self._wait_out_repeated_loss()
+        still_abandoned = []
+        requeued = 0
+        for task_id in self._abandoned:
+            try:
+                with self._claim_txn:
+                    with self._conn.cursor() as cur:
+                        put_back = self._put_abandoned_back(cur, task_id)
+                    self._conn.commit()
+            except Exception:
+                logger.warning(
+                    "Could not put abandoned task %s back on the queue yet; retrying "
+                    "on the next loop", task_id, exc_info=True,
+                )
+                self._safe_rollback()
+                still_abandoned.append(task_id)
+                continue
+            if put_back:
+                requeued += 1
+        self._abandoned = still_abandoned
+        if not requeued:
+            return
+        try:
+            with self._claim_txn:
+                with self._conn.cursor() as cur:
+                    sql.notify_job(cur, sql.QUEUE_HIGH)
+                    sql.notify_job(cur, sql.QUEUE_DEFAULT)
+                self._conn.commit()
+        except Exception:
+            logger.exception(
+                "Could not wake the queues after requeueing an abandoned task"
+            )
+            self._safe_rollback()
+
     def run_forever(self):
         while True:
+            self.requeue_abandoned()
             try:
                 job = self.claim()
             except Exception:
@@ -325,12 +480,16 @@ class Worker:
             outcome, summary = config.TASK_STATUS_FAIL, _error_summary(exc)
             if _is_connectivity_error(exc):
                 logger.warning(
-                    "Task %s hit a database connectivity error; leaving its row for "
-                    "the queue to requeue instead of failing it.", task_id,
+                    "Task %s lost its database connection; putting its row back "
+                    "on the queue instead of failing it.", task_id,
                 )
                 outcome = None
+                if task_id not in self._abandoned:
+                    self._abandoned.append(task_id)
         else:
             outcome, summary = config.TASK_STATUS_SUCCESS, None
+        if outcome is not None:
+            self._uncharged.pop(task_id, None)
         try:
             with self._claim_txn:
                 if outcome is not None:
@@ -346,6 +505,31 @@ class Worker:
         finally:
             logger.info("Finished %s in %.1fs", task_id, time.time() - started)
 
+    def _drop_claim_conn(self):
+        try:
+            if self._conn is not None:
+                self._conn.close()
+        except Exception:
+            logger.debug("Closing the dead claim connection failed", exc_info=True)
+        self._conn = None
+
+    def _write_terminal_row(self, task_id, status, error, result):
+        with self._conn.cursor() as cur:
+            row = sql.current_row(cur, task_id)
+            if row is None or row['status'] != config.TASK_STATUS_RUNNING:
+                return False
+            written = sql.finish_task(
+                cur, task_id, status, _terminal_details(status, error, result),
+                time.time(), worker_id=self.identity,
+            )
+        if written is None:
+            logger.error(
+                "Refusing to finish %s: the row is no longer this worker's. It was "
+                "reclaimed and restarted elsewhere while this process was still on it.",
+                task_id,
+            )
+        return True
+
     def finalize(self, job, status, error, result=None):
         task_id = job['task_id']
         for attempt in (1, 2):
@@ -356,24 +540,8 @@ class Worker:
                         task_id,
                     )
                     self.connect()
-                with self._conn.cursor() as cur:
-                    row = sql.current_row(cur, task_id)
-                    if row is None or row['status'] != config.TASK_STATUS_RUNNING:
-                        return
-                    details = {'message': _final_message(status, error)}
-                    if error:
-                        details['error'] = error
-                    if isinstance(result, dict):
-                        details['final_summary_details'] = result
-                    written = sql.finish_task(
-                        cur, task_id, status, details, time.time(), worker_id=self.identity
-                    )
-                if written is None:
-                    logger.error(
-                        "Refusing to finish %s: the row is no longer this worker's. It was "
-                        "reclaimed and restarted elsewhere while this process was still on it.",
-                        task_id,
-                    )
+                if not self._write_terminal_row(task_id, status, error, result):
+                    return
             except Exception:
                 self._safe_rollback()
                 if attempt == 1:
@@ -381,12 +549,7 @@ class Worker:
                         "Could not write the terminal row for %s; retrying once on a "
                         "fresh connection", task_id, exc_info=True,
                     )
-                    try:
-                        if self._conn is not None:
-                            self._conn.close()
-                    except Exception:
-                        logger.debug("Closing the dead claim connection failed", exc_info=True)
-                    self._conn = None
+                    self._drop_claim_conn()
                     continue
                 logger.exception("Could not write the terminal row for %s", task_id)
             else:
@@ -423,9 +586,10 @@ class Worker:
         cached = self._shared_cache.get(token)
         if cached is not None:
             return cached
-        with self._conn.cursor() as cur:
-            body = sql.get_shared(cur, owner, token)
-        self._conn.commit()
+        with self._claim_txn:
+            with self._conn.cursor() as cur:
+                body = sql.get_shared(cur, owner, token)
+            self._conn.commit()
         if len(body) <= config.QUEUE_SHARED_CACHE_MAX_BYTES:
             self._shared_cache = {token: body}
         else:
@@ -467,12 +631,78 @@ def _final_message(status, error):
     return error or "Task failed. Check the container logs for details."
 
 
+def _terminal_details(status, error, result):
+    details = {'message': _final_message(status, error)}
+    if error:
+        details['error'] = error
+    if isinstance(result, dict):
+        details['final_summary_details'] = result
+    return details
+
+
+_LOST_CONNECTION_SUMMARY = (
+    "The database connection was lost repeatedly while this task ran. "
+    "Check the container logs for details."
+)
+
+_LOST_CONNECTION_ERROR_NAMES = (
+    'ConnectionException',
+    'ConnectionDoesNotExist',
+    'ConnectionFailure',
+    'SqlclientUnableToEstablishSqlconnection',
+    'SqlserverRejectedEstablishmentOfSqlconnection',
+    'TransactionResolutionUnknown',
+    'ProtocolViolation',
+    'AdminShutdown',
+    'CrashShutdown',
+    'CannotConnectNow',
+    'DatabaseDropped',
+    'IdleSessionTimeout',
+    'TooManyConnections',
+)
+
+_LOST_CONNECTION_SQLSTATE_CLASS = '08'
+
+_LOST_CONNECTION_SQLSTATES = frozenset({
+    '53300', '57P01', '57P02', '57P03', '57P04', '57P05',
+})
+
+
+def _lost_connection_types():
+    from psycopg2 import InterfaceError, errors
+
+    found = [InterfaceError]
+    for name in _LOST_CONNECTION_ERROR_NAMES:
+        error_type = getattr(errors, name, None)
+        if isinstance(error_type, type):
+            found.append(error_type)
+    try:
+        from database import ConnectionLostError
+
+        found.append(ConnectionLostError)
+    except Exception:
+        logger.debug("database.ConnectionLostError is unavailable", exc_info=True)
+    return tuple(found)
+
+
 def _is_connectivity_error(exc):
     try:
-        from psycopg2 import InterfaceError, OperationalError
+        from psycopg2 import OperationalError
+
+        lost = _lost_connection_types()
     except Exception:
         return False
-    return isinstance(exc, (OperationalError, InterfaceError))
+    if isinstance(exc, lost):
+        return True
+    if not isinstance(exc, OperationalError):
+        return False
+    sqlstate = getattr(exc, 'pgcode', None)
+    if sqlstate is None:
+        return type(exc) is OperationalError
+    return (
+        str(sqlstate).startswith(_LOST_CONNECTION_SQLSTATE_CLASS)
+        or sqlstate in _LOST_CONNECTION_SQLSTATES
+    )
 
 
 def _error_summary(exc):

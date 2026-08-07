@@ -17,6 +17,7 @@ canonical `plugins` DB table.
 Main Features:
 * Catalog fetch/merge across configured repository manifests with compatibility filtering.
 * Install/uninstall/enable/disable/settings/apply endpoints (admin-gated via app_auth path rules).
+* Apply waits for the worker restart ack with the full queue-control budget rather than the shorter advisory cap, so a slow fleet restart is not reported as a failure.
 """
 
 import json
@@ -569,10 +570,6 @@ def api_repos():
 @plugins_bp.route('/api/plugins/apply', methods=['POST'])
 def api_apply():
     try:
-        # The FULL budget, not the advisory cap. "Apply now (restart)" is a button
-        # the user is sitting in front of, and the cap is hard-limited to 5s while
-        # a real fleet restart takes longer than that - so the ack never arrived in
-        # time and the page reported a failed restart that had actually worked.
         workers_published = restart_manager.publish_restart_request(
             timeout_seconds=config.QUEUE_CONTROL_TIMEOUT_SECONDS
         )

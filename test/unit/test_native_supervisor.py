@@ -18,6 +18,10 @@ Main Features:
 * A stop requested during the database probe restarts no child
 * start_child refuses to spawn while stopping but is allowed while starting
 * start_in_background owns the boot thread and invokes start_all
+* The database probe holds one autocommit session and reuses it across ticks
+* A dropped session is replaced once before the database is declared unhealthy
+* An unreachable database returns False and is logged with its traceback
+* A programming error in the probe surfaces instead of faking an unhealthy database
 """
 
 import importlib.util
@@ -81,6 +85,52 @@ def _bare_supervisor(mod):
 
 
 PLATFORMS = ['linux', 'macos', 'windows']
+
+
+class _ProbeError(Exception):
+    pass
+
+
+class _ProbeCursor:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc_info):
+        return False
+
+    def execute(self, sql):
+        if self._conn.probe_fails:
+            raise _ProbeError('server closed the connection unexpectedly')
+        self._conn.executed.append(sql)
+
+    def fetchone(self):
+        return (1,)
+
+
+class _ProbeConnection:
+    def __init__(self, probe_fails=False):
+        self.closed = 0
+        self.autocommit = None
+        self.executed = []
+        self.probe_fails = probe_fails
+
+    def cursor(self):
+        if self.closed:
+            raise _ProbeError('connection already closed')
+        return _ProbeCursor(self)
+
+    def set_session(self, autocommit=False):
+        self.autocommit = autocommit
+
+    def close(self):
+        self.closed = 1
+
+
+def _fake_psycopg2(connect):
+    return types.SimpleNamespace(connect=connect, Error=_ProbeError)
 
 
 @pytest.fixture(params=PLATFORMS)
@@ -368,27 +418,14 @@ def test_postgres_health_uses_lossless_socket_kwargs(platform_name, monkeypatch)
     socket_dir = '/tmp/Audio&Muse+#socket'
     sup._database_url = f'postgresql://postgres:@/postgres?host={socket_dir}'
     seen = {}
-
-    class _Cursor:
-        def execute(self, sql):
-            seen['sql'] = sql
-
-        def fetchone(self):
-            return (1,)
-
-    class _Connection:
-        def cursor(self):
-            return _Cursor()
-
-        def close(self):
-            seen['closed'] = True
+    conn = _ProbeConnection()
 
     def connect(*args, **kwargs):
         seen['args'] = args
         seen['kwargs'] = kwargs
-        return _Connection()
+        return conn
 
-    monkeypatch.setitem(sys.modules, 'psycopg2', types.SimpleNamespace(connect=connect))
+    monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(connect))
     restart = MagicMock(side_effect=AssertionError('healthy PostgreSQL must not be restarted'))
     if hasattr(mod, 'db_backend'):
         monkeypatch.setattr(mod.db_backend, 'ensure_embedded_running', restart)
@@ -402,8 +439,10 @@ def test_postgres_health_uses_lossless_socket_kwargs(platform_name, monkeypatch)
     assert seen['kwargs']['port'] == '5432'
     assert seen['kwargs']['user'] == 'postgres'
     assert seen['kwargs']['dbname'] == 'postgres'
-    assert seen['sql'] == 'SELECT 1'
-    assert seen['closed'] is True
+    assert conn.executed == ['SELECT 1']
+    assert conn.autocommit is True
+    assert conn.closed == 0
+    assert sup._probe_connection is conn
     restart.assert_not_called()
 
 
@@ -473,3 +512,150 @@ class TestTheHealthLoopHasOneImplementationForEveryPlatform:
         sup._health_loop()
 
         assert started == ['flask']
+
+
+class TestTheDatabaseProbeHoldsOneSession:
+    def test_a_second_tick_reuses_the_session_instead_of_reconnecting(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        opened = []
+
+        def connect(**_kwargs):
+            conn = _ProbeConnection()
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(connect))
+
+        assert sup._probe_postgres(host='/tmp/sock', port='5432') is True
+        assert sup._probe_postgres(host='/tmp/sock', port='5432') is True
+
+        assert len(opened) == 1
+        assert opened[0].executed == ['SELECT 1', 'SELECT 1']
+        assert opened[0].autocommit is True
+        assert opened[0].closed == 0
+
+    def test_a_dropped_session_is_replaced_once_before_calling_the_database_unhealthy(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        stale = _ProbeConnection(probe_fails=True)
+        fresh = _ProbeConnection()
+        sup._probe_connection = stale
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: fresh))
+
+        assert sup._probe_postgres(host='/tmp/sock') is True
+
+        assert stale.closed == 1
+        assert fresh.executed == ['SELECT 1']
+        assert sup._probe_connection is fresh
+
+    def test_a_closed_session_is_never_reused(self, supervisor_case, monkeypatch):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        gone = _ProbeConnection()
+        gone.close()
+        fresh = _ProbeConnection()
+        sup._probe_connection = gone
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: fresh))
+
+        assert sup._probe_postgres(host='/tmp/sock') is True
+
+        assert gone.executed == []
+        assert fresh.executed == ['SELECT 1']
+
+    def test_an_unreachable_database_returns_false_and_logs_the_traceback(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        logged = []
+
+        def _refused(**_kwargs):
+            raise _ProbeError('could not connect to server')
+
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(_refused))
+        sup._log = types.SimpleNamespace(
+            exception=lambda msg, *a, **k: logged.append(msg),
+            debug=lambda *a, **k: None,
+            warning=lambda *a, **k: None,
+            info=lambda *a, **k: None,
+        )
+
+        assert sup._probe_postgres(host='/tmp/sock') is False
+
+        assert len(logged) == 1
+        assert getattr(sup, '_probe_connection', None) is None
+
+    def test_a_probe_that_never_runs_is_false_rather_than_healthy(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        dead = _ProbeConnection(probe_fails=True)
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: dead))
+
+        assert sup._probe_postgres(host='/tmp/sock') is False
+
+        assert dead.closed == 1
+        assert getattr(sup, '_probe_connection', None) is None
+
+    def test_a_misused_connect_call_surfaces_instead_of_faking_an_unhealthy_database(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+
+        logged = []
+
+        def _misused(**_kwargs):
+            raise TypeError("connect() got an unexpected keyword argument 'keepalives'")
+
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(_misused))
+        sup._log = types.SimpleNamespace(
+            exception=lambda msg, *a, **k: logged.append(msg),
+            debug=lambda *a, **k: None,
+            warning=lambda *a, **k: None,
+            info=lambda *a, **k: None,
+        )
+
+        with pytest.raises(TypeError):
+            sup._probe_postgres(host='/tmp/sock')
+
+        assert len(logged) == 1
+
+    def test_a_session_call_that_does_not_exist_surfaces_instead_of_faking_unhealthy(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        without_set_session = types.SimpleNamespace(closed=0, close=lambda: None)
+        monkeypatch.setitem(
+            sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: without_set_session)
+        )
+
+        with pytest.raises(AttributeError):
+            sup._probe_postgres(host='/tmp/sock')
+
+        assert getattr(sup, '_probe_connection', None) is None
+
+    def test_the_health_loop_closes_the_held_session_when_it_exits(
+        self, supervisor_case, monkeypatch
+    ):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+        monkeypatch.setattr(supervisor_health, 'HEALTH_INTERVAL_SECONDS', 0.01)
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+        held = _ProbeConnection()
+        sup._probe_connection = held
+        monkeypatch.setattr(sup, '_ensure_postgres_healthy', lambda: sup._health_stop.set())
+
+        sup._health_loop()
+
+        assert held.closed == 1
+        assert sup._probe_connection is None

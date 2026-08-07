@@ -145,7 +145,7 @@ start concurrently, and re-upgrading does not repair that state. If you must rol
 back, restore the database from a backup taken before the upgrade.
 
 **Remote worker tip:**
-A worker on separate hardware runs the same image with `SERVICE_TYPE=worker`. It only needs to reach the main server, so set `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` to the main server values instead of the local container names. Worker-only compose examples are kept in `deployment/deprecated/`.
+A worker on separate hardware runs the same image with `SERVICE_TYPE=worker`. It only needs to reach the main server, so set `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` to the main server values instead of the local container names. Worker-only compose examples are kept in `deployment/test/`: `docker-compose-cpu-worker-test.yaml` and `docker-compose-nvidia-worker-test.yaml`, alongside a `.env.example` that already points `POSTGRES_HOST` at a remote server. They build the image from the repository, so replace the `build:` block with `image: ghcr.io/neptunehub/audiomuse-ai:latest` to run the published image instead.
 
 ## Local Deployment MacOS
 

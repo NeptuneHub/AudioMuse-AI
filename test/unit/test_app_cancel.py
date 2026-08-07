@@ -17,6 +17,7 @@ Main Features:
 * The tombstone and the stop signal are one transaction, so neither can happen alone
 * A failed transaction raises rather than reporting a false success
 * Exactly one REVOKED recap row survives, for the task the caller named
+* The global cancel epoch is incremented in that same transaction
 * An un-acknowledged provider-migration handshake is spared, as is a live control request
 * History keeps each row's real terminal status instead of restamping it
 """
@@ -28,6 +29,7 @@ import pytest
 
 import app_helper
 import config
+import database
 import taskqueue
 
 
@@ -160,10 +162,17 @@ class TestTheCancelEpochIsActuallyBumped:
         app_helper.cancel_job_and_children_recursive('task-1')
 
         bumps = [
-            index for index, (sql, _params) in enumerate(recorder)
-            if 'app_config' in sql and 'global_cancel_epoch' not in sql
+            sql for sql, params in recorder
+            if params and database.GLOBAL_CANCEL_EPOCH_KEY in params
         ]
-        assert bumps, 'cancel must advance the epoch the migration endpoints read'
+        assert len(bumps) == 1, (
+            'cancel must advance the epoch the migration endpoints read, and the key '
+            'travels as a bind parameter, so only the parameters identify the statement'
+        )
+        assert bumps[0].startswith('INSERT INTO app_config'), (
+            'reading the epoch back is not bumping it'
+        )
+        assert '+ 1' in bumps[0], 'the epoch has to advance, not be restamped'
         assert db.commit.call_count == 1
 
 

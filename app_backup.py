@@ -19,11 +19,20 @@ Main Features:
   `config.DATABASE_URL`, with the password moved into PGPASSWORD so it never
   reaches argv or the restore log.
 * Serializes restores with a self-releasing lock FILE (a restore replaces the
-  database, so the lock cannot live in it) and
+  database, so the lock cannot live in it) that fails closed: only a lock that is
+  absent, or readable and older than the TTL, lets a new restore start, while one
+  that cannot be read counts as held. It also
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
 * The restore runs detached, so `/api/backup/restore` answers "started" long
   before the outcome is known; the runner appends a `RESTORE-RESULT:` marker that
   `/api/backup/restore-status` reports back to the page.
+* A dump is restored exactly as it was taken. The backup saves everything and the
+  restore restores everything, including the task rows, because the queue IS
+  `task_status`: nothing here filters, rewrites or finishes what came back.
+* The stop and start requests around a restore wait the whole control-action
+  window, not the ack-wait budget: the workers must be provably down before psql
+  replaces the database under them, and reporting "they did not confirm" while
+  they are still legitimately stopping aborts a restore that was going fine.
 * Backups are compressed to .zip; restore accepts .sql or .zip uploads
   (zip detected by magic bytes and extracted before psql).
 """
@@ -67,6 +76,12 @@ RESTORE_LOG_DIR = os.environ.get("RESTORE_LOG_DIR", BACKUP_DIR)
 # so a crash mid-restore cannot block every later attempt forever.
 RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
 
+# A lock we cannot READ is not an absent one: a uid or permission mismatch on a
+# shared backup volume, or an I/O error on network storage, must refuse the
+# restore instead of trampling the one that may still be running. A negative age
+# never crosses the TTL, so an unreadable lock reads as held and never expires.
+RESTORE_LOCK_UNREADABLE_AGE = float('-inf')
+
 # Machine-readable outcome the detached runner appends to its log. The HTTP
 # request answers "started" long before the runner finishes, so this marker is
 # the only way the page can tell an abort from a completed restore.
@@ -89,8 +104,8 @@ def _restore_lock_age():
     except FileNotFoundError:
         return None
     except OSError:
-        logger.exception("Could not read the restore lock; treating it as expired.")
-        return float('inf')
+        logger.exception("Could not read the restore lock; treating it as held.")
+        return RESTORE_LOCK_UNREADABLE_AGE
     try:
         return time.time() - float(raw)
     except ValueError:
@@ -102,6 +117,11 @@ def _acquire_restore_lock():
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         age = _restore_lock_age()
+        if age == RESTORE_LOCK_UNREADABLE_AGE:
+            logger.warning(
+                "Refusing the restore: the lock cannot be read, so a restore may still be running."
+            )
+            return False
         if age is not None and age > RESTORE_LOCK_TTL_SECONDS:
             logger.warning("Clearing a restore lock left behind %.0fs ago.", age)
             _release_restore_lock()
@@ -273,7 +293,14 @@ def _wait_for_flask(log=None):
 
 def _publish_worker_start(log=None):
     try:
-        started = restart_manager.publish_start_request()
+        # The listener starts all three worker services synchronously before it
+        # answers, so this waits the action window rather than the ack-wait budget:
+        # the default gave up at 30s on exactly the busy install where a fleet
+        # start takes longer, and then logged a start that had in fact succeeded
+        # as a failure.
+        started = restart_manager.publish_start_request(
+            timeout_seconds=config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+        )
     except Exception as exc:
         if log is not None:
             log.write(f"Failed to request worker start: {exc}\n")
@@ -1062,7 +1089,15 @@ def restore_backup():
         # Start restore only if all chunks received or single file upload
         if restore_file and all_chunks_received:
             workers_require_recovery = True
-            stop_requested = restart_manager.publish_stop_request()
+            # The workers must be DOWN before psql replaces the database under
+            # them, so this waits out the whole action window instead of the
+            # ack-wait budget. A three-worker stop legitimately takes 45-60s, and
+            # the 30s default answered 503 "workers did not confirm they stopped"
+            # while they were still stopping - on precisely the busy install where
+            # restoring a backup matters most.
+            stop_requested = restart_manager.publish_stop_request(
+                timeout_seconds=config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+            )
             if not stop_requested:
                 logger.error(
                     'Restore aborted: worker stop request failed or was not acknowledged'

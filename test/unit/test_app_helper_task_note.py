@@ -8,58 +8,37 @@
 
 """Task-note summary strings built by app_helper._build_task_note.
 
-Covers the per-task-type note produced for analysis, cleaning, and clustering,
-including subtask aggregation from the DB and fallbacks to detail fields.
+Covers the per-task-type note produced for analysis, cleaning, and clustering.
+The note is built from the parent row's own details only: there is no subtask
+query any more, so the builder takes no database handle at all and the tests
+that used to feed it a failing connection have nothing left to assert.
 
 Main Features:
-* Analysis: sums tracks_analyzed across subtasks, falls back to album counts,
-  survives DB errors and invalid subtask JSON
+* Analysis: reports the parent's own tracks_analyzed, falls back to album counts
 * Cleaning: first recognized numeric key wins, floats truncated, zero reported
 * Clustering: sampled/cluster counts from best_params with graceful fallbacks;
   unknown task types and non-dict details yield an empty string
+* The signature is pinned so a database lookup cannot creep back in
 """
 
-from unittest.mock import MagicMock
+import inspect
 
 import pytest
 
 from app_helper import _build_task_note
 
 
-def make_db(rows):
-    db = MagicMock()
-    cur = MagicMock()
-    cur.fetchall.return_value = rows
-    db.cursor.return_value.__enter__.return_value = cur
-    return db, cur
-
-
 class TestAnalysisNote:
 
     def test_falls_back_to_albums_completed(self):
-        db, _ = make_db([])
-        result = _build_task_note('main_analysis', {'albums_completed': 7}, db)
-        assert result == 'Albums analyzed: 7'
+        assert _build_task_note('main_analysis', {'albums_completed': 7}) == 'Albums analyzed: 7'
 
     def test_falls_back_to_total_albums_processed(self):
-        db, _ = make_db([])
-        result = _build_task_note('main_analysis', {'total_albums_processed': 12}, db)
+        result = _build_task_note('main_analysis', {'total_albums_processed': 12})
         assert result == 'Albums analyzed: 12'
 
     def test_returns_empty_string_when_nothing_to_report(self):
-        db, _ = make_db([])
-        assert _build_task_note('main_analysis', {}, db) == ''
-
-    def test_db_error_falls_back_to_album_details(self):
-        db = MagicMock()
-        db.cursor.side_effect = RuntimeError('no db')
-        result = _build_task_note('main_analysis', {'albums_completed': 3}, db)
-        assert result == 'Albums analyzed: 3'
-
-    def test_db_error_without_albums_returns_empty_string(self):
-        db = MagicMock()
-        db.cursor.side_effect = RuntimeError('no db')
-        assert _build_task_note('main_analysis', {}, db) == ''
+        assert _build_task_note('main_analysis', {}) == ''
 
 
 class TestCleanNote:
@@ -75,27 +54,24 @@ class TestCleanNote:
         ],
     )
     def test_each_recognized_key(self, key):
-        result = _build_task_note('main_cleaning', {key: 6}, MagicMock())
-        assert result == 'Songs cleaned: 6'
+        assert _build_task_note('main_cleaning', {key: 6}) == 'Songs cleaned: 6'
 
     def test_first_key_wins(self):
         details = {'tracks_deleted': 2, 'orphans_removed': 9}
-        assert _build_task_note('main_cleaning', details, MagicMock()) == 'Songs cleaned: 2'
+        assert _build_task_note('main_cleaning', details) == 'Songs cleaned: 2'
 
     def test_zero_is_reported(self):
-        result = _build_task_note('main_cleaning', {'tracks_deleted': 0}, MagicMock())
-        assert result == 'Songs cleaned: 0'
+        assert _build_task_note('main_cleaning', {'tracks_deleted': 0}) == 'Songs cleaned: 0'
 
     def test_string_values_skipped_in_favor_of_later_numeric_key(self):
         details = {'tracks_deleted': '5', 'orphans_removed': 3}
-        assert _build_task_note('main_cleaning', details, MagicMock()) == 'Songs cleaned: 3'
+        assert _build_task_note('main_cleaning', details) == 'Songs cleaned: 3'
 
     def test_float_value_truncated(self):
-        result = _build_task_note('main_cleaning', {'songs_cleaned': 4.7}, MagicMock())
-        assert result == 'Songs cleaned: 4'
+        assert _build_task_note('main_cleaning', {'songs_cleaned': 4.7}) == 'Songs cleaned: 4'
 
     def test_no_recognized_keys_returns_empty_string(self):
-        assert _build_task_note('main_cleaning', {'other': 1}, MagicMock()) == ''
+        assert _build_task_note('main_cleaning', {'other': 1}) == ''
 
 
 class TestClusterNote:
@@ -105,79 +81,62 @@ class TestClusterNote:
             'sampled_songs': 1,
             'num_playlists_created': 8,
         }
-        result = _build_task_note('main_clustering', details, MagicMock())
-        assert result == 'sampled: 500 | clusters: 8'
+        assert _build_task_note('main_clustering', details) == 'sampled: 500 | clusters: 8'
 
     def test_non_dict_best_params_falls_back_to_sampled_songs(self):
         details = {'best_params': 'oops', 'sampled_songs': 100}
-        assert _build_task_note('main_clustering', details, MagicMock()) == 'sampled: 100'
+        assert _build_task_note('main_clustering', details) == 'sampled: 100'
 
     def test_best_params_without_subset_size_falls_back(self):
         details = {'best_params': {}, 'num_sampled_songs': 50}
-        assert _build_task_note('main_clustering', details, MagicMock()) == 'sampled: 50'
+        assert _build_task_note('main_clustering', details) == 'sampled: 50'
 
     def test_clusters_only(self):
-        assert (
-            _build_task_note('main_clustering', {'num_clusters': 4}, MagicMock()) == 'clusters: 4'
-        )
+        assert _build_task_note('main_clustering', {'num_clusters': 4}) == 'clusters: 4'
 
     def test_zero_sampled_is_omitted(self):
         details = {'sampled_songs': 0, 'num_clusters': 3}
-        assert _build_task_note('main_clustering', details, MagicMock()) == 'clusters: 3'
+        assert _build_task_note('main_clustering', details) == 'clusters: 3'
 
     def test_no_data_returns_empty_string(self):
-        assert _build_task_note('main_clustering', {}, MagicMock()) == ''
+        assert _build_task_note('main_clustering', {}) == ''
 
     def test_non_numeric_sampled_returns_empty_string(self):
         details = {'sampled_songs': 'abc', 'num_clusters': 3}
-        assert _build_task_note('main_clustering', details, MagicMock()) == ''
+        assert _build_task_note('main_clustering', details) == ''
 
 
 class TestGeneralBehavior:
     def test_none_task_type_returns_empty_string(self):
-        assert _build_task_note(None, {'tracks_deleted': 5}, MagicMock()) == ''
+        assert _build_task_note(None, {'tracks_deleted': 5}) == ''
 
     def test_unknown_task_type_returns_empty_string(self):
-        assert _build_task_note('sonic_fingerprint', {'tracks_deleted': 5}, MagicMock()) == ''
+        assert _build_task_note('sonic_fingerprint', {'tracks_deleted': 5}) == ''
 
     def test_task_type_matching_is_case_insensitive(self):
-        result = _build_task_note('MAIN_CLUSTERING', {'num_clusters': 2}, MagicMock())
-        assert result == 'clusters: 2'
+        assert _build_task_note('MAIN_CLUSTERING', {'num_clusters': 2}) == 'clusters: 2'
 
     def test_non_dict_details_treated_as_empty(self):
-        assert _build_task_note('main_cleaning', 'notadict', MagicMock()) == ''
+        assert _build_task_note('main_cleaning', 'notadict') == ''
 
 
 class TestAnalysisNoteReadsTheParentsOwnTally:
 
     def test_the_parents_own_track_count_is_reported(self):
-        note = _build_task_note(
-            'main_analysis', {'tracks_analyzed': 4211}, MagicMock()
-        )
+        assert _build_task_note('main_analysis', {'tracks_analyzed': 4211}) == 'Songs analyzed: 4211'
 
-        assert note == 'Songs analyzed: 4211'
+    def test_the_builder_takes_no_database_handle_at_all(self):
+        parameters = list(inspect.signature(_build_task_note).parameters)
 
-    def test_no_child_query_is_issued_at_all(self):
-        db = MagicMock()
-
-        _build_task_note('main_analysis', {'tracks_analyzed': 7}, db)
-
-        assert not db.cursor.called, (
-            'the note must not query for children that no longer exist'
+        assert parameters == ['task_type', 'details_obj'], (
+            'the note must not query for children that no longer exist; keeping a '
+            'connection parameter is how that query creeps back in'
         )
 
     def test_a_zero_tally_falls_back_to_the_album_line(self):
-        note = _build_task_note(
-            'main_analysis',
-            {'tracks_analyzed': 0, 'albums_completed': 12},
-            MagicMock(),
-        )
+        note = _build_task_note('main_analysis', {'tracks_analyzed': 0, 'albums_completed': 12})
 
         assert 'Songs analyzed' not in (note or '')
 
     def test_a_float_tally_is_truncated(self):
-        note = _build_task_note(
-            'main_analysis', {'tracks_analyzed': 9.9}, MagicMock()
-        )
-
-        assert note == 'Songs analyzed: 9'
+        assert _build_task_note('main_analysis', {'tracks_analyzed': 9.9}) == 'Songs analyzed: 9'

@@ -40,7 +40,9 @@ Main Features:
 * ``notify_*`` publish on the channels workers and Flask listen to
 """
 
+import hashlib
 import json
+import socket
 import zlib
 
 import config
@@ -56,11 +58,30 @@ CHANNEL_EVENT = 'audiomuse_event'
 CHANNEL_CONTROL = 'audiomuse_control'
 CHANNEL_RECLAIM = 'audiomuse_reclaim'
 
+_NOTIFY = "SELECT pg_notify(%s, %s)"
+
 QUEUE_HIGH = queue_names.QUEUE_HIGH
 QUEUE_DEFAULT = queue_names.QUEUE_DEFAULT
 CANCEL_ALL = queue_names.CANCEL_ALL
 
 CONTROL_TASK_TYPE = 'worker_control'
+
+LIVE_STATUSES = tuple(config.TASK_STATUS_LIVE)
+TERMINAL_STATUSES = tuple(config.TASK_STATUS_TERMINAL)
+
+_NEW = config.TASK_STATUS_NEW
+_RUNNING = config.TASK_STATUS_RUNNING
+_FAIL = config.TASK_STATUS_FAIL
+_REVOKED = config.TASK_STATUS_REVOKED
+
+
+def _status_list(statuses, separator=','):
+    return separator.join(f"'{status}'" for status in statuses)
+
+
+_LIVE_STATUS_SQL = _status_list(LIVE_STATUSES, ', ')
+_LIVE_IN_LIST = _status_list(LIVE_STATUSES)
+_TERMINAL_IN_LIST = _status_list(TERMINAL_STATUSES)
 
 _ADD_COLUMNS = """
     ALTER TABLE task_status
@@ -80,9 +101,9 @@ _SET_FILLFACTOR = "ALTER TABLE task_status SET (fillfactor = 70)"
 CLAIM_INDEX_NAME = 'idx_task_status_claim'
 
 _CLAIM_INDEX = """
-    CREATE INDEX IF NOT EXISTS {}
-      ON task_status (queue_name, priority DESC, id) WHERE status = 'NEW'
-""".format(CLAIM_INDEX_NAME)
+    CREATE INDEX IF NOT EXISTS {name}
+      ON task_status (queue_name, priority DESC, id) WHERE status = '{new}'
+""".format(name=CLAIM_INDEX_NAME, new=_NEW)
 
 PARENT_INDEX_NAME = 'idx_task_status_parent'
 
@@ -93,21 +114,21 @@ PARENT_INDEX_SQL = """
 
 MAIN_TASK_TYPES = ('main_analysis', 'main_clustering', 'cleaning', 'provider_migration')
 
-LIVE_STATUSES = tuple(config.TASK_STATUS_LIVE)
-_LIVE_STATUS_SQL = ', '.join(f"'{status}'" for status in LIVE_STATUSES)
+MAIN_INDEX_PREFIX = 'idx_task_status_one_live_main'
 
-MAIN_INDEX_NAME = "idx_task_status_one_live_main_{:x}".format(
-    zlib.crc32('|'.join((','.join(MAIN_TASK_TYPES), ','.join(LIVE_STATUSES))).encode())
+MAIN_INDEX_NAME = "{}_{:x}".format(
+    MAIN_INDEX_PREFIX,
+    zlib.crc32('|'.join((','.join(MAIN_TASK_TYPES), ','.join(LIVE_STATUSES))).encode()),
 )
 
-_DROP_STALE_MAIN_INDEXES = """
+_DROP_STALE_INDEXES = """
     DO $do$
     DECLARE stale text;
     BEGIN
         FOR stale IN
             SELECT indexname FROM pg_indexes
             WHERE tablename = 'task_status'
-              AND indexname LIKE 'idx_task_status_one_live_main%%'
+              AND indexname LIKE %s
               AND indexname <> %s
         LOOP
             EXECUTE format('DROP INDEX IF EXISTS %%I', stale);
@@ -130,8 +151,11 @@ _ONE_LIVE_MAIN_INDEX = """
 
 SWEEP_TASK_TYPE = 'server_sweep'
 
-SWEEP_INDEX_NAME = "idx_task_status_one_live_sweep_{:x}".format(
-    zlib.crc32('|'.join((SWEEP_TASK_TYPE, ','.join(LIVE_STATUSES))).encode())
+SWEEP_INDEX_PREFIX = 'idx_task_status_one_live_sweep'
+
+SWEEP_INDEX_NAME = "{}_{:x}".format(
+    SWEEP_INDEX_PREFIX,
+    zlib.crc32('|'.join((SWEEP_TASK_TYPE, ','.join(LIVE_STATUSES))).encode()),
 )
 
 _ONE_LIVE_SWEEP_INDEX = """
@@ -142,31 +166,19 @@ _ONE_LIVE_SWEEP_INDEX = """
         AND task_type = '{sweep}'
 """.format(name=SWEEP_INDEX_NAME, statuses=_LIVE_STATUS_SQL, sweep=SWEEP_TASK_TYPE)
 
-_DROP_STALE_SWEEP_INDEXES = """
-    DO $do$
-    DECLARE stale text;
-    BEGIN
-        FOR stale IN
-            SELECT indexname FROM pg_indexes
-            WHERE tablename = 'task_status'
-              AND indexname LIKE 'idx_task_status_one_live_sweep%%'
-              AND indexname <> %s
-        LOOP
-            EXECUTE format('DROP INDEX IF EXISTS %%I', stale);
-        END LOOP;
-    END
-    $do$
-"""
-
+# PENDING, STARTED, PROGRESS and FAILURE are the spellings this table held before
+# the queue existed. They are history, not vocabulary, so they stay literal here:
+# config's aliases of those names point at the CURRENT spellings and would make
+# every one of these statements a no-op.
 _MIGRATE_STATUSES = (
-    "UPDATE task_status SET status='NEW' WHERE status='PENDING'",
-    "UPDATE task_status SET status='RUNNING' WHERE status IN ('STARTED','PROGRESS')",
-    "UPDATE task_status SET status='FAIL' WHERE status='FAILURE'",
-    """
+    f"UPDATE task_status SET status='{_NEW}' WHERE status='PENDING'",
+    f"UPDATE task_status SET status='{_RUNNING}' WHERE status IN ('STARTED','PROGRESS')",
+    f"UPDATE task_status SET status='{_FAIL}' WHERE status='FAILURE'",
+    f"""
     DO $do$
     BEGIN
         IF to_regclass('task_history') IS NOT NULL THEN
-            EXECUTE 'UPDATE task_history SET status=''FAIL'' WHERE status=''FAILURE''';
+            EXECUTE 'UPDATE task_history SET status=''{_FAIL}'' WHERE status=''FAILURE''';
         END IF;
     END
     $do$
@@ -176,18 +188,20 @@ _MIGRATE_STATUSES = (
 _DROP_LEGACY_CHILDREN = "DELETE FROM task_status WHERE parent_task_id IS NOT NULL"
 
 _RETIRE_SURPLUS_LIVE_ROOTS = """
-    UPDATE task_status SET status='REVOKED', progress=100
+    UPDATE task_status SET status='{revoked}', progress=100
     WHERE task_id IN (
         SELECT task_id FROM (
             SELECT task_id, row_number() OVER (
                        PARTITION BY (task_type = '{sweep}') ORDER BY id DESC) AS rank
             FROM task_status
             WHERE parent_task_id IS NULL
-              AND status IN ('NEW','RUNNING')
+              AND status IN ({live})
               AND task_type NOT IN ('alchemy_radio','{control}')
         ) ranked WHERE ranked.rank > 1
     )
-""".format(sweep=SWEEP_TASK_TYPE, control=CONTROL_TASK_TYPE)
+""".format(
+    revoked=_REVOKED, live=_LIVE_IN_LIST, sweep=SWEEP_TASK_TYPE, control=CONTROL_TASK_TYPE,
+)
 
 _CREATE_BASE_TABLE = """
     CREATE TABLE IF NOT EXISTS task_status (
@@ -245,10 +259,10 @@ def ensure_schema(cur):
         cur.execute(PARENT_INDEX_SQL)
     if _index_missing(cur, MAIN_INDEX_NAME):
         cur.execute(_ONE_LIVE_MAIN_INDEX)
-        cur.execute(_DROP_STALE_MAIN_INDEXES, (MAIN_INDEX_NAME,))
+        cur.execute(_DROP_STALE_INDEXES, (MAIN_INDEX_PREFIX + '%', MAIN_INDEX_NAME))
     if _index_missing(cur, SWEEP_INDEX_NAME):
         cur.execute(_ONE_LIVE_SWEEP_INDEX)
-        cur.execute(_DROP_STALE_SWEEP_INDEXES, (SWEEP_INDEX_NAME,))
+        cur.execute(_DROP_STALE_INDEXES, (SWEEP_INDEX_PREFIX + '%', SWEEP_INDEX_NAME))
     return first_time
 
 
@@ -260,21 +274,25 @@ def _index_missing(cur, index_name):
     return cur.fetchone() is None
 
 
-_INSERT_JOB = """
+_INSERT_JOB = f"""
     INSERT INTO task_status (task_id, parent_task_id, task_type, sub_type_identifier,
                              status, func, payload, queue_name, priority,
                              attempts, max_attempts, progress, details, timestamp, start_time)
-    VALUES (%s, %s, %s, %s, 'NEW', %s, %s, %s, %s, 0, %s, 0, %s, NOW(), NULL)
+    VALUES (%s, %s, %s, %s, '{_NEW}', %s, %s, %s, %s, 0, %s, 0, %s, NOW(), NULL)
     ON CONFLICT (task_id) DO UPDATE SET
         func = EXCLUDED.func,
         payload = EXCLUDED.payload,
         queue_name = EXCLUDED.queue_name,
         priority = EXCLUDED.priority,
         max_attempts = EXCLUDED.max_attempts,
-        status = 'NEW',
+        parent_task_id = COALESCE(EXCLUDED.parent_task_id, task_status.parent_task_id),
+        sub_type_identifier = COALESCE(EXCLUDED.sub_type_identifier,
+                                       task_status.sub_type_identifier),
+        details = COALESCE(EXCLUDED.details, task_status.details),
+        status = '{_NEW}',
         timestamp = NOW()
     WHERE task_status.func IS NULL
-      AND task_status.status IN ('NEW','RUNNING')
+      AND task_status.status IN ({_LIVE_IN_LIST})
     RETURNING task_id
 """
 
@@ -328,29 +346,29 @@ def insert_job(cur, task_id, task_type, func, args=None, kwargs=None, queue=QUEU
 
 
 def notify_job(cur, queue):
-    cur.execute("SELECT pg_notify(%s, %s)", (CHANNEL_JOB, queue))
+    cur.execute(_NOTIFY, (CHANNEL_JOB, queue))
 
 
 def notify_cancel(cur, task_id):
-    cur.execute("SELECT pg_notify(%s, %s)", (CHANNEL_CANCEL, str(task_id)))
+    cur.execute(_NOTIFY, (CHANNEL_CANCEL, str(task_id)))
 
 
 def notify_event(cur, event):
-    cur.execute("SELECT pg_notify(%s, %s)", (CHANNEL_EVENT, str(event)))
+    cur.execute(_NOTIFY, (CHANNEL_EVENT, str(event)))
 
 
 def notify_control(cur, payload):
-    cur.execute("SELECT pg_notify(%s, %s)", (CHANNEL_CONTROL, json.dumps(payload)))
+    cur.execute(_NOTIFY, (CHANNEL_CONTROL, json.dumps(payload)))
 
 
-_CLAIM = """
-    UPDATE task_status SET status='RUNNING',
+_CLAIM = f"""
+    UPDATE task_status SET status='{_RUNNING}',
                            worker_id = %s,
                            start_time = COALESCE(start_time, %s),
                            timestamp = NOW()
     WHERE task_id = (
         SELECT task_id FROM task_status
-        WHERE status='NEW' AND queue_name = %s
+        WHERE status='{_NEW}' AND queue_name = %s
         ORDER BY priority DESC, id
         FOR UPDATE SKIP LOCKED
         LIMIT 1)
@@ -413,10 +431,10 @@ def release_maintenance_lock(cur):
     )
 
 
-_RUNNING_TASKS = """
+_RUNNING_TASKS = f"""
     SELECT task_id, attempts, max_attempts, task_type
     FROM task_status AS t
-    WHERE t.status='RUNNING' AND t.func IS NOT NULL
+    WHERE t.status='{_RUNNING}' AND t.func IS NOT NULL
       AND t.timestamp < NOW() - make_interval(secs => %s)
       AND NOT EXISTS (SELECT 1 FROM pg_stat_activity AS a
                       WHERE a.datname = current_database()
@@ -435,20 +453,20 @@ def running_tasks(cur, grace_seconds=None):
     ]
 
 
-_REQUEUE_OR_FAIL = """
+_REQUEUE_OR_FAIL = f"""
     WITH prev AS (
         SELECT task_id, attempts, worker_id,
                (parent_task_id IS NOT NULL AND NOT EXISTS (
                     SELECT 1 FROM task_status AS p
                     WHERE p.task_id = task_status.parent_task_id
-                      AND p.status IN ('NEW','RUNNING'))) AS parent_gone
+                      AND p.status IN ({_LIVE_IN_LIST}))) AS parent_gone
         FROM task_status
-        WHERE task_id = %s AND status='RUNNING'
+        WHERE task_id = %s AND status='{_RUNNING}'
     ), reclaimed AS (
         UPDATE task_status AS t
         SET attempts = t.attempts + 1,
             status = CASE WHEN NOT prev.parent_gone AND t.attempts + 1 <= t.max_attempts
-                          THEN 'NEW' ELSE 'FAIL' END,
+                          THEN '{_NEW}' ELSE '{_FAIL}' END,
             details = CASE WHEN NOT prev.parent_gone AND t.attempts + 1 <= t.max_attempts
                            THEN t.details ELSE %s END,
             progress = CASE WHEN NOT prev.parent_gone AND t.attempts + 1 <= t.max_attempts
@@ -457,7 +475,7 @@ _REQUEUE_OR_FAIL = """
                             THEN NULL ELSE %s END,
             timestamp = NOW()
         FROM prev
-        WHERE t.task_id = prev.task_id AND t.status='RUNNING'
+        WHERE t.task_id = prev.task_id AND t.status='{_RUNNING}'
         RETURNING t.status
     )
     SELECT reclaimed.status,
@@ -472,15 +490,16 @@ _REQUEUE_OR_FAIL = """
 RECLAIM_SEPARATOR = '\x1f'
 
 
-_REQUEUE_UNCHARGED = """
-    UPDATE task_status SET status='NEW', worker_id=NULL, timestamp=NOW()
-    WHERE task_id = %s AND status='RUNNING'
+_REQUEUE_UNCHARGED = f"""
+    UPDATE task_status SET status='{_NEW}', worker_id=NULL, timestamp=NOW()
+    WHERE task_id = %s AND status='{_RUNNING}'
+      AND (%s IS NULL OR worker_id IS NULL OR worker_id = %s)
     RETURNING task_id
 """
 
 
-def requeue_uncharged(cur, task_id):
-    cur.execute(_REQUEUE_UNCHARGED, (task_id,))
+def requeue_uncharged(cur, task_id, worker_id=None):
+    cur.execute(_REQUEUE_UNCHARGED, (task_id, worker_id, worker_id))
     return cur.fetchone() is not None
 
 
@@ -507,9 +526,9 @@ def decode_reclaim(payload):
     return {'task_id': parts[0], 'worker_id': parts[1], 'attempts': attempts}
 
 
-_PUT_SHARED = """
+_PUT_SHARED = f"""
     UPDATE task_status SET shared_token = %s, shared_payload = %s
-    WHERE task_id = %s AND status IN ('NEW','RUNNING')
+    WHERE task_id = %s AND status IN ({_LIVE_IN_LIST})
     RETURNING task_id
 """
 
@@ -525,8 +544,6 @@ _CLEAR_SHARED = """
 
 
 def shared_token_for(body):
-    import hashlib
-
     return hashlib.sha256(body.encode('utf-8')).hexdigest()[:32]
 
 
@@ -584,24 +601,13 @@ def current_row(cur, task_id):
     }
 
 
-_STILL_OWNED = "SELECT worker_id, status FROM task_status WHERE task_id = %s"
-
-
-def owner_of(cur, task_id):
-    cur.execute(_STILL_OWNED, (task_id,))
-    row = cur.fetchone()
-    if row is None:
-        return None
-    return {'worker_id': row[0], 'status': row[1]}
-
-
-_FINISH_TASK = """
+_FINISH_TASK = f"""
     UPDATE task_status
     SET status = %s, progress = 100, details = %s,
         end_time = COALESCE(end_time, %s), timestamp = NOW(),
         func = NULL, payload = NULL,
         shared_token = NULL, shared_payload = NULL
-    WHERE task_id = %s AND status = 'RUNNING'
+    WHERE task_id = %s AND status = '{_RUNNING}'
       AND (%s IS NULL OR worker_id IS NULL OR worker_id = %s)
     RETURNING status
 """
@@ -615,9 +621,9 @@ def finish_task(cur, task_id, status, details, now, worker_id=None):
     return row[0] if row else None
 
 
-_REAP_CHILDREN = """
+_REAP_CHILDREN = f"""
     DELETE FROM task_status
-    WHERE parent_task_id = %s AND status IN ('SUCCESS','FAIL','REVOKED')
+    WHERE parent_task_id = %s AND status IN ({_TERMINAL_IN_LIST})
     RETURNING task_id, status, sub_type_identifier, details
 """
 
@@ -639,9 +645,9 @@ def reap_children(cur, parent_task_id):
     return reaped
 
 
-_LIVE_CHILDREN = """
+_LIVE_CHILDREN = f"""
     SELECT task_id, sub_type_identifier FROM task_status
-    WHERE parent_task_id = %s AND status IN ('NEW','RUNNING')
+    WHERE parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
 """
 
 
@@ -660,11 +666,11 @@ def live_children(cur, parent_task_id):
 # because getting it right in one of them and not the other hangs a run just the
 # same.
 TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD = (
-    "status IN ('SUCCESS','FAIL','REVOKED') "
+    f"status IN ({_TERMINAL_IN_LIST}) "
     "AND (parent_task_id IS NULL "
     "     OR NOT EXISTS (SELECT 1 FROM task_status AS live "
     "                    WHERE live.task_id = task_status.parent_task_id "
-    "                      AND live.status IN ('NEW','RUNNING')))"
+    f"                      AND live.status IN ({_LIVE_IN_LIST})))"
 )
 
 _CLEAR_TASK_STATUS = (
@@ -677,11 +683,11 @@ def clear_task_status(cur):
     return cur.rowcount
 
 
-_WORKER_SNAPSHOT = """
+_WORKER_SNAPSHOT = f"""
     SELECT a.application_name, a.backend_start, t.task_id, t.task_type
     FROM pg_stat_activity AS a
     LEFT JOIN task_status AS t
-      ON t.status = 'RUNNING' AND t.worker_id = a.application_name
+      ON t.status = '{_RUNNING}' AND t.worker_id = a.application_name
     WHERE a.application_name LIKE %s AND a.application_name NOT LIKE %s
       AND a.datname = current_database()
     ORDER BY a.application_name
@@ -725,8 +731,6 @@ def worker_snapshot(cur):
 
 def hostname():
     try:
-        import socket
-
         return socket.gethostname()
     except Exception:
         return 'unknown'

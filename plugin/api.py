@@ -19,6 +19,7 @@ Main Features:
   auto-resolve the calling plugin id from the import namespace.
 """
 
+import inspect
 import logging
 import re
 import sys
@@ -55,6 +56,10 @@ ANALYSIS_COMPONENTS = frozenset({'asr'})
 
 # Where a plugin provider goes in the ONNX chain, see register_onnx_provider.
 ONNX_POSITIONS = frozenset({'before_cuda', 'before_cpu'})
+
+# Argument names plugin.manager.run_plugin_task consumes itself, so a plugin task
+# function that declares one of them could never receive it.
+RESERVED_TASK_PARAMS = frozenset({'server_scope', 'task_claim_required'})
 
 __all__ = [
     'PluginContext', 'config', 'logger', 'get_db', 'save_task_status',
@@ -137,6 +142,27 @@ class QueuedPluginTask(str):
         return str(self)
 
 
+def _reject_reserved_params(func, dotted):
+    if not callable(func):
+        return
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return
+    reserved = sorted(
+        name for name, param in params.items()
+        if name in RESERVED_TASK_PARAMS
+        and param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY)
+    )
+    if reserved:
+        raise TypeError(
+            f"plugin task {dotted} declares reserved argument names: {', '.join(reserved)}. "
+            "AudioMuse-AI consumes server_scope and task_claim_required itself to run a plugin "
+            "task once per music server, so your function can never receive them. Rename the "
+            "parameter; call active_server_id() to learn which server the current run targets."
+        )
+
+
 def enqueue(func, *args, queue='default', **kwargs):
     import json
 
@@ -144,6 +170,7 @@ def enqueue(func, *args, queue='default', **kwargs):
 
     task_id = str(uuid.uuid4())
     dotted = dotted_path(func)
+    _reject_reserved_params(func, dotted)
     try:
         json.dumps({'args': list(args), 'kwargs': kwargs})
     except TypeError as exc:
@@ -219,10 +246,14 @@ class PluginContext:
         self.settings_endpoint = endpoint
 
     def add_task(self, name, func, queue='default'):
-        self.tasks[name] = {'dotted': dotted_path(func), 'queue': queue}
+        dotted = dotted_path(func)
+        _reject_reserved_params(func, dotted)
+        self.tasks[name] = {'dotted': dotted, 'queue': queue}
 
     def add_cron_task(self, name, func, queue='default'):
-        self.cron_tasks[name] = {'dotted': dotted_path(func), 'queue': queue}
+        dotted = dotted_path(func)
+        _reject_reserved_params(func, dotted)
+        self.cron_tasks[name] = {'dotted': dotted, 'queue': queue}
 
     def register_onnx_provider(self, name, options=None, position='before_cpu',
                                only_models=None, exclude_models=None,

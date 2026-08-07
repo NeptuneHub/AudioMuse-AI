@@ -32,8 +32,8 @@ import threading
 import config
 import service_roles
 
-SUPERVISORCTL_CMD = os.environ.get('SUPERVISORCTL_CMD', '/usr/bin/supervisorctl')
-SUPERVISOR_CONF = os.environ.get('SUPERVISOR_CONF', '/etc/supervisor/conf.d/supervisord.conf')
+SUPERVISORCTL_CMD = config.SUPERVISORCTL_CMD
+SUPERVISOR_CONF = config.SUPERVISOR_CONF
 logger = logging.getLogger(__name__)
 
 CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS = config.QUEUE_CONTROL_ADVISORY_TIMEOUT_SECONDS
@@ -49,49 +49,55 @@ def new_control_request_id():
 
 
 def get_control_request_result(action, request_id):
+    from database import connect_raw
     from taskqueue.control import get_control_request_result as _result
 
-    if not _action_matches(request_id, action):
-        return False
-    return _result(request_id)
-
-
-def _action_matches(request_id, action):
+    conn = connect_raw()
     try:
-        from database import connect_raw
-
-        conn = connect_raw()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT details FROM task_status WHERE task_id = %s", (request_id,)
-                )
-                row = cur.fetchone()
-            conn.commit()
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                logger.debug("Action-check connection close failed", exc_info=True)
-        if row is None or not row[0]:
-            return True
-        try:
-            recorded = json.loads(row[0]).get('action')
-        except (TypeError, ValueError):
-            return True
-        if recorded is not None and recorded != action:
-            logger.error(
-                'Control request ID %s belongs to action %r, not %r',
-                request_id, recorded, action,
-            )
+        if not _action_matches(conn, request_id, action):
             return False
-        return True
+        return _result(request_id, conn=conn)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.debug("Action-check connection close failed", exc_info=True)
+
+
+def _action_matches(conn, request_id, action):
+    from database import coerce_db_details
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT details FROM task_status WHERE task_id = %s", (request_id,)
+            )
+            row = cur.fetchone()
     except Exception:
         logger.exception(
             "Could not validate the action of control request %s; assuming it matches",
             request_id,
         )
+        try:
+            conn.rollback()
+        except Exception:
+            logger.debug("Action-check rollback failed", exc_info=True)
         return True
+    details = coerce_db_details(row[0] if row else None)
+    if not isinstance(details, dict):
+        logger.error(
+            'Control request ID %s has a non-object details payload (%s); assuming it matches',
+            request_id, type(details).__name__,
+        )
+        return True
+    recorded = details.get('action')
+    if recorded is not None and recorded != action:
+        logger.error(
+            'Control request ID %s belongs to action %r, not %r',
+            request_id, recorded, action,
+        )
+        return False
+    return True
 
 
 def publish_control_request(action, request_id=None, timeout_seconds=None):
@@ -174,10 +180,23 @@ def _send_control(arguments):
     return False
 
 
+def _supervisorctl_already_satisfied(action, stdout, stderr):
+    lines = [line.strip().lower() for line in (stdout + '\n' + stderr).splitlines()
+             if line.strip()]
+    if not lines:
+        return False
+    if action == 'start':
+        return all('started' in line for line in lines)
+    if action == 'stop':
+        return all(('stopped' in line or 'not running' in line) for line in lines)
+    return False
+
+
 def run_supervisorctl_detail(arguments):
     if _use_control_ipc():
         ok = _send_control(arguments)
         return ok, ('control server accepted' if ok else 'control server rejected the command')
+    action = arguments[0] if arguments else ''
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -185,16 +204,7 @@ def run_supervisorctl_detail(arguments):
         stderr = result.stderr.strip()
         detail = stderr or stdout or '(no output)'
         if result.returncode != 0:
-            lines = [line.strip().lower() for line in (stdout + '\n' + stderr).splitlines()
-                     if line.strip()]
-            action = arguments[0] if arguments else ''
-            idempotent = (
-                action == 'start' and lines and all('started' in line for line in lines)
-            ) or (
-                action == 'stop' and lines
-                and all(('stopped' in line or 'not running' in line) for line in lines)
-            )
-            if idempotent:
+            if _supervisorctl_already_satisfied(action, stdout, stderr):
                 logger.info(
                     'supervisorctl %s was already satisfied: %s', action, stdout or stderr
                 )
@@ -269,7 +279,7 @@ def schedule_flask_restart(delay_seconds=2.5):
     if os.environ.get('SERVICE_TYPE', '').lower() != 'flask':
         return False
 
-    if os.environ.get('DISABLE_FLASK_RESTART', 'false').lower() == 'true':
+    if config.DISABLE_FLASK_RESTART:
         return False
 
     timer = threading.Timer(delay_seconds, _restart_flask_program)

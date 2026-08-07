@@ -15,9 +15,17 @@ counted (error 2007), never failed; the album fails only on real errors, and a
 job that dies before writing anything still leaves a FAILURE row so the parent
 phase cannot count it as completed.
 
+A database connectivity error is the one exception and is re-raised untouched at
+every level, entry point included. Claiming only looks at NEW rows and reclaiming
+only at RUNNING ones, so a FAILURE row written while the database is away is
+never touched again: a two-second blip would permanently fail the album and count
+it into the parent's failed tally. Left alone, the row stays RUNNING and the
+queue requeues it.
+
 Main Features:
 * analyze_album_task: the queue entry point, binding the server context and
-  guaranteeing a failure row on any pre-analysis crash.
+  guaranteeing a failure row on any pre-analysis crash other than a connectivity
+  one.
 * _analyze_single_track: the linear stage sequence, one `if plan.<stage>:` per
   stage; the fingerprint identity decision maps this server's file onto the
   union catalogue (same audio on N servers = ONE catalogue row).
@@ -52,7 +60,7 @@ from app_helper import (
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
-from psycopg2 import OperationalError
+from psycopg2 import InterfaceError, OperationalError
 
 from error import error_manager
 from error.error_dictionary import (
@@ -315,6 +323,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
     try:
         with server_context.use_server(_bind_server_context(server_id)):
             return _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id)
+    except (OperationalError, InterfaceError):
+        raise
     except Exception as e:
         _record_album_failure_row(album_id, album_name, parent_task_id, e)
         raise
@@ -490,7 +500,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         existing_top_moods_by_id, pending_track_maps,
                     )
                     tracks_analyzed_count += 1
-                except OperationalError:
+                except (OperationalError, InterfaceError):
                     raise
                 except TrackNotAnalyzable as e:
                     error_manager.record(
@@ -559,10 +569,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             )
             return {"status": "SUCCESS", **summary}
 
-        except OperationalError as e:
-            # Deliberately NO terminal row - see the same carve-out in cleaning and
-            # in analysis/main. Writing FAIL here is what stopped the retry this
-            # message promises: nothing ever claims or reclaims a FAIL row again.
+        except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
         except Exception as e:

@@ -36,6 +36,12 @@ Main Features:
 * ``enqueue_server_alignment`` queues a full-refresh alignment of one server from
   a caller with no Flask app context - the provider migration uses it so the
   artist ids and file paths a provider swap cannot carry are rebuilt.
+* ``insert_pending_sweep_row`` is a thin sweep-shaped name over
+  ``database.stage_pending_task_row`` and writes no INSERT of its own. It used to
+  be a second hand-written copy of that statement, and a placeholder row is only
+  adoptable by the enqueue that follows it while it matches a guard neither copy
+  can see, so the next change to that guard would have had to be found in two
+  files nothing connects.
 * Zero-download alignment: matching from catalogue metadata only.
 * Artist links: each swept server's ``artist_server_map`` rows are upserted
   from its fetched catalogue.
@@ -62,18 +68,17 @@ Main Features:
   partial so a transient provider error never mass-deletes valid mappings.
 """
 
-import json
 import logging
 import time
 import uuid
 
-import psycopg2
 from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
 from config import SWEEP_PRUNE_MIN_FETCH_RATIO
 from database import (
     connect_raw,
+    stage_pending_task_row,
 )
 from sanitization import sanitize_string_for_db
 from tasks import provider_probe
@@ -90,29 +95,12 @@ class SweepCancelled(Exception):
 
 
 def insert_pending_sweep_row(cur, task_id, message):
-    import config
-
-    details = json.dumps({
-        'message': message,
-        'status_message': message,
-    })
-    cur.execute("SAVEPOINT audiomuse_stage_sweep")
-    try:
-        cur.execute(
-            "INSERT INTO task_status "
-            "(task_id, task_type, status, progress, details, timestamp, start_time) "
-            "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
-            "ON CONFLICT (task_id) DO NOTHING",
-            (task_id, SWEEP_TASK_TYPE, config.TASK_STATUS_NEW, details, time.time()),
-        )
-    except psycopg2.errors.UniqueViolation:
-        cur.execute("ROLLBACK TO SAVEPOINT audiomuse_stage_sweep")
-        logger.info(
-            "Not staging sweep %s: another alignment sweep is already live.", task_id
-        )
-        return False
-    cur.execute("RELEASE SAVEPOINT audiomuse_stage_sweep")
-    return True
+    return stage_pending_task_row(
+        cur,
+        task_id,
+        SWEEP_TASK_TYPE,
+        {'message': message, 'status_message': message},
+    )
 
 
 def enqueue_server_alignment(server_id=None, message=None, task_id=None,
@@ -129,10 +117,6 @@ def enqueue_server_alignment(server_id=None, message=None, task_id=None,
             return None
         with db.cursor() as cur:
             cur.execute(
-                # Any live sweep counts, root or child. The provider migration
-                # queues its alignment as its own child so it does not take the
-                # start path, and a check that only looked at roots could not see
-                # it - so a second sweep would start straight over the top of it.
                 "SELECT task_id FROM task_status WHERE task_type = %s "
                 "AND status = ANY(%s) "
                 "ORDER BY timestamp DESC",
@@ -149,7 +133,7 @@ def enqueue_server_alignment(server_id=None, message=None, task_id=None,
             taskqueue.enqueue(
                 'tasks.multiserver_sync.sweep_server',
                 args=(target,),
-                kwargs={'task_id': task_id},
+                kwargs={'task_id': task_id, 'parent_task_id': parent_task_id},
                 task_id=task_id,
                 task_type=SWEEP_TASK_TYPE,
                 queue=taskqueue.QUEUE_HIGH,
@@ -162,11 +146,6 @@ def enqueue_server_alignment(server_id=None, message=None, task_id=None,
             logger.info("Alignment %s lost the race to another live sweep.", task_id)
             return None
         except taskqueue.TaskNotQueued:
-            # The row already carries its func, so an earlier attempt queued this
-            # very alignment and insert_job will not rewrite a runnable row. That is
-            # the whole point of asking again - the restart handshake retries the
-            # post-commit step under the same ids - so the alignment IS queued and
-            # saying so is the correct answer, not an error.
             db.rollback()
             logger.info("Alignment %s was already queued by an earlier attempt.", task_id)
             return task_id
@@ -182,7 +161,7 @@ def enqueue_server_alignment(server_id=None, message=None, task_id=None,
             logger.debug("Alignment enqueue connection close failed", exc_info=True)
 
 
-def _make_reporter(task_id, label):
+def _make_reporter(task_id, label, parent_task_id=None):
     try:
         from flask_app import app
         from app_helper import save_task_status
@@ -206,6 +185,7 @@ def _make_reporter(task_id, label):
                     task_id,
                     SWEEP_TASK_TYPE,
                     task_state or TASK_STATUS_PROGRESS,
+                    parent_task_id=parent_task_id,
                     progress=pct,
                     details=details,
                 )
@@ -667,7 +647,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     }
 
 
-def sweep_server(server_id, task_id=None, conn=None):
+def sweep_server(server_id, task_id=None, conn=None, parent_task_id=None):
     import config
 
     task_id = _resolve_task_id(task_id)
@@ -679,7 +659,7 @@ def sweep_server(server_id, task_id=None, conn=None):
         from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
 
         cancel()
-        report = _make_reporter(task_id, server_id)
+        report = _make_reporter(task_id, server_id, parent_task_id=parent_task_id)
         server = registry.get_server(server_id, conn=db)
         if server is None:
             report("Server no longer exists; nothing to align.", 100, task_state=TASK_STATUS_SUCCESS)

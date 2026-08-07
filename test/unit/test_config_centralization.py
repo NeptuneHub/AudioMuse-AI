@@ -20,6 +20,8 @@ Main Features:
   custom deployments retain the explicit DATABASE_URL override compatibility
 * No module outside test/ reads DATABASE_URL from the environment, by get/getenv
   or by subscript
+* config.py, the one file the repo-wide scan exempts, never reads DATABASE_URL
+  from the environment either: it is derived from the five POSTGRES_* parts
 * Importer modules still reference the config names they depend on
 * Importers have no local os.environ.get or getattr-fallback default for those names
 * Repo-wide: no runtime module re-reads a config-owned env var with a default
@@ -409,14 +411,6 @@ def test_no_module_uses_getattr_config_fallback():
 
 
 def test_config_never_reads_database_url_from_the_environment():
-    """The user configures the five POSTGRES_* parts and nothing else.
-
-    config.py is excluded from the scan above because it is where env reading
-    legitimately happens - which left the one file the rule is really about
-    unchecked. DATABASE_URL is DERIVED from the parts; honouring an env override
-    would give the connection string two sources that can disagree, and the one
-    that loses is silent.
-    """
     src = _read_source('config.py')
     tree = ast.parse(src)
     offenders = []

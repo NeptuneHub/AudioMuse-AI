@@ -297,7 +297,9 @@ class TestPgConnectionArgs:
         monkeypatch.setattr(app_backup.config, 'DATABASE_URL', 'postgresql://u:p@[::1:5432/db')
         released = []
         monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: released.append(True))
-        monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', lambda: True)
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'publish_start_request', lambda **_kwargs: True
+        )
         log_file = tmp_path / 'restore.log'
         assert app_backup._run_restore_runner(str(tmp_path / 'dump.sql'), str(log_file)) == 1
         assert released == [True]
@@ -326,7 +328,9 @@ class TestPgConnectionArgs:
 
         assert app_backup._run_restore_runner(str(dump_file), str(log_file)) == 1
         psql.assert_not_called()
-        worker_start.assert_called_once_with()
+        worker_start.assert_called_once_with(
+            timeout_seconds=app_backup.config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+        )
         assert released == [True]
         assert dump_file.exists()
         log_text = log_file.read_text()
@@ -357,7 +361,9 @@ class TestPgConnectionArgs:
         monkeypatch.setattr(
             app_backup.restart_manager, 'stop_local_flask_service_detail', lambda: (True, '')
         )
-        monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', lambda: False)
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'publish_start_request', lambda **_kwargs: False
+        )
         monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
         monkeypatch.setattr(app_backup.subprocess, 'Popen', lambda *_a, **_k: _PsqlProcess())
         monkeypatch.setattr(
@@ -393,7 +399,9 @@ class TestRestoreWorkerStopSafety:
         worker_start = MagicMock(return_value=True)
         runner = MagicMock(side_effect=AssertionError('restore runner must not start'))
         monkeypatch.setattr(app_backup, '_release_restore_lock', released)
-        monkeypatch.setattr(app_backup.restart_manager, 'publish_stop_request', lambda: False)
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'publish_stop_request', lambda **_kwargs: False
+        )
         monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', worker_start)
         monkeypatch.setattr(app_backup.subprocess, 'Popen', runner)
 
@@ -402,7 +410,9 @@ class TestRestoreWorkerStopSafety:
         assert resp.status_code == 503
         assert 'did not confirm' in resp.get_json()['error']
         runner.assert_not_called()
-        worker_start.assert_called_once_with()
+        worker_start.assert_called_once_with(
+            timeout_seconds=app_backup.config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+        )
         released.assert_called_once_with()
 
     def test_create_backup_runs_pg_dump_against_the_database_url(

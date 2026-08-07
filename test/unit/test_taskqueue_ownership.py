@@ -147,7 +147,7 @@ class TestReconnectingCoversTheNoticeItCouldNotHear:
         instance._held_task_id = 'task-1'
         conn = MagicMock()
         conn.cursor.side_effect = lambda: _Cursor(
-            {'task-1': (instance.identity, config.TASK_STATUS_RUNNING)}
+            {'task-1': (config.TASK_STATUS_RUNNING, 'main_analysis', None, instance.identity)}
         )
 
         instance.on_listener_ready(conn)
@@ -159,7 +159,12 @@ class TestReconnectingCoversTheNoticeItCouldNotHear:
         instance._held_task_id = 'task-1'
         conn = MagicMock()
         conn.cursor.side_effect = lambda: _Cursor(
-            {'task-1': ('audiomuse-worker-default-hostB-22', config.TASK_STATUS_RUNNING)}
+            {
+                'task-1': (
+                    config.TASK_STATUS_RUNNING, 'main_analysis', None,
+                    'audiomuse-worker-default-hostB-22',
+                )
+            }
         )
 
         instance.on_listener_ready(conn)
@@ -171,7 +176,7 @@ class TestReconnectingCoversTheNoticeItCouldNotHear:
         instance._held_task_id = 'task-1'
         conn = MagicMock()
         conn.cursor.side_effect = lambda: _Cursor(
-            {'task-1': (instance.identity, config.TASK_STATUS_NEW)}
+            {'task-1': (config.TASK_STATUS_NEW, 'main_analysis', None, instance.identity)}
         )
 
         instance.on_listener_ready(conn)

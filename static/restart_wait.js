@@ -46,6 +46,17 @@
  * reloads the moment the server answers, so a restart that takes two seconds
  * does not cost twenty. Only the ceiling is ever overridden, by the restore,
  * which replaces the whole database before the services come back.
+ *
+ * ``until`` is watched from the moment ``waitAndGo`` is called, not from the
+ * end of the countdown. A request that fails usually fails while the countdown
+ * is still ticking, and the tick then painted a reassuring "restarting in N
+ * seconds" straight over the error - the caller's error, or this module's -
+ * once per second until the floor expired, so the user was told everything was
+ * fine right up to the redirect that never came. A rejection therefore stops
+ * the countdown dead and nothing renders over the failure afterwards; a caller
+ * that renders its own, better-worded message is free to do so and it stays.
+ * Resolution still changes nothing until the floor is over: the countdown
+ * always runs to completion on the success path.
  */
 (function () {
     var DEFAULT_FLOOR_SECONDS = 20;
@@ -53,7 +64,7 @@
     var PROBE_INTERVAL_MS = 500;
 
     function redirect(target) {
-        var fresh = target + (target.indexOf('?') === -1 ? '?' : '&') + '_reloaded=' + Date.now();
+        var fresh = target + (target.includes('?') ? '&' : '?') + '_reloaded=' + Date.now();
         if (window.appRedirect) {
             window.appRedirect(fresh);
         } else {
@@ -63,7 +74,7 @@
 
     function probe(target) {
         var url = (window.appUrl ? window.appUrl(target) : target);
-        var bust = url + (url.indexOf('?') === -1 ? '?' : '&') + '_probe=' + Date.now();
+        var bust = url + (url.includes('?') ? '&' : '?') + '_probe=' + Date.now();
         return fetch(bust, { method: 'GET', cache: 'no-store', redirect: 'follow' })
             .then(function (resp) { return resp.status < 500; })
             .catch(function () { return false; });
@@ -114,7 +125,34 @@
             redirect(target);
         }
 
+        var untilResolved = false;
+        var untilFailed = false;
+        var floorReached = false;
+
+        function untilSucceeded() {
+            untilResolved = true;
+            if (floorReached) { finish(); }
+        }
+
+        function untilRejected(err) {
+            untilFailed = true;
+            render(err?.message || 'That did not work. Check the logs.');
+        }
+
+        // `until` lets the countdown start the INSTANT the user acts, instead of
+        // after the request that triggers the restart comes back. That request is
+        // held open for the whole restart, so waiting for it meant the page sat
+        // frozen for minutes and the countdown only appeared once there was nothing
+        // left to count. Nothing is redirected until it resolves, so a request that
+        // fails still reports its error instead of navigating away.
+        if (opts.until) {
+            opts.until.then(untilSucceeded, untilRejected);
+        }
+
         function tick() {
+            if (untilFailed) {
+                return;
+            }
             if (remaining > 0) {
                 render(
                     (prefix ? prefix + ' ' : '')
@@ -125,19 +163,10 @@
                 window.setTimeout(tick, 1000);
                 return;
             }
-            // `until` lets the countdown start the INSTANT the user acts, instead of
-            // after the request that triggers the restart comes back. That request
-            // is held open for the whole restart, so waiting for it meant the page
-            // sat frozen for minutes and the countdown only appeared once there was
-            // nothing left to count. Nothing is redirected until it resolves, so a
-            // request that fails still reports its error instead of navigating away.
-            if (!opts.until) {
+            floorReached = true;
+            if (!opts.until || untilResolved) {
                 finish();
-                return;
             }
-            opts.until.then(finish, function (err) {
-                render((err && err.message) || 'That did not work. Check the logs.');
-            });
         }
 
         tick();

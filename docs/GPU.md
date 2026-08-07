@@ -23,7 +23,7 @@ GPU-accelerated clustering is also available through RAPIDS cuML. It can give a 
    USE_GPU_CLUSTERING=true
    ```
 3. Make sure the NVIDIA Container Toolkit is installed on the host
-4. Use the GPU compose file `deployment/docker-compose-nvidia.yaml`. Worker-only GPU examples are kept in `deployment/deprecated/`
+4. Use the GPU compose file `deployment/docker-compose-nvidia.yaml`. A worker-only GPU example is kept in `deployment/test/docker-compose-nvidia-worker-test.yaml`
 
 **Performance Impact:**
 - **KMeans**: 10-50x faster than CPU

@@ -75,6 +75,14 @@ def _sanitize_log_text(text: Any) -> Any:
     return re.sub(r" {2,}", " ", cleaned).strip()
 
 
+# Public alias for call sites that interpolate a request value into a log
+# message. LogSanitizingFilter already cleans every record, so this is belt and
+# braces at runtime - its real job is to put the CWE-117 sanitizer *in* the
+# taint path, where a reader (and a static analyser) can see it, instead of
+# leaving it in a logging filter installed somewhere else entirely.
+sanitize_log_value = _sanitize_log_text
+
+
 class LogSanitizingFilter(logging.Filter):
     """Logging filter that sanitizes ``record.msg`` and ``record.args``.
 

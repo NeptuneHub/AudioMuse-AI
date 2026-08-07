@@ -119,85 +119,81 @@ def _connection(conn):
     return get_db(), True
 
 
-def take_start_lock(conn=None):
+def _with_cursor(action, conn):
     from . import sql
 
     db, owns_transaction = _connection(conn)
-    with db.cursor() as cur:
-        sql.take_start_lock(cur)
+    cur = db.cursor()
+    try:
+        result = action(sql, cur)
+    finally:
+        cur.close()
     if owns_transaction:
         db.commit()
+    return result
+
+
+def take_start_lock(conn=None):
+    _with_cursor(lambda sql, cur: sql.take_start_lock(cur), conn)
 
 
 SHARED_KWARG_REF = '__audiomuse_shared__'
 
 
 def put_shared_payload(owner_task_id, body, conn=None, token=None):
-    from . import sql
-
-    db, owns_transaction = _connection(conn)
-    with db.cursor() as cur:
-        token = sql.put_shared(cur, owner_task_id, body, token=token)
-    if owns_transaction:
-        db.commit()
-    return token
+    return _with_cursor(
+        lambda sql, cur: sql.put_shared(cur, owner_task_id, body, token=token), conn
+    )
 
 
 def clear_shared_payload(owner_task_id, token, conn=None):
-    from . import sql
+    return _with_cursor(
+        lambda sql, cur: sql.clear_shared(cur, owner_task_id, token), conn
+    )
 
-    db, owns_transaction = _connection(conn)
-    with db.cursor() as cur:
-        cleared = sql.clear_shared(cur, owner_task_id, token)
-    if owns_transaction:
-        db.commit()
-    return cleared
+
+def _check_shared(shared, kwargs, parent_task_id):
+    if parent_task_id is None:
+        raise ValueError('shared needs a parent_task_id to hang the payload on')
+    for name, token in shared.items():
+        if name not in kwargs and token is None:
+            raise ValueError(
+                f"shared kwarg {name!r} has neither a body in kwargs nor a token"
+            )
+
+
+def _publish_shared(sql, cur, parent_task_id, shared, kwargs):
+    refs = {}
+    for name, token in shared.items():
+        if name in kwargs:
+            refs[name] = sql.put_shared(cur, parent_task_id, kwargs.pop(name), token=token)
+        elif token is not None:
+            refs[name] = token
+    if refs:
+        kwargs[SHARED_KWARG_REF] = {'owner': parent_task_id, 'tokens': refs}
 
 
 def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAULT,
             priority=0, parent_task_id=None, sub_type_identifier=None,
-            max_attempts=None, details=None, conn=None, shared_kwargs=None,
-            shared_tokens=None):
+            max_attempts=None, details=None, conn=None, shared=None):
     import psycopg2
-
-    from . import sql
 
     if func not in ALLOWED_FUNCS:
         raise UnknownTaskFunction(f"{func} is not an allowed task function")
 
     kwargs = dict(kwargs or {})
-    if shared_kwargs:
-        if parent_task_id is None:
-            raise ValueError('shared_kwargs needs a parent_task_id to hang the payload on')
-        shared_tokens = shared_tokens or {}
-        for name in shared_kwargs:
-            if name not in kwargs and name not in shared_tokens:
-                raise ValueError(
-                    f"shared kwarg {name!r} not found in kwargs or shared_tokens"
-                )
+    if shared:
+        _check_shared(shared, kwargs, parent_task_id)
 
-    db, owns_transaction = _connection(conn)
-    cur = db.cursor()
-    try:
+    def _write(sql, cur):
         if parent_task_id is None:
             sql.take_start_lock(cur)
         cur.execute("SAVEPOINT audiomuse_enqueue")
         try:
             if parent_task_id is None:
                 sql.clear_task_status(cur)
-            if shared_kwargs:
-                refs = {}
-                for name in shared_kwargs:
-                    if name in kwargs:
-                        body = kwargs.pop(name)
-                        refs[name] = sql.put_shared(
-                            cur, parent_task_id, body,
-                            token=(shared_tokens or {}).get(name),
-                        )
-                    elif name in shared_tokens:
-                        refs[name] = shared_tokens[name]
-                if refs:
-                    kwargs[SHARED_KWARG_REF] = {'owner': parent_task_id, 'tokens': refs}
+            if shared:
+                _publish_shared(sql, cur, parent_task_id, shared, kwargs)
             inserted = sql.insert_job(
                 cur,
                 task_id=task_id,
@@ -222,76 +218,31 @@ def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAU
             )
         cur.execute("RELEASE SAVEPOINT audiomuse_enqueue")
         sql.notify_job(cur, queue)
-    finally:
-        cur.close()
-    if owns_transaction:
-        db.commit()
+
+    _with_cursor(_write, conn)
     logger.info("Queued %s task %s on the %s queue.", task_type, task_id, queue)
     return task_id
 
 
 def reap_finished_children(parent_task_id, conn=None):
-    from . import sql
-
-    db, owns_transaction = _connection(conn)
-    cur = db.cursor()
-    try:
-        reaped = sql.reap_children(cur, parent_task_id)
-    finally:
-        cur.close()
-    if owns_transaction:
-        db.commit()
-    return reaped
+    return _with_cursor(lambda sql, cur: sql.reap_children(cur, parent_task_id), conn)
 
 
 def live_children(parent_task_id, conn=None):
-    from . import sql
-
-    db, owns_transaction = _connection(conn)
-    cur = db.cursor()
-    try:
-        children = sql.live_children(cur, parent_task_id)
-    finally:
-        cur.close()
-    if owns_transaction:
-        db.commit()
-    return children
+    return _with_cursor(lambda sql, cur: sql.live_children(cur, parent_task_id), conn)
 
 
 def worker_snapshot(conn=None):
-    from . import sql
-
-    db, owns_transaction = _connection(conn)
-    cur = db.cursor()
-    try:
-        workers = sql.worker_snapshot(cur)
-    finally:
-        cur.close()
-    if owns_transaction:
-        db.commit()
-    return workers
+    return _with_cursor(lambda sql, cur: sql.worker_snapshot(cur), conn)
 
 
 def request_cancel(task_id, conn=None):
-    _publish(lambda sql_module, cur: sql_module.notify_cancel(cur, str(task_id)), conn)
+    _with_cursor(lambda sql, cur: sql.notify_cancel(cur, str(task_id)), conn)
 
 
 def request_cancel_all(conn=None):
-    _publish(lambda sql_module, cur: sql_module.notify_cancel(cur, CANCEL_ALL), conn)
+    _with_cursor(lambda sql, cur: sql.notify_cancel(cur, CANCEL_ALL), conn)
 
 
 def publish_event(event, conn=None):
-    _publish(lambda sql_module, cur: sql_module.notify_event(cur, event), conn)
-
-
-def _publish(action, conn):
-    from . import sql
-
-    db, owns_transaction = _connection(conn)
-    cur = db.cursor()
-    try:
-        action(sql, cur)
-    finally:
-        cur.close()
-    if owns_transaction:
-        db.commit()
+    _with_cursor(lambda sql, cur: sql.notify_event(cur, event), conn)

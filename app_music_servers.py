@@ -32,6 +32,7 @@ from flask import Blueprint, g, jsonify, request
 
 import config
 import taskqueue
+from app_logging import sanitize_log_value
 from app_helper import (
     coerce_db_details,
 )
@@ -41,7 +42,9 @@ from database import (
     get_active_main_task,
     main_task_start_lock,
     record_task_history,
+    stage_pending_task_row,
 )
+from taskqueue.sql import SWEEP_TASK_TYPE
 from app_server_context import (
     merge_creds,
     server_public_dict,
@@ -134,9 +137,9 @@ def _revoke_active_sweeps(cur):
         # Any live sweep, root or child. The provider migration queues its
         # alignment as its own child so it does not take the start path, and a
         # root-only filter left it running while a new sweep started over it.
-        "SELECT task_id, start_time FROM task_status WHERE task_type = 'server_sweep' "
+        "SELECT task_id, start_time FROM task_status WHERE task_type = %s "
         "AND status NOT IN (%s, %s, %s) FOR UPDATE",
-        terminal,
+        (SWEEP_TASK_TYPE,) + terminal,
     )
     rows = cur.fetchall()
     task_ids = [row[0] for row in rows]
@@ -176,7 +179,7 @@ def _record_superseded_sweep_history(records):
     for task_id, duration in records:
         record_task_history(
             task_id,
-            'server_sweep',
+            SWEEP_TASK_TYPE,
             config.TASK_STATUS_REVOKED,
             duration_seconds=duration,
             details=details,
@@ -196,25 +199,22 @@ def _claim_replacement_sweep(task_id):
     try:
         with db.cursor() as cur:
             records = _revoke_active_sweeps(cur)
-            cur.execute(
-                """
-                INSERT INTO task_status
-                    (task_id, task_type, status, progress, details, timestamp, start_time)
-                VALUES (%s, 'server_sweep', %s, 0, %s, NOW(), %s)
-                """,
-                (
-                    task_id,
-                    config.TASK_STATUS_PENDING,
-                    json.dumps({
-                        'message': 'Server alignment queued for all servers.',
-                    }),
-                    time.time(),
-                ),
+            staged = stage_pending_task_row(
+                cur,
+                task_id,
+                SWEEP_TASK_TYPE,
+                {'message': 'Server alignment queued for all servers.'},
             )
+            if not staged:
+                raise RuntimeError(
+                    "Another alignment sweep took the live slot; not replacing it"
+                )
         # NO commit here. The staged row only becomes runnable once the enqueue
         # writes its func, and committing between the two published a func-less
-        # PENDING row that a crash left stranded for the 30-minute stale sweep.
-        # The caller enqueues on this same connection and commits both together.
+        # row that a crash left stranded for the 30-minute stale sweep. The caller
+        # enqueues on this same connection and commits both together. The INSERT
+        # itself lives in database.stage_pending_task_row so that the status and
+        # the absent func stay whatever taskqueue's adoption guard accepts.
     except Exception:
         db.rollback()
         logger.exception("Could not atomically claim replacement sweep %s", task_id)
@@ -230,9 +230,9 @@ def _live_sweep_row():
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
-            "SELECT task_id, status FROM task_status WHERE task_type = 'server_sweep' "
+            "SELECT task_id, status FROM task_status WHERE task_type = %s "
             "AND status = ANY(%s) ORDER BY timestamp DESC LIMIT 1",
-            (list(config.TASK_STATUS_LIVE),),
+            (SWEEP_TASK_TYPE, list(config.TASK_STATUS_LIVE)),
         )
         row = cur.fetchone()
     if row is None:
@@ -277,7 +277,7 @@ def _enqueue_sweep(at_front=False):
                     'tasks.multiserver_sync.sweep_all_secondary_servers',
                     kwargs={'task_id': task_id},
                     task_id=task_id,
-                    task_type='server_sweep',
+                    task_type=SWEEP_TASK_TYPE,
                     queue=taskqueue.QUEUE_HIGH,
                     priority=taskqueue.PRIORITY_FRONT if at_front else 0,
                     details={'message': 'Server alignment queued.'},
@@ -308,7 +308,8 @@ def _latest_sweep_task():
         try:
             cur.execute(
                 "SELECT task_id, status, progress, details FROM task_status "
-                "WHERE task_type = 'server_sweep' ORDER BY timestamp DESC LIMIT 1"
+                "WHERE task_type = %s ORDER BY timestamp DESC LIMIT 1",
+                (SWEEP_TASK_TYPE,),
             )
             row = cur.fetchone()
         finally:
@@ -609,7 +610,7 @@ def sweep_server(server_id):
                 args=(server_id,),
                 kwargs={'task_id': task_id},
                 task_id=task_id,
-                task_type='server_sweep',
+                task_type=SWEEP_TASK_TYPE,
                 queue=taskqueue.QUEUE_HIGH,
                 details={
                     'message': 'Server matching sweep queued.',
@@ -619,6 +620,8 @@ def sweep_server(server_id):
     except taskqueue.TaskAlreadyRunning as exc:
         return jsonify({"error": exc.user_message}), exc.status_code
     except Exception:
-        logger.exception("Failed to queue the matching sweep for server %s", server_id)
+        logger.exception(
+            "Failed to queue the matching sweep for server %s", sanitize_log_value(server_id)
+        )
         return jsonify({"error": "Could not queue the sweep; check container logs."}), 500
     return jsonify({"enqueued": True, "task_id": task_id, "job_id": task_id, "server_id": server_id}), 202

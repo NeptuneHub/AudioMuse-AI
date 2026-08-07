@@ -437,9 +437,6 @@ class TestRunRadioPlaylists:
     def test_reports_progress_before_the_index_load_and_per_radio(
         self, mock_alchemy, _mock_upsert, mock_get_radios
     ):
-        """The cron run has no queued job behind it, so its only proof of life is this
-        callback: the maintenance pass fails an in-process row that stops reporting. The
-        first beat lands BEFORE the index load, the slowest step of the whole run."""
         from tasks.radio_manager import run_radio_playlists
 
         mock_get_radios.return_value = [
@@ -452,7 +449,10 @@ class TestRunRadioPlaylists:
         run_radio_playlists(report=lambda message, progress: beats.append((message, progress)))
 
         assert len(beats) == 3
-        assert 'index' in beats[0][0].lower()
+        assert 'index' in beats[0][0].lower(), (
+            'the index load is the slowest step of the run, so the first beat must '
+            'land before it or the maintenance pass fails a row that is still alive'
+        )
         assert [b[1] for b in beats] == [1, 50.0, 100.0]
         assert "Chill" in beats[1][0] and "Rock" in beats[2][0]
 

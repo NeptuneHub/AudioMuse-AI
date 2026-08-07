@@ -61,6 +61,8 @@ from psycopg2 import OperationalError
 
 logger = logging.getLogger(__name__)
 
+STARTING_MESSAGE = "Starting per-server library cleanup..."
+
 
 def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
     clean_catalogue = CLEANING_CATALOGUE if clean_catalogue is None else bool(clean_catalogue)
@@ -110,8 +112,8 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                 "message": "Library cleanup is already terminal.",
             }
         initial_details = {
-            "message": "Starting per-server library cleanup...",
-            "status_message": "Starting per-server library cleanup...",
+            "message": STARTING_MESSAGE,
+            "status_message": STARTING_MESSAGE,
         }
         save_task_status(
             current_task_id, "cleaning", TASK_STATUS_RUNNING, progress=0, details=initial_details
@@ -130,7 +132,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
 
         cancel, close_cancel = make_cancel_check(current_task_id)
         try:
-            log_and_update_main("Starting per-server library cleanup...", 5)
+            log_and_update_main(STARTING_MESSAGE, 5)
 
             servers = registry.servers_for_scope('all')
             present_canonical_ids = set()
@@ -336,12 +338,6 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
             )
             return {"status": TASK_STATUS_REVOKED, "message": "Library cleanup cancelled."}
         except OperationalError as e:
-            # Deliberately NO terminal row. The message promises a retry and a FAIL
-            # row is exactly what makes one impossible: the claim only looks at NEW
-            # rows and the reclaim only at RUNNING ones, so a row written here is
-            # never touched again. Left RUNNING, the queue requeues it as soon as
-            # the advisory lock drops - which is what a database that went away for
-            # a few seconds should cost.
             logger.exception(
                 "Database connection error during cleaning; leaving the row for the "
                 "queue to requeue rather than failing it here."

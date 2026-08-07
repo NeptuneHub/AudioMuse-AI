@@ -122,7 +122,8 @@ All containers run on one host, communicating via the Docker network. Docker can
   `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`,
   and `POSTGRES_DB` pointing at the main server instead of at the
   local container names
-- Worker-only compose examples are available under `deployment/deprecated/`
+- Worker-only compose examples are available under `deployment/test/`
+  (`docker-compose-cpu-worker-test.yaml` and `docker-compose-nvidia-worker-test.yaml`)
 
 ## Scalability
 

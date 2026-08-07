@@ -17,7 +17,9 @@ Main Features:
 * output_server_scope is forced to 'all' whatever the client posts
 * Auto-calibration defaults on and can be turned off from the body
 * top_n_clustering_playlist accepts the legacy payload spellings
-* A live main task answers 409 and queues nothing
+* A live main task the gate can already see answers 409 and queues nothing
+* A start that passed the gate and lost the INSERT answers 409, never 500, and
+  names the task that actually won
 """
 
 import pytest
@@ -53,6 +55,24 @@ def client():
 
 def _start(client, **body):
     return client.post('/api/clustering/start', json=body)
+
+
+def _lose_the_admission_race(monkeypatch, winner):
+    reads = []
+    attempted = []
+
+    def _active(**kwargs):
+        reads.append(kwargs)
+        return winner if len(reads) > 1 else None
+
+    def _reject(func, **kwargs):
+        attempted.append(func)
+        raise taskqueue.TaskAlreadyRunning()
+
+    monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_clustering, 'get_active_main_task', _active)
+    monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _reject)
+    return attempted
 
 
 class TestStartClustering:
@@ -98,7 +118,9 @@ class TestStartClustering:
 
         assert queued[0]['kwargs']['top_n_playlists_param'] == 12
 
-    def test_a_live_main_task_answers_409_and_queues_nothing(self, client, monkeypatch):
+    def test_a_live_main_task_the_gate_sees_answers_409_and_queues_nothing(
+        self, client, monkeypatch
+    ):
         monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
         monkeypatch.setattr(
             app_clustering, 'get_active_main_task',
@@ -115,21 +137,26 @@ class TestStartClustering:
         assert response.get_json()['task_id'] == 'live-1'
         assert calls == [], 'nothing may be queued once the gate has refused'
 
-    def test_losing_the_admission_race_answers_409_not_500(self, client, monkeypatch):
-        monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
-        monkeypatch.setattr(
-            app_clustering, 'get_active_main_task',
-            lambda **_kw: {'task_id': 'live-2', 'status': config.TASK_STATUS_RUNNING},
+    def test_a_start_that_passed_the_gate_then_lost_the_insert_answers_409_not_500(
+        self, client, monkeypatch
+    ):
+        attempted = _lose_the_admission_race(
+            monkeypatch, {'task_id': 'winner-1', 'status': config.TASK_STATUS_RUNNING}
         )
-
-        def _reject(func, **kwargs):
-            raise taskqueue.TaskAlreadyRunning()
-
-        monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _reject)
 
         response = _start(client)
 
+        assert attempted == ['tasks.clustering.run_clustering_task'], (
+            'the gate has to let this start through, or the INSERT race is never run'
+        )
         assert response.status_code == 409
+        body = response.get_json()
+        assert body['task_id'] == 'winner-1', (
+            'the losing id names a row the savepoint rolled back, so the answer has '
+            'to carry the task that actually holds the gate'
+        )
+        assert body['status'] == config.TASK_STATUS_RUNNING
+        assert 'already running' in body['error'].lower()
 
     def test_a_queue_failure_answers_500_without_leaking_the_exception(
         self, client, monkeypatch

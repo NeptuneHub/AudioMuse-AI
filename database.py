@@ -19,6 +19,37 @@ Main Features:
   timeout), fails that unit of work once with ``ConnectionLostError`` (an
   ``OperationalError`` subclass), and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped history rows.
+* A status write the row itself refuses - it is REVOKED, or it does not exist and
+  its parent is gone or already terminal - ends the transaction with a ROLLBACK
+  rather than a commit, and only a write that landed commits. Callers stage work
+  on this same connection and let the status write publish it: the clustering
+  parent reaps a finished batch and queues the next one without committing either,
+  so a refused write that still committed published a reap whose result nothing
+  had recorded, and the batch was lost. Nothing else leaves writes pending across
+  a status write - every other helper here commits its own - so the rollback ends
+  an empty transaction for every other caller.
+* A finished ROOT collapses task_status to its own one-line recap. A child never
+  does: when a report omits the parent the stored one decides, and
+  ``worker_control`` is exempt because a restart handshake finishes DURING the
+  run that published it.
+* The start gate excludes the self-managed types, and the ``plugin.`` prefix only
+  together with them: a caller passing a narrower list (a cleaning, a provider
+  migration) must still see a live plugin root and refuse, because plugins write
+  the mappings those two rewrite.
+* ``init_db`` creates the task_status parent index from the one statement in
+  ``taskqueue.sql`` that the worker's ``ensure_schema`` also runs, so the index
+  shape cannot depend on which container booted first.
+* ``stage_pending_task_row`` is the ONE way to write a placeholder task row that a
+  later ``taskqueue.enqueue`` on the same transaction adopts. Only a func-less row
+  in a live status is adoptable, so the two hand-written copies of that INSERT had
+  to agree with a guard they could not see; one of them drifted and committed a
+  func-less row nothing ran until the 30-minute stale sweep. It never commits: the
+  caller's enqueue writes the func and commits both together. It returns True only
+  for a row THIS call created. The INSERT skips an existing task_id rather than
+  raising, so returning True whenever nothing raised told a caller it owned a slot
+  another run already held - and the sweep claim reads that answer as permission
+  to enqueue over it. The rowcount of the INSERT is the answer, and it has to be
+  read before the RELEASE SAVEPOINT overwrites it.
 * Embedding, projection, and alchemy CRUD shared by workers and the web app.
 """
 
@@ -44,6 +75,7 @@ from tz_helper import UTC_NOW_SQL
 from sanitization import sanitize_db_field, sanitize_string_for_db, sanitize_for_log
 
 from config import (
+    TASK_STATUS_NEW,
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
@@ -172,7 +204,7 @@ def stop_embedded():
         _embedded_server = None
 
 
-def _build_task_note(task_type, details_obj, db):
+def _build_task_note(task_type, details_obj):
     if not isinstance(details_obj, dict):
         details_obj = {}
     t = (task_type or '').lower()
@@ -234,7 +266,7 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             details_obj = details if isinstance(details, dict) else {}
             details_obj = dict(details_obj)
             details_obj['_task_id'] = task_id
-            note = _build_task_note(task_type, details_obj, db) or ''
+            note = _build_task_note(task_type, details_obj) or ''
             if not note:
                 note = details_obj.get('status_message') or details_obj.get('message') or ''
 
@@ -321,22 +353,12 @@ def _collapse_finished_task(db, task_id, task_type, parent_task_id, status):
         return 0
     if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
         return 0
-    # A restart handshake is machinery, not a run the user started, and it finishes
-    # DURING one - the provider migration publishes it and then keeps reporting.
-    # Letting it collapse made it the surviving recap and deleted the migration's
-    # own row, so the wizard polled a task that no longer existed and got 404 with
-    # no countdown. It still cleans up: the next handshake deletes this one.
-    if task_type == 'worker_control':
+    from taskqueue.sql import CONTROL_TASK_TYPE, TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD
+
+    if task_type == CONTROL_TASK_TYPE:
         return 0
     try:
         with db.cursor() as cur:
-            # Every OTHER finished row, and only finished rows. Deleting live ones
-            # killed work that was still going: a migration queues its server
-            # alignment and only then reports terminal, and a radio or a plugin task
-            # can be running alongside. A missing row is the cancellation signal, so
-            # a finishing task must never take one from a task that is still going.
-            from taskqueue.sql import TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD
-
             cur.execute(
                 "DELETE FROM task_status WHERE task_id <> %s AND "
                 + TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD,
@@ -396,8 +418,8 @@ def save_task_status(
                OR EXISTS (SELECT 1 FROM task_status AS existing WHERE existing.task_id = %s)
             ON CONFLICT (task_id) DO UPDATE SET
                 status = EXCLUDED.status,
-                parent_task_id = EXCLUDED.parent_task_id,
-                sub_type_identifier = EXCLUDED.sub_type_identifier,
+                parent_task_id = COALESCE(EXCLUDED.parent_task_id, task_status.parent_task_id),
+                sub_type_identifier = COALESCE(EXCLUDED.sub_type_identifier, task_status.sub_type_identifier),
                 progress = EXCLUDED.progress,
                 details = EXCLUDED.details,
                 timestamp = NOW(),
@@ -420,6 +442,7 @@ def save_task_status(
                               ELSE task_status.payload
                           END
             WHERE task_status.status IS DISTINCT FROM %s
+            RETURNING parent_task_id
         """,
             (
                 task_id,
@@ -446,7 +469,14 @@ def save_task_status(
             ),
         )
         written = cur.rowcount > 0
-        db.commit()
+        stored_parent_task_id = parent_task_id
+        if written:
+            written_row = cur.fetchone()
+            if written_row is not None:
+                stored_parent_task_id = written_row[0]
+            db.commit()
+        else:
+            db.rollback()
     except psycopg2.Error:
         written = False
         logger.exception(f"DB Error saving task status for {task_id}")
@@ -470,13 +500,55 @@ def save_task_status(
 
     try:
         _maybe_record_task_history(
-            db, task_id, task_type, status, parent_task_id, details, current_unix_time
+            db, task_id, task_type, status, stored_parent_task_id, details, current_unix_time
         )
     except Exception as e_hist:
         logger.debug(f"history record skipped for {task_id}: {e_hist}")
 
-    _collapse_finished_task(db, task_id, task_type, parent_task_id, status)
+    _collapse_finished_task(db, task_id, task_type, stored_parent_task_id, status)
     return True
+
+
+STAGE_PENDING_TASK_ROW_SQL = (
+    "INSERT INTO task_status "
+    "(task_id, task_type, status, progress, details, timestamp, start_time) "
+    "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
+    "ON CONFLICT (task_id) DO NOTHING"
+)
+
+_STAGE_SAVEPOINT = "audiomuse_stage_task_row"
+
+
+def stage_pending_task_row(cur, task_id, task_type, details, start_time=None):
+    payload = json.dumps(details if isinstance(details, dict) else {'message': str(details)})
+    cur.execute(f"SAVEPOINT {_STAGE_SAVEPOINT}")
+    try:
+        cur.execute(
+            STAGE_PENDING_TASK_ROW_SQL,
+            (
+                task_id,
+                task_type,
+                TASK_STATUS_NEW,
+                payload,
+                time.time() if start_time is None else start_time,
+            ),
+        )
+    except psycopg2.errors.UniqueViolation:
+        cur.execute(f"ROLLBACK TO SAVEPOINT {_STAGE_SAVEPOINT}")
+        logger.info(
+            "Not staging %s row %s: another live row already holds the slot.",
+            sanitize_for_log(task_type), sanitize_for_log(task_id),
+        )
+        return False
+    created = cur.rowcount > 0
+    cur.execute(f"RELEASE SAVEPOINT {_STAGE_SAVEPOINT}")
+    if not created:
+        logger.info(
+            "Not staging %s row %s: that task id is already in task_status, so this "
+            "call created nothing and does not own the slot.",
+            sanitize_for_log(task_type), sanitize_for_log(task_id),
+        )
+    return created
 
 
 def get_task_info_from_db(task_id):
@@ -1274,10 +1346,6 @@ def init_db():
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
-            # The SAME statement the worker's ensure_schema runs. Two spellings of
-            # one index name meant CREATE INDEX IF NOT EXISTS silently kept
-            # whichever container booted first, so the shape depended on start
-            # order - a full index here, a partial one there.
             from taskqueue.sql import PARENT_INDEX_SQL
 
             cur.execute(PARENT_INDEX_SQL)
@@ -2242,6 +2310,14 @@ def clean_up_previous_main_tasks():
         cur.close()
 
 
+def _prefixes_excluded_with(exclude_task_types):
+    if not exclude_task_types:
+        return ()
+    if set(SELF_MANAGED_TASK_TYPES).issubset(exclude_task_types):
+        return SELF_MANAGED_TASK_TYPE_PREFIXES
+    return ()
+
+
 def get_active_main_task(
     task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES, conn=None
 ):
@@ -2270,13 +2346,9 @@ def get_active_main_task(
         if exclude_task_types:
             query += " AND task_type <> ALL(%s)"
             params.append(list(exclude_task_types))
-            # INSIDE the branch. Outside it, a caller that passed a narrow exclude
-            # list still lost the plugin tasks, so they stopped blocking Cleaning -
-            # the opposite of what SELF_MANAGED_TASK_TYPE_PREFIXES is documented to
-            # do, and they write the very mappings Cleaning rewrites.
-            for prefix in SELF_MANAGED_TASK_TYPE_PREFIXES:
-                query += " AND task_type NOT LIKE %s"
-                params.append(prefix + '%')
+        for prefix in _prefixes_excluded_with(exclude_task_types):
+            query += " AND task_type NOT LIKE %s"
+            params.append(prefix + '%')
         query += " ORDER BY timestamp DESC LIMIT 1"
         cur.execute(query, tuple(params))
 

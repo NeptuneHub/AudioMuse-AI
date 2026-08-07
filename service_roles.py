@@ -33,6 +33,23 @@ reason: it was byte-identical in all of them, including the ``sys.argv`` rewrite
 that hands the queue name to ``taskqueue.worker``. Only the Flask server differs
 per platform, so it arrives as a callable.
 
+``declare_worker_role`` is here for that same reason and for one more. Every
+queue-side entrypoint had grown its own spelling of the ``SERVICE_TYPE`` to
+``AUDIOMUSE_ROLE`` shim - a conditional two-liner in two of them, a bare
+assignment in a third, a ``setdefault`` buried in a function in a fourth - and
+the drift was invisible because nothing here fails loudly. It is ORDERING, not
+configuration: ``config`` decides at IMPORT time whether it is running
+Flask-side and bootstraps the schema when it decides that it is, so an
+entrypoint that imports config before declaring its role runs Flask's DDL from
+inside a worker container. The call therefore stays ABOVE the config import,
+which is why the imports below it carry ``noqa: E402``.
+
+It stays CONDITIONAL by default because Flask imports ``taskqueue.control`` in
+order to publish a control request and must keep its own role. A process that IS
+a queue entrypoint - ``python -m taskqueue.worker`` is nothing else, whatever
+``SERVICE_TYPE`` says or fails to say - passes ``force=True`` instead, so a bare
+metal run with no ``SERVICE_TYPE`` in the environment is still a worker.
+
 This sits at the repository root rather than under ``native-build/native_common``
 because ``restart_manager`` is one of its consumers and runs in the container,
 where ``native-build/`` is not on ``sys.path`` at all. The native supervisors and
@@ -44,8 +61,11 @@ Main Features:
 * ``WORKER_SERVICES`` / ``FLASK_SERVICES`` drive restart_manager's supervisorctl calls
 * ``WORKER_ROLES`` drives each platform's ``build_child_env``
 * ``run_role`` is the one role dispatcher, taking the platform's Flask runner
+* ``declare_worker_role`` is the one SERVICE_TYPE to AUDIOMUSE_ROLE shim, and it
+  runs before config is imported in every queue-side entrypoint
 """
 
+import os
 import runpy
 import sys
 
@@ -99,6 +119,20 @@ WORKER_MODULE = 'taskqueue.worker'
 MAINTENANCE_MODULE = 'taskqueue.maintenance'
 
 ROLE_FLAG_PREFIX = '--role='
+
+ROLE_ENV = 'AUDIOMUSE_ROLE'
+SERVICE_TYPE_ENV = 'SERVICE_TYPE'
+WORKER_ENV_VALUE = 'worker'
+
+
+def declare_worker_role(force=False):
+    if force:
+        os.environ[ROLE_ENV] = WORKER_ENV_VALUE
+        return True
+    if os.environ.get(SERVICE_TYPE_ENV, '').lower() != WORKER_ENV_VALUE:
+        return False
+    os.environ.setdefault(ROLE_ENV, WORKER_ENV_VALUE)
+    return True
 
 
 def run_role(role, run_flask):

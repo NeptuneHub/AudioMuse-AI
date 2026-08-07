@@ -547,6 +547,25 @@ def cancel_job_and_children_recursive(
     return len(snapshots)
 
 
+def _record_one_cancellation(row, now_ts, reason):
+    duration = None
+    if row['start_time'] is not None:
+        end = row['end_time'] if row['end_time'] is not None else now_ts
+        duration = max(0.0, float(end) - float(row['start_time']))
+    already_terminal = row['status'] in (
+        TASK_STATUS_SUCCESS, TASK_STATUS_FAIL, TASK_STATUS_REVOKED
+    )
+    details = coerce_db_details(row['details']) if already_terminal else None
+    database.record_task_history(
+        row['task_id'],
+        row['task_type'],
+        row['status'] if already_terminal else TASK_STATUS_REVOKED,
+        duration_seconds=duration,
+        note=None if already_terminal else reason,
+        details=details,
+    )
+
+
 def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
     try:
         for row in snapshots:
@@ -554,21 +573,6 @@ def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
                 continue
             if row['task_type'] in (CONTROL_TASK_TYPE, 'provider_migration_planner'):
                 continue
-            duration = None
-            if row['start_time'] is not None:
-                end = row['end_time'] if row['end_time'] is not None else now_ts
-                duration = max(0.0, float(end) - float(row['start_time']))
-            already_terminal = row['status'] in (
-                TASK_STATUS_SUCCESS, TASK_STATUS_FAIL, TASK_STATUS_REVOKED
-            )
-            details = coerce_db_details(row['details']) if already_terminal else None
-            database.record_task_history(
-                row['task_id'],
-                row['task_type'],
-                row['status'] if already_terminal else TASK_STATUS_REVOKED,
-                duration_seconds=duration,
-                note=None if already_terminal else reason,
-                details=details,
-            )
+            _record_one_cancellation(row, now_ts, reason)
     except Exception:
         logger.exception("Could not record cancellation history; the cancel itself stands")

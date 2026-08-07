@@ -16,7 +16,12 @@ analyzed not one song (error codes 2005/2006/2007); a wiped task_status row IS
 the cancellation signal at every level.
 
 Main Features:
-* run_analysis_task / run_analysis_server_task: the queue entry points.
+* run_analysis_task / run_analysis_server_task: the queue entry points. A
+  database connectivity error propagates out of both instead of being folded into
+  the failed-server list. Claiming only looks at NEW rows and reclaiming only at
+  RUNNING ones, so a terminal row written while the database is away is never
+  touched again and a two-second blip would drop a whole server phase from the
+  run for good; left alone, the row stays RUNNING and the queue requeues it.
 * _run_analysis_server_task_impl: work map -> skip-or-enqueue -> drain -> final
   index rebuild, with revocation polls and DB reconciliation throttled to
   ANALYSIS_MONITOR_DB_INTERVAL.
@@ -442,7 +447,7 @@ def _run_analysis_server_task_impl(
                     wm_server_id, clap_available, LYRICS_ENABLED
                 )
                 work_map_bulk_ok = True
-            except OperationalError:
+            except (OperationalError, InterfaceError):
                 raise
             except Exception:
                 logger.warning(
@@ -476,11 +481,6 @@ def _run_analysis_server_task_impl(
 
             active_jobs = set()
             albums_skipped, albums_launched, albums_completed = 0, 0, 0
-            # Seeded, not reset: the songs a previous attempt analysed are real
-            # work and stay in the recap. Only its FAILURES are dropped, which is
-            # the baseline main took before dispatch. albums_completed is left at
-            # zero on purpose - it drives this attempt's progress bar and the index
-            # rebuild threshold, and seeding it would push both past their range.
             tracks_analyzed_total = [carried_over_tracks]
             last_rebuild_count = 0
             albums_no_tracks = 0
@@ -615,7 +615,7 @@ def _run_analysis_server_task_impl(
                         am = _ah.album_work_masks(
                             ids, wm_server_id, clap_available, LYRICS_ENABLED
                         )
-                    except OperationalError:
+                    except (OperationalError, InterfaceError):
                         raise
                     except Exception:
                         logger.warning(
@@ -696,6 +696,8 @@ def _run_analysis_server_task_impl(
                 log_and_update_main("Performing final index rebuild...", 95)
                 try:
                     _run_all_index_builds(log_fn=log_and_update_main)
+                except (OperationalError, InterfaceError):
+                    raise
                 except error_manager.AudioMuseError:
                     raise
                 except Exception as e:
@@ -735,7 +737,7 @@ def _run_analysis_server_task_impl(
                 "tracks_analyzed": tracks_analyzed_total[0],
             }
 
-        except OperationalError as e:
+        except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
         except Exception as e:
@@ -868,6 +870,9 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 return {'status': 'REVOKED', 'servers_completed': len(summaries)}
             if phase_status != TASK_STATUS_SUCCESS:
                 failed.append(server['name'])
+        except (OperationalError, InterfaceError) as e:
+            error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
+            raise
         except Exception as e:
             failed.append(server['name'])
             error_manager.record(
@@ -890,6 +895,9 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
         )
         try:
             _run_all_index_builds()
+        except (OperationalError, InterfaceError) as e:
+            error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
+            raise
         except Exception as e:
             err = error_manager.record(
                 error_manager.classify(e, ERR_INDEX_BUILD), str(e), exc=e, logger=logger
