@@ -10,34 +10,21 @@
 
 Drives the multi-step migration flow whose dry-run and source-refresh phases run
 as queued tasks polled by the UI; delegates track matching to
-provider_migration_matcher and reuses the app's core routines under an app context.
+provider_migration_matcher and reuses the app's core routines under an app
+context.
 
 Main Features:
-* The centralized catalogue is NEVER touched: `score` rows, their canonical fp_2
-  ids and their embeddings survive every migration. A provider swap only rewrites
-  `track_server_map` for the default server - matched songs get the target's track
-  id, unmatched songs are unbound from that server - so no song's analysis is ever
-  lost and the similarity indexes stay valid (no rebuild).
-* Under an advisory lock, repoints the default server's mappings, refreshes song
-  metadata from the new provider, clears the old provider's artist ids, and points
-  the music_servers default row at the target.
-* Chromaprint fingerprints are CARRIED onto the target's track ids in the same
-  transaction instead of being left behind keyed by dead ids. A provider swap does
-  not touch the audio, so a same-provider re-id (a Navidrome id rotation) keeps
-  every fingerprint it already computed rather than re-downloading the library.
-* The 'analysis' match tier survives the repoint: it is the only record that a
-  catalogue row has no usable signature and can never be relabelled, and dropping
-  it makes the next boot re-hash the whole catalogue for nothing.
-* Queues a full-refresh alignment of the migrated server, whose task row is
-  written INSIDE the migration transaction so the intent survives a crash between
-  the commit and the enqueue. That sweep rebuilds the artist ids the swap had to
-  clear and refreshes the file paths the target may not have reported.
-* The root task stays non-terminal until every worker durably acknowledges the
-  restart.  The completed session retains the execute and restart request ids, so
-  a publisher killed by its own restart can retry under the same task id, observe
-  the acknowledgement without republishing, and only then report SUCCESS.
-* Reads target metadata from the migration_target_meta side table and builds
-  the old->new id mapping via indexed per-album queries; reloads state after commit.
+* The centralized catalogue is NEVER touched: score rows, their canonical ids
+  and embeddings survive. A provider swap only rewrites track_server_map for the
+  default server, so no analysis is lost and the indexes stay valid (no rebuild).
+* Under an advisory lock, repoints the default server's mappings, refreshes
+  metadata, clears the old provider's artist ids, and points the default row at
+  the target.
+* Chromaprint fingerprints are carried onto the target's track ids in the same
+  transaction rather than left keyed by dead ids.
+* Queues a full-refresh alignment of the migrated server, its task row written
+  INSIDE the migration transaction so the intent survives a crash; the root task
+  stays non-terminal until every worker acknowledges the restart.
 """
 
 import json

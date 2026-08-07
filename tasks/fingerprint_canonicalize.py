@@ -9,58 +9,26 @@
 """Relabel legacy catalogue rows so item_id becomes the embedding signature.
 
 The canonical id is the 200-bit per-dimension sign signature of each track's
-stored MusiCNN embedding (tasks.simhash), so this is a database operation: no
-downloads, no binaries, no audio decoding. It runs ONCE per lifetime of a
-legacy row, at Flask container startup, and is an instant no-op afterwards;
-analysis mints canonical ids directly at analyze time so nothing here runs
-during analysis. It is NOT once per lifetime of an INSTALL: identity is derived
-from the MusiCNN embedding, so swapping the model re-mints every id and runs the
-whole rewrite again. Signatures are hashed a chunk at a time to mint each row's
-content id, and duplicate candidates are read straight from the audio IVF index
-the library already built - only tracks sharing an IVF cell (cluster) are
-compared - so a large legacy install migrates without ever holding the whole
-catalogue's pairs in memory. The rewrite uses the same proven transactional
-key-rewrite the provider-migration feature uses (score, playlist, and all
-embedding tables, with the embedding foreign keys dropped and re-added around
-it). A legacy row merges into an existing catalogue row ONLY when they share an
-IVF cluster AND the exact raw-embedding cosine confirms it is the same audio
-(the Similar Songs duplicate rule) AND the two track durations agree within
-DURATION_TOLERANCE_SECONDS - a homogeneous library (say, solo piano) puts
-genuinely different recordings inside the cosine threshold, and only the
-length tells them apart. Durations come from ONE paged metadata listing of
-the source server (no audio downloads) and are backfilled into
-score.duration; if the server is unreachable the migration still runs and
-simply merges nothing, which is always safe (an absent IVF index does the
-same, and a track the index does not cover keeps its own id). The source server's real ids
-are preserved in track_server_map so output can be translated back; a row
-whose embedding is missing or unusable (NULL, truncated, wrong size, constant,
-non-finite) is relabelled to the server-scoped fp_0 unsignable id and mapped
-with the 'analysis' tier, so no corruption shape can leave a legacy id behind
-to fail the verifier and re-run the migration forever.
+stored MusiCNN embedding (tasks.simhash), so this is a pure database
+operation: no downloads, binaries or audio decoding. It runs ONCE per lifetime of
+a legacy row at Flask startup and is an instant no-op afterwards; identity comes
+from the embedding, so swapping the model re-mints every id.
+
+Duplicate candidates come from the audio IVF index the library already built:
+only tracks sharing an IVF cell are compared, keeping peak memory linear in the
+library. The rewrite uses the same transactional key-rewrite as provider
+migration, and repoints the similarity indexes in the same transaction. A legacy
+row merges only when it shares an IVF cluster AND the exact raw-embedding cosine
+confirms the same audio AND the durations agree within
+DURATION_TOLERANCE_SECONDS. Durations come from one paged metadata listing
+and are backfilled into score.duration; an unreachable server or missing IVF
+index simply merges nothing, which is always safe. Unsignable rows are relabelled
+to the server-scoped fp_0 id, so no corruption shape can re-run the migration
+forever.
 
 Main Features:
-* One-time, idempotent startup relabel of legacy rows. Content ids are hashed
-  from embeddings a chunk at a time and dropped; duplicate candidates come from
-  the audio IVF clusters (``_ivf_candidate_pairs``): only tracks sharing a cell
-  are paired, pairs whose stored lengths are unknown or incompatible are dropped
-  by a vectorized compare before any embedding is fetched (the confirm would
-  reject them anyway), and the survivors are confirmed one bounded slice at a
-  time. Peak memory is LINEAR in the library - small per-track structures (id,
-  cell and duration maps, ~tens of MB per 100k tracks) plus one bounded confirm
-  slice - and never grows with how crowded a cluster is (the PAIR count), which
-  is what used to run the container out of memory. A track the IVF does not
-  cover keeps its own id; a track whose embedding yields NO signature (constant
-  or non-finite) is relabelled to the same server-scoped fp_0 unsignable id
-  analysis would mint, mapped with the 'analysis' tier, and never proposed as a
-  merge partner - it can never fail the verifier as a leftover legacy row.
-* Cosine-confirmed duplicate merge into existing canonical rows.
-* Repoints the similarity indexes at the new ids in the same transaction: a
-  relabel renames tracks without moving a vector, so nothing is re-clustered.
-* Records the source-server mapping in track_server_map, streamed in with COPY,
-  and moves the legacy ``score.file_path`` onto those map rows - a path belongs
-  to a FILE ON A SERVER, and once the shared column is emptied the map row is
-  its only copy, so the duplicate merge carries it through the
-  snapshot-delete-reinsert too.
+* One-time, idempotent startup relabel; cosine-confirmed duplicate merge
+* Source-server mapping recorded in track_server_map, streamed in with COPY
 """
 
 import io

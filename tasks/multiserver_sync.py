@@ -9,63 +9,26 @@
 """The sweep: alignment of the analyzed catalogue with media servers.
 
 The ONLY place that walks a server's whole catalogue to reconcile it with the
-analyzed database - analysis never sweeps, it only aligns the tracks it
-actually analyzes. A sweep is a pure metadata pass, NEVER a download or an
-analysis: track mappings via normalized path, path tail, and metadata tiers,
-plus the server's artist links and a set-based catalogue metadata refresh. It
-runs automatically the moment a server is added or its matching-relevant
-settings change, and from the Align button.
+analyzed database. A sweep is a pure metadata pass, never a download or an
+analysis: track mappings via normalized path, path tail and metadata tiers, plus
+the server's artist links and a set-based catalogue metadata refresh. It runs
+automatically when a server is added or its matching settings change, and from
+the Align button.
 
-Runs as a queue job on the high-priority queue (a main task, like analysis and
-clustering coordinators, so album jobs on the default queue can never starve
-it) and reports progress into ``task_status`` (task type ``server_sweep``);
-cancellable via the standard /api/cancel endpoint (cooperative checks).
-Unmatched tracks are simply left unmapped - the analyzed catalogue is never
-touched or reduced. Already-mapped tracks are skipped, so re-sweeps are
-incremental. Catalogue fetches run bound to the target server so its own
-library filter applies, and a full-refresh sweep (the add-server and manual
-align actions) prunes mappings whose provider track is no longer on that
-server - only map rows are removed, never analyzed tracks.
+Runs as a high-priority queue job reporting progress into task_status and is
+cancellable. Unmatched tracks are left unmapped; re-sweeps are incremental.
+Full-refresh sweeps prune mappings whose provider track is gone (only map rows,
+never analyzed tracks), skipping the prune when a fetch looks partial.
 
 Main Features:
-* ``sweep_server`` / ``sweep_all_secondary_servers`` queue entry points with live
-  percentage progress, one-line status, and cooperative cancellation.
-* ``fetch_server_catalogue`` / ``prune_stale_mappings`` / ``unmapped_local_count``
-  are the public helpers this module owns; the cleaning task reuses them instead
-  of re-implementing the fetch and the prune, so the two can never drift apart.
-* ``enqueue_server_alignment`` queues a full-refresh alignment of one server from
-  a caller with no Flask app context - the provider migration uses it so the
-  artist ids and file paths a provider swap cannot carry are rebuilt.
-* ``insert_pending_sweep_row`` is a thin sweep-shaped name over
-  ``database.stage_pending_task_row`` and writes no INSERT of its own. It used to
-  be a second hand-written copy of that statement, and a placeholder row is only
-  adoptable by the enqueue that follows it while it matches a guard neither copy
-  can see, so the next change to that guard would have had to be found in two
-  files nothing connects.
-* Zero-download alignment: matching from catalogue metadata only.
-* Artist links: each swept server's ``artist_server_map`` rows are upserted
-  from its fetched catalogue.
-* Catalogue metadata refresh: album, album artist, year and rating are
-  batch-updated for every track mapped to the swept server; ``file_path``
-  only from the default server (it is the matcher's top-priority tier).
-* Lean memory: the fetched target catalogue is condensed into a slim
-  CandidateIndex right after the fetch (its metadata staged into a temp
-  table), and the local catalogue streams through it in keyset-paginated
-  chunks with per-chunk upserts, so the local side is never fully
-  materialized.
-* A sweep whose worker died is restarted by the queue's own reclaim: the row
-  stays RUNNING with nobody holding its advisory lock, which is the whole of
-  the abandoned-sweep detection that used to need its own recovery pass.
-* Empty-catalogue guard: while nothing is analyzed yet every sweep completes
-  instantly without fetching, so first-install server adds and restarts cost
-  nothing; the first analysis creates the mappings itself.
-* Per-server library sizes are NOT owned here: the dashboard's snapshot
-  refresher counts every server's catalogue at Flask startup and hourly;
-  sweeps and cleaning just keep ``track_count`` fresh from fetches they
-  already perform.
-* Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
-  per-server counts stay truthful; pruning is skipped when the fetch looks
-  partial so a transient provider error never mass-deletes valid mappings.
+* sweep_server / sweep_all_secondary_servers entry points with live
+  progress and cooperative cancellation; helpers shared with the cleaning task so
+  the two can never drift apart.
+* Zero-download alignment, artist link upserts, and batch metadata refresh.
+* Lean memory: fetched catalogue is condensed into a slim CandidateIndex and the
+  local side streams through it in keyset-paginated chunks.
+* A sweep whose worker died is restarted by the queue's own reclaim; an
+  empty-catalogue guard makes first-install sweeps instant no-ops.
 """
 
 import logging

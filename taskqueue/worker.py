@@ -8,106 +8,29 @@
 
 """One worker process: claim a task, run it, finish it, repeat.
 
-Run as ``python -m taskqueue.worker --queue high`` or ``--queue default``. Two
-of these per container and N containers all point at the same Postgres and need
-no coordination between them, because the claim is a single UPDATE whose
-subquery takes ``FOR UPDATE SKIP LOCKED``: every worker races, exactly one wins,
-and the losers move on to the next row instead of blocking.
+Run as python -m taskqueue.worker --queue high or --queue default. The
+claim is a single UPDATE whose subquery takes FOR UPDATE SKIP LOCKED, so N
+workers racing need no coordination. The job runs IN THIS PROCESS - cancelling
+means ending the process, the worker recycles after QUEUE_MAX_JOBS, and the
+ONNX models stay warm for its whole life.
 
-The job runs IN THIS PROCESS. That is why cancelling means ending the process
-(see ``taskqueue.process.stop_hard``) and why the same mechanism recycles the
-worker after ``QUEUE_MAX_JOBS`` jobs, which is this project's guard against a
-long-lived process accumulating leaks. Running in-process also keeps the worker
-warm: the ONNX models are loaded once and stay loaded for the life of the
-worker rather than being re-loaded per album.
+Liveness is the advisory lock held on the task's own connection; if the process
+dies the lock dies with it, so no heartbeat is needed. ensure_hold retakes
+the lock the moment the listener reconnects after a Postgres restart or failover,
+before reclaim can hand the still-running task elsewhere.
 
-Liveness is the advisory lock this process holds on the task it is running, on
-its own connection, for exactly as long as it runs it. Nothing is written every
-few seconds and nothing times out; if this process dies the connection drops and
-Postgres releases the lock immediately, so no heartbeat, job-state mirror or
-registry bookkeeping is needed to notice.
-
-That lock is only as durable as the connection under it, which is why
-``ensure_hold`` exists. Whatever drops the listener - a Postgres restart, a
-failover, a recycled PgBouncer server connection - drops the idle claim
-connection too, and the lock goes with it while this process is still computing.
-Reclaim would then find an unlocked RUNNING row and hand a live task to somebody
-else, so the lock is RETAKEN the moment the listener comes back rather than
-covered by a grace period long enough to outlast the outage. The claim
-connection also carries the same short TCP keepalives the listener does, on the
-server side as well as the client side, because it is Postgres that releases the
-lock and a worker whose host vanished without a FIN/RST otherwise kept it for
-the better part of two hours.
-
-The thread caps at the bottom of this module must be applied BEFORE numpy, ONNX
-or BLAS are imported anywhere, so they run at module import and every heavy
-import is deferred into ``main``. The frozen launchers import only stdlib and
-``native_common.frozen_children`` before dispatching here, so this ordering
-holds in the native builds too.
-
-``service_roles.declare_worker_role`` sits in that same block for the same kind
-of reason: ``config`` decides at IMPORT time whether it is running Flask-side
-and bootstraps the schema when it decides that it is, so the role has to be
-declared before the ``import config`` below it or a worker container runs
-Flask's DDL. It is the shared shim rather than a fourth local spelling of it,
-and it is FORCED here because this module is never anything but a worker, with
-or without a ``SERVICE_TYPE`` in the environment.
+Thread caps at the bottom of this module must be applied BEFORE numpy/ONNX/BLAS
+import, so heavy imports are deferred into main, and
+service_roles.declare_worker_role runs before import config for the same
+ordering reason.
 
 Main Features:
-* Claim/drain loop that keeps pulling while work exists, and blocks on LISTEN when it does not
-* A cancel notification for the task this worker holds ends the process tree in about 50ms
-* Terminal rows are a safety net: a task normally writes its own, and a child row is deleted
-* Boot reclaims tasks whose worker died, bounded by QUEUE_MAX_ATTEMPTS
-* Schema bootstrap runs under the SAME advisory lock init_db takes, so a worker
-  and Flask booting together cannot run the DDL migration concurrently
-* A LOST DATABASE CONNECTION never becomes a terminal row: the tasks re-raise
-  those deliberately, and THIS worker puts the row back on the queue itself as
-  soon as it has a healthy connection again, without charging a worker-loss
-  attempt. Writing FAIL there let a two-second Postgres blip kill a job for good,
-  because nothing ever claims or reclaims a FAIL row again.
-
-"Lost connection" is a much narrower thing than ``psycopg2.OperationalError``,
-which is why ``_is_connectivity_error`` enumerates instead of matching the base
-class. psycopg2's error hierarchy is FLAT - ``ConnectionFailure`` is not a
-subclass of ``ConnectionException``, every SQLSTATE gets its own class hung
-directly off the DBAPI base - so ``OperationalError`` is also the base of
-``QueryCanceled`` (57014), ``DeadlockDetected``, ``SerializationFailure``,
-``DiskFull`` and ``OutOfMemory``. Those are the database REFUSING this unit of
-work, not the socket dying, and the free retry must not cover them: every app
-connection carries ``statement_timeout=600000``, so a query that outgrows ten
-minutes arrives as ``QueryCanceled`` and would otherwise be requeued with no
-attempt charged, for ever, ten minutes at a time. A lost connection is instead
-SQLSTATE class 08, the 57Pxx shutdown codes, 53300, ``InterfaceError``,
-``database.ConnectionLostError``, and a bare ``OperationalError`` with no
-SQLSTATE at all - which is what libpq raises for "server closed the connection
-unexpectedly", "could not connect to server" and an SSL EOF.
-
-Even a genuinely lost connection only gets ``UNCHARGED_REQUEUE_LIMIT`` free
-passes per row. After that the same requeue goes through ``requeue_or_fail``,
-which charges a worker-loss attempt and writes FAIL once QUEUE_MAX_ATTEMPTS is
-spent, so a database that is permanently unhappy ends the run instead of
-spinning the row for ever while QUEUE_MAX_JOBS recycles the process. Each repeat
-pass also waits, doubling from QUEUE_RECONNECT_DELAY_SECONDS and capped at
-QUEUE_POLL_INTERVAL_SECONDS, because nothing else on this path sleeps: a failure
-that reproduces in milliseconds would otherwise hammer Postgres and wake every
-worker in the fleet twice per iteration.
-
-Leaving that abandoned row for reclaim instead is not an option, and it is worth
-being explicit about why. Reclaim reads liveness from ``pg_stat_activity``: a
-RUNNING row is a candidate only when no session is named after its worker. The
-process that abandoned the row is still running under the same identity, so its
-own row is excluded from every recovery path - maintenance, another worker's boot
-reclaim, the control plane's uncharged requeue - for as long as the container
-lives. The run would sit at a frozen percentage and the one-live-main index would
-answer 409 to every new start until somebody cancelled by hand. The worker that
-walks away from a row therefore owns putting it back, and it retries on each loop
-until the requeue lands or the row is no longer its own RUNNING row.
-
-The boot reclaim passes a grace of zero on purpose. A process that has just
-started is provably not the one that abandoned any RUNNING row, and the advisory
-lock plus the worker's own live session in ``pg_stat_activity`` already answer
-liveness exactly - so waiting out the normal grace only guaranteed that the pass
-found nothing, which is precisely the case it was written for.
+* Claim/drain loop that blocks on LISTEN when no work exists
+* A cancel notification ends the process tree in about 50ms
+* Boot reclaims orphaned tasks bounded by QUEUE_MAX_ATTEMPTS
+* A lost connection (SQLSTATE class 08, 57Pxx, InterfaceError) requeues the row
+  without charging an attempt, up to UNCHARGED_REQUEUE_LIMIT free passes,
+  then charges and fails as usual
 """
 
 import logging

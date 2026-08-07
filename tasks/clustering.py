@@ -8,99 +8,28 @@
 
 """Clustering orchestrator: evolutionary search that turns embeddings into playlists.
 
-The main clustering queue job. run_clustering_task runs the WHOLE pipeline once per
-target server, sequentially: each server clusters only its own availability-scoped
-catalogue (servers hold different libraries), runs its own evolutionary/elitist
-search via run_clustering_batch_task child jobs, and gets its own playlists -
-results are never computed once and pushed to other servers. Delegates the
-per-iteration work to clustering_helper, the models to clustering_gpu, and
+run_clustering_task runs the whole pipeline once per target server,
+sequentially: each server clusters only its own availability-scoped catalogue,
+runs its own evolutionary/elitist search via run_clustering_batch_task child
+jobs, and gets its own playlists. Delegates per-iteration work to
+clustering_helper, models to clustering_gpu, and
 dedup/size/diversity filtering to clustering_postprocessing.
 
 Main Features:
-* run_clustering_task: sequential per-server loop over the requested scope
-  (a specific server, 'default', or 'all'); _cluster_one_server runs one
-  server's full pipeline with per-server batch job ids.
-* Per-server persistence: each server's playlists replace ITS OWN rows in the
-  playlist table (bare names + server_id) as soon as it succeeds, and every run
-  starts by pruning rows of servers no longer configured - the table is always
+* Per-server persistence: playlists replace ITS OWN rows, so the table is always
   the last run per server, never a growing history.
-* _absorb_finished_batches / _launch_batch_job: fan out parameter sets into
-  batch jobs, track elites, and adapt sampling each generation. After
-  CLUSTERING_EARLY_STOP_BATCHES consecutive batches without a better result no
-  new batches are enqueued; in-flight ones drain and the best result stands.
-
-The drain loop owns NO copy of what the queue already knows. Finished children
-are REAPED - the row is deleted as its result is read - so a batch cannot be
-counted twice and there is no processed-id set, no adoption pass and no
-start-time table to keep in step. The single exit is "nothing live left, and
-either every batch has been launched or something told us to stop launching",
-which cannot hang while anything is still moving: a child either finishes, or its
-worker dies and the queue requeues it within seconds. There is deliberately NO
-per-batch timeout, because slow hardware must never be mistaken for a hang.
-
-That guarantee has exactly one hole, and CLUSTERING_STALL_TIMEOUT_MINUTES is the
-bound for it: a child wedged inside native code that never returns keeps its
-worker process alive, so the worker still holds the advisory lock, reclaim
-correctly leaves the row alone, the live set never drains and an unattended cron
-run waits at a frozen generation count with nobody there to press Cancel. The
-valve is NOT a per-batch budget and cannot fire on a batch that is merely slow:
-its clock is reset by any change at all anywhere in the run - a batch finishing,
-failing, being launched, or entering or leaving the live set - and by a pass that
-could not read the queue at all, so neither a long database outage nor a slow
-child is ever mistaken for a wedged one, and the valve expires only when nothing
-whatsoever has happened for hours. When it does, the parent cancels the batches
-it is still waiting on through the same revoke the user's Cancel uses, records on
-its own row how long it waited and how many batches it gave up on, and finishes
-with the best result it already holds.
-
-That is only possible because the parent persists its own progress on its own
-row (_resumable_progress). It used to start every attempt at zero and rebuild
-its counters by scanning the child rows, which is precisely why the children had
-to be left in the table, and why the dedup, adoption and phantom-tracking layers
-existed at all. The winning result rides along, so a crashed main task resumes
-holding it instead of redoing the search - kept affordable by stripping the
-fields nothing reads and by writing only when something CHANGED, which is once
-per batch, the rate at which that same payload was written before. runs_completed
-is now a progress figure ONLY: it is no longer the loop's exit condition, so a
-failed batch no longer has to fake progress to keep the parent from starving.
-
-The reap and the launch are part of the very write that records them. Both run
-on the parent's own connection WITHOUT committing, and the status write that
-carries the absorbed result - or the incremented batches_launched - is what
-commits them, so a parent that dies mid-pass either keeps a finished batch's
-result or keeps its row, and either has a batch queued and counted or has
-neither. Committing them on their own was the whole failure: a finished batch
-vanished between the delete and the parent's next report, and a launch counter
-that reached the row a pass late let a resumed parent re-enqueue - under the
-same deterministic id, against a row the recovery reap had just deleted - a
-batch that had already run, then count its iterations and its elite a second
-time. A write can fail to land by two routes and both roll the transaction back:
-the parent suppresses it here when its claim is already gone, and save_task_status
-rolls back itself when the row refuses the write - a Cancel that landed between
-the two checks. Either way the in-memory counters are restored to the values
-still on the row, so the next pass credits that batch exactly once and no reaped
-result is ever committed away with nothing recording it.
-* Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
-  so playlists span the library rather than one dominant genre.
-* _calibrate_cluster_params: per-server auto-tuning for EVERY algorithm via up
-  to CLUSTERING_CALIBRATION_MAX_TRIES quick single-iteration probes. KMeans,
-  GMM and Spectral tune their own cluster/component range against one fixed
-  stratified sample: small libraries pin the range to TOP_N_CLUSTERING_PLAYLIST clusters
-  directly (never above subset_size / (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N), never
-  below subset_size / CLUSTERING_MAX_PLAYLIST_SONGS) and each probe runs at
-  the TOP of the range (worst case for emptiness). DBSCAN has no cluster
-  count: its eps range is DERIVED from the data instead (k-distance heuristic
-  via _derive_dbscan_eps - the configured 0.1-0.5 default is unusable in the
-  ~200-dim embedding space where every point would be noise), oversized
-  components are re-split by KMeans in clustering_helper, and probes widen
-  eps when playlists come out tiny and tighten it when oversized. A probe only passes with at
-  least TOP_N_CLUSTERING_PLAYLIST playlists of MIN_PLAYLIST_SIZE_FOR_TOP_N+ songs;
-  otherwise clusters shrink toward the goal. Oversized probes (over
-  CLUSTERING_MAX_PLAYLIST_SONGS) grow clusters; big beats empty. On probe
-  failure the library-size cap still applies. Calibration is
-  skipped on crash-recovery resumes (existing batch children).
-* _name_and_prepare_playlists: score, name (optionally via AI) and persist results;
-  app imports are deferred inside functions to avoid circular imports.
+* Fan-out of parameter sets into batch jobs with elite tracking and adaptive
+  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES without improvement.
+* The drain loop REAPS finished children (row deleted as the result is read) so
+  a batch is never counted twice; no per-batch timeout, and
+  CLUSTERING_STALL_TIMEOUT_MINUTES bounds the one wedge case (native code
+  that never returns) by revoking and finishing with the best result held.
+* The parent persists its own progress on its row (_resumable_progress), so a
+  crashed main task resumes with the winning result instead of redoing the search.
+* Reap and launch ride the SAME status write (never a separate commit), so a
+  parent dying mid-pass cannot lose a finished batch or double-count a launch.
+* Genre-stratified sampling and per-server calibration
+  (_calibrate_cluster_params) auto-tune every algorithm via quick probes.
 """
 
 from collections import defaultdict

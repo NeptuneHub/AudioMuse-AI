@@ -8,40 +8,23 @@
 
 """The public face of the Postgres task queue: enqueue, cancel, and who am I.
 
-Enqueueing is an INSERT that runs in the CALLER's transaction, and the NOTIFY
-that wakes a worker only fires when Postgres commits it. A start path therefore
-has exactly one step that can fail, and it fails atomically: either the row and
-its wake-up both commit or neither does. There is no window in which a task row
-exists without a queued job, or a queued job without a row, so no code is needed
-to detect or repair that half-state.
+Enqueueing is an INSERT in the CALLER's transaction, and the NOTIFY that wakes a
+worker only fires when Postgres commits it, so a start path fails atomically.
+Admission is enforced by the database - a partial unique index allows one live
+main task, so a concurrent second start raises TaskAlreadyRunning.
 
-Admission is likewise enforced by the database rather than by a lock: a partial
-unique index allows one live main task, so a concurrent second start raises
-``TaskAlreadyRunning`` rather than racing a check-then-act sequence.
-
-``ALLOWED_FUNCS`` is a security boundary, not bookkeeping. ``func`` is read back
-out of a database row and then called, so it is matched against this frozen set
-before ``importlib`` ever sees it; a dotted path that is not listed is refused
-rather than imported.
-
-Every import below the constants is deliberately deferred into a function body.
-``taskqueue`` sits one level above ``config`` in test_import_architecture.py's
-eager graph and several long chains run through it, so importing its own
-submodules at module level would push the deepest chain past MAX_CHAIN.
+ALLOWED_FUNCS is a security boundary: func is read back from a row and called,
+so it is matched against this frozen set before importlib ever sees it. Every
+import below is deferred into function bodies to keep the eager chains under
+MAX_CHAIN.
 
 Main Features:
-* ``enqueue`` writes the job row and the wake-up notification in one transaction
-* ``TaskAlreadyRunning`` carries the 409 message the start endpoints return
-* ``request_cancel`` / ``request_cancel_all`` publish the real-time stop signal
-* ``current_task_id`` tells a running task which row is its own
-* ``reap_finished_children`` deletes a parent's finished children and returns their outcomes
-
-A root enqueue clears the FINISHED rows before inserting itself - that is the
-whole retention policy, no cap and no age. It deliberately never touches NEW or
-RUNNING rows: an unconditional wipe also deleted work that was genuinely still
-running (a radio, a sweep, a plugin task), and a missing row IS the cancellation
-signal, so starting one task silently killed another. The wipe sits INSIDE the
-enqueue savepoint so a refused start undoes it.
+* enqueue writes the job row and the wake-up notification in one transaction
+* request_cancel / request_cancel_all publish the real-time stop signal
+* current_task_id tells a running task which row is its own
+* reap_finished_children deletes finished children and returns their outcomes
+A root enqueue clears the FINISHED rows before inserting itself (the whole
+retention policy); it never touches NEW or RUNNING rows.
 """
 
 import importlib

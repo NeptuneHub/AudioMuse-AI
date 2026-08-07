@@ -6,110 +6,21 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Asking every worker container to restart, stop, start, or pre-sync plugins.
+"""Publishes control requests (restart/stop/start/plugin-sync) and waits for worker
+acknowledgements via durable task_status rows; listeners run in a separate
+process so the stop/start handshake survives worker shutdown.
 
-Flask cannot reach a worker container directly, so it publishes a request and
-waits for the workers to say they did it.
-
-The request and its acknowledgements are ordinary ``task_status`` rows, so they
-are durable for free and the existing retention rules clean them up. The
-expected acknowledgement count comes from ``pg_stat_activity``: every listener
-announces itself with an ``application_name``, so Flask counts the listeners
-that are alive RIGHT NOW rather than trusting a subscriber count sampled when a
-message went out. Delivery is therefore never fire-and-forget: the wait ends on
-a real answer, which is what lets the setup wizard's
-``worker_restart_acknowledged`` mean the workers actually restarted.
-
-The listener is its own process, not a thread inside a worker, for one specific
-reason: the ``stop`` action stops the workers, and something has to still be
-listening afterwards to hear the ``start`` that brings them back.
-
-The wait is a poll rather than a notification, because the answer is a row and
-not a message: a listener that acknowledges between two checks is acknowledged
-all the same, while a lost notification would mean a restart nobody could
-confirm. Its cadence widens as the wait goes on - it starts at
-``QUEUE_CONTROL_POLL_INTERVAL_SECONDS`` and doubles up to a tenth of the budget -
-because a supervisor restart resolves in whole seconds while the interval is a
-quarter of one, so the flat cadence spent about 120 round trips per restart
-learning nothing. That fraction alone bought a blind tail proportional to the
-budget, which is why ``POLL_INTERVAL_CEILING_SECONDS`` caps it as well: the
-restore waits a whole action window, a tenth of which is fifteen seconds, so an
-acknowledgement that landed at t=17s went unnoticed until t=30s - once on the
-stop request and again on the start request, about half a minute added to every
-restore. The cap holds that dead time to a few seconds whatever the budget and
-still costs a small fraction of the flat loop. The deadline itself does not move:
-each sleep is clamped to the time left, so the last count still happens exactly
-when the budget runs out.
-
-The ``service_roles.declare_worker_role()`` call above the imports is ordering,
-not configuration; ``service_roles`` explains why, and why it stays conditional on
-``SERVICE_TYPE`` here rather than forcing the role as a real queue entrypoint
-does. It has to run before ``import config``, which is why the imports below it
-carry ``noqa: E402``.
-
-Two different budgets meet here and neither may stand in for the other.
-``QUEUE_CONTROL_TIMEOUT_SECONDS`` is how long a CALLER waits for the answer, and a
-caller that stops waiting changes nothing about the action: the request row is
-left RUNNING so the late acknowledgements still land on it.
-``QUEUE_CONTROL_ACTION_WINDOW_SECONDS`` is how long the ACTION itself may still be
-running, so it is what bounds the exemption below - and it is the same number
-``taskqueue.maintenance`` stands its reclaim down for, deliberately. An exemption
-shorter than that stand-down lets a second publisher delete the request row the
-stand-down is reading, which turns the guard off in the middle of the restart it
-exists to cover.
-
-A verdict answers the CALLER; it is not a report on the fleet. The wait ends on
-the first FAIL because whoever asked has to hear about it at once, and the row it
-then finishes is also the marker maintenance reads, so one listener's failure
-used to retract the protection from every listener still working: two replicas,
-one ``supervisorctl restart`` that returns non-zero AFTER it has already killed
-its workers, and the other pod's tasks were charged a worker loss they never
-suffered. The verdict is therefore still written the instant it is known - the
-provider-migration handshake reads it to decide whether to rotate its request -
-but only SUCCESS retracts the marker, because SUCCESS is the one answer that
-means every listener has finished. The finish deliberately does not rewrite
-``timestamp``: the marker expires one action window after the PUBLISH, and a
-refusal must not push that instant out.
-
-Only an action that STOPS workers suspends the reclaim, and
-``WORKER_STOPPING_ACTIONS`` is the same tuple that decides which actions requeue
-the stopped workers' tasks below - so reclaim stands down exactly where something
-else has taken responsibility for those rows. A plugin pre-sync stops nothing and
-used to suspend it anyway: a pre-sync outrunning the five-second advisory budget
-left its row RUNNING, and a worker that genuinely died in the window that
-followed was never reclaimed. The action travels in ``sub_type_identifier`` on
-the request row, which is what maintenance filters on.
-
-The statuses these statements write are interpolated from the
-``config.TASK_STATUS_*`` constants, as ``taskqueue.sql`` and
-``taskqueue.maintenance`` build theirs. The request row is the row maintenance
-looks for before it stands its reclaim down, so a spelling hardcoded here and
-renamed in config would leave the two halves of that handshake matching
-different strings and silently charge a deliberate restart as a worker loss.
+The wait polls on a widening but capped cadence. Two budgets govern it:
+QUEUE_CONTROL_TIMEOUT_SECONDS (how long the caller waits) and
+QUEUE_CONTROL_ACTION_WINDOW_SECONDS (how long the action may run and reclaim
+stands down). A FAIL verdict is written immediately but only SUCCESS retracts the
+protection marker; only worker-stopping actions suspend reclaim.
 
 Main Features:
-* ``publish_control_request`` asks, waits for every live listener, and returns a real verdict
-* The acknowledgement wait polls on a widening but capped cadence and still ends on the deadline
-* A refusal is recorded at once and still leaves the marker standing for the rest of the window
-* ``control_listener`` performs the supervisor action and records its own acknowledgement
-* Expected listener count read from ``pg_stat_activity``, needing no registry
-* A new handshake deletes the previous request row and its acks, exactly as a
-  new task run clears the last one. Nothing else ever removed them, so repeated
-  wizard saves accumulated one set of rows per save. A handshake somebody is
-  still waiting on is spared: publishers run in different processes - the wizard
-  in Flask, the provider migration in a worker - so a second save used to delete
-  the first request's rows out from under its poll loop, which then timed out
-  and reported a restart nobody had failed to do. The exemption is bounded by
-  ``QUEUE_CONTROL_ACTION_WINDOW_SECONDS``, because a request that times out is
-  never moved off RUNNING and an unbounded exemption would leak one set of rows
-  per abandoned handshake.
-* A restart or stop the CONTROL PLANE performed requeues the stopped workers'
-  tasks itself, without charging a worker-loss attempt - the same warm-shutdown
-  contract rq's SIGTERM gave. A wizard save is a deliberate restart, not a
-  crash, and letting it burn one of the three attempts meant three saves during
-  a long analysis failed the run for good. The advisory-lock probe keeps this
-  exact: a worker still alive on another container keeps its task, and a real
-  crash still goes through the ordinary charged reclaim.
+* publish_control_request asks, waits, and returns a real verdict
+* ControlListener performs the supervisor action and records its ack
+* A deliberate restart/stop requeues stopped workers' tasks without charging a
+  worker-loss attempt
 """
 
 import json

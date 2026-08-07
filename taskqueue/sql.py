@@ -8,36 +8,22 @@
 
 """Every statement the Postgres task queue runs, and nothing else.
 
-The queue IS the ``task_status`` row: the same row carries the payload a worker
-must run and the status the UI reads, so there is only one copy of that state
-and nothing to keep in sync. Six columns and one partial index turn the existing
-table into a queue.
+The queue IS the task_status row: the same row carries the payload a worker
+must run and the status the UI reads. Six columns and one partial index turn
+the existing table into a queue.
 
-Two design points are load-bearing and easy to undo by accident. First, the
-claim is ONE statement: an UPDATE whose subquery takes ``FOR UPDATE SKIP
-LOCKED``, so N workers across N containers race without any coordination and
-exactly one wins. Second, liveness is a session advisory lock rather than a
-heartbeat column: a worker takes ``pg_advisory_lock(LOCK_CLASS, hashtext(id))``
-on its own connection for as long as it runs the task, so a dead process
-releases it the instant its connection drops. Nothing has to time out, nothing
-has to be written every few seconds, and a reclaim running in another container
-cannot mistake a task somebody else is actively running for an orphan.
-
-``LOCK_CLASS`` is safe against the seven advisory locks the rest of the app
-already uses because Postgres keeps two-argument advisory locks in a different
-lock space from single-argument ones, and every existing key is single-argument.
-
-Every function here takes a cursor the caller owns and commits. That keeps this
-module a near-leaf (it imports only ``config``), which matters because
-test_import_architecture.py caps the eager import chain and both the workers and
-the Flask blueprints sit at opposite ends of it.
+Two design points are load-bearing. First, the claim is ONE statement - an
+UPDATE whose subquery takes FOR UPDATE SKIP LOCKED - so N workers race with no
+coordination and exactly one wins. Second, liveness is a session advisory lock
+rather than a heartbeat: a dead process releases the lock when its connection
+drops. Every function takes a cursor the caller owns and commits, keeping this
+a near-leaf module (imports only config) under the MAX_CHAIN cap.
 
 Main Features:
-* ``ensure_schema`` adds the queue columns, indexes and the one-time status migration
-* ``insert_job`` / ``claim`` / ``finish_child`` / ``requeue_or_fail`` move a row through its life
-* ``hold`` / ``try_hold`` / ``release`` are the advisory-lock liveness primitives
-* ``reap_children`` deletes finished children and returns their outcomes in one round trip
-* ``notify_*`` publish on the channels workers and Flask listen to
+* ensure_schema adds the queue columns, indexes and the one-time migration
+* insert_job / claim / finish_child / requeue_or_fail move a row through its life
+* hold / try_hold / release are the advisory-lock liveness primitives
+* reap_children deletes finished children; notify_* publish to workers/Flask
 """
 
 import hashlib

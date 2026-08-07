@@ -10,38 +10,21 @@
 
 Runs as a queue job. Fetches the current track set of every configured media
 server through the sweep's OWN enumeration and pruning
-(``multiserver_sync.fetch_server_catalogue`` / ``prune_stale_mappings``, library
-filter applied), so the prune baseline can never disagree with the enumeration
-that created the mappings, and removes ONLY that server's rows from
-track_server_map for tracks it no longer has. The
-A song that disappeared from ONE server keeps its analysis, embeddings and
-mappings on every other server. A song bound to NO server (an orphan) is
-DELETED from the catalogue - it is gone from every library, so its analysis is
-removed and simply re-created if the file ever returns. That delete happens
-ONLY when every server was read completely (none failed, empty or partial), so
-an incomplete view can never delete a track still on a server. Every cleaning
-run then runs the SAME full similarity-index rebuild analysis runs, INLINE, and
-is not reported complete until the indexes reflect the cleaned catalogue and the
-'reload' has been published so a running Flask swaps the new indexes in.
+(multiserver_sync.fetch_server_catalogue / prune_stale_mappings, library filter
+applied), so the prune baseline can never disagree with the enumeration that
+created the mappings, and removes ONLY that server's rows from track_server_map
+for tracks it no longer has. A song bound to NO server (an orphan) is deleted
+from the catalogue, and that delete happens ONLY when every server was read
+completely (none failed, empty or partial). Every run then executes the same
+full similarity-index rebuild analysis runs, INLINE, and is not reported
+complete until Flask reloads the indexes.
 
 Main Features:
-* identify_and_clean_orphaned_albums_task: the queue entry point that fetches each
-  server's tracks, prunes that server's stale mappings, and deletes the tracks
-  left bound to no server.
-* Reuses the sweep's public helpers rather than re-implementing the fetch and
-  the prune, so cleaning and the sweep can never drift apart.
-* Refreshes each server's stored library size (``music_servers.track_count``)
-  from the fetch it already performs, keeping the dashboard's coverage
-  denominator current on every cleaning run.
-* Deletes catalogue tracks bound to no server, but only when every server was
-  read completely; otherwise it just reports them and deletes nothing.
-* Runs the Chromaprint dedup (Path B) each time: splits merged duplicate groups
-  whose stored fingerprints prove they are different recordings, so a false merge
-  is corrected once its files have Chromaprints (skip-if-missing, unmap-only).
-* Runs the shared _run_all_index_builds inline at the end of every run, the same
-  final rebuild analysis performs, so the task completes only once the similarity
-  indexes are consistent with the catalogue on every music server and Flask has
-  been told to reload them.
+* identify_and_clean_orphaned_albums_task: the queue entry point.
+* Reuses the sweep's public helpers so cleaning and the sweep never drift apart.
+* Refreshes each server's stored library size (music_servers.track_count).
+* Runs the Chromaprint dedup (Path B) each time: splits merged groups whose
+  stored fingerprints prove they are different recordings (skip-if-missing).
 """
 
 import logging

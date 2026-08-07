@@ -8,62 +8,29 @@
 
 """Stopping a worker and everything it spawned, identically on every platform.
 
-A job runs in the worker process itself, so cancelling it means ending that
-process, and ending it means taking its children with it: an analysis job holds
-ONNX sessions and a loky pool whose workers are separate OS processes, and a
-survivor would keep a GPU or a whole CPU busy with work nobody is waiting for.
-The supervisor then respawns the worker, which is the same mechanism used to
-recycle it after ``QUEUE_MAX_JOBS`` jobs, so there is exactly one kill path.
+A job runs in the worker process itself, so cancelling means ending that process
+and its children (ONNX sessions, a loky pool); the supervisor respawns the
+worker. There is exactly one kill path.
 
-The POSIX branch signals children INDIVIDUALLY first and only signals the
-process GROUP as its last act, with SIGKILL. The ordering is the whole point.
-This process is itself in the group it signals, so a group SIGTERM ends it at
-that instruction unless the process first sets SIGTERM to SIG_IGN - and
-``signal.signal`` raises ValueError off the main thread, which is exactly where
-a cancel arrives (the notification is dispatched on the Listener thread). That
-made the group signal kill the worker before the grace period, the SIGKILL
-escalation and the clean exit could run, leaving alive the loky and ONNX
-children this function exists to reap. Doing the per-child work first needs no
-signal disposition at all and therefore behaves identically on every thread.
+POSIX signals children INDIVIDUALLY first and only signals the process GROUP as
+its last act, with SIGKILL. The ordering is the whole point: this process is
+itself in the group it signals, and signal.signal raises ValueError off the
+main thread (where a cancel arrives), so a group-first signal would kill the
+worker before the grace period ran. The group sweep is still needed last because
+a reparented grandchild keeps its process group, which killpg reaches.
 
-The group sweep is still needed and still last: a child that exits while its own
-child lives leaves a grandchild reparented to PID 1, where ``psutil`` can no
-longer find it, but which KEEPS its process group - so ``killpg`` reaches it and
-enumeration does not. SIGKILL needs no handler, so nothing can be skipped, and
-this process dying with the group is the intended exit (every supervisor entry
-is ``autorestart=true``, so the exit status does not matter). It is only correct
-because the worker is a group leader in every environment that starts it -
-supervisord with ``killasgroup=true`` in the container, ``start_new_session=True``
-in the Linux and macOS supervisors, ``CREATE_NEW_PROCESS_GROUP`` on Windows - so
-a change to any of those spawn flags would make this signal the supervisor's own
-group instead. The unit tests assert those flags for that reason.
+Windows has no signalable process groups, so it enumerates with psutil before
+touching itself. taskkill /T /F is avoided, and os.kill(pid, 0) on win32
+TERMINATES the probed process, so liveness probing is psutil-only there.
 
-Windows has no process groups to signal this way, so it enumerates with psutil
-BEFORE touching itself, terminates, waits, then kills. Shelling out to
-``taskkill /T /F`` was rejected: spawning a console process from inside a frozen
-PyInstaller bundle is exactly the fragile path ``frozen_children`` exists to
-avoid, and psutil is already a dependency. Liveness probing is psutil-only there
-too: CPython implements ``os.kill(pid, 0)`` on win32 as OpenProcess plus
-TerminateProcess, so the POSIX "signal 0 is a probe" idiom TERMINATES the process
-it asks about - it killed the sibling worker whose joblib folder was being
-checked, and reported every genuinely dead pid as alive because OpenProcess
-fails there with a plain OSError rather than ProcessLookupError.
-
-The sweep is pid-scoped for the same reason. TEMP_DIR is SHARED by both worker
-processes in a container, so an unqualified sweep at boot deleted memmap folders
-belonging to the sibling worker that was still using them - and the default
-worker recycles every ``QUEUE_MAX_JOBS`` jobs, so that happened routinely
-mid-analysis. A folder is removed only once the pid in its name is provably
-dead, and an unreadable name is left alone. The two layouts put that pid in
-different places: ``joblib_memmapping_folder_<pid>_<...>`` in the first numeric
-underscore field, ``loky-<pid>-<random suffix>`` in the SECOND hyphen field
-rather than the last, so reading the last field returned the random suffix and
-swept no loky folder at all - except when mkdtemp happened to produce an
-all-digit suffix, where an unrelated number decided the fate of a live pool.
+The temp sweep is pid-scoped because TEMP_DIR is SHARED by both workers in a
+container; a folder is removed only once the pid in its name is provably dead.
+The two layouts put that pid in different fields
+(joblib_memmapping_folder_<pid> vs loky-<pid>-<suffix>).
 
 Main Features:
-* ``stop_hard`` kills this process tree and exits, on POSIX and on Windows
-* ``sweep_stale_temp_dirs`` clears joblib folders a previous hard kill leaked
+* stop_hard kills this process tree and exits, on POSIX and Windows
+* sweep_stale_temp_dirs clears joblib folders a previous hard kill leaked
 """
 
 import logging

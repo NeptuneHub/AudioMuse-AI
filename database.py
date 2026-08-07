@@ -8,48 +8,19 @@
 
 """Postgres data-access layer for the whole application.
 
-Owns the per-request connection (via Flask ``g``), the embedded-server
-lifecycle, the ``init_db`` schema bootstrap, and every read/write helper for
-tasks, track analysis and embeddings, projections, and alchemy anchors/radios.
+Owns the per-request connection (via Flask g), the embedded-server lifecycle,
+the init_db schema bootstrap, and every read/write helper for tasks, track
+analysis and embeddings, projections, and alchemy anchors/radios.
 
 Main Features:
-* Connection management plus ``init_db`` table/index creation and migrations. A
-  worker job holds ONE app context for its whole run, so ``get_db`` drops a
-  cached connection the server closed under it (a database restart, an idle
-  timeout), fails that unit of work once with ``ConnectionLostError`` (an
-  ``OperationalError`` subclass), and reconnects on the next call.
-* Task-status and history persistence with sanitized fields and capped history rows.
-* A status write the row itself refuses - it is REVOKED, or it does not exist and
-  its parent is gone or already terminal - ends the transaction with a ROLLBACK
-  rather than a commit, and only a write that landed commits. Callers stage work
-  on this same connection and let the status write publish it: the clustering
-  parent reaps a finished batch and queues the next one without committing either,
-  so a refused write that still committed published a reap whose result nothing
-  had recorded, and the batch was lost. Nothing else leaves writes pending across
-  a status write - every other helper here commits its own - so the rollback ends
-  an empty transaction for every other caller.
-* A finished ROOT collapses task_status to its own one-line recap. A child never
-  does: when a report omits the parent the stored one decides, and
-  ``worker_control`` is exempt because a restart handshake finishes DURING the
-  run that published it.
-* The start gate excludes the self-managed types, and the ``plugin.`` prefix only
-  together with them: a caller passing a narrower list (a cleaning, a provider
-  migration) must still see a live plugin root and refuse, because plugins write
-  the mappings those two rewrite.
-* ``init_db`` creates the task_status parent index from the one statement in
-  ``taskqueue.sql`` that the worker's ``ensure_schema`` also runs, so the index
-  shape cannot depend on which container booted first.
-* ``stage_pending_task_row`` is the ONE way to write a placeholder task row that a
-  later ``taskqueue.enqueue`` on the same transaction adopts. Only a func-less row
-  in a live status is adoptable, so the two hand-written copies of that INSERT had
-  to agree with a guard they could not see; one of them drifted and committed a
-  func-less row nothing ran until the 30-minute stale sweep. It never commits: the
-  caller's enqueue writes the func and commits both together. It returns True only
-  for a row THIS call created. The INSERT skips an existing task_id rather than
-  raising, so returning True whenever nothing raised told a caller it owned a slot
-  another run already held - and the sweep claim reads that answer as permission
-  to enqueue over it. The rowcount of the INSERT is the answer, and it has to be
-  read before the RELEASE SAVEPOINT overwrites it.
+* Connection management plus init_db table/index creation and migrations; a
+  worker job holds ONE app context for its whole run, so get_db drops a cached
+  connection the server closed and reconnects on the next call.
+* Task-status and history persistence with sanitized fields and capped rows; a
+  status write the row refuses ends the transaction with a ROLLBACK.
+* stage_pending_task_row is the one way to stage a placeholder row that a later
+  taskqueue.enqueue on the same transaction adopts (returns True only for a row
+  this call created).
 * Embedding, projection, and alchemy CRUD shared by workers and the web app.
 """
 

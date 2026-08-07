@@ -8,60 +8,27 @@
 
 """The one health loop all three native supervisors run.
 
-Restarting an unhealthy database and respawning a child that exited is the same
-work on every platform, so it lived as three copies that had already drifted:
-macOS was missing both shutdown guards the other two had, which is exactly the
-silent per-platform divergence ``service_roles`` was created to end. Only
-``_ensure_postgres_healthy`` stays with the platform, because how the connection
-parameters are discovered genuinely differs.
+Restarting an unhealthy database and respawning an exited child is the same work
+on every platform, so it lived as three copies that had already drifted. The
+mixin reads _health_stop, _state, _desired, _lock, _children
+and _log off the supervisor and calls its start_child and
+_ensure_postgres_healthy.
 
-The mixin reads ``_health_stop``, ``_state``, ``_desired``, ``_lock``,
-``_children`` and ``_log`` off the supervisor and calls its ``start_child`` and
-``_ensure_postgres_healthy``; every ProcessSupervisor already defines all of them.
+The probe connection is held between ticks (a fresh probe every 5s would fork
+~17k backends/day), but health is never inferred from its mere existence: every
+tick runs a real SELECT 1. Reconnecting only on error keeps a momentarily
+saturated max_connections from restarting a healthy database. The session is
+autocommit so it never pins the xmin horizon.
 
-The probe connection is held between ticks, the way ``taskqueue.listen`` holds
-its LISTEN session, because a probe every five seconds is roughly seventeen
-thousand backend forks a day on an install nobody is touching. Health is still
-never inferred from the mere existence of that session: every tick runs a real
-``SELECT 1`` round trip on it, and a probe that errors drops the session and
-retries once on a fresh connection before the database is declared unhealthy.
-Reconnecting only on error is also what keeps a momentarily saturated
-``max_connections`` from restarting a database that is answering queries fine.
-The session is autocommit so it can never sit idle in a transaction holding the
-xmin horizon, and it is closed when the loop exits so a shutdown or a restore
-never waits on it.
-
-Opening and running that probe only ever absorbs the database and OS errors that
-genuinely mean the server is unreachable. A blanket ``except Exception`` here is
-a trap rather than caution: it turns any coding mistake in the probe into an
-unhealthy verdict, so the supervisor restarts a perfectly healthy database in a
-loop with nothing in the log naming the real cause, which is exactly how the
-autocommit call silently disabled the whole probe once already. A real connection
-failure is logged with its traceback and reported as unreachable; anything else
-is logged as the bug it is by whichever helper hit it and only then re-raised,
-because every platform ``_ensure_postgres_healthy`` absorbs that re-raise without
-logging it - it has to, to keep the health thread and therefore child restarts
-alive - so that log line is the only thing left naming the cause.
-
-``psycopg2`` stays a deferred import inside the two probe helpers rather than
-moving to the top of this module, which is the repository default. This mixin is
-imported at module scope by all three frozen supervisors, and the supervisor is
-the process that prepares the environment libpq is later loaded with: the Windows
-child environment is the only place the embedded server's ``bin`` directory is
-prepended to ``PATH``, and the Linux one swaps ``LD_LIBRARY_PATH`` back to the
-system loader around every native load. A module-scope import would hoist that
-native load into the supervisor's own import, turning a libpq that will not load
-into a supervisor that dies before it can open its log file or start the
-database, instead of one probe that fails and says so. Both the Windows
-supervisor and its ``db_backend`` already defer psycopg2 for the same reason.
+Only unreachable-server errors are absorbed; a blanket except Exception
+would turn any probe bug into an unhealthy verdict and restart a healthy
+database in a loop. psycopg2 stays a deferred import so an unloadable libpq
+cannot kill a supervisor before it can even open its log.
 
 Main Features:
 * One guarded loop: a stop request is honoured before every restart decision
 * Restarts the embedded database first, then any child whose process exited
 * A child that cannot be restarted is logged and retried on the next pass
-* One held probe connection per supervisor, reconnected only when a probe fails
-* Only unreachable-server errors are absorbed; a bug in the probe surfaces loudly
-* psycopg2 is imported inside the probe so an unloadable libpq cannot kill boot
 """
 
 import threading

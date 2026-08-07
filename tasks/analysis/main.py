@@ -9,42 +9,19 @@
 """Analysis orchestration: FOR EACH SERVER, dispatch FOR EACH ALBUM and drain.
 
 run_analysis_task runs one phase per enabled server (union catalogue, default
-first). Each phase loads the server's work map ONCE, walks the albums, enqueues
-tasks.analysis.album.analyze_album_task children for the ones with work, drains
-them, and rebuilds the indexes at the end. A run fails only if it crashed or
-analyzed not one song (error codes 2005/2006/2007); a wiped task_status row IS
-the cancellation signal at every level.
+first): loads the work map ONCE, walks albums, enqueues
+tasks.analysis.album.analyze_album_task children, drains them, and rebuilds the
+indexes. A run fails only if it crashed or analyzed not one song (2005/2006/2007).
 
 Main Features:
-* run_analysis_task / run_analysis_server_task: the queue entry points. A
-  database connectivity error propagates out of both instead of being folded into
-  the failed-server list. Claiming only looks at NEW rows and reclaiming only at
-  RUNNING ones, so a terminal row written while the database is away is never
-  touched again and a two-second blip would drop a whole server phase from the
-  run for good; left alone, the row stays RUNNING and the queue requeues it.
-* _run_analysis_server_task_impl: work map -> skip-or-enqueue -> drain -> final
-  index rebuild, with revocation polls and DB reconciliation throttled to
-  ANALYSIS_MONITOR_DB_INTERVAL.
-* _verify_media_server_reachable: pre-flight probe so an unreachable or
-  unauthenticated server aborts early with 1101/1104 instead of failing every
-  child job.
-* _inflight_children: the one read of this task's live children, used both to
-  decide whether TEMP_DIR may be wiped and to adopt what a previous attempt left
-  running.
-* _carried_over_tracks: a reclaim requeues the parent by setting its own row back
-  to NEW and leaves the children alone, so an earlier attempt's rows are still
-  there when the retry starts. Its FAILURES must not be counted - doing so made
-  `failed_count >= albums_launched` true and reported a fully successful retry as
-  a failed phase - but its analysed songs are real work, so they are carried into
-  this attempt's total rather than dropped with them.
+* run_analysis_task / run_analysis_server_task queue entry points.
+* _run_analysis_server_task_impl: work map -> skip-or-enqueue -> drain -> rebuild.
+* _verify_media_server_reachable: pre-flight probe aborting early (1101/1104).
+* _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
+  an earlier attempt's analysed songs into this attempt's total.
 
-TEMP_DIR is SHARED by every worker process in a container and clean_temp empties
-it wholesale, so the start-of-run wipe is gated on this task provably having no
-live children. A parent whose worker died is requeued and restarts within
-seconds while the album children it is about to adopt are still decoding audio
-into that directory; wiping it there destroyed the work of the very jobs the
-adoption pass exists to preserve. If the children cannot be read at all the wipe
-is skipped, because leaking temp files is the cheaper mistake.
+TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
+task having no live children; if they cannot be read the wipe is skipped.
 """
 
 import os

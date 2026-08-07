@@ -6,108 +6,25 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Restart tasks whose worker died, and finish rows whose owner cannot.
+"""Reclaims tasks whose worker died and finishes rows whose owner cannot.
 
-This module does NOT keep ``task_status`` small; nothing here needs to. A run
-that starts empties the table, a Cancel empties it, and a run that finishes
-empties it apart from its own one-line recap, so the table already holds either
-the run happening now or the recap of the last one. There is no prune, no cap,
-no age and no ranking anywhere in the queue.
+Orphan detection needs no heartbeat or registry: a task is orphaned when its row
+says RUNNING and nobody holds its advisory lock, which died with the worker's
+connection. A task restarts ONLY because its worker died, at most
+QUEUE_MAX_ATTEMPTS times, then fails for good.
 
-``reclaim_orphans`` needs no heartbeat, no staleness threshold and no registry
-bookkeeping: a task is orphaned when its row says RUNNING and nobody holds its
-advisory lock, which Postgres answers exactly and instantly, because the lock
-died with the worker's connection.
+Reclaim stands down while a control stop/restart is in flight:
+taskqueue.control requeues those tasks itself without charging an attempt.
+The stand-down is bounded by QUEUE_CONTROL_ACTION_WINDOW_SECONDS (how long the
+action may take), and only actions that STOP workers suspend it. One listener's
+FAIL does not end it, because SUCCESS is the only answer that means every
+listener finished.
 
-The rule it enforces is deliberately the only retry rule in the system: a task
-restarts ONLY because its worker died, at most ``QUEUE_MAX_ATTEMPTS`` times, and
-then fails for good. A task that raised on its own merits was already written to
-FAIL by the worker and never appears here.
-
-A worker the CONTROL PLANE stopped did not die, so reclaim stands down entirely
-while a control request row is unfinished: ``taskqueue.control`` requeues those
-tasks itself without charging an attempt. This has to be checked here rather
-than at the one caller, because the reclaimer that would otherwise win the race
-is the freshly booted worker's own grace-0 pass, which runs before the control
-listener has finished restarting the fleet - on native builds the services are
-restarted one at a time, so the first worker is already reclaiming while the
-last is still being terminated. Three wizard saves during a long analysis failed
-the run for good that way.
-
-Unfinished means anything but SUCCESS, and the distinction is the whole point:
-SUCCESS is written only once EVERY live listener has acknowledged, so it is the
-one answer that means nobody is still stopping anything. A verdict of FAIL is one
-listener's answer, not the fleet's - a pod whose ``supervisorctl`` returns
-non-zero after it has already killed its workers answers FAIL at t=30s while its
-neighbour is legitimately still stopping its three services - and reading the
-marker as gone at that point charged the neighbour's rows exactly the worker-loss
-attempt this window exists to prevent.
-
-The stand-down covers only the actions that STOP workers, which is
-``taskqueue.control.WORKER_STOPPING_ACTIONS`` and therefore precisely the actions
-whose listener performs the uncharged requeue: standing reclaim down means
-deferring to that requeue, so an action which never performs one has nothing to
-defer to. A plugin pre-sync stops no worker, and suspending reclaim for it meant
-a pre-sync slower than the caller's five-second budget left a row nobody would
-ever finish and a worker that really died in the following window went
-unreclaimed. The published action is read from the request row's
-``sub_type_identifier``; a row that does not name its action at all is read as
-one that stops workers, because the expensive mistake is charging an attempt that
-was never a loss.
-
-That stand-down is measured against ``QUEUE_CONTROL_ACTION_WINDOW_SECONDS``,
-which is how long the ACTION may legitimately take, and NOT against
-``QUEUE_CONTROL_TIMEOUT_SECONDS``, which is only how long a caller waits to hear
-about it. It was the ack-wait budget once, and that is the whole bug: the request
-row's timestamp is written at publish and never refreshed, a caller gives up
-after 30s (5s for the wizard) while a three-worker stop legitimately takes 45-60,
-and the first worker back then found the guard already expired and charged every
-still-restarting worker's row an attempt. The uncharged requeue that arrives
-seconds later cannot undo it, because those rows are no longer RUNNING.
-
-The same window bounds the guard the other way: because the timestamp is never
-refreshed - not by the action running, and not by the verdict that finishes the
-row - a control row an abandoned, crashed or refused handshake left unfinished
-suspends reclaim for exactly one action window and not one second longer.
-
-This process runs in every worker container, and one ``pg_try_advisory_lock``
-elects a single winner per cycle. Nothing here mutates state a Cancel could be
-racing, so the lock needs no blocking or timeout variants: it is only about not
-doing the same tidy-up N times.
-
-The cycle is split in two only because of how often each half is worth running.
-Reclaim is one indexed scan plus one ``pg_try_advisory_lock`` per RUNNING
-candidate, so it runs every few seconds and a dead worker is noticed in about
-that long. The slow half exists for rows no worker owns - an inline task whose
-web process died, a migration killed by its own restart - and for the shared
-payload a terminal row would otherwise keep alive.
-
-The one case the advisory lock cannot answer is a Postgres restart: it frees
-every lock at once. The loop answers it directly - losing its own connection is
-exactly the same event, so the first cycle after any reconnect is skipped, which
-is more than the couple of seconds a live worker's listener needs to come back
-and retake its lock through ``Worker.ensure_hold``.
-
-The ``service_roles.declare_worker_role()`` call above the imports is ordering,
-not configuration; ``service_roles`` explains why. It has to run before ``import
-config``, which is why the imports below it carry ``noqa: E402``.
-
-Every status these statements write or compare is interpolated from the
-``config.TASK_STATUS_*`` constants, exactly as ``taskqueue.sql`` builds its own,
-so renaming one in config moves the stale-row sweep, the shared-payload wipe and
-the control-in-flight guard with it. Hardcoding a spelling in even one of them is
-silent: the Python comparisons in this module follow config, the statement does
-not, and the sweep simply stops matching the rows it exists to finish.
-
-Main Features:
-* ``reclaim_orphans`` requeues or fails tasks whose worker is provably gone
-* ``reclaim_orphans`` charges nothing while a control stop or restart is in flight
-* One listener's refusal does not end that stand-down for the listeners still working
-* An action that stops no worker never suspends reclaim at all
-* ``fail_stale_inline_rows`` finishes rows whose in-process owner died
-* ``recover_migration_handshakes`` resumes a migration killed by its own restart
-* ``clear_terminal_shared_payloads`` drops the payload a finished row still holds
-* ``run_cycle`` runs reclaim always and the slow half only when it is due
+Runs in every worker container; a single pg_try_advisory_lock elects one
+winner per cycle. Reclaim runs every few seconds; the slow half (stale inline
+rows, migration handshakes, terminal shared payloads) only when due. After a
+Postgres restart the first cycle is skipped so live workers can retake their
+locks.
 """
 
 import json
