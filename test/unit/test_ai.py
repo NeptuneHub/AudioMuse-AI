@@ -207,7 +207,7 @@ class TestCleanPlaylistName:
         assert result == "Rock Classics"
 
     def test_fixes_text_encoding(self):
-        mojibake = "Rock â€™n Roll"
+        mojibake = b'Rock \xe2\x80\x99n Roll'.decode('cp1252')
 
         assert clean_playlist_name(mojibake) == "Rock 'n Roll"
 
