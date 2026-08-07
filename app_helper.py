@@ -119,6 +119,20 @@ def sanitize_task_details(details, state, task_type=None):
     # return value, not this display copy.
     details.pop('final_subset_track_ids', None)
     details.pop('full_best_result_from_batch', None)
+
+    # The main clustering task's own best_result is kept in full in the database
+    # (a worker restart resumes from it, and it is what actually gets turned into
+    # playlists at the end of the run), but nothing displays the per-song playlist
+    # composition or the per-playlist embedding vectors it also carries. /api/active_tasks
+    # is polled every 3 seconds while clustering runs, so leaving these in made every
+    # poll re-read, re-decode and re-serialize a payload that grows with the catalogue
+    # and the number of candidate playlists - large enough to make the polling page feel
+    # unresponsive without any of it ever reaching the screen.
+    best_result = details.get('best_result')
+    if isinstance(best_result, dict):
+        for heavy_key in ('named_playlists', 'playlist_centroids', 'playlist_to_centroid_vector_map'):
+            best_result.pop(heavy_key, None)
+
     summary = details.get('final_summary_details')
     if isinstance(summary, dict) and isinstance(summary.get('orphaned_albums'), list):
         from tasks.simhash import is_fingerprint_id

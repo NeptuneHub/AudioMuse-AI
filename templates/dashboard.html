@@ -595,14 +595,10 @@
         host.innerHTML = '';
         (rows || []).forEach(q => {
             const count = q.pending_count || 0;
-            const waiting = count > 0
-                ? 'Oldest waiting: ' + fmtDuration(q.oldest_pending_seconds)
-                : 'Nothing waiting';
             const div = document.createElement('div');
             div.className = 'dash-stat-card';
             div.innerHTML = `<h3>${QUEUE_LABELS[q.queue_name] || q.queue_name}</h3>
-                             <div class="dash-stat">${count.toLocaleString()}</div>
-                             <div class="dash-substat">${waiting}</div>`;
+                             <div class="dash-stat">${count.toLocaleString()}</div>`;
             host.appendChild(div);
         });
     }

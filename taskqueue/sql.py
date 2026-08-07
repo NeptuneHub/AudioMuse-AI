@@ -716,7 +716,7 @@ def worker_snapshot(cur):
 
 
 _QUEUE_BACKLOG = f"""
-    SELECT queue_name, COUNT(*), EXTRACT(EPOCH FROM (NOW() - MIN(timestamp)))::int
+    SELECT queue_name, COUNT(*)
     FROM task_status
     WHERE status = '{_NEW}' AND queue_name = ANY(%s)
     GROUP BY queue_name
@@ -725,12 +725,11 @@ _QUEUE_BACKLOG = f"""
 
 def queue_backlog(cur):
     cur.execute(_QUEUE_BACKLOG, (list(queue_names.QUEUE_NAMES),))
-    found = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+    found = dict(cur.fetchall())
     return [
         {
             'queue_name': name,
-            'pending_count': found.get(name, (0, None))[0],
-            'oldest_pending_seconds': found.get(name, (0, None))[1],
+            'pending_count': found.get(name, 0),
         }
         for name in queue_names.QUEUE_NAMES
     ]

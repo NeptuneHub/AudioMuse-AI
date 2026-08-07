@@ -6,13 +6,13 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""How many jobs are waiting per queue, and how long the oldest has waited.
+"""How many jobs are waiting per queue.
 
 The dashboard used to show worker state (busy or idle) and nothing about the
 backlog behind those workers, so an operator had no way to tell "the default
-queue has 340 albums waiting, the oldest for 8 minutes" from "the queue is
-empty". ``sql.queue_backlog`` answers exactly that with one cheap aggregate
-against the same partial index the claim statement already uses.
+queue has 340 albums waiting" from "the queue is empty". ``sql.queue_backlog``
+answers exactly that with one cheap aggregate against the same partial index
+the claim statement already uses.
 
 A queue with nothing waiting must still be reported as zero, not omitted: the
 aggregate only produces a row for queue names that actually have a NEW row, so
@@ -21,8 +21,8 @@ queue" silently drops a queue the moment its backlog clears.
 
 Main Features:
 * Every queue name from queue_names.QUEUE_NAMES is always represented
-* A queue with no pending rows reports zero and no age
-* Counts and the oldest-waiting age come straight off the recorded query
+* A queue with no pending rows reports zero
+* The count comes straight off the recorded query
 * Only NEW rows of the requested queue names are ever counted
 """
 
@@ -44,13 +44,12 @@ class _RecordingCursor:
 
 class TestEveryQueueIsAlwaysRepresented:
     def test_a_queue_with_nothing_waiting_still_reports_zero(self):
-        cur = _RecordingCursor([(queue_names.QUEUE_HIGH, 3, 45)])
+        cur = _RecordingCursor([(queue_names.QUEUE_HIGH, 3)])
 
         result = sql.queue_backlog(cur)
 
         by_name = {row['queue_name']: row for row in result}
         assert by_name[queue_names.QUEUE_DEFAULT]['pending_count'] == 0
-        assert by_name[queue_names.QUEUE_DEFAULT]['oldest_pending_seconds'] is None
 
     def test_every_known_queue_name_appears_exactly_once(self):
         cur = _RecordingCursor([])
@@ -62,14 +61,13 @@ class TestEveryQueueIsAlwaysRepresented:
 
 
 class TestTheAggregateIsReportedAsIs:
-    def test_the_pending_count_and_oldest_age_come_from_the_query(self):
-        cur = _RecordingCursor([(queue_names.QUEUE_DEFAULT, 340, 480)])
+    def test_the_pending_count_comes_from_the_query(self):
+        cur = _RecordingCursor([(queue_names.QUEUE_DEFAULT, 340)])
 
         result = sql.queue_backlog(cur)
 
         by_name = {row['queue_name']: row for row in result}
         assert by_name[queue_names.QUEUE_DEFAULT]['pending_count'] == 340
-        assert by_name[queue_names.QUEUE_DEFAULT]['oldest_pending_seconds'] == 480
 
     def test_only_the_requested_queue_names_are_bound_into_the_query(self):
         cur = _RecordingCursor([])
