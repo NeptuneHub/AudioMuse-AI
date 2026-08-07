@@ -40,7 +40,7 @@ from config import (
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAIL,
 )
-from database import get_db, save_task_status
+from database import get_db, save_task_status, MAX_LOG_ENTRIES_STORED
 from psycopg2 import OperationalError
 from psycopg2 import sql as pgsql
 from sanitization import sanitize_string_for_db
@@ -90,13 +90,17 @@ def make_task_reporter(task_id, task_type, initial_message,
     base = dict(base_details or {})
     state = {'progress': 0, 'last_db': float('-inf')}
     label = prefix or f"{task_type}-{task_id}"
+    logs = [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {initial_message}"]
 
     try:
         save_task_status(
             task_id, task_type, TASK_STATUS_RUNNING,
             parent_task_id=parent_task_id, sub_type_identifier=sub_type_identifier,
             progress=int(progress_base),
-            details={**base, "message": initial_message, "status_message": initial_message},
+            details={
+                **base, "message": initial_message, "status_message": initial_message,
+                "log": list(logs),
+            },
         )
     except OperationalError as e:
         error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
@@ -109,6 +113,13 @@ def make_task_reporter(task_id, task_type, initial_message,
         details = {**base, **kwargs, "message": message, "status_message": message}
         if downgrade_terminal and task_state in (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL):
             task_state = TASK_STATUS_RUNNING
+        if task_state == TASK_STATUS_SUCCESS:
+            details["log"] = [f"Task completed successfully. Final status: {message}"]
+        else:
+            logs.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+            if len(logs) > MAX_LOG_ENTRIES_STORED:
+                del logs[:-MAX_LOG_ENTRIES_STORED]
+            details["log"] = logs
         scaled = int(progress_base + (progress or 0) * progress_span / 100.0)
         now = time.monotonic()
         throttled = (

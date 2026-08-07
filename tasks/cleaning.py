@@ -28,6 +28,7 @@ Main Features:
 """
 
 import logging
+import time
 import uuid
 from collections import defaultdict
 
@@ -52,6 +53,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
 
     from flask_app import app
     from app_helper import get_db, get_task_info_from_db, save_task_status
+    from database import MAX_LOG_ENTRIES_STORED
     from config import (
         TASK_STATUS_RUNNING,
         TASK_STATUS_SUCCESS,
@@ -97,11 +99,13 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
         initial_details = {
             "message": STARTING_MESSAGE,
             "status_message": STARTING_MESSAGE,
+            "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {STARTING_MESSAGE}"],
         }
         save_task_status(
             current_task_id, "cleaning", TASK_STATUS_RUNNING, progress=0, details=initial_details
         )
         current_progress = 0
+        current_task_logs = initial_details["log"]
 
         def log_and_update_main(message, progress, **kwargs):
             nonlocal current_progress
@@ -109,6 +113,13 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
             logger.info(f"[CleaningTask-{current_task_id}] {message}")
             details = {**kwargs, "message": message, "status_message": message}
             task_state = kwargs.get('task_state', TASK_STATUS_RUNNING)
+            if task_state != TASK_STATUS_SUCCESS:
+                current_task_logs.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+                if len(current_task_logs) > MAX_LOG_ENTRIES_STORED:
+                    del current_task_logs[:-MAX_LOG_ENTRIES_STORED]
+                details["log"] = current_task_logs
+            else:
+                details["log"] = [f"Task completed successfully. Final status: {message}"]
             save_task_status(
                 current_task_id, "cleaning", task_state, progress=progress, details=details
             )

@@ -18,6 +18,14 @@ SERVICE_TYPE to AUDIOMUSE_ROLE shim - ordering, not configuration: it runs befor
 import config, stays conditional so Flask keeps its own role, and queue
 entrypoints pass force=True. Lives at the repository root so restart_manager can
 import it.
+
+Main Features:
+* ROLE_OF and QUEUE_OF_ROLE map a supervised SERVICE to its ROLE and, for
+  workers, the queue it drains
+* declare_worker_role sets AUDIOMUSE_ROLE before config is imported so a
+  maintenance or worker child never runs Flask's schema bootstrap
+* run_role dispatches a role to Flask, a queue worker, maintenance, or the
+  restart listener
 """
 
 import os

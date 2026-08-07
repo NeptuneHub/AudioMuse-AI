@@ -25,6 +25,14 @@ winner per cycle. Reclaim runs every few seconds; the slow half (stale inline
 rows, migration handshakes, terminal shared payloads) only when due. After a
 Postgres restart the first cycle is skipped so live workers can retake their
 locks.
+
+Main Features:
+* reclaim_orphans requeues or fails RUNNING tasks whose advisory lock died
+  with their worker, deferring to an in-flight control-plane action instead
+* fail_stale_inline_rows finishes task rows left RUNNING by a web process
+  that stopped, skipping any protected migration handshake task
+* run_cycle elects one maintenance winner per pass and runs reclaim plus the
+  slower retention sweeps only when they are due
 """
 
 import json

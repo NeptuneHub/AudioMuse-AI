@@ -18,10 +18,10 @@ Main Features:
   the `details.log` array survives on the wire without any task writing it to the
   task_status row.
 * Failed tasks always gain a structured error dict plus a mirrored error_message.
-* The main clustering task's best_result loses its per-song playlist composition
-  and per-playlist embedding vectors here only - the database copy stays whole,
-  because a worker restart resumes from it and it is what actually becomes
-  playlists at the end of the run.
+* The main clustering task's best_result is dropped here only - the database copy
+  stays whole, because a worker restart resumes from it and it is what actually
+  becomes playlists at the end of the run; the score and hyperparameters the UI
+  shows already live in separate, small, top-level keys.
 """
 
 import os
@@ -165,30 +165,32 @@ class TestSanitizeTaskDetails:
         )
         assert out['final_summary_details']['orphaned_albums'] == 'unexpected'
 
-    def test_the_main_clustering_tasks_best_result_loses_its_heavy_playlist_data(self):
+    def test_the_main_clustering_tasks_best_result_is_dropped_entirely(self):
         out = sanitize_task_details(
             {
+                'best_score': 16.76,
+                'elite_solutions': [{'score': 16.76, 'params': {'n_clusters': 67}}],
                 'best_result': {
-                    'fitness_score': 0.87,
-                    'parameters': {'n_clusters': 12},
+                    'fitness_score': 16.76,
+                    'parameters': {'n_clusters': 67},
                     'named_playlists': {'Rock': ['fp_1', 'fp_2']},
                     'playlist_centroids': {'Rock': [0.1, 0.2, 0.3]},
                     'playlist_to_centroid_vector_map': {'Rock': [0.1, 0.2, 0.3]},
+                    'playlist_primary_genres': {'Rock': 'rock'},
                 },
             },
             'PROGRESS', 'main_clustering',
         )
-        best_result = out['best_result']
-        assert 'named_playlists' not in best_result
-        assert 'playlist_centroids' not in best_result
-        assert 'playlist_to_centroid_vector_map' not in best_result
-        assert best_result['fitness_score'] == 0.87
-        assert best_result['parameters'] == {'n_clusters': 12}
+        # best_result never reached this response on remote main, since the task
+        # never persisted it at all before the queue moved onto Postgres - matched
+        # here rather than picked apart key by key, so a new heavy key added to
+        # best_result later cannot silently start leaking through again.
+        assert 'best_result' not in out
+        # The score and the hyperparameters of the best candidates found so far -
+        # everything the UI actually shows - survive untouched.
+        assert out['best_score'] == 16.76
+        assert out['elite_solutions'] == [{'score': 16.76, 'params': {'n_clusters': 67}}]
 
     def test_a_details_dict_with_no_best_result_is_left_alone(self):
         out = sanitize_task_details({'progress': 40}, 'PROGRESS', 'main_clustering')
         assert 'best_result' not in out
-
-    def test_a_non_dict_best_result_does_not_crash(self):
-        out = sanitize_task_details({'best_result': 'unexpected'}, 'PROGRESS', 'main_clustering')
-        assert out['best_result'] == 'unexpected'

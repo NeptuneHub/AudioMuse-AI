@@ -90,6 +90,7 @@ from database import (
     get_child_tasks_from_db,
     get_recent_playlist_names,
     main_task_start_lock,
+    MAX_LOG_ENTRIES_STORED,
 )
 
 from sanitization import sanitize_for_json
@@ -509,6 +510,7 @@ def run_clustering_task(
             "stale_batches": 0,
             "batches_launched": 0,
             "server_idx": 0,
+            "log": [],
         }
         resume_from = _resumable_progress(task_info, num_clustering_runs)
         if resume_from:
@@ -529,6 +531,10 @@ def run_clustering_task(
 
             _main_task_accumulated_details["status_message"] = message
             _main_task_accumulated_details["message"] = message
+            run_log = _main_task_accumulated_details["log"]
+            run_log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+            if len(run_log) > MAX_LOG_ENTRIES_STORED:
+                del run_log[:-MAX_LOG_ENTRIES_STORED]
 
             details_for_db = _main_task_accumulated_details.copy()
             details_for_db.pop('last_subset_ids', None)
@@ -737,6 +743,7 @@ def run_clustering_task(
                     s.get('playlists_created', 0) for s in successes
                 ),
                 "per_server": per_server_summary,
+                "log": _main_task_accumulated_details.get("log", [])[-MAX_LOG_ENTRIES_STORED:],
             }
 
 
