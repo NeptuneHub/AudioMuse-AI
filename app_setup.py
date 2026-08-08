@@ -49,7 +49,11 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
 # the two /api/setup/plex/pin routes that proxy the request server-side.
 PLEX_PIN_API_BASE = "https://plex.tv/api/v2/pins"
 PLEX_PIN_PRODUCT = "AudioMuse-AI"
-PLEX_PIN_TIMEOUT = 30
+# (connect, read) rather than a single 30s figure: the browser polls the GET
+# route every ~1.5s, and gunicorn here runs a single worker with a handful of
+# threads (see deployment/supervisord.conf), so a slow/unreachable plex.tv
+# must give up its thread quickly or it starves every other request in the app.
+PLEX_PIN_TIMEOUT = (10, 25)
 
 
 def _plex_pin_headers(client_id):
