@@ -226,9 +226,3 @@ For more details on how to contribute please follow the [Contributing Guidelines
 - https://codeberg.org/NeptuneHub/AudioMuse-AI
 
 DO **NOT** USE MIRROR TO RAISE ISSUE, PR OTHER ACTION DIFFERENT FROM GET THE CODE
-
-## Star History
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/chart?repos=NeptuneHub/AudioMuse-AI&type=timeline&legend=top-left&sealed_token=TqPw9S19yFWnn4iwuyaEJEDBQLTpCf8TXpw6280d4QLqT60LtECvBZSqDNAmSGsP6G76vKgaUSKLc1m18hJ8ZRKtNCVhNghxLSV-llCEXHvA9bqyn0UuWg)](https://www.star-history.com/?repos=NeptuneHub%2FAudioMuse-AI&type=timeline&legend=top-left)
