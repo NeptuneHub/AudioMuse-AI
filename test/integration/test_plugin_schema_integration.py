@@ -8,7 +8,7 @@
 
 """Plugin schema self-heal tests against a real Postgres database.
 
-Reproduces the worker boot crash where the RQ worker reads the plugins registry
+Reproduces the worker boot crash where the queue worker reads the plugins registry
 before the web process has run init_db, then verifies that ensure_plugins_table
 creates the table so the read no longer raises UndefinedTable.
 
@@ -44,7 +44,7 @@ def pg_dsn():
         try:
             psycopg2.connect(dsn).close()
         except Exception as e:
-            pytest.skip(f"AUDIOMUSE_TEST_DATABASE_URL not reachable: {e}")
+            pytest.fail(f"AUDIOMUSE_TEST_DATABASE_URL is set but not reachable, refusing to skip: {e}")
         yield dsn
         return
     try:

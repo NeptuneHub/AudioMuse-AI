@@ -760,22 +760,6 @@ class TestAuthTransitions:
 
 
 class TestModuleConstants:
-    def test_basic_server_fields_is_set(self):
-        from tasks.setup_manager import BASIC_SERVER_FIELDS
-
-        assert isinstance(BASIC_SERVER_FIELDS, set)
-        assert 'MEDIASERVER_TYPE' in BASIC_SERVER_FIELDS
-        assert 'JELLYFIN_URL' in BASIC_SERVER_FIELDS
-
-    def test_auth_fields_is_set(self):
-        from tasks.setup_manager import AUTH_FIELDS
-
-        assert isinstance(AUTH_FIELDS, set)
-        assert 'AUTH_ENABLED' in AUTH_FIELDS
-        assert 'AUDIOMUSE_USER' in AUTH_FIELDS
-        assert 'AUDIOMUSE_PASSWORD' in AUTH_FIELDS
-        assert 'API_TOKEN' in AUTH_FIELDS
-
     def test_server_required_fields_matches_config(self):
         import config
 

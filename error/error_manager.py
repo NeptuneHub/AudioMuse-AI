@@ -45,7 +45,7 @@ _AUTH_STATUS_CODES = (401, 403)
 # (class_name, module_prefixes, code). module_prefixes is None to match the name
 # in any module (used for names unique to this app), or a tuple of import-path
 # prefixes to restrict the match. The restriction stops unrelated libraries that
-# reuse a common class name (e.g. redis.exceptions.ConnectionError, builtin
+# reuse a common class name (e.g. psycopg2.OperationalError, builtin
 # BrokenPipeError) from stealing a media-server or database code.
 _EXCEPTION_RULES = (
     ("LyrionAPIError", None, ERR_MEDIASERVER_UNREACHABLE),

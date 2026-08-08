@@ -9,12 +9,12 @@
 """Linux packaging steps for the standalone build.
 
 Platform module invoked by ``build.py`` to stage the Linux bundle: it checks
-the vendored redis/PostgreSQL/pg-contrib inputs are present, verifies the
+the vendored PostgreSQL/pg-contrib inputs are present, verifies the
 pgserver bundle when used, and produces the distributable (nfpm packages,
 icons). The macOS/Windows modules are the platform-specific siblings.
 
 Main Features:
-* Validates vendored redis, PostgreSQL and pg-contrib files per architecture.
+* Validates vendored PostgreSQL and pg-contrib files per architecture.
 * Builds .deb/.rpm packages via nfpm and generates the app icons.
 """
 
@@ -36,7 +36,6 @@ def prepare(ctx):
     vendor = ctx.root / "native-build" / "linux" / "vendor"
     if ctx.use_pgserver:
         required = [
-            vendor / "redis" / arch / "redis-server",
             vendor / "pg-contrib" / arch / "lib" / "unaccent.so",
             vendor / "pg-contrib" / arch / "lib" / "pg_trgm.so",
             vendor / "pg-contrib" / arch / "extension" / "unaccent.control",
@@ -45,7 +44,6 @@ def prepare(ctx):
         ]
     else:
         required = [
-            vendor / "redis" / arch / "redis-server",
             vendor / "postgres" / arch / "bin" / "postgres",
             vendor / "postgres" / arch / "bin" / "initdb",
             vendor / "postgres" / arch / "bin" / "pg_ctl",
@@ -60,7 +58,6 @@ def prepare(ctx):
         for m in missing:
             print(f"::error::Missing vendored file: {m}")
         raise SystemExit("Vendored inputs missing (see native-build/linux/vendor/*/README.md).")
-    (vendor / "redis" / arch / "redis-server").chmod(0o755)
 
 
 def _restore_aarch64_exec_bits(ctx):

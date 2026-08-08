@@ -1014,7 +1014,7 @@
             throw new Error('__source_refresh__');  // caught below, message discarded
         }
         if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
-        // The heavy fetch+match runs in an RQ worker now; poll for the result.
+        // The heavy fetch+match runs in a queue worker now; poll for the result.
         if (data.task_id) {
             return await pollMigrationJob(data.task_id);
         }
@@ -1029,12 +1029,12 @@
         while (true) {
             const res = await jsonFetch(statusUrl);
             const s = res.status || 'unknown';
-            if (s === 'finished') {
+            if (AudioMuseTaskStatus.isSuccess(s)) {
                 const r = res.result || {};
                 if (r && r.error) throw new Error(r.error);
                 return r;
             }
-            if (s === 'failed') {
+            if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
                 throw new Error(res.error || 'Background job failed. Check the container logs for details.');
             }
             await new Promise(r => setTimeout(r, 2000));
@@ -1079,7 +1079,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId }),
             });
-            // Heavy source re-probe runs in an RQ worker now; poll for it.
+            // Heavy source re-probe runs in a queue worker now; poll for it.
             const result = enq.task_id ? await pollMigrationJob(enq.task_id) : enq;
             if (result.path_format === 'absolute') {
                 statusEl.innerHTML = '<div class="mig-success">Loaded ' + result.overrides_count +
@@ -1539,7 +1539,7 @@
                 const res = await jsonFetch(statusUrl);
                 const s = res.status || 'unknown';
                 statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
-                if (s === 'finished') {
+                if (AudioMuseTaskStatus.isSuccess(s)) {
                     const r = res.result || {};
                     const indexNote = r.index_rebuild_needed
                         ? '<p style="margin:0.5rem 0 0;"><strong>Note:</strong> ' +
@@ -1566,25 +1566,18 @@
                     const countdownHost = document.createElement('p');
                     countdownHost.id = 'mig-restart-countdown';
                     countdownHost.style.cssText = 'margin:1rem 0 0; font-size:1.1rem; font-weight:700; color:#b45309; text-align:center;';
-                    countdownHost.textContent = 'Restarting services - redirecting to login in 20 seconds...';
                     statusEl.parentNode.insertBefore(countdownHost, statusEl.nextSibling);
-                    // Flask is restarting to pick up the new provider config cleanly
-                    // (same pattern as the setup wizard). Count down and redirect to
-                    // /login so the user reconnects to a fresh process.
-                    let countdown = 20;
-                    const cdInterval = setInterval(function() {
-                        countdown -= 1;
-                        if (countdown > 0) {
-                            countdownHost.textContent = 'Restarting services - redirecting to login in ' + countdown + ' second' + (countdown === 1 ? '' : 's') + '...';
-                        } else {
-                            countdownHost.textContent = 'Redirecting...';
-                            clearInterval(cdInterval);
-                            if (window.appRedirect) { window.appRedirect('/login'); } else { window.location.href = '/login'; }
-                        }
-                    }, 1000);
+                    // Flask restarts to pick up the new provider config cleanly (same
+                    // pattern as the setup wizard). The wait probes for the server
+                    // coming back rather than guessing a fixed number of seconds.
+                    window.AudioMuseRestart.waitAndGo({
+                        element: countdownHost,
+                        target: '/login',
+                        restartScheduled: res.restart_scheduled
+                    });
                     return;
                 }
-                if (s === 'failed') {
+                if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
                     showError(statusEl,
                         '<strong>Migration failed.</strong><br>' +
                         (res.error || 'Unknown error') +

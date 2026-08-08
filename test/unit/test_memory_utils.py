@@ -19,9 +19,12 @@ Main Features:
 * sanitize_string/json remove null and control chars while preserving unicode
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock
+import sys
 
+import pytest
+from unittest.mock import Mock, MagicMock, patch
+
+import tasks.memory_utils as memory_utils
 from sanitization import (
     sanitize_string_for_db,
     sanitize_json_for_db,
@@ -74,25 +77,68 @@ class TestSanitizeStringForDB:
 
 
 class TestCleanupCudaMemory:
-    def test_cleanup_returns_bool(self):
-        result = cleanup_cuda_memory(force=False)
-        assert isinstance(result, bool)
+    @staticmethod
+    def _fake_torch_with_cuda():
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = True
+        return fake_torch
 
-    def test_cleanup_does_not_raise(self):
-        cleanup_cuda_memory(force=True)
-        cleanup_cuda_memory(force=False)
+    def test_force_true_empties_the_torch_cuda_cache_and_reports_cleanup_performed(self):
+        fake_torch = self._fake_torch_with_cuda()
+
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            result = cleanup_cuda_memory(force=True)
+
+        assert result is True
+        fake_torch.cuda.empty_cache.assert_called_once_with()
+        fake_torch.cuda.synchronize.assert_not_called()
+
+    def test_force_false_synchronizes_torch_cuda_instead_of_emptying_the_cache(self):
+        fake_torch = self._fake_torch_with_cuda()
+
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            result = cleanup_cuda_memory(force=False)
+
+        assert result is True
+        fake_torch.cuda.synchronize.assert_called_once_with()
+        fake_torch.cuda.empty_cache.assert_not_called()
+
+    def test_torch_without_available_cuda_falls_through_to_the_cupy_branch(self):
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_cupy = MagicMock()
+
+        with patch.dict(sys.modules, {"torch": fake_torch, "cupy": fake_cupy}):
+            result = cleanup_cuda_memory(force=True)
+
+        assert result is True
+        fake_torch.cuda.empty_cache.assert_not_called()
+        fake_torch.cuda.synchronize.assert_not_called()
+        device_pool = fake_cupy.get_default_memory_pool.return_value
+        pinned_pool = fake_cupy.get_default_pinned_memory_pool.return_value
+        device_pool.free_all_blocks.assert_called_once_with()
+        pinned_pool.free_all_blocks.assert_called_once_with()
+
+    def test_reports_no_cleanup_when_neither_torch_nor_cupy_is_importable(self):
+        with patch.dict(sys.modules, {"torch": None, "cupy": None}):
+            with patch.object(memory_utils, "gc") as fake_gc:
+                result = cleanup_cuda_memory(force=True)
+
+        assert result is False
+        fake_gc.collect.assert_called_once_with()
 
 
 class TestCleanupOnnxSession:
-    def test_cleanup_none_session(self):
-        cleanup_onnx_session(None, "test_session")
-
-    def test_cleanup_mock_session(self):
-        class MockSession:
+    def test_none_session_skips_the_gc_pass_that_a_real_session_triggers(self):
+        class FakeSession:
             pass
 
-        session = MockSession()
-        cleanup_onnx_session(session, "mock_session")
+        with patch.object(memory_utils, "gc") as fake_gc:
+            cleanup_onnx_session(None, "test_session")
+            assert fake_gc.collect.call_count == 0
+
+            cleanup_onnx_session(FakeSession(), "mock_session")
+            assert fake_gc.collect.call_count == 1
 
 
 class TestSessionRecycler:
@@ -249,13 +295,23 @@ class TestComprehensiveMemoryCleanup:
         assert set(results.keys()) == {"cuda", "onnx_pool", "gc", "malloc_trim"}
         assert all(isinstance(v, bool) for v in results.values())
 
-    def test_gc_is_always_true(self):
-        results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
-        assert results["gc"] is True
+    def test_force_cuda_false_never_calls_cleanup_cuda_memory(self):
+        with patch.object(
+            memory_utils, "cleanup_cuda_memory", return_value=True
+        ) as fake_cleanup:
+            results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
 
-    def test_force_cuda_false_reports_cuda_false(self):
-        results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+        fake_cleanup.assert_not_called()
         assert results["cuda"] is False
+
+    def test_force_cuda_true_calls_cleanup_cuda_memory_with_force_and_reports_its_result(self):
+        with patch.object(
+            memory_utils, "cleanup_cuda_memory", return_value=True
+        ) as fake_cleanup:
+            results = comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=False)
+
+        fake_cleanup.assert_called_once_with(force=True)
+        assert results["cuda"] is True
 
     def test_reset_onnx_pool_false_reports_onnx_pool_false(self):
         results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)

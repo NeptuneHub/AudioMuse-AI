@@ -14,7 +14,7 @@ and assembles the distributable with the unsigned-app authorization README.
 The Linux/Windows modules are the platform-specific siblings.
 
 Main Features:
-* Generates icons and ad-hoc signs bundled binaries (redis, postgres, dylibs).
+* Generates icons and ad-hoc signs bundled binaries (postgres, dylibs).
 * Ships a README instructing users to clear the quarantine xattr on the app.
 """
 
@@ -22,7 +22,7 @@ import os
 import subprocess
 
 _SIGN_SUFFIXES = (".dylib", ".so")
-_SIGN_NAMES = {"redis-server", "postgres", "initdb", "pg_ctl", "psql", "pg_isready"}
+_SIGN_NAMES = {"postgres", "initdb", "pg_ctl", "psql", "pg_isready"}
 
 _README = """This AudioMuse-AI app is not signed to avoid Apple recurrent subscription cost. To have it working you need to:
 - Move AudioMuse-AI.app in /Applications
@@ -39,13 +39,6 @@ def prepare(ctx):
 
 
 def _retarget_shared_libomp(app):
-    # sklearn and numkong both bundle libomp.dylib; PyInstaller rewrites every
-    # extension's rpath to the Frameworks root and points the shared top-level
-    # libomp.dylib symlink at whichever copy it collected first (sklearn's,
-    # which is older). numkong's kernels need ___kmpc_dispatch_deinit, absent
-    # from sklearn's copy, so `import numkong` fails and the i8 IVF path falls
-    # back to NumPy. libomp only ever adds symbols, so the newer numkong copy
-    # is safe for sklearn too - retarget the shared symlink at it.
     contents = os.path.join(str(app), "Contents")
     target = os.path.join("numkong", "__dot__dylibs", "libomp.dylib")
     if not os.path.exists(os.path.join(contents, "Frameworks", target)):

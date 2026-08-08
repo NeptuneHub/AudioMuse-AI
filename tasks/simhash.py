@@ -11,30 +11,18 @@
 The catalogue id is a 200-bit signature, one bit per embedding dimension: bit d
 is "dimension d is above this song's own average". No random projections, no
 external binaries, no metadata - the id IS the shape of the song's MusiCNN
-profile, encoded as the scheme-versioned ``fp_2<50hex>`` item_id. The signature
-is similarity-preserving (a re-encode of the same recording flips only a few
-borderline bits, distinct songs differ by tens), so near signatures propose
-identity; the decision is then confirmed by the EXACT cosine distance between
-the raw embeddings using the same ``DUPLICATE_DISTANCE_THRESHOLD_COSINE`` the
-Similar Songs duplicate filter already trusts, AND by the track duration:
-two tracks are the same recording only when their lengths agree within
-``DURATION_TOLERANCE_SECONDS`` (the AcoustID rule). A missing duration on
-either side means "cannot prove same recording" and identity splits rather
-than merges - a false split is a harmless duplicate row, a false merge
-deletes a song. Everything deciding identity is derived from the audio
-itself.
+profile, encoded as the scheme-versioned fp_2<50hex> item_id. Near signatures
+propose identity; it is confirmed by the EXACT cosine distance between raw
+embeddings (DUPLICATE_DISTANCE_THRESHOLD_COSINE) AND by track duration within
+DURATION_TOLERANCE_SECONDS. A missing duration means identity splits rather
+than merges - a false split is a harmless duplicate row, a false merge deletes.
 
 Main Features:
-* ``embedding_signature`` / ``signature_batch`` (vectorized) compute the
-  200-bit code; ``canonical_id_str`` / ``signature_from_canonical_id`` encode
-  and recover it from the ``fp_2`` id.
-* ``SignatureIndex`` banded Hamming-tolerant candidate lookup (pigeonhole
-  guarantee within ``SIGNATURE_MATCH_MAX_HAMMING`` bits).
-* ``CatalogResolver.resolve``: signature proposes, raw-embedding cosine plus
-  duration agreement confirm, collisions mint the next free id.
-* ``confirm_pairs`` / ``merge_pairs``: the vectorized whole-catalogue confirm
-  and merge steps the startup migration drives.
-* ``is_fingerprint_id`` recognizes any ``fp_``-prefixed catalogue id.
+* embedding_signature / signature_batch (vectorized) compute the 200-bit code.
+* SignatureIndex banded Hamming-tolerant candidate lookup (pigeonhole guarantee).
+* CatalogResolver.resolve: signature proposes, cosine plus duration confirm.
+* confirm_pairs / merge_pairs: vectorized whole-catalogue confirm and merge.
+* is_fingerprint_id recognizes any fp_-prefixed catalogue id.
 """
 
 import hashlib

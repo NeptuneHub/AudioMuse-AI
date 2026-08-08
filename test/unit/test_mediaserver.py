@@ -1006,10 +1006,13 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
 
         result = get_top_played_songs(limit=20, user_creds={})
 
+        assert len(result) == 6
+
         per_album = {}
         for song in result:
             album = song['Id'].split('_')[0]
             per_album[album] = per_album.get(album, 0) + 1
+        assert set(per_album) == {'a1', 'a2', 'a3'}
         assert all(count <= 2 for count in per_album.values()), (
             f"Some album exceeded the cap of 2: {per_album}"
         )
@@ -1550,14 +1553,6 @@ class TestDispatcherAutomaticPlaylistDeletion:
         deleted_ids = [call[0][0] for call in mock_delete.call_args_list]
         assert 'nav1' in deleted_ids
         assert 'nav2' in deleted_ids
-
-
-class TestLyrionSelectBestArtist:
-    def test_artist_priority_order(self):
-        priority_fields = ['trackartist', 'contributor', 'artist', 'albumartist', 'band']
-
-        assert priority_fields[0] == 'trackartist', "trackartist should be highest priority"
-        assert priority_fields[-1] == 'band', "band should be lowest priority"
 
 
 class TestLyrionJsonRpcRequest:
@@ -2662,13 +2657,6 @@ class TestCreatePlaylistReturnContract:
 
         with patch.object(module, creator, return_value=created):
             assert module.create_playlist('Mix', ['t1']) == created
-
-    @pytest.mark.parametrize('provider,creator', _DELEGATING_CREATORS)
-    def test_returns_none_when_the_creator_reports_failure(self, provider, creator):
-        module = importlib.import_module(f'tasks.mediaserver.{provider}')
-
-        with patch.object(module, creator, return_value=None):
-            assert module.create_playlist('Mix', ['t1']) is None
 
 
 class TestJellyfinCreatePlaylist:

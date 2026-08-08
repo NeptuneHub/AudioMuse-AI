@@ -17,6 +17,9 @@ Main Features:
 * Migration is idempotent and never accumulates a duplicate unique index.
 * Two provider files for one item_id on one server can coexist after migration.
 * translate_ids picks one provider id deterministically (strongest tier wins).
+* The real provider-migration transaction collapses the duplicate default-server
+  rows of one item before it stamps the new provider id, so the relaxed PK is
+  never violated, and it leaves every non-default server untouched.
 """
 
 import os
@@ -46,7 +49,7 @@ def pg_dsn():
         try:
             psycopg2.connect(dsn).close()
         except Exception as e:
-            pytest.skip(f"AUDIOMUSE_TEST_DATABASE_URL not reachable: {e}")
+            pytest.fail(f"AUDIOMUSE_TEST_DATABASE_URL is set but not reachable, refusing to skip: {e}")
         yield dsn
         return
     try:
@@ -151,6 +154,29 @@ def _unique_indexes_on_provider(conn):
             "    WHERE a2.attrelid = 'track_server_map'::regclass) a)"
         )
         return cur.fetchone()[0]
+
+
+def _prepare_migration_session(conn):
+    import database
+
+    with conn.cursor() as cur:
+        database.relax_track_server_map_pk(cur)
+        cur.execute("ALTER TABLE music_servers ADD COLUMN IF NOT EXISTS track_count INTEGER")
+        cur.execute("DROP TABLE IF EXISTS migration_target_meta, migration_session CASCADE")
+        cur.execute(
+            "CREATE TABLE migration_session (id SERIAL PRIMARY KEY, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP, "
+            "status TEXT NOT NULL DEFAULT 'in_progress', source_type TEXT NOT NULL, "
+            "target_type TEXT NOT NULL, target_creds TEXT NOT NULL, "
+            "state JSONB NOT NULL DEFAULT '{}')"
+        )
+        cur.execute(
+            "INSERT INTO migration_session (source_type, target_type, target_creds) "
+            "VALUES ('jellyfin', 'navidrome', '{}') RETURNING id"
+        )
+        session_id = cur.fetchone()[0]
+    conn.commit()
+    return session_id
 
 
 class TestRelaxTrackServerMapPk:
@@ -331,32 +357,63 @@ class TestRelaxTrackServerMapPk:
             )
             assert cur.fetchone()[0] == 2
 
-    def test_provider_migration_dedupe_prevents_unique_violation(self, old_schema_db):
-        """The provider-migration UPDATE stamps every default-server row of an
-        item with the same new provider id; with N:1 that would violate the
-        (server_id, provider_track_id) PK, so duplicates are collapsed first."""
-        import database
+    def test_run_migration_transaction_collapses_duplicate_default_rows_before_repointing_ids(
+        self, old_schema_db
+    ):
+        from tasks import provider_migration_tasks as mig
 
+        session_id = _prepare_migration_session(old_schema_db)
         with old_schema_db.cursor() as cur:
-            database.relax_track_server_map_pk(cur)
             cur.execute(
                 "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier) "
                 "VALUES ('X', 'srv', 'provB', 'fingerprint')"
             )
+            cur.execute("SELECT count(*) FROM track_server_map WHERE item_id = 'X'")
+            assert cur.fetchone()[0] == 2
         old_schema_db.commit()
 
         with old_schema_db.cursor() as cur:
-            # The dedupe DELETE from _run_migration_transaction (B7).
-            cur.execute(
-                "DELETE FROM track_server_map t USING music_servers s "
-                "WHERE s.is_default AND t.server_id = s.server_id "
-                "AND t.ctid <> (SELECT min(t2.ctid) FROM track_server_map t2 "
-                "WHERE t2.item_id = t.item_id AND t2.server_id = t.server_id)"
+            mig._run_migration_transaction(
+                cur, {'X': 'navi-1'}, {}, 'navidrome', {}, session_id
             )
-            # Now the migration UPDATE cannot collide: one row per item remains.
             cur.execute(
-                "UPDATE track_server_map SET provider_track_id = 'newid' WHERE item_id = 'X'"
+                "SELECT item_id, server_id, provider_track_id, match_tier "
+                "FROM track_server_map ORDER BY provider_track_id"
             )
-            cur.execute("SELECT count(*) FROM track_server_map WHERE item_id = 'X'")
-            assert cur.fetchone()[0] == 1
+            rows = cur.fetchall()
         old_schema_db.commit()
+
+        assert rows == [('X', 'srv', 'navi-1', 'default')]
+
+    def test_run_migration_transaction_repoints_every_server_only_on_the_default_one(
+        self, old_schema_db
+    ):
+        from tasks import provider_migration_tasks as mig
+
+        session_id = _prepare_migration_session(old_schema_db)
+        with old_schema_db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO music_servers (server_id, name, server_type, is_default) "
+                "VALUES ('plex', 'Plex', 'plex', FALSE)"
+            )
+            cur.execute(
+                "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier) "
+                "VALUES ('X', 'plex', 'plex-9', 'fingerprint')"
+            )
+        old_schema_db.commit()
+
+        with old_schema_db.cursor() as cur:
+            mig._run_migration_transaction(
+                cur, {'X': 'navi-1'}, {}, 'navidrome', {}, session_id
+            )
+            cur.execute(
+                "SELECT server_id, provider_track_id, match_tier "
+                "FROM track_server_map ORDER BY server_id"
+            )
+            rows = cur.fetchall()
+        old_schema_db.commit()
+
+        assert rows == [
+            ('plex', 'plex-9', 'fingerprint'),
+            ('srv', 'navi-1', 'default'),
+        ]

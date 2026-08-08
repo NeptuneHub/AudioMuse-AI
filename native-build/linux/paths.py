@@ -11,7 +11,7 @@
 Resolves the bundle resource root (PyInstaller ``_MEIPASS`` or the source
 repo) and the per-user data locations under ``XDG_DATA_HOME`` (logs under
 ``XDG_STATE_HOME``), so the Linux launcher, supervisor and embedded-Postgres
-modules agree on where pgdata, redis, logs, models and temp files live. Paths
+modules agree on where pgdata, logs, models and temp files live. Paths
 containing spaces fall back to a ``/tmp`` location so the Unix sockets work.
 The macOS/Windows ``paths`` modules are the platform-specific siblings.
 
@@ -78,10 +78,6 @@ def pgdata_dir():
     return _ensure(os.path.join(app_support_dir(), "pgdata"))
 
 
-def redis_dir():
-    return _ensure(os.path.join(app_support_dir(), "redis"))
-
-
 def temp_audio_dir():
     return _ensure(os.path.join(app_support_dir(), "temp_audio"))
 
@@ -92,10 +88,6 @@ def numba_cache_dir():
 
 def backup_dir():
     return _ensure(os.path.join(app_support_dir(), "backup"))
-
-
-def redis_socket_path():
-    return os.path.join(redis_dir(), "redis.sock")
 
 
 def control_socket_path():
@@ -116,18 +108,6 @@ def log_file():
 
 def model_dir():
     return os.path.join(resource_root(), "model")
-
-
-def redis_binary():
-    if getattr(sys, "frozen", False):
-        return os.path.join(resource_root(), "redis-server")
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "vendor",
-        "redis",
-        platform.machine(),
-        "redis-server",
-    )
 
 
 def fpcalc_binary():

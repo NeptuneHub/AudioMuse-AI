@@ -295,15 +295,15 @@ class TestOrphanAndOverlapRows:
         executed = " ".join(str(call.args[0]) for call in cur.execute.call_args_list)
         assert "FROM score" not in executed
 
-    def test_orphan_row_skipped_when_total_songs_unavailable(self, monkeypatch):
-        # A failed total-songs count arrives as None; the helper must not crash or
-        # invent an orphan row (the snapshot is refused upstream anyway).
+    def test_total_songs_unavailable_withholds_only_the_orphan_row(self, monkeypatch):
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
         cur = self._cursor(self._TWO_SERVERS, 183380)
 
         servers = dash._collect_music_server_metrics(cur, total_songs=None)
 
-        assert all(not s.get('is_orphan') for s in servers)
+        assert [s['name'] for s in servers] == ['Jellyfin', 'Plex', 'On multiple servers']
+        assert servers[-1]['unique_songs'] == -152
+        assert cur.connection.rollback.call_count == 0
 
     def test_no_synthetic_rows_when_disjoint_and_fully_bound(self, monkeypatch):
         # distinct_mapped == sum of per-server uniques (no overlap) and == total

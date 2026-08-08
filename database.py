@@ -8,17 +8,19 @@
 
 """Postgres data-access layer for the whole application.
 
-Owns the per-request connection (via Flask ``g``), the embedded-server
-lifecycle, the ``init_db`` schema bootstrap, and every read/write helper for
-tasks, track analysis and embeddings, projections, and alchemy anchors/radios.
+Owns the per-request connection (via Flask g), the embedded-server lifecycle,
+the init_db schema bootstrap, and every read/write helper for tasks, track
+analysis and embeddings, projections, and alchemy anchors/radios.
 
 Main Features:
-* Connection management plus ``init_db`` table/index creation and migrations. A
-  worker job holds ONE app context for its whole run, so ``get_db`` drops a
-  cached connection the server closed under it (a database restart, an idle
-  timeout), fails that unit of work once with ``ConnectionLostError`` (an
-  ``OperationalError`` subclass), and reconnects on the next call.
-* Task-status and history persistence with sanitized fields and capped history rows.
+* Connection management plus init_db table/index creation and migrations; a
+  worker job holds ONE app context for its whole run, so get_db drops a cached
+  connection the server closed and reconnects on the next call.
+* Task-status and history persistence with sanitized fields and capped rows; a
+  status write the row refuses ends the transaction with a ROLLBACK.
+* stage_pending_task_row is the one way to stage a placeholder row that a later
+  taskqueue.enqueue on the same transaction adopts (returns True only for a row
+  this call created).
 * Embedding, projection, and alchemy CRUD shared by workers and the web app.
 """
 
@@ -27,6 +29,7 @@ import logging
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 
 import numpy as np
 import psycopg2
@@ -40,21 +43,54 @@ logger = logging.getLogger(__name__)
 
 from tz_helper import UTC_NOW_SQL
 
-from sanitization import sanitize_db_field, sanitize_string_for_db
+from sanitization import sanitize_db_field, sanitize_string_for_db, sanitize_for_log
 
 from config import (
+    TASK_STATUS_NEW,
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
+    TASK_STATUS_TERMINAL,
 )
+
+_TERMINAL_STATUSES = list(TASK_STATUS_TERMINAL)
 
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
-SELF_MANAGED_TASK_TYPES = ('server_sweep', 'alchemy_radio')
+# Serializes the whole check-cleanup-claim sequence every main-task start runs.
+# Session scoped rather than transaction scoped on purpose: clean_up_previous_main_tasks
+# commits in the middle of that sequence, and a transaction lock would be released
+# by that commit - reopening the very gap this closes.
+MAIN_TASK_START_LOCK_KEY = 5512740318664902
+
+_ADVISORY_LOCK_SQL = "SELECT pg_advisory_lock(%s)"
+_ADVISORY_UNLOCK_SQL = "SELECT pg_advisory_unlock(%s)"
+
+GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
+
+# sonic_fingerprint is deliberately NOT here: a running fingerprint blocked an
+# analysis or clustering start on main, and quietly excluding it here let the two
+# run concurrently over the same catalogue.
+SELF_MANAGED_TASK_TYPES = (
+    'server_sweep', 'alchemy_radio', 'worker_control',
+    'provider_migration_planner',
+)
+
+SELF_MANAGED_TASK_TYPE_PREFIXES = ('plugin.',)
+
+# Rows that must never refuse a batch start. A restart handshake, the inline radio
+# and the migration PLANNER are machinery, not work that touches the catalogue.
+# server_sweep and the plugin tasks are deliberately NOT here: those really do
+# write the mappings a cleaning or a migration rewrites, so they must still block.
+# The starts used to pass an empty tuple, which excluded NOTHING, so a restart
+# handshake in flight answered 409 to a cleaning the user had just asked for.
+NON_BLOCKING_TASK_TYPES = (
+    'worker_control', 'alchemy_radio', 'provider_migration_planner',
+)
 
 INLINE_FLASK_TASK_TYPES = ('alchemy_radio',)
 
@@ -139,34 +175,15 @@ def stop_embedded():
         _embedded_server = None
 
 
-def _build_task_note(task_type, details_obj, db):
+def _build_task_note(task_type, details_obj):
     if not isinstance(details_obj, dict):
         details_obj = {}
     t = (task_type or '').lower()
 
     try:
         if 'analysis' in t:
-            try:
-                with db.cursor() as cur:
-                    cur.execute(
-                        "SELECT details FROM task_status WHERE parent_task_id = %s AND status = 'SUCCESS'",
-                        (details_obj.get('_task_id') or '',),
-                    )
-                    rows = cur.fetchall()
-            except Exception:
-                rows = []
-            songs = 0
-            for (d,) in rows or []:
-                if not d:
-                    continue
-                try:
-                    obj = json.loads(d)
-                    if isinstance(obj, dict):
-                        v = obj.get('tracks_analyzed')
-                        if isinstance(v, (int, float)):
-                            songs += int(v)
-                except Exception:
-                    continue
+            songs = details_obj.get('tracks_analyzed')
+            songs = int(songs) if isinstance(songs, (int, float)) else 0
             if songs > 0:
                 return f"Songs analyzed: {songs}"
             albums = details_obj.get('albums_completed') or details_obj.get(
@@ -210,16 +227,17 @@ def _build_task_note(task_type, details_obj, db):
     return ''
 
 
-def record_task_history(task_id, task_type, status, duration_seconds=None, note=None, details=None):
+def record_task_history(task_id, task_type, status, duration_seconds=None, note=None,
+                        details=None, conn=None):
     if not task_id:
         return
     try:
-        db = get_db()
+        db = conn or get_db()
         if note is None:
             details_obj = details if isinstance(details, dict) else {}
             details_obj = dict(details_obj)
             details_obj['_task_id'] = task_id
-            note = _build_task_note(task_type, details_obj, db) or ''
+            note = _build_task_note(task_type, details_obj) or ''
             if not note:
                 note = details_obj.get('status_message') or details_obj.get('message') or ''
 
@@ -301,6 +319,39 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
     record_task_history(task_id, task_type, status, duration_s, details=details)
 
 
+def _collapse_finished_task(db, task_id, task_type, parent_task_id, status):
+    if parent_task_id is not None or not task_type:
+        return 0
+    if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
+        return 0
+    from taskqueue.sql import CONTROL_TASK_TYPE, TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD
+
+    if task_type == CONTROL_TASK_TYPE:
+        return 0
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "DELETE FROM task_status WHERE task_id <> %s AND "
+                + TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD,
+                (task_id,),
+            )
+            deleted = cur.rowcount
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after a failed task collapse failed", exc_info=True)
+        logger.exception("Could not collapse finished task %s", sanitize_for_log(task_id))
+        return 0
+    if deleted:
+        logger.info(
+            "Task %s finished (%s); dropped %d rows, keeping only its one-line recap.",
+            sanitize_for_log(task_id), sanitize_for_log(status), deleted,
+        )
+    return deleted
+
+
 def save_task_status(
     task_id,
     task_type,
@@ -309,6 +360,7 @@ def save_task_status(
     sub_type_identifier=None,
     progress=0,
     details=None,
+    raise_on_error=False,
 ):
     try:
         db = get_db()
@@ -321,26 +373,47 @@ def save_task_status(
 
     details_json = json.dumps(details) if details is not None else None
 
+    written = False
     cur = db.cursor()
     try:
         cur.execute(
             """
             INSERT INTO task_status (task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, timestamp, start_time, end_time)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, CASE WHEN %s IN ('SUCCESS', 'FAILURE', 'REVOKED') THEN %s ELSE NULL END)
+            SELECT %s, %s, %s, %s, %s, %s, %s, NOW(), %s, CASE WHEN %s = ANY(%s) THEN %s ELSE NULL END
+            WHERE %s IS NULL
+               OR EXISTS (
+                    SELECT 1 FROM task_status AS parent
+                    WHERE parent.task_id = %s
+                      AND parent.status <> ALL(%s)
+               )
+               OR EXISTS (SELECT 1 FROM task_status AS existing WHERE existing.task_id = %s)
             ON CONFLICT (task_id) DO UPDATE SET
                 status = EXCLUDED.status,
-                parent_task_id = EXCLUDED.parent_task_id,
-                sub_type_identifier = EXCLUDED.sub_type_identifier,
+                parent_task_id = COALESCE(EXCLUDED.parent_task_id, task_status.parent_task_id),
+                sub_type_identifier = COALESCE(EXCLUDED.sub_type_identifier, task_status.sub_type_identifier),
                 progress = EXCLUDED.progress,
                 details = EXCLUDED.details,
                 timestamp = NOW(),
                 start_time = COALESCE(task_status.start_time, %s),
                 end_time = CASE
-                                WHEN EXCLUDED.status IN ('SUCCESS', 'FAILURE', 'REVOKED') AND task_status.end_time IS NULL
+                                WHEN EXCLUDED.status = ANY(%s) AND task_status.end_time IS NULL
                                 THEN %s
                                 ELSE task_status.end_time
-                           END
-            WHERE task_status.status IS DISTINCT FROM 'REVOKED'
+                           END,
+                -- A terminal row is a recap, never a runnable job. Tasks write
+                -- their own terminal row through here, so the worker's finish
+                -- statement is a safety net that mostly does not fire and the
+                -- payload survived: a clustering batch's kwargs carry the whole
+                -- lightweight genre map, and secrets aside, that is hundreds of
+                -- megabytes of WAL-logged, replicated, backed-up dead weight
+                -- kept for as long as the one-line recap.
+                func = CASE WHEN EXCLUDED.status = ANY(%s) THEN NULL ELSE task_status.func END,
+                payload = CASE
+                              WHEN EXCLUDED.status = ANY(%s) THEN NULL
+                              ELSE task_status.payload
+                          END
+            WHERE task_status.status IS DISTINCT FROM %s
+            RETURNING parent_task_id
         """,
             (
                 task_id,
@@ -352,28 +425,101 @@ def save_task_status(
                 details_json,
                 current_unix_time,
                 status,
+                _TERMINAL_STATUSES,
                 current_unix_time,
+                parent_task_id,
+                parent_task_id,
+                _TERMINAL_STATUSES,
+                task_id,
                 current_unix_time,
+                _TERMINAL_STATUSES,
                 current_unix_time,
+                _TERMINAL_STATUSES,
+                _TERMINAL_STATUSES,
+                TASK_STATUS_REVOKED,
             ),
         )
-        db.commit()
+        written = cur.rowcount > 0
+        stored_parent_task_id = parent_task_id
+        if written:
+            written_row = cur.fetchone()
+            if written_row is not None:
+                stored_parent_task_id = written_row[0]
+            db.commit()
+        else:
+            db.rollback()
     except psycopg2.Error:
+        written = False
         logger.exception(f"DB Error saving task status for {task_id}")
         try:
             db.rollback()
             logger.info(f"DB transaction rolled back for task status update of {task_id}.")
         except psycopg2.Error:
             logger.exception(f"DB Error during rollback for task status {task_id}")
+        if raise_on_error:
+            raise
     finally:
         cur.close()
 
+    if not written:
+        logger.info(
+            "Discarded the %s report for task %s (parent %s): the row is REVOKED, or "
+            "it does not exist and its parent is missing or already terminal.",
+            status, task_id, parent_task_id,
+        )
+        return False
+
     try:
         _maybe_record_task_history(
-            db, task_id, task_type, status, parent_task_id, details, current_unix_time
+            db, task_id, task_type, status, stored_parent_task_id, details, current_unix_time
         )
     except Exception as e_hist:
         logger.debug(f"history record skipped for {task_id}: {e_hist}")
+
+    _collapse_finished_task(db, task_id, task_type, stored_parent_task_id, status)
+    return True
+
+
+STAGE_PENDING_TASK_ROW_SQL = (
+    "INSERT INTO task_status "
+    "(task_id, task_type, status, progress, details, timestamp, start_time) "
+    "VALUES (%s, %s, %s, 0, %s, NOW(), %s) "
+    "ON CONFLICT (task_id) DO NOTHING"
+)
+
+_STAGE_SAVEPOINT = "audiomuse_stage_task_row"
+
+
+def stage_pending_task_row(cur, task_id, task_type, details, start_time=None):
+    payload = json.dumps(details if isinstance(details, dict) else {'message': str(details)})
+    cur.execute(f"SAVEPOINT {_STAGE_SAVEPOINT}")
+    try:
+        cur.execute(
+            STAGE_PENDING_TASK_ROW_SQL,
+            (
+                task_id,
+                task_type,
+                TASK_STATUS_NEW,
+                payload,
+                time.time() if start_time is None else start_time,
+            ),
+        )
+    except psycopg2.errors.UniqueViolation:
+        cur.execute(f"ROLLBACK TO SAVEPOINT {_STAGE_SAVEPOINT}")
+        logger.info(
+            "Not staging %s row %s: another live row already holds the slot.",
+            sanitize_for_log(task_type), sanitize_for_log(task_id),
+        )
+        return False
+    created = cur.rowcount > 0
+    cur.execute(f"RELEASE SAVEPOINT {_STAGE_SAVEPOINT}")
+    if not created:
+        logger.info(
+            "Not staging %s row %s: that task id is already in task_status, so this "
+            "call created nothing and does not own the slot.",
+            sanitize_for_log(task_type), sanitize_for_log(task_id),
+        )
+    return created
 
 
 def get_task_info_from_db(task_id):
@@ -409,12 +555,6 @@ def get_task_info_from_db(task_id):
 
 
 def get_task_statuses(task_ids):
-    """``{task_id: status}`` for several tasks in ONE round-trip.
-
-    The per-track revocation check needs the status of a task and its parent and
-    nothing else, so it reads only the status column and asks once instead of
-    running the full get_task_info_from_db row build per task per track.
-    """
     ids = [str(t) for t in task_ids if t]
     if not ids:
         return {}
@@ -785,7 +925,6 @@ def get_chromaprint(server_id, provider_track_id):
 
 
 def get_lyrics_axis_vectors(item_ids):
-    """Return raw lyric-axis vectors for the requested tracks."""
     if not item_ids:
         return {}
     conn = get_db()
@@ -850,14 +989,6 @@ _SCHEMA_ADVISORY_LOCK = 726354821
 
 
 def purge_media_keys_from_app_config(cur):
-    """Delete every media-server setting from app_config, returning the count.
-
-    The music_servers registry is their ONLY home (the config globals are a
-    read-only projection of its default row). Boot and the provider migration
-    both call this single implementation, so a legacy copy can never survive in
-    app_config and quietly override - or leak the credentials of - a server that
-    no longer exists.
-    """
     cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
     if not cur.fetchone()[0]:
         return 0
@@ -869,7 +1000,6 @@ def purge_media_keys_from_app_config(cur):
 
 
 def missing_required_creds(server_type, creds):
-    """Required-but-empty credential keys for ``server_type``."""
     required = [
         config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
         for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(
@@ -882,14 +1012,6 @@ def missing_required_creds(server_type, creds):
 
 
 def _seed_registry_from_legacy_config(cur):
-    """Move an ALREADY CONFIGURED legacy install's server into the registry.
-
-    Only a config that really describes a reachable server is migrated. A fresh
-    install has none - MEDIASERVER_TYPE merely defaults to 'jellyfin' with empty
-    credentials - so the registry stays EMPTY and the setup wizard opens on a
-    blank table: the user adds whichever server they actually want, and it
-    becomes the default.
-    """
     from tasks.mediaserver.registry import creds_from_config, _default_server_name
 
     cur.execute("SELECT COUNT(*) FROM music_servers")
@@ -921,13 +1043,6 @@ def _seed_registry_from_legacy_config(cur):
 
 
 def _drop_unconfigured_servers(cur):
-    """Remove credential-less rows an earlier build seeded from an empty config.
-
-    Such a row is not a server anybody can reach - it only made the setup wizard
-    show a phantom entry. One that somehow owns track mappings is kept: that was
-    a working server whose credentials were cleared, and its catalogue bindings
-    are not ours to throw away.
-    """
     cur.execute("SELECT server_id, name, server_type, creds FROM music_servers")
     unconfigured = [
         (server_id, name)
@@ -980,15 +1095,6 @@ def _migrate_playlist_server_column(cur):
 
 
 def _migrate_artist_mapping_to_server_map(cur):
-    """One-time: fold the legacy default-only ``artist_mapping`` into
-    ``artist_server_map`` (keyed by the default server), then DROP it.
-
-    Gated purely by the table's existence, so it is an instant no-op once done and
-    a fresh install (which never creates the table) skips it. Runs inside init_db,
-    which already holds the schema advisory lock, so replicas are serialized. After
-    this, artist_server_map is the sole source of truth and the read-time fallback
-    to artist_mapping is gone.
-    """
     cur.execute("SELECT to_regclass('public.artist_mapping')")
     if cur.fetchone()[0] is None:
         return
@@ -1011,8 +1117,6 @@ def _migrate_artist_mapping_to_server_map(cur):
             "server (%d artist(s)) and dropped the obsolete table.", migrated,
         )
         return
-    # No default server to attribute the rows to: drop it if empty, otherwise leave
-    # it for a boot where a default exists.
     cur.execute("SELECT EXISTS (SELECT 1 FROM artist_mapping)")
     if not cur.fetchone()[0]:
         cur.execute("DROP TABLE artist_mapping")
@@ -1022,7 +1126,7 @@ def _migrate_artist_mapping_to_server_map(cur):
 def init_db():
     db = get_db()
     with db.cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+        cur.execute(_ADVISORY_LOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
         try:
             if sys.platform == 'win32':
                 for ext in ('unaccent', 'pg_trgm'):
@@ -1175,11 +1279,6 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)"
             )
-            # The Browse "Albums" view groups/orders by the album identity
-            # COALESCE(NULLIF(album_artist,''), author) (album_artist, falling back
-            # to author), which the raw (album_artist, album) index above cannot
-            # serve. This functional index lets that list stream in order and stop
-            # at the page's LIMIT instead of seq-scanning + sorting the whole score.
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_album_browse ON score "
                 "((COALESCE(NULLIF(album_artist, ''), author)), album)"
@@ -1189,10 +1288,6 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
                 "WHERE item_id NOT LIKE 'fp\\_%'"
             )
-            # The startup duration migration's hard version gate ("are there any
-            # older-scheme ids left?") reads this partial index. It shrinks to
-            # empty once everything is bumped to the current scheme, so the gate
-            # stays instant on a huge catalogue and the server is never re-listed.
             from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
             cur.execute("DROP INDEX IF EXISTS idx_score_null_duration")
             cur.execute("DROP INDEX IF EXISTS idx_score_old_scheme")
@@ -1222,9 +1317,9 @@ def init_db():
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_task_status_parent ON task_status (parent_task_id)"
-            )
+            from taskqueue.sql import PARENT_INDEX_SQL
+
+            cur.execute(PARENT_INDEX_SQL)
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_task_status_type_timestamp "
                 "ON task_status (task_type, timestamp DESC)"
@@ -1247,6 +1342,9 @@ def init_db():
                     note TEXT
                 )
             """)
+            from taskqueue.sql import ensure_schema as ensure_queue_schema
+
+            ensure_queue_schema(cur)
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
@@ -1554,41 +1652,33 @@ def init_db():
         finally:
             try:
                 db.rollback()
-                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
             except Exception:
                 logger.exception("Failed to release the schema advisory lock")
 
 
-def connect_raw():
-    """Open a standalone psycopg2 connection (no Flask ``g``).
-
-    For boot-time callers that run before an app/request context exists, such as
-    plugin materialization in the web and worker entrypoints.
-    """
-    return psycopg2.connect(
-        config.DATABASE_URL,
-        connect_timeout=30,
-        keepalives_idle=600,
-        keepalives_interval=30,
-        keepalives_count=3,
-        options=_CONNECT_OPTIONS,
-    )
+def connect_raw(application_name=None, keepalive_idle_seconds=None,
+                keepalive_interval_seconds=None, keepalive_count=None):
+    idle = int(keepalive_idle_seconds or 600)
+    interval = int(keepalive_interval_seconds or 30)
+    count = int(keepalive_count or 3)
+    kwargs = {
+        'connect_timeout': 30,
+        'keepalives': 1,
+        'keepalives_idle': idle,
+        'keepalives_interval': interval,
+        'keepalives_count': count,
+        'options': '{} -c tcp_keepalives_idle={} -c tcp_keepalives_interval={} '
+                   '-c tcp_keepalives_count={}'.format(
+                       _CONNECT_OPTIONS, idle, interval, count
+                   ),
+    }
+    if application_name:
+        kwargs['application_name'] = application_name
+    return psycopg2.connect(config.DATABASE_URL, **kwargs)
 
 
 def _migrate_file_path_to_track_server_map(cur):
-    """Move the audio path from the SHARED score row onto each server's map row.
-
-    A path is a property of a FILE ON A SERVER, not of the song. Holding one path
-    per catalogue row meant only the default server could ever write it, so the
-    matcher's two strongest tiers (path, tail) had no evidence at all for a track
-    the default happens not to have - and adding an 11th server could only match
-    such tracks by metadata. Each server now records the path IT sees.
-
-    Idempotent and loss-free by construction, so it needs no marker row: the copy
-    only fills map rows that have no path yet, and score.file_path is cleared ONLY
-    for rows whose path is already safe in at least one map row. A catalogue row
-    that is on no server keeps its path until a map row exists to carry it.
-    """
     cur.execute(
         "SELECT EXISTS (SELECT 1 FROM score WHERE file_path IS NOT NULL LIMIT 1)"
     )
@@ -1668,10 +1758,6 @@ def _scrub_control_chars_from_map_ids(cur):
 
 
 def _ensure_track_server_map_key(cur):
-    """Ensure track_server_map carries the (server_id, provider_track_id) unique
-    index and the relaxed PRIMARY KEY the N:1 upserts arbitrate on. Dedupes any
-    rows that would violate the index before creating it. The caller owns the
-    transaction."""
     cur.execute(
         "SELECT to_regclass('public.idx_track_server_map_provider_unique') IS NULL"
     )
@@ -1687,12 +1773,6 @@ def _ensure_track_server_map_key(cur):
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_track_server_map_provider_unique "
         "ON track_server_map (server_id, provider_track_id)"
     )
-    # The PK is (server_id, provider_track_id), which cannot serve a scan of one
-    # server ORDERED BY item_id. Two hot queries need exactly that: the dashboard's
-    # COUNT(DISTINCT item_id) GROUP BY server_id (a seq scan plus an external merge
-    # sort of every mapped row, recomputed roughly every minute) and the sweep's
-    # metadata refresh (DISTINCT ON (item_id) ... ORDER BY item_id, provider_track_id,
-    # run on every alignment). Both become index-only scans with no Sort node.
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_track_server_map_server_item "
         "ON track_server_map (server_id, item_id)"
@@ -1701,12 +1781,6 @@ def _ensure_track_server_map_key(cur):
 
 
 def ensure_track_server_map_schema(conn=None):
-    """Self-heal entry point for the write path: guarantees the (server_id,
-    provider_track_id) key exists so ``ON CONFLICT`` on it cannot fail with
-    "no unique or exclusion constraint matching". A worker writing before the
-    startup migration, or a database restored from a schema predating the
-    relaxation, recovers here instead of crashing the album. Commits its own
-    transaction; returns True on success."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -1725,13 +1799,6 @@ def ensure_track_server_map_schema(conn=None):
 
 
 def track_server_map_pk_columns(conn=None):
-    """The columns of track_server_map's PRIMARY KEY, in key order.
-
-    The catalog is the only trustworthy answer: relax_track_server_map_pk returns
-    False both when the swap FAILED and when there was nothing to do, and
-    ensure_track_server_map_schema returns True even when the swap silently rolled
-    back, so a caller that needs to know the key really is relaxed must look here.
-    """
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -1748,13 +1815,6 @@ def track_server_map_pk_columns(conn=None):
 
 
 def relax_track_server_map_pk(cur):
-    """Relax track_server_map PK (item_id, server_id) -> (server_id,
-    provider_track_id) so N provider files may map to one canonical song per
-    server. Detected by COLUMNS (not name) so it is a no-op once migrated; the
-    caller owns the transaction. The replacement item-leading index is created
-    FIRST so the score FK cascade and item_id probes keep an index. The
-    constraint is deliberately NOT named: naming it would rename the backing
-    index and make the earlier CREATE UNIQUE INDEX rebuild a duplicate."""
     cur.execute(
         "SELECT c.conname FROM pg_constraint c "
         "WHERE c.conrelid = 'track_server_map'::regclass AND c.contype = 'p' "
@@ -1790,13 +1850,6 @@ def relax_track_server_map_pk(cur):
 
 
 def _create_plugins_table(cur):
-    """Run the idempotent DDL that creates the plugins registry table.
-
-    Kept as one canonical block so ``init_db`` and the boot-time
-    ``ensure_plugins_table`` never drift. The caller owns the transaction. Plugin
-    code lives on the PLUGINS_DIR volume and is re-downloaded from ``source_url``;
-    the table stores only metadata.
-    """
     cur.execute("""
         CREATE TABLE IF NOT EXISTS plugins (
             id           TEXT PRIMARY KEY,
@@ -1822,26 +1875,18 @@ def _create_plugins_table(cur):
 
 
 def ensure_plugins_table(conn=None):
-    """Create the plugins registry table if it does not exist yet.
-
-    The RQ worker entrypoints never run ``init_db``; they rely on the web process
-    for the schema. When a worker boots before that has happened, reading the
-    registry raises ``UndefinedTable``. The plugin subsystem calls this first so
-    it can self-heal its own table. Shares ``init_db``'s advisory lock so a
-    concurrent web-side ``init_db`` can never race the CREATE.
-    """
     own = conn is None
     db = conn or connect_raw()
     try:
         with db.cursor() as cur:
-            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            cur.execute(_ADVISORY_LOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
             try:
                 _create_plugins_table(cur)
                 db.commit()
             finally:
                 try:
                     db.rollback()
-                    cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                    cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
                 except Exception:
                     logger.exception("Failed to release the schema advisory lock")
     finally:
@@ -1875,7 +1920,6 @@ def _row_to_plugin(row):
 
 
 def list_plugins(conn=None):
-    """Return every installed plugin as a dict (without the package bytes)."""
     db = conn or get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     try:
@@ -1886,7 +1930,6 @@ def list_plugins(conn=None):
 
 
 def get_plugin(plugin_id, conn=None):
-    """Return a single plugin dict (without package bytes) or None."""
     db = conn or get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     try:
@@ -1899,11 +1942,6 @@ def get_plugin(plugin_id, conn=None):
 
 def upsert_plugin(plugin_id, name, version, manifest, source_url, checksum, requirements,
                   source_repo=None, conn=None):
-    """Insert or replace a plugin registry row.
-
-    Stores metadata plus the re-download URL and checksum. The plugin code itself
-    lives on the PLUGINS_DIR volume, not in this table.
-    """
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -1931,7 +1969,6 @@ def upsert_plugin(plugin_id, name, version, manifest, source_url, checksum, requ
 
 
 def delete_plugin(plugin_id, conn=None):
-    """Remove a plugin row from the registry."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -1942,7 +1979,6 @@ def delete_plugin(plugin_id, conn=None):
 
 
 def set_plugin_enabled(plugin_id, enabled, conn=None):
-    """Flip a plugin's enabled flag."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -1956,13 +1992,6 @@ def set_plugin_enabled(plugin_id, enabled, conn=None):
 
 
 def set_plugin_load_status(plugin_id, status, conn=None, role=None, error=None):
-    """Persist the last-boot load result plus the per-role error text.
-
-    ``load_errors`` maps 'flask'/'worker' to the failing role's message, so a
-    plugin that only breaks on the worker still shows a useful error in the web
-    UI. A success for a role clears that role's entry. With ``status=None`` only
-    the role's error entry is written/cleared and load_status stays untouched.
-    """
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2002,11 +2031,6 @@ def set_plugin_load_status(plugin_id, status, conn=None, role=None, error=None):
 
 
 def clear_plugin_deps_failed(plugin_id, conn=None):
-    """Reset a stale deps_failed badge once a later install got the dependencies in.
-
-    load_status goes back to NULL (shown as 'pending' until the restart) instead of
-    keeping a failure the plugin no longer has.
-    """
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2020,7 +2044,6 @@ def clear_plugin_deps_failed(plugin_id, conn=None):
 
 
 def get_plugin_settings(plugin_id, conn=None):
-    """Return the settings JSONB dict for a plugin (empty dict if none)."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2032,7 +2055,6 @@ def get_plugin_settings(plugin_id, conn=None):
 
 
 def set_plugin_settings(plugin_id, settings, conn=None):
-    """Replace the whole settings JSONB dict for a plugin."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2046,11 +2068,6 @@ def set_plugin_settings(plugin_id, settings, conn=None):
 
 
 def set_plugin_cron_tasks(plugin_id, cron_tasks, conn=None):
-    """Store the cron tasks a plugin declared in register() inside its manifest JSONB.
-
-    Captured at install time so the web process, which never imports a
-    worker-only plugin, can still resolve and dispatch its scheduled tasks.
-    """
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2065,7 +2082,6 @@ def set_plugin_cron_tasks(plugin_id, cron_tasks, conn=None):
 
 
 def get_app_config_value(key, default=None, conn=None):
-    """Return a single app_config value by key, or ``default`` if absent."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2076,8 +2092,24 @@ def get_app_config_value(key, default=None, conn=None):
         cur.close()
 
 
+def bump_global_cancel_epoch(conn=None):
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO app_config (key, value) VALUES (%s, '1') "
+            "ON CONFLICT (key) DO UPDATE SET "
+            "value = (COALESCE(NULLIF(app_config.value, ''), '0')::bigint + 1)::text, "
+            "updated_at = CURRENT_TIMESTAMP RETURNING value",
+            (GLOBAL_CANCEL_EPOCH_KEY,),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        cur.close()
+
+
 def set_app_config_value(key, value, conn=None):
-    """Upsert a single app_config key/value pair."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2092,7 +2124,6 @@ def set_app_config_value(key, value, conn=None):
 
 
 def delete_cron_rows_for_plugin(plugin_id, conn=None):
-    """Delete cron rows whose task_type is ``plugin.<id>.<name>`` for this plugin."""
     db = conn or get_db()
     cur = db.cursor()
     try:
@@ -2104,13 +2135,6 @@ def delete_cron_rows_for_plugin(plugin_id, conn=None):
 
 
 def drop_plugin_data_tables(plugin_id, conn=None):
-    """Drop every table a plugin created under the ``plugin_<id>__`` namespace.
-
-    The character after the prefix must not be an underscore: sanctioned table
-    names (``api.table``) always start with a letter, and skipping underscore
-    continuations keeps a sibling id like ``foo_`` (tables ``plugin_foo___x``)
-    safe when ``foo`` is purged.
-    """
     db = conn or get_db()
     cur = db.cursor()
     dropped = []
@@ -2130,6 +2154,24 @@ def drop_plugin_data_tables(plugin_id, conn=None):
         cur.close()
 
 
+@contextmanager
+def main_task_start_lock(conn=None):
+    db = conn or get_db()
+    with db.cursor() as cur:
+        cur.execute(_ADVISORY_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,))
+    try:
+        yield
+    finally:
+        try:
+            with db.cursor() as cur:
+                cur.execute(_ADVISORY_UNLOCK_SQL, (MAIN_TASK_START_LOCK_KEY,))
+        except Exception:
+            logger.exception(
+                "Could not release the main-task start lock; it will clear when the "
+                "connection closes"
+            )
+
+
 def clean_up_previous_main_tasks():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -2143,11 +2185,15 @@ def clean_up_previous_main_tasks():
     )
 
     try:
-        cur.execute(
+        archive_query = (
             "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status "
-            "WHERE status IN %s AND parent_task_id IS NULL AND task_type <> ALL(%s)",
-            (non_terminal_statuses, list(SELF_MANAGED_TASK_TYPES)),
+            "WHERE status IN %s AND parent_task_id IS NULL AND task_type <> ALL(%s)"
         )
+        archive_params = [non_terminal_statuses, list(SELF_MANAGED_TASK_TYPES)]
+        for prefix in SELF_MANAGED_TASK_TYPE_PREFIXES:
+            archive_query += " AND task_type NOT LIKE %s"
+            archive_params.append(prefix + '%')
+        cur.execute(archive_query, tuple(archive_params))
         tasks_to_archive = cur.fetchall()
 
         archived_count = 0
@@ -2173,22 +2219,22 @@ def clean_up_previous_main_tasks():
                     )
 
             try:
-                duration_s = None
-                if task_row['start_time'] is not None:
-                    end = task_row['end_time'] if task_row['end_time'] is not None else time.time()
-                    duration_s = max(0.0, float(end) - float(task_row['start_time']))
-                final_status = (
-                    TASK_STATUS_SUCCESS
-                    if original_status == TASK_STATUS_SUCCESS
-                    else TASK_STATUS_REVOKED
-                )
-                record_task_history(
-                    task_id,
-                    task_row['task_type'],
-                    final_status,
-                    duration_s,
-                    details=original_details_dict,
-                )
+                if original_status != TASK_STATUS_SUCCESS:
+                    duration_s = None
+                    if task_row['start_time'] is not None:
+                        end = (
+                            task_row['end_time']
+                            if task_row['end_time'] is not None
+                            else time.time()
+                        )
+                        duration_s = max(0.0, float(end) - float(task_row['start_time']))
+                    record_task_history(
+                        task_id,
+                        task_row['task_type'],
+                        TASK_STATUS_REVOKED,
+                        duration_s,
+                        details=original_details_dict,
+                    )
             except Exception as e_hist:
                 logger.debug(f"history record skipped during archive of {task_id}: {e_hist}")
 
@@ -2223,7 +2269,8 @@ def clean_up_previous_main_tasks():
         if archived_count > 0:
             db.commit()
             logger.info(
-                f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks."
+                f"Archived {archived_count} previous main tasks and deleted "
+                f"{deleted_children_count} child tasks."
             )
         else:
             logger.info("No previous main tasks found to clean up.")
@@ -2234,8 +2281,18 @@ def clean_up_previous_main_tasks():
         cur.close()
 
 
-def get_active_main_task(task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES):
-    db = get_db()
+def _prefixes_excluded_with(exclude_task_types):
+    if not exclude_task_types:
+        return ()
+    if set(SELF_MANAGED_TASK_TYPES).issubset(exclude_task_types):
+        return SELF_MANAGED_TASK_TYPE_PREFIXES
+    return ()
+
+
+def get_active_main_task(
+    task_type=None, exclude_task_types=SELF_MANAGED_TASK_TYPES, conn=None
+):
+    db = conn or get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
 
@@ -2260,6 +2317,9 @@ def get_active_main_task(task_type=None, exclude_task_types=SELF_MANAGED_TASK_TY
         if exclude_task_types:
             query += " AND task_type <> ALL(%s)"
             params.append(list(exclude_task_types))
+        for prefix in _prefixes_excluded_with(exclude_task_types):
+            query += " AND task_type NOT LIKE %s"
+            params.append(prefix + '%')
         query += " ORDER BY timestamp DESC LIMIT 1"
         cur.execute(query, tuple(params))
 
@@ -2278,71 +2338,6 @@ def get_child_tasks_from_db(parent_task_id):
     tasks = cur.fetchall()
     cur.close()
     return [dict(row) for row in tasks]
-
-
-def count_terminal_children(parent_task_id):
-    """How many of ``parent_task_id``'s children have finished, in ONE round-trip.
-
-    A union analysis gives every phase the SAME parent, so the monitor's old
-    approach (fetch every child row, then filter in Python against this phase's
-    launched ids) pulled every earlier phase's rows too - tens of thousands of rows
-    every ten seconds, nearly all discarded. It only ever needed the count.
-    """
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "SELECT count(*) FROM task_status "
-            "WHERE parent_task_id = %s AND status IN %s",
-            (
-                parent_task_id,
-                (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED),
-            ),
-        )
-        return cur.fetchone()[0]
-    finally:
-        cur.close()
-
-
-def _child_error_from_row(row):
-    raw = row["details"]
-    if isinstance(raw, dict):
-        details = raw
-    elif raw:
-        try:
-            details = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            details = {}
-    else:
-        details = {}
-    structured = details.get("error") if isinstance(details, dict) else None
-    if isinstance(structured, dict) and "error_code" in structured:
-        return {"album_id": row["sub_type_identifier"], **structured}
-    return None
-
-
-def get_failed_child_summary(parent_task_id, sample_limit=5):
-    conn = get_db()
-    errors = []
-    with conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute(
-            "SELECT COUNT(*) AS failed_count FROM task_status "
-            "WHERE parent_task_id = %s AND status = %s",
-            (parent_task_id, TASK_STATUS_FAILURE),
-        )
-        failed_count = cur.fetchone()["failed_count"]
-        if failed_count:
-            cur.execute(
-                "SELECT sub_type_identifier, details FROM task_status "
-                "WHERE parent_task_id = %s AND status = %s "
-                "ORDER BY timestamp DESC LIMIT %s",
-                (parent_task_id, TASK_STATUS_FAILURE, sample_limit),
-            )
-            for row in cur.fetchall():
-                child_error = _child_error_from_row(row)
-                if child_error is not None:
-                    errors.append(child_error)
-    return failed_count, errors
 
 
 def save_alchemy_anchor(name, centroid, exclusions=None):

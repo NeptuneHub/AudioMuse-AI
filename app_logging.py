@@ -9,10 +9,11 @@
 """Shared logging setup for every AudioMuse-AI entry point.
 
 Call ``configure_logging()`` exactly once per process, as early as possible,
-before any module that emits log records is imported. Workers that don't import
-``app`` (the high-priority worker, the janitor) call this instead of setting up
-logging inline, so formats stay uniform and no ``logger.info`` silently falls
-through to Python's ``lastResort`` handler during long jobs.
+before any module that emits log records is imported. Processes that don't import
+``app`` (the queue workers, the maintenance loop, the control listener) call this
+instead of setting up logging inline, so formats stay uniform and no
+``logger.info`` silently falls through to Python's ``lastResort`` handler during
+long jobs.
 
 Main Features:
 * One shared format and a re-entrant setup (``basicConfig`` is a no-op once the
@@ -72,6 +73,14 @@ def _sanitize_log_text(text: Any) -> Any:
     cleaned = _CONTROL_RE.sub(" ", cleaned)
     # Collapse runs of spaces left behind by removed symbols / control codes.
     return re.sub(r" {2,}", " ", cleaned).strip()
+
+
+# Public alias for call sites that interpolate a request value into a log
+# message. LogSanitizingFilter already cleans every record, so this is belt and
+# braces at runtime - its real job is to put the CWE-117 sanitizer *in* the
+# taint path, where a reader (and a static analyser) can see it, instead of
+# leaving it in a logging filter installed somewhere else entirely.
+sanitize_log_value = _sanitize_log_text
 
 
 class LogSanitizingFilter(logging.Filter):

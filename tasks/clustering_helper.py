@@ -48,8 +48,6 @@ except ImportError:
     GPU_CLUSTERING_AVAILABLE = False
     logger.debug("GPU clustering module not available, using CPU only")
 
-from rq.job import Job, JobStatus
-from rq.exceptions import NoSuchJobError
 
 from config import (
     STRATIFIED_GENRES,
@@ -72,7 +70,6 @@ from config import (
     LN_OTHER_FEATURES_PURITY_STATS,
     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
     USE_GPU_CLUSTERING,
-    TASK_STATUS_SUCCESS,
     LYRICS_ENABLED,
 )
 from .commons import score_vector
@@ -83,10 +80,8 @@ from tasks.ai.playlist_namer import build_naming_context, evidence_from_cluster_
 from database import (
     get_tracks_by_ids,
     get_score_data_by_ids,
-    get_task_info_from_db,
     get_lyrics_axis_vectors,
 )
-from taskqueue import redis_conn
 
 
 def _shuffle_playlist_songs(songs, playlist_name):
@@ -1086,37 +1081,6 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
     final_name = f"{base_name}{appended_other_features_str}"
 
     return final_name, details
-
-
-def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
-    from flask_app import app
-
-    try:
-        job = Job.fetch(job_id, connection=redis_conn)
-        if job.is_finished and isinstance(job.result, dict):
-            return job.result
-    except NoSuchJobError:
-        logger.warning(f"[{parent_task_id}] Job {job_id} not in RQ. Checking DB.")
-        with app.app_context():
-            task_info = get_task_info_from_db(job_id)
-            if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, JobStatus.FINISHED]:
-                try:
-                    details = json.loads(task_info.get('details'))
-                    batch_result = details.get('full_best_result_from_batch') or details.get(
-                        'full_result'
-                    )
-                    if batch_result:
-                        return {
-                            "status": "SUCCESS",
-                            "best_result_from_batch": batch_result,
-                            "iterations_completed_in_batch": details.get(
-                                "iterations_completed_in_batch", 0
-                            ),
-                            "final_subset_track_ids": details.get("final_subset_track_ids", []),
-                        }
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(f"Could not parse result from DB for job {job_id}")
-    return None
 
 
 def _fill_balanced_quotas(quotas, capacities, remaining):

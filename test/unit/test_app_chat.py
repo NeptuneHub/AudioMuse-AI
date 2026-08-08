@@ -12,238 +12,270 @@ Covers the input guards and artist-diversity enforcement used by the chat
 pipeline.
 
 Main Features:
-* Song-similarity and search-database filter pre-validation.
-* Artist-diversity capping, overflow backfill, and underrepresented priority.
+* Seed-search song-seed validation and search_database filter detection.
+* Artist-diversity capping and progressive cap relaxation from the overflow.
 """
 
-class TestPreValidation:
-    def test_song_similarity_empty_title_rejected(self):
-        title = ""
+import pytest
 
-        is_valid = bool(title.strip())
-        assert not is_valid
+import app_chat
+import config
+from tasks.ai import tools
 
-    def test_song_similarity_empty_artist_rejected(self):
-        artist = ""
 
-        is_valid = bool(artist.strip())
-        assert not is_valid
+TRUTHY_SEARCH_FILTERS = {
+    'genres': ['rock'],
+    'moods': ['sad'],
+    'tempo_min': 90,
+    'tempo_max': 140,
+    'energy_min': 0.2,
+    'energy_max': 0.9,
+    'key': 'C',
+    'scale': 'minor',
+    'year_min': 1990,
+    'year_max': 1999,
+    'min_rating': 4,
+    'album': 'Dark Side of the Moon',
+    'other_features': ['party'],
+    'candidate_item_ids': ['abc123'],
+    'voices': ['female vocalists'],
+    'instrumental': True,
+    'exclude_artists': ['Nickelback'],
+    'exclude_genres': ['Hip-Hop'],
+}
 
-    def test_song_similarity_whitespace_only_rejected(self):
-        title = "   "
-        artist = "  \t  "
 
-        assert not title.strip()
-        assert not artist.strip()
+def _song(item_id, artist):
+    return {'item_id': item_id, 'artist': artist, 'title': f'{artist} {item_id}'}
 
-    def test_search_database_zero_filters_rejected(self):
-        filters = {}
-        filter_keys = [
-            'genres',
-            'moods',
-            'tempo_min',
-            'tempo_max',
-            'energy_min',
-            'energy_max',
-            'key',
-            'scale',
-            'year_min',
-            'year_max',
-            'min_rating',
-            'album',
-        ]
 
-        has_filter = any(filters.get(k) for k in filter_keys)
-        assert not has_filter
+def _run_pipeline_with_pool(monkeypatch, songs):
+    import tasks.ai.planner as planner
+    import tasks.mcp_helper as mcp_helper
 
-    def test_search_database_album_only_filter_accepted(self):
-        filters = {'album': 'Dark Side of the Moon'}
-        filter_keys = [
-            'genres',
-            'moods',
-            'tempo_min',
-            'tempo_max',
-            'energy_min',
-            'energy_max',
-            'key',
-            'scale',
-            'year_min',
-            'year_max',
-            'min_rating',
-            'album',
-        ]
+    def _fake_plan(**kwargs):
+        yield from ()
+        return {
+            'songs': list(songs),
+            'song_sources': {s['item_id']: 0 for s in songs},
+            'tools_used_history': [],
+            'plan_notes': [],
+            'executed_query_str': 'stub-query',
+            'filter_applied': True,
+        }
 
-        has_filter = any(filters.get(k) for k in filter_keys)
-        assert has_filter
+    monkeypatch.setattr(planner, 'plan_and_execute_once', _fake_plan)
+    monkeypatch.setattr(mcp_helper, 'get_library_context', lambda: {'total_songs': 0})
+    monkeypatch.setattr(
+        app_chat.app_server_context,
+        'scope_results',
+        lambda rows, _server, **kwargs: list(rows),
+    )
 
-    def test_search_database_genres_filter_accepted(self):
-        filters = {'genres': ['rock', 'metal']}
-        filter_keys = [
-            'genres',
-            'moods',
-            'tempo_min',
-            'tempo_max',
-            'energy_min',
-            'energy_max',
-            'key',
-            'scale',
-            'year_min',
-            'year_max',
-            'min_rating',
-            'album',
-        ]
+    log_messages = []
+    response, status = app_chat._drain_pipeline(
+        app_chat._run_chat_pipeline(
+            {'userInput': 'build me a playlist', 'ai_provider': 'OLLAMA'},
+            log_messages,
+        )
+    )
+    assert status == 200
+    return response
 
-        has_filter = any(filters.get(k) for k in filter_keys)
-        assert has_filter
 
-    def test_search_database_year_filter_accepted(self):
-        filters = {'year_min': 1990}
-        filter_keys = [
-            'genres',
-            'moods',
-            'tempo_min',
-            'tempo_max',
-            'energy_min',
-            'energy_max',
-            'key',
-            'scale',
-            'year_min',
-            'year_max',
-            'min_rating',
-            'album',
-        ]
+class TestSeedSearchSongSeedValidation:
+    @pytest.mark.parametrize(
+        'title,artist',
+        [
+            ('', 'Artist'),
+            ('Song', ''),
+            ('   ', 'Artist'),
+            ('Song', '  \t  '),
+            ('', ''),
+        ],
+    )
+    def test_song_seed_with_blank_title_or_artist_is_skipped_before_the_similarity_call(
+        self, monkeypatch, title, artist
+    ):
+        calls = []
+        monkeypatch.setattr(
+            tools,
+            '_song_similarity_api_sync',
+            lambda *args: calls.append(args) or {'songs': [], 'message': ''},
+        )
 
-        has_filter = any(filters.get(k) for k in filter_keys)
-        assert has_filter
+        result = tools._dispatch_seed_search(
+            {'seeds': [{'type': 'song', 'title': title, 'artist': artist}]}, {}
+        )
 
-    def test_song_similarity_both_title_and_artist_required(self):
-        test_cases = [
-            {"title": "Song", "artist": ""},
-            {"title": "", "artist": "Artist"},
-            {"title": "Song", "artist": "Artist"},
-        ]
+        assert calls == []
+        assert result['songs'] == []
+        assert 'seed_search: skipping malformed song seed' in result['message']
 
-        for tc in test_cases:
-            title_valid = bool(tc['title'].strip())
-            artist_valid = bool(tc['artist'].strip())
-            is_valid = title_valid and artist_valid
+    def test_complete_song_seed_reaches_the_similarity_call_stripped_of_whitespace(
+        self, monkeypatch
+    ):
+        calls = []
 
-            if tc['title'] == "Song" and tc['artist'] == "Artist":
-                assert is_valid
-            else:
-                assert not is_valid
+        def _fake_similarity(seed_title, seed_artist, limit):
+            calls.append((seed_title, seed_artist, limit))
+            return {'songs': [{'item_id': 's1'}], 'message': 'ok'}
+
+        monkeypatch.setattr(tools, '_song_similarity_api_sync', _fake_similarity)
+
+        result = tools._dispatch_seed_search(
+            {
+                'seeds': [{'type': 'song', 'title': ' Song ', 'artist': ' Artist '}],
+                'get_songs': 60,
+            },
+            {},
+        )
+
+        assert calls == [('Song', 'Artist', 60)]
+        assert result['songs'] == [{'item_id': 's1'}]
+
+
+class TestSearchDatabaseFilterDetection:
+    def test_other_filter_key_set_is_exactly_the_one_this_module_pins(self):
+        assert set(TRUTHY_SEARCH_FILTERS) == set(tools._SEARCH_OTHER_FILTER_KEYS)
+
+    @pytest.mark.parametrize('key', sorted(TRUTHY_SEARCH_FILTERS))
+    def test_each_other_filter_key_alone_counts_as_a_filter(self, key):
+        assert tools._has_other_search_filters({key: TRUTHY_SEARCH_FILTERS[key]}) is True
+
+    @pytest.mark.parametrize(
+        'tool_args',
+        [
+            {},
+            {'artist': 'Nas'},
+            {'get_songs': 200},
+            {'genres': [], 'moods': None, 'album': ''},
+        ],
+    )
+    def test_artist_only_and_empty_values_do_not_count_as_a_filter(self, tool_args):
+        assert tools._has_other_search_filters(tool_args) is False
+
+    def test_search_database_with_zero_filters_still_runs_the_query_once(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            tools,
+            '_database_genre_query_sync',
+            lambda *args, **kwargs: calls.append(kwargs.get('fuzzy_match'))
+            or {'songs': [], 'message': 'no-op'},
+        )
+
+        result = tools._dispatch_search_database({})
+
+        assert calls == [False]
+        assert result == {'songs': [], 'message': 'no-op'}
+
+    @pytest.mark.parametrize(
+        'extra_filter,expected_fuzzy_calls',
+        [
+            ({}, ['Nas']),
+            ({'genres': ['rock']}, []),
+            ({'voices': ['female vocalists']}, []),
+            ({'exclude_genres': ['Hip-Hop']}, []),
+        ],
+    )
+    def test_fuzzy_artist_fallback_runs_only_when_no_other_filter_narrows_the_search(
+        self, monkeypatch, extra_filter, expected_fuzzy_calls
+    ):
+        query_calls = []
+        fuzzy_calls = []
+
+        class _FakeConn:
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            tools,
+            '_database_genre_query_sync',
+            lambda *args, **kwargs: query_calls.append(kwargs.get('fuzzy_match'))
+            or {'songs': [], 'message': 'empty'},
+        )
+        monkeypatch.setattr(tools, '_get_db_connection', _FakeConn)
+        monkeypatch.setattr(
+            tools,
+            '_fuzzy_match_author_title',
+            lambda conn, name: fuzzy_calls.append(name) or None,
+        )
+
+        tool_args = {'artist': 'Nas'}
+        tool_args.update(extra_filter)
+        tools._dispatch_search_database(tool_args)
+
+        assert query_calls == [False, True]
+        assert fuzzy_calls == expected_fuzzy_calls
 
 
 class TestArtistDiversityEnforcement:
-    def _apply_diversity_logic(self, songs, max_per_artist, target_count):
-        artist_song_counts = {}
-        diverse_list = []
-        overflow_pool = []
+    @pytest.mark.parametrize('cap', [3, 5])
+    def test_final_playlist_holds_at_most_the_configured_songs_per_artist(
+        self, monkeypatch, cap
+    ):
+        monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST_PLAYLIST', cap)
+        songs = [_song(f'b{i}', 'Beatles') for i in range(20)]
+        songs += [_song(f'u{i}', f'Solo{i}') for i in range(180)]
 
-        for song in songs:
-            artist = song.get('artist', 'Unknown')
-            artist_song_counts[artist] = artist_song_counts.get(artist, 0) + 1
+        response = _run_pipeline_with_pool(monkeypatch, songs)
 
-            if artist_song_counts[artist] <= max_per_artist:
-                diverse_list.append(song)
-            else:
-                overflow_pool.append(song)
-
-        if len(diverse_list) < target_count and overflow_pool:
-            diverse_artist_counts = {}
-            for song in diverse_list:
-                artist = song.get('artist', 'Unknown')
-                diverse_artist_counts[artist] = diverse_artist_counts.get(artist, 0) + 1
-
-            def artist_rarity(song):
-                artist = song.get('artist', 'Unknown')
-                return diverse_artist_counts.get(artist, 0)
-
-            overflow_sorted = sorted(overflow_pool, key=artist_rarity)
-
-            backfill_needed = target_count - len(diverse_list)
-            backfill = overflow_sorted[:backfill_needed]
-            diverse_list.extend(backfill)
-
-        return diverse_list
-
-    def test_songs_above_cap_moved_to_overflow(self):
-        songs = [
-            {'item_id': '1', 'artist': 'Beatles', 'title': 'Let It Be'},
-            {'item_id': '2', 'artist': 'Beatles', 'title': 'Hey Jude'},
-            {'item_id': '3', 'artist': 'Beatles', 'title': 'A Day in Life'},
-            {'item_id': '4', 'artist': 'Beatles', 'title': 'Twist and Shout'},
-            {'item_id': '5', 'artist': 'Beatles', 'title': 'Love Me Do'},
-            {'item_id': '6', 'artist': 'Beatles', 'title': 'Penny Lane'},
+        results = response['query_results']
+        assert len(results) == 100
+        assert [s['item_id'] for s in results if s['artist'] == 'Beatles'] == [
+            f'b{i}' for i in range(cap)
         ]
+        assert f'removed {20 - cap} excess songs from pool (max {cap}/artist)' in response['message']
 
-        result = self._apply_diversity_logic(songs, max_per_artist=5, target_count=5)
+    def test_overflow_songs_are_dropped_when_the_capped_pool_already_fills_the_target(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST_PLAYLIST', 5)
+        songs = [_song(f'a{a}s{i}', f'Artist{a}') for a in range(20) for i in range(10)]
 
-        beatles_in_result = [s for s in result if s['artist'] == 'Beatles']
-        assert len(beatles_in_result) == 5
-        assert len(result) == 5
+        response = _run_pipeline_with_pool(monkeypatch, songs)
 
-    def test_exact_cap_songs_all_included(self):
-        songs = [{'item_id': f'{i}', 'artist': 'Artist1', 'title': f'Song{i}'} for i in range(1, 6)]
-
-        result = self._apply_diversity_logic(songs, max_per_artist=5, target_count=10)
-
-        assert len(result) == 5
-        assert all(s['artist'] == 'Artist1' for s in result)
-
-    def test_backfill_from_overflow(self):
-        songs = [
-            {'item_id': '1', 'artist': 'Beatles', 'title': 'A'},
-            {'item_id': '2', 'artist': 'Beatles', 'title': 'B'},
-            {'item_id': '3', 'artist': 'Beatles', 'title': 'C'},
-            {'item_id': '4', 'artist': 'Beatles', 'title': 'D'},
-            {'item_id': '5', 'artist': 'Beatles', 'title': 'E'},
-            {'item_id': '6', 'artist': 'Rolling Stones', 'title': 'X'},
-            {'item_id': '7', 'artist': 'Rolling Stones', 'title': 'Y'},
-            {'item_id': '8', 'artist': 'Rolling Stones', 'title': 'Z'},
+        results = response['query_results']
+        assert [s['item_id'] for s in results] == [
+            f'a{a}s{i}' for a in range(20) for i in range(5)
         ]
+        assert 'Progressive cap relaxation' not in response['message']
 
-        result = self._apply_diversity_logic(songs, max_per_artist=5, target_count=8)
+    def test_pool_short_of_target_relaxes_the_cap_until_the_overflow_is_exhausted(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST_PLAYLIST', 5)
+        songs = [_song(f'a{i}', 'ArtistA') for i in range(30)]
+        songs += [_song(f'b{i}', 'ArtistB') for i in range(30)]
 
-        assert len(result) == 8
-        beatles = [s for s in result if s['artist'] == 'Beatles']
-        stones = [s for s in result if s['artist'] == 'Rolling Stones']
-        assert len(beatles) == 5
-        assert len(stones) == 3
+        response = _run_pipeline_with_pool(monkeypatch, songs)
 
-    def test_backfill_prioritizes_underrepresented_artists(self):
-        songs = [
-            {'item_id': '1', 'artist': 'Artist1', 'title': 'A1'},
-            {'item_id': '2', 'artist': 'Artist1', 'title': 'A2'},
-            {'item_id': '3', 'artist': 'Artist1', 'title': 'A3'},
-            {'item_id': '4', 'artist': 'Artist1', 'title': 'A4'},
-            {'item_id': '5', 'artist': 'Artist1', 'title': 'A5'},
-            {'item_id': '6', 'artist': 'Artist2', 'title': 'B1'},
-            {'item_id': '7', 'artist': 'Artist3', 'title': 'C1'},
-            {'item_id': '8', 'artist': 'Artist3', 'title': 'C2'},
-            {'item_id': '9', 'artist': 'Artist3', 'title': 'C3'},
-            {'item_id': '10', 'artist': 'Artist3', 'title': 'C4'},
-            {'item_id': '11', 'artist': 'Artist3', 'title': 'C5'},
-            {'item_id': '12', 'artist': 'Artist2', 'title': 'B2'},
-            {'item_id': '13', 'artist': 'Artist3', 'title': 'C6'},
+        results = response['query_results']
+        assert len(results) == 60
+        assert len([s for s in results if s['artist'] == 'ArtistA']) == 30
+        assert len([s for s in results if s['artist'] == 'ArtistB']) == 30
+        assert (
+            'Progressive cap relaxation: 5 -> 30/artist to reach 60 songs' in response['message']
+        )
+
+    def test_cap_relaxation_admits_one_song_per_artist_per_level_so_small_overflows_go_first(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST_PLAYLIST', 5)
+        songs = [_song(f'a{i}', 'ArtistA') for i in range(20)]
+        songs += [_song(f'b{i}', 'ArtistB') for i in range(6)]
+        songs += [_song(f'u{i}', f'Solo{i}') for i in range(80)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs)
+
+        results = response['query_results']
+        assert len(results) == 100
+        assert [s['item_id'] for s in results if s['artist'] == 'ArtistB'] == [
+            f'b{i}' for i in range(6)
         ]
-
-        result = self._apply_diversity_logic(songs, max_per_artist=5, target_count=12)
-
-        assert len(result) == 12
-        artist2_count = len([s for s in result if s['artist'] == 'Artist2'])
-        assert artist2_count >= 2
-
-    def test_overflow_pool_not_used_when_target_met(self):
-        songs = [
-            {'item_id': '1', 'artist': 'Artist1', 'title': 'A1'},
-            {'item_id': '2', 'artist': 'Artist1', 'title': 'A2'},
-            {'item_id': '3', 'artist': 'Artist2', 'title': 'B1'},
-            {'item_id': '4', 'artist': 'Artist1', 'title': 'A3'},
+        assert [s['item_id'] for s in results if s['artist'] == 'ArtistA'] == [
+            f'a{i}' for i in range(14)
         ]
-
-        result = self._apply_diversity_logic(songs, max_per_artist=2, target_count=3)
-
-        assert len(result) == 3
-        artist1_count = len([s for s in result if s['artist'] == 'Artist1'])
-        assert artist1_count == 2
+        assert (
+            'Progressive cap relaxation: 5 -> 14/artist to reach 100 songs' in response['message']
+        )

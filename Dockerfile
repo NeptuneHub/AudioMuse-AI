@@ -359,7 +359,7 @@ RUN set -ux; \
             libpq5 \
             ffmpeg libchromaprint-tools wget curl \
             supervisor procps \
-            git vim redis-tools strace iputils-ping \
+            git vim strace iputils-ping \
             postgresql-common ca-certificates \
             "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)" \
             # PostgreSQL 18 client from PGDG (pg_dump 18 backs up PG 15-18; psql restore stays compatible with old pg_dump 16 / PG 15 dumps)

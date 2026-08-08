@@ -1,17 +1,5 @@
 version: '3.8'
 services:
-  # Redis service for RQ (task queue)
-  redis:
-    image: redis:7-alpine
-    container_name: audiomuse-redis
-    environment:
-      TZ: "${TZ:-UTC}"
-    ports:
-      - "${REDIS_PORT:-6379}:6379" # Expose Redis port to the host
-    volumes:
-      - redis-data:/data # Persistent storage for Redis data
-    restart: unless-stopped
-
   # PostgreSQL database service
   postgres:
     image: postgres:15-alpine
@@ -42,13 +30,11 @@ services:
       POSTGRES_DB: "audiomusedb"
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "5432" # Internal port - always 5432 inside the Docker network
-      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
       - plugins-flask:/app/plugin/installed # This container's own plugins cache (code + pip deps)
     depends_on:
-      - redis
       - postgres
     restart: unless-stopped
     deploy:
@@ -59,12 +45,12 @@ services:
               device_ids: ["0"]
               capabilities: [gpu]
 
-  # AudioMuse-AI RQ Worker service
+  # AudioMuse-AI Queue Worker service
   audiomuse-ai-worker:
     image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
     container_name: audiomuse-ai-worker-instance
     environment:
-      SERVICE_TYPE: "worker" # Tells the container to run the RQ worker
+      SERVICE_TYPE: "worker" # Tells the container to run the queue workers
       TZ: "${TZ:-UTC}"
       # DATABASE_URL is now constructed by config.py from the following:
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
@@ -72,7 +58,6 @@ services:
       POSTGRES_DB: "audiomusedb"
       POSTGRES_HOST: "postgres" # Service name of the postgres container
       POSTGRES_PORT: "5432" # Internal port - always 5432 inside the Docker network
-      REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
@@ -81,7 +66,6 @@ services:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
       - plugins-worker:/app/plugin/installed # This container's own plugins cache (code + pip deps)
     depends_on:
-      - redis
       - postgres
     restart: unless-stopped
     deploy:
@@ -94,7 +78,6 @@ services:
 
 # Define volumes for persistent data and temporary files
 volumes:
-  redis-data:
   postgres-data:
   temp-audio-flask: # Volume for Flask app's temporary audio
   temp-audio-worker: # Volume for Worker's temporary audio

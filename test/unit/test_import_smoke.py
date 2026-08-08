@@ -13,7 +13,7 @@ catch syntax and import-time errors that the unit suite would otherwise miss.
 
 Main Features:
 * Discovers all package/module names under the repo root
-* Each module imports cleanly, tolerating a reached DB or Redis connection
+* Each module imports cleanly, tolerating a reached database connection
 * Missing optional deps (cuml/cupy/ivf/faiss/tensorflow) skip rather than fail
 """
 
@@ -74,8 +74,4 @@ def test_module_imports_cleanly(modname):
         msg = str(exc).lower()
         if any(dep in msg for dep in _OPTIONAL_DEPS):
             pytest.skip(f"{modname}: optional dependency absent ({exc})")
-        raise
-    except Exception as exc:  # noqa: BLE001 -- surface the real failure
-        if "redis" in type(exc).__module__ and "connect" in str(exc).lower():
-            pytest.skip(f"{modname}: reached Redis connection during import (machinery OK)")
         raise

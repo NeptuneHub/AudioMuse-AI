@@ -6,7 +6,7 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Numeric-locale pinning and fragile-module warmup before RQ fork.
+"""Numeric-locale pinning and fragile-module warmup before any worker fork.
 
 Covers the bootstrap that pins LC_NUMERIC and pre-imports scipy/numpy so the
 macOS longdouble parse race cannot surface inside forked workers.

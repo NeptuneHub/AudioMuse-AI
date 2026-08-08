@@ -4,10 +4,8 @@ numba==0.60.0
 soundfile==0.13.1
 Flask
 Flask-Cors
-redis
 requests
 scikit-learn==1.7.2
-rq==2.7.0
 pyyaml
 six
 rapidfuzz

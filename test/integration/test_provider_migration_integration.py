@@ -24,7 +24,6 @@ import re
 import sys
 import tempfile
 from urllib.parse import quote
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -246,7 +245,7 @@ def pg_dsn():
         try:
             psycopg2.connect(dsn).close()
         except Exception as e:
-            pytest.skip(f"AUDIOMUSE_TEST_DATABASE_URL not reachable: {e}")
+            pytest.fail(f"AUDIOMUSE_TEST_DATABASE_URL is set but not reachable, refusing to skip: {e}")
         yield dsn
         return
 
@@ -285,9 +284,8 @@ def migration_db(pg_dsn):
         return conn
 
     mig._get_dedicated_conn = _connect
-    mig._get_redis = lambda: MagicMock()
     mig._drain_workers_or_timeout = lambda *a, **k: None
-    mig._post_commit_reload = lambda *a, **k: None
+    mig._post_commit_reload = lambda *a, **k: True
 
     yield {'dsn': pg_dsn, 'connect': _connect}
 
@@ -322,12 +320,6 @@ def _reassemble_id_map(parts):
 
 
 def _seed_library(conn, source_rendered, segmented=False, source_type='jellyfin'):
-    """Seed a canonicalized, single-server install.
-
-    The path lives on the SERVER's map row, never on the shared score row: score
-    is the union catalogue and a path belongs to a file on a server. Seeding it
-    the old way (score.file_path) would test a schema that no longer exists.
-    """
     src_ids = [r['id'] for r in source_rendered]
     ivf_map = json.dumps({str(i): sid for i, sid in enumerate(src_ids)})
     projection_map = json.dumps(src_ids)
@@ -555,9 +547,6 @@ def test_real_provider_migration(source, target, migration_db):
     matched_item_ids = set(expected_map.keys())
     verify = migration_db['connect']()
     with verify.cursor() as cur:
-        # THE CATALOGUE IS NEVER TOUCHED. item_id is the fp_2 hash of the audio, so a
-        # provider swap cannot change it and must never delete it: the analysis behind
-        # it is expensive and irreplaceable. Only the MAPPING moves.
         cur.execute("SELECT item_id, file_path, title, album_artist, year FROM score")
         score = {row[0]: row for row in cur.fetchall()}
         assert set(score.keys()) == catalogue_ids, (
@@ -574,8 +563,6 @@ def test_real_provider_migration(source, target, migration_db):
             assert row[3] == r['album_artist']
             assert row[4] == 2000 + i, "year not refreshed from new_meta"
 
-        # The mapping is what migrated: matched songs are now reachable by the TARGET
-        # provider's id, and the unmatched one is unbound from the server entirely.
         cur.execute(
             "SELECT item_id, provider_track_id, file_path FROM track_server_map "
             "WHERE server_id = %s",
@@ -595,9 +582,6 @@ def test_real_provider_migration(source, target, migration_db):
                 "the target's path must land on the server's own map row"
             )
 
-        # A Chromaprint is computed from the AUDIO, which a provider swap does not
-        # touch, so it follows the song onto the target's id. This is what lets a
-        # Navidrome id rotation migrate without re-fingerprinting the library.
         cur.execute(
             "SELECT c.provider_track_id, c.fingerprint FROM chromaprint c "
             "WHERE c.server_id = %s",
@@ -614,7 +598,6 @@ def test_real_provider_migration(source, target, migration_db):
                 "each song kept ITS OWN fingerprint across the repoint"
             )
 
-        # Reached the way every consumer reaches it: joined to the map row.
         cur.execute(
             "SELECT m.item_id, c.fingerprint FROM chromaprint c "
             "JOIN track_server_map m ON m.server_id = c.server_id "
@@ -630,9 +613,6 @@ def test_real_provider_migration(source, target, migration_db):
             "the unbound song's fingerprint must not linger keyed by a dead id"
         )
 
-        # 'analysis' marks a row whose embedding yields no signature: the startup
-        # canonicalizer reads that tier to know the row can never be relabelled, so
-        # flattening it here makes every later boot re-hash the whole catalogue.
         cur.execute(
             "SELECT item_id, match_tier FROM track_server_map WHERE server_id = %s",
             (_DEFAULT_SERVER_ID,),
@@ -648,7 +628,6 @@ def test_real_provider_migration(source, target, migration_db):
             if item_id != unsignable_id
         ), "every other migrated row is a plain repoint"
 
-        # Embeddings hang off score, so if the catalogue survived, so did they.
         for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
             cur.execute(f"SELECT item_id FROM {table}")
             ids = {row[0] for row in cur.fetchall()}
@@ -656,8 +635,6 @@ def test_real_provider_migration(source, target, migration_db):
                 f"{source}->{target}: {table} must survive a provider swap intact"
             )
 
-        # No item_id moved, so every similarity index still points at the right songs
-        # and needs no rebuild. This is the whole reason the canonical id exists.
         assert result['index_rebuild_needed'] is False
         cur.execute("SELECT id_map_json FROM voyager_index_data WHERE index_name = 'ivf_main'")
         ivf_map = json.loads(cur.fetchone()[0])
@@ -669,10 +646,6 @@ def test_real_provider_migration(source, target, migration_db):
             "the projection id map must be untouched"
         )
 
-        # Artist IDs belong to the old provider and cannot be repointed (the matcher
-        # produces an id per TRACK), so they are dropped and the next analysis rebuilds
-        # them. Artist ANALYSIS is keyed by artist NAME, which a provider swap does not
-        # change, so the artist indexes survive untouched like the track ones.
         cur.execute("SELECT COUNT(*) FROM artist_server_map")
         assert cur.fetchone()[0] == 0, "artist_server_map holds dead provider ids; must be cleared"
         for table in (
@@ -709,11 +682,6 @@ def test_real_provider_migration(source, target, migration_db):
 
 @pytest.mark.integration
 def test_navidrome_id_rotation_carries_fingerprints_through_duplicate_files(migration_db):
-    """The Navidrome id-rotation case, hardest shape: same server, ids PERMUTED onto
-    each other, and one song owning two files. The rotation must not trip the
-    (server_id, provider_track_id) key, must leave no fingerprint under a dead id,
-    and must keep a real fingerprint for the song rather than a NULL sibling row.
-    """
     source = target = 'navidrome'
     rendered = []
     for index, track in enumerate(SHARED_TRACKS):
@@ -734,9 +702,6 @@ def test_navidrome_id_rotation_carries_fingerprints_through_duplicate_files(migr
     duplicate_owner = rendered[1]['id']
     duplicate_file_id = _provider_id(source, 0, _ORPHAN_OFFSET)
     with conn.cursor() as cur:
-        # The unsignable marker sits on the SECOND row, which the collapse discards
-        # (it keeps the lowest ctid, i.e. the row seeded first). The marker belongs
-        # to the SONG, not to whichever file wins that race.
         cur.execute(
             "INSERT INTO track_server_map "
             "(item_id, server_id, provider_track_id, match_tier, file_path) "
@@ -995,11 +960,6 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
     _seed_library(conn, source_rendered, segmented=True)
     session_id = _insert_session(conn, source, target, matches, new_meta)
 
-    # IVF_MAX_PART_SIZE_MB=0 used to make the id-map REWRITE overflow, forcing the
-    # index to be dropped and a full rebuild flagged. There is no rewrite any more, so
-    # there is nothing to overflow: the part-size limit is irrelevant to a migration.
-    # This guards against ever reintroducing an item_id rewrite here, which would take
-    # the embeddings with it and cost a full rebuild on every provider swap.
     saved_max_part = config.IVF_MAX_PART_SIZE_MB
     config.IVF_MAX_PART_SIZE_MB = 0
     try:

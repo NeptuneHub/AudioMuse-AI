@@ -1,6 +1,6 @@
 # Configuration Parameters
 
-These are the parameters accepted for this script. From `v1.0.0`, only PostgreSQL, Redis, and `TZ` must still be configured via environment variables. All other configuration values are managed through the browser Setup Wizard and stored in the database. For compatibility with older installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is the landing page on a clean installation and is also available later from the menu under Administration > Setup Wizard.
+These are the parameters accepted for this script. From `v1.0.0`, only PostgreSQL and `TZ` must still be configured via environment variables. All other configuration values are managed through the browser Setup Wizard and stored in the database. For compatibility with older installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is the landing page on a clean installation and is also available later from the menu under Administration > Setup Wizard.
 
 How to find jellyfin **userid**:
 * Log into Jellyfin from your browser as an admin
@@ -44,7 +44,6 @@ The **mandatory** parameter that you need to change from the example are this:
 | `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |
 | `POSTGRES_HOST`      | (Required) PostgreSQL host.                                             | `postgres-service.playlist`       |
 | `POSTGRES_PORT`      | (Required) PostgreSQL port.                                             | `5432`                            |
-| `REDIS_URL`          | (Required) URL for Redis.                                               | `redis://localhost:6379/0`        |
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
 | `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. Leave the default when pointing at a local Ollama instance. | `no-key-needed` |
@@ -67,7 +66,7 @@ These parameters can be left as-is:
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L918) | `false` |
 | `DASHBOARD_BROWSE_PAGE_SIZE` | Rows per page in the Song/Artist/Album browse view opened from the dashboard.                | `100` |
 | `DASHBOARD_BROWSE_MAX_OFFSET` | Deepest OFFSET a browse query may reach. Past this the API stops paging and asks you to refine with search/filters, so a 1M-row catalogue cannot be hit with a pathological deep-page scan. | `50000` |
-| `TZ`     | Set the time zone of all containers (Flask, worker, Redis and PostgreSQL) | `UTC` |
+| `TZ`     | Set the time zone of all containers (Flask, worker and PostgreSQL) | `UTC` |
 
 These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
 

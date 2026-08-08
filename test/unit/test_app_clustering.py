@@ -6,217 +6,175 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Unit tests for the app_clustering blueprint start endpoint.
+"""The clustering start endpoint and the parameters it queues.
 
-Registers the clustering blueprint and posts to the start route with mocked
-queue and status calls to check enqueueing and active-task gating.
+The endpoint is one INSERT now: the queue row is the claim, admission is a
+partial unique index, and there is no failure handler because the worker writes
+the terminal row itself and knows whether a restart is coming.
 
 Main Features:
-* Starts clustering when no task is active.
-* Blocks when a clustering task or another batch is already active.
-* Always enqueues with output_server_scope 'all' (batch tasks cover every
-  server; a client-supplied scope is ignored).
+* A successful start returns 202 with the queued task id, at status NEW
+* output_server_scope is forced to 'all' whatever the client posts
+* Auto-calibration defaults on and can be turned off from the body
+* top_n_clustering_playlist accepts the legacy payload spellings
+* A live main task the gate can already see answers 409 and queues nothing
+* A start that passed the gate and lost the INSERT answers 409, never 500, and
+  names the task that actually won
 """
 
 import pytest
-from unittest.mock import Mock, patch
 from flask import Flask
+
+import config
+import app_clustering
+import taskqueue
 from app_clustering import clustering_bp
 
 
 @pytest.fixture
-def app():
-    app = Flask(__name__)
-    app.register_blueprint(clustering_bp)
-    app.config['TESTING'] = True
-    return app
+def queued(monkeypatch):
+    calls = []
+
+    def _fake_enqueue(func, **kwargs):
+        calls.append({'func': func, **kwargs})
+        return kwargs['task_id']
+
+    monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _fake_enqueue)
+    monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_clustering, 'get_active_main_task', lambda **_kw: None)
+    return calls
 
 
 @pytest.fixture
-def client(app):
+def client():
+    app = Flask(__name__)
+    app.register_blueprint(clustering_bp)
+    app.config['TESTING'] = True
     return app.test_client()
 
 
-class TestStartClusteringEndpoint:
-    @patch('app_clustering.get_active_main_task', return_value=None)
-    @patch('app_clustering.rq_queue_high')
-    @patch('app_clustering.clean_up_previous_main_tasks')
-    @patch('app_clustering.save_task_status')
-    def test_successful_clustering_start_with_no_active_task(
-        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
-    ):
-        mock_job = Mock()
-        mock_job.id = "cluster-job-123"
-        mock_job.get_status.return_value = "queued"
-        mock_queue.enqueue.return_value = mock_job
+def _start(client, **body):
+    return client.post('/api/clustering/start', json=body)
 
-        response = client.post('/api/clustering/start', json={})
 
-        assert response.status_code == 202
-        data = response.get_json()
-        assert data['task_id'] == "cluster-job-123"
-        assert data['task_type'] == "main_clustering"
-        assert data['status'] == "queued"
-        mock_cleanup.assert_called_once()
-        mock_save_status.assert_called_once()
+def _lose_the_admission_race(monkeypatch, winner):
+    reads = []
+    attempted = []
 
-    @patch('app_clustering.get_active_main_task', return_value=None)
-    @patch('app_clustering.rq_queue_high')
-    @patch('app_clustering.clean_up_previous_main_tasks')
-    @patch('app_clustering.save_task_status')
-    def test_start_enqueues_output_server_scope_all_even_when_a_scope_is_posted(
-        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
-    ):
-        mock_job = Mock()
-        mock_job.id = "cluster-job-123"
-        mock_job.get_status.return_value = "queued"
-        mock_queue.enqueue.return_value = mock_job
+    def _active(**kwargs):
+        reads.append(kwargs)
+        return winner if len(reads) > 1 else None
 
-        response = client.post('/api/clustering/start', json={'output_server_scope': 's2'})
+    def _reject(func, **kwargs):
+        attempted.append(func)
+        raise taskqueue.TaskAlreadyRunning()
+
+    monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_clustering, 'get_active_main_task', _active)
+    monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _reject)
+    return attempted
+
+
+class TestStartClustering:
+    def test_a_successful_start_returns_the_queued_task_at_status_new(self, client, queued):
+        response = _start(client)
 
         assert response.status_code == 202
-        enqueue_kwargs = mock_queue.enqueue.call_args.kwargs['kwargs']
-        assert enqueue_kwargs['output_server_scope'] == 'all'
+        body = response.get_json()
+        assert body['task_type'] == 'main_clustering'
+        assert body['status'] == config.TASK_STATUS_NEW
+        assert body['task_id'] == queued[0]['task_id']
 
-    @patch('app_clustering.get_active_main_task', return_value=None)
-    @patch('app_clustering.rq_queue_high')
-    @patch('app_clustering.clean_up_previous_main_tasks')
-    @patch('app_clustering.save_task_status')
-    def test_auto_parameter_discovery_defaults_on_and_can_be_disabled(
-        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
+    def test_the_queued_entry_names_the_clustering_task_on_the_high_queue(self, client, queued):
+        _start(client)
+
+        assert queued[0]['func'] == 'tasks.clustering.run_clustering_task'
+        assert queued[0]['queue'] == taskqueue.QUEUE_HIGH
+
+    def test_output_server_scope_is_forced_to_all_whatever_the_client_posts(
+        self, client, queued
     ):
-        mock_job = Mock()
-        mock_job.id = "cluster-job-123"
-        mock_job.get_status.return_value = "queued"
-        mock_queue.enqueue.return_value = mock_job
+        _start(client, output_server_scope='srv-2')
 
-        response = client.post('/api/clustering/start', json={})
-        assert response.status_code == 202
-        assert mock_queue.enqueue.call_args.kwargs['kwargs']['auto_calibration_param'] is True
+        assert queued[0]['kwargs']['output_server_scope'] == 'all'
 
-        response = client.post(
-            '/api/clustering/start', json={'auto_parameter_discovery': False}
+    def test_auto_calibration_defaults_on(self, client, queued):
+        _start(client)
+
+        assert queued[0]['kwargs']['auto_calibration_param'] is True
+
+    def test_auto_calibration_can_be_turned_off_from_the_body(self, client, queued):
+        _start(client, auto_parameter_discovery=False)
+
+        assert queued[0]['kwargs']['auto_calibration_param'] is False
+
+    def test_top_n_clustering_playlist_is_queued(self, client, queued):
+        _start(client, top_n_clustering_playlist=10)
+
+        assert queued[0]['kwargs']['top_n_playlists_param'] == 10
+
+    def test_the_legacy_top_n_playlists_spelling_is_accepted(self, client, queued):
+        _start(client, top_n_playlists=12)
+
+        assert queued[0]['kwargs']['top_n_playlists_param'] == 12
+
+    def test_a_live_main_task_the_gate_sees_answers_409_and_queues_nothing(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(
+            app_clustering, 'get_active_main_task',
+            lambda **_kw: {'task_id': 'live-1', 'status': config.TASK_STATUS_RUNNING},
         )
-        assert response.status_code == 202
-        assert mock_queue.enqueue.call_args.kwargs['kwargs']['auto_calibration_param'] is False
-
-    @patch('app_clustering.get_active_main_task', return_value=None)
-    @patch('app_clustering.rq_queue_high')
-    @patch('app_clustering.clean_up_previous_main_tasks')
-    @patch('app_clustering.save_task_status')
-    def test_top_n_clustering_playlist_is_enqueued_and_accepts_legacy_payloads(
-        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
-    ):
-        mock_job = Mock()
-        mock_job.id = "cluster-job-123"
-        mock_job.get_status.return_value = "queued"
-        mock_queue.enqueue.return_value = mock_job
-
-        response = client.post(
-            '/api/clustering/start', json={'top_n_clustering_playlist': 10}
+        calls = []
+        monkeypatch.setattr(
+            app_clustering.taskqueue, 'enqueue', lambda func, **kw: calls.append(func)
         )
-        assert response.status_code == 202
-        kwargs = mock_queue.enqueue.call_args.kwargs['kwargs']
-        assert kwargs['top_n_playlists_param'] == 10
-        assert 'min_clustering_top_param' not in kwargs
 
-        response = client.post('/api/clustering/start', json={'min_clustering_top': 12})
-        assert response.status_code == 202
-        assert mock_queue.enqueue.call_args.kwargs['kwargs']['top_n_playlists_param'] == 12
-
-        response = client.post('/api/clustering/start', json={'top_n_playlists': 9})
-        assert response.status_code == 202
-        kwargs = mock_queue.enqueue.call_args.kwargs['kwargs']
-        assert kwargs['top_n_playlists_param'] == 9
-
-    @patch(
-        'app_clustering.get_active_main_task',
-        return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'},
-    )
-    @patch('app_clustering.rq_queue_high')
-    @patch('app_clustering.clean_up_previous_main_tasks')
-    @patch('app_clustering.save_task_status')
-    def test_clustering_blocks_when_active_task_exists(
-        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
-    ):
-        response = client.post('/api/clustering/start', json={})
+        response = _start(client)
 
         assert response.status_code == 409
-        data = response.get_json()
-        assert data['task_id'] == 'existing-clustering-123'
-        assert data['status'] == 'STARTED'
-        mock_cleanup.assert_not_called()
-        mock_queue.enqueue.assert_not_called()
+        assert response.get_json()['task_id'] == 'live-1'
+        assert calls == [], 'nothing may be queued once the gate has refused'
 
-    @patch(
-        'app_clustering.get_active_main_task',
-        return_value={
-            'task_id': 'existing-cleaning-123',
-            'status': 'STARTED',
-            'task_type': 'cleaning',
-        },
-    )
-    @patch('app_clustering.rq_queue_high')
-    @patch('app_clustering.clean_up_previous_main_tasks')
-    @patch('app_clustering.save_task_status')
-    def test_clustering_blocks_when_another_batch_is_active(
-        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
+    def test_a_start_that_passed_the_gate_then_lost_the_insert_answers_409_not_500(
+        self, client, monkeypatch
     ):
-        response = client.post('/api/clustering/start', json={})
+        attempted = _lose_the_admission_race(
+            monkeypatch, {'task_id': 'winner-1', 'status': config.TASK_STATUS_RUNNING}
+        )
 
+        response = _start(client)
+
+        assert attempted == ['tasks.clustering.run_clustering_task'], (
+            'the gate has to let this start through, or the INSERT race is never run'
+        )
         assert response.status_code == 409
-        data = response.get_json()
-        assert data['task_id'] == 'existing-cleaning-123'
-        assert data['status'] == 'STARTED'
-        mock_cleanup.assert_not_called()
-        mock_queue.enqueue.assert_not_called()
-
-
-class TestFailureHandlerRetryAwareness:
-    def test_handler_leaves_the_row_live_when_rq_still_has_retries(self, monkeypatch):
-        import app_clustering
-        from rq.exceptions import AbandonedJobError
-
-        writes = []
-        monkeypatch.setattr(
-            app_clustering, 'save_task_status',
-            lambda *a, **k: writes.append((a, k)),
+        body = response.get_json()
+        assert body['task_id'] == 'winner-1', (
+            'the losing id names a row the savepoint rolled back, so the answer has '
+            'to carry the task that actually holds the gate'
         )
-        job = Mock()
-        job.id = 'clustering-main-1'
-        job.retries_left = 2
+        assert body['status'] == config.TASK_STATUS_RUNNING
+        assert 'already running' in body['error'].lower()
 
-        err = AbandonedJobError('worker died')
-        app_clustering.clustering_task_failure_handler(
-            job, object(), AbandonedJobError, err, None
-        )
+    def test_a_queue_failure_answers_500_without_leaking_the_exception(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(app_clustering, 'get_active_main_task', lambda **_kw: None)
 
-        assert writes == []
+        def _boom(func, **kwargs):
+            raise RuntimeError('connection refused to 10.0.0.5')
 
-    def test_handler_fails_the_row_only_once_retries_are_exhausted(self, monkeypatch):
-        import sys
-        import types
+        monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _boom)
 
-        import app_clustering
+        response = _start(client)
 
-        fake_flask_app = types.ModuleType('flask_app')
-        fake_flask_app.app = Flask('failure-handler-test')
-        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+        assert response.status_code == 500
+        assert '10.0.0.5' not in response.get_json()['error']
 
-        writes = []
-        monkeypatch.setattr(
-            app_clustering, 'save_task_status',
-            lambda task_id, task_type, status, **k: writes.append(
-                (task_id, task_type, status)
-            ),
-        )
-        job = Mock()
-        job.id = 'clustering-main-1'
-        job.retries_left = 0
 
-        err = RuntimeError('boom')
-        app_clustering.clustering_task_failure_handler(
-            job, object(), RuntimeError, err, None
-        )
-
-        assert writes == [('clustering-main-1', 'main_clustering', 'FAILURE')]
+class TestNoFailureHandlerRemains:
+    def test_the_rq_failure_handler_is_gone(self):
+        assert not hasattr(app_clustering, 'clustering_task_failure_handler')

@@ -167,6 +167,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // The countdown itself is the shared one in restart_wait.js. Only the ceiling
+    // differs here: a restore stops Flask, replaces the database and brings the
+    // services back, which can take far longer than any other restart.
+    const RESTORE_MAX_WAIT_SECONDS = 30 * 60;
+
     // Restore backup via chunked file upload (1GB chunks)
     restoreBtn.addEventListener('click', async () => {
         if (!fileInput.files.length || confirmInput.value !== EXPECTED_PHRASE) return;
@@ -209,23 +214,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!res.ok) throw new Error(data.error || `Chunk ${chunkNum} upload failed`);
 
                 if (data.all_chunks_received) {
-                    // All chunks received, restore starting
+                    // Countdown from the instant the upload lands, exactly like the
+                    // setup wizard, then redirect. Nothing is waited on here.
                     restoreStatus.style.color = 'var(--color-success, green)';
-                    let countdown = 60;
-                    restoreStatus.textContent =
-                        'All chunks uploaded. Database restore started. Restarting application - '
-                        + 'redirecting in ' + countdown + ' seconds…';
-                    const countdownInterval = setInterval(() => {
-                        countdown -= 1;
-                        if (countdown > 0) {
-                            restoreStatus.textContent =
-                                'All chunks uploaded. Database restore started. Restarting application - '
-                                + 'redirecting in ' + countdown + ' seconds…';
-                        } else {
-                            clearInterval(countdownInterval);
-                            if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
-                        }
-                    }, 1000);
+                    window.AudioMuseRestart.waitAndGo({
+                        element: restoreStatus,
+                        prefix: 'All chunks uploaded. Database restore started.',
+                        target: '/',
+                        maxSeconds: RESTORE_MAX_WAIT_SECONDS
+                    });
                     return;
                 } else {
                     // Chunk received, waiting for more

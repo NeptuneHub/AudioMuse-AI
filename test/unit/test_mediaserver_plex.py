@@ -612,6 +612,10 @@ class TestPlexDownloadTrack:
 
         assert download_track(str(tmp_path), {'Id': '101', 'Name': 'x'}) is None
 
+        assert mock_get.call_count == 1
+        assert mock_get.call_args[0][0] == f'{PLEX_URL}/library/metadata/101'
+        assert list(tmp_path.iterdir()) == []
+
 
 class TestPlexTestConnection:
     @patch('tasks.mediaserver.plex.requests.get')

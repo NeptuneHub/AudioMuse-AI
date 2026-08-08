@@ -14,8 +14,14 @@ children, focusing on its threading guards and start/stop state machine.
 Main Features:
 * join_workers returns promptly from the boot thread and skips the main thread on Windows
 * The health loop clears a preset stop flag and spawns a live watcher thread
+* All three platforms share one health loop, and none keeps a private copy
+* A stop requested during the database probe restarts no child
 * start_child refuses to spawn while stopping but is allowed while starting
 * start_in_background owns the boot thread and invokes start_all
+* The database probe holds one autocommit session and reuses it across ticks
+* A dropped session is replaced once before the database is declared unhealthy
+* An unreachable database returns False and is logged with its traceback
+* A programming error in the probe surfaces instead of faking an unhealthy database
 """
 
 import importlib.util
@@ -23,6 +29,8 @@ import os
 import sys
 import threading
 import time
+import types
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -66,7 +74,6 @@ def _bare_supervisor(mod):
     sup._health_thread = None
     sup._boot_thread = None
     sup._database_url = 'postgresql://unused'
-    sup._redis_url = 'redis://unused'
     sup._db_conn = 'postgresql://unused'
 
     class _Log:
@@ -78,6 +85,52 @@ def _bare_supervisor(mod):
 
 
 PLATFORMS = ['linux', 'macos', 'windows']
+
+
+class _ProbeError(Exception):
+    pass
+
+
+class _ProbeCursor:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc_info):
+        return False
+
+    def execute(self, sql):
+        if self._conn.probe_fails:
+            raise _ProbeError('server closed the connection unexpectedly')
+        self._conn.executed.append(sql)
+
+    def fetchone(self):
+        return (1,)
+
+
+class _ProbeConnection:
+    def __init__(self, probe_fails=False):
+        self.closed = 0
+        self.autocommit = None
+        self.executed = []
+        self.probe_fails = probe_fails
+
+    def cursor(self):
+        if self.closed:
+            raise _ProbeError('connection already closed')
+        return _ProbeCursor(self)
+
+    def set_session(self, autocommit=False):
+        self.autocommit = autocommit
+
+    def close(self):
+        self.closed = 1
+
+
+def _fake_psycopg2(connect):
+    return types.SimpleNamespace(connect=connect, Error=_ProbeError)
 
 
 @pytest.fixture(params=PLATFORMS)
@@ -156,9 +209,8 @@ class TestStartHealthLoopClearsStop:
             body_ran.set()
             sup._health_stop.set()
 
-        for name in ('_ensure_postgres_healthy', '_ensure_redis_healthy'):
-            if hasattr(sup, name):
-                monkeypatch.setattr(sup, name, _record_and_stop)
+        if hasattr(sup, '_ensure_postgres_healthy'):
+            monkeypatch.setattr(sup, '_ensure_postgres_healthy', _record_and_stop)
         if hasattr(mod, 'urllib'):
             monkeypatch.setattr(mod.urllib.request, 'urlopen', _record_and_stop)
 
@@ -220,7 +272,7 @@ class TestSpawnRefusedWhileStopping:
         monkeypatch.setattr(mod.subprocess, 'Popen', _FakePopen)
         for name in ('_terminate_named',):
             if hasattr(sup, name):
-                monkeypatch.setattr(sup, name, lambda *a, **k: None)
+                monkeypatch.setattr(sup, name, lambda *a, **k: True)
         if hasattr(mod, 'threading'):
             monkeypatch.setattr(
                 mod.threading,
@@ -233,13 +285,30 @@ class TestSpawnRefusedWhileStopping:
             )
         if hasattr(mod, 'env_builder'):
             monkeypatch.setattr(mod.env_builder, 'build_child_env', lambda *a, **k: {})
-        if hasattr(sup, '_ensure_redis_running'):
-            monkeypatch.setattr(sup, '_ensure_redis_running', lambda *a, **k: 'redis://x')
 
         sup._state = 'starting'
         result = sup.start_child('flask')
         assert result is True
         assert 'flask' in sup._desired
+
+    def test_start_is_idempotent_for_an_existing_live_child(self, supervisor_case, monkeypatch):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+
+        class _Live:
+            def poll(self):
+                return None
+
+        live = _Live()
+        sup._children['queue-worker-default'] = live
+        popen = MagicMock(side_effect=AssertionError('must not spawn a duplicate child'))
+        monkeypatch.setattr(mod.subprocess, 'Popen', popen)
+
+        assert sup.start_child('queue-worker-default') is True
+        assert sup._children['queue-worker-default'] is live
+        assert 'queue-worker-default' in sup._desired
+        popen.assert_not_called()
 
 
 class TestStartInBackground:
@@ -265,3 +334,328 @@ class TestStartInBackground:
         assert boot_thread_seen['thread'] is sup._boot_thread
         assert boot_thread_seen['thread'] is not threading.current_thread()
         thread.join(2)
+
+
+@pytest.mark.parametrize('platform_name', PLATFORMS)
+def test_control_reply_waits_for_all_services_and_aggregates_failure(
+    platform_name, monkeypatch
+):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+    completed = []
+
+    def restart(service):
+        completed.append(service)
+        return service != 'queue-worker-high'
+
+    monkeypatch.setattr(sup, 'restart_child', restart)
+
+    result = sup.dispatch_control(
+        'restart', ['queue-worker-default', 'queue-worker-high', 'queue-maintenance']
+    )
+
+    assert completed == ['queue-worker-default', 'queue-worker-high', 'queue-maintenance']
+    assert result is False
+
+
+@pytest.mark.parametrize('platform_name', PLATFORMS)
+def test_control_service_exception_is_a_negative_result_and_later_services_run(
+    platform_name, monkeypatch
+):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+    completed = []
+
+    def stop(service):
+        completed.append(service)
+        if service == 'queue-worker-default':
+            raise RuntimeError('stop failed')
+        return True
+
+    monkeypatch.setattr(sup, 'stop_child', stop)
+
+    assert sup.dispatch_control('stop', ['queue-worker-default', 'queue-maintenance']) is False
+    assert completed == ['queue-worker-default', 'queue-maintenance']
+
+
+@pytest.mark.parametrize('platform_name', PLATFORMS)
+def test_unstoppable_child_returns_false_and_remains_tracked(platform_name, monkeypatch):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+
+    class _StubbornProcess:
+        pid = 4321
+        stdout = None
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise TimeoutError('still alive')
+
+        def send_signal(self, _signal):
+            return None
+
+        def kill(self):
+            return None
+
+    proc = _StubbornProcess()
+    sup._children['queue-worker-default'] = proc
+    sup._desired.add('queue-worker-default')
+    if platform_name != 'windows':
+        monkeypatch.setattr(mod.os, 'getpgid', lambda _pid: 4321, raising=False)
+        monkeypatch.setattr(mod.os, 'killpg', lambda *_args: None, raising=False)
+
+    assert sup.stop_child('queue-worker-default') is False
+    assert sup._children['queue-worker-default'] is proc
+    assert 'queue-worker-default' in sup._desired
+
+
+@pytest.mark.parametrize('platform_name', ['linux', 'macos'])
+def test_postgres_health_uses_lossless_socket_kwargs(platform_name, monkeypatch):
+    mod = _load_supervisor(platform_name)
+    sup = _bare_supervisor(mod)
+    socket_dir = '/tmp/Audio&Muse+#socket'
+    sup._database_url = f'postgresql://postgres:@/postgres?host={socket_dir}'
+    seen = {}
+    conn = _ProbeConnection()
+
+    def connect(*args, **kwargs):
+        seen['args'] = args
+        seen['kwargs'] = kwargs
+        return conn
+
+    monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(connect))
+    restart = MagicMock(side_effect=AssertionError('healthy PostgreSQL must not be restarted'))
+    if hasattr(mod, 'db_backend'):
+        monkeypatch.setattr(mod.db_backend, 'ensure_embedded_running', restart)
+    else:
+        monkeypatch.setattr(mod.database, 'ensure_embedded_running', restart)
+
+    sup._ensure_postgres_healthy()
+
+    assert seen['args'] == ()
+    assert seen['kwargs']['host'] == socket_dir
+    assert seen['kwargs']['port'] == '5432'
+    assert seen['kwargs']['user'] == 'postgres'
+    assert seen['kwargs']['dbname'] == 'postgres'
+    assert conn.executed == ['SELECT 1']
+    assert conn.autocommit is True
+    assert conn.closed == 0
+    assert sup._probe_connection is conn
+    restart.assert_not_called()
+
+
+class TestTheHealthLoopHasOneImplementationForEveryPlatform:
+    def test_each_supervisor_inherits_the_shared_loop(self, supervisor_case):
+        from native_common.supervisor_health import HealthLoopMixin
+
+        _platform, mod = supervisor_case
+
+        assert issubclass(mod.ProcessSupervisor, HealthLoopMixin)
+
+    def test_no_platform_keeps_its_own_copy(self, supervisor_case):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+
+        assert (mod.ProcessSupervisor._health_loop
+                is supervisor_health.HealthLoopMixin._health_loop)
+        assert (mod.ProcessSupervisor._start_health_loop
+                is supervisor_health.HealthLoopMixin._start_health_loop)
+
+    def test_a_stop_during_the_database_probe_restarts_nothing(
+        self, supervisor_case, monkeypatch
+    ):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+        monkeypatch.setattr(supervisor_health, 'HEALTH_INTERVAL_SECONDS', 0.01)
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+        dead = MagicMock()
+        dead.poll.return_value = 1
+        sup._children = {'flask': dead}
+        sup._desired = {'flask'}
+        started = []
+        monkeypatch.setattr(sup, 'start_child', lambda name: started.append(name))
+        monkeypatch.setattr(
+            sup, '_ensure_postgres_healthy', lambda: sup._health_stop.set()
+        )
+
+        sup._health_loop()
+
+        assert started == []
+
+    def test_a_dead_child_is_restarted_while_the_supervisor_runs(
+        self, supervisor_case, monkeypatch
+    ):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+        monkeypatch.setattr(supervisor_health, 'HEALTH_INTERVAL_SECONDS', 0.01)
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+        dead = MagicMock()
+        dead.poll.return_value = 1
+        sup._children = {'flask': dead}
+        sup._desired = {'flask'}
+        started = []
+
+        def _restart(name):
+            started.append(name)
+            sup._health_stop.set()
+
+        monkeypatch.setattr(sup, 'start_child', _restart)
+        monkeypatch.setattr(sup, '_ensure_postgres_healthy', lambda: None)
+
+        sup._health_loop()
+
+        assert started == ['flask']
+
+
+class TestTheDatabaseProbeHoldsOneSession:
+    def test_a_second_tick_reuses_the_session_instead_of_reconnecting(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        opened = []
+
+        def connect(**_kwargs):
+            conn = _ProbeConnection()
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(connect))
+
+        assert sup._probe_postgres(host='/tmp/sock', port='5432') is True
+        assert sup._probe_postgres(host='/tmp/sock', port='5432') is True
+
+        assert len(opened) == 1
+        assert opened[0].executed == ['SELECT 1', 'SELECT 1']
+        assert opened[0].autocommit is True
+        assert opened[0].closed == 0
+
+    def test_a_dropped_session_is_replaced_once_before_calling_the_database_unhealthy(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        stale = _ProbeConnection(probe_fails=True)
+        fresh = _ProbeConnection()
+        sup._probe_connection = stale
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: fresh))
+
+        assert sup._probe_postgres(host='/tmp/sock') is True
+
+        assert stale.closed == 1
+        assert fresh.executed == ['SELECT 1']
+        assert sup._probe_connection is fresh
+
+    def test_a_closed_session_is_never_reused(self, supervisor_case, monkeypatch):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        gone = _ProbeConnection()
+        gone.close()
+        fresh = _ProbeConnection()
+        sup._probe_connection = gone
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: fresh))
+
+        assert sup._probe_postgres(host='/tmp/sock') is True
+
+        assert gone.executed == []
+        assert fresh.executed == ['SELECT 1']
+
+    def test_an_unreachable_database_returns_false_and_logs_the_traceback(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        logged = []
+
+        def _refused(**_kwargs):
+            raise _ProbeError('could not connect to server')
+
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(_refused))
+        sup._log = types.SimpleNamespace(
+            exception=lambda msg, *a, **k: logged.append(msg),
+            debug=lambda *a, **k: None,
+            warning=lambda *a, **k: None,
+            info=lambda *a, **k: None,
+        )
+
+        assert sup._probe_postgres(host='/tmp/sock') is False
+
+        assert len(logged) == 1
+        assert getattr(sup, '_probe_connection', None) is None
+
+    def test_a_probe_that_never_runs_is_false_rather_than_healthy(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        dead = _ProbeConnection(probe_fails=True)
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: dead))
+
+        assert sup._probe_postgres(host='/tmp/sock') is False
+
+        assert dead.closed == 1
+        assert getattr(sup, '_probe_connection', None) is None
+
+    def test_a_misused_connect_call_surfaces_instead_of_faking_an_unhealthy_database(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+
+        logged = []
+
+        def _misused(**_kwargs):
+            raise TypeError("connect() got an unexpected keyword argument 'keepalives'")
+
+        monkeypatch.setitem(sys.modules, 'psycopg2', _fake_psycopg2(_misused))
+        sup._log = types.SimpleNamespace(
+            exception=lambda msg, *a, **k: logged.append(msg),
+            debug=lambda *a, **k: None,
+            warning=lambda *a, **k: None,
+            info=lambda *a, **k: None,
+        )
+
+        with pytest.raises(TypeError):
+            sup._probe_postgres(host='/tmp/sock')
+
+        assert len(logged) == 1
+
+    def test_a_session_call_that_does_not_exist_surfaces_instead_of_faking_unhealthy(
+        self, supervisor_case, monkeypatch
+    ):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        without_set_session = types.SimpleNamespace(closed=0, close=lambda: None)
+        monkeypatch.setitem(
+            sys.modules, 'psycopg2', _fake_psycopg2(lambda **_kwargs: without_set_session)
+        )
+
+        with pytest.raises(AttributeError):
+            sup._probe_postgres(host='/tmp/sock')
+
+        assert getattr(sup, '_probe_connection', None) is None
+
+    def test_the_health_loop_closes_the_held_session_when_it_exits(
+        self, supervisor_case, monkeypatch
+    ):
+        from native_common import supervisor_health
+
+        _platform, mod = supervisor_case
+        monkeypatch.setattr(supervisor_health, 'HEALTH_INTERVAL_SECONDS', 0.01)
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+        held = _ProbeConnection()
+        sup._probe_connection = held
+        monkeypatch.setattr(sup, '_ensure_postgres_healthy', lambda: sup._health_stop.set())
+
+        sup._health_loop()
+
+        assert held.closed == 1
+        assert sup._probe_connection is None

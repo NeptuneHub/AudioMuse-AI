@@ -11,21 +11,20 @@
 Resolves the bundle resource root (PyInstaller ``_MEIPASS`` or the source
 repo) and the per-user data locations under ``%LOCALAPPDATA%`` (falling back to
 ``%PROGRAMDATA%`` when the path contains spaces), so the Windows launcher,
-supervisor and embedded-Postgres modules agree on where pgdata, redis, logs,
+supervisor and embedded-Postgres modules agree on where pgdata, logs,
 models and temp files live. The Linux/macOS ``paths`` modules are the
 platform-specific siblings.
 
 Main Features:
 * ``resource_root``, tray-icon path and per-user data directories under LOCALAPPDATA.
-* Fixed loopback ports (pg 5432, redis 6379, control 8001) plus persisted random
-  DB/Redis passwords cached under a per-user ``secrets`` dir.
+* Fixed loopback ports (pg 5432, control 8001) plus a persisted random DB
+  password cached under a per-user ``secrets`` dir.
 """
 
 import os
 import platform
 import secrets
 import sys
-from urllib.parse import quote
 
 APP_NAME = "AudioMuse-AI"
 
@@ -68,10 +67,6 @@ def pgdata_dir():
     return _ensure(os.path.join(app_support_dir(), "pgdata"))
 
 
-def redis_dir():
-    return _ensure(os.path.join(app_support_dir(), "redis"))
-
-
 def temp_audio_dir():
     return _ensure(os.path.join(app_support_dir(), "temp_audio"))
 
@@ -107,24 +102,12 @@ def db_password():
     return _secret("pg_password")
 
 
-def redis_password():
-    return _secret("redis_password")
-
-
-def redis_port():
-    return 6379
-
-
 def pg_port():
     return 5432
 
 
 def pg_start_timeout():
     return 120
-
-
-def redis_url():
-    return f"redis://:{quote(redis_password(), safe='')}@127.0.0.1:{redis_port()}/0"
 
 
 def control_port():
@@ -145,18 +128,6 @@ def log_file():
 
 def model_dir():
     return os.path.join(resource_root(), "model")
-
-
-def redis_binary():
-    if getattr(sys, "frozen", False):
-        return os.path.join(resource_root(), "redis-server.exe")
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "vendor",
-        "redis",
-        platform.machine().lower(),
-        "redis-server.exe",
-    )
 
 
 def fpcalc_binary():

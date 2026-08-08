@@ -6,15 +6,19 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Supervisor control plane for restarting Flask and RQ worker processes.
+"""Stopping, starting and restarting the supervised Flask and worker processes.
 
-Publishes control requests onto the Redis restart channel that
-``restart_listener`` consumes, and provides the supervisorctl-backed helpers
-that actually stop, start, and restart the managed services.
+The "how do I reach the other container" half now lives in ``taskqueue.control``,
+which broadcasts over Postgres and collects durable acknowledgements. What is
+left here is the local half: actually driving supervisorctl (containers) or the
+control socket (native builds), plus the delayed self-restart Flask arms for
+itself.
 
 Main Features:
-* ``publish_*`` helpers broadcast restart/stop/start and plugin-sync requests to workers.
+* ``publish_*`` delegate to ``taskqueue.control`` and keep their boolean contract.
 * supervisorctl-driven actions over the known Flask and worker service names.
+* ``run_supervisorctl_detail`` returns WHY an action failed, so the restore log
+  can say more than "did not confirm it stopped".
 * On native builds (control socket/host:port set), dispatches there instead of supervisorctl.
 """
 
@@ -26,45 +30,107 @@ import subprocess
 import threading
 
 import config
-from taskqueue import new_redis_connection
+import service_roles
 
-RESTART_CHANNEL = os.environ.get('AUDIO_MUSE_CONFIG_RESTART_CHANNEL', 'audiomuse:config_restart')
-SUPERVISORCTL_CMD = os.environ.get('SUPERVISORCTL_CMD', '/usr/bin/supervisorctl')
-SUPERVISOR_CONF = os.environ.get('SUPERVISOR_CONF', '/etc/supervisor/conf.d/supervisord.conf')
+SUPERVISORCTL_CMD = config.SUPERVISORCTL_CMD
+SUPERVISOR_CONF = config.SUPERVISOR_CONF
 logger = logging.getLogger(__name__)
 
-FLASK_SERVICE = ['flask']
-WORKER_SERVICES = ['rq-worker-default', 'rq-worker-high', 'rq-janitor']
+CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS = config.QUEUE_CONTROL_ADVISORY_TIMEOUT_SECONDS
+
+FLASK_SERVICE = service_roles.FLASK_SERVICES
+WORKER_SERVICES = service_roles.WORKER_SERVICES
 
 
-def publish_control_request(action):
+def new_control_request_id():
+    from taskqueue.control import new_control_request_id as _new_id
+
+    return _new_id()
+
+
+def get_control_request_result(action, request_id):
+    from database import connect_raw
+    from taskqueue.control import get_control_request_result as _result
+
+    conn = connect_raw()
     try:
-        redis_conn = new_redis_connection(
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            decode_responses=True,
-        )
-        redis_conn.publish(RESTART_CHANNEL, action)
-        return True
+        if not _action_matches(conn, request_id, action):
+            return False
+        return _result(request_id, conn=conn)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.debug("Action-check connection close failed", exc_info=True)
+
+
+def _action_matches(conn, request_id, action):
+    from database import coerce_db_details
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT details FROM task_status WHERE task_id = %s", (request_id,)
+            )
+            row = cur.fetchone()
     except Exception:
-        logger.exception('Could not publish %s request to Redis', action)
+        logger.exception(
+            "Could not validate the action of control request %s; assuming it matches",
+            request_id,
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            logger.debug("Action-check rollback failed", exc_info=True)
+        return True
+    details = coerce_db_details(row[0] if row else None)
+    if not isinstance(details, dict):
+        logger.error(
+            'Control request ID %s has a non-object details payload (%s); assuming it matches',
+            request_id, type(details).__name__,
+        )
+        return True
+    recorded = details.get('action')
+    if recorded is not None and recorded != action:
+        logger.error(
+            'Control request ID %s belongs to action %r, not %r',
+            request_id, recorded, action,
+        )
         return False
+    return True
 
 
-def publish_restart_request():
-    return publish_control_request('restart')
+def publish_control_request(action, request_id=None, timeout_seconds=None):
+    from taskqueue.control import publish_control_request as _publish
+
+    return _publish(action, request_id=request_id, timeout_seconds=timeout_seconds)
 
 
-def publish_plugin_sync_request():
-    return publish_control_request('plugin-sync')
+def publish_restart_request(request_id=None, timeout_seconds=None):
+    from taskqueue import control
+
+    return publish_control_request(control.ACTION_RESTART, request_id, timeout_seconds)
 
 
-def publish_stop_request():
-    return publish_control_request('stop')
+def publish_stop_request(request_id=None, timeout_seconds=None):
+    from taskqueue import control
+
+    return publish_control_request(control.ACTION_STOP, request_id, timeout_seconds)
 
 
-def publish_start_request():
-    return publish_control_request('start')
+def publish_start_request(request_id=None, timeout_seconds=None):
+    from taskqueue import control
+
+    return publish_control_request(control.ACTION_START, request_id, timeout_seconds)
+
+
+def publish_plugin_sync_request(request_id=None, timeout_seconds=None):
+    from taskqueue import control
+
+    return publish_control_request(control.ACTION_PLUGIN_SYNC, request_id, timeout_seconds)
+
+
+CONTROL_IPC_TIMEOUT_SECONDS = config.CONTROL_IPC_TIMEOUT_SECONDS
 
 
 def _control_endpoint():
@@ -100,7 +166,7 @@ def _send_control(arguments):
     payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
     try:
         with socket.socket(family, socket.SOCK_STREAM) as sock:
-            sock.settimeout(15)
+            sock.settimeout(CONTROL_IPC_TIMEOUT_SECONDS)
             sock.connect(address)
             sock.sendall(payload + b'\n')
             response = sock.recv(1024).strip()
@@ -114,33 +180,58 @@ def _send_control(arguments):
     return False
 
 
-def _run_supervisorctl(arguments):
+def _supervisorctl_already_satisfied(action, stdout, stderr):
+    lines = [line.strip().lower() for line in (stdout + '\n' + stderr).splitlines()
+             if line.strip()]
+    if not lines:
+        return False
+    if action == 'start':
+        return all('started' in line for line in lines)
+    if action == 'stop':
+        return all(('stopped' in line or 'not running' in line) for line in lines)
+    return False
+
+
+def run_supervisorctl_detail(arguments):
     if _use_control_ipc():
-        return _send_control(arguments)
+        ok = _send_control(arguments)
+        return ok, ('control server accepted' if ok else 'control server rejected the command')
+    action = arguments[0] if arguments else ''
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
+        detail = stderr or stdout or '(no output)'
         if result.returncode != 0:
-            logger.error('supervisorctl failed (%s): %s', result.returncode, stderr or stdout)
-            return False
+            if _supervisorctl_already_satisfied(action, stdout, stderr):
+                logger.info(
+                    'supervisorctl %s was already satisfied: %s', action, stdout or stderr
+                )
+                return True, detail
+            logger.error('supervisorctl failed (%s): %s', result.returncode, detail)
+            return False, f'exit {result.returncode}: {detail}'
         logger.info('supervisorctl succeeded: %s', stdout)
-        return True
+        return True, detail
     except FileNotFoundError:
         logger.exception('supervisorctl command not found at %s', SUPERVISORCTL_CMD)
-        return False
+        return False, f'supervisorctl not found at {SUPERVISORCTL_CMD}'
     except subprocess.TimeoutExpired:
         logger.exception('supervisorctl timed out after 30s: %s', cmd)
-        return False
-    except Exception:
+        return False, 'supervisorctl timed out after 30s'
+    except Exception as exc:
         logger.exception('Failed to run supervisorctl command: %s', cmd)
-        return False
+        return False, f'{exc.__class__.__name__}: {exc}'
 
 
-def stop_local_flask_service():
+def _run_supervisorctl(arguments):
+    ok, _detail = run_supervisorctl_detail(arguments)
+    return ok
+
+
+def stop_local_flask_service_detail():
     logger.info('Stopping supervised Flask service')
-    return _run_supervisorctl(['stop'] + FLASK_SERVICE)
+    return run_supervisorctl_detail(['stop'] + FLASK_SERVICE)
 
 
 def start_local_flask_service():
@@ -181,14 +272,14 @@ def _spawn_supervisorctl(arguments):
 
 def _restart_flask_program():
     logger.info('Restarting supervised Flask program via supervisorctl')
-    return _spawn_supervisorctl(['restart', 'flask'])
+    return _spawn_supervisorctl(['restart'] + FLASK_SERVICE)
 
 
 def schedule_flask_restart(delay_seconds=2.5):
     if os.environ.get('SERVICE_TYPE', '').lower() != 'flask':
         return False
 
-    if os.environ.get('DISABLE_FLASK_RESTART', 'false').lower() == 'true':
+    if config.DISABLE_FLASK_RESTART:
         return False
 
     timer = threading.Timer(delay_seconds, _restart_flask_program)

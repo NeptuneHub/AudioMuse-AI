@@ -8,63 +8,29 @@
 
 """One-time catalogue duration backfill + duplicate repair at Flask startup.
 
-Every fp_2 content id needs its track LENGTH in score.duration: it is the anchor
-of identity confirmation (durations_compatible splits when either side is NULL),
-so a row with no duration can never be a duration-confirmed merge target - the
-same audio re-added, or the same song on another server (the whole point of the
-N:1 track_server_map design), would fail the check and mint a duplicate id. So
-this gives EVERY fp_2 row a duration, not only the duplicates.
+Every fp_2 content id needs its track LENGTH in score.duration: it anchors
+identity confirmation, so a row with no duration can never be a
+duration-confirmed merge target and the same audio would mint a duplicate id.
 
-Upgrade paths, told apart by the shape of score.item_id, all converge here
-(no stored flag - a flag in app_config is purged as an unknown key on the next
-boot, which made an earlier version run on every restart):
+Upgrade paths (told apart by the shape of score.item_id, no stored flag) all
+converge here: from < 3.0.0 the legacy migration relabels AND backfills so this
+no-ops; from an early 3.0.0 this backfills and fixes embedding-only false
+merges; from a later scheme bump every existing merge is re-confirmed at the
+current tolerance and the scheme relabel runs once.
 
-* From < 3.0.0 (item_id are provider ids): the legacy migration
-  (fingerprint_canonicalize) relabels to the current scheme AND backfills
-  score.duration for every relabelled row in one shot. This step then no-ops.
-* From an early 3.0.0 (item_id are ALREADY fp_2): the legacy migration no-ops,
-  and THIS step does the work - it backfills the length of every fp_2 row and
-  fixes the embedding-only false merges.
-* From a later scheme bump (e.g. fp_3 -> fp_4, which tightened the duration
-  tolerance): every EXISTING merge is re-confirmed in place at the current
-  tolerance and the ones whose files now differ in length by more than it are
-  unmapped; the stored length is kept, never dropped. Then the scheme relabel
-  bumps every row up (minting the next id on a collision), so it runs once.
-
-The signal is score.duration: a row WITH a duration was already confirmed, a row
-with a NULL duration was not. Every fp_2 NULL-duration row is looked at exactly
-once. A row mapping ONE file just gets its length stamped. A row mapping MORE
-than one file is a merge: real (all lengths agree) keeps its length stamped and
-its mappings; false (lengths differ) is unmapped so the next analysis re-analyzes
-each file under its own correct id. A single file whose server reports no length
-is stamped with a 0 sentinel so the whole catalogue is not re-listed for it on
-every boot - 0 behaves exactly like NULL for identity (never confirms a merge)
-and a later re-analysis overwrites it with the real length. Durations come from
-ONE metadata listing per server (no per-id/batch fetch, no audio downloads),
-fetched concurrently across servers. The duration backfill and re-verify never
-delete a score or embedding row; the separate migration-only orphan purge does.
+The signal is score.duration: a row WITH a duration was already confirmed, a
+NULL one was not. A single-file row just gets its length stamped; a real merge
+keeps length + mappings; a false merge is unmapped for re-analysis; a file with
+no reported length gets a 0 sentinel (behaves like NULL for identity). Lengths
+come from one whole-catalogue listing per server, fetched concurrently.
 
 Main Features:
-* Table-derived, marker-free idempotency via score.duration - instant no-op once
-  every row carries a length.
-* Backfills the length of EVERY fp_2 row (single-file and duplicate survivors),
-  not only duplicates, from the same one whole-catalogue listing per server.
-* Duplicate consensus: real groups keep + stamp their length, false groups lose
-  only their track_server_map rows; single-file rows are never unmapped.
-* Concurrent per-server fetch, progress logs at every ~10%, final summary.
-* split_chromaprint_false_merges: cleaning-time Path B - splits a same-server
-  duplicate group whose stored Chromaprints prove its files are different
-  recordings (skip-if-missing); unmaps only, never deletes a catalogue row.
-* purge_orphan_catalogue_rows: migration-only cleanup - deletes every score row
-  bound to no server (false-merge splits plus pre-existing orphans), so the
-  catalogue is clean after a migration; embeddings cascade, per-file Chromaprints
-  are kept, and each deleted track re-analyzes under its own id if its file returns.
-  It needs no complete-listing guard (unlike the cleaning pass): it never interprets
-  a server listing, only the map table itself, and an unreachable server keeps its
-  map rows, so a track still on any server is never purged. The one accepted window
-  is a concurrently analyzing track between its score insert and its map flush on
-  the migration boot itself - hitting it costs that track one re-analysis, nothing
-  more.
+* Table-derived, marker-free idempotency via score.duration.
+* split_chromaprint_false_merges: cleaning-time Path B - splits a
+  same-server group whose stored Chromaprints prove the files differ.
+* purge_orphan_catalogue_rows: migration-only cleanup of score rows bound to
+  no server; never interprets a server listing, so a track still on any server
+  is never purged.
 """
 
 import logging

@@ -19,9 +19,11 @@ Main Features:
   auto-resolve the calling plugin id from the import namespace.
 """
 
+import inspect
 import logging
 import re
 import sys
+import uuid
 
 from flask import render_template, url_for
 
@@ -33,7 +35,6 @@ from database import (
     get_score_data_by_ids,
     get_tracks_by_ids,
 )
-from taskqueue import rq_queue_high, rq_queue_default
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
@@ -56,11 +57,15 @@ ANALYSIS_COMPONENTS = frozenset({'asr'})
 # Where a plugin provider goes in the ONNX chain, see register_onnx_provider.
 ONNX_POSITIONS = frozenset({'before_cuda', 'before_cpu'})
 
+# Argument names plugin.manager.run_plugin_task consumes itself, so a plugin task
+# function that declares one of them could never receive it.
+RESERVED_TASK_PARAMS = frozenset({'server_scope', 'task_claim_required'})
+
 __all__ = [
     'PluginContext', 'config', 'logger', 'get_db', 'save_task_status',
     'get_score_data_by_ids', 'get_tracks_by_ids', 'get_setting', 'set_setting',
     'table', 'enqueue', 'valid_plugin_id', 'dotted_path', 'render_page',
-    'manage_plugins_url', 'rq_queue_high', 'rq_queue_default',
+    'manage_plugins_url',
     'active_server_id', 'list_servers', 'use_server',
     'TASK_STATUS_PENDING', 'TASK_STATUS_STARTED', 'TASK_STATUS_PROGRESS',
     'TASK_STATUS_SUCCESS', 'TASK_STATUS_FAILURE', 'TASK_STATUS_REVOKED',
@@ -68,12 +73,6 @@ __all__ = [
 
 
 def render_page(body, title=None, active='plugins'):
-    """Wrap a plugin's HTML in the AudioMuse-AI layout (sidebar nav + styling).
-
-    Lets a plugin return a full page - with the app navigation preserved - from a
-    single call: ``return render_page('<p>hi</p>', title='My Plugin')``. ``body``
-    is rendered as-is (the plugin controls it); ``title`` shows as the page heading.
-    """
     return render_template(
         'plugin_page.html',
         plugin_body=body,
@@ -84,11 +83,6 @@ def render_page(body, title=None, active='plugins'):
 
 
 def manage_plugins_url():
-    """Return the URL of the Manage Plugins admin page.
-
-    Handy as the redirect target after a plugin's settings form saves, since the
-    settings page is opened from that admin page.
-    """
     return url_for('plugins_bp.plugins_page')
 
 
@@ -116,7 +110,6 @@ def _current_plugin_id():
 
 
 def table(name):
-    """Return the namespaced table name ``plugin_<id>__<name>`` for the calling plugin."""
     pid = _current_plugin_id()
     if not pid:
         raise RuntimeError('table() must be called from plugin code')
@@ -126,7 +119,6 @@ def table(name):
 
 
 def get_setting(key, default=None):
-    """Return the DB-stored per-plugin setting for ``key`` or ``default``."""
     pid = _current_plugin_id()
     if not pid:
         return default
@@ -135,7 +127,6 @@ def get_setting(key, default=None):
 
 
 def set_setting(key, value):
-    """Persist a per-plugin setting override into the ``plugins.settings`` JSONB."""
     pid = _current_plugin_id()
     if not pid:
         raise RuntimeError('set_setting() must be called from plugin code')
@@ -145,43 +136,74 @@ def set_setting(key, value):
     return value
 
 
+class QueuedPluginTask(str):
+    @property
+    def id(self):
+        return str(self)
+
+
+def _reject_reserved_params(func, dotted):
+    if not callable(func):
+        return
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return
+    reserved = sorted(
+        name for name, param in params.items()
+        if name in RESERVED_TASK_PARAMS
+        and param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY)
+    )
+    if reserved:
+        raise TypeError(
+            f"plugin task {dotted} declares reserved argument names: {', '.join(reserved)}. "
+            "AudioMuse-AI consumes server_scope and task_claim_required itself to run a plugin "
+            "task once per music server, so your function can never receive them. Rename the "
+            "parameter; call active_server_id() to learn which server the current run targets."
+        )
+
+
 def enqueue(func, *args, queue='default', **kwargs):
-    """Enqueue a plugin task by callable or dotted path, wrapped for app context."""
-    q = rq_queue_high if queue == 'high' else rq_queue_default
+    import json
+
+    import taskqueue
+
+    task_id = str(uuid.uuid4())
     dotted = dotted_path(func)
-    return q.enqueue(
+    _reject_reserved_params(func, dotted)
+    try:
+        json.dumps({'args': list(args), 'kwargs': kwargs})
+    except TypeError as exc:
+        raise TypeError(
+            f"plugin task {dotted} was queued with arguments that cannot be stored: {exc}. "
+            "Task arguments must be JSON-serializable (str, int, float, bool, None, "
+            "list, dict); pass an ISO string instead of a datetime, a list instead of a set."
+        ) from exc
+    taskqueue.enqueue(
         'plugin.manager.run_plugin_task',
         args=(dotted,) + tuple(args),
         kwargs=kwargs,
-        job_timeout=-1,
+        task_id=task_id,
+        task_type=f'plugin.{dotted}',
+        queue=taskqueue.QUEUE_HIGH if queue == 'high' else taskqueue.QUEUE_DEFAULT,
+        details={'message': 'Plugin task queued.'},
     )
+    return QueuedPluginTask(task_id)
 
 
 def active_server_id():
-    """The media server this task is currently bound to (None = the default one).
-
-    A cron-scheduled plugin task runs once per server in its schedule's scope,
-    so this tells the task which catalogue it is looking at right now.
-    """
     from tasks.mediaserver import context as ms_context
 
     return ms_context.active_server_id()
 
 
 def list_servers():
-    """Every configured media server (normalized dicts, credentials included)."""
     from tasks.mediaserver import registry as ms_registry
 
     return ms_registry.list_servers()
 
 
 def use_server(server_id):
-    """Bind every media-server call in this block to ``server_id``.
-
-    ``with api.use_server(sid): api_playlists...`` targets that server; None
-    means the default one. Plugin cron tasks are already bound per server by
-    their schedule's scope, so this is only needed for extra, explicit targeting.
-    """
     from tasks.mediaserver import context as ms_context, registry as ms_registry
 
     if not server_id:
@@ -190,11 +212,6 @@ def use_server(server_id):
 
 
 def _model_scope(value):
-    """Normalize an only_models/exclude_models argument to a list or None.
-
-    A single label is accepted as a plain string; without this ``'musicnn'``
-    would become ``['m', 'u', 's', ...]`` and silently match nothing.
-    """
     if not value:
         return None
     if isinstance(value, str):
@@ -203,14 +220,6 @@ def _model_scope(value):
 
 
 class PluginContext:
-    """Registration sink passed to a plugin's ``register(ctx)``.
-
-    A plugin declares where each component runs by which method it calls: the
-    ``add_blueprint``/``add_menu_item``/``on_flask_start`` group activates on the
-    Flask (online) container, while ``add_task``/``add_cron_task``/
-    ``register_onnx_provider``/``on_worker_start``/``on_song_analyzed`` activate on
-    the worker (batch) container. ``on_install`` runs once at install for schema setup.
-    """
 
     def __init__(self, plugin_id, role):
         self.plugin_id = plugin_id
@@ -234,30 +243,21 @@ class PluginContext:
         self.menu_items.append({'label': label, 'endpoint': endpoint, 'admin_only': bool(admin_only)})
 
     def set_settings_page(self, endpoint):
-        """Point the Manage Plugins 'Settings' button at this Flask endpoint.
-
-        When set, the Settings button on the admin Plugins page opens this page
-        instead of the generic JSON editor. No extra menu entry is created.
-        """
         self.settings_endpoint = endpoint
 
     def add_task(self, name, func, queue='default'):
-        self.tasks[name] = {'dotted': dotted_path(func), 'queue': queue}
+        dotted = dotted_path(func)
+        _reject_reserved_params(func, dotted)
+        self.tasks[name] = {'dotted': dotted, 'queue': queue}
 
     def add_cron_task(self, name, func, queue='default'):
-        self.cron_tasks[name] = {'dotted': dotted_path(func), 'queue': queue}
+        dotted = dotted_path(func)
+        _reject_reserved_params(func, dotted)
+        self.cron_tasks[name] = {'dotted': dotted, 'queue': queue}
 
     def register_onnx_provider(self, name, options=None, position='before_cpu',
                                only_models=None, exclude_models=None,
                                needs_static_shapes=False):
-        """Offer an extra ONNX Runtime execution provider for the analysis sessions.
-
-        ``only_models``/``exclude_models`` scope the provider to specific session
-        labels (a single label may be given as a plain string). ``position`` is
-        ``'before_cpu'`` (the default) or ``'before_cuda'``. Set
-        ``needs_static_shapes`` when the provider's graph compiler cannot handle
-        symbolic dimensions, so core pins them before building the session.
-        """
         if position not in ONNX_POSITIONS:
             logger.warning(
                 "Plugin %s registered ONNX provider %s with unknown position %r; "
@@ -281,44 +281,12 @@ class PluginContext:
         self.worker_start.append(func)
 
     def on_song_analyzed(self, func):
-        """Register a worker hook fired after a song finishes analysis and its results are saved.
-
-        The hook receives one dict: ``item_id``, ``run_id`` (the analysis run's task
-        id, shared by every song of one run), ``audio_path`` (the temp file, valid
-        only during the call), ``metadata`` (title/artist/album/...), ``media_item``
-        (the raw media-server track), ``analysis`` (tempo/key/scale/moods/energy or
-        None), ``top_moods``, and ``musicnn_embedding``/``clap_embedding`` (or None).
-        It runs on the worker inside an app context, so ``get_db``/``table`` work.
-        """
         self.song_analyzed_hooks.append(func)
 
     def on_install(self, func):
         self.install_hooks.append(func)
 
     def register_analysis_provider(self, component, factory, cache=True):
-        """Replace a whole analysis component with a plugin-supplied implementation.
-
-        Some accelerators need more than a different ONNX execution provider: they
-        need a different library entirely. MIGraphX, for instance, cannot run the
-        ONNX Whisper decoder at all, so an AMD plugin swaps in faster-whisper.
-
-        ``component`` names the step to replace, one of ANALYSIS_COMPONENTS.
-        ``factory`` is the replacement module/object, or a zero-arg callable
-        returning one. It must match the built-in module's public surface; for
-        ``asr`` that is ``load_whisper_model()``, ``transcribe(wav, sr,
-        language=None)``, ``is_loaded()`` and ``unload()``, where ``transcribe``
-        returns ``{'text': ..., 'language': ..., 'avg_logprob': ...}`` - the last
-        one gates transcript quality and must be left out, not faked, when the
-        backend cannot report a confidence. Core consults the registered provider
-        first and falls back to the built-in when no plugin registered one, when
-        the factory fails or returns None, or when the replacement is missing part
-        of that surface.
-
-        A callable ``factory`` is resolved once and the result reused, matching the
-        built-in modules, which stay loaded for a whole album and are freed at its
-        end. Pass ``cache=False`` to be called for every use instead; then the
-        plugin owns unloading whatever it hands out.
-        """
         if component not in ANALYSIS_COMPONENTS:
             logger.warning(
                 'Plugin %s registered an analysis provider for unknown component %r; '

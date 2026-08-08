@@ -8,16 +8,24 @@
 
 """The per-album analysis job: FOR EACH SONG, run the stages that are missing.
 
-One RQ job per album. Each track gets a TrackPlan, then _analyze_single_track
+One queue job per album. Each track gets a TrackPlan, then _analyze_single_track
 runs the ordered stages: download -> MusiCNN -> identity resolve -> persist ->
 CLAP -> lyrics -> plugin hook. A track that yields nothing is SKIPPED and
 counted (error 2007), never failed; the album fails only on real errors, and a
 job that dies before writing anything still leaves a FAILURE row so the parent
 phase cannot count it as completed.
 
+A database connectivity error is the one exception and is re-raised untouched at
+every level, entry point included. Claiming only looks at NEW rows and reclaiming
+only at RUNNING ones, so a FAILURE row written while the database is away is
+never touched again: a two-second blip would permanently fail the album and count
+it into the parent's failed tally. Left alone, the row stays RUNNING and the
+queue requeues it.
+
 Main Features:
-* analyze_album_task: the RQ entry point, binding the server context and
-  guaranteeing a failure row on any pre-analysis crash.
+* analyze_album_task: the queue entry point, binding the server context and
+  guaranteeing a failure row on any pre-analysis crash other than a connectivity
+  one.
 * _analyze_single_track: the linear stage sequence, one `if plan.<stage>:` per
   stage; the fingerprint identity decision maps this server's file onto the
   union catalogue (same audio on N servers = ONE catalogue row).
@@ -30,7 +38,7 @@ import os
 import time
 import uuid
 
-from rq import get_current_job
+import taskqueue
 
 from config import (
     TEMP_DIR,
@@ -46,14 +54,13 @@ from config import (
 
 from flask_app import app
 from app_helper import (
-    redis_conn,
     save_task_status,
     get_task_statuses,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
-from psycopg2 import OperationalError
+from psycopg2 import InterfaceError, OperationalError
 
 from error import error_manager
 from error.error_dictionary import (
@@ -316,26 +323,37 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
     try:
         with server_context.use_server(_bind_server_context(server_id)):
             return _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id)
+    except (OperationalError, InterfaceError):
+        raise
     except Exception as e:
         _record_album_failure_row(album_id, album_name, parent_task_id, e)
         raise
 
 
 def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
-    current_job = get_current_job(redis_conn)
-    if current_job is None:
+    current_task_id = taskqueue.current_task_id()
+    if current_task_id is None:
         return
     try:
         with app.app_context():
-            statuses = get_task_statuses([current_job.id])
-            if statuses.get(current_job.id) == TASK_STATUS_FAILURE:
+            ids = [current_task_id]
+            if parent_task_id:
+                ids.append(parent_task_id)
+            statuses = get_task_statuses(ids)
+            if parent_task_id and (
+                parent_task_id not in statuses
+                or statuses.get(parent_task_id)
+                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+            ):
+                return
+            if statuses.get(current_task_id) == TASK_STATUS_FAILURE:
                 return
             err = error_manager.from_exception(
                 exc, code=error_manager.classify(exc, ERR_ALBUM_ANALYSIS_FAILED),
                 logger=logger,
             )
             save_task_status(
-                current_job.id,
+                current_task_id,
                 "album_analysis",
                 TASK_STATUS_FAILURE,
                 parent_task_id=parent_task_id,
@@ -357,10 +375,26 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
 def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     from ..clap_analyzer import is_clap_available
 
-    current_job = get_current_job(redis_conn)
-    current_task_id = current_job.id if current_job else str(uuid.uuid4())
+    claimed_task_id = taskqueue.current_task_id()
+    current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
+        if claimed_task_id and parent_task_id:
+            parent_statuses = get_task_statuses([parent_task_id])
+            if (
+                parent_task_id not in parent_statuses
+                or parent_statuses.get(parent_task_id)
+                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+            ):
+                logger.info(
+                    "Album task %s will not start because parent %s is missing or terminal.",
+                    current_task_id,
+                    parent_task_id,
+                )
+                return {
+                    "status": TASK_STATUS_REVOKED,
+                    "message": "Parent analysis was cancelled.",
+                }
         tracks_analyzed_count, tracks_skipped_count = 0, 0
         tracks_not_analyzable_count = 0
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
@@ -369,10 +403,10 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
         session_recycler = SessionRecycler(recycle_interval=recycle_interval)
 
         log_and_update_album_task = make_task_reporter(
-            current_task_id, "album_analysis", current_job,
+            current_task_id, "album_analysis",
             "Album analysis task started.",
             parent_task_id=parent_task_id, sub_type_identifier=album_id,
-            base_details={"album_name": album_name}, log_cap=50,
+            base_details={"album_name": album_name},
             prefix=f"AlbumTask-{current_task_id}-{album_name}",
             min_db_interval=ANALYSIS_MONITOR_DB_INTERVAL,
         )
@@ -396,7 +430,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 missing_lyrics_ids_set,
                 clap_label_embeddings,
                 existing_top_moods_by_id,
-            ) = _ah.build_album_plan(album_name, tracks, top_n_moods, redis_conn, LYRICS_ENABLED)
+            ) = _ah.build_album_plan(album_name, tracks, top_n_moods, LYRICS_ENABLED)
 
             _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album_name)
 
@@ -409,7 +443,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
 
             def revoked():
                 nonlocal last_revocation_check
-                if not current_job:
+                if not claimed_task_id:
                     return False
                 now = time.monotonic()
                 if now - last_revocation_check < ANALYSIS_MONITOR_DB_INTERVAL:
@@ -466,7 +500,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         existing_top_moods_by_id, pending_track_maps,
                     )
                     tracks_analyzed_count += 1
-                except OperationalError:
+                except (OperationalError, InterfaceError):
                     raise
                 except TrackNotAnalyzable as e:
                     error_manager.record(
@@ -535,14 +569,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             )
             return {"status": "SUCCESS", **summary}
 
-        except OperationalError as e:
-            err = error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
-            log_and_update_album_task(
-                f"Database connection failed for album '{album_name}'. Retrying...",
-                log_and_update_album_task.state['progress'],
-                task_state=TASK_STATUS_FAILURE,
-                error=err,
-            )
+        except (OperationalError, InterfaceError) as e:
+            error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
         except Exception as e:
             err = error_manager.from_exception(

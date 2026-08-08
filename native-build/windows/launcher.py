@@ -9,15 +9,15 @@
 """Entry point and role dispatcher for the Windows standalone build.
 
 Single frozen executable that runs as the tray supervisor by default or, with
-``--role=``, as one of its child processes: the Flask/waitress server or an RQ
-worker/janitor/restart-listener. It installs Windows-only shims first (forcing
-multiprocessing ``fork`` to ``spawn`` and stubbing the POSIX ``os.wait*``
-helpers RQ expects) so the POSIX-oriented worker code runs on Windows. The
-Linux/macOS launchers are the platform-specific siblings.
+``--role=``, as one of its child processes: the Flask/waitress server or a queue
+worker/maintenance/control-listener. It still forces multiprocessing ``fork`` to
+``spawn`` for loky's sake; the POSIX ``os.wait*`` stubs are gone, because nothing
+in the queue needs them any more. The Linux/macOS launchers are the
+platform-specific siblings.
 
 Main Features:
-* Runs Flask via waitress or launches a named RQ role in-process.
-* Patches multiprocessing and os so fork-based RQ workers run on Windows.
+* Runs Flask via waitress or launches a named queue role in-process.
+* Patches multiprocessing so loky's spawn payloads work in the frozen bundle.
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
   instead of re-entering the launcher as a stray copy of the app.
 """
@@ -35,36 +35,18 @@ def _win_get_context(method=None):
 
 multiprocessing.get_context = _win_get_context
 
-import os as _os_patch
-
-if not hasattr(_os_patch, 'wait4'):
-    _os_waitpid = _os_patch.waitpid
-
-    def _win_wait4(pid, options):
-        return _os_waitpid(pid, options) + (None,)
-
-    _os_patch.wait4 = _win_wait4
-if not hasattr(_os_patch, 'WIFEXITED'):
-    _os_patch.WIFEXITED = lambda status: True
-if not hasattr(_os_patch, 'WIFSIGNALED'):
-    _os_patch.WIFSIGNALED = lambda status: False
-if not hasattr(_os_patch, 'WTERMSIG'):
-    _os_patch.WTERMSIG = lambda status: 0
-if not hasattr(_os_patch, 'WEXITSTATUS'):
-    _os_patch.WEXITSTATUS = lambda status: status
-
 import os as _os
 
 _os.environ.setdefault("OTEL_PYTHON_CONTEXT", "contextvars_context")
 
 import os
-import runpy
 import signal
 import sys
 import threading
 import time
 import webbrowser
 
+import service_roles
 from native_common import frozen_children
 
 WEB_URL = "http://127.0.0.1:8000"
@@ -99,21 +81,7 @@ def _run_flask():
 
 
 def _run_role(role):
-    sys.argv = [a for a in sys.argv if not a.startswith("--role=")]
-    if role == "flask":
-        _run_flask()
-    elif role == "worker-high":
-        runpy.run_module("rq_worker_high_priority", run_name="__main__")
-    elif role == "worker-default":
-        runpy.run_module("rq_worker", run_name="__main__")
-    elif role == "janitor":
-        runpy.run_module("rq_janitor", run_name="__main__")
-    elif role == "restart-listener":
-        import restart_listener
-
-        restart_listener.main()
-    else:
-        raise SystemExit(f"Unknown role: {role}")
+    service_roles.run_role(role, _run_flask)
 
 
 _INSTANCE_LOCK = None

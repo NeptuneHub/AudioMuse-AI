@@ -454,6 +454,10 @@ html.dark-mode button:not(.btn):disabled {
     color: var(--status-failure-text);
     background-color: var(--status-failure-bg);
 }
+.status-warning {
+    color: var(--status-pending-text);
+    background-color: var(--status-pending-bg);
+}
 
 .status-error-block {
     margin: 0.5rem 0;

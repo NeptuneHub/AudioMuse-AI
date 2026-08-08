@@ -1,7 +1,7 @@
 # ============================================================================
 # AudioMuse-AI Test Stack: One NVIDIA AudioMuse Instance Per Provider
 # ============================================================================
-# Launches 4 independent AudioMuse stacks (flask + worker + redis + postgres),
+# Launches 4 independent AudioMuse stacks (flask + worker + postgres),
 # each configured for a different media server provider.
 #
 # Prerequisites:
@@ -49,14 +49,6 @@ x-env-common: &env-common
 services:
 
   # -- infrastructure --------------------------------------------------------
-  redis-jellyfin:
-    image: redis:7-alpine
-    container_name: test-am-redis-jellyfin
-    volumes:
-      - redis-jellyfin:/data
-    restart: unless-stopped
-    networks:
-      - am-jellyfin
   postgres-jellyfin:
     image: postgres:15-alpine
     container_name: test-am-pg-jellyfin
@@ -95,11 +87,9 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-jellyfin
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-jellyfin:6379/0
     volumes:
       - temp-flask-jf:/app/temp_audio
     depends_on:
-      - redis-jellyfin
       - postgres-jellyfin
     networks:
       - am-jellyfin
@@ -120,12 +110,10 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-jellyfin
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-jellyfin:6379/0
       USE_GPU_CLUSTERING: "true"
     volumes:
       - temp-worker-jf:/app/temp_audio
     depends_on:
-      - redis-jellyfin
       - postgres-jellyfin
     networks:
       - am-jellyfin
@@ -136,14 +124,6 @@ services:
 # ============================================================================
 
   # -- infrastructure --------------------------------------------------------
-  redis-emby:
-    image: redis:7-alpine
-    container_name: test-am-redis-emby
-    volumes:
-      - redis-emby:/data
-    restart: unless-stopped
-    networks:
-      - am-emby
   postgres-emby:
     image: postgres:15-alpine
     container_name: test-am-pg-emby
@@ -177,11 +157,9 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-emby
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-emby:6379/0
     volumes:
       - temp-flask-emby:/app/temp_audio
     depends_on:
-      - redis-emby
       - postgres-emby
     networks:
       - am-emby
@@ -202,12 +180,10 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-emby
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-emby:6379/0
       USE_GPU_CLUSTERING: "true"
     volumes:
       - temp-worker-emby:/app/temp_audio
     depends_on:
-      - redis-emby
       - postgres-emby
     networks:
       - am-emby
@@ -218,14 +194,6 @@ services:
 # ============================================================================
 
   # -- infrastructure --------------------------------------------------------
-  redis-navidrome:
-    image: redis:7-alpine
-    container_name: test-am-redis-navidrome
-    volumes:
-      - redis-navidrome:/data
-    restart: unless-stopped
-    networks:
-      - am-navidrome
   postgres-navidrome:
     image: postgres:15-alpine
     container_name: test-am-pg-navidrome
@@ -259,11 +227,9 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-navidrome
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-navidrome:6379/0
     volumes:
       - temp-flask-nav:/app/temp_audio
     depends_on:
-      - redis-navidrome
       - postgres-navidrome
     networks:
       - am-navidrome
@@ -284,12 +250,10 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-navidrome
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-navidrome:6379/0
       USE_GPU_CLUSTERING: "true"
     volumes:
       - temp-worker-nav:/app/temp_audio
     depends_on:
-      - redis-navidrome
       - postgres-navidrome
     networks:
       - am-navidrome
@@ -300,14 +264,6 @@ services:
 # ============================================================================
 
   # -- infrastructure --------------------------------------------------------
-  redis-lyrion:
-    image: redis:7-alpine
-    container_name: test-am-redis-lyrion
-    volumes:
-      - redis-lyrion:/data
-    restart: unless-stopped
-    networks:
-      - am-lyrion
   postgres-lyrion:
     image: postgres:15-alpine
     container_name: test-am-pg-lyrion
@@ -339,11 +295,9 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-lyrion
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-lyrion:6379/0
     volumes:
       - temp-flask-lyr:/app/temp_audio
     depends_on:
-      - redis-lyrion
       - postgres-lyrion
     networks:
       - am-lyrion
@@ -362,12 +316,10 @@ services:
       POSTGRES_DB: audiomusedb
       POSTGRES_HOST: postgres-lyrion
       POSTGRES_PORT: "5432"
-      REDIS_URL: redis://redis-lyrion:6379/0
       USE_GPU_CLUSTERING: "true"
     volumes:
       - temp-worker-lyr:/app/temp_audio
     depends_on:
-      - redis-lyrion
       - postgres-lyrion
     networks:
       - am-lyrion
@@ -390,22 +342,18 @@ networks:
 # ============================================================================
 volumes:
   # Jellyfin
-  redis-jellyfin:
   pg-jellyfin:
   temp-flask-jf:
   temp-worker-jf:
   # Emby
-  redis-emby:
   pg-emby:
   temp-flask-emby:
   temp-worker-emby:
   # Navidrome
-  redis-navidrome:
   pg-navidrome:
   temp-flask-nav:
   temp-worker-nav:
   # Lyrion
-  redis-lyrion:
   pg-lyrion:
   temp-flask-lyr:
   temp-worker-lyr:

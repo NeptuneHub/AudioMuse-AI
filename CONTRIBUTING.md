@@ -13,8 +13,8 @@ Multiple information can be found in the [docs](docs/) folder.
 ## High-Level Architecture
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
 * **Flask Web Application (audiomuse-ai-flask):** Here is the front-end of the application, intended as both an HTML page and an API. Here also lives the logic of the services that are synchronous, such as getting similar songs.
-* **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for tasks that need to be executed asynchronously, such as analyzing songs, performing clustering, or reconstructing the index for similar song searches. With the Redis queue and a Kubernetes architecture, it is possible to spawn more workers to increase scalability and availability.
-* **Redis Queue:** where Flask write the job, and Workers check the job to do.
+* **Queue Workers (audiomuse-ai-worker):** This is for tasks that need to be executed asynchronously, such as analyzing songs, performing clustering, or reconstructing the index for similar song searches. With a PostgreSQL-backed queue and a Kubernetes architecture, it is possible to spawn more workers to increase scalability and availability.
+* **Task Queue (`taskqueue/`):** the `task_status` table in PostgreSQL, where Flask writes the job and Workers claim it. There is no separate broker.
 * **PostgreSQL Database (postgres-deployment):** The database. Not only the analysis live here but also the log status o the async task.
 
 ## Supported Architecture and Mediaserver

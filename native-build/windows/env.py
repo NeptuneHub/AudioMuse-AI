@@ -8,9 +8,9 @@
 
 """Child-process environment builder for the Windows standalone build.
 
-Assembles the environment variables each supervised child (Flask, RQ workers)
-inherits: the embedded database URL built from the connection dict, queue
-selection, per-user data and model paths, offline-model flags and the loopback
+Assembles the environment variables each supervised child (Flask, queue workers)
+inherits: the embedded database URL built from the connection dict,
+per-user data and model paths, offline-model flags and the loopback
 control host/port (used instead of the macOS control socket). The macOS/Linux
 ``env`` modules build the equivalent environments for their platforms.
 
@@ -22,12 +22,13 @@ Main Features:
 import os
 from urllib.parse import quote
 
+import service_roles
 from windows import paths
 
-_WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
+_WORKER_ROLES = service_roles.WORKER_ROLES
 
 
-def build_child_env(role, db_conn, redis_url):
+def build_child_env(role, db_conn):
     env = dict(os.environ)
     model_dir = paths.model_dir()
     database_url = (
@@ -43,9 +44,7 @@ def build_child_env(role, db_conn, redis_url):
             "AUDIOMUSE_CONTROL_HOST": "127.0.0.1",
             "AUDIOMUSE_CONTROL_PORT": str(paths.control_port()),
             "DATABASE_TYPE": "embedded",
-            "QUEUE_TYPE": "embedded",
             "DATABASE_URL": database_url,
-            "REDIS_URL": redis_url,
             "TEMP_DIR": paths.temp_audio_dir(),
             "NUMBA_CACHE_DIR": paths.numba_cache_dir(),
             "HF_HOME": os.path.join(model_dir, "huggingface"),

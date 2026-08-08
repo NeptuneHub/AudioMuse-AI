@@ -9,12 +9,12 @@
 """Windows packaging steps for the standalone build.
 
 Platform module invoked by ``build.py`` to stage the Windows bundle: it checks
-the vendored redis/pg-contrib/OpenMP inputs are present, stages the numkong
+the vendored pg-contrib/OpenMP inputs are present, stages the numkong
 OpenMP DLL needed by the INT8 SIMD kernels, and verifies the pgserver bundle.
 The Linux/macOS modules are the platform-specific siblings.
 
 Main Features:
-* Validates vendored redis, pg-contrib and OpenMP DLLs per architecture.
+* Validates vendored pg-contrib and OpenMP DLLs per architecture.
 * Stages the numkong OpenMP DLL so the i8 SIMD kernels load at runtime.
 """
 
@@ -33,7 +33,6 @@ def prepare(ctx):
     pg_contrib = vendor / "pg-contrib" / arch
     omp_dll = vendor / "numkong" / arch / config.windows_omp_dll(arch)
     required = [
-        vendor / "redis" / arch / "redis-server.exe",
         pg_contrib / "lib" / "unaccent.dll",
         pg_contrib / "lib" / "pg_trgm.dll",
         pg_contrib / "extension" / "unaccent.control",

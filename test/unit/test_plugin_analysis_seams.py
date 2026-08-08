@@ -35,8 +35,12 @@ import types
 
 import pytest
 
+import lyrics
+import lyrics._asr_backend as asr_backend
 import plugin.api as api
 import plugin.manager as manager
+import tasks.analysis.song as song_module
+import tasks.clap_analyzer as clap_module
 
 
 def _record(plugin_id, load_status='ok', onnx_providers=None, analysis_providers=None):
@@ -119,14 +123,13 @@ class TestResolveProvidersScoping:
 
     @pytest.fixture
     def song(self, monkeypatch):
-        song = pytest.importorskip('tasks.analysis.song')
         fake_ort = types.SimpleNamespace(
             get_available_providers=lambda: [
                 'FakeGpuExecutionProvider', 'CPUExecutionProvider'
             ]
         )
-        monkeypatch.setattr(song, 'ort', fake_ort)
-        return song
+        monkeypatch.setattr(song_module, 'ort', fake_ort)
+        return song_module
 
     @pytest.fixture
     def song_with_cuda(self, song, monkeypatch):
@@ -232,13 +235,12 @@ class TestCpuOnlyDefaultSessions:
 
     @pytest.fixture
     def song(self, monkeypatch):
-        song = pytest.importorskip('tasks.analysis.song')
-        monkeypatch.setattr(song, 'ort', types.SimpleNamespace(
+        monkeypatch.setattr(song_module, 'ort', types.SimpleNamespace(
             get_available_providers=lambda: [
                 'CUDAExecutionProvider', 'FakeGpuExecutionProvider', 'CPUExecutionProvider'
             ]
         ))
-        return song
+        return song_module
 
     def _names(self, chain):
         return [name for name, _opts in chain]
@@ -276,32 +278,28 @@ class TestCpuOnlyDefaultSessions:
 class TestStaticShapeProviders:
     """CLAP must learn which providers need pinned shapes from the registration."""
 
-    @pytest.fixture
-    def clap(self):
-        return pytest.importorskip('tasks.clap_analyzer')
-
-    def test_plugin_provider_opts_in(self, clap, monkeypatch):
+    def test_plugin_provider_opts_in(self, monkeypatch):
         monkeypatch.setattr(manager.plugin_manager, 'get_onnx_providers', lambda: [
             {'name': 'FakeGpuExecutionProvider', 'needs_static_shapes': True},
         ])
-        assert 'FakeGpuExecutionProvider' in clap._static_shape_providers()
+        assert 'FakeGpuExecutionProvider' in clap_module._static_shape_providers()
 
-    def test_provider_without_the_flag_is_left_out(self, clap, monkeypatch):
+    def test_provider_without_the_flag_is_left_out(self, monkeypatch):
         monkeypatch.setattr(manager.plugin_manager, 'get_onnx_providers', lambda: [
             {'name': 'FakeGpuExecutionProvider', 'needs_static_shapes': False},
         ])
-        assert 'FakeGpuExecutionProvider' not in clap._static_shape_providers()
+        assert 'FakeGpuExecutionProvider' not in clap_module._static_shape_providers()
 
-    def test_builtin_coreml_is_always_there(self, clap, monkeypatch):
+    def test_builtin_coreml_is_always_there(self, monkeypatch):
         monkeypatch.setattr(manager.plugin_manager, 'get_onnx_providers', lambda: [])
-        assert 'CoreMLExecutionProvider' in clap._static_shape_providers()
+        assert 'CoreMLExecutionProvider' in clap_module._static_shape_providers()
 
-    def test_broken_plugin_manager_is_survivable(self, clap, monkeypatch):
+    def test_broken_plugin_manager_is_survivable(self, monkeypatch):
         def boom():
             raise RuntimeError('plugin manager exploded')
 
         monkeypatch.setattr(manager.plugin_manager, 'get_onnx_providers', boom)
-        assert clap._static_shape_providers() == {'CoreMLExecutionProvider'}
+        assert clap_module._static_shape_providers() == {'CoreMLExecutionProvider'}
 
 
 class TestManagerOnnxProviders:
@@ -530,10 +528,6 @@ class TestRegisterAnalysisProvider:
 
 
 class TestGetAsrBackend:
-    @pytest.fixture
-    def asr(self):
-        return pytest.importorskip('lyrics._asr_backend')
-
     def _backend(self, **overrides):
         """A stand-in with the full whisper surface, minus anything overridden away."""
         surface = {name: (lambda *a, **k: None) for name in ('load_whisper_model',
@@ -549,32 +543,31 @@ class TestGetAsrBackend:
         patching sys.modules alone is not enough.
         """
         stub = types.ModuleType('lyrics.whisper_onnx')
-        lyrics_pkg = pytest.importorskip('lyrics')
         monkeypatch.setitem(sys.modules, 'lyrics.whisper_onnx', stub)
-        monkeypatch.setattr(lyrics_pkg, 'whisper_onnx', stub, raising=False)
+        monkeypatch.setattr(lyrics, 'whisper_onnx', stub, raising=False)
         return stub
 
-    def test_override_is_used_when_registered(self, asr, monkeypatch):
+    def test_override_is_used_when_registered(self, monkeypatch):
         backend = self._backend()
         monkeypatch.setattr(
             manager.plugin_manager, 'get_analysis_provider',
             lambda component: backend if component == 'asr' else None,
         )
-        assert asr.get_asr_backend() is backend
+        assert asr_backend.get_asr_backend() is backend
 
     @pytest.mark.parametrize(
         'missing', ['load_whisper_model', 'transcribe', 'is_loaded', 'unload']
     )
-    def test_incomplete_override_falls_back_to_builtin(self, asr, monkeypatch, caplog, missing):
+    def test_incomplete_override_falls_back_to_builtin(self, monkeypatch, caplog, missing):
         backend = self._backend(**{missing: None})
         monkeypatch.setattr(
             manager.plugin_manager, 'get_analysis_provider', lambda component: backend
         )
         stub = self._stub_builtin(monkeypatch)
-        assert asr.get_asr_backend() is stub
+        assert asr_backend.get_asr_backend() is stub
         assert missing in caplog.text
 
-    def test_incomplete_override_warning_names_the_owning_plugin(self, asr, monkeypatch, caplog):
+    def test_incomplete_override_warning_names_the_owning_plugin(self, monkeypatch, caplog):
         backend = self._backend(unload=None)
         monkeypatch.setattr(
             manager.plugin_manager, 'get_analysis_provider', lambda component: backend
@@ -583,39 +576,39 @@ class TestGetAsrBackend:
             manager.plugin_manager, 'analysis_provider_owner', lambda component: 'gpu_plugin'
         )
         stub = self._stub_builtin(monkeypatch)
-        assert asr.get_asr_backend() is stub
+        assert asr_backend.get_asr_backend() is stub
         assert 'gpu_plugin' in caplog.text
         assert 'unload' in caplog.text
 
-    def test_incomplete_override_warns_on_every_call(self, asr, monkeypatch, caplog):
+    def test_incomplete_override_warns_on_every_call(self, monkeypatch, caplog):
         backend = self._backend(unload=None)
         monkeypatch.setattr(
             manager.plugin_manager, 'get_analysis_provider', lambda component: backend
         )
         stub = self._stub_builtin(monkeypatch)
-        assert asr.get_asr_backend() is stub
-        assert asr.get_asr_backend() is stub
+        assert asr_backend.get_asr_backend() is stub
+        assert asr_backend.get_asr_backend() is stub
         assert len([r for r in caplog.records if 'is missing' in r.getMessage()]) == 2
 
-    def test_non_callable_attribute_is_not_enough(self, asr, monkeypatch):
+    def test_non_callable_attribute_is_not_enough(self, monkeypatch):
         backend = self._backend(is_loaded=True)
         monkeypatch.setattr(
             manager.plugin_manager, 'get_analysis_provider', lambda component: backend
         )
         stub = self._stub_builtin(monkeypatch)
-        assert asr.get_asr_backend() is stub
+        assert asr_backend.get_asr_backend() is stub
 
-    def test_falls_back_to_builtin_when_no_override(self, asr, monkeypatch):
+    def test_falls_back_to_builtin_when_no_override(self, monkeypatch):
         monkeypatch.setattr(
             manager.plugin_manager, 'get_analysis_provider', lambda component: None
         )
         stub = self._stub_builtin(monkeypatch)
-        assert asr.get_asr_backend() is stub
+        assert asr_backend.get_asr_backend() is stub
 
-    def test_manager_error_falls_back_to_builtin(self, asr, monkeypatch):
+    def test_manager_error_falls_back_to_builtin(self, monkeypatch):
         def boom(component):
             raise RuntimeError('plugin manager exploded')
 
         monkeypatch.setattr(manager.plugin_manager, 'get_analysis_provider', boom)
         stub = self._stub_builtin(monkeypatch)
-        assert asr.get_asr_backend() is stub
+        assert asr_backend.get_asr_backend() is stub
