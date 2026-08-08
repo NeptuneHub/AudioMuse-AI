@@ -547,6 +547,7 @@ class TestNavidromeAuthParams:
 
         mock_config.NAVIDROME_USER = 'testuser'
         mock_config.NAVIDROME_PASSWORD = 'secret123'
+        mock_config.NAVIDROME_API_KEY = ''
         mock_config.APP_VERSION = '1.0.0'
 
         params = get_navidrome_auth_params()
@@ -556,6 +557,26 @@ class TestNavidromeAuthParams:
         hex_password = params['p'].replace('enc:', '')
         decoded = bytes.fromhex(hex_password).decode('utf-8')
         assert decoded == 'secret123'
+        assert 'apiKey' not in params
+
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_prefers_opensubsonic_api_key(self, mock_config):
+        from tasks.mediaserver.navidrome import get_navidrome_auth_params
+
+        mock_config.NAVIDROME_USER = 'testuser'
+        mock_config.NAVIDROME_PASSWORD = 'secret123'
+        mock_config.NAVIDROME_API_KEY = 'oss-api-key'
+
+        params = get_navidrome_auth_params()
+
+        assert params == {
+            'apiKey': 'oss-api-key',
+            'v': '1.16.1',
+            'c': 'AudioMuse-AI',
+            'f': 'json',
+        }
+        assert 'u' not in params
+        assert 'p' not in params
 
     @patch('tasks.mediaserver.navidrome.config')
     def test_returns_empty_when_no_credentials(self, mock_config):
@@ -563,10 +584,37 @@ class TestNavidromeAuthParams:
 
         mock_config.NAVIDROME_USER = ''
         mock_config.NAVIDROME_PASSWORD = ''
+        mock_config.NAVIDROME_API_KEY = ''
 
         params = get_navidrome_auth_params()
 
         assert params == {}
+
+
+class TestNavidromeMissingRequiredCreds:
+    def test_api_key_only_is_complete(self):
+        from database import missing_required_creds
+
+        assert missing_required_creds(
+            'navidrome',
+            {'url': 'http://navidrome:4533', 'api_key': 'oss-key'},
+        ) == []
+
+    def test_user_password_only_is_complete(self):
+        from database import missing_required_creds
+
+        assert missing_required_creds(
+            'navidrome',
+            {'url': 'http://navidrome:4533', 'user': 'u', 'password': 'p'},
+        ) == []
+
+    def test_url_only_is_incomplete(self):
+        from database import missing_required_creds
+
+        missing = missing_required_creds('navidrome', {'url': 'http://navidrome:4533'})
+        assert 'user' in missing
+        assert 'password' in missing
+        assert 'url' not in missing
 
 
 class TestNavidromeRequest:

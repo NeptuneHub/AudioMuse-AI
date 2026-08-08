@@ -269,10 +269,21 @@ class SetupManager:
 
         return config.MEDIASERVER_FIELDS_BY_TYPE
 
+    def _is_valid_navidrome_config(self, config_module):
+        if not self._is_valid_string(getattr(config_module, 'NAVIDROME_URL', '')):
+            return False
+        if self._is_valid_string(getattr(config_module, 'NAVIDROME_API_KEY', '')):
+            return True
+        return self._is_valid_string(
+            getattr(config_module, 'NAVIDROME_USER', '')
+        ) and self._is_valid_string(getattr(config_module, 'NAVIDROME_PASSWORD', ''))
+
     def _is_valid_server_config(self, config_module):
         media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
         if media_type not in self.server_required_fields:
             return False
+        if media_type == 'navidrome':
+            return self._is_valid_navidrome_config(config_module)
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
             for field in self.server_required_fields[media_type]

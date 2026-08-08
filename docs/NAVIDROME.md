@@ -20,6 +20,11 @@ Two repositories are involved:
 - Docker and Docker Compose (or a native build, see the note in Step 1).
 - Navidrome and AudioMuse-AI able to reach each other over the network.
 
+For OpenSubsonic servers that support API keys (including some non-Navidrome
+servers), the Setup Wizard lets you choose **Username + password** or
+**OpenSubsonic API key**. Pick one method: when API key mode is selected,
+AudioMuse-AI authenticates with `apiKey=` and does not send `u`/`p`.
+
 ## Step 1 - Deploy AudioMuse-AI
 
 AudioMuse-AI runs as a small stack: the Flask app, a worker and PostgreSQL.

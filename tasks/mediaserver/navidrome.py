@@ -103,12 +103,27 @@ def list_libraries(user_creds=None):
     ]
 
 
-def get_navidrome_auth_params(username=None, password=None):
+def get_navidrome_auth_params(username=None, password=None, api_key=None):
+    """Return Subsonic auth query params (OpenSubsonic apiKey, else u/p)."""
     creds = context.active_creds()
+    auth_key = (
+        api_key
+        or (creds.get('api_key') if creds else None)
+        or getattr(config, 'NAVIDROME_API_KEY', '')
+        or ''
+    )
+    if auth_key:
+        return {
+            "apiKey": auth_key,
+            "v": "1.16.1",
+            "c": "AudioMuse-AI",
+            "f": "json",
+        }
+
     auth_user = username or (creds.get('user') if creds else None) or config.NAVIDROME_USER
     auth_pass = password or (creds.get('password') if creds else None) or config.NAVIDROME_PASSWORD
     if not auth_user or not auth_pass:
-        logger.warning("Navidrome User or Password is not configured.")
+        logger.warning("Navidrome credentials are not configured (need apiKey or user/password).")
         return {}
     hex_encoded_password = auth_pass.encode('utf-8').hex()
     return {
@@ -122,11 +137,21 @@ def get_navidrome_auth_params(username=None, password=None):
 
 _SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
 
-_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&][pst]=)[^&\s]*')
+_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:[pst]|apiKey)=)[^&\s]*')
 
 
 def _redact_navidrome_secrets(text):
     return _SECRET_QUERY_PARAM.sub(r'\1[REDACTED]', str(text))
+
+
+def _auth_kwargs_from_creds(user_creds):
+    if not user_creds:
+        return {}
+    return {
+        'username': user_creds.get('user'),
+        'password': user_creds.get('password'),
+        'api_key': user_creds.get('api_key'),
+    }
 
 
 def _navidrome_request_ex(
@@ -134,12 +159,9 @@ def _navidrome_request_ex(
 ):
     user_creds = context.active_creds(user_creds)
     params = params or {}
-    auth_params = get_navidrome_auth_params(
-        username=user_creds.get('user') if user_creds else None,
-        password=user_creds.get('password') if user_creds else None,
-    )
+    auth_params = get_navidrome_auth_params(**_auth_kwargs_from_creds(user_creds))
     if not auth_params:
-        msg = "Navidrome username or password is not configured."
+        msg = "Navidrome credentials are not configured (need apiKey or user/password)."
         logger.error(f"{msg} Cannot make API call.")
         return None, {'kind': 'config', 'message': msg}
 

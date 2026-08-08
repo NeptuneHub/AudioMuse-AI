@@ -22,9 +22,10 @@
             { key: 'token', label: 'API Token', secret: true }
         ],
         navidrome: [
-            { key: 'url', label: 'Server URL', placeholder: 'http://navidrome:4533' },
-            { key: 'user', label: 'Username' },
-            { key: 'password', label: 'Password', secret: true }
+            { key: 'url', label: 'Server URL', placeholder: 'http://navidrome:4533', authGroup: 'always' },
+            { key: 'user', label: 'Username', authGroup: 'password' },
+            { key: 'password', label: 'Password', secret: true, authGroup: 'password' },
+            { key: 'api_key', label: 'OpenSubsonic API Key', secret: true, authGroup: 'apikey' }
         ],
         lyrion: [
             { key: 'url', label: 'Server URL', placeholder: 'http://lyrion:9000' }
@@ -99,16 +100,85 @@
 
     function currentType() { return el('ms-type').value; }
 
+    function detectNavidromeAuthMode(values) {
+        values = values || {};
+        if (values.api_key) {
+            return 'apikey';
+        }
+        return 'password';
+    }
+
+    function getNavidromeAuthMode() {
+        var selected = document.querySelector('input[name="ms_navidrome_auth_mode"]:checked');
+        return selected ? selected.value : 'password';
+    }
+
+    function applyNavidromeAuthMode() {
+        var mode = getNavidromeAuthMode();
+        var mount = el('ms-cred-fields');
+        if (!mount) { return; }
+        mount.querySelectorAll('[data-auth-group]').forEach(function (wrap) {
+            var group = wrap.dataset.authGroup;
+            var active = (group === 'always') || (group === mode);
+            wrap.style.display = active ? 'flex' : 'none';
+            var input = wrap.querySelector('input');
+            if (input) {
+                input.disabled = !active;
+            }
+        });
+    }
+
+    function renderNavidromeAuthModeSelector(initialMode) {
+        var wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.gap = '0.25rem';
+        wrap.id = 'ms-navidrome-auth-mode';
+        var title = document.createElement('label');
+        title.textContent = 'Authentication method';
+        wrap.appendChild(title);
+
+        function addOption(value, text) {
+            var optLabel = document.createElement('label');
+            optLabel.style.cssText = 'display:flex; align-items:center; gap:0.5rem; font-weight:500;';
+            var input = document.createElement('input');
+            input.type = 'radio';
+            input.name = 'ms_navidrome_auth_mode';
+            input.value = value;
+            input.checked = (initialMode === value);
+            input.addEventListener('change', applyNavidromeAuthMode);
+            optLabel.appendChild(input);
+            optLabel.appendChild(document.createTextNode(text));
+            wrap.appendChild(optLabel);
+        }
+
+        addOption('password', 'Username + password');
+        addOption('apikey', 'OpenSubsonic API key');
+        var hint = document.createElement('small');
+        hint.textContent = 'Choose one method. Inactive credentials are cleared on save.';
+        wrap.appendChild(hint);
+        return wrap;
+    }
+
     function renderCredFields(values, editing) {
         if (window.PlexLink) { window.PlexLink.stop(); }
         var fields = CRED_FIELDS[currentType()] || [];
         var mount = el('ms-cred-fields');
         mount.innerHTML = '';
+        var authMode = (currentType() === 'navidrome') ? detectNavidromeAuthMode(values) : null;
+        var authModeInserted = false;
         fields.forEach(function (f) {
+            if (currentType() === 'navidrome' && f.authGroup === 'password' && !authModeInserted) {
+                mount.appendChild(renderNavidromeAuthModeSelector(authMode));
+                authModeInserted = true;
+            }
             var wrap = document.createElement('div');
             wrap.style.display = 'flex';
             wrap.style.flexDirection = 'column';
             wrap.style.gap = '0.25rem';
+            if (f.authGroup) {
+                wrap.dataset.authGroup = f.authGroup;
+            }
             var label = document.createElement('label');
             label.textContent = f.label;
             var input = document.createElement('input');
@@ -128,6 +198,9 @@
             wrap.appendChild(input);
             mount.appendChild(wrap);
         });
+        if (currentType() === 'navidrome') {
+            applyNavidromeAuthMode();
+        }
         if (currentType() === 'plex' && window.PlexLink) {
             var plexRow = document.createElement('div');
             plexRow.id = 'ms-plex-link';
@@ -137,6 +210,26 @@
                 getTokenInput: function () { return el('ms-cred-token'); }
             });
         }
+    }
+
+    function collectCreds(editing) {
+        var creds = {};
+        var fields = CRED_FIELDS[currentType()] || [];
+        var authMode = (currentType() === 'navidrome') ? getNavidromeAuthMode() : null;
+        fields.forEach(function (f) {
+            if (authMode && f.authGroup && f.authGroup !== 'always' && f.authGroup !== authMode) {
+                creds[f.key] = '';
+                return;
+            }
+            var input = el('ms-cred-' + f.key);
+            var value = input ? input.value.trim() : '';
+            if (f.secret && !value) {
+                if (editing) { creds[f.key] = CRED_MASK; }
+            } else {
+                creds[f.key] = value;
+            }
+        });
+        return creds;
     }
 
     function clearLibraryBoxes() {
@@ -204,21 +297,6 @@
                 }
             })
             .catch(function () { clearLibraryBoxes(); });
-    }
-
-    function collectCreds(editing) {
-        var creds = {};
-        var fields = CRED_FIELDS[currentType()] || [];
-        fields.forEach(function (f) {
-            var input = el('ms-cred-' + f.key);
-            var value = input ? input.value.trim() : '';
-            if (f.secret && !value) {
-                if (editing) { creds[f.key] = CRED_MASK; }
-            } else {
-                creds[f.key] = value;
-            }
-        });
-        return creds;
     }
 
     function resetForm() {

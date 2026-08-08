@@ -311,6 +311,24 @@ class TestIsValidServerConfig:
         cfg = _cfg(MEDIASERVER_TYPE="navidrome", NAVIDROME_URL="http://localhost:4533")
         assert self.mgr._is_valid_server_config(cfg) is False
 
+    def test_navidrome_api_key_without_user_password(self):
+        cfg = _cfg(
+            MEDIASERVER_TYPE="navidrome",
+            NAVIDROME_URL="http://localhost:4533",
+            NAVIDROME_API_KEY="oss-key",
+        )
+        assert self.mgr._is_valid_server_config(cfg) is True
+
+    def test_navidrome_user_password_without_api_key(self):
+        cfg = _cfg(
+            MEDIASERVER_TYPE="navidrome",
+            NAVIDROME_URL="http://localhost:4533",
+            NAVIDROME_USER="u",
+            NAVIDROME_PASSWORD="p",
+            NAVIDROME_API_KEY="",
+        )
+        assert self.mgr._is_valid_server_config(cfg) is True
+
     def test_placeholder_in_required_field(self):
         cfg = _cfg(
             MEDIASERVER_TYPE="jellyfin",
