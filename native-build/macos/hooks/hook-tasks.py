@@ -8,7 +8,7 @@
 
 """PyInstaller hook that bundles the ``tasks`` package for the macOS build.
 
-The RQ workers import task modules by name at runtime, so PyInstaller's static
+The queue workers import task modules by name at runtime, so PyInstaller's static
 analysis misses them; this hook collects every ``tasks`` submodule as a hidden
 import so the frozen macOS app can enqueue and run all job types.
 

@@ -9,14 +9,14 @@
 """Process supervisor for the Linux standalone build.
 
 Boots and monitors the full local stack in dependency order: embedded
-PostgreSQL, Redis, the Flask/waitress server and the RQ worker/janitor/
+PostgreSQL, the Flask/waitress server and the queue worker/maintenance/
 restart-listener children (each re-spawned from ``linux.launcher`` with a
 ``--role=``). It restarts crashed children, serves the control socket, and
 tears everything down on shutdown. The macOS/Windows supervisors are the
 platform-specific siblings.
 
 Main Features:
-* Ordered boot, health polling and automatic restart of Flask + RQ children.
+* Ordered boot, health polling and automatic restart of Flask + queue children.
 * Runs the Unix-socket control server and writes newest-first rotating logs.
 """
 
@@ -31,37 +31,30 @@ import time
 import urllib.error
 import urllib.request
 
-import redis as redis_lib
 
-import taskqueue
+import service_roles
 from linux import db_backend
 from linux import env as env_builder
 from linux import paths
 from macos.control_ipc import ControlServer
 from macos.reverse_log import NewestFirstFileHandler
+from native_common.supervisor_health import HealthLoopMixin
 
 logger = logging.getLogger("audiomuse.supervisor")
 
 FLASK_URL = "http://127.0.0.1:8000/"
 
-ROLE_OF = {
-    "flask": "flask",
-    "rq-worker-high": "worker-high",
-    "rq-worker-default": "worker-default",
-    "rq-janitor": "janitor",
-    "restart-listener": "restart-listener",
-}
+ROLE_OF = service_roles.ROLE_OF
 
-BOOT_ORDER = ["flask", "rq-worker-high", "rq-worker-default", "rq-janitor", "restart-listener"]
+BOOT_ORDER = service_roles.BOOT_ORDER
 
 
-class ProcessSupervisor:
+class ProcessSupervisor(HealthLoopMixin):
     def __init__(self):
         self._lock = threading.RLock()
         self._children = {}
         self._desired = set()
         self._database_url = None
-        self._redis_url = None
         self._state = "stopped"
         self._control = ControlServer(paths.control_socket_path(), self.dispatch_control)
         self._health_thread = None
@@ -117,13 +110,11 @@ class ProcessSupervisor:
             self._log.info("Embedded PostgreSQL ready")
             if self._stop_requested.is_set():
                 return
-            self._start_redis()
-            self._log.info("Embedded Redis ready")
             for name in BOOT_ORDER:
                 if self._stop_requested.is_set():
                     return
                 self.start_child(name)
-                if name == "flask":
+                if name == service_roles.SERVICE_FLASK:
                     self._wait_http(FLASK_URL, timeout=180)
             with self._lock:
                 if self._stop_requested.is_set():
@@ -147,9 +138,9 @@ class ProcessSupervisor:
             self._desired.clear()
         self._health_stop.set()
         self._join_workers()
+        self._close_probe_conn()
         for name in reversed(BOOT_ORDER):
             self._terminate_named(name)
-        self._terminate_named("redis")
         try:
             db_backend.stop_embedded()
         except Exception:
@@ -166,26 +157,6 @@ class ProcessSupervisor:
             if thread is not None and thread is not current and thread.is_alive():
                 thread.join(timeout=30)
 
-    def _start_redis(self, wait_timeout=60):
-        argv, url = taskqueue.build_embedded_redis_argv(
-            paths.redis_binary(), paths.redis_socket_path(), paths.redis_dir()
-        )
-        self._redis_url = url
-        self._spawn("redis", argv, env_builder.restore_native_lib_path(dict(os.environ)))
-        self._wait_redis(timeout=wait_timeout)
-
-    def _wait_redis(self, timeout):
-        deadline = time.time() + timeout
-        last = None
-        while time.time() < deadline:
-            try:
-                if redis_lib.Redis(unix_socket_path=paths.redis_socket_path()).ping():
-                    return
-            except Exception as exc:
-                last = exc
-            time.sleep(0.5)
-        raise RuntimeError(f"Embedded Redis did not become ready: {last}")
-
     def start_child(self, name):
         role = ROLE_OF.get(name)
         if role is None:
@@ -193,24 +164,41 @@ class ProcessSupervisor:
         with self._lock:
             if self._state not in ("starting", "running"):
                 return False
+            existing = self._children.get(name)
+            if existing is not None and existing.poll() is None:
+                self._desired.add(name)
+                return True
             self._desired.add(name)
-        argv = [sys.executable, f"--role={role}"]
-        child_env = env_builder.build_child_env(role, self._database_url, self._redis_url)
-        self._spawn(name, argv, child_env)
-        return True
+        if not self._claim_start(name):
+            return True
+        try:
+            argv = [sys.executable, f"--role={role}"]
+            child_env = env_builder.build_child_env(role, self._database_url)
+            self._spawn(name, argv, child_env)
+            return True
+        finally:
+            self._release_start(name)
 
     def stop_child(self, name):
+        if name not in ROLE_OF:
+            return False
         with self._lock:
+            was_desired = name in self._desired
             self._desired.discard(name)
-        self._terminate_named(name)
-        return True
+        stopped = self._terminate_named(name)
+        if not stopped and was_desired:
+            with self._lock:
+                self._desired.add(name)
+        return stopped
 
     def restart_child(self, name):
-        self._terminate_named(name)
+        if name not in ROLE_OF or not self._terminate_named(name):
+            return False
         return self.start_child(name)
 
     def _spawn(self, name, argv, child_env):
-        self._terminate_named(name)
+        if not self._terminate_named(name):
+            raise RuntimeError(f"Could not terminate existing child {name}")
         proc = subprocess.Popen(
             argv,
             env=child_env,
@@ -240,71 +228,68 @@ class ProcessSupervisor:
         with self._lock:
             proc = self._children.pop(name, None)
         if proc is None:
-            return
+            return True
+        terminated = False
         try:
-            if proc.poll() is not None:
-                return
+            try:
+                already_exited = proc.poll() is not None
+            except Exception:
+                logger.exception("Could not inspect %s before termination", name)
+                already_exited = False
+            if already_exited:
+                terminated = True
+                return True
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except ProcessLookupError:
-                return
+                terminated = True
+                return True
             except Exception:
                 logger.exception("SIGTERM failed for %s", name)
             try:
                 proc.wait(timeout=10)
-                return
+                terminated = True
+                return True
             except Exception:
                 pass
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 proc.wait(timeout=5)
+                terminated = True
+                return True
             except Exception:
-                pass
+                logger.exception("SIGKILL failed for %s", name)
+                try:
+                    terminated = proc.poll() is not None
+                except Exception:
+                    terminated = False
+                if not terminated:
+                    with self._lock:
+                        self._children.setdefault(name, proc)
+                return terminated
         finally:
-            if proc.stdout is not None:
+            if terminated and proc.stdout is not None:
                 try:
                     proc.stdout.close()
                 except Exception:
                     pass
 
-    def _start_health_loop(self):
-        self._health_stop.clear()
-        self._health_thread = threading.Thread(target=self._health_loop, name="health", daemon=True)
-        self._health_thread.start()
-
-    def _health_loop(self):
-        while not self._health_stop.wait(5):
-            if self._state != "running":
-                continue
-            self._ensure_postgres_healthy()
-            if self._health_stop.is_set():
-                return
-            self._ensure_redis_healthy()
-            for name in list(self._desired):
-                if self._health_stop.is_set():
-                    return
-                with self._lock:
-                    proc = self._children.get(name)
-                if proc is not None and proc.poll() is not None:
-                    self._log.warning("%s exited (code %s); restarting", name, proc.returncode)
-                    self.start_child(name)
-
     def _ensure_postgres_healthy(self):
         if self._database_url is None:
             return
         try:
-            import psycopg2
-
-            conn = psycopg2.connect(self._database_url, connect_timeout=3)
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT 1")
-                cur.fetchone()
-            finally:
-                conn.close()
-            return
+            pg_host, pg_port = env_builder._pg_conn_parts(self._database_url)
+            healthy = self._probe_postgres(
+                host=pg_host,
+                port=pg_port,
+                user='postgres',
+                dbname='postgres',
+            )
         except Exception:
-            pass
+            healthy = False
+        if healthy:
+            return
+        self._close_probe_conn()
         self._log.warning("Embedded PostgreSQL unhealthy; restarting it")
         try:
             self._database_url = db_backend.ensure_embedded_running(paths.pgdata_dir())
@@ -312,36 +297,20 @@ class ProcessSupervisor:
         except Exception:
             self._log.exception("Failed to restart embedded PostgreSQL")
 
-    def _ensure_redis_healthy(self):
-        with self._lock:
-            proc = self._children.get("redis")
-        if proc is not None and proc.poll() is None:
-            try:
-                if redis_lib.Redis(
-                    unix_socket_path=paths.redis_socket_path(),
-                    socket_connect_timeout=2,
-                    socket_timeout=2,
-                ).ping():
-                    return
-            except Exception:
-                pass
-        self._log.warning("Embedded Redis unhealthy; restarting it")
-        try:
-            self._start_redis(wait_timeout=15)
-            self._log.info("Embedded Redis restarted")
-        except Exception:
-            self._log.exception("Failed to restart embedded Redis")
-
     def dispatch_control(self, action, services):
+        if action not in ("restart", "stop", "start"):
+            return False
+        operation = {
+            "stop": self.stop_child,
+            "start": self.start_child,
+            "restart": self.restart_child,
+        }[action]
         results = []
         for svc in services:
-            if action == "stop":
-                results.append(self.stop_child(svc))
-            elif action == "start":
-                results.append(self.start_child(svc))
-            elif action == "restart":
-                results.append(self.restart_child(svc))
-            else:
+            try:
+                results.append(bool(operation(svc)))
+            except Exception:
+                self._log.exception("Control %s failed for %s", action, svc)
                 results.append(False)
         return all(results) if results else False
 
@@ -397,7 +366,6 @@ class ProcessSupervisor:
                     if (
                         paths.APP_NAME in cmdline
                         or "--role=" in cmdline
-                        or "redis-server" in cmdline
                         or "postgres" in cmdline
                     ):
                         proc.terminate()
@@ -409,7 +377,6 @@ class ProcessSupervisor:
                     if (
                         paths.APP_NAME in comm
                         or "--role=" in comm
-                        or "redis-server" in comm
                         or "postgres" in comm
                     ):
                         os.kill(pid, signal.SIGTERM)
@@ -424,7 +391,6 @@ class ProcessSupervisor:
         except Exception:
             return
         me = os.getpid()
-        redis_marker = paths.redis_dir()
         pg_marker = paths.pgdata_dir()
         terminated = []
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
@@ -434,9 +400,8 @@ class ProcessSupervisor:
                 cmd = " ".join(proc.info.get("cmdline") or [])
                 if not cmd:
                     continue
-                stale_redis = "redis-server" in cmd and redis_marker in cmd
                 stale_pg = ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd
-                if stale_redis or stale_pg:
+                if stale_pg:
                     proc.terminate()
                     terminated.append(proc)
                     self._log.info(

@@ -93,53 +93,45 @@ def _make_connection(cursor):
 
 @pytest.mark.unit
 class TestGenreRegexPattern:
-    def _matches(self, genre, mood_vector):
-        pattern = f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)"
-        return bool(re.search(pattern, mood_vector))
+    def _emit(self, genre):
+        mod = _import_mcp_impl()
+        cur = MagicMock()
+        cur.__enter__ = Mock(return_value=cur)
+        cur.__exit__ = Mock(return_value=False)
+        cur.fetchall = Mock(return_value=[])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
 
-    def test_genre_at_start_matches(self):
-        assert self._matches("rock", "rock:0.82,pop:0.45")
+        with patch.object(mod, 'get_db_connection', return_value=conn):
+            mod._database_genre_query_sync(genres=[genre], get_songs=10)
 
-    def test_genre_after_comma_matches(self):
-        assert self._matches("rock", "pop:0.45,rock:0.82")
+        return cur.execute.call_args[0][0], cur.execute.call_args[0][1]
 
-    def test_genre_after_comma_with_space_matches(self):
-        assert self._matches("rock", "pop:0.45, rock:0.82")
+    def test_genre_filter_emits_the_score_capturing_regex_for_scoring_and_for_the_threshold(self):
+        sql, params = self._emit("rock")
+        assert "SUBSTRING(mood_vector FROM %s)" in sql
+        assert params == [
+            r"(?i)(?:^|,)\s*rock:(\d+\.?\d*)",
+            r"(?i)(?:^|,)\s*rock:(\d+\.?\d*)",
+            0.5,
+            10,
+        ]
 
-    def test_substring_does_not_match(self):
-        assert not self._matches("rock", "indie rock:0.31,pop:0.45")
+    def test_emitted_genre_regex_matches_a_whole_label_but_never_a_substring_of_one(self):
+        _, params = self._emit("rock")
+        pattern = params[0]
+        assert re.search(pattern, "rock:0.82,pop:0.45")
+        assert re.search(pattern, "pop:0.45,rock:0.82")
+        assert re.search(pattern, "pop:0.45, rock:0.82")
+        assert re.search(pattern, "POP:0.45,Rock:0.82")
+        assert not re.search(pattern, "indie rock:0.31,pop:0.45")
+        assert not re.search(pattern, "jazz:0.90")
 
-    def test_compound_genre_matches(self):
-        assert self._matches("indie rock", "pop:0.45,indie rock:0.31")
-
-    def test_case_insensitive(self):
-        assert self._matches("Rock", "rock:0.82,pop:0.45")
-
-    def test_no_match_returns_false(self):
-        assert not self._matches("jazz", "rock:0.82,pop:0.45")
-
-    def test_single_genre_vector(self):
-        assert self._matches("rock", "rock:0.82")
-
-    def test_genre_with_special_chars(self):
-        assert self._matches("r&b", "r&b:0.65,pop:0.45")
-
-    def test_hip_hop_no_substring_match(self):
-        assert not self._matches("hip hop", "trip hop:0.45")
-
-    def test_pop_no_substring_match(self):
-        assert not self._matches("pop", "indie pop:0.55,rock:0.82")
-
-    def test_pop_matches_at_start(self):
-        assert self._matches("pop", "pop:0.55,rock:0.82")
-
-    def test_lowercase_input_matches_titlecase_label(self):
-        assert self._matches("mellow", "Mellow:0.74,pop:0.45")
-        assert self._matches("hip-hop", "Hip-Hop:0.61,rock:0.20")
-        assert self._matches("progressive rock", "Progressive rock:0.55")
-
-    def test_uppercase_input_matches_lowercase_stored(self):
-        assert self._matches("ROCK", "rock:0.82,pop:0.45")
+    def test_emitted_genre_regex_escapes_regex_metacharacters_in_the_label(self):
+        _, params = self._emit("hip-hop (old.school)")
+        pattern = params[0]
+        assert re.search(pattern, "hip-hop (old.school):0.61,rock:0.20")
+        assert not re.search(pattern, "hip-hop (oldXschool):0.61")
 
 
 @pytest.mark.unit
@@ -241,30 +233,33 @@ class TestGetLibraryContext:
 
 @pytest.mark.unit
 class TestEnergyNormalization:
-    def test_zero_maps_to_energy_min(self):
-        e_min, e_max = 0.01, 0.15
-        raw = e_min + 0.0 * (e_max - e_min)
-        assert raw == pytest.approx(0.01)
+    @pytest.mark.parametrize(
+        "normalized,expected_raw",
+        [(0.0, 0.01), (0.25, 0.045), (0.5, 0.08), (0.75, 0.115), (1.0, 0.15)],
+    )
+    def test_scale_energy_maps_the_zero_to_one_scale_onto_the_configured_raw_range(
+        self, monkeypatch, normalized, expected_raw
+    ):
+        ai_mod = _import_ai_mcp_client()
+        import config as cfg
 
-    def test_one_maps_to_energy_max(self):
-        e_min, e_max = 0.01, 0.15
-        raw = e_min + 1.0 * (e_max - e_min)
-        assert raw == pytest.approx(0.15)
+        monkeypatch.setattr(cfg, 'ENERGY_MIN', 0.01)
+        monkeypatch.setattr(cfg, 'ENERGY_MAX', 0.15)
+        assert ai_mod._scale_energy(normalized) == pytest.approx(expected_raw)
 
-    def test_half_maps_to_midpoint(self):
-        e_min, e_max = 0.01, 0.15
-        raw = e_min + 0.5 * (e_max - e_min)
-        assert raw == pytest.approx(0.08)
+    def test_scale_energy_reads_the_bounds_from_config_rather_than_hard_coding_them(
+        self, monkeypatch
+    ):
+        ai_mod = _import_ai_mcp_client()
+        import config as cfg
 
-    def test_quarter_maps_correctly(self):
-        e_min, e_max = 0.01, 0.15
-        raw = e_min + 0.25 * (e_max - e_min)
-        assert raw == pytest.approx(0.045)
+        monkeypatch.setattr(cfg, 'ENERGY_MIN', 1.0)
+        monkeypatch.setattr(cfg, 'ENERGY_MAX', 3.0)
+        assert ai_mod._scale_energy(0.5) == pytest.approx(2.0)
 
-    def test_three_quarter_maps_correctly(self):
-        e_min, e_max = 0.01, 0.15
-        raw = e_min + 0.75 * (e_max - e_min)
-        assert raw == pytest.approx(0.115)
+    def test_scale_energy_passes_none_through_so_an_absent_bound_stays_absent(self):
+        ai_mod = _import_ai_mcp_client()
+        assert ai_mod._scale_energy(None) is None
 
 
 @pytest.mark.unit
@@ -392,7 +387,7 @@ class TestDatabaseGenreQuery:
         sql = cur.execute.call_args[0][0]
         assert sql.count("AND") >= 5
 
-    def test_results_returned_as_list(self):
+    def test_each_row_becomes_a_song_whose_artist_key_carries_the_author_column(self):
         mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
         cur.fetchall = Mock(
@@ -418,16 +413,20 @@ class TestDatabaseGenreQuery:
         with patch.object(mod, 'get_db_connection', return_value=conn):
             result = mod._database_genre_query_sync(genres=["rock"], get_songs=10)
 
-        assert isinstance(result, (list, dict))
-        if isinstance(result, dict):
-            assert "songs" in result
+        assert result["songs"] == [
+            {"item_id": "1", "title": "Song A", "artist": "Artist A", "album": "Album"}
+        ]
 
-    def test_get_songs_converted_to_int(self):
+    def test_a_float_get_songs_reaches_the_limit_placeholder_as_an_int(self):
         mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
             mod._database_genre_query_sync(genres=["rock"], get_songs=50.0)
+
+        limit_param = cur.execute.call_args[0][1][-1]
+        assert limit_param == 50
+        assert isinstance(limit_param, int)
 
 
 @pytest.mark.unit
@@ -539,26 +538,27 @@ class TestClampRecipe:
 
 @pytest.mark.unit
 class TestExecuteMcpToolEnergyConversion:
-    def test_search_database_energy_conversion(self):
+    def test_search_database_hands_the_query_raw_energy_bounds_not_the_normalized_ones(
+        self, monkeypatch
+    ):
         ai_mod = _import_ai_mcp_client()
 
         mock_query = Mock(return_value={"songs": []})
         import config as cfg
 
-        orig_min, orig_max = cfg.ENERGY_MIN, cfg.ENERGY_MAX
-        try:
-            cfg.ENERGY_MIN = 0.01
-            cfg.ENERGY_MAX = 0.15
-            with patch.object(ai_mod, '_database_genre_query_sync', mock_query):
-                ai_mod.execute_mcp_tool(
-                    "search_database",
-                    {"genres": ["rock"], "energy_min": 0.5, "energy_max": 0.8},
-                    {},
-                )
+        monkeypatch.setattr(cfg, 'ENERGY_MIN', 0.01)
+        monkeypatch.setattr(cfg, 'ENERGY_MAX', 0.15)
+        with patch.object(ai_mod, '_database_genre_query_sync', mock_query):
+            ai_mod.execute_mcp_tool(
+                "search_database",
+                {"genres": ["rock"], "energy_min": 0.5, "energy_max": 0.8},
+                {},
+            )
 
-        finally:
-            cfg.ENERGY_MIN = orig_min
-            cfg.ENERGY_MAX = orig_max
+        mock_query.assert_called_once()
+        positional = mock_query.call_args[0]
+        assert positional[5] == pytest.approx(0.08)
+        assert positional[6] == pytest.approx(0.122)
 
     def test_unknown_tool_returns_error(self):
         ai_mod = _import_ai_mcp_client()
@@ -665,7 +665,7 @@ class TestSongSimilarityLookup:
 
         assert cur.execute.called
 
-    def test_no_match_returns_empty(self):
+    def test_an_unresolvable_seed_returns_no_songs_and_says_it_was_not_found(self):
         mod = _import_mcp_impl()
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
@@ -677,9 +677,11 @@ class TestSongSimilarityLookup:
         with patch.object(mod, 'get_db_connection', return_value=conn):
             result = mod._song_similarity_api_sync("nonexistent song", "unknown artist", 10)
 
-        assert isinstance(result, (list, dict))
-        if isinstance(result, dict):
-            assert len(result.get("songs", [])) == 0
+        assert result["songs"] == []
+        assert (
+            "Song 'nonexistent song' by 'unknown artist' not found in database"
+            in result["message"]
+        )
 
 
 @pytest.mark.unit
@@ -1526,10 +1528,13 @@ class TestClampRecipeGrounding:
         return {"filters": base, "sound_descriptions": ["warm"],
                 "seed_artists": [], "lyric_themes": []}
 
-    def test_absent_grounding_filter_leaves_the_recipe_unchanged(self):
+    def test_absent_grounding_filter_leaves_the_recipe_filters_as_the_llm_wrote_them(self):
         clamp = self._fn()
-        recipe = self._recipe(genres=["jazz"], year_min=1990)
-        assert clamp(recipe) == clamp(recipe, None)
+        out = clamp(self._recipe(genres=["jazz"], year_min=1990), None)
+        assert out["filters"]["genres"] == ["jazz"]
+        assert out["filters"]["year_min"] == 1990
+        assert out["filters"]["year_max"] is None
+        assert out["sound_descriptions"] == ["warm"]
 
     def test_grounding_genres_union_with_the_recipe_genres(self):
         clamp = self._fn()

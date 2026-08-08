@@ -19,7 +19,7 @@ Main Features:
   IVF index from pgvector embeddings and hold one process-wide instance.
 * ensure_ivf_index_loaded: every query entry point loads that instance on first
   use, so the one queued task that still queries this index (the sonic
-  fingerprint cron, which runs on an RQ worker) finds it instead of finding none.
+  fingerprint cron, which runs on a queue worker) finds it instead of finding none.
   Online features query it from Flask, which preloads it at startup.
 * find_nearest_neighbors_by_id / _by_vector, search_tracks_unified, radius walk:
   neighbor queries with f32 re-rank overfetch, artist capping, content
@@ -923,14 +923,6 @@ def _compute_num_to_query(n, radius_similarity, eliminate_duplicates, mood_simil
 
 
 def _build_initial_neighbor_results(neighbor_vec_ids, distances, target_item_id):
-    """Neighbours as {item_id, distance}, each track at most ONCE.
-
-    Two slots of the index can name the same track - a legacy migration merges
-    duplicate recordings into one catalogue row and points both of their slots
-    at it - and their vectors are near-identical, so without this the same song
-    comes back twice, side by side. Neighbours arrive nearest-first, so the slot
-    kept is the closest one.
-    """
     initial_results = []
     seen = set()
     for vec_id, dist in zip(neighbor_vec_ids, distances):

@@ -1,9 +1,11 @@
 window.PlexLink = (function () {
     var pollTimer = null;
+    var pollGeneration = 0;
 
     function stop() {
+        pollGeneration++;
         if (pollTimer) {
-            clearInterval(pollTimer);
+            clearTimeout(pollTimer);
             pollTimer = null;
         }
     }
@@ -50,25 +52,44 @@ window.PlexLink = (function () {
 
     function poll(pinId, cid, opts, statusEl) {
         stop();
+        var generation = pollGeneration;
         var deadline = Date.now() + 180000;
-        pollTimer = setInterval(function () {
+
+        function tick() {
+            if (generation !== pollGeneration) {
+                return;
+            }
             if (Date.now() > deadline) {
-                stop();
                 setStatus(statusEl, 'err', 'Timed out waiting for Plex. Start again to retry.');
                 return;
             }
             var url = '/api/setup/plex/pin/' + encodeURIComponent(pinId)
                 + '?client_id=' + encodeURIComponent(cid) + '&_=' + Date.now();
             fetch(url, { cache: 'no-store' })
-                .then(function (r) { return r.json(); })
-                .then(function (data) {
-                    if (data && data.token) {
-                        stop();
-                        fillToken(opts, data.token, statusEl);
+                .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+                .then(function (result) {
+                    if (generation !== pollGeneration) {
+                        return;
                     }
+                    if (result.data && result.data.token) {
+                        fillToken(opts, result.data.token, statusEl);
+                        return;
+                    }
+                    if (!result.ok) {
+                        setStatus(statusEl, 'pending', (result.data && result.data.error) || 'Unable to reach Plex, retrying...');
+                    }
+                    pollTimer = setTimeout(tick, 1500);
                 })
-                .catch(function () { return null; });
-        }, 1500);
+                .catch(function () {
+                    if (generation !== pollGeneration) {
+                        return;
+                    }
+                    setStatus(statusEl, 'pending', 'Unable to reach Plex, retrying...');
+                    pollTimer = setTimeout(tick, 1500);
+                });
+        }
+
+        tick();
     }
 
     function renderCode(codeEl, code, opts) {

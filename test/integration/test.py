@@ -8,6 +8,15 @@
 
 """Live HTTP smoke tests that drive a running AudioMuse-AI server.
 
+MANUAL, OPT-IN ONLY: this file is deliberately named test.py, which pytest.ini's
+`python_files = test_*.py` does NOT match, so neither `pytest test/integration`
+nor CI ever collects it. Run it by naming it explicitly, against a server that is
+already up at BASE_URL below:
+    pytest test/integration/test.py -s -v
+Renaming it to test_*.py would make CI run it against a hardcoded LAN address and
+fail. Nothing here is a regression gate; treat a green run as a hand-checked smoke
+signal only.
+
 Posts to the real REST API over the network, polling task status to
 completion, and asserts each response shape and the follow-on playlist
 creation for the core end-user flows.
@@ -233,6 +242,8 @@ def test_map_visualization():
     assert resp.status_code == 200, f"Status: {resp.status_code}, Body: {resp.text}"
     data = resp.json()
     assert 'items' in data and isinstance(data['items'], list), f"Response: {data}"
+    assert data['items'], f"Map returned no items: {data}"
+    assert all(item.get('item_id') for item in data['items']), f"Response: {data}"
 
     sim_resp = get_with_retries(
         f'{BASE_URL}/api/similar_tracks',
@@ -254,30 +265,6 @@ def test_map_visualization():
 
     elapsed = time.time() - start_time
     print(f"[TIMING] Map Visualization test completed in {elapsed:.2f} seconds")
-
-
-def test_annoy_similarity_and_playlist():
-    start_time = time.time()
-    sim_resp = get_with_retries(
-        f'{BASE_URL}/api/similar_tracks',
-        params={'title': 'By the Way', 'artist': 'Red Hot Chili Peppers', 'n': 1},
-    )
-    assert sim_resp.status_code == 200, f"Status: {sim_resp.status_code}, Body: {sim_resp.text}"
-    sim_data = sim_resp.json()
-    assert isinstance(sim_data, list) and sim_data, f"Response: {sim_data}"
-    item_id = sim_data[0].get('item_id')
-    assert item_id
-
-    pl_resp = requests.post(
-        f'{BASE_URL}/api/create_playlist',
-        json={'playlist_name': 'TestPlaylist', 'track_ids': [item_id]},
-    )
-    assert pl_resp.status_code == 201, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
-    pl_data = pl_resp.json()
-    assert 'playlist_id' in pl_data
-
-    elapsed = time.time() - start_time
-    print(f"[TIMING] Similar Song test completed in {elapsed:.2f} seconds")
 
 
 def test_song_path_and_playlist():

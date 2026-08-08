@@ -118,15 +118,7 @@ def test_a_loky_posix_worker_argv_runs_the_worker_module(ran_module, frozen_chil
     assert len(ran_module) == 1
     name, kwargs, _ = ran_module[0]
     assert name == 'joblib.externals.loky.backend.popen_loky_posix'
-    assert kwargs == {'run_name': '__main__', 'alter_sys': False}
-
-
-def test_the_worker_module_runs_without_replacing_the_main_module(
-    ran_module, frozen_children
-):
-    frozen_children.run_frozen_child(LOKY_WORKER_ARGV, frozen=True)
-    _, kwargs, _ = ran_module[0]
-    assert kwargs['alter_sys'] is False, (
+    assert kwargs == {'run_name': '__main__', 'alter_sys': False}, (
         "alter_sys=True swaps sys.modules['__main__'], so loky's "
         "_fixup_main_from_path stops matching the parent and re-runs the bundle "
         "entry script from a path that does not exist on disk"

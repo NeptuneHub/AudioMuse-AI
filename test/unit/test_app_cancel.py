@@ -6,44 +6,58 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""The Stop path: cancel_job_and_children_recursive and the cancel endpoints.
+"""Global cancel: one transaction, one notification, no second system.
 
-The cancel WIPES task_status (so the table cannot grow without bound) and leaves a
-single REVOKED recap row for the id the user actually cancelled. The wipe is
-therefore the cancellation signal itself: every long task polls its own row, and a
-task that can no longer FIND its row has been cancelled. Reading a missing row as
-"not revoked, carry on" is the original bug - it let a cancelled analysis keep
-enqueuing albums onto the queue the cancel had just emptied.
+Cancel is one transaction against one system: queued rows stop being claimable
+the moment they stop being NEW, and a NOTIFY riding on the same commit reaches
+whichever worker holds the running one. There is no second store to scan, no
+retry budget to zero and no queue to empty separately.
 
 Main Features:
-* The global cancel deletes every task_status row and leaves one REVOKED recap
-* task_history is snapshotted BEFORE task_status is wiped, so history survives
-* Every cooperative check treats a missing row as revoked (analysis, sweep, clustering)
-* A failed status QUERY is not an empty answer, and leaves the task running
+* The tombstone and the stop signal are one transaction, so neither can happen alone
+* A failed transaction raises rather than reporting a false success
+* Exactly one REVOKED recap row survives, for the task the caller named
+* The global cancel epoch is incremented in that same transaction
+* An un-acknowledged provider-migration handshake is spared, as is a live control request
+* History keeps each row's real terminal status instead of restamping it
 """
 
-from unittest.mock import MagicMock, patch
+import json
+from unittest.mock import MagicMock
 
 import pytest
 
+import app_helper
+import config
+import database
+import taskqueue
 
-class _FakeCursor:
-    """Records executed SQL and answers the snapshot SELECT."""
 
-    def __init__(self, rows):
-        self._rows = rows
-        self.executed = []
-        self.rowcount = 0
+class _Cursor:
+    def __init__(self, recorder):
+        self._recorder = recorder
+        self.rowcount = 3
+        self._rows = []
 
     def execute(self, sql, params=None):
-        self.executed.append((" ".join(sql.split()), params))
-        if sql.strip().upper().startswith("SELECT"):
-            self._pending = list(self._rows)
+        self._recorder.append((' '.join(sql.split()), params))
+        text = sql.upper()
+        if 'FROM MIGRATION_SESSION' in text:
+            self._rows = list(self._recorder.migration_rows)
+        elif 'WHERE TASK_TYPE = %S AND STATUS IN' in text:
+            self._rows = [(task_id,) for task_id in self._recorder.control_rows]
+        elif 'APP_CONFIG' in text:
+            self._rows = [('7',)]
+        elif text.strip().startswith('SELECT'):
+            self._rows = list(self._recorder.snapshot_rows)
         else:
-            self.rowcount = len(self._rows)
+            self._rows = []
 
     def fetchall(self):
-        return list(self._rows)
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
     def close(self):
         pass
@@ -51,141 +65,185 @@ class _FakeCursor:
     def __enter__(self):
         return self
 
-    def __exit__(self, *a):
+    def __exit__(self, *args):
         return False
 
 
-def _rows():
-    return [
-        {
-            'task_id': 'analysis-1', 'task_type': 'main_analysis', 'status': 'PROGRESS',
-            'details': None, 'start_time': 1.0, 'end_time': None,
-        },
-        {
-            'task_id': 'sweep-1', 'task_type': 'server_sweep', 'status': 'PROGRESS',
-            'details': None, 'start_time': 2.0, 'end_time': None,
-        },
-    ]
+class _Recorder(list):
+    def __init__(self):
+        super().__init__()
+        self.snapshot_rows = []
+        self.migration_rows = []
+        self.control_rows = []
+
+
+def _row(task_id, task_type='main_analysis', status=config.TASK_STATUS_RUNNING):
+    return {
+        'task_id': task_id,
+        'task_type': task_type,
+        'status': status,
+        'details': json.dumps({'message': 'x'}),
+        'start_time': 100.0,
+        'end_time': None,
+    }
 
 
 @pytest.fixture
-def cancel_env():
-    cur = _FakeCursor(_rows())
+def cancel_env(monkeypatch):
+    recorder = _Recorder()
     db = MagicMock()
-    db.cursor.return_value = cur
-    with (
-        patch('app_helper.get_db', return_value=db),
-        patch('app_helper.redis_conn') as redis,
-        patch('app_helper.rq_queue_high'),
-        patch('app_helper.rq_queue_default'),
-        patch('app_helper.save_task_status') as save,
-        patch('app_helper.record_task_history') as hist,
-    ):
-        redis.keys.return_value = []
-        yield cur, save, hist
-
-
-def test_global_cancel_wipes_task_status_so_it_cannot_grow_without_bound(cancel_env):
-    from app_helper import cancel_job_and_children_recursive
-
-    cur, _save, _hist = cancel_env
-    cancel_job_and_children_recursive('analysis-1')
-
-    statements = [sql for sql, _ in cur.executed]
-    assert any(s.startswith("DELETE FROM task_status") for s in statements)
-
-
-def test_global_cancel_leaves_exactly_one_revoked_recap_row(cancel_env):
-    """The only row to survive is the id the user actually cancelled, so the UI has
-    one canonical cancelled task to show."""
-    from app_helper import cancel_job_and_children_recursive
-
-    _cur, save, _hist = cancel_env
-    cancel_job_and_children_recursive('analysis-1')
-
-    save.assert_called_once()
-    assert save.call_args[0][0] == 'analysis-1'
-    assert save.call_args[0][2] == 'REVOKED'
-
-
-def test_history_is_snapshotted_before_task_status_is_touched(cancel_env):
-    """The dashboard's history must still show what was running when Stop was hit."""
-    from app_helper import cancel_job_and_children_recursive
-
-    cur, _save, hist = cancel_env
-    cancel_job_and_children_recursive('analysis-1')
-
-    assert hist.call_count == 2
-    recorded = {c[0][0]: c[0][2] for c in hist.call_args_list}
-    assert recorded == {'analysis-1': 'REVOKED', 'sweep-1': 'REVOKED'}
-
-    wipe_idx = next(
-        i for i, (sql, _) in enumerate(cur.executed) if sql.startswith("DELETE FROM task_status")
+    db.cursor.side_effect = lambda *a, **k: _Cursor(recorder)
+    monkeypatch.setattr(app_helper, 'get_db', lambda: db)
+    history = []
+    monkeypatch.setattr(
+        app_helper.database, 'record_task_history',
+        lambda task_id, task_type, status, **kw: history.append((task_id, task_type, status, kw)),
     )
-    select_idx = next(
-        i for i, (sql, _) in enumerate(cur.executed) if sql.startswith("SELECT task_id")
+    signalled = []
+    monkeypatch.setattr(
+        taskqueue, 'request_cancel_all', lambda conn=None: signalled.append(conn)
     )
-    assert select_idx < wipe_idx, "history must be snapshotted before the wipe"
+    return recorder, db, history, signalled
 
 
-def test_a_sweep_whose_row_was_wiped_treats_that_as_cancelled():
-    """The wipe IS the signal. A sweep that can no longer find its own row has been
-    cancelled; reading absence as 'carry on' let it run to completion against a queue
-    the cancel had already emptied."""
-    from tasks.multiserver_sync import make_cancel_check, SweepCancelled
-
-    conn = MagicMock()
-    cur = conn.cursor.return_value
-    cur.fetchone.return_value = None  # the cancel deleted this sweep's row
-
-    with patch('tasks.multiserver_sync.connect_raw', return_value=conn):
-        check, close = make_cancel_check('sweep-1')
-        with pytest.raises(SweepCancelled):
-            check()
-        close()
+def _statements(recorder):
+    return [sql for sql, _params in recorder]
 
 
-def test_cancelling_an_in_process_task_revokes_its_row_and_spares_the_queues(cancel_env):
-    """The alchemy radio runs inside the web process with no RQ job, so the global
-    cancel would stop nothing while still emptying both queues and deleting every
-    task_status row - destroying an unrelated queued analysis to cancel something it
-    cannot reach."""
-    from app_helper import revoke_inline_task_row
+class TestTheTombstoneAndTheSignalAreOneTransaction:
+    def test_the_stop_signal_is_published_before_the_commit(self, cancel_env):
+        recorder, db, _history, signalled = cancel_env
+        recorder.snapshot_rows = [_row('task-1')]
 
-    cur, save, _hist = cancel_env
-    with patch(
-        'app_helper.get_task_info_from_db',
-        return_value={'task_id': 'radio-1', 'task_type': 'alchemy_radio'},
-    ):
-        message = revoke_inline_task_row('radio-1')
+        app_helper.cancel_job_and_children_recursive('task-1')
 
-    assert message
-    assert save.call_args[0][:3] == ('radio-1', 'alchemy_radio', 'REVOKED')
-    statements = [sql for sql, _ in cur.executed]
-    assert not any(s.startswith("DELETE FROM task_status") for s in statements)
+        assert signalled == [db], 'the cancel must be signalled on the same connection'
+        db.commit.assert_called_once()
+
+    def test_a_failed_transaction_rolls_back_and_raises(self, cancel_env, monkeypatch):
+        recorder, db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('task-1')]
+        db.commit.side_effect = RuntimeError('disk full')
+
+        with pytest.raises(RuntimeError):
+            app_helper.cancel_job_and_children_recursive('task-1')
+
+        db.rollback.assert_called_once()
+
+    def test_every_task_row_is_deleted(self, cancel_env):
+        recorder, _db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('task-1'), _row('task-2', 'main_clustering')]
+
+        app_helper.cancel_job_and_children_recursive('task-1')
+
+        assert any(
+            sql == 'DELETE FROM task_status' for sql in _statements(recorder)
+        ), 'the wipe is what stops queued work: a non-NEW row can never be claimed'
+
+    def test_exactly_one_revoked_recap_row_survives(self, cancel_env):
+        recorder, _db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('task-1')]
+
+        app_helper.cancel_job_and_children_recursive('task-1')
+
+        inserts = [
+            params for sql, params in recorder if sql.startswith('INSERT INTO task_status')
+        ]
+        assert len(inserts) == 1
+        assert inserts[0][0] == 'task-1'
+        assert inserts[0][2] == config.TASK_STATUS_REVOKED
 
 
-def test_cancelling_a_queued_task_is_not_diverted_to_the_in_process_path(cancel_env):
-    from app_helper import revoke_inline_task_row
+class TestTheCancelEpochIsActuallyBumped:
+    def test_the_epoch_advances_inside_the_cancel_transaction(self, cancel_env):
+        recorder, db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('task-1')]
 
-    _cur, save, _hist = cancel_env
-    with patch(
-        'app_helper.get_task_info_from_db',
-        return_value={'task_id': 'analysis-1', 'task_type': 'main_analysis'},
-    ):
-        assert revoke_inline_task_row('analysis-1') is None
+        app_helper.cancel_job_and_children_recursive('task-1')
 
-    save.assert_not_called()
+        bumps = [
+            sql for sql, params in recorder
+            if params and database.GLOBAL_CANCEL_EPOCH_KEY in params
+        ]
+        assert len(bumps) == 1, (
+            'cancel must advance the epoch the migration endpoints read, and the key '
+            'travels as a bind parameter, so only the parameters identify the statement'
+        )
+        assert bumps[0].startswith('INSERT INTO app_config'), (
+            'reading the epoch back is not bumping it'
+        )
+        assert '+ 1' in bumps[0], 'the epoch has to advance, not be restamped'
+        assert db.commit.call_count == 1
 
 
-def test_a_failed_status_query_is_not_an_empty_answer_and_leaves_the_sweep_running():
-    """Absence means cancelled; an unreachable DB does not."""
-    from tasks.multiserver_sync import make_cancel_check
+class TestProtectedRows:
+    def test_an_unacknowledged_migration_handshake_is_spared(self, cancel_env):
+        recorder, _db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('exec-1', 'provider_migration')]
+        recorder.migration_rows = [('exec-1', 'align-1')]
 
-    conn = MagicMock()
-    conn.cursor.side_effect = RuntimeError("database is unreachable")
+        app_helper.cancel_job_and_children_recursive('other-1')
 
-    with patch('tasks.multiserver_sync.connect_raw', return_value=conn):
-        check, close = make_cancel_check('sweep-1')
-        check()  # must not raise
-        close()
+        deletes = [
+            params for sql, params in recorder if sql.startswith('DELETE FROM task_status')
+        ]
+        assert deletes, 'a protected cancel still deletes everything unprotected'
+        protected = set(deletes[0][0])
+        assert {'exec-1', 'align-1'} <= protected
+
+    def test_a_live_control_request_is_spared(self, cancel_env):
+        recorder, _db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('task-1')]
+        recorder.control_rows = ['control-abc']
+
+        app_helper.cancel_job_and_children_recursive('task-1')
+
+        deletes = [
+            params for sql, params in recorder if sql.startswith('DELETE FROM task_status')
+        ]
+        assert 'control-abc' in set(deletes[0][0])
+
+    def test_a_protected_task_id_gets_no_recap_row(self, cancel_env):
+        recorder, _db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('exec-1', 'provider_migration')]
+        recorder.migration_rows = [('exec-1', None)]
+
+        app_helper.cancel_job_and_children_recursive('exec-1')
+
+        inserts = [
+            sql for sql in _statements(recorder) if sql.startswith('INSERT INTO task_status')
+        ]
+        assert not inserts, 'a spared row must not be overwritten by a REVOKED recap'
+
+
+class TestCancelHistory:
+    def test_an_already_finished_task_keeps_its_own_terminal_status(self, cancel_env):
+        recorder, _db, history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('done-1', status=config.TASK_STATUS_SUCCESS)]
+
+        app_helper.cancel_job_and_children_recursive('done-1')
+
+        assert history[0][2] == config.TASK_STATUS_SUCCESS, (
+            'pressing Cancel must not rewrite a completed run as cancelled'
+        )
+
+    def test_a_running_task_is_recorded_as_revoked_with_the_reason(self, cancel_env):
+        recorder, _db, history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('live-1')]
+
+        app_helper.cancel_job_and_children_recursive('live-1', reason='user pressed cancel')
+
+        assert history[0][2] == config.TASK_STATUS_REVOKED
+        assert history[0][3]['note'] == 'user pressed cancel'
+
+    def test_history_failure_never_undoes_the_cancel(self, cancel_env, monkeypatch):
+        recorder, db, _history, _signalled = cancel_env
+        recorder.snapshot_rows = [_row('live-1')]
+        monkeypatch.setattr(
+            app_helper.database, 'record_task_history',
+            MagicMock(side_effect=RuntimeError('history table is gone')),
+        )
+
+        app_helper.cancel_job_and_children_recursive('live-1')
+
+        db.commit.assert_called_once()

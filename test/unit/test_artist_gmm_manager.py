@@ -246,27 +246,30 @@ class TestEdgeCases:
 
         assert gmm_params is None
 
-    def test_zero_dimensional_embeddings(self):
-        try:
-            embeddings = [np.array([]) for _ in range(5)]
-            gmm_params = fit_artist_gmm("Invalid Artist", embeddings)
-            assert (
-                gmm_params is None
-                or 'n_features' not in gmm_params
-                or gmm_params['n_features'] == 0
-            )
-        except Exception:
-            pass
+    def test_zero_dimensional_embeddings_return_none_instead_of_raising(self, caplog):
+        embeddings = [np.array([]) for _ in range(5)]
 
-    def test_mismatched_embedding_dimensions(self):
+        with caplog.at_level(logging.ERROR, logger="tasks.artist_gmm_manager"):
+            gmm_params = fit_artist_gmm("Invalid Artist", embeddings)
+
+        assert gmm_params is None
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors, "the fit failure must be logged at ERROR"
+        assert "Failed to fit GMM for artist 'Invalid Artist'" in errors[0].message
+        assert errors[0].exc_info is not None
+
+    def test_mismatched_embedding_dimensions_return_none_instead_of_raising(self, caplog):
         rng = np.random.default_rng(0)
         embeddings = [rng.random(128), rng.random(64), rng.random(128)]
 
-        try:
+        with caplog.at_level(logging.ERROR, logger="tasks.artist_gmm_manager"):
             gmm_params = fit_artist_gmm("Mismatched Artist", embeddings)
-            assert gmm_params is None or gmm_params is not None
-        except (ValueError, Exception):
-            pass
+
+        assert gmm_params is None
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors, "the dimension mismatch must be logged at ERROR"
+        assert "Failed to fit GMM for artist 'Mismatched Artist'" in errors[0].message
+        assert errors[0].exc_info is not None
 
     def test_very_large_component_count(self):
         embeddings = [np.random.rand(128) for _ in range(100)]

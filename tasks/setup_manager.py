@@ -41,22 +41,6 @@ from argon2 import exceptions as argon2_exceptions
 from psycopg2.extras import RealDictCursor
 
 DEFAULT_CONFIG_TABLE = "app_config"
-BASIC_SERVER_FIELDS = {
-    'MEDIASERVER_TYPE',
-    'JELLYFIN_URL',
-    'JELLYFIN_USER_ID',
-    'JELLYFIN_TOKEN',
-    'NAVIDROME_URL',
-    'NAVIDROME_USER',
-    'NAVIDROME_PASSWORD',
-    'LYRION_URL',
-    'EMBY_URL',
-    'EMBY_USER_ID',
-    'EMBY_TOKEN',
-    'PLEX_URL',
-    'PLEX_TOKEN',
-}
-AUTH_FIELDS = {'AUTH_ENABLED', 'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN'}
 
 _WARNED_NO_DEFAULT_SERVER = False
 

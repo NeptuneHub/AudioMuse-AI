@@ -19,6 +19,7 @@ Main Features:
 """
 
 import numpy as np
+import pytest
 from unittest.mock import MagicMock, patch
 from tasks.clustering_postprocessing import (
     apply_minimum_size_filter_to_clustering_result,
@@ -56,17 +57,32 @@ class TestMinimumSizeFilter:
 
         assert len(filtered["named_playlists"]) == 2
 
-    def test_handles_empty_playlists(self):
-        best_result = {"named_playlists": {}}
+    @pytest.mark.parametrize(
+        "result_without_playlists",
+        [None, {}, {"named_playlists": {}}],
+    )
+    def test_returns_the_caller_object_itself_when_there_are_no_playlists_to_filter(
+        self, result_without_playlists
+    ):
+        filtered = apply_minimum_size_filter_to_clustering_result(
+            result_without_playlists, min_size=10
+        )
+
+        assert filtered is result_without_playlists
+
+    def test_returns_a_new_result_with_an_empty_playlist_map_when_every_playlist_is_too_small(self):
+        songs = [("s1", "T1", "A1")] * 3
+        best_result = {
+            "named_playlists": {"Tiny": songs},
+            "playlist_centroids": {"Tiny": np.array([1.0, 0.0])},
+        }
 
         filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=10)
 
+        assert filtered is not best_result
         assert filtered["named_playlists"] == {}
-
-    def test_handles_none_result(self):
-        filtered = apply_minimum_size_filter_to_clustering_result(None, min_size=10)
-
-        assert filtered is None
+        assert filtered["playlist_centroids"] == {}
+        assert best_result["named_playlists"] == {"Tiny": songs}
 
     def test_min_size_zero_keeps_all(self):
         best_result = {
@@ -160,24 +176,28 @@ class TestTitleArtistDeduplication:
 
         assert len(filtered) == 2
 
-    def test_handles_empty_list(self):
+    def test_returns_empty_for_an_empty_song_list_without_opening_a_cursor(self):
         mock_db = MagicMock()
 
         filtered = apply_title_artist_deduplication([], mock_db)
 
         assert filtered == []
+        mock_db.cursor.assert_not_called()
 
-    def test_handles_missing_song_details(self):
+    def test_skips_songs_with_no_score_row_and_keeps_the_ones_that_have_one(self):
         mock_db = MagicMock()
         mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = []
+        mock_cursor.fetchall.return_value = [
+            {'item_id': 's2', 'title': 'Kept Song', 'author': 'Artist'},
+        ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
 
-        song_results = [{'item_id': 's1'}]
+        song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
 
         filtered = apply_title_artist_deduplication(song_results, mock_db)
 
-        assert len(filtered) == 0
+        assert filtered == [{'item_id': 's2'}]
+        assert mock_cursor.execute.call_args[0][1] == (['s1', 's2'],)
 
 
 class TestDistanceFilteringDirect:
@@ -321,13 +341,6 @@ class TestSelectDiversePlaylists:
 
 
 class TestEdgeCases:
-    def test_minimum_size_filter_with_missing_key(self):
-        best_result = {}
-
-        filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=10)
-
-        assert filtered is not None
-
     def test_title_dedup_with_unicode(self):
         mock_db = MagicMock()
         mock_cursor = MagicMock()

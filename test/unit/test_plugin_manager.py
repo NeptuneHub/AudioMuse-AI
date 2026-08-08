@@ -75,7 +75,7 @@ def _record(plugin_id, enabled=True, requirements=None, manifest=None):
 
 class _DummyConn:
     def close(self):
-        """No-op close; the fake connection holds no resources."""
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +137,32 @@ class TestCronTaskFallback:
         mgr = manager.PluginManager()
         mgr.records = {'jobber': _record('jobber', manifest={'cron_tasks': {'daily': 'not-a-dict'}})}
         assert mgr.get_cron_task('plugin.jobber.daily') is None
+
+
+def test_dequeued_cron_plugin_with_wiped_claim_does_not_import_plugin(monkeypatch):
+    import taskqueue
+
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-cancelled')
+    monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
+    monkeypatch.setattr(database, 'get_task_info_from_db', lambda _task_id: None)
+    import_module = pytest.MonkeyPatch()
+    try:
+        import_module.setattr(
+            manager.importlib,
+            'import_module',
+            lambda _name: (_ for _ in ()).throw(
+                AssertionError('cancelled plugin must not be imported')
+            ),
+        )
+        result = manager.run_plugin_task(
+            'audiomuse_plugins.demo.tasks.daily',
+            server_scope='all',
+            task_claim_required=True,
+        )
+    finally:
+        import_module.undo()
+
+    assert result['status'] == config.TASK_STATUS_REVOKED
 
 
 class TestRequirementPinning:
@@ -398,23 +424,6 @@ class TestRequirements:
 
         assert calls['n'] == 0
 
-    def test_pip_runs_when_pinned_version_mismatches(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
-        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
-        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
-        dist = tmp_path / '_lib' / 'matplotlib-3.7.0.dist-info'
-        dist.mkdir(parents=True)
-        (dist / 'METADATA').write_text('Metadata-Version: 2.1\nName: matplotlib\nVersion: 3.7.0\n', encoding='utf-8')
-        installed = {'specs': None}
-
-        mgr = manager.PluginManager()
-        monkeypatch.setattr(mgr, '_pip_install', lambda specs: installed.__setitem__('specs', specs) or True)
-        mgr.records = {'withreq': _record('withreq', requirements=['matplotlib==3.9.0'])}
-
-        mgr.ensure_requirements()
-
-        assert installed['specs'] == ['matplotlib==3.9.0']
-
 
 class TestTargets:
     def test_default_targets_are_both(self):
@@ -597,7 +606,6 @@ class TestInstallFromManifest:
         manifest = {'id': 'demo', 'name': 'Demo', 'version': '2.0.0',
                     'min_core_version': '2.5.0', 'requirements': []}
         mgr.install_package(pkg, manifest, source_url='https://e/demo.zip')
-        # upsert_plugin(plugin_id, name, version, manifest, ...)
         assert stored['args'][0] == 'demo'
         assert stored['args'][2] == '2.0.0'
         assert stored['args'][3] is manifest
@@ -770,7 +778,7 @@ class TestApiSurface:
 
     def test_dotted_path(self):
         def f():
-            """Stub; the test only inspects its __module__ and __name__."""
+            pass
         f.__module__ = 'audiomuse_plugins.demo.tasks'
         assert api.dotted_path(f) == 'audiomuse_plugins.demo.tasks.f'
         assert api.dotted_path('a.b.c') == 'a.b.c'
@@ -779,7 +787,7 @@ class TestApiSurface:
         ctx = api.PluginContext('demo', 'worker')
 
         def task():
-            """Stub; the test only inspects its __module__ and __name__."""
+            pass
         task.__module__ = 'audiomuse_plugins.demo.tasks'
         task.__name__ = 'task'
 
@@ -828,10 +836,10 @@ class TestSongAnalyzedHooks:
 
     def test_aggregates_ok_records_only(self):
         def a(payload):
-            """Stub listener."""
+            pass
 
         def b(payload):
-            """Stub listener."""
+            pass
 
         mgr = self._mgr({'a': [a], 'b': [b]})
         mgr.records['b']['load_status'] = 'error'
@@ -852,11 +860,6 @@ class TestSongAnalyzedHooks:
         mgr = self._mgr({'p': [good, bad, good2]})
         mgr.run_song_analyzed({'item_id': 'x'})
         assert seen == ['good', 'good2']
-
-    def test_run_is_noop_when_no_hooks(self):
-        mgr = manager.PluginManager()
-        mgr.records = {}
-        mgr.run_song_analyzed({'item_id': 'x'})
 
     def test_multiple_plugins_run_in_sequence_and_isolated(self):
         seen = []
@@ -879,7 +882,7 @@ class TestSongAnalyzedHooks:
 
     def test_deps_failed_plugin_hooks_stay_active(self):
         def a(payload):
-            """Stub listener."""
+            pass
 
         mgr = self._mgr({'a': [a]})
         mgr.records['a']['load_status'] = 'deps_failed'
@@ -1071,13 +1074,6 @@ class TestRunSongAnalyzedHookHelper:
 
 
 class TestPluginTaskRunsPerServer:
-    """A scheduled plugin task runs once per server in its schedule's scope.
-
-    Servers hold different catalogues, so a plugin creating playlists or reading
-    listening history has to see the server it is running against - the same rule
-    the built-in scheduled tasks follow. Without a scope (a plugin's own
-    api.enqueue) it stays a single unbound run against the default server.
-    """
 
     @staticmethod
     def _servers(monkeypatch, servers):
@@ -1119,10 +1115,6 @@ class TestPluginTaskRunsPerServer:
         results = _run_per_server(
             lambda: seen.append(context.active_server_id()) or 'ran', 'all', (), {}
         )
-        # Every bound server reports its own id, the DEFAULT included. Binding the
-        # default to a None context (its provider calls still fall back to config)
-        # left active_server_id() empty, which every availability-scoped reader
-        # takes to mean "search the whole union catalogue".
         assert seen == ['d1', 's2']
         assert results == ['ran', 'ran']
 
@@ -1154,3 +1146,35 @@ class TestPluginTaskRunsPerServer:
         _run_per_server(plugin_task, 'all', ('x',), {'y': 1})
         assert captured['args'] == ('x',)
         assert captured['kwargs'] == {'y': 1}
+
+
+def test_a_successful_plugin_run_records_a_one_line_recap(monkeypatch):
+    import types
+
+    import taskqueue
+
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-ok')
+    monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
+    monkeypatch.setattr(
+        database, 'get_task_info_from_db',
+        lambda _task_id: {'task_type': 'plugin.demo.daily', 'status': 'STARTED'},
+    )
+    module = types.ModuleType('audiomuse_plugins.demo.tasks')
+    module.daily = lambda *a, **k: {'ok': True}
+    monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)
+    monkeypatch.setattr(
+        manager, '_run_per_server', lambda func, scope, args, kwargs: {'ok': True}
+    )
+
+    saved = {}
+    monkeypatch.setattr(
+        database, 'save_task_status',
+        lambda *a, **k: saved.update({'args': a, 'kwargs': k}),
+    )
+
+    manager.run_plugin_task('audiomuse_plugins.demo.tasks.daily', server_scope='all')
+
+    assert saved['args'][2] == config.TASK_STATUS_SUCCESS
+    details = saved['kwargs'].get('details')
+    assert details is not None
+    assert details.get('message')

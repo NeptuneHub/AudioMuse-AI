@@ -25,8 +25,8 @@ Main Features:
 * Upserts each playlist, falling back to create_playlist when the provider does
   not support create_or_replace_playlist, and returns a created/failed summary.
 * Reports progress through an optional ``report`` callback: the cron tick passes
-  one that heartbeats its task_status row, so a run that outlives the RQ janitor's
-  orphan grace period is not mistaken for a row with nothing behind it.
+  one that heartbeats its task_status row, so a run that outlives the queue
+  maintenance grace period is not mistaken for a row with nothing behind it.
 """
 
 import logging

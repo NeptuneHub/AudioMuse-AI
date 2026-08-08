@@ -45,7 +45,9 @@ class FakeConnection:
         self.closed = 1
 
     def cursor(self, *args, **kwargs):
-        return MagicMock()
+        cur = MagicMock()
+        cur.rowcount = 1
+        return cur
 
     def commit(self):
         pass

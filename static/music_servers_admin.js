@@ -49,6 +49,33 @@
         node.style.color = ok ? '' : '#c0392b';
     }
 
+    // The save paths reload the page, so a warning rendered before the reload is
+    // thrown away. Park it and render it once the new page is up.
+    var PENDING_WARNING_KEY = 'audiomuse_music_servers_warning';
+
+    function parkWarning(body) {
+        if (!body?.warning) { return; }
+        try {
+            window.sessionStorage.setItem(PENDING_WARNING_KEY, body.warning);
+        } catch (e) {
+            window.alert(body.warning);
+        }
+    }
+
+    function showParkedWarning() {
+        var parked = null;
+        try {
+            parked = window.sessionStorage.getItem(PENDING_WARNING_KEY);
+            window.sessionStorage.removeItem(PENDING_WARNING_KEY);
+        } catch (e) {
+            console.warn('Could not read the parked warning', e);
+            return;
+        }
+        if (parked) {
+            feedback(el('music-servers-error'), parked, false);
+        }
+    }
+
     function showRegistryForm() {
         var editor = el('default-server-editor');
         if (editor) { editor.style.display = 'none'; }
@@ -272,7 +299,6 @@
 
     var sweepTimer = null;
     var currentSweepTaskId = null;
-    var ACTIVE_STATES = ['PENDING', 'STARTED', 'PROGRESS', 'queued', 'started', 'deferred', 'scheduled'];
 
     function renderSweepProgress(pct, message, active, failed) {
         var box = el('sweep-progress');
@@ -307,8 +333,8 @@
                     consecutiveErrors = 0;
                     var msg = (d.details && (d.details.status_message || d.details.message)) || d.status_message || d.state || '';
                     var state = d.state || '';
-                    var terminal = ['SUCCESS', 'FAILURE', 'REVOKED', 'finished', 'failed', 'canceled'].indexOf(state) !== -1;
-                    var failed = state === 'FAILURE' || state === 'failed';
+                    var terminal = AudioMuseTaskStatus.isTerminal(state);
+                    var failed = AudioMuseTaskStatus.isFailure(state);
                     renderSweepProgress(terminal ? 100 : (d.progress || 0), msg, !terminal, failed);
                     if (terminal) {
                         stopSweepPolling();
@@ -334,7 +360,7 @@
     function maybeResumeSweep(data) {
         var t = data && data.sweep_task;
         if (!t || !t.task_id) { return; }
-        if (ACTIVE_STATES.indexOf(t.status) !== -1) {
+        if (AudioMuseTaskStatus.isLive(t.status)) {
             renderSweepProgress(t.progress || 0, t.message || 'Sweep in progress...', true, false);
             pollSweep(t.task_id);
         }
@@ -381,6 +407,7 @@
                     feedback(el('ms-feedback'), (res.d && res.d.error) || 'Save failed.', false);
                     return;
                 }
+                parkWarning(res.d);
                 if (res.d && res.d.is_default) {
                     // The default server IS what the setup form edits. Reload so
                     // that form shows the new default instead of re-saving the
@@ -391,6 +418,7 @@
                 hideRegistryForm();
                 resetForm();
                 loadServers();
+                showParkedWarning();
                 if (res.d && res.d.sweep_task_id) {
                     renderSweepProgress(0, 'Matching sweep queued...', true, false);
                     pollSweep(res.d.sweep_task_id);
@@ -425,6 +453,7 @@
                     feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not set the default server.', false);
                     return;
                 }
+                parkWarning(res.d);
                 // Same reason as in save(): the setup form edits the default
                 // server, so it must be re-read from the new one.
                 window.location.reload();
@@ -496,4 +525,5 @@
     resetForm();
     hideRegistryForm();
     loadServers();
+    showParkedWarning();
 })();

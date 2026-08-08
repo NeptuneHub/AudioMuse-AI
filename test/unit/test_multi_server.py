@@ -28,12 +28,17 @@ Main Features:
 """
 
 import gc
+import inspect
 import json
 import logging
 import sys
+import types
 import weakref
+from contextlib import nullcontext
 
 import pytest
+import taskqueue
+from flask import Flask
 from unittest.mock import MagicMock
 
 
@@ -216,19 +221,6 @@ class TestRegistryPureHelpers:
         conn.cursor.return_value = cursor
         result = registry.translate_ids(['A', 'B'], 'sec', conn=conn)
         assert result == {'A': 'provA'}
-
-    def test_default_never_leaks_unmapped_canonical_id(self, monkeypatch):
-        from tasks.mediaserver import registry
-
-        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
-        cursor = MagicMock()
-        cursor.fetchall.return_value = []
-        conn = MagicMock()
-        conn.cursor.return_value = cursor
-
-        assert registry.translate_ids(['fp_deadbeef', 'legacy-provider-id'], None, conn=conn) == {
-            'legacy-provider-id': 'legacy-provider-id'
-        }
 
 
 class TestDefaultServerContextSelfHeal:
@@ -505,14 +497,6 @@ class TestMatcherTiers:
         assert result['match_tiers']['A'] == 'exact_meta'
 
     def test_an_11th_server_matches_on_a_path_the_default_server_never_had(self):
-        """The whole point of the per-server path column.
-
-        The track lives on servers 5 and 7, NEVER on the default, so the shared row
-        holds no path for it. Onboarding an 11th server that has the very same file
-        must still match on PATH. Under the old one-path-per-catalogue model there
-        was no path to match against and this fell through to the metadata tiers,
-        which here would have matched the WRONG track.
-        """
         from tasks.provider_migration_matcher import match_tracks
 
         old = [{
@@ -673,18 +657,59 @@ class TestCanonicalInputIds:
 
 
 class TestSonicFingerprintProviderRecency:
-    def test_last_played_uses_provider_id_for_canonical_song(self, monkeypatch):
+    @staticmethod
+    def _patch_fingerprint_sources(monkeypatch, top_songs, canonical_by_provider, tracks):
+        import app_helper
+        from tasks import sonic_fingerprint_manager as sfm
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(
-            registry,
-            'reverse_translate_ids',
-            lambda ids, server_id=None, conn=None: {'jelly1': 'fp_a'},
+            sfm, 'get_top_played_songs',
+            lambda limit=None, user_creds=None: list(top_songs),
         )
-        mapping = registry.canonical_input_ids(['jelly1'], None)
-        provider_by_canonical = {c: p for p, c in mapping.items()}
-        assert provider_by_canonical.get('fp_a', 'fp_a') == 'jelly1'
-        assert provider_by_canonical.get('fp_unknown', 'fp_unknown') == 'fp_unknown'
+        monkeypatch.setattr(
+            registry, 'canonical_input_ids',
+            lambda ids, server_id=None, conn=None: dict(canonical_by_provider),
+        )
+        monkeypatch.setattr(app_helper, 'get_tracks_by_ids', lambda ids: list(tracks))
+        asked = []
+
+        def fake_last_played(item_id, user_creds=None):
+            asked.append(item_id)
+            return None
+
+        monkeypatch.setattr(sfm, 'get_last_played_time', fake_last_played)
+        return sfm, asked
+
+    def test_last_played_is_asked_with_the_provider_id_never_the_canonical_id(self, monkeypatch):
+        import numpy as np
+
+        sfm, asked = self._patch_fingerprint_sources(
+            monkeypatch,
+            [{'Id': 'jelly1'}],
+            {'jelly1': 'fp_a'},
+            [{'item_id': 'fp_a', 'embedding_vector': np.array([1.0, 0.0])}],
+        )
+
+        results = sfm.generate_sonic_fingerprint(num_neighbors=1)
+
+        assert asked == ['jelly1']
+        assert results == [{'item_id': 'fp_a', 'distance': 0.0}]
+
+    def test_unmapped_provider_id_stays_its_own_seed_and_recency_key(self, monkeypatch):
+        import numpy as np
+
+        sfm, asked = self._patch_fingerprint_sources(
+            monkeypatch,
+            [{'Id': 'legacy9'}],
+            {},
+            [{'item_id': 'legacy9', 'embedding_vector': np.array([0.0, 1.0])}],
+        )
+
+        results = sfm.generate_sonic_fingerprint(num_neighbors=1)
+
+        assert asked == ['legacy9']
+        assert results == [{'item_id': 'legacy9', 'distance': 0.0}]
 
 
 class TestAnalysisCanonicalResolution:
@@ -707,7 +732,6 @@ class TestAnalysisCanonicalResolution:
 
 
 class TestServerWorkMap:
-    """load_server_work_map: ONE scan per server replacing per-album queries."""
 
     def _cursor(self, pages_by_sql):
         executed = []
@@ -777,9 +801,6 @@ class TestServerWorkMap:
         assert 'lyrics_embedding' not in sql
 
     def test_album_work_masks_is_a_bounded_per_album_query(self, monkeypatch):
-        """The per-album fallback yields the same bits as the bulk scan but via a
-        bounded ANY() query (no keyset LIMIT), so a bulk-scan failure degrades to
-        per-album checks instead of aborting the phase."""
         import tasks.analysis.helper as helper
 
         cur, executed = self._cursor({'mapped': [[
@@ -976,12 +997,6 @@ class TestSingleTranslationPoint:
 
 
 def _legacy_cursor(legacy_rows, canonical_rows=()):
-    """A cursor over a catalogue of legacy rows (+ already-canonical ones).
-
-    _build_mapping COUNTs each kind, streams both through server-side cursors to
-    hash their signatures a batch at a time, then fetches embeddings BACK for
-    the candidate pairs it asks the cosine to confirm.
-    """
     import numpy as np
     from tasks import simhash as _sh
     from tasks.paged_ivf import pack_directory
@@ -1053,13 +1068,11 @@ def _legacy_cursor(legacy_rows, canonical_rows=()):
 
     cursor = MagicMock()
     cursor.connection = FakeConn()
-    # Two COUNTs: legacy first, then already-canonical.
     cursor.fetchone.side_effect = [(len(legacy_rows),), (len(canonical_rows),)]
     return cursor
 
 
 class TestIndexRepoint:
-    """A relabel renames tracks; it must not rebuild a single index."""
 
     def _patched(self, monkeypatch, blob, stored, invalidated):
         from tasks import index_build_helpers, paged_ivf
@@ -1093,7 +1106,7 @@ class TestIndexRepoint:
         cursor = MagicMock()
         cursor.fetchall.return_value = [('main_map', json.dumps(['jf_1', 'jf_2', 'jf_3']))]
         canonicalize._repoint_indexes(
-            cursor, {'jf_1': 'fp_2aa', 'jf_3': 'fp_2aa'}  # jf_3 merged INTO jf_1's row
+            cursor, {'jf_1': 'fp_2aa', 'jf_3': 'fp_2aa'}
         )
 
         written = stored['music_library__ivf_dir']
@@ -1101,13 +1114,11 @@ class TestIndexRepoint:
             unpack_directory(written)
         )
         assert new_ids == ['fp_2aa', 'jf_2', 'fp_2aa']
-        # Not one vector, cell assignment or centroid may move.
         assert np.array_equal(new_centroids, centroids)
         assert np.array_equal(new_id2cell, id2cell)
         assert (dim, metric, normalized, dtype) == (4, 'angular', True, 1)
         assert invalidated == ['music_library']
 
-        # The map projection's id list is rewritten in place too.
         update = [c for c in cursor.execute.call_args_list if 'UPDATE' in c.args[0]]
         assert json.loads(update[0].args[1][0]) == ['fp_2aa', 'jf_2', 'fp_2aa']
 
@@ -1317,8 +1328,6 @@ class TestEmbeddingCanonicalization:
 
         assert result == {'relabelled': 0, 'duplicates': 0}
         sqls = [sql for sql, _params in conn.executed]
-        # The advisory lock makes exactly one replica relabel; the others wait
-        # and then find nothing to do.
         assert sqls == [
             "SHOW statement_timeout",
             "SET statement_timeout = 0",
@@ -1331,7 +1340,106 @@ class TestEmbeddingCanonicalization:
         assert conn.commits >= 1
 
 
+def _candidate_selects(executed):
+    return [
+        e for e in executed
+        if e[0].lstrip().startswith('SELECT') and e[1] is not None
+    ]
+
+
+class TestAlignmentQueuedTwiceIsNotAnError:
+    def test_an_alignment_an_earlier_attempt_queued_reports_its_own_id(self, monkeypatch):
+        import taskqueue
+        from tasks import multiserver_sync as sync
+
+        db = MagicMock()
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        db.cursor.return_value.__enter__ = lambda _self: cursor
+        db.cursor.return_value.__exit__ = lambda *_a: False
+        monkeypatch.setattr(sync, 'connect_raw', lambda *a, **k: db)
+        monkeypatch.setattr(
+            sync.registry, 'get_default_server_id', lambda *_a, **_k: 'server-1'
+        )
+
+        def enqueue(*_args, **_kwargs):
+            raise taskqueue.TaskNotQueued('already exists')
+
+        monkeypatch.setattr(taskqueue, 'enqueue', enqueue)
+
+        result = sync.enqueue_server_alignment(task_id='align-1')
+
+        assert result == 'align-1', (
+            'the restart handshake retries the post-commit step under the same ids, '
+            'so a row that already carries its func means the alignment IS queued'
+        )
+
+
 class TestSweepAlignment:
+    def test_dequeued_single_sweep_honours_wiped_row_before_any_work(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        close = MagicMock()
+
+        def cancelled():
+            raise sync.SweepCancelled()
+
+        reporter_factory = MagicMock()
+        get_server = MagicMock()
+        sweep_one = MagicMock()
+        provider_fetch = MagicMock()
+        monkeypatch.setattr(sync, '_make_cancel_check', lambda _task_id: (cancelled, close))
+        monkeypatch.setattr(sync, '_make_reporter', reporter_factory)
+        monkeypatch.setattr(sync.registry, 'get_server', get_server)
+        monkeypatch.setattr(sync, '_sweep_one', sweep_one)
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', provider_fetch)
+        db = MagicMock()
+
+        result = sync.sweep_server('server-1', task_id='wiped-sweep', conn=db)
+
+        assert result == {'server_id': 'server-1', 'cancelled': True}
+        reporter_factory.assert_not_called()
+        get_server.assert_not_called()
+        sweep_one.assert_not_called()
+        provider_fetch.assert_not_called()
+        db.cursor.assert_not_called()
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        close.assert_called_once_with()
+
+    def test_dequeued_recovery_sweep_honours_wiped_row_before_any_work(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        close = MagicMock()
+
+        def cancelled():
+            raise sync.SweepCancelled()
+
+        reporter_factory = MagicMock()
+        list_servers = MagicMock()
+        sweep_one = MagicMock()
+        provider_fetch = MagicMock()
+        monkeypatch.setattr(sync, '_make_cancel_check', lambda _task_id: (cancelled, close))
+        monkeypatch.setattr(sync, '_make_reporter', reporter_factory)
+        monkeypatch.setattr(sync.registry, 'list_servers', list_servers)
+        monkeypatch.setattr(sync, '_sweep_one', sweep_one)
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', provider_fetch)
+        db = MagicMock()
+
+        result = sync.sweep_all_secondary_servers(
+            task_id='wiped-recovery-replacement', conn=db, server_ids=['server-1']
+        )
+
+        assert result == []
+        reporter_factory.assert_not_called()
+        list_servers.assert_not_called()
+        sweep_one.assert_not_called()
+        provider_fetch.assert_not_called()
+        db.cursor.assert_not_called()
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        close.assert_called_once_with()
+
     def test_iter_unmapped_local_rows_keyset_pagination(self):
         from tasks import multiserver_sync as sync
 
@@ -1362,8 +1470,6 @@ class TestSweepAlignment:
         assert [row['item_id'] for chunk in chunks for row in chunk] == [
             'a1', 'a2', 'a3', 'a4', 'a5'
         ]
-        # Every server's path for the row, so the matcher can offer a NEW server
-        # every layout the catalogue knows, not just the default server's.
         assert chunks[0][0] == {
             'item_id': 'a1', 'title': 't1', 'author': 'au1',
             'album': 'al1', 'album_artist': 'aa1', 'file_path': None,
@@ -1388,7 +1494,7 @@ class TestSweepAlignment:
         reports = []
         monkeypatch.setattr(
             sync, '_make_reporter',
-            lambda task_id, label, full_refresh=None: (
+            lambda task_id, label: (
                 lambda message, progress, task_state=None: reports.append(
                     (message, progress, task_state)
                 )
@@ -1464,7 +1570,7 @@ class TestSweepAlignment:
         reports = []
         monkeypatch.setattr(
             sync, '_make_reporter',
-            lambda task_id, label, full_refresh=None: (
+            lambda task_id, label: (
                 lambda message, progress, task_state=None: reports.append(
                     (message, progress, task_state)
                 )
@@ -1583,8 +1689,6 @@ class TestSweepAlignment:
         assert calls == [('s1', {'A': '1'})]
 
     def test_refresh_writes_the_path_to_the_map_row_never_to_the_shared_score_row(self):
-        """A path belongs to a file on a server, so EVERY server refreshes its own
-        map row and NO server may stamp a path onto the shared catalogue row."""
         from tasks import multiserver_sync as sync
 
         executed = []
@@ -1592,7 +1696,7 @@ class TestSweepAlignment:
         cur.execute.side_effect = lambda sql, params=None: executed.append(
             (str(sql), params)
         )
-        cur.fetchone.return_value = ('sweep_track_meta',)  # guard: temp table exists
+        cur.fetchone.return_value = ('sweep_track_meta',)
         cur.rowcount = 3
         db = MagicMock()
         db.cursor.return_value = cur
@@ -1613,7 +1717,7 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         cur = MagicMock()
-        cur.fetchone.return_value = (None,)  # to_regclass -> table not staged
+        cur.fetchone.return_value = (None,)
         db = MagicMock()
         db.cursor.return_value = cur
         assert sync._refresh_mapped_metadata(db, 'srv') == 0
@@ -1626,7 +1730,6 @@ class TestSweepAlignment:
         assert sync._strip_nul('clean') == 'clean'
         assert sync._strip_nul(None) is None
         assert sync._strip_nul(2020) == 2020
-        # A tag with a NUL must not blow up artist-map collection.
         maps = sync._collect_artist_maps(
             [{'artist': 'AC\x00DC', 'artist_id': 'id\x001'}]
         )
@@ -1739,106 +1842,108 @@ class TestSweepAlignment:
     def test_enqueue_sweep_supersedes_active_sweeps_with_all_server_alignment(self, monkeypatch):
         import app_music_servers as msrv
 
-        # No cleaning run in flight: the sweep and cleaning both prune
-        # track_server_map, so an alignment refuses while cleaning is live.
         monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: None)
+        monkeypatch.setattr(msrv, 'main_task_start_lock', nullcontext)
+        db = MagicMock()
+        monkeypatch.setattr(msrv, 'get_db', lambda: db)
+        monkeypatch.setattr(
+            msrv, '_claim_replacement_sweep', lambda task_id: [('old-task', 1.0)]
+        )
+        monkeypatch.setattr(msrv, '_record_superseded_sweep_history', lambda records: None)
         cancelled = []
         monkeypatch.setattr(
-            msrv, '_cancel_active_sweeps', lambda: cancelled.append('old-task') or ['old-task']
-        )
-        saved = {}
-        monkeypatch.setattr(
-            msrv, 'save_task_status',
-            lambda task_id, task_type, status, **kw: saved.update(
-                {'task_id': task_id, 'task_type': task_type, 'status': status}
-            ),
+            msrv, '_cleanup_superseded_sweep_jobs', lambda ids: cancelled.extend(ids)
         )
         enqueued = {}
 
         def fake_enqueue(func, **kwargs):
             enqueued['func'] = func
             enqueued.update(kwargs)
+            assert not db.commit.called, (
+                'the staged sweep row must only become durable together with its '
+                'job: a commit before the enqueue published a func-less row a '
+                'crash left stranded for the stale sweep'
+            )
 
-        monkeypatch.setattr(msrv.rq_queue_high, 'enqueue', fake_enqueue)
+        monkeypatch.setattr(taskqueue, 'enqueue', fake_enqueue)
         task_id = msrv._enqueue_sweep()
         assert cancelled == ['old-task']
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
-        assert enqueued['job_id'] == task_id
-        assert saved['task_type'] == 'server_sweep'
+        assert enqueued['task_id'] == task_id
+        assert enqueued['conn'] is db
+        assert db.commit.called
 
-    def test_enqueue_sweep_refuses_while_a_cleaning_run_is_live(self, monkeypatch):
-        """Both prune track_server_map against a catalogue snapshot taken minutes
-        earlier, so an overlap lets one delete the mappings the other just wrote."""
+    @pytest.mark.parametrize(
+        'blocking_type,consulted_before_refusal',
+        [
+            ('cleaning', ['cleaning']),
+            ('provider_migration', ['cleaning', 'provider_migration']),
+        ],
+    )
+    def test_enqueue_sweep_refuses_while_a_track_map_rewriter_is_live(
+        self, monkeypatch, blocking_type, consulted_before_refusal
+    ):
         import app_music_servers as msrv
 
-        active = {'task_id': 'clean-1', 'task_type': 'cleaning', 'status': 'PROGRESS'}
-        monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: active)
+        active = {'task_id': 'blocker-1', 'task_type': blocking_type, 'status': 'RUNNING'}
+        consulted = []
+
+        def fake_active(task_type=None):
+            consulted.append(task_type)
+            return active if task_type == blocking_type else None
+
+        monkeypatch.setattr(msrv, 'get_active_main_task', fake_active)
+        monkeypatch.setattr(msrv, 'main_task_start_lock', nullcontext)
+        db = MagicMock()
+        monkeypatch.setattr(msrv, 'get_db', lambda: db)
+        claimed = []
+        monkeypatch.setattr(
+            msrv, '_claim_replacement_sweep',
+            lambda task_id: claimed.append(task_id) or [],
+        )
         enqueued = []
         monkeypatch.setattr(
-            msrv.rq_queue_high, 'enqueue', lambda *a, **k: enqueued.append(a)
-        )
-        cancelled = []
-        monkeypatch.setattr(
-            msrv, '_cancel_active_sweeps', lambda: cancelled.append(1) or []
+            taskqueue, 'enqueue', lambda *a, **k: enqueued.append(a)
         )
 
         assert msrv._enqueue_sweep() is None
+        assert consulted == consulted_before_refusal
+        assert claimed == []
         assert enqueued == []
-        # It must not supersede the sweeps it is not going to replace, either.
-        assert cancelled == []
+        assert not db.commit.called
 
-    def test_cancel_active_sweeps_revokes_each_non_terminal_sweep(self, monkeypatch):
+    def test_sweep_replacement_fails_closed_if_the_whole_old_set_cannot_be_revoked(
+        self, monkeypatch
+    ):
         import app_music_servers as msrv
-        import config
 
         cur = MagicMock()
-        cur.fetchall.return_value = [('t1',), ('t2',)]
+        cur.__enter__.return_value = cur
+        cur.fetchall.return_value = [('old-1', 1.0), ('old-2', 2.0)]
+        cur.rowcount = 1
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(msrv, 'get_db', lambda: db)
-        revoked = []
-        monkeypatch.setattr(
-            msrv, 'save_task_status',
-            lambda task_id, task_type, status, **kw: revoked.append(
-                (task_id, task_type, status)
-            ),
-        )
-        started_job = MagicMock()
-        started_job.get_status.return_value = 'started'
-        queued_job = MagicMock()
-        queued_job.get_status.return_value = 'queued'
-        jobs = {'t1': started_job, 't2': queued_job}
+        monkeypatch.setattr(msrv, 'main_task_start_lock', nullcontext)
+        monkeypatch.setattr(msrv, 'get_active_main_task', lambda task_type=None: None)
+        enqueue = MagicMock()
+        monkeypatch.setattr(taskqueue, 'enqueue', enqueue)
 
-        class _FakeJob:
-            @staticmethod
-            def fetch(task_id, connection=None):
-                return jobs[task_id]
-
-        monkeypatch.setattr(msrv, 'Job', _FakeJob)
-        stopped = []
-        monkeypatch.setattr(
-            msrv, 'send_stop_job_command', lambda conn, task_id: stopped.append(task_id)
-        )
-        assert msrv._cancel_active_sweeps() == ['t1', 't2']
-        assert revoked == [
-            ('t1', 'server_sweep', config.TASK_STATUS_REVOKED),
-            ('t2', 'server_sweep', config.TASK_STATUS_REVOKED),
-        ]
-        assert stopped == ['t1']
-        queued_job.cancel.assert_called_once()
-        started_job.cancel.assert_not_called()
+        assert msrv._enqueue_sweep() is None
+        db.rollback.assert_called_once()
+        db.commit.assert_not_called()
+        enqueue.assert_not_called()
 
     def test_enqueue_server_alignment_targets_the_default_server_with_no_app_context(
         self, monkeypatch
     ):
-        """The provider migration asks for this from an RQ job, where Flask's ``g``
-        does not exist, so the server is resolved on the helper's own connection
-        rather than through get_db()."""
         from tasks import multiserver_sync as sync
 
         cur = MagicMock()
         executed = []
         cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        cur.fetchall.return_value = []
+        cur.__enter__.return_value = cur
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
@@ -1851,18 +1956,130 @@ class TestSweepAlignment:
             enqueued['func'] = func
             enqueued.update(kwargs)
 
-        import app_helper
-        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', fake_enqueue)
+        monkeypatch.setattr(taskqueue, 'enqueue', fake_enqueue)
 
         task_id = sync.enqueue_server_alignment(message='after the migration')
 
         assert task_id
         assert enqueued['func'] == 'tasks.multiserver_sync.sweep_server'
         assert enqueued['args'] == ('srv-default',)
-        assert enqueued['kwargs'] == {'task_id': task_id}
-        rows = [e for e in executed if e[0].startswith('INSERT INTO task_status')]
-        assert rows, "the sweep must be visible in task_status before it is queued"
-        assert sync.SWEEP_TASK_TYPE in rows[0][1]
+        assert enqueued['kwargs'] == {'task_id': task_id, 'parent_task_id': None}
+        assert enqueued['task_type'] == sync.SWEEP_TASK_TYPE
+        assert enqueued['conn'] is db
+
+    def test_alignment_enqueued_as_a_child_carries_its_parent_into_the_sweep_kwargs(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        cur.__enter__.return_value = cur
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(
+            sync.registry, 'get_default_server_id', lambda conn=None: 'srv-default'
+        )
+        enqueued = {}
+
+        def fake_enqueue(func, **kwargs):
+            enqueued['func'] = func
+            enqueued.update(kwargs)
+
+        monkeypatch.setattr(taskqueue, 'enqueue', fake_enqueue)
+
+        task_id = sync.enqueue_server_alignment(
+            server_id='srv-1',
+            message='after the migration',
+            parent_task_id='migration-1',
+        )
+
+        assert task_id
+        assert enqueued['parent_task_id'] == 'migration-1'
+        assert enqueued['kwargs'] == {
+            'task_id': task_id, 'parent_task_id': 'migration-1',
+        }
+        bound = inspect.signature(sync.sweep_server).bind(
+            *enqueued['args'], **enqueued['kwargs']
+        )
+        assert bound.arguments['parent_task_id'] == 'migration-1'
+
+    def test_sweep_progress_write_keeps_the_parent_instead_of_promoting_the_child_to_a_root(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+        import config
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('sweep-parent-test')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        saved = []
+        fake_app_helper = types.ModuleType('app_helper')
+        fake_app_helper.save_task_status = (
+            lambda task_id, task_type, status, **kwargs: saved.append(
+                (task_id, status, kwargs)
+            )
+        )
+        monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
+        monkeypatch.setattr(
+            sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
+        )
+        monkeypatch.setattr(
+            sync.registry, 'get_server',
+            lambda server_id, conn=None: {
+                'server_id': server_id, 'name': 'Nav', 'server_type': 'navidrome',
+                'creds': {}, 'music_libraries': '',
+            },
+        )
+
+        def fake_sweep_one(server, db, report, base, span, cancel, full_refresh=False):
+            report(f"Aligning {server['name']}: 3 tracks to match...", 50)
+            return {
+                'server_id': server['server_id'], 'matched': 2, 'unmapped': 3,
+                'tier_counts': {},
+            }
+
+        monkeypatch.setattr(sync, '_sweep_one', fake_sweep_one)
+
+        sync.sweep_server(
+            'srv-1', task_id='sweep-1', conn=MagicMock(), parent_task_id='migration-1',
+        )
+
+        assert [status for _tid, status, _kw in saved] == [
+            config.TASK_STATUS_STARTED,
+            config.TASK_STATUS_PROGRESS,
+            config.TASK_STATUS_SUCCESS,
+        ]
+        assert all(task_id == 'sweep-1' for task_id, _status, _kw in saved)
+        assert [kw.get('parent_task_id') for _tid, _status, kw in saved] == [
+            'migration-1', 'migration-1', 'migration-1',
+        ]
+
+    def test_root_sweep_reports_a_null_parent_so_it_stays_its_own_root(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('sweep-root-test')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+
+        saved = []
+        fake_app_helper = types.ModuleType('app_helper')
+        fake_app_helper.save_task_status = (
+            lambda task_id, task_type, status, **kwargs: saved.append(kwargs)
+        )
+        monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
+
+        report = sync._make_reporter('sweep-1', 'srv-1')
+        report('Aligning...', 40)
+
+        assert len(saved) == 1
+        assert saved[0].get('parent_task_id') is None
+        assert saved[0]['progress'] == 40
+        assert saved[0]['details'] == {
+            'status_message': 'Aligning...', 'message': 'Aligning...',
+        }
 
     def test_enqueue_server_alignment_queues_nothing_without_a_server(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -1872,673 +2089,54 @@ class TestSweepAlignment:
         monkeypatch.setattr(
             sync.registry, 'get_default_server_id', lambda conn=None: None
         )
-        import app_helper
         called = []
         monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue', lambda *a, **k: called.append(1)
+            taskqueue, 'enqueue', lambda *a, **k: called.append(1)
         )
 
         assert sync.enqueue_server_alignment() is None
         assert called == []
 
-    def test_a_progress_update_does_not_wipe_the_full_refresh_flag(self, monkeypatch):
-        """save_task_status REPLACES details wholesale, and recovery only ever fires
-        for a sweep that STARTED and died (a still-queued job counts as alive and
-        just runs after the restart). By then the first progress report has
-        rewritten the row, so a flag written only at enqueue time is gone exactly
-        when the janitor needs it. Every progress update has to carry it."""
-        import types
-
-        from tasks import multiserver_sync as sync
-
-        fake_flask_app = types.ModuleType('flask_app')
-        fake_flask_app.app = MagicMock()
-        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
-
-        saved = []
-        import app_helper
-        monkeypatch.setattr(
-            app_helper, 'save_task_status',
-            lambda *a, **k: saved.append(k.get('details')),
-        )
-
-        report = sync._make_reporter('t1', 'all', full_refresh=True)
-        report('Starting alignment...', 2, task_state='STARTED')
-
-        assert saved, "the reporter must actually have written a row"
-        assert sync._details_full_refresh(saved[0]) is True, (
-            "the running sweep's strength must survive its own progress updates"
-        )
-
-    def test_a_matching_only_sweep_reports_itself_as_such(self, monkeypatch):
-        import types
-
-        from tasks import multiserver_sync as sync
-
-        fake_flask_app = types.ModuleType('flask_app')
-        fake_flask_app.app = MagicMock()
-        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
-
-        saved = []
-        import app_helper
-        monkeypatch.setattr(
-            app_helper, 'save_task_status',
-            lambda *a, **k: saved.append(k.get('details')),
-        )
-
-        report = sync._make_reporter('t2', 'all', full_refresh=False)
-        report('Aligning...', 5, task_state='STARTED')
-
-        assert saved and sync._details_full_refresh(saved[0]) is False
-
-    def test_recovery_replacement_keeps_the_strength_of_the_sweep_it_replaces(
-        self, monkeypatch
-    ):
-        """A killed FULL-REFRESH alignment must come back as a full refresh. Replaced
-        by a matching-only sweep it does nothing at all whenever every track is
-        already mapped - exactly the state a provider migration leaves - so the
-        artist ids the alignment existed to rebuild stay empty."""
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.return_value = [
-            ('dead-alignment', json.dumps({'message': 'x', 'full_refresh': True})),
-        ]
-        cur.execute.side_effect = lambda sql, params=None: None
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
-        enqueued = {}
-
-        import app_helper
-        monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue',
-            lambda func, **kwargs: enqueued.update({'func': func}, **kwargs),
-        )
-
-        sync.recover_abandoned_sweeps()
-
-        assert enqueued['kwargs']['full_refresh'] is True
-
-    def test_recovery_of_a_plain_sweep_stays_matching_only(self, monkeypatch):
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.return_value = [('dead-sweep', json.dumps({'message': 'x'}))]
-        cur.execute.side_effect = lambda sql, params=None: None
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
-        enqueued = {}
-
-        import app_helper
-        monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue',
-            lambda func, **kwargs: enqueued.update({'func': func}, **kwargs),
-        )
-
-        sync.recover_abandoned_sweeps()
-
-        assert enqueued['kwargs']['full_refresh'] is False
-
-    def test_unreadable_details_never_break_recovery(self, monkeypatch):
-        from tasks import multiserver_sync as sync
-
-        assert sync._details_full_refresh(None) is False
-        assert sync._details_full_refresh('not json') is False
-        assert sync._details_full_refresh('[]') is False
-        assert sync._details_full_refresh('{"full_refresh": true}') is True
-        assert sync._details_full_refresh(b'{"full_refresh": true}') is True
-        assert sync._details_full_refresh({'full_refresh': True}) is True
-
-    def test_a_redis_hiccup_leaves_a_row_the_janitor_can_recover(self, monkeypatch):
-        """If the enqueue throws, the task_status row is ALREADY written, so the
-        janitor finds a sweep with no RQ job and re-queues it. Writing the row after
-        the enqueue would lose the alignment outright."""
+    def test_repeated_automatic_alignment_coalesces_into_one_live_root(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         cur = MagicMock()
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append(sql)
+        cur.__enter__.return_value = cur
+        cur.fetchall.return_value = [('already-live',)]
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
         monkeypatch.setattr(
             sync.registry, 'get_default_server_id', lambda conn=None: 'srv-default'
         )
+        enqueue = MagicMock()
+        monkeypatch.setattr(taskqueue, 'enqueue', enqueue)
 
-        def _boom(*a, **k):
-            raise RuntimeError('redis is down')
-
-        import app_helper
-        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', _boom)
-
-        with pytest.raises(RuntimeError):
-            sync.enqueue_server_alignment(message='after the migration')
-
-        assert any(s.startswith('INSERT INTO task_status') for s in executed), (
-            "the recoverable row must exist before the enqueue is attempted"
+        assert sync.enqueue_server_alignment() == 'already-live'
+        enqueue.assert_not_called()
+        assert not any(
+            call.args and str(call.args[0]).startswith('INSERT INTO task_status')
+            for call in cur.execute.call_args_list
         )
-
-    def test_recover_abandoned_sweeps_replaces_dead_sweep(self, monkeypatch):
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.return_value = [('dead-sweep', None)]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
-        enqueued = {}
-
-        def fake_enqueue(func, **kwargs):
-            enqueued['func'] = func
-            enqueued.update(kwargs)
-
-        import app_helper
-        monkeypatch.setattr(app_helper.rq_queue_high, 'enqueue', fake_enqueue)
-        new_task_id = sync.recover_abandoned_sweeps()
-        assert new_task_id is not None
-        assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
-        assert enqueued['job_id'] == new_task_id
-        assert enqueued['kwargs'] == {'task_id': new_task_id, 'full_refresh': False}
-        revoke_calls = [e for e in executed if e[0].startswith('UPDATE task_status')]
-        assert revoke_calls and ['dead-sweep'] in revoke_calls[0][1]
-
-    def test_recover_abandoned_sweeps_leaves_healthy_sweeps_alone(self, monkeypatch):
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
-        cur = MagicMock()
-        cur.fetchall.return_value = [('live-sweep', None)]
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'alive')
-        import app_helper
-        called = []
-        monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue',
-            lambda *a, **k: called.append(1),
-        )
-        assert sync.recover_abandoned_sweeps() is None
-        assert called == []
-
-    def test_recover_abandoned_sweeps_recovers_rows_whose_rq_job_vanished(self, monkeypatch):
-        """A sweep row whose job is gone from Redis entirely used to be SKIPPED, on
-        the theory that the batch-start cleanup would archive it. That cleanup no
-        longer touches sweeps (starting an analysis used to silently revoke a running
-        one), so nothing retired these rows and the servers panel showed a phantom
-        alignment stuck at N% forever."""
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.return_value = [('never-enqueued-sweep', None)]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'missing')
-        import app_helper
-        called = []
-        monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue',
-            lambda *a, **k: called.append(1),
-        )
-        assert sync.recover_abandoned_sweeps() is not None
-        assert called == [1]
-        assert [e for e in executed if e[0].startswith('UPDATE task_status')]
-
-    def test_reap_orphaned_tasks_fails_rows_with_no_rq_job_behind_them(self, monkeypatch):
-        """A main row is committed BEFORE its job is enqueued. If Redis is down at
-        that moment, the PENDING row survives with nothing behind it, and
-        get_active_main_task counts it as live - so every later Start returns 409,
-        forever. Nothing used to retire it."""
-        from rq.exceptions import NoSuchJobError
-        from tasks import multiserver_sync as sync
-
-        cur = MagicMock()
-        cur.rowcount = 1
-        # First SELECT: RQ-backed rows. Second: in-process rows, judged by heartbeat.
-        cur.fetchall.side_effect = [[('ghost-analysis',)], []]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-
-        import rq.job
-
-        def _no_job(task_id, connection=None):
-            raise NoSuchJobError(task_id)
-
-        monkeypatch.setattr(rq.job.Job, 'fetch', staticmethod(_no_job))
-        self._mirror_fetch_many(monkeypatch)
-
-        assert sync.reap_orphaned_tasks() == 1
-        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
-        assert len(updates) == 1
-        assert 'FAILURE' in updates[0][1]
-        assert ['ghost-analysis'] in updates[0][1]
-
-        # Sweeps are excluded: recover_abandoned_sweeps re-enqueues those instead.
-        select = executed[0]
-        assert sync.SWEEP_TASK_TYPE in select[1][0]
-
-    def test_reap_orphaned_tasks_reconciles_terminal_jobs_but_keeps_live_jobs(
-        self, monkeypatch
-    ):
-        from tasks import multiserver_sync as sync
-
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.side_effect = [
-            [
-                ('failed-analysis',),
-                ('stopped-analysis',),
-                ('finished-analysis',),
-                ('live-analysis',),
-            ],
-            [],
-        ]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-
-        jobs = {}
-        for task_id, status in (
-            ('failed-analysis', 'failed'),
-            ('stopped-analysis', 'stopped'),
-            ('finished-analysis', 'finished'),
-            ('live-analysis', 'started'),
-        ):
-            job = MagicMock()
-            job.get_status.return_value = status
-            jobs[task_id] = job
-
-        import rq.job
-
-        monkeypatch.setattr(
-            rq.job.Job, 'fetch',
-            staticmethod(lambda task_id, connection=None: jobs[task_id]),
-        )
-        self._mirror_fetch_many(monkeypatch)
-
-        assert sync.reap_orphaned_tasks() == 3
-        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
-        assert len(updates) == 3
-        status_by_task = {
-            params[3][0]: params[0]
-            for _, params in updates
-        }
-        assert status_by_task == {
-            'failed-analysis': 'FAILURE',
-            'stopped-analysis': 'REVOKED',
-            'finished-analysis': 'FAILURE',
-        }
-        assert 'live-analysis' not in status_by_task
-
-    def test_reap_orphaned_tasks_revokes_an_existing_canceled_job(self, monkeypatch):
-        from tasks import multiserver_sync as sync
-
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.side_effect = [[('canceled-analysis',)], []]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-
-        canceled_job = MagicMock()
-        canceled_job.get_status.return_value = 'canceled'
-
-        import rq.job
-
-        monkeypatch.setattr(
-            rq.job.Job, 'fetch',
-            staticmethod(lambda task_id, connection=None: canceled_job),
-        )
-        self._mirror_fetch_many(monkeypatch)
-
-        assert sync.reap_orphaned_tasks() == 1
-        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
-        assert len(updates) == 1
-        assert 'REVOKED' in updates[0][1]
-        assert ['canceled-analysis'] in updates[0][1]
-
-    def _mirror_fetch_many(self, monkeypatch):
-        import rq.exceptions
-        import rq.job
-
-        def batch_fetch(job_ids, connection=None):
-            fetched = []
-            for job_id in job_ids:
-                try:
-                    fetched.append(rq.job.Job.fetch(job_id, connection=connection))
-                except rq.exceptions.NoSuchJobError:
-                    fetched.append(None)
-            return fetched
-
-        monkeypatch.setattr(rq.job.Job, 'fetch_many', staticmethod(batch_fetch))
-
-    def _reap_harness(self, monkeypatch, candidates, abandoned_confirmed=True):
-        from tasks import multiserver_sync as sync
-
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.side_effect = [[(t,) for t in candidates], []]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
-        monkeypatch.setattr(
-            sync, '_confirm_abandoned', lambda task_id: abandoned_confirmed
-        )
-        self._mirror_fetch_many(monkeypatch)
-        return sync, executed
-
-    def test_reap_orphaned_tasks_updates_nothing_when_the_redis_probe_itself_fails(
-        self, monkeypatch
-    ):
-        import redis.exceptions
-        import rq.job
-
-        sync, executed = self._reap_harness(monkeypatch, ['live-analysis'])
-
-        def boom(task_id, connection=None):
-            raise redis.exceptions.ConnectionError('redis is down')
-
-        monkeypatch.setattr(rq.job.Job, 'fetch', staticmethod(boom))
-
-        assert sync.reap_orphaned_tasks() == 0
-        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
-
-    def test_reap_orphaned_tasks_updates_nothing_when_the_redis_probe_times_out(
-        self, monkeypatch
-    ):
-        import redis.exceptions
-        import rq.job
-
-        sync, executed = self._reap_harness(monkeypatch, ['a-task', 'b-task'])
-
-        def boom(task_id, connection=None):
-            raise redis.exceptions.TimeoutError('redis timed out')
-
-        monkeypatch.setattr(rq.job.Job, 'fetch', staticmethod(boom))
-
-        assert sync.reap_orphaned_tasks() == 0
-        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
-
-    def _force_probe(self, monkeypatch, states):
-        import rq_job_state
-
-        monkeypatch.setattr(
-            rq_job_state, 'probe_jobs_many', lambda task_ids, connection: states
-        )
-
-    def test_reap_orphaned_tasks_requeues_a_started_job_whose_worker_heartbeat_died(
-        self, monkeypatch
-    ):
-        import rq_job_state
-
-        sync, executed = self._reap_harness(monkeypatch, ['abandoned-analysis'])
-        self._force_probe(
-            monkeypatch, {'abandoned-analysis': ('abandoned', 'started')}
-        )
-        retried = []
-        monkeypatch.setattr(
-            rq_job_state, 'retry_abandoned_job',
-            lambda task_id, connection: retried.append(task_id)
-            or rq_job_state.RETRY_REQUEUED,
-        )
-
-        assert sync.reap_orphaned_tasks() == 0
-        assert retried == ['abandoned-analysis']
-        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
-
-    def test_reap_orphaned_tasks_fails_an_abandoned_job_that_is_out_of_retries(
-        self, monkeypatch
-    ):
-        import rq_job_state
-
-        sync, executed = self._reap_harness(monkeypatch, ['exhausted-analysis'])
-        self._force_probe(
-            monkeypatch, {'exhausted-analysis': ('abandoned', 'started')}
-        )
-        monkeypatch.setattr(
-            rq_job_state, 'retry_abandoned_job',
-            lambda task_id, connection: rq_job_state.RETRY_NO_BUDGET,
-        )
-
-        assert sync.reap_orphaned_tasks() == 1
-        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
-        assert len(updates) == 1
-        assert 'FAILURE' in updates[0][1]
-
-    def test_reap_orphaned_tasks_leaves_an_abandoned_job_alone_on_a_transient_error(
-        self, monkeypatch
-    ):
-        import rq_job_state
-
-        sync, executed = self._reap_harness(monkeypatch, ['blip-analysis'])
-        self._force_probe(monkeypatch, {'blip-analysis': ('abandoned', 'started')})
-        monkeypatch.setattr(
-            rq_job_state, 'retry_abandoned_job',
-            lambda task_id, connection: rq_job_state.RETRY_ERROR,
-        )
-
-        assert sync.reap_orphaned_tasks() == 0
-        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
-
-    def test_reap_orphaned_tasks_leaves_a_started_job_with_a_fresh_heartbeat_alone(
-        self, monkeypatch
-    ):
-        sync, executed = self._reap_harness(monkeypatch, ['long-chromaprint-run'])
-        self._force_probe(
-            monkeypatch, {'long-chromaprint-run': ('alive', 'started')}
-        )
-
-        assert sync.reap_orphaned_tasks() == 0
-        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
-
-    def test_reap_orphaned_tasks_never_probes_rq_for_a_task_that_runs_in_flask(
-        self, monkeypatch
-    ):
-        """The alchemy radio runs in the web process and is never enqueued, so RQ has
-        no job for it: probing declared a healthy run dead after the 120s grace and
-        the row then flipped back to SUCCESS. It is excluded from the RQ query and
-        only reaped once its heartbeat has been stale for the longer inline window."""
-        from tasks import multiserver_sync as sync
-        from database import INLINE_FLASK_TASK_TYPES
-
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.side_effect = [[], [('stalled-radio',)]]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-
-        import rq.job
-
-        probed = []
-        monkeypatch.setattr(
-            rq.job.Job, 'fetch',
-            staticmethod(lambda task_id, connection=None: probed.append(task_id)),
-        )
-
-        assert sync.reap_orphaned_tasks() == 1
-        assert probed == []
-
-        rq_select, inline_select = executed[0], executed[1]
-        assert 'alchemy_radio' in rq_select[1][0]
-        assert list(INLINE_FLASK_TASK_TYPES) == inline_select[1][0]
-        assert inline_select[1][-1] == sync._INLINE_STALE_SECONDS
-        assert sync._INLINE_STALE_SECONDS > sync._ORPHAN_GRACE_SECONDS
-
-        updates = [e for e in executed if e[0].startswith('UPDATE task_status')]
-        assert len(updates) == 1
-        assert ['stalled-radio'] in updates[0][1]
-        assert 'stopped reporting progress' in updates[0][1][1]
-
-    def test_recover_abandoned_sweeps_backs_off_after_enqueue(self, monkeypatch):
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.return_value = [('dead-sweep', None)]
-        db = MagicMock()
-        db.cursor.return_value = cur
-        connections = []
-        monkeypatch.setattr(sync, 'connect_raw', lambda: connections.append(1) or db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
-        import app_helper
-        enqueued = []
-        monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue',
-            lambda *a, **k: enqueued.append(1),
-        )
-        assert sync.recover_abandoned_sweeps() is not None
-        assert sync.recover_abandoned_sweeps() is None
-        assert enqueued == [1]
-        assert connections == [1]
-
-    def test_recover_abandoned_sweeps_skips_the_replacement_when_every_stale_row_finished_mid_pass(
-        self, monkeypatch
-    ):
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
-        cur = MagicMock()
-        cur.rowcount = 0
-        cur.fetchall.return_value = [('just-finished-sweep', None)]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'terminal')
-        import app_helper
-        enqueued = []
-        monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue',
-            lambda *a, **k: enqueued.append(1),
-        )
-        assert sync.recover_abandoned_sweeps() is None
-        assert enqueued == []
-        assert [e for e in executed if e[0].startswith('INSERT')] == []
-
-    def test_recover_abandoned_sweeps_waits_for_a_second_sighting_of_an_abandoned_sweep(
-        self, monkeypatch
-    ):
-        from tasks import multiserver_sync as sync
-
-        monkeypatch.setattr(sync, '_recovery_state', {'last': None})
-        monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.return_value = [('suspended-sweep', None)]
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'abandoned')
-        import app_helper
-        enqueued = []
-        monkeypatch.setattr(
-            app_helper.rq_queue_high, 'enqueue',
-            lambda *a, **k: enqueued.append(1),
-        )
-        assert sync.recover_abandoned_sweeps() is None
-        assert enqueued == []
-        monkeypatch.setattr(sync, '_ABANDONED_CONFIRM_SECONDS', 0)
-        assert sync.recover_abandoned_sweeps() is not None
-        assert enqueued == [1]
-
-    def test_an_abandoned_job_needs_a_second_sighting_before_the_janitor_acts(
-        self, monkeypatch
-    ):
-        import rq_job_state
-        from tasks import multiserver_sync as sync
-
-        cur = MagicMock()
-        cur.rowcount = 1
-        cur.fetchall.side_effect = [
-            [('abandoned-analysis',)], [],
-            [('abandoned-analysis',)], [],
-        ]
-        executed = []
-        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
-        db = MagicMock()
-        db.cursor.return_value = cur
-        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_ABANDONED_FIRST_SEEN', {})
-        monkeypatch.setattr(
-            rq_job_state, 'probe_jobs_many',
-            lambda task_ids, connection: {
-                'abandoned-analysis': ('abandoned', 'started')
-            },
-        )
-        retried = []
-        monkeypatch.setattr(
-            rq_job_state, 'retry_abandoned_job',
-            lambda task_id, connection: retried.append(task_id)
-            or rq_job_state.RETRY_REQUEUED,
-        )
-
-        assert sync.reap_orphaned_tasks() == 0
-        assert retried == []
-
-        monkeypatch.setattr(sync, '_ABANDONED_CONFIRM_SECONDS', 0)
-        assert sync.reap_orphaned_tasks() == 0
-        assert retried == ['abandoned-analysis']
-        assert [e for e in executed if e[0].startswith('UPDATE task_status')] == []
 
     def test_dashboard_metrics_count_each_servers_analyzed_songs_locally(self, monkeypatch):
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
         cur = MagicMock()
-        # Columns: server_id, name, type, is_default, rows_total, unique_songs.
-        # Purely local: one GROUP BY over track_server_map, no track_count walk
-        # and no score scan (the legacy anti-join is gone).
         cur.fetchall.return_value = [
             ('s1', 'Jellyfin', 'jellyfin', True, 188032, 188000),
             ('s2', 'PLEX', 'plex', False, 46, 46),
             ('s3', 'Fresh', 'navidrome', False, 0, 0),
         ]
-        # COUNT(DISTINCT item_id) over track_server_map == the sum of per-server
-        # uniques here, so no "on multiple servers" adjustment row is added.
         cur.fetchone.return_value = (188046,)
         rows = dash._collect_music_server_metrics(cur)
-        # resolved is just the mapped-row count; the 32-file gap between rows_total
-        # and unique_songs is duplicate copies.
         assert rows[0]['unique_songs'] == 188000
         assert rows[0]['duplicate_copies'] == 32
         assert rows[0]['resolved'] == 188032
         assert rows[1]['unique_songs'] == 46
         assert rows[1]['duplicate_copies'] == 0
         assert rows[1]['resolved'] == 46
-        # No remote library size is ever surfaced by the dashboard.
         assert all('server_songs' not in r for r in rows)
 
     def test_sweep_stores_server_track_count(self, monkeypatch):
@@ -2576,9 +2174,6 @@ class TestSweepAlignment:
         db.commit.assert_not_called()
 
     def test_a_refused_prune_is_reported_not_silently_zero(self):
-        """A refusal returned 0, exactly like 'nothing to prune'. A library that
-        really did shrink by more than half kept its stale mappings and said so
-        nowhere the user could see."""
         from tasks import multiserver_sync as sync
 
         cursor = MagicMock()
@@ -2590,18 +2185,10 @@ class TestSweepAlignment:
         assert sync.prune_stale_mappings(
             db, 's1', {str(i) for i in range(10)}, refused=refused
         ) == 0
-        # The counts are carried out so the UI can say WHICH server refused and why.
         assert refused == [(10, 100)]
 
 
 class TestFirstRunSetupWizardServerApi:
-    """The first-run wizard drives /api/servers before any admin exists.
-
-    The auth barrier opens the registry API while setup is needed (it already
-    opens /api/setup, which writes the same credentials); these tests pin the
-    second gate - the blueprint's own admin check - to the same window, and the
-    promotion of the first real server over init_db's credential-less seed row.
-    """
 
     @staticmethod
     def _request_context(**kwargs):
@@ -2684,7 +2271,7 @@ class TestFirstRunSetupWizardServerApi:
             msrv.registry, 'delete_server',
             lambda sid, conn=None: deleted.append(sid) or True,
         )
-        monkeypatch.setattr(msrv, '_apply_default_to_config', lambda: None)
+        monkeypatch.setattr(msrv, '_apply_default_to_config', lambda: True)
         monkeypatch.setattr(msrv, '_enqueue_sweep', lambda *a, **k: 'sweep-1')
 
         with self._request_context(
@@ -2721,14 +2308,77 @@ class TestFirstRunSetupWizardServerApi:
         assert deleted == []
 
 
-class TestSonicFingerprintDefaultsPerServer:
-    """The Sonic Fingerprint form must describe the SELECTED server.
+class TestDefaultServerRestartAcknowledgement:
+    def test_default_change_waits_for_restart_before_enqueuing_alignment(self, monkeypatch):
+        import app_music_servers as msrv
+        from flask import Flask
 
-    Its credential fields and pre-filled account come from /api/config/defaults;
-    reading them off the config globals would describe the DEFAULT server, so a
-    Navidrome secondary behind a Jellyfin default rendered the wrong fields and
-    the generate call then rejected them.
-    """
+        events = []
+        monkeypatch.setattr(msrv, '_forbid_non_admin', lambda: None)
+        monkeypatch.setattr(
+            msrv.registry, 'get_server',
+            lambda server_id: {'server_id': server_id},
+        )
+        monkeypatch.setattr(
+            msrv.registry, 'set_default', lambda server_id: events.append('registry')
+        )
+        monkeypatch.setattr(
+            msrv, '_apply_default_to_config',
+            lambda: events.append('restart-ack') or True,
+        )
+        monkeypatch.setattr(
+            msrv, '_enqueue_sweep', lambda *a, **k: events.append('sweep') or 'sweep-1'
+        )
+        monkeypatch.setattr(msrv, 'servers_for_ui', lambda: {'servers': []})
+
+        with Flask('default-order').test_request_context(method='POST'):
+            response = msrv.set_default_server('s2')
+
+        assert response.status_code == 200
+        assert events == ['registry', 'restart-ack', 'sweep']
+
+    def test_unacknowledged_restart_still_succeeds_warns_and_sweeps(self, monkeypatch):
+        import app_music_servers as msrv
+        from flask import Flask
+
+        monkeypatch.setattr(msrv, '_forbid_non_admin', lambda: None)
+        monkeypatch.setattr(
+            msrv.registry, 'get_server',
+            lambda server_id: {'server_id': server_id},
+        )
+        monkeypatch.setattr(msrv.registry, 'set_default', lambda server_id: None)
+        monkeypatch.setattr(msrv, '_apply_default_to_config', lambda: False)
+        sweep = MagicMock(return_value='sweep-1')
+        monkeypatch.setattr(msrv, '_enqueue_sweep', sweep)
+        monkeypatch.setattr(msrv, 'servers_for_ui', lambda: {'servers': []})
+
+        with Flask('default-failure').test_request_context(method='POST'):
+            response, status = msrv.set_default_server('s2')
+
+        assert status == 200
+        body = response.get_json()
+        assert body['restart_acknowledged'] is False
+        assert body['warning']
+        sweep.assert_called_once()
+
+    def test_the_default_change_never_waits_the_full_background_ack_deadline(
+        self, monkeypatch
+    ):
+        import app_music_servers as msrv
+        import restart_manager
+
+        publish = MagicMock(return_value=True)
+        monkeypatch.setattr(restart_manager, 'publish_restart_request', publish)
+        monkeypatch.setattr(msrv.config, 'refresh_config', lambda: None)
+
+        assert msrv._apply_default_to_config() is True
+
+        waited = publish.call_args.kwargs['timeout_seconds']
+        assert waited == restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+        assert waited <= 5.0
+
+
+class TestSonicFingerprintDefaultsPerServer:
 
     @staticmethod
     def _call(monkeypatch, selected, server_row):
@@ -2889,14 +2539,6 @@ class TestPluginApiUseServerBinding:
 
 
 class TestRegistrySeeding:
-    """A fresh install starts with a BLANK server table.
-
-    init_db seeds the registry only from a legacy install that really has a
-    reachable server configured; MEDIASERVER_TYPE merely defaulting to
-    'jellyfin' with empty credentials is NOT a server, and seeding it put a
-    phantom Jellyfin row in the setup wizard. Rows like that (from earlier
-    builds) are removed at boot unless they own track mappings.
-    """
 
     @staticmethod
     def _cursor(existing=0, rows=None):
@@ -2955,7 +2597,6 @@ class TestRegistrySeeding:
         deletes = [(sql, p) for sql, p in cur.executed if 'DELETE FROM music_servers' in sql]
         assert len(deletes) == 1
         assert deletes[0][1] == (['seed'],)
-        # Never drops a server that still owns catalogue bindings.
         assert 'NOT EXISTS' in deletes[0][0]
         assert 'track_server_map' in deletes[0][0]
 
@@ -2973,9 +2614,6 @@ class TestRegistrySeeding:
 
 class TestDashboardHasNoLegacyScoreScan:
     def test_per_server_metrics_never_scan_score(self, monkeypatch):
-        # The legacy provider-keyed anti-join over score is gone: per-server
-        # metrics are a single GROUP BY over track_server_map and must not call
-        # _counted_or_none (the only path that scanned score here).
         import app_dashboard as dash
 
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
@@ -2986,7 +2624,6 @@ class TestDashboardHasNoLegacyScoreScan:
         monkeypatch.setattr(dash, '_counted_or_none', _boom)
         cur = MagicMock()
         cur.fetchall.return_value = [('d1', 'Main', 'jellyfin', True, 40, 40)]
-        # distinct mapped == the single server's uniques: no overlap row.
         cur.fetchone.return_value = (40,)
 
         rows = dash._collect_music_server_metrics(cur)
@@ -3016,18 +2653,26 @@ class TestLyrionFolderFilterIsAnchored:
 
 
 class TestServerParamCoercion:
-    def test_non_string_server_id_is_a_clean_400_not_a_crash(self, monkeypatch):
+    def test_int_server_id_reaches_the_registry_as_text_then_a_clean_400(self, monkeypatch):
         from flask import Flask
         import app_server_context as ctx
         from tasks.mediaserver import registry
 
-        monkeypatch.setattr(registry, 'get_server', lambda sid, conn=None: None)
-        monkeypatch.setattr(registry, 'get_server_by_name', lambda name, conn=None: None)
+        seen = []
+
+        def record(value, conn=None):
+            seen.append(value)
+            return None
+
+        monkeypatch.setattr(registry, 'get_server', record)
+        monkeypatch.setattr(registry, 'get_server_by_name', record)
 
         app = Flask('server-param-test')
         with app.test_request_context('/api/x', method='POST', json={'server': 12345}):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Unknown server '12345'"):
                 ctx.resolve_request_server_id()
+
+        assert seen == ['12345', '12345']
 
     def test_structured_server_value_is_rejected(self):
         from flask import Flask

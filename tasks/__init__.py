@@ -8,7 +8,7 @@
 
 """Top-level package for AudioMuse-AI background tasks and managers.
 
-Namespace package for the RQ worker jobs, media-server sync, similarity
+Namespace package for the queue worker jobs, media-server sync, similarity
 index managers, and the ``ai`` LLM playlist subsystem; it defines no
 symbols itself and exists so submodules import as ``tasks.<name>``.
 

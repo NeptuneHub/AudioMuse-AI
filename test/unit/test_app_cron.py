@@ -8,7 +8,7 @@
 
 """Cron scheduler dispatch and the sonic-fingerprint task it enqueues.
 
-Exercises run_due_cron_jobs and the RQ task behind the sonic-fingerprint row.
+Exercises run_due_cron_jobs and the queued task behind the sonic-fingerprint row.
 Batch rows enqueue so a slow media server cannot swallow a scheduling window; the
 alchemy radio runs inline in Flask, the only process holding the similarity index.
 
@@ -20,7 +20,7 @@ Main Features:
 * Non-empty results upsert under the constant cron playlist name via item_ids
 * NotImplementedError from the backend falls back to a timestamped legacy playlist
 * A live main task blocks a cron analysis/clustering start, as the manual endpoints do
-* A failed enqueue leaves FAILURE, never a PENDING row that would 409 every later start
+* A failed enqueue leaves no row at all, never a PENDING row that would 409 every later start
 """
 
 from unittest.mock import MagicMock, patch
@@ -40,8 +40,8 @@ def _make_cron_row(task_type='sonic_fingerprint'):
 def _setup_db_mock(task_type='sonic_fingerprint'):
     cur = MagicMock()
     cur.fetchall.return_value = [_make_cron_row(task_type)]
-    # The row is claimed for its minute with an UPDATE ... WHERE last_run < %s;
-    # rowcount == 1 means this tick won the claim.
+    cur.fetchone.return_value = None
+    cur.__enter__.return_value = cur
     cur.rowcount = 1
     db = MagicMock()
     db.cursor.return_value = cur
@@ -49,11 +49,6 @@ def _setup_db_mock(task_type='sonic_fingerprint'):
 
 
 def _run_fingerprint_task():
-    """Drive the task the sonic-fingerprint cron row enqueues, on the legacy default.
-
-    Outside an RQ job get_current_job() is None, so the task writes no task_status
-    row and needs no database.
-    """
     from tasks.sonic_fingerprint_manager import run_sonic_fingerprint_task
 
     with patch('tasks.mediaserver.registry.servers_for_scope', return_value=[None]):
@@ -70,18 +65,73 @@ def test_sonic_fingerprint_row_enqueues_instead_of_running_inline(mock_get_db, _
 
     with (
         patch('app_cron.save_task_status'),
-        patch('app_cron.rq_queue_default') as queue,
+        patch('app_cron.taskqueue.enqueue') as enqueue,
         patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint') as gen,
     ):
         run_due_cron_jobs()
 
     gen.assert_not_called()
-    queue.enqueue.assert_called_once()
+    enqueue.assert_called_once()
     assert (
-        queue.enqueue.call_args[0][0]
+        enqueue.call_args[0][0]
         == 'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task'
     )
-    assert queue.enqueue.call_args[1]['kwargs'] == {'server_scope': 'all'}
+    assert enqueue.call_args[1]['kwargs'] == {'server_scope': 'all'}
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_a_minute_already_claimed_by_another_web_process_fires_nothing(mock_get_db, _matches):
+    from app_cron import run_due_cron_jobs
+
+    cur = MagicMock()
+    cur.fetchall.return_value = [
+        _make_cron_row('sonic_fingerprint'),
+        _make_cron_row('alchemy_radio'),
+    ]
+    cur.fetchone.return_value = None
+    cur.__enter__.return_value = cur
+    cur.rowcount = 0
+    db = MagicMock()
+    db.cursor.return_value = cur
+    mock_get_db.return_value = db
+
+    with (
+        patch('app_cron.save_task_status') as save,
+        patch('app_cron.taskqueue.enqueue') as enqueue,
+        patch('tasks.radio_manager.run_radio_playlists') as run,
+    ):
+        run_due_cron_jobs()
+
+    enqueue.assert_not_called()
+    run.assert_not_called()
+    save.assert_not_called()
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_the_minute_claim_writes_last_run_only_when_it_is_older_than_this_minute(
+    mock_get_db, _matches
+):
+    from app_cron import run_due_cron_jobs
+
+    db, cur = _setup_db_mock()
+    mock_get_db.return_value = db
+
+    with (
+        patch('app_cron.save_task_status'),
+        patch('app_cron.taskqueue.enqueue'),
+    ):
+        run_due_cron_jobs()
+
+    updates = [c for c in cur.execute.call_args_list if c[0][0].startswith('UPDATE cron')]
+    assert len(updates) == 1
+    sql, params = updates[0][0]
+    assert 'last_run IS NULL OR last_run < %s' in sql
+    minute_start, row_id, guard = params
+    assert row_id == 1
+    assert guard == minute_start
+    assert minute_start % 60 == 0
 
 
 def test_sonic_fingerprint_task_skips_on_empty_results():
@@ -96,6 +146,23 @@ def test_sonic_fingerprint_task_skips_on_empty_results():
     upsert.assert_not_called()
     legacy.assert_not_called()
     assert summary['playlists_created'] == 0
+
+
+def test_dequeued_sonic_task_with_wiped_claim_does_no_work():
+    import taskqueue
+    from tasks.sonic_fingerprint_manager import run_sonic_fingerprint_task
+
+    with (
+        patch.object(taskqueue, 'current_task_id', return_value='sonic-cancelled'),
+        patch('database.get_task_info_from_db', return_value=None),
+        patch('database.save_task_status') as save,
+        patch('tasks.mediaserver.registry.servers_for_scope') as servers,
+    ):
+        result = run_sonic_fingerprint_task(server_scope='all')
+
+    assert result['status'] == 'REVOKED'
+    save.assert_not_called()
+    servers.assert_not_called()
 
 
 def test_sonic_fingerprint_task_calls_upsert_with_constant_name():
@@ -145,14 +212,12 @@ def test_alchemy_radio_row_runs_inline_in_flask_never_on_a_worker(mock_get_db, _
     summary = {'playlists_created': 2, 'failed': []}
     with (
         patch('app_cron.save_task_status') as save,
-        patch('app_cron.rq_queue_default') as queue,
-        patch('app_cron.rq_queue_high') as queue_high,
+        patch('app_cron.taskqueue.enqueue') as enqueue,
         patch('tasks.radio_manager.run_radio_playlists', return_value=summary) as run,
     ):
         run_due_cron_jobs()
 
-    queue.enqueue.assert_not_called()
-    queue_high.enqueue.assert_not_called()
+    enqueue.assert_not_called()
     run.assert_called_once()
     assert run.call_args.kwargs['server_scope'] == 'all'
     assert callable(run.call_args.kwargs['report'])
@@ -190,11 +255,8 @@ def test_failed_inline_radio_run_is_recorded_as_failure_without_a_traceback(
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_the_inline_radio_row_heartbeats_progress_into_its_own_task_row(mock_get_db, _matches):
-    """The row has no RQ job behind it, so a heartbeat is the only thing separating a
-    long run from a dead one. Without it the janitor fails a perfectly healthy run
-    after its 120s orphan grace, and the row then flips back to SUCCESS."""
     from app_cron import run_due_cron_jobs
-    from config import TASK_STATUS_PROGRESS
+    from config import TASK_STATUS_RUNNING
 
     db, _cur = _setup_db_mock(task_type='alchemy_radio')
     mock_get_db.return_value = db
@@ -209,19 +271,17 @@ def test_the_inline_radio_row_heartbeats_progress_into_its_own_task_row(mock_get
     ):
         run_due_cron_jobs()
 
-    progress_calls = [c for c in save.call_args_list if c[0][2] == TASK_STATUS_PROGRESS]
-    assert len(progress_calls) == 1
-    assert progress_calls[0][1]['progress'] == 50
-    assert progress_calls[0][1]['details']['status_message'] == 'Radio 1 of 2'
+    running_calls = [c for c in save.call_args_list if c[0][2] == TASK_STATUS_RUNNING]
+    assert running_calls
+    heartbeat = running_calls[-1]
+    assert heartbeat[1]['progress'] == 50
+    assert heartbeat[1]['details']['status_message'] == 'Radio 1 of 2'
 
 
 @patch('app_cron.get_db')
 def test_an_inline_run_interrupted_by_a_restart_is_failed_when_the_cron_thread_starts(
     mock_get_db,
 ):
-    """Only this process writes an inline run's final status, so a restart mid-run left
-    a STARTED row nothing ever resolved. It is failed at startup, where no inline run
-    can be live: skipping that occurrence is fine, outliving the process is not."""
     from app_cron import reap_interrupted_inline_runs
     from config import TASK_STATUS_FAILURE, TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED
 
@@ -260,9 +320,6 @@ def test_startup_reap_writes_nothing_when_no_inline_run_was_interrupted(mock_get
 
 
 def test_a_radio_row_can_never_gate_a_start_because_only_flask_can_finish_it():
-    """The radio shares nothing with a batch run - it reads the index and upserts a
-    playlist - so it never needed the main-task mutex, and holding it meant one
-    interrupted run 409'd every Start Analysis/Clustering until a human intervened."""
     import database
 
     cur = MagicMock()
@@ -273,7 +330,8 @@ def test_a_radio_row_can_never_gate_a_start_because_only_flask_can_finish_it():
     with patch('database.get_db', return_value=db):
         assert database.get_active_main_task() is None
 
-    excluded = cur.execute.call_args[0][1][-1]
+    params = cur.execute.call_args[0][1]
+    excluded = next(param for param in params if isinstance(param, list))
     assert 'alchemy_radio' in excluded
     assert 'alchemy_radio' in database.SELF_MANAGED_TASK_TYPES
 
@@ -281,52 +339,52 @@ def test_a_radio_row_can_never_gate_a_start_because_only_flask_can_finish_it():
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_cron_analysis_does_not_start_a_second_run_while_one_is_live(mock_get_db, _matches):
-    """The manual endpoints 409 on a live main task; cron must refuse too."""
     from app_cron import run_due_cron_jobs
 
     db, _cur = _setup_db_mock(task_type='analysis')
     mock_get_db.return_value = db
 
-    active = {'task_id': 'live-1', 'task_type': 'main_analysis', 'status': 'PROGRESS'}
+    active = {'task_id': 'live-1', 'task_type': 'main_analysis', 'status': 'RUNNING'}
     with (
         patch('app_cron.get_active_main_task', return_value=active),
         patch('app_cron.save_task_status') as save,
-        patch('app_cron.rq_queue_high') as queue,
+        patch('app_cron.taskqueue.enqueue') as enqueue,
     ):
         run_due_cron_jobs()
 
-    queue.enqueue.assert_not_called()
+    enqueue.assert_not_called()
     save.assert_not_called()
 
 
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
-def test_failed_analysis_enqueue_is_recorded_as_failure_not_left_pending(mock_get_db, _matches):
-    """A PENDING row with no job behind it would 409-block every later manual start."""
+def test_a_failed_queue_write_leaves_no_row_behind(mock_get_db, _matches):
     from app_cron import run_due_cron_jobs
-    from config import TASK_STATUS_FAILURE
 
     db, _cur = _setup_db_mock(task_type='analysis')
     mock_get_db.return_value = db
 
-    queue = MagicMock()
-    queue.enqueue.side_effect = RuntimeError("redis is down")
     with (
         patch('app_cron.get_active_main_task', return_value=None),
         patch('app_cron.save_task_status') as save,
-        patch('app_cron.rq_queue_high', queue),
+        patch(
+            'app_cron.taskqueue.enqueue', side_effect=RuntimeError("database is down")
+        ) as enqueue,
+        patch('app_cron.clean_up_previous_main_tasks'),
     ):
         run_due_cron_jobs()
 
-    assert save.call_args_list[-1][0][2] == TASK_STATUS_FAILURE
+    enqueue.assert_called_once()
+    assert enqueue.call_args[0][0] == 'tasks.analysis.run_analysis_task'
+    assert enqueue.call_args[1]['task_type'] == 'main_analysis'
+    assert not save.call_args_list, 'a failed queue write must leave no task row'
+    db.rollback.assert_not_called()
+    db.commit.assert_called_once()
 
 
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
-    """Batch work always covers EVERY server, so a plugin schedule is enqueued
-    with scope 'all' even if an old row still carries a narrower one: a stale
-    'default' option must not quietly keep skipping the other servers."""
     from app_cron import run_due_cron_jobs
 
     row = _make_cron_row(task_type='plugin.demo.sync')
@@ -347,38 +405,13 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
 
     with patch.dict('sys.modules', {'plugin.manager': fake_plugin_module}), \
             patch('app_cron.save_task_status'), \
-            patch('app_cron.rq_queue_default') as queue:
+            patch('app_cron.taskqueue.enqueue') as queue:
         run_due_cron_jobs()
 
-    assert queue.enqueue.called
-    kwargs = queue.enqueue.call_args.kwargs
+    assert queue.called
+    kwargs = queue.call_args.kwargs
     assert kwargs['args'] == ('audiomuse_plugins.demo.tasks.sync',)
-    assert kwargs['kwargs'] == {'server_scope': 'all'}
-
-
-@patch('app_cron.cron_matches_now', return_value=True)
-@patch('app_cron.get_db')
-def test_plugin_branch_defaults_to_all_servers(mock_get_db, _matches):
-    from app_cron import run_due_cron_jobs
-
-    row = _make_cron_row(task_type='plugin.demo.sync')
-    cur = MagicMock()
-    cur.fetchall.return_value = [row]
-    cur.rowcount = 1
-    db = MagicMock()
-    db.cursor.return_value = cur
-    mock_get_db.return_value = db
-
-    plugin_manager = MagicMock()
-    plugin_manager.get_cron_task.return_value = {
-        'dotted': 'audiomuse_plugins.demo.tasks.sync', 'queue': 'default',
+    assert kwargs['kwargs'] == {
+        'server_scope': 'all',
+        'task_claim_required': True,
     }
-    fake_plugin_module = MagicMock()
-    fake_plugin_module.plugin_manager = plugin_manager
-
-    with patch.dict('sys.modules', {'plugin.manager': fake_plugin_module}), \
-            patch('app_cron.save_task_status'), \
-            patch('app_cron.rq_queue_default') as queue:
-        run_due_cron_jobs()
-
-    assert queue.enqueue.call_args.kwargs['kwargs'] == {'server_scope': 'all'}

@@ -24,7 +24,7 @@ Main Features:
 import re
 import types
 import requests
-from flask import request, jsonify, render_template, make_response, after_this_request
+from flask import request, jsonify, render_template, make_response
 import config
 from flask_app import app
 from tasks.setup_manager import setup_manager
@@ -49,7 +49,11 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
 # the two /api/setup/plex/pin routes that proxy the request server-side.
 PLEX_PIN_API_BASE = "https://plex.tv/api/v2/pins"
 PLEX_PIN_PRODUCT = "AudioMuse-AI"
-PLEX_PIN_TIMEOUT = 30
+# (connect, read) rather than a single 30s figure: the browser polls the GET
+# route every ~1.5s, and gunicorn here runs a single worker with a handful of
+# threads (see deployment/supervisord.conf), so a slow/unreachable plex.tv
+# must give up its thread quickly or it starves every other request in the app.
+PLEX_PIN_TIMEOUT = (10, 25)
 
 
 def _plex_pin_headers(client_id):
@@ -137,7 +141,6 @@ HIDDEN_ADVANCED_FIELDS = {
     'POSTGRES_HOST',
     'POSTGRES_PORT',
     'POSTGRES_DB',
-    'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
@@ -156,7 +159,8 @@ HIDDEN_ADVANCED_FIELDS = {
     'CLAP_CATEGORY_WEIGHTS',
     'CLAP_CATEGORY_WEIGHTS_DEFAULT',
     'CLAP_EMBEDDING_DIMENSION',
-    'CLAP_OTHER_FEATURES_REDIS_KEY',
+    'CLAP_OTHER_FEATURES_CACHE_DIR',
+    'CLAP_OTHER_FEATURES_CACHE_FILE',
     'EMBEDDING_DIMENSION',
     'INDEX_NAME',
     'IVF_DISK_CACHE_DIR',
@@ -167,17 +171,21 @@ HIDDEN_ADVANCED_FIELDS = {
     'PROBE_TOP_PLAYED_LIMIT',
     'MIGRATION_MAX_COLLISION_DETAILS',
     'MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT',
-    'QUEUE_TYPE',
     'VOICE_VOCAB',
     'MOOD_CENTROIDS_FILE',
     'OTHER_FEATURE_LABELS',
     'STRATIFIED_GENRES',
+    'TASK_STATUS_FAIL',
     'TASK_STATUS_FAILURE',
+    'TASK_STATUS_LIVE',
+    'TASK_STATUS_NEW',
     'TASK_STATUS_PENDING',
     'TASK_STATUS_PROGRESS',
     'TASK_STATUS_REVOKED',
+    'TASK_STATUS_RUNNING',
     'TASK_STATUS_STARTED',
     'TASK_STATUS_SUCCESS',
+    'TASK_STATUS_TERMINAL',
     'TEMPO_MAX_BPM',
     'TEMPO_MIN_BPM',
     'USE_MINIBATCH_KMEANS',
@@ -214,18 +222,39 @@ HIDDEN_ADVANCED_FIELDS = {
     'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
     'SONIC_FINGERPRINT_CRON_PLAYLIST_NAME',
     # Worker / queue / batch-orchestration infra knobs (operator-level)
-    'RQ_MAX_JOBS',
-    'RQ_MAX_JOBS_HIGH',
-    'RQ_LOGGING_LEVEL',
+    'QUEUE_POLL_INTERVAL_SECONDS',
+    'QUEUE_MAX_ATTEMPTS',
+    'QUEUE_MAX_JOBS',
+    'QUEUE_MAX_JOBS_HIGH',
+    'QUEUE_ORPHAN_SCAN_SECONDS',
+    'QUEUE_ORPHAN_GRACE_SECONDS',
+    'QUEUE_RETENTION_SCAN_SECONDS',
+    'QUEUE_KEEPALIVE_IDLE_SECONDS',
+    'QUEUE_KEEPALIVE_INTERVAL_SECONDS',
+    'QUEUE_KEEPALIVE_COUNT',
+    'QUEUE_KILL_GRACE_SECONDS',
+    'QUEUE_SECRET_KWARGS',
+    'QUEUE_SHARED_CACHE_MAX_BYTES',
+    'QUEUE_RECONNECT_DELAY_SECONDS',
+    'QUEUE_INLINE_STALE_SECONDS',
+    'QUEUE_CONTROL_ADVISORY_TIMEOUT_SECONDS',
+    'QUEUE_CONTROL_POLL_INTERVAL_SECONDS',
+    'CONTROL_IPC_TIMEOUT_SECONDS',
+    'AUDIO_MUSE_LISTENER_ID',
+    'SUPERVISORCTL_CMD',
+    'SUPERVISOR_CONF',
+    'DISABLE_FLASK_RESTART',
+    'FLASK_BIND_PORT',
+    'FLASK_LOCAL_URL',
+    'FLASK_READY_TIMEOUT_SECONDS',
+    'QUEUE_CONTROL_TIMEOUT_SECONDS',
+    'QUEUE_MAX_ERRORS_KEPT',
     'MAX_QUEUED_ANALYSIS_JOBS',
     'REBUILD_INDEX_BATCH_SIZE',
-    'DB_FETCH_CHUNK_SIZE',
     'AUDIO_LOAD_TIMEOUT',
     'ITERATIONS_PER_BATCH_JOB',
     'MAX_CONCURRENT_BATCH_JOBS',
-    'CLUSTERING_BATCH_TIMEOUT_MINUTES',
     'CLUSTERING_MAX_FAILED_BATCHES',
-    'CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS',
     # Pathfinding internals
     'PATH_AVG_JUMP_SAMPLE_SIZE',
     'PATH_CANDIDATES_PER_STEP',
@@ -330,12 +359,6 @@ def _test_media_server_connection(filtered_values):
 
 
 def _list_provider_libraries(filtered_values):
-    """List the music libraries a provider exposes, given in-flight wizard values.
-
-    Merges form values with the currently stored config (same fallback logic as
-    the test-connection flow, so secret placeholders use the saved value), then
-    calls ``mediaserver.list_libraries()``. Returns ``{libraries, unsupported}``.
-    """
     test_config = _merge_test_config(filtered_values)
     original_config = _patch_config_for_test(test_config)
     try:
@@ -348,7 +371,7 @@ def _list_provider_libraries(filtered_values):
 def should_show_advanced(name):
     if name in HIDDEN_ADVANCED_FIELDS:
         return False
-    if name.startswith('POSTGRES_') or name.startswith('REDIS_'):
+    if name.startswith('POSTGRES_'):
         return False
     if re.match(r'.*_STATS$', name):
         return False
@@ -369,7 +392,6 @@ def _get_allowed_setup_keys():
 
 
 def _has_admin_user():
-    """Return True if at least one admin exists in audiomuse_users."""
     try:
         from app_auth import count_admin_users
 
@@ -698,8 +720,24 @@ def setup_api():
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
 
-        restart_manager.publish_restart_request()
-        restart_requested = True
+        # The configuration is already durable at this point.  A publish return
+        # value is therefore not a rollback signal, but it must not be ignored:
+        # returning an ordinary success while workers still use the old provider
+        # settings is unsafe and makes the operator believe the setup is complete.
+        # Flask is restarted below either way so this process reloads its own
+        # configuration; the response clearly distinguishes a fully applied save
+        # from a durable save which still needs worker recovery.
+        try:
+            worker_restart_acknowledged = bool(
+                restart_manager.publish_restart_request(
+                    timeout_seconds=restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
+                )
+            )
+        except Exception:
+            worker_restart_acknowledged = False
+            app.logger.exception(
+                'Configuration was saved, but requesting the worker restart failed'
+            )
     except AudioMuseError as ae:
         app.logger.error('Setup media server check failed: %s', ae, exc_info=ae.cause)
         return jsonify(ae.to_dict()), error_manager.http_status_for_code(ae.code)
@@ -713,22 +751,43 @@ def setup_api():
             {'error': 'Unable to save configuration. Check the server log for details.'}
         ), 500
 
-    response = make_response(
-        jsonify(
-            {
-                'status': 'ok',
-                'saved_keys': list(filtered_values.keys()),
-                'restart_requested': restart_requested,
-            }
-        ),
-        200,
-    )
+    try:
+        # The timer is delayed, so arming it now still lets this response leave
+        # the process before the local Flask service is restarted.
+        flask_restart_scheduled = bool(restart_manager.schedule_flask_restart())
+    except Exception:
+        flask_restart_scheduled = False
+        app.logger.exception(
+            'Configuration was saved, but scheduling the Flask restart failed'
+        )
 
-    @after_this_request
-    def schedule_restart(response):
-        if restart_requested:
-            restart_manager.schedule_flask_restart()
-        return response
+    # schedule_flask_restart() returns False ONLY for deliberate opt-outs
+    # (DISABLE_FLASK_RESTART, or SERVICE_TYPE != flask); a genuine failure raises and
+    # is caught above. Treating those opt-outs as an incomplete restart made a fully
+    # successful save answer 503 forever on those deployments.
+    restart_complete = worker_restart_acknowledged
+    response_payload = {
+        'status': 'ok' if restart_complete else 'partial',
+        'saved_keys': list(filtered_values.keys()),
+        'restart_requested': True,
+        'worker_restart_acknowledged': worker_restart_acknowledged,
+        'flask_restart_scheduled': flask_restart_scheduled,
+    }
+    # The configuration is already durable and the Flask restart timer is already
+    # armed. Answering 503 made setup.js take its error branch, so it never ran the
+    # redirect countdown - and gunicorn then restarted underneath the page anyway.
+    if not restart_complete:
+        # The listener only acks AFTER it has synchronously restarted the whole
+        # worker fleet, which routinely outlasts this short advisory budget. A
+        # "not confirmed" here therefore usually means the restart is still IN
+        # PROGRESS, not that it failed - the text must not prescribe a manual
+        # restart, which would bounce the fleet a second time for no reason.
+        response_payload['warning'] = (
+            'Configuration was saved. The workers are restarting now; this can '
+            'take a little while. If tasks stay unavailable, check the service '
+            'logs or restart AudioMuse.'
+        )
+    response = make_response(jsonify(response_payload), 200)
 
     if config.AUTH_ENABLED:
         response.delete_cookie('audiomuse_jwt', samesite='Strict', path='/')

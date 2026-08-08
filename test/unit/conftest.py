@@ -98,6 +98,28 @@ def config_restore():
         setattr(cfg, attr, val)
 
 
+# The unit suite is hermetic: no test in this directory may open a real
+# database connection. This mask was previously an ACCIDENT - a module-level
+# patcher in test_memory_cleanup.py started at collection time and was never
+# stopped, so dozens of endpoint tests passed only because every stray
+# get_db() silently hit a MagicMock, and the integration suite broke whenever
+# it shared a process with the units. MODULE scope on purpose: it unwinds when
+# each unit module finishes, so nothing is left patched by the time an
+# integration test runs in the same process. A test that needs a specific
+# connection shape still wins, because monkeypatch/patch apply on top of this.
+@pytest.fixture(autouse=True, scope='module')
+def _no_real_database_connections():
+    from unittest.mock import patch as _patch
+
+    conn = MagicMock()
+    conn.cursor.return_value.rowcount = 1
+    conn.cursor.return_value.__enter__.return_value = conn.cursor.return_value
+    patcher = _patch('psycopg2.connect', return_value=conn)
+    patcher.start()
+    yield
+    patcher.stop()
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     mod = next(
         (

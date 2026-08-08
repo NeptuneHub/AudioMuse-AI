@@ -8,47 +8,28 @@
 
 """Clustering orchestrator: evolutionary search that turns embeddings into playlists.
 
-The main clustering RQ job. run_clustering_task runs the WHOLE pipeline once per
-target server, sequentially: each server clusters only its own availability-scoped
-catalogue (servers hold different libraries), runs its own evolutionary/elitist
-search via run_clustering_batch_task child jobs, and gets its own playlists -
-results are never computed once and pushed to other servers. Delegates the
-per-iteration work to clustering_helper, the models to clustering_gpu, and
+run_clustering_task runs the whole pipeline once per target server,
+sequentially: each server clusters only its own availability-scoped catalogue,
+runs its own evolutionary/elitist search via run_clustering_batch_task child
+jobs, and gets its own playlists. Delegates per-iteration work to
+clustering_helper, models to clustering_gpu, and
 dedup/size/diversity filtering to clustering_postprocessing.
 
 Main Features:
-* run_clustering_task: sequential per-server loop over the requested scope
-  (a specific server, 'default', or 'all'); _cluster_one_server runs one
-  server's full pipeline with per-server batch job ids.
-* Per-server persistence: each server's playlists replace ITS OWN rows in the
-  playlist table (bare names + server_id) as soon as it succeeds, and every run
-  starts by pruning rows of servers no longer configured - the table is always
+* Per-server persistence: playlists replace ITS OWN rows, so the table is always
   the last run per server, never a growing history.
-* _monitor_and_process_batches / _launch_batch_job: fan out parameter sets into
-  batch jobs, track elites, and adapt sampling each generation. After
-  CLUSTERING_EARLY_STOP_BATCHES consecutive batches without a better result no
-  new batches are enqueued; in-flight ones drain and the best result stands.
-* Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
-  so playlists span the library rather than one dominant genre.
-* _calibrate_cluster_params: per-server auto-tuning for EVERY algorithm via up
-  to CLUSTERING_CALIBRATION_MAX_TRIES quick single-iteration probes. KMeans,
-  GMM and Spectral tune their own cluster/component range against one fixed
-  stratified sample: small libraries pin the range to TOP_N_CLUSTERING_PLAYLIST clusters
-  directly (never above subset_size / (2 * MIN_PLAYLIST_SIZE_FOR_TOP_N), never
-  below subset_size / CLUSTERING_MAX_PLAYLIST_SONGS) and each probe runs at
-  the TOP of the range (worst case for emptiness). DBSCAN has no cluster
-  count: its eps range is DERIVED from the data instead (k-distance heuristic
-  via _derive_dbscan_eps - the configured 0.1-0.5 default is unusable in the
-  ~200-dim embedding space where every point would be noise), oversized
-  components are re-split by KMeans in clustering_helper, and probes widen
-  eps when playlists come out tiny and tighten it when oversized. A probe only passes with at
-  least TOP_N_CLUSTERING_PLAYLIST playlists of MIN_PLAYLIST_SIZE_FOR_TOP_N+ songs;
-  otherwise clusters shrink toward the goal. Oversized probes (over
-  CLUSTERING_MAX_PLAYLIST_SONGS) grow clusters; big beats empty. On probe
-  failure the library-size cap still applies. Calibration is
-  skipped on crash-recovery resumes (existing batch children).
-* _name_and_prepare_playlists: score, name (optionally via AI) and persist results;
-  app imports are deferred inside functions to avoid circular imports.
+* Fan-out of parameter sets into batch jobs with elite tracking and adaptive
+  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES without improvement.
+* The drain loop REAPS finished children (row deleted as the result is read) so
+  a batch is never counted twice; no per-batch timeout, and
+  CLUSTERING_STALL_TIMEOUT_MINUTES bounds the one wedge case (native code
+  that never returns) by revoking and finishing with the best result held.
+* The parent persists its own progress on its row (_resumable_progress), so a
+  crashed main task resumes with the winning result instead of redoing the search.
+* Reap and launch ride the SAME status write (never a separate commit), so a
+  parent dying mid-pass cannot lose a finished batch or double-count a launch.
+* Genre-stratified sampling and per-server calibration
+  (_calibrate_cluster_params) auto-tune every algorithm via quick probes.
 """
 
 from collections import defaultdict
@@ -57,14 +38,11 @@ import json
 import time
 import logging
 import uuid
-import traceback
 
-from rq import get_current_job, Retry
-from rq.job import Job
-from rq.exceptions import NoSuchJobError
+import taskqueue
 
-import rq_job_state
 
+from psycopg2 import OperationalError
 from psycopg2.extras import DictCursor
 
 from config import (
@@ -83,13 +61,13 @@ from config import (
     ITERATIONS_PER_BATCH_JOB,
     MAX_CONCURRENT_BATCH_JOBS,
     MIN_PLAYLIST_SIZE_FOR_TOP_N,
-    CLUSTERING_BATCH_TIMEOUT_MINUTES,
     CLUSTERING_MAX_FAILED_BATCHES,
     CLUSTERING_CLEANING,
     CLUSTER_NAMING_AI_HISTORY,
     CLUSTERING_MAX_PLAYLIST_SONGS,
     CLUSTERING_CALIBRATION_MAX_TRIES,
     CLUSTERING_EARLY_STOP_BATCHES,
+    CLUSTERING_STALL_TIMEOUT_MINUTES,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
@@ -98,20 +76,21 @@ from config import (
 )
 
 from error import error_manager
-from error.error_dictionary import ERR_CLUSTERING_FAILED
+from error.error_dictionary import ERR_CLUSTERING_FAILED, ERR_DB_CONNECTION
 
 from app_helper import (
     save_task_status,
-    redis_conn,
     get_task_info_from_db,
     get_db,
-    rq_queue_default,
 )
 from database import (
+    coerce_db_details,
     update_playlist_table,
     prune_playlist_rows_for_missing_servers,
     get_child_tasks_from_db,
     get_recent_playlist_names,
+    main_task_start_lock,
+    MAX_LOG_ENTRIES_STORED,
 )
 
 from sanitization import sanitize_for_json
@@ -127,7 +106,6 @@ from sklearn.neighbors import NearestNeighbors
 from .clustering_helper import (
     _get_stratified_song_subset,
     _get_track_primary_genre,
-    get_job_result_safely,
     _perform_single_clustering_iteration,
     _prepare_iteration_data,
     _prepare_and_scale_data,
@@ -142,6 +120,8 @@ from .clustering_postprocessing import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PARENT_CANCELLED_MESSAGE = "Parent task was cancelled."
 
 
 def _derive_dbscan_eps(item_ids, min_samples, active_moods, enable_embeddings):
@@ -172,49 +152,6 @@ def _viable_playlists(result, target=TOP_N_CLUSTERING_PLAYLIST):
     return min(keepers, max(1, target))
 
 
-def batch_task_failure_handler(job, connection, type, value, tb):
-    retries_left = getattr(job, 'retries_left', None)
-    if retries_left:
-        logger.warning(
-            "Clustering batch task %s failed but RQ will requeue it (%s attempt(s) "
-            "left); leaving its task row live.",
-            getattr(job, 'id', None), retries_left,
-        )
-        return
-    from flask_app import app
-
-    with app.app_context():
-        task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
-        parent_id = job.kwargs.get('parent_task_id')
-        batch_id_str = job.kwargs.get('batch_id_str')
-
-        tb_formatted = ""
-        if isinstance(tb, traceback.StackSummary):
-            tb_formatted = "".join(tb.format())
-        else:
-            tb_formatted = "".join(traceback.format_exception(type, value, tb))
-
-        error_details = {
-            "message": "Clustering batch sub-task failed permanently after all retries.",
-            "error": error_manager.build(ERR_CLUSTERING_FAILED, str(value)),
-            "error_type": str(type.__name__),
-            "error_value": str(value),
-        }
-
-        save_task_status(
-            task_id,
-            "clustering_batch",
-            TASK_STATUS_FAILURE,
-            parent_task_id=parent_id,
-            sub_type_identifier=batch_id_str,
-            progress=100,
-            details=error_details,
-        )
-        app.logger.error(
-            f"Clustering batch task {task_id} (parent: {parent_id}) failed permanently. DB status updated.\n{tb_formatted}"
-        )
-
-
 def run_clustering_batch_task(
     batch_id_str,
     start_run_idx,
@@ -238,50 +175,71 @@ def run_clustering_batch_task(
     initial_subset_track_ids_json,
     enable_clustering_embeddings_param,
     top_n_playlists_param=None,
-    min_clustering_top_param=None,
-    top_n_clustering_playlist_param=None,
 ):
     from flask_app import app
 
-    current_job = get_current_job(redis_conn)
-    current_task_id = current_job.id if current_job else str(uuid.uuid4())
-    if top_n_clustering_playlist_param is None:
-        top_n_clustering_playlist_param = (
-            min_clustering_top_param
-            if min_clustering_top_param is not None
-            else top_n_playlists_param
-        )
-    if top_n_clustering_playlist_param is None:
-        top_n_clustering_playlist_param = TOP_N_CLUSTERING_PLAYLIST
+    claimed_task_id = taskqueue.current_task_id()
+    current_task_id = claimed_task_id or str(uuid.uuid4())
+    top_n_clustering_playlist_param = (
+        top_n_playlists_param
+        if top_n_playlists_param is not None
+        else TOP_N_CLUSTERING_PLAYLIST
+    )
     logger.info(f"Starting clustering batch task {current_task_id} (Batch: {batch_id_str})")
 
     with app.app_context():
-
         def _log_and_update(message, progress, details=None, state=TASK_STATUS_PROGRESS):
             logger.info(f"[ClusteringBatchTask-{current_task_id}] {message}")
             db_details = {
                 "batch_id": batch_id_str,
                 "start_run_idx": start_run_idx,
                 "num_iterations_in_batch": num_iterations_in_batch,
+                "message": message,
                 "status_message": message,
                 **(details or {}),
             }
-            if current_job:
-                current_job.meta['progress'] = progress
-                current_job.meta['status_message'] = message
-                current_job.save_meta()
-            save_task_status(
-                current_task_id,
-                "clustering_batch",
-                state,
-                parent_task_id=parent_task_id,
-                sub_type_identifier=batch_id_str,
-                progress=progress,
-                details=db_details,
-            )
+
+            def write_if_parent_live():
+                if claimed_task_id:
+                    parent = get_task_info_from_db(parent_task_id)
+                    if parent is None or parent.get('status') in (
+                        TASK_STATUS_SUCCESS,
+                        TASK_STATUS_FAILURE,
+                        TASK_STATUS_REVOKED,
+                    ):
+                        logger.info(
+                            "Suppressing batch status write for %s because parent %s "
+                            "is missing or terminal.",
+                            current_task_id, parent_task_id,
+                        )
+                        return False
+                return save_task_status(
+                    current_task_id,
+                    "clustering_batch",
+                    state,
+                    parent_task_id=parent_task_id,
+                    sub_type_identifier=batch_id_str,
+                    progress=progress,
+                    details=db_details,
+                )
+
+            return write_if_parent_live()
 
         try:
-            _log_and_update("Batch started.", 0)
+            parent_task_info = get_task_info_from_db(parent_task_id)
+            if claimed_task_id and (
+                parent_task_info is None
+                or parent_task_info.get('status')
+                in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]
+            ):
+                logger.info(
+                    "Clustering batch %s will not start because parent %s is "
+                    "missing or terminal.",
+                    current_task_id, parent_task_id,
+                )
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
+            if not _log_and_update("Batch started.", 0):
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
             genre_to_lightweight_track_data_map = json.loads(
                 genre_to_lightweight_track_data_map_json
             )
@@ -297,22 +255,20 @@ def run_clustering_batch_task(
             for i in range(num_iterations_in_batch):
                 current_run_global_idx = start_run_idx + i
 
-                if current_job:
-                    # A MISSING row counts as revoked: the cancel wipes task_status,
-                    # so a batch that can no longer find its own row was cancelled.
+                if claimed_task_id:
                     task_info = get_task_info_from_db(current_task_id)
                     parent_task_info = get_task_info_from_db(parent_task_id)
                     if (
                         task_info is None
                         or task_info.get('status') == TASK_STATUS_REVOKED
-                        or (
-                            parent_task_info
-                            and parent_task_info.get('status')
-                            in [TASK_STATUS_REVOKED, TASK_STATUS_FAILURE]
-                        )
+                        or parent_task_info is None
+                        or parent_task_info.get('status')
+                        in [TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED, TASK_STATUS_FAILURE]
                     ):
-                        _log_and_update(
-                            "Stopping batch due to revocation.", i, state=TASK_STATUS_REVOKED
+                        logger.info(
+                            "Stopping batch %s due to missing/terminal cancellation "
+                            "state; no task row will be recreated.",
+                            current_task_id,
                         )
                         return {"status": "REVOKED", "message": "Batch task revoked."}
 
@@ -390,12 +346,13 @@ def run_clustering_batch_task(
                 "full_best_result_from_batch": best_result_in_batch,
                 "final_subset_track_ids": current_sampled_track_ids,
             }
-            _log_and_update(
+            if not _log_and_update(
                 f"Batch complete. Best score: {best_score_in_batch:.2f}",
                 100,
                 details=final_details,
                 state=TASK_STATUS_SUCCESS,
-            )
+            ):
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
             return {
                 "status": "SUCCESS",
                 "iterations_completed_in_batch": iterations_completed,
@@ -403,15 +360,24 @@ def run_clustering_batch_task(
                 "final_subset_track_ids": current_sampled_track_ids,
             }
 
+        except OperationalError as e:
+            logger.exception(
+                "Database connection error during clustering batch %s; leaving the "
+                "row for the queue to requeue rather than failing it here.",
+                batch_id_str,
+            )
+            error_manager.record(ERR_DB_CONNECTION, str(e))
+            raise
         except Exception as e:
             logger.exception(f"Clustering batch {batch_id_str} failed")
             err = error_manager.record(
                 error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e)
             )
-            _log_and_update(
+            if not _log_and_update(
                 f"Batch failed: {e}", 100, details={"error": err}, state=TASK_STATUS_FAILURE
-            )
-            return {"status": "FAILURE", "message": str(e)}
+            ):
+                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
+            return {"status": TASK_STATUS_FAILURE, "message": str(e)}
 
 
 def run_clustering_task(
@@ -454,24 +420,19 @@ def run_clustering_task(
     enable_clustering_embeddings_param=True,
     output_server_scope="all",
     auto_calibration_param=None,
-    min_clustering_top_param=None,
-    top_n_clustering_playlist_param=None,
 ):
     from flask_app import app
 
     if auto_calibration_param is None:
         auto_calibration_param = CLUSTERING_AUTO_CALIBRATION
-    if top_n_clustering_playlist_param is None:
-        top_n_clustering_playlist_param = (
-            min_clustering_top_param
-            if min_clustering_top_param is not None
-            else top_n_playlists_param
-        )
-    if top_n_clustering_playlist_param is None:
-        top_n_clustering_playlist_param = TOP_N_CLUSTERING_PLAYLIST
+    top_n_clustering_playlist_param = (
+        top_n_playlists_param
+        if top_n_playlists_param is not None
+        else TOP_N_CLUSTERING_PLAYLIST
+    )
 
-    current_job = get_current_job(redis_conn)
-    current_task_id = current_job.id if current_job else str(uuid.uuid4())
+    claimed_task_id = taskqueue.current_task_id()
+    current_task_id = claimed_task_id or str(uuid.uuid4())
     logger.info(f"Starting main clustering task {current_task_id}")
 
     _ai_naming_summary = {
@@ -516,10 +477,18 @@ def run_clustering_task(
 
     with app.app_context():
         task_info = get_task_info_from_db(current_task_id)
+        if claimed_task_id and task_info is None:
+            logger.info(
+                "Main clustering task %s has no task row; global Cancel removed "
+                "it before execution, so it will not restart.",
+                current_task_id,
+            )
+            return {
+                "status": TASK_STATUS_REVOKED,
+                "message": "Task was cancelled before execution.",
+            }
         if task_info and task_info.get('status') in [
-            TASK_STATUS_SUCCESS,
-            TASK_STATUS_FAILURE,
-            TASK_STATUS_REVOKED,
+            TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
         ]:
             logger.info(
                 f"Main clustering task {current_task_id} is already in a terminal state ('{task_info.get('status')}'). Skipping execution."
@@ -531,20 +500,27 @@ def run_clustering_task(
             }
 
         _main_task_accumulated_details = {
-            "log": [],
             "total_runs": num_clustering_runs,
             "runs_completed": 0,
             "best_score": -1.0,
             "best_result": None,
-            "active_jobs": {},
             "elite_solutions": [],
             "last_subset_ids": [],
-            "processed_job_ids": set(),
-            "batch_start_times": {},
-            "failed_batches": set(),
-            "timed_out_batches": set(),
+            "failed_batches": 0,
             "stale_batches": 0,
+            "batches_launched": 0,
+            "server_idx": 0,
+            "log": [],
         }
+        resume_from = _resumable_progress(task_info, num_clustering_runs)
+        if resume_from:
+            _main_task_accumulated_details.update(resume_from)
+            logger.info(
+                "Main clustering task %s is resuming a previous attempt at server "
+                "index %d with %d/%d runs already completed.",
+                current_task_id, resume_from.get("server_idx", 0),
+                resume_from.get("runs_completed", 0), num_clustering_runs,
+            )
 
         def _log_and_update(
             message, progress, details_to_add_or_update=None, task_state=TASK_STATUS_PROGRESS
@@ -554,31 +530,38 @@ def run_clustering_task(
                 _main_task_accumulated_details.update(details_to_add_or_update)
 
             _main_task_accumulated_details["status_message"] = message
-
-            log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
-            _main_task_accumulated_details["log"].append(log_entry)
+            _main_task_accumulated_details["message"] = message
+            run_log = _main_task_accumulated_details["log"]
+            run_log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+            if len(run_log) > MAX_LOG_ENTRIES_STORED:
+                del run_log[:-MAX_LOG_ENTRIES_STORED]
 
             details_for_db = _main_task_accumulated_details.copy()
-            details_for_db.pop('active_jobs', None)
-            details_for_db.pop('best_result', None)
             details_for_db.pop('last_subset_ids', None)
-            details_for_db.pop('processed_job_ids', None)
-            details_for_db.pop('failed_batches', None)
-            details_for_db.pop('timed_out_batches', None)
-            details_for_db.pop('batch_start_times', None)
+            if details_for_db.get('best_result') is not None:
+                details_for_db['best_result'] = _persistable_best_result(
+                    details_for_db['best_result']
+                )
 
-            if current_job:
-                current_job.meta['progress'] = progress
-                current_job.meta['status_message'] = message
-                current_job.save_meta()
+            def write_if_still_claimed():
+                if claimed_task_id:
+                    own = get_task_info_from_db(current_task_id)
+                    if own is None or own.get('status') == TASK_STATUS_REVOKED:
+                        logger.info(
+                            "Suppressing main clustering status write for %s: its "
+                            "claim is gone, so the run was cancelled.",
+                            current_task_id,
+                        )
+                        return False
+                return save_task_status(
+                    current_task_id,
+                    "main_clustering",
+                    task_state,
+                    progress=progress,
+                    details=details_for_db,
+                )
 
-            save_task_status(
-                current_task_id,
-                "main_clustering",
-                task_state,
-                progress=progress,
-                details=details_for_db,
-            )
+            return write_if_still_claimed()
 
         try:
             _log_and_update(
@@ -611,18 +594,25 @@ def run_clustering_task(
                     server_span,
                 )
 
+                if server_idx < _main_task_accumulated_details.get("server_idx", 0):
+                    logger.info(
+                        "Skipping server index %d: a previous attempt of this task "
+                        "already finished it.", server_idx,
+                    )
+                    continue
+                if server_idx > _main_task_accumulated_details.get("server_idx", 0):
+                    _main_task_accumulated_details.update({
+                        "runs_completed": 0,
+                        "best_score": -1.0,
+                        "best_result": None,
+                        "elite_solutions": [],
+                        "last_subset_ids": [],
+                        "failed_batches": 0,
+                        "stale_batches": 0,
+                        "batches_launched": 0,
+                    })
                 _main_task_accumulated_details.update({
-                    "runs_completed": 0,
-                    "best_score": -1.0,
-                    "best_result": None,
-                    "active_jobs": {},
-                    "elite_solutions": [],
-                    "last_subset_ids": [],
-                    "processed_job_ids": set(),
-                    "batch_start_times": {},
-                    "failed_batches": set(),
-                    "timed_out_batches": set(),
-                    "stale_batches": 0,
+                    "server_idx": server_idx,
                     "job_prefix": f"{current_task_id}_s{server_idx}",
                 })
 
@@ -631,7 +621,7 @@ def run_clustering_task(
                         target_server,
                         _main_task_accumulated_details,
                         report,
-                        current_job,
+                        claimed_task_id,
                         current_task_id,
                         clustering_method,
                         num_clusters_min,
@@ -727,17 +717,22 @@ def run_clustering_task(
                     )
                 )
 
+            skipped = [s for s in per_server_summary if s['status'] != 'success']
+            skipped_detail = (
+                ' Skipped: '
+                + '; '.join(
+                    f"{s['server']}: {s.get('reason') or 'no reason reported'}"
+                    for s in skipped
+                )
+                if skipped
+                else ''
+            )
             final_message = (
                 f"Clustering task completed successfully on {len(successes)}/"
-                f"{len(target_servers)} server(s)!"
+                f"{len(target_servers)} server(s)!{skipped_detail}"
             )
 
-            log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {final_message}"
-            _main_task_accumulated_details["log"].append(log_entry)
             logger.info(f"[MainClusteringTask-{current_task_id}] {final_message}")
-
-            final_log = _main_task_accumulated_details.get('log', [])
-            truncated_log = final_log[-10:]
 
             final_db_summary = {
                 "status_message": final_message,
@@ -748,16 +743,9 @@ def run_clustering_task(
                     s.get('playlists_created', 0) for s in successes
                 ),
                 "per_server": per_server_summary,
-                "log": truncated_log,
-                "log_storage_info": f"Log truncated to last {len(truncated_log)} entries. Original length: {len(final_log)}."
-                if len(final_log) > 10
-                else "Full log.",
+                "log": _main_task_accumulated_details.get("log", [])[-MAX_LOG_ENTRIES_STORED:],
             }
 
-            if current_job:
-                current_job.meta['progress'] = 100
-                current_job.meta['status_message'] = final_message
-                current_job.save_meta()
 
             save_task_status(
                 current_task_id,
@@ -790,7 +778,7 @@ def _make_server_reporter(log_and_update, server_label, base_progress, span):
     def report(message, local_pct, task_state=TASK_STATUS_PROGRESS):
         scoped = f"[{server_label}] {message}" if server_label else message
         pct = base_progress + (max(0.0, min(100.0, float(local_pct))) / 100.0) * span
-        log_and_update(scoped, pct, task_state=task_state)
+        return log_and_update(scoped, pct, task_state=task_state)
 
     return report
 
@@ -949,11 +937,18 @@ def _calibrate_cluster_params(
         return safe_min, safe_max, percentile
 
 
+def _run_claim_is_gone(claimed_task_id, task_id):
+    if not claimed_task_id:
+        return False
+    info = get_task_info_from_db(task_id)
+    return info is None or info.get('status') == TASK_STATUS_REVOKED
+
+
 def _cluster_one_server(
     target_server,
     state,
     report,
-    current_job,
+    claimed_task_id,
     current_task_id,
     clustering_method,
     num_clusters_min,
@@ -1000,14 +995,14 @@ def _cluster_one_server(
     cur = db.cursor(cursor_factory=DictCursor)
     if target_server is not None:
         cur.execute(
-            "SELECT s.item_id, s.author, s.mood_vector FROM score s "
+            "SELECT s.item_id, s.mood_vector FROM score s "
             "WHERE s.mood_vector IS NOT NULL AND s.mood_vector != '' AND "
             + registry.availability_sql('s'),
             (target_server['server_id'], bool(target_server.get('is_default'))),
         )
     else:
         cur.execute(
-            "SELECT item_id, author, mood_vector FROM score "
+            "SELECT item_id, mood_vector FROM score "
             "WHERE mood_vector IS NOT NULL AND mood_vector != ''"
         )
     lightweight_rows = cur.fetchall()
@@ -1019,9 +1014,12 @@ def _cluster_one_server(
         return 'skipped', reason
 
     genre_map = _prepare_genre_map(lightweight_rows)
+    del lightweight_rows
     genre_map_json = json.dumps(genre_map)
+    shared_genre_map_token = taskqueue.put_shared_payload(current_task_id, genre_map_json)
 
     job_prefix = state.get("job_prefix") or current_task_id
+    _revoke_foreign_batches(current_task_id, job_prefix)
     child_tasks_from_db = [
         t for t in get_child_tasks_from_db(current_task_id)
         if str(t.get('task_id', '')).startswith(job_prefix + "_batch_")
@@ -1114,93 +1112,75 @@ def _cluster_one_server(
         if ITERATIONS_PER_BATCH_JOB > 0
         else 0
     )
-    next_batch_to_launch = 0
+    next_batch_to_launch = int(state.get("batches_launched") or 0)
 
-    if child_tasks_from_db:
+    local_pct = 5
+
+    def persist_progress(message):
+        return report(message, local_pct)
+
+    if child_tasks_from_db or next_batch_to_launch:
+        _absorb_finished_batches(state, current_task_id, persist_progress)
         logger.info(
-            f"Found {len(child_tasks_from_db)} existing child tasks for '{server_name}'. Attempting state recovery."
-        )
-        _monitor_and_process_batches(state, current_task_id, initial_check=True)
-
-        runs_accounted_for = state["runs_completed"]
-        next_batch_to_launch = runs_accounted_for // ITERATIONS_PER_BATCH_JOB
-
-        logger.info(
-            f"Recovery complete. Resuming. Runs accounted for: {runs_accounted_for}/{num_clustering_runs}. Next batch index to launch: {next_batch_to_launch}"
+            "Resuming '%s' from its own persisted progress: %d/%d runs, %d batches "
+            "already launched.",
+            server_name, state["runs_completed"], num_clustering_runs, next_batch_to_launch,
         )
 
     if not state["last_subset_ids"]:
         initial_subset_data = _get_stratified_song_subset(genre_map, target_songs_per_genre)
         state["last_subset_ids"] = [t['item_id'] for t in initial_subset_data]
 
-    last_progress_time = time.time()
-    last_known_runs = state["runs_completed"]
-    local_pct = 5
+    stop_launching = False
+    last_progress_signature = None
+    last_progress_at = time.time()
 
-    while state["runs_completed"] < num_clustering_runs:
+    while True:
         task_info = get_task_info_from_db(current_task_id)
-        if current_job and (
-            current_job.is_stopped
-            or task_info is None
-            or task_info.get('status') == TASK_STATUS_REVOKED
+        if claimed_task_id and (
+            task_info is None or task_info.get('status') == TASK_STATUS_REVOKED
         ):
             report("Task revoked, stopping.", local_pct, task_state=TASK_STATUS_REVOKED)
             return 'revoked', None
 
-        _monitor_and_process_batches(state, current_task_id)
+        _absorb_finished_batches(state, current_task_id, persist_progress)
 
-        if state["runs_completed"] > last_known_runs:
-            last_known_runs = state["runs_completed"]
-            last_progress_time = time.time()
-        elif time.time() - last_progress_time > CLUSTERING_BATCH_TIMEOUT_MINUTES * 60:
-            stale_minutes = (time.time() - last_progress_time) / 60
-            report(
-                f"STALENESS WATCHDOG: No progress for {stale_minutes:.1f} min (limit: {CLUSTERING_BATCH_TIMEOUT_MINUTES} min). "
-                f"Forcing completion at {last_known_runs}/{num_clustering_runs} runs.",
-                local_pct,
-            )
-            logger.warning(
-                f"STALENESS WATCHDOG triggered. runs_completed stuck at {last_known_runs}/{num_clustering_runs} for {stale_minutes:.1f} min."
-            )
-            state["runs_completed"] = num_clustering_runs
+        try:
+            live = _live_batches(state, current_task_id)
+        except Exception:
+            logger.exception("Could not list the live clustering batches; retrying")
+            last_progress_at = time.time()
+            time.sleep(3)
+            continue
 
-        failed_batch_count = len(state.get("failed_batches", set()))
-        if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES:
+        failed_batch_count = state.get("failed_batches", 0)
+        if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES and not stop_launching:
+            stop_launching = True
             logger.warning(
                 f"Stopping new batch launches: {failed_batch_count} batches have failed (max: {CLUSTERING_MAX_FAILED_BATCHES})"
             )
-            remaining_runs = num_clustering_runs - state["runs_completed"]
-            if remaining_runs > 0:
-                state["runs_completed"] = num_clustering_runs
-                logger.warning(
-                    f"Forced completion of {remaining_runs} remaining runs due to batch failures"
-                )
 
         stale_batches = state.get("stale_batches", 0)
-        if (
-            stale_batches >= CLUSTERING_EARLY_STOP_BATCHES
-            and not state["active_jobs"]
-            and state["runs_completed"] < num_clustering_runs
-        ):
+        if stale_batches >= CLUSTERING_EARLY_STOP_BATCHES and not stop_launching:
+            stop_launching = True
             report(
                 f"Early stop: {stale_batches} consecutive batches without a better "
                 f"result. Finishing at {state['runs_completed']}/{num_clustering_runs} runs.",
                 local_pct,
             )
-            state["runs_completed"] = num_clustering_runs
 
         while (
-            len(state["active_jobs"]) < MAX_CONCURRENT_BATCH_JOBS
+            not stop_launching
+            and len(live) < MAX_CONCURRENT_BATCH_JOBS
             and next_batch_to_launch < num_total_batches
-            and failed_batch_count < CLUSTERING_MAX_FAILED_BATCHES
-            and stale_batches < CLUSTERING_EARLY_STOP_BATCHES
         ):
-            _launch_batch_job(
+            launch_conn = get_db()
+            launched = _launch_batch_job(
                 state,
                 current_task_id,
                 next_batch_to_launch,
                 num_clustering_runs,
-                genre_map_json,
+                shared_genre_map_token,
                 target_songs_per_genre,
                 clustering_method,
                 num_clusters_min,
@@ -1225,29 +1205,77 @@ def _cluster_one_server(
                 score_weight_other_feature_purity_param,
                 top_n_moods_for_clustering_param,
                 enable_clustering_embeddings_param,
+                conn=launch_conn,
             )
+            if not launched:
+                _rollback_quietly(launch_conn)
+                report("Task revoked before the next batch could start.", local_pct,
+                       task_state=TASK_STATUS_REVOKED)
+                return 'revoked', None
+            state["batches_launched"] = next_batch_to_launch + 1
+            if not persist_progress(
+                f"Started batch {next_batch_to_launch + 1}/{num_total_batches}."
+            ):
+                state["batches_launched"] = next_batch_to_launch
+                _rollback_quietly(launch_conn)
+                logger.warning(
+                    "Could not record batch %d of %s as launched; its enqueue was "
+                    "rolled back with it so the next pass launches it exactly once.",
+                    next_batch_to_launch, current_task_id,
+                )
+                break
+            live.append(f"{state.get('job_prefix') or current_task_id}_batch_{next_batch_to_launch}")
             next_batch_to_launch += 1
 
         local_pct = (
-            5 + int(75 * state["runs_completed"] / num_clustering_runs)
+            5 + int(75 * min(state["runs_completed"], num_clustering_runs) / num_clustering_runs)
             if num_clustering_runs > 0
             else 5
         )
-        report(
-            f"Progress: {state['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(state['active_jobs'])}. Best score: {state['best_score']:.2f}",
-            local_pct,
+        progress_signature = (
+            state["runs_completed"], state["best_score"], len(live),
+            next_batch_to_launch, stop_launching,
         )
-
-        if state["runs_completed"] >= num_clustering_runs and len(state["active_jobs"]) == 0:
+        if progress_signature != last_progress_signature:
+            last_progress_signature = progress_signature
+            last_progress_at = time.time()
             report(
-                f"All runs ({state['runs_completed']}) are processed or accounted for. Forcing loop exit to prevent starvation.",
+                f"Progress: {state['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(live)}. Best score: {state['best_score']:.2f}",
+                local_pct,
+            )
+        elif live and _stall_valve_expired(last_progress_at):
+            stalled_minutes = (time.time() - last_progress_at) / 60.0
+            last_progress_at = time.time()
+            stop_launching = True
+            abandoned = _give_up_on_stalled_batches(
+                live, current_task_id, stalled_minutes
+            )
+            report(
+                f"No progress of any kind for {stalled_minutes:.0f} min (limit: "
+                f"{CLUSTERING_STALL_TIMEOUT_MINUTES} min). Gave up on {abandoned} of "
+                f"{len(live)} unfinished batch(es) and finishing with the best result "
+                f"from {state['runs_completed']}/{num_clustering_runs} runs.",
+                local_pct,
+            )
+
+        if not live and (stop_launching or next_batch_to_launch >= num_total_batches):
+            report(
+                f"All batches are done: {state['runs_completed']}/{num_clustering_runs} runs completed.",
                 local_pct,
             )
             break
 
         time.sleep(3)
 
-    _monitor_and_process_batches(state, current_task_id)
+    _absorb_finished_batches(state, current_task_id, persist_progress)
+
+    try:
+        taskqueue.clear_shared_payload(current_task_id, shared_genre_map_token)
+    except Exception:
+        logger.exception(
+            "Could not clear the shared genre map for %s; maintenance will sweep it",
+            current_task_id,
+        )
 
     report("All batches completed. Finalizing...", 82)
 
@@ -1307,6 +1335,13 @@ def _cluster_one_server(
         90,
     )
 
+    if _run_claim_is_gone(claimed_task_id, current_task_id):
+        logger.info(
+            "Clustering %s was cancelled before naming; no playlist is created.",
+            current_task_id,
+        )
+        return 'revoked', None
+
     previous_playlist_names = _previous_names_for_naming(
         target_server['server_id'] if target_server else None
     )
@@ -1324,6 +1359,14 @@ def _cluster_one_server(
         mistral_model_name_param,
         previous_playlist_names=previous_playlist_names,
     )
+
+    if _run_claim_is_gone(claimed_task_id, current_task_id):
+        logger.info(
+            "Clustering %s was cancelled before playlist creation; the server is "
+            "left untouched.",
+            current_task_id,
+        )
+        return 'revoked', None
 
     report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
     with registry.bind(target_server):
@@ -1376,204 +1419,228 @@ def _calculate_target_songs_per_genre(genre_map, percentile, min_songs):
     return max(min_songs, int(np.floor(target)))
 
 
-def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False):
-    current_time = time.time()
-    timeout_seconds = CLUSTERING_BATCH_TIMEOUT_MINUTES * 60
-    processed_jobs = state_dict.get("processed_job_ids", set())
-
-    timed_out_jobs = []
-    for job_id, start_time in list(state_dict.get("batch_start_times", {}).items()):
-        if job_id not in processed_jobs:
-            elapsed_time = current_time - start_time
-            if elapsed_time > timeout_seconds:
-                logger.warning(
-                    f"TIMEOUT: Batch {job_id} has timed out after {elapsed_time / 60:.1f} minutes (limit: {CLUSTERING_BATCH_TIMEOUT_MINUTES} min)"
-                )
-                timed_out_jobs.append(job_id)
-                state_dict.setdefault("timed_out_batches", set()).add(job_id)
-                state_dict.setdefault("failed_batches", set()).add(job_id)
-    for job_id in timed_out_jobs:
-        try:
-            batch_idx = None
-            if "_batch_" in job_id:
-                batch_idx = int(job_id.rsplit("_batch_", 1)[1])
-            if batch_idx is not None:
-                total_runs = state_dict.get("total_runs", 0)
-                start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
-                num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
-                if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
-                    runs_to_add = min(num_iterations, total_runs - state_dict["runs_completed"])
-                    state_dict["runs_completed"] += runs_to_add
-                    logger.warning(
-                        f"Job {job_id} timed out. Forced runs_completed count to increase by {runs_to_add} to prevent starvation."
-                    )
-        except Exception:
-            logger.exception(f"Could not compute runs for timed out job {job_id}.")
-        state_dict.setdefault("processed_job_ids", set()).add(job_id)
-        if job_id in state_dict.get("active_jobs", {}):
-            del state_dict["active_jobs"][job_id]
-
-    all_child_tasks = get_child_tasks_from_db(parent_task_id)
-    job_prefix = state_dict.get("job_prefix")
-    if job_prefix:
-        all_child_tasks = [
-            t for t in all_child_tasks
-            if str(t.get('task_id', '')).startswith(job_prefix + "_batch_")
-        ]
-
-    jobs_for_status_check = []
-    for task_info in all_child_tasks:
-        if task_info['task_id'] not in processed_jobs:
-            jobs_for_status_check.append(task_info)
-
-    for job_id in state_dict["active_jobs"].keys():
-        if job_id not in processed_jobs and not any(
-            t['task_id'] == job_id for t in jobs_for_status_check
-        ):
-            jobs_for_status_check.append(
-                {
-                    'task_id': job_id,
-                    'status': TASK_STATUS_STARTED,
-                    'sub_type_identifier': None,
-                    'details': None,
-                }
-            )
-
-    jobs_ready_for_result_extraction = []
-
-    for task_info in jobs_for_status_check:
-        job_id = task_info['task_id']
-        db_status = task_info['status']
-
-        is_terminal_in_db = db_status in [
-            TASK_STATUS_SUCCESS,
-            TASK_STATUS_FAILURE,
-            TASK_STATUS_REVOKED,
-        ]
-
-        if is_terminal_in_db:
-            jobs_ready_for_result_extraction.append(job_id)
-            continue
-
-        try:
-            job = Job.fetch(job_id, connection=redis_conn)
-            if rq_job_state.is_terminal_status(job.get_status(refresh=False)):
-                jobs_ready_for_result_extraction.append(job_id)
-            elif job_id not in state_dict["active_jobs"]:
-                state_dict["active_jobs"][job_id] = job
-        except NoSuchJobError:
-            logger.warning(
-                f"Job {job_id} (status: {db_status}) not found in RQ (likely cleared). Treating as finished to prevent main task starvation."
-            )
-            jobs_ready_for_result_extraction.append(job_id)
-        except Exception:
-            logger.exception(
-                f"Error checking RQ status for job {job_id}. Assuming terminal state to prevent starvation."
-            )
-            jobs_ready_for_result_extraction.append(job_id)
-
-    for job_id in jobs_ready_for_result_extraction:
-        if job_id in processed_jobs:
-            continue
-
-        result = get_job_result_safely(job_id, parent_task_id, "clustering_batch")
-
-        if result and result.get("status") == TASK_STATUS_SUCCESS:
-            state_dict["runs_completed"] += result.get("iterations_completed_in_batch", 0)
-            state_dict["last_subset_ids"] = result.get(
-                "final_subset_track_ids", state_dict["last_subset_ids"]
-            )
-            best_from_batch = result.get("best_result_from_batch")
-            improved = False
-            if best_from_batch and best_from_batch.get("parameters"):
-                current_best_score = best_from_batch.get("fitness_score", -1.0)
-                state_dict["elite_solutions"].append(
-                    {"score": current_best_score, "params": best_from_batch.get("parameters")}
-                )
-                target = state_dict.get("top_n_clustering_playlist")
-                if target is None:
-                    target = TOP_N_CLUSTERING_PLAYLIST
-                current_rank = (
-                    _viable_playlists(best_from_batch, target),
-                    current_best_score,
-                )
-                best_rank = (
-                    _viable_playlists(state_dict["best_result"], target),
-                    state_dict["best_score"],
-                )
-                if current_rank > best_rank:
-                    state_dict["best_score"] = current_best_score
-                    state_dict["best_result"] = best_from_batch
-                    improved = True
-            if not initial_check:
-                state_dict["stale_batches"] = (
-                    0 if improved else state_dict.get("stale_batches", 0) + 1
-                )
-        else:
-            state_dict.setdefault("failed_batches", set()).add(job_id)
-            if not initial_check:
-                state_dict["stale_batches"] = state_dict.get("stale_batches", 0) + 1
-
-            task_info_for_runs = next((t for t in all_child_tasks if t['task_id'] == job_id), None)
-
-            if task_info_for_runs and task_info_for_runs.get('sub_type_identifier'):
-                if task_info_for_runs['sub_type_identifier'].startswith('Batch_'):
-                    try:
-                        batch_idx = int(task_info_for_runs['sub_type_identifier'].split('_')[-1])
-                        total_runs = state_dict['total_runs']
-
-                        start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
-                        num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
-
-                        if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
-                            runs_to_add = min(
-                                num_iterations, total_runs - state_dict["runs_completed"]
-                            )
-                            state_dict["runs_completed"] += runs_to_add
-                            logger.warning(
-                                f"Job {job_id} failed/missing result. Forced runs_completed count to increase by {runs_to_add} to prevent main task starvation."
-                            )
-
-                    except Exception:
-                        logger.exception(
-                            f"Could not calculate runs for failed/missing job {job_id} using sub_type_identifier."
-                        )
-            else:
-                try:
-                    if "_batch_" in job_id:
-                        batch_idx = int(job_id.rsplit("_batch_", 1)[1])
-                        total_runs = state_dict.get('total_runs', 0)
-                        start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
-                        num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
-                        if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
-                            runs_to_add = min(
-                                num_iterations, total_runs - state_dict["runs_completed"]
-                            )
-                            state_dict["runs_completed"] += runs_to_add
-                            logger.warning(
-                                f"Job {job_id} failed/missing result (no DB info). Inferred batch index and adjusted runs_completed by {runs_to_add}."
-                            )
-                except Exception:
-                    logger.exception(
-                        f"Could not infer runs for failed/missing job {job_id} from job_id."
-                    )
-
-        state_dict.setdefault("processed_job_ids", set()).add(job_id)
-        if job_id in state_dict["active_jobs"]:
-            del state_dict["active_jobs"][job_id]
-
-    failed_batch_count = len(state_dict.get("failed_batches", set()))
-    if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES:
-        logger.warning(
-            f"Reached maximum failed batches ({failed_batch_count}/{CLUSTERING_MAX_FAILED_BATCHES}). Some jobs may be unstable."
+def _revoke_batch(job_id, parent_task_id, message):
+    try:
+        save_task_status(
+            job_id, 'clustering_batch', TASK_STATUS_REVOKED, progress=100,
+            parent_task_id=parent_task_id, details={'message': message},
         )
+        taskqueue.request_cancel(job_id)
+        return True
+    except Exception:
+        logger.exception("Could not cancel the clustering batch %s", job_id)
+        return False
 
-    state_dict["elite_solutions"].sort(key=lambda x: x["score"], reverse=True)
-    state_dict["elite_solutions"] = state_dict["elite_solutions"][:TOP_N_ELITES]
+
+def _stall_valve_expired(last_progress_at):
+    if CLUSTERING_STALL_TIMEOUT_MINUTES <= 0:
+        return False
+    return (time.time() - last_progress_at) >= CLUSTERING_STALL_TIMEOUT_MINUTES * 60
+
+
+def _give_up_on_stalled_batches(live, parent_task_id, stalled_minutes):
+    abandoned = 0
+    for job_id in live:
+        if _revoke_batch(
+            job_id, parent_task_id,
+            'The parent clustering task gave up on this batch: nothing anywhere in '
+            f'the run changed for {stalled_minutes:.0f} minutes, so it stopped '
+            'waiting rather than hang the whole run on it.',
+        ):
+            abandoned += 1
+    logger.warning(
+        "Clustering %s made no progress of any kind for %.0f minutes (limit: %d "
+        "minutes); gave up on %d of %d unfinished batch(es).",
+        parent_task_id, stalled_minutes, CLUSTERING_STALL_TIMEOUT_MINUTES,
+        abandoned, len(live),
+    )
+    return abandoned
+
+
+def _revoke_foreign_batches(parent_task_id, job_prefix):
+    try:
+        live = taskqueue.live_children(parent_task_id)
+    except Exception:
+        logger.exception(
+            "Could not list the live children of %s; leaving any stale batch alone",
+            parent_task_id,
+        )
+        return 0
+    mine = job_prefix + "_batch_"
+    revoked = 0
+    for child in live:
+        job_id = str(child.get('task_id') or '')
+        if not job_id or "_batch_" not in job_id or job_id.startswith(mine):
+            continue
+        if _revoke_batch(
+            job_id, parent_task_id,
+            'This batch belonged to an earlier phase of a run that restarted, so it '
+            'was cancelled rather than left to fail on a genre map that is gone.',
+        ):
+            revoked += 1
+    if revoked:
+        logger.warning(
+            "Revoked %d clustering batch(es) left over from an earlier phase of this task.",
+            revoked,
+        )
+    return revoked
+
+
+_RESUMABLE_KEYS = (
+    "runs_completed", "best_score", "best_result", "elite_solutions",
+    "failed_batches", "stale_batches", "batches_launched", "server_idx",
+)
+
+# Produced by every iteration but read by NOBODY once the run is over, and the
+# two largest numeric blobs in the result: the PCA component matrix is
+# n_components x EMBEDDING_DIMENSION floats and the scaler is two more rows of
+# it. Dropping them is what makes the winning result cheap enough to keep on the
+# parent row. The centroid maps below them ARE read, by clustering_postprocessing.
+_UNUSED_BEST_RESULT_KEYS = ("scaler_details", "pca_model_details")
+
+
+def _persistable_best_result(best_result):
+    if not isinstance(best_result, dict):
+        return best_result
+    return {
+        key: value for key, value in best_result.items()
+        if key not in _UNUSED_BEST_RESULT_KEYS
+    }
+
+
+def _resumable_progress(task_info, num_clustering_runs):
+    if not task_info:
+        return None
+    details = coerce_db_details(task_info.get('details'))
+    if not isinstance(details, dict):
+        return None
+    if details.get("total_runs") != num_clustering_runs:
+        return None
+    resumed = {key: details[key] for key in _RESUMABLE_KEYS if key in details}
+    if not resumed.get("batches_launched") and not resumed.get("runs_completed"):
+        return None
+    if not isinstance(resumed.get("elite_solutions"), list):
+        resumed["elite_solutions"] = []
+    return resumed
+
+
+def _absorb_batch_result(state_dict, job_id, status, details):
+    if status != TASK_STATUS_SUCCESS:
+        state_dict["failed_batches"] = state_dict.get("failed_batches", 0) + 1
+        state_dict["stale_batches"] = state_dict.get("stale_batches", 0) + 1
+        logger.warning("Clustering batch %s ended as %s.", job_id, status)
+        return
+
+    state_dict["runs_completed"] += int(details.get("iterations_completed_in_batch") or 0)
+    subset = details.get("final_subset_track_ids")
+    if subset:
+        state_dict["last_subset_ids"] = subset
+
+    best_from_batch = (
+        details.get("full_best_result_from_batch") or details.get("full_result")
+    )
+    improved = False
+    if best_from_batch and best_from_batch.get("parameters"):
+        score = best_from_batch.get("fitness_score", -1.0)
+        state_dict["elite_solutions"].append(
+            {"score": score, "params": best_from_batch.get("parameters")}
+        )
+        target = state_dict.get("top_n_clustering_playlist")
+        if target is None:
+            target = TOP_N_CLUSTERING_PLAYLIST
+        current_rank = (_viable_playlists(best_from_batch, target), score)
+        best_rank = (
+            _viable_playlists(state_dict["best_result"], target),
+            state_dict["best_score"],
+        )
+        if current_rank > best_rank:
+            state_dict["best_score"] = score
+            state_dict["best_result"] = best_from_batch
+            improved = True
+
+    state_dict["stale_batches"] = 0 if improved else state_dict.get("stale_batches", 0) + 1
+
+
+_ABSORBED_KEYS = (
+    "runs_completed", "best_score", "best_result", "elite_solutions",
+    "failed_batches", "stale_batches", "last_subset_ids",
+)
+
+
+def _absorbed_snapshot(state_dict):
+    snapshot = {key: state_dict.get(key) for key in _ABSORBED_KEYS}
+    snapshot["elite_solutions"] = list(snapshot["elite_solutions"] or [])
+    return snapshot
+
+
+def _rollback_quietly(db):
+    if db is None:
+        return
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception("Could not roll back the clustering parent transaction")
+
+
+def _discard_reap(db, state_dict, snapshot):
+    _rollback_quietly(db)
+    state_dict.update(snapshot)
+
+
+def _absorb_finished_batches(state_dict, parent_task_id, persist):
+    snapshot = _absorbed_snapshot(state_dict)
+    mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
+    absorbed = 0
+    db = None
+    try:
+        db = get_db()
+        reaped = taskqueue.reap_finished_children(parent_task_id, conn=db)
+        for child in reaped:
+            job_id = str(child.get('task_id') or '')
+            if not job_id.startswith(mine):
+                continue
+            details = child.get('details')
+            _absorb_batch_result(
+                state_dict, job_id, child.get('status'),
+                details if isinstance(details, dict) else {},
+            )
+            absorbed += 1
+
+        if not absorbed:
+            db.commit()
+            return 0
+
+        state_dict["elite_solutions"].sort(key=lambda x: x["score"], reverse=True)
+        state_dict["elite_solutions"] = state_dict["elite_solutions"][:TOP_N_ELITES]
+        persisted = persist(
+            f"Absorbed {absorbed} finished batch(es): "
+            f"{state_dict['runs_completed']} runs completed."
+        )
+    except Exception:
+        logger.exception(
+            "Could not reap the finished clustering batches of %s; retrying next pass",
+            parent_task_id,
+        )
+        persisted = False
+
+    if not persisted:
+        _discard_reap(db, state_dict, snapshot)
+        return 0
+    return absorbed
+
+
+def _live_batches(state_dict, parent_task_id):
+    mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
+    return [
+        str(child.get('task_id'))
+        for child in taskqueue.live_children(parent_task_id)
+        if str(child.get('task_id') or '').startswith(mine)
+    ]
 
 
 def _launch_batch_job(
-    state_dict, parent_task_id, batch_idx, total_runs, genre_map_json, target_per_genre, *args
+    state_dict, parent_task_id, batch_idx, total_runs, shared_genre_map_token,
+    target_per_genre, *args, conn=None
 ):
     (
         clustering_method,
@@ -1619,7 +1686,6 @@ def _launch_batch_job(
         "batch_id_str": f"Batch_{batch_idx}",
         "start_run_idx": start_run,
         "num_iterations_in_batch": num_iterations,
-        "genre_to_lightweight_track_data_map_json": genre_map_json,
         "target_songs_per_genre": target_per_genre,
         "sampling_percentage_change_per_run": SAMPLING_PERCENTAGE_CHANGE_PER_RUN,
         "clustering_method": clustering_method,
@@ -1672,21 +1738,41 @@ def _launch_batch_job(
         "top_n_playlists_param": batch_top_n,
     }
 
-    new_job = rq_queue_default.enqueue(
-        'tasks.clustering.run_clustering_batch_task',
-        kwargs=job_args,
-        job_id=batch_job_id,
-        job_timeout=CLUSTERING_BATCH_TIMEOUT_MINUTES * 60,
-        retry=Retry(max=3),
-        on_failure=batch_task_failure_handler,
-    )
-    state_dict["active_jobs"][new_job.id] = new_job
-
-    state_dict.setdefault("batch_start_times", {})[new_job.id] = time.time()
+    with main_task_start_lock():
+        parent = get_task_info_from_db(parent_task_id)
+        if parent is None or parent.get('status') in (
+            TASK_STATUS_SUCCESS,
+            TASK_STATUS_FAILURE,
+            TASK_STATUS_REVOKED,
+        ):
+            logger.info(
+                "Not enqueueing batch %s because parent %s is missing or terminal.",
+                batch_job_id, parent_task_id,
+            )
+            return False
+        try:
+            taskqueue.enqueue(
+                'tasks.clustering.run_clustering_batch_task',
+                kwargs=job_args,
+                task_id=batch_job_id,
+                task_type='clustering_batch',
+                queue=taskqueue.QUEUE_DEFAULT,
+                parent_task_id=parent_task_id,
+                shared={
+                    'genre_to_lightweight_track_data_map_json': shared_genre_map_token,
+                },
+                conn=conn,
+            )
+        except (taskqueue.TaskNotQueued, taskqueue.TaskAlreadyRunning):
+            logger.info(
+                "Batch %s already has a queue row from a previous attempt; leaving it "
+                "to finish instead of re-enqueueing.", batch_job_id,
+            )
 
     logger.info(
-        f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}."
+        f"Enqueued batch job {batch_job_id} for runs {start_run}-{start_run + num_iterations - 1}."
     )
+    return True
 
 
 def _previous_names_for_naming(server_id):

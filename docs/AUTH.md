@@ -1,6 +1,6 @@
 # Authentication
 
-From v1.0.0, only PostgreSQL, Redis, and `TZ` must still be configured via environment variables. All other configuration values are managed through the browser Setup Wizard and stored in the database. For compatibility with older installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is the landing page on a clean installation and is also available later from the menu under Administration > Setup Wizard.
+From v1.0.0, only PostgreSQL and `TZ` must still be configured via environment variables. All other configuration values are managed through the browser Setup Wizard and stored in the database. For compatibility with older installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is the landing page on a clean installation and is also available later from the menu under Administration > Setup Wizard.
 
 Authentication is enabled by default since v0.9.6 through the `AUTH_ENABLED` parameter. It uses the mandatory `AUDIOMUSE_USER` and `AUDIOMUSE_PASSWORD`, plus the optional `API_TOKEN` and `JWT_SECRET`.
 

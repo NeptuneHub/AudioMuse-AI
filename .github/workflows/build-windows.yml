@@ -3,10 +3,10 @@
 #
 # Mirrors build-linux.yml and build-macos.yml. The package bundles EVERYTHING
 # (Python runtime, onnxruntime, PyAV/ffmpeg, the ONNX models, embedded
-# PostgreSQL via pgserver and embedded Redis), so an installed package needs no
+# PostgreSQL via pgserver), so an installed package needs no
 # Docker and no separately-installed database/broker.
 #
-# The small native build inputs (redis-server.exe, the unaccent/pg_trgm contrib
+# The small native build inputs (the unaccent/pg_trgm contrib
 # modules) are built or downloaded in this workflow, then baked into the bundle
 # by the shared AudioMuse-AI.spec.
 #
@@ -78,10 +78,6 @@ jobs:
           .venv-windows\Scripts\activate
           pip install --upgrade pip
           pip install -r requirements/windows.txt
-
-      - name: Build vendored redis-server.exe
-        shell: cmd
-        run: native-build\windows\vendor\build-redis.bat
 
       - name: Verify vendored PostgreSQL contrib is present
         shell: powershell

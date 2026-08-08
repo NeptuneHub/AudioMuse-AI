@@ -33,28 +33,6 @@ from tasks.clustering_helper import (
 
 
 class TestMutateParam:
-    def test_mutate_param_integer_within_bounds(self):
-        random.seed(42)
-        value = 10
-        min_val = 5
-        max_val = 15
-        delta = 2
-
-        mutated = _mutate_param(value, min_val, max_val, delta, is_float=False)
-
-        assert min_val <= mutated <= max_val
-
-    def test_mutate_param_float_within_bounds(self):
-        random.seed(42)
-        value = 0.5
-        min_val = 0.1
-        max_val = 1.0
-        delta = 0.1
-
-        mutated = _mutate_param(value, min_val, max_val, delta, is_float=True)
-
-        assert min_val <= mutated <= max_val
-
     def test_mutate_param_clamps_at_max(self):
         value = 98
         min_val = 0
@@ -233,23 +211,6 @@ class TestApplyClusteringModel:
 
 
 class TestGetStratifiedSongSubset:
-    def test_stratified_sampling_balances_genres(self):
-        genre_map = {
-            'Rock': [
-                {'item_id': 'r1', 'mood_vector': 'Rock:0.8,Pop:0.2'},
-                {'item_id': 'r2', 'mood_vector': 'Rock:0.9,Jazz:0.1'},
-            ],
-            'Pop': [
-                {'item_id': 'p1', 'mood_vector': 'Pop:0.7,Rock:0.3'},
-            ],
-        }
-        target_per_genre = 2
-
-        subset = _get_stratified_song_subset(genre_map, target_per_genre)
-
-        assert isinstance(subset, list)
-        assert len(subset) >= 0
-
     def test_rotation_keeps_the_subset_at_the_exact_configured_size(self, monkeypatch):
         from tasks import clustering_helper
 
@@ -321,13 +282,6 @@ class TestGetStratifiedSongSubset:
 
 
 class TestGetTrackPrimaryGenre:
-    def test_returns_genre_from_mood_vector(self):
-        track_data = {'mood_vector': 'Rock:0.8,Pop:0.2'}
-
-        genre = _get_track_primary_genre(track_data)
-
-        assert genre in ['Rock', '__other__']
-
     def test_returns_other_when_no_stratified_genre(self):
         track_data = {'mood_vector': 'UnknownMood:0.9'}
 

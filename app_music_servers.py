@@ -23,16 +23,28 @@ Main Features:
   media servers here before any admin account exists.
 """
 
+import json
 import logging
+import time
 import uuid
 
 from flask import Blueprint, g, jsonify, request
-from rq.job import Job
 
 import config
-import rq_job_state
-from app_helper import coerce_db_details, redis_conn, rq_queue_high, save_task_status, send_stop_job_command
-from database import get_db, missing_required_creds, get_active_main_task
+import taskqueue
+from app_logging import sanitize_log_value
+from app_helper import (
+    coerce_db_details,
+)
+from database import (
+    get_db,
+    missing_required_creds,
+    get_active_main_task,
+    main_task_start_lock,
+    record_task_history,
+    stage_pending_task_row,
+)
+from taskqueue.sql import SWEEP_TASK_TYPE
 from app_server_context import (
     merge_creds,
     server_public_dict,
@@ -47,16 +59,18 @@ music_servers_bp = Blueprint('music_servers_bp', __name__)
 
 _SUPPORTED_TYPES = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex')
 
+_SUPERSEDED_SWEEP_MESSAGE = 'Superseded by a new alignment covering all servers.'
+
+
+def _superseded_sweep_details():
+    return {
+        'message': _SUPERSEDED_SWEEP_MESSAGE,
+        'status_message': _SUPERSEDED_SWEEP_MESSAGE,
+        'log': [_SUPERSEDED_SWEEP_MESSAGE],
+    }
+
 
 def _setup_in_progress():
-    """True while the first-run setup wizard is the caller.
-
-    Set by the auth barrier when the install still needs setup: no admin
-    account exists yet, so there is nobody to authenticate as, and the whole
-    /api/setup surface (which writes these same credentials) is already open in
-    that window. It closes the moment setup completes, after which every
-    mutation here is admin-only again.
-    """
     return bool(getattr(g, 'setup_needed', False))
 
 
@@ -79,114 +93,203 @@ def _validate_type(server_type):
 
 
 def _as_bool(value):
-    """Parse a JSON flag. A non-UI caller may send the STRING "false", which is
-    truthy in Python - and would silently promote its server to default."""
     if isinstance(value, str):
         return value.strip().lower() in ('true', '1', 'yes', 'on')
     return bool(value)
 
 
 def _apply_default_to_config():
-    """Propagate a default-server change to every process.
-
-    The registry row that just changed IS the source of truth; the config module
-    globals are only its projection. Reload them here for this process and
-    request a restart so workers re-import config and re-project the row. No
-    values are written anywhere - the registry was already updated by the caller.
-    """
     import restart_manager
 
-    config.refresh_config()
-    restart_manager.publish_restart_request()
-
-
-def _cancel_active_sweeps():
-    """Revoke queued/running alignment sweeps so a consolidated one replaces them.
-
-    Surgical per-sweep cancel: touches ONLY the stale sweep jobs, never the RQ
-    queues or other task_status rows, so a running analysis (or any other job)
-    keeps going when a server is added or edited. The REVOKED row is written
-    first so the sweep's cooperative cancellation check picks it up even when
-    the RQ commands fail.
-    """
-    cancelled = []
     try:
-        db = get_db()
-        cur = db.cursor()
-        try:
-            cur.execute(
-                "SELECT task_id FROM task_status WHERE task_type = 'server_sweep' "
-                "AND status NOT IN (%s, %s, %s)",
-                (config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
-                 config.TASK_STATUS_REVOKED),
+        config.refresh_config()
+        return bool(
+            restart_manager.publish_restart_request(
+                timeout_seconds=restart_manager.CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS
             )
-            rows = cur.fetchall()
-        finally:
-            cur.close()
+        )
     except Exception:
-        logger.exception("Could not look up active sweeps to supersede")
-        return cancelled
-    for row in rows:
-        stale_task_id = row[0]
-        try:
-            save_task_status(
-                stale_task_id, 'server_sweep', config.TASK_STATUS_REVOKED,
-                progress=100,
-                details={'message': 'Superseded by a new alignment covering all servers.'},
+        logger.exception(
+            "Default server was saved, but worker restart acknowledgement failed"
+        )
+        return False
+
+
+def _restart_partial_failure(body, status_code=200):
+    # The server row is ALREADY committed and the sweep already enqueued, so a 503
+    # here made the admin UI print "Save failed." for a change that succeeded - and
+    # retrying then hit "already exists" with no way to reach the success path.
+    body['restart_acknowledged'] = False
+    body['warning'] = (
+        "The server change was saved, but worker restart was not acknowledged. "
+        "Restart AudioMuse before starting new catalogue work."
+    )
+    return jsonify(body), status_code
+
+
+def _revoke_active_sweeps(cur):
+    terminal = (
+        config.TASK_STATUS_SUCCESS,
+        config.TASK_STATUS_FAILURE,
+        config.TASK_STATUS_REVOKED,
+    )
+    cur.execute(
+        # Any live sweep, root or child. The provider migration queues its
+        # alignment as its own child so it does not take the start path, and a
+        # root-only filter left it running while a new sweep started over it.
+        "SELECT task_id, start_time FROM task_status WHERE task_type = %s "
+        "AND status NOT IN (%s, %s, %s) FOR UPDATE",
+        (SWEEP_TASK_TYPE,) + terminal,
+    )
+    rows = cur.fetchall()
+    task_ids = [row[0] for row in rows]
+    if task_ids:
+        now = time.time()
+        cur.execute(
+            """
+            UPDATE task_status
+            SET status = %s, progress = 100, details = %s,
+                timestamp = NOW(), end_time = COALESCE(end_time, %s)
+            WHERE task_id = ANY(%s)
+              AND status NOT IN (%s, %s, %s)
+            """,
+            (
+                config.TASK_STATUS_REVOKED,
+                json.dumps(_superseded_sweep_details()),
+                now,
+                task_ids,
+                *terminal,
+            ),
+        )
+        if cur.rowcount != len(task_ids):
+            raise RuntimeError(
+                "Active sweep set changed while superseding; refusing partial replacement"
             )
-            cancelled.append(stale_task_id)
-        except Exception:
-            logger.exception("Could not revoke superseded sweep %s", stale_task_id)
-            continue
+    return [
+        (
+            row[0],
+            max(0.0, now - float(row[1])) if row[1] is not None else None,
+        )
+        for row in rows
+    ]
+
+
+def _record_superseded_sweep_history(records):
+    details = _superseded_sweep_details()
+    for task_id, duration in records:
+        record_task_history(
+            task_id,
+            SWEEP_TASK_TYPE,
+            config.TASK_STATUS_REVOKED,
+            duration_seconds=duration,
+            details=details,
+        )
+
+
+def _cleanup_superseded_sweep_jobs(task_ids):
+    for stale_task_id in task_ids:
         try:
-            job = Job.fetch(stale_task_id, connection=redis_conn)
-            status = job.get_status(refresh=False)
-            if rq_job_state.is_running_status(status):
-                send_stop_job_command(redis_conn, stale_task_id)
-            elif rq_job_state.is_alive_status(status):
-                job.cancel()
+            taskqueue.request_cancel(stale_task_id)
         except Exception:
-            logger.exception("RQ cleanup failed for superseded sweep %s", stale_task_id)
-    return cancelled
+            logger.exception("Could not signal the superseded sweep %s", stale_task_id)
+
+
+def _claim_replacement_sweep(task_id):
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            records = _revoke_active_sweeps(cur)
+            staged = stage_pending_task_row(
+                cur,
+                task_id,
+                SWEEP_TASK_TYPE,
+                {'message': 'Server alignment queued for all servers.'},
+            )
+            if not staged:
+                raise RuntimeError(
+                    "Another alignment sweep took the live slot; not replacing it"
+                )
+        # NO commit here. The staged row only becomes runnable once the enqueue
+        # writes its func, and committing between the two published a func-less
+        # row that a crash left stranded for the 30-minute stale sweep. The caller
+        # enqueues on this same connection and commits both together. The INSERT
+        # itself lives in database.stage_pending_task_row so that the status and
+        # the absent func stay whatever taskqueue's adoption guard accepts.
+    except Exception:
+        db.rollback()
+        logger.exception("Could not atomically claim replacement sweep %s", task_id)
+        raise
+    return records
+
+
+def _live_sweep_row():
+    # get_active_main_task only looks at parentless rows, by design: it answers
+    # "is a MAIN task running". The provider migration queues its alignment as its
+    # own CHILD so it does not take the start path, so that question misses it and
+    # a manual align would start a second sweep straight over the top of it.
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT task_id, status FROM task_status WHERE task_type = %s "
+            "AND status = ANY(%s) ORDER BY timestamp DESC LIMIT 1",
+            (SWEEP_TASK_TYPE, list(config.TASK_STATUS_LIVE)),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {'task_id': row[0], 'status': row[1]}
+
+
+def _task_blocking_a_sweep():
+    # Cleaning and provider migration both rewrite track_server_map, which is
+    # exactly what a sweep writes. Migration refuses while a sweep runs; without
+    # this the reverse was not true, so a sweep could start mid-repoint.
+    for task_type in ('cleaning', 'provider_migration'):
+        active = get_active_main_task(task_type=task_type)
+        if active:
+            return active
+    return None
 
 
 def _enqueue_sweep(at_front=False):
-    """Replace any queued/running sweep with one alignment of every server.
-
-    Adding several servers back to back cancels the previous alignment each time
-    and starts a fresh one, so the newest sweep always covers every not-yet-aligned
-    server and no stale sweep for an outdated server set keeps running.
-
-    Refuses while a cleaning run is live: both prune track_server_map against a
-    catalogue snapshot taken minutes earlier, so an overlap lets one delete the
-    mappings the other just wrote.
-    """
-    active = get_active_main_task(task_type='cleaning')
-    if active:
-        logger.warning(
-            "Server alignment not enqueued: cleaning task %s is still %s. "
-            "Re-run the alignment once it finishes.",
-            active['task_id'], active['status'],
-        )
-        return None
-
-    superseded = _cancel_active_sweeps()
     task_id = str(uuid.uuid4())
     try:
-        save_task_status(
-            task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={
-                'message': 'Server alignment queued for all servers.',
-                'full_refresh': True,
-            },
-        )
-        rq_queue_high.enqueue(
-            'tasks.multiserver_sync.sweep_all_secondary_servers',
-            kwargs={'task_id': task_id},
-            job_id=task_id,
-            job_timeout=-1,
-            at_front=at_front,
-        )
+        # Cleaning's own gate sees sweeps (exclude_task_types=()), so without the
+        # shared lock a cleaning start and this enqueue could each pass their gate
+        # before either had written its row - and both prune track_server_map.
+        with main_task_start_lock():
+            active = _task_blocking_a_sweep()
+            if active:
+                logger.warning(
+                    "Server alignment not enqueued: %s task %s is still %s. "
+                    "Re-run the alignment once it finishes.",
+                    active['task_type'], active['task_id'], active['status'],
+                )
+                return None
+
+            # Revoking only some old sweeps and then continuing would permit two
+            # incompatible catalogue snapshots. Revoke the complete set and
+            # insert the replacement in one transaction.
+            db = get_db()
+            records = _claim_replacement_sweep(task_id)
+            try:
+                taskqueue.enqueue(
+                    'tasks.multiserver_sync.sweep_all_secondary_servers',
+                    kwargs={'task_id': task_id},
+                    task_id=task_id,
+                    task_type=SWEEP_TASK_TYPE,
+                    queue=taskqueue.QUEUE_HIGH,
+                    priority=taskqueue.PRIORITY_FRONT if at_front else 0,
+                    details={'message': 'Server alignment queued.'},
+                    conn=db,
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        _record_superseded_sweep_history(records)
+        superseded = [stale_id for stale_id, _duration in records]
+        _cleanup_superseded_sweep_jobs(superseded)
         if superseded:
             logger.info(
                 "Superseded %d active sweep(s) with consolidated alignment %s",
@@ -205,7 +308,8 @@ def _latest_sweep_task():
         try:
             cur.execute(
                 "SELECT task_id, status, progress, details FROM task_status "
-                "WHERE task_type = 'server_sweep' ORDER BY timestamp DESC LIMIT 1"
+                "WHERE task_type = %s ORDER BY timestamp DESC LIMIT 1",
+                (SWEEP_TASK_TYPE,),
             )
             row = cur.fetchone()
         finally:
@@ -231,19 +335,10 @@ def _name_taken(name, exclude_server_id=None):
 
 
 def _missing_cred_keys(server_type, creds):
-    """Required-but-empty cred keys for ``server_type`` (url/token/... style keys)."""
     return missing_required_creds(server_type, creds)
 
 
 def _placeholder_default():
-    """The default server row when it is only init_db's credential-less seed.
-
-    A fresh install always carries one (seeded from an unconfigured config), and
-    it is not a server anybody can reach: the first real server added has to
-    take its place, or setup could never complete. Returns None when the default
-    is a properly configured server (or when there is no default at all, which
-    the registry already resolves by making the new server the default).
-    """
     try:
         default = registry.get_default_server()
     except Exception:
@@ -257,12 +352,6 @@ def _placeholder_default():
 
 
 def _drop_unused_placeholder(placeholder):
-    """Delete the seed row once a real server has replaced it as the default.
-
-    Kept when it owns track mappings: that would mean a once-working server
-    whose credentials were cleared, and its catalogue bindings are not ours to
-    throw away - it just stays as a secondary for the admin to fix or remove.
-    """
     try:
         if registry.mapped_count(placeholder['server_id']):
             return False
@@ -279,11 +368,6 @@ def _drop_unused_placeholder(placeholder):
 
 @music_servers_bp.route('/api/servers', methods=['GET'])
 def list_servers():
-    """List configured media servers plus the default id.
-
-    Admins receive each server's masked credentials (to prefill the setup editor);
-    non-admins receive only the fields the menu dropdown needs, with no creds.
-    """
     payload = servers_for_ui()
     payload['sweep_task'] = _latest_sweep_task()
     if not _is_admin_caller():
@@ -330,13 +414,19 @@ def add_server():
     )
     sweep_task_id = None
     created = registry.get_server(server_id)
+    restart_acknowledged = True
     if created and created['is_default']:
         if placeholder is not None and placeholder['server_id'] != server_id:
             _drop_unused_placeholder(placeholder)
-        _apply_default_to_config()
+        restart_acknowledged = _apply_default_to_config()
+    # The sweep aligns the new server; it does not depend on workers having
+    # acknowledged the restart. Skipping it left a committed server row permanently
+    # unaligned, with no path to retry it (re-submitting hits "already exists").
     sweep_task_id = _enqueue_sweep()
     body = server_public_dict(created)
     body['sweep_task_id'] = sweep_task_id
+    if not restart_acknowledged:
+        return _restart_partial_failure(body, 201)
     return jsonify(body), 201
 
 
@@ -382,8 +472,7 @@ def update_server(server_id):
         music_libraries=data.get('music_libraries'),
     )
     sweep_task_id = None
-    if is_default:
-        _apply_default_to_config()
+    restart_acknowledged = _apply_default_to_config() if is_default else True
     # Sweep only on changes that can alter track matching; renames never
     # re-match the catalogue.
     new_libraries = data.get('music_libraries')
@@ -396,6 +485,8 @@ def update_server(server_id):
         sweep_task_id = _enqueue_sweep()
     body = server_public_dict(registry.get_server(server_id))
     body['sweep_task_id'] = sweep_task_id
+    if not restart_acknowledged:
+        return _restart_partial_failure(body)
     return jsonify(body)
 
 
@@ -421,10 +512,12 @@ def set_default_server(server_id):
     if registry.get_server(server_id) is None:
         return jsonify({"error": "Unknown server."}), 404
     registry.set_default(server_id)
+    restart_acknowledged = _apply_default_to_config()
     sweep_task_id = _enqueue_sweep()
-    _apply_default_to_config()
     payload = servers_for_ui()
     payload['sweep_task_id'] = sweep_task_id
+    if not restart_acknowledged:
+        return _restart_partial_failure(payload)
     return jsonify(payload)
 
 
@@ -473,7 +566,6 @@ def server_libraries():
 
 @music_servers_bp.route('/api/servers/align', methods=['POST'])
 def align_servers():
-    """Align every secondary server against the default (no-op when aligned)."""
     forbidden = _forbid_non_admin()
     if forbidden:
         return forbidden
@@ -492,21 +584,44 @@ def sweep_server(server_id):
         return jsonify({"error": "Unknown server."}), 404
     task_id = str(uuid.uuid4())
     try:
-        save_task_status(
-            task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={
-                'message': 'Server matching sweep queued.',
-                'full_refresh': True,
-            },
-        )
-        rq_queue_high.enqueue(
-            'tasks.multiserver_sync.sweep_server',
-            args=(server_id,),
-            kwargs={'task_id': task_id},
-            job_id=task_id,
-            job_timeout=-1,
-        )
+        # This endpoint had no gate at all, so a single-server sweep could start
+        # mid-migration and rewrite the mappings it was repointing.
+        with main_task_start_lock():
+            active = _task_blocking_a_sweep()
+            if active:
+                return jsonify(
+                    {
+                        "error": f"A {active['task_type']} task is running. "
+                                 f"Re-run the sweep once it finishes.",
+                        "task_id": active['task_id'],
+                    }
+                ), 409
+            active_sweep = _live_sweep_row()
+            if active_sweep:
+                return jsonify(
+                    {
+                        "error": "A server sweep is already in progress.",
+                        "task_id": active_sweep['task_id'],
+                        "status": active_sweep['status'],
+                    }
+                ), 409
+            taskqueue.enqueue(
+                'tasks.multiserver_sync.sweep_server',
+                args=(server_id,),
+                kwargs={'task_id': task_id},
+                task_id=task_id,
+                task_type=SWEEP_TASK_TYPE,
+                queue=taskqueue.QUEUE_HIGH,
+                details={
+                    'message': 'Server matching sweep queued.',
+                    'status_message': 'Server matching sweep queued.',
+                },
+            )
+    except taskqueue.TaskAlreadyRunning as exc:
+        return jsonify({"error": exc.user_message}), exc.status_code
     except Exception:
-        logger.exception("Failed to enqueue matching sweep for server %s", server_id)
-        return jsonify({"error": "Could not enqueue the sweep; check container logs."}), 500
+        logger.exception(
+            "Failed to queue the matching sweep for server %s", sanitize_log_value(server_id)
+        )
+        return jsonify({"error": "Could not queue the sweep; check container logs."}), 500
     return jsonify({"enqueued": True, "task_id": task_id, "job_id": task_id, "server_id": server_id}), 202

@@ -133,6 +133,10 @@
        theirs, so it stays readable on phones. */
     #music-servers-status-table { min-width: 640px; }
 
+    /* Two tiles, one per queue, above the workers table - reuses .dash-grid /
+       .dash-stat-card so it already wraps to one column on narrow phones. */
+    #queue-backlog { margin-bottom: 1rem; }
+
     /* Workers table: force hostname and current-job cells to wrap onto new
        lines instead of bleeding into the next column. */
     .workers-table td, .workers-table th { white-space: normal; }
@@ -224,7 +228,6 @@
         </div>
         <p class="muted dash-updated" id="keynumbers-updated">Loading…</p>
         <div class="dash-grid" id="key-numbers"></div>
-        <p class="dash-clickhint">Click any underlined number to open the full list.</p>
     </section>
 
     <!-- Music Server Status (shown when at least one server is configured) -->
@@ -237,7 +240,6 @@
             </span>
         </h2>
         <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
-        <p class="dash-clickhint">Click any underlined count to open the full list of those songs.</p>
         <div class="dash-table-wrap">
             <table class="dash-table" id="music-servers-status-table">
                 <thead><tr>
@@ -258,18 +260,19 @@
         <h2>Queue Workers
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each worker container spins up two RQ workers: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
+                <span class="tooltip-text">Each worker container runs two queue worker processes: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="workers-updated">Loading…</p>
+        <div class="dash-grid" id="queue-backlog"></div>
         <div class="dash-table-wrap">
             <table class="dash-table workers-table" id="workers-table">
                 <thead><tr>
                     <th>Hostname</th>
                     <th class="col-narrow">State</th>
                     <th>Queues</th>
-                    <th class="col-narrow">OK</th>
-                    <th class="col-narrow">Fail</th>
+                    <th>Started</th>
+                    <th>Current Task</th>
                     <th>Current Job</th>
                 </tr></thead>
                 <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
@@ -390,15 +393,7 @@
     const tickColor = () => isDark() ? '#D1D5DB' : '#374151';
 
     function statusBadgeClass(status) {
-        if (!status) return 'badge-unknown';
-        const s = status.toUpperCase();
-        if (s === 'SUCCESS' || s === 'OK') return 'badge-success';
-        if (s === 'FAILURE' || s === 'DOWN') return 'badge-failure';
-        if (s === 'PENDING') return 'badge-pending';
-        if (s === 'STARTED') return 'badge-started';
-        if (s === 'PROGRESS') return 'badge-progress';
-        if (s === 'REVOKED') return 'badge-revoked';
-        return 'badge-unknown';
+        return AudioMuseTaskStatus.badgeClass(status);
     }
 
     function fmtDuration(secs) {
@@ -593,16 +588,32 @@
         return td;
     }
 
+    const QUEUE_LABELS = { high: 'High-priority queue', default: 'Default queue' };
+
+    function renderQueueBacklog(rows) {
+        const host = document.getElementById('queue-backlog');
+        host.innerHTML = '';
+        (rows || []).forEach(q => {
+            const count = q.pending_count || 0;
+            const div = document.createElement('div');
+            div.className = 'dash-stat-card';
+            div.innerHTML = `<h3>${QUEUE_LABELS[q.queue_name] || q.queue_name}</h3>
+                             <div class="dash-stat">${count.toLocaleString()}</div>`;
+            host.appendChild(div);
+        });
+    }
+
     function renderWorkers(workers) {
         const tbody = document.querySelector('#workers-table tbody');
+        const columns = document.querySelectorAll('#workers-table thead th').length;
         tbody.innerHTML = '';
         if (!workers || workers.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="muted">No active workers detected.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + columns
+                + '" class="muted">No active workers detected.</td></tr>';
             return;
         }
         workers.forEach(w => {
-            const cls = w.state === 'busy' ? 'badge-progress'
-                : (w.state === 'idle' ? 'badge-ok' : 'badge-unknown');
+            const cls = AudioMuseTaskStatus.workerStateClass(w.state);
             const jobTd = document.createElement('td');
             if (w.current_job_id) {
                 const code = document.createElement('code');
@@ -615,8 +626,8 @@
             tr.appendChild(textCell(w.hostname || '-'));
             tr.appendChild(badgeCell(w.state || 'unknown', cls));
             tr.appendChild(textCell((w.queues || []).join(', ') || '-'));
-            tr.appendChild(textCell(w.successful_jobs ?? 0));
-            tr.appendChild(textCell(w.failed_jobs ?? 0));
+            tr.appendChild(textCell(w.started_at ? fmtTime(w.started_at) : '-'));
+            tr.appendChild(textCell(w.current_task_type || '-'));
             tr.appendChild(jobTd);
             tbody.appendChild(tr);
         });
@@ -823,6 +834,7 @@
             const servers = Array.isArray(content.music_servers) ? content.music_servers : [];
             renderKeyNumbers(d);
             renderWorkers(d.workers);
+            renderQueueBacklog(d.queue_backlog);
             renderRecentTasks(d.recent_tasks);
             renderTopGenre(content.top_genre);
             renderMoodsCoverage(content.moods_coverage);

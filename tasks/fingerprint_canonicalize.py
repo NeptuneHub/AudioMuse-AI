@@ -9,63 +9,33 @@
 """Relabel legacy catalogue rows so item_id becomes the embedding signature.
 
 The canonical id is the 200-bit per-dimension sign signature of each track's
-stored MusiCNN embedding (tasks.simhash), so this is a database operation: no
-downloads, no binaries, no audio decoding. It runs ONCE per lifetime of a
-legacy row, at Flask container startup, and is an instant no-op afterwards;
-analysis mints canonical ids directly at analyze time so nothing here runs
-during analysis. It is NOT once per lifetime of an INSTALL: identity is derived
-from the MusiCNN embedding, so swapping the model re-mints every id and runs the
-whole rewrite again. Signatures are hashed a chunk at a time to mint each row's
-content id, and duplicate candidates are read straight from the audio IVF index
-the library already built - only tracks sharing an IVF cell (cluster) are
-compared - so a large legacy install migrates without ever holding the whole
-catalogue's pairs in memory. The rewrite uses the same proven transactional
-key-rewrite the provider-migration feature uses (score, playlist, and all
-embedding tables, with the embedding foreign keys dropped and re-added around
-it). A legacy row merges into an existing catalogue row ONLY when they share an
-IVF cluster AND the exact raw-embedding cosine confirms it is the same audio
-(the Similar Songs duplicate rule) AND the two track durations agree within
-DURATION_TOLERANCE_SECONDS - a homogeneous library (say, solo piano) puts
-genuinely different recordings inside the cosine threshold, and only the
-length tells them apart. Durations come from ONE paged metadata listing of
-the source server (no audio downloads) and are backfilled into
-score.duration; if the server is unreachable the migration still runs and
-simply merges nothing, which is always safe (an absent IVF index does the
-same, and a track the index does not cover keeps its own id). The source server's real ids
-are preserved in track_server_map so output can be translated back; a row
-whose embedding is missing or unusable (NULL, truncated, wrong size, constant,
-non-finite) is relabelled to the server-scoped fp_0 unsignable id and mapped
-with the 'analysis' tier, so no corruption shape can leave a legacy id behind
-to fail the verifier and re-run the migration forever.
+stored MusiCNN embedding (tasks.simhash), so this is a pure database
+operation: no downloads, binaries or audio decoding. It runs ONCE per lifetime of
+a legacy row at Flask startup and is an instant no-op afterwards; identity comes
+from the embedding, so swapping the model re-mints every id.
+
+Duplicate candidates come from the audio IVF index the library already built:
+only tracks sharing an IVF cell are compared, keeping peak memory linear in the
+library. The rewrite uses the same transactional key-rewrite as provider
+migration, and repoints the similarity indexes in the same transaction. A legacy
+row merges only when it shares an IVF cluster AND the exact raw-embedding cosine
+confirms the same audio AND the durations agree within
+DURATION_TOLERANCE_SECONDS. Durations come from one paged metadata listing
+and are backfilled into score.duration; an unreachable server or missing IVF
+index simply merges nothing, which is always safe. Unsignable rows are relabelled
+to the server-scoped fp_0 id, so no corruption shape can re-run the migration
+forever.
 
 Main Features:
-* One-time, idempotent startup relabel of legacy rows. Content ids are hashed
-  from embeddings a chunk at a time and dropped; duplicate candidates come from
-  the audio IVF clusters (``_ivf_candidate_pairs``): only tracks sharing a cell
-  are paired, pairs whose stored lengths are unknown or incompatible are dropped
-  by a vectorized compare before any embedding is fetched (the confirm would
-  reject them anyway), and the survivors are confirmed one bounded slice at a
-  time. Peak memory is LINEAR in the library - small per-track structures (id,
-  cell and duration maps, ~tens of MB per 100k tracks) plus one bounded confirm
-  slice - and never grows with how crowded a cluster is (the PAIR count), which
-  is what used to run the container out of memory. A track the IVF does not
-  cover keeps its own id; a track whose embedding yields NO signature (constant
-  or non-finite) is relabelled to the same server-scoped fp_0 unsignable id
-  analysis would mint, mapped with the 'analysis' tier, and never proposed as a
-  merge partner - it can never fail the verifier as a leftover legacy row.
-* Cosine-confirmed duplicate merge into existing canonical rows.
-* Repoints the similarity indexes at the new ids in the same transaction: a
-  relabel renames tracks without moving a vector, so nothing is re-clustered.
-* Records the source-server mapping in track_server_map, streamed in with COPY,
-  and moves the legacy ``score.file_path`` onto those map rows - a path belongs
-  to a FILE ON A SERVER, and once the shared column is emptied the map row is
-  its only copy, so the duplicate merge carries it through the
-  snapshot-delete-reinsert too.
+* One-time, idempotent startup relabel; cosine-confirmed duplicate merge
+* Source-server mapping recorded in track_server_map, streamed in with COPY
 """
 
 import io
 import json
 import logging
+
+import taskqueue
 import time
 
 import numpy as np
@@ -124,14 +94,6 @@ _RELABEL_ADVISORY_LOCK = 726354822
 
 
 def _hash_catalogue(cur, sql, params, ids, packed, valid, offset):
-    """Stream (item_id, embedding) rows, packing each BATCH's signatures.
-
-    The embeddings are the bulk of the catalogue - 800 bytes a track against 25
-    for its signature - so they are hashed a batch at a time and dropped, never
-    accumulated: only ``_CHUNK_ROWS`` of them are resident at any moment,
-    whatever the library's size. A server-side cursor keeps the result set on
-    the server side of that, too.
-    """
     scan = cur.connection.cursor(name='migration_scan_%d' % offset)
     scan.itersize = _CHUNK_ROWS
     row_index = offset
@@ -378,14 +340,6 @@ def _ivf_candidate_pairs(cur, ids, valid, loaded, provider_durations, source_id)
 
 
 def _folders_for_rows(cur, ids, left, right, count):
-    """Folder key per row for the rows that appear in a candidate pair, else None.
-
-    Feeds merge_pairs so the folder rule is applied WHILE the groups are built:
-    two distinct files in one folder never land in the same group, so no
-    same-folder merge is ever formed (no wrong id to unmap later). Legacy rows
-    carry score.file_path; a row without one (e.g. an already-canonical target)
-    is left unconstrained.
-    """
     folders = [None] * count
     if left.size == 0:
         return folders
@@ -407,29 +361,6 @@ def _folders_for_rows(cur, ids, left, right, count):
 
 
 def _build_mapping(cur, source_id):
-    """{legacy_id: canonical_id} to relabel plus {legacy_id: existing_id} to merge.
-
-    Legacy rows are everything whose item_id is not a current-scheme signature
-    id: provider ids and ids minted by retired schemes alike. The legacy COUNT
-    runs FIRST, so a fully migrated catalogue returns instantly without loading
-    anything. Also returns the provider duration map so the caller can backfill
-    score.duration for the rows it relabels.
-
-    Identity is resolved in vectorized BATCHES, never catalogue-at-once: the
-    embeddings are hashed ``_CHUNK_ROWS`` at a time and dropped (only their
-    25-byte signatures are kept), and the banded blocking streams its candidate
-    pairs in bounded slices however crowded a band gets. What stays resident is
-    25 bytes a track, plus - during the confirm - the embeddings of the tracks a
-    signature actually matched. Peak is therefore linear in the library and
-    small (~200 MB at 200k tracks), where holding the whole catalogue's pairs at
-    once ran the container out of memory.
-
-    That per-track loop was also quadratic AND single-core - it spent its life
-    in Python bit twiddling under the GIL, which no thread pool can help - and
-    it dominated the migration (~9.5 minutes for 188k tracks, versus seconds
-    here). The answer is identical either way: a track merges into the nearest
-    earlier row that the cosine confirms.
-    """
     head_len = simhash.CANONICAL_ID_LEN
     cur.execute(
         "SELECT COUNT(*) FROM score s "
@@ -468,8 +399,6 @@ def _build_mapping(cur, source_id):
     valid = np.zeros(rows_total, dtype=bool)
 
     started = time.monotonic()
-    # Canonical rows first: "earlier wins", so an existing catalogue id is always
-    # the one a legacy duplicate merges INTO, never the other way round.
     canonical_loaded = _hash_catalogue(
         cur,
         "SELECT s.item_id, e.embedding FROM score s "
@@ -488,8 +417,6 @@ def _build_mapping(cur, source_id):
     packed = packed[:loaded]
     valid = valid[:loaded]
 
-    # A canonical row's id already encodes its signature - keep using it, exactly
-    # as the streaming resolver did when it registered those rows by id alone.
     for row in range(canonical_loaded):
         signature = simhash.signature_from_canonical_id(ids[row])
         if signature is None:
@@ -507,17 +434,8 @@ def _build_mapping(cur, source_id):
     left, right = _ivf_candidate_pairs(
         cur, ids, valid, loaded, provider_durations, source_id
     )
-    # A canonical row may only ever be a merge TARGET, never a child. merge_pairs
-    # refuses a merge whose target has itself already merged, so a confirmed
-    # canonical-vs-canonical pair (which the emit loop below discards anyway, since
-    # it only walks the legacy range) would set parent[j]=i and thereby make j
-    # ineligible as a target - and a legacy row whose only confirmed match was j
-    # would then mint a THIRD id for the same audio.
     keep = right >= canonical_loaded
     left, right = left[keep], right[keep]
-    # Fold the folder rule INTO the id calculation: merge_pairs will not put two
-    # distinct files from one folder in the same group, so a same-folder merge is
-    # never formed here (no wrong id to unmap in a second pass).
     folders = _folders_for_rows(cur, ids, left, right, loaded)
     parent = simhash.merge_pairs(loaded, packed, left, right, folders=folders)
 
@@ -570,12 +488,6 @@ def _build_mapping(cur, source_id):
 
 
 def _merge_duplicate_rows(cur, duplicate_mapping):
-    """Merge provider-keyed duplicate analysis rows into existing canonical rows.
-
-    The source track_server_map rows are snapshotted and deleted before the
-    canonical copies are inserted, so the per-server provider-id unique index
-    is never violated while both keys exist.
-    """
     if not duplicate_mapping:
         return
     cur.execute(
@@ -619,7 +531,6 @@ def _merge_duplicate_rows(cur, duplicate_mapping):
 
 
 def _default_provider_ids(cur, default_id, item_ids):
-    """Preserve current default-server ids before catalogue keys are rewritten."""
     if not item_ids:
         return {}
     cur.execute(
@@ -638,8 +549,6 @@ def _copy_escape(value):
 
 
 def _copy_pairs(cur, table, mapping):
-    """COPY a {old_id: new_id} mapping into ``table`` (id, id) - one stream, no
-    per-row round trips."""
     buffer = io.StringIO()
     for old_id, new_id in mapping.items():
         buffer.write(
@@ -663,14 +572,6 @@ def _populate_relabel_map(cur, mapping):
 
 
 def _relabel_item_ids(cur, lyrics_exists):
-    """Single-pass key rewrite: every table is written exactly once.
-
-    New fp_2 signature ids can never equal any legacy id (different shape) and
-    are unique among themselves, so the collision-safe two-phase prefix rewrite
-    the provider-migration uses is unnecessary here - skipping the second pass
-    halves the write volume on the embedding tables, which dominate the
-    migration time.
-    """
     tables = ["score", "playlist", "embedding", "clap_embedding"]
     if lyrics_exists:
         tables.append("lyrics_embedding")
@@ -686,29 +587,12 @@ def _relabel_item_ids(cur, lyrics_exists):
 
 
 def _legacy_paths_by_item_id(cur):
-    """Each legacy row's own path, captured BEFORE the rewrite can destroy it.
-
-    In the legacy schema the path sits on the shared score row, so a merged
-    duplicate's path dies with the score row the merge deletes - and the winner's
-    path is NOT a substitute: the two files are the same audio at DIFFERENT paths,
-    which is exactly the per-file information the new column exists to keep. So the
-    paths are snapshotted against the OLD ids first, and each map row is then born
-    carrying the path of the file it actually describes.
-    """
     cur.execute("SELECT item_id, file_path FROM score WHERE file_path IS NOT NULL")
     return {str(item_id): path for item_id, path in cur.fetchall()}
 
 
 def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids,
                            legacy_paths, provider_durations=None):
-    """Stream the preserved provider ids in with COPY, not row-by-row INSERTs.
-
-    One 200k-row COPY into an unlogged staging table beats tens of thousands of
-    parameterised VALUES tuples: the client does no per-row round trip and the
-    server does no per-row parse. The same staging table backfills
-    score.duration from the provider metadata, so the relabelled catalogue can
-    take part in duration-confirmed identity from now on.
-    """
     if not all_changes:
         return
     provider_durations = provider_durations or {}
@@ -765,19 +649,6 @@ def _copy_track_server_map(cur, source_id, all_changes, default_provider_ids,
 
 
 def _repoint_indexes(cur, renames):
-    """Point the existing indexes at the new ids. Nothing is re-clustered.
-
-    A relabel does not move a single vector - it renames tracks - so every
-    index, cell and centroid stays exactly as valid as it was. The only thing
-    that goes stale is the id list each index carries, and rewriting that is a
-    second of work. Rebuilding them instead costs minutes, and for every one of
-    those minutes the catalogue holds new ids while the indexes still hold the
-    old ones, so every similarity lookup fails with "track not found".
-
-    A merged duplicate's entry is pointed at the row it merged INTO: the two are
-    the same recording (a cosine confirmed it), so the vector is right where it
-    was, and the id it now answers to is one that still exists.
-    """
     from .paged_ivf import (
         IVF_DIR_TABLE,
         invalidate_global_cell_cache,
@@ -846,21 +717,6 @@ def _repoint_indexes(cur, renames):
 
 
 def relabel_scheme_to_current(cur, only_with_duration=True):
-    """Bump every older-version content id (fp_2) up to the current scheme (fp_3).
-
-    A pure key rewrite - the signature body is unchanged, only the version digit -
-    so there is no re-hashing and no re-clustering. A bumped fp_2 can still land on
-    an fp_3 that already exists (the duration veto keeps two same-signature rows
-    apart), so each target is minted through mint_canonical_id and steps to the next
-    free id instead of colliding on score_pkey. Reuses the same drop-FK / single
-    UPDATE / repoint-index path the
-    provider relabel uses. ``only_with_duration`` bumps rows that already carry a
-    length PLUS orphaned old-scheme rows no server maps: a server the backfill merely
-    skipped keeps its old id and retries next boot, but an orphan (no track_server_map
-    row, so no server can ever supply a length) is bumped anyway so the version gate
-    can finally go cold. Orphans are relabelled, never deleted, so a future server
-    that has the track can re-map it.
-    """
     from tasks import simhash
 
     head = simhash.CURRENT_ID_HEAD
@@ -903,11 +759,10 @@ def relabel_scheme_to_current(cur, only_with_duration=True):
 
 
 class CanonicalizationVerificationError(RuntimeError):
-    """The rewrite produced a catalogue that violates its own invariants."""
+    pass
 
 
 def _index_id_map_lengths(cur):
-    """{index_name: number of ids it carries}, for every track-keyed id list."""
     from .paged_ivf import IVF_DIR_TABLE, unpack_directory
     from .index_build_helpers import load_segmented_blob
 
@@ -931,13 +786,6 @@ def _index_id_map_lengths(cur):
 
 
 def _verify_migration(cur, score_before, duplicates, index_lengths_before):
-    """Assert the rewrite's invariants, or raise so the caller rolls it back.
-
-    A whole-catalogue key rewrite that commits WRONG is the worst thing this file
-    can do: it is silent, it is permanent, and every later run trusts it. The
-    transaction already makes a crash safe; this makes a bad SUCCESS unsafe too,
-    by turning it into a failed boot instead of a corrupted catalogue.
-    """
     problems = []
 
     cur.execute(
@@ -983,11 +831,9 @@ def _verify_migration(cur, score_before, duplicates, index_lengths_before):
 
 
 def _publish_index_reload():
-    """Tell any already-running Flask to reload the repointed indexes."""
     try:
-        from app_helper import redis_conn
 
-        redis_conn.publish('index-updates', 'reload')
+        taskqueue.publish_event('index-reload')
         logger.info(
             "Similarity indexes now answer to the new catalogue ids; asked Flask "
             "to reload them."
@@ -1001,17 +847,6 @@ def _publish_index_reload():
 
 
 def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None):
-    """Relabel legacy item_ids to the canonical signature id.
-
-    Pure database alignment: no downloads. A relabel renames tracks without
-    moving a single vector, so the similarity indexes are REPOINTED at the new
-    ids in the same transaction rather than rebuilt - they keep working across
-    the migration instead of failing "track not found" for the minutes a rebuild
-    would take. ``log_fn`` receives ``(message, progress)`` step updates for a
-    caller's progress bar. The session's statement_timeout is lifted and
-    autocommit forced off for the rewrite (both restored on a caller-provided
-    connection) so large catalogues are not cancelled mid-relabel.
-    """
     def _log(message):
         logger.info("[CatalogueMigration] %s", message)
         if log_fn is not None:
@@ -1038,10 +873,6 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             cur.execute("SHOW statement_timeout")
             prev_timeout = cur.fetchone()[0]
         cur.execute("SET statement_timeout = 0")
-        # Several Flask replicas boot at once on a multi-replica deployment.
-        # This lock makes exactly one of them do the relabel: the others wait,
-        # then find nothing left to migrate and return immediately, instead of
-        # racing the same key rewrite and DDL through the FK drop/re-add.
         cur.execute("SELECT pg_advisory_xact_lock(%s)", (_RELABEL_ADVISORY_LOCK,))
         source_id = source_server_id or registry.get_default_server_id(db)
         if not source_id:
@@ -1097,14 +928,9 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (source_id,),
         )
-        # In the SAME transaction as the relabel: the catalogue's ids and the
-        # indexes' ids are one fact, and they must never be observable apart.
         _log("Pointing the similarity indexes at the new ids...")
         _repoint_indexes(cur, all_changes)
 
-        # The last thing before the point of no return. Everything above is still
-        # rollback-able; one COMMIT from here it is permanent and every later run
-        # trusts it.
         _log("Verifying the rewritten catalogue...")
         _verify_migration(cur, score_before, duplicates, index_lengths_before)
 
@@ -1154,10 +980,6 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
         if own_conn:
             db.close()
 
-    # The whole-server duration listing is handed to the caller so the duplicate
-    # repair reuses it instead of listing the same server a second time on this
-    # same boot (its only slow step). Keyed by server so the repair matches it to
-    # the groups it has to backfill.
     return {
         'relabelled': relabelled,
         'duplicates': duplicates,

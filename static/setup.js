@@ -350,9 +350,8 @@ var ADVANCED_SECTIONS = [
             'ENABLE_CLUSTERING_EMBEDDINGS', 'CLUSTER_ALGORITHM', 'MAX_SONGS_PER_CLUSTER',
             'MAX_SONGS_PER_ARTIST', 'MAX_DISTANCE', 'CLUSTERING_RUNS', 'TOP_N_CLUSTERING_PLAYLIST',
             'MIN_PLAYLIST_SIZE_FOR_TOP_N', 'USE_GPU_CLUSTERING', 'CLUSTERING_CLEANING',
-            'ITERATIONS_PER_BATCH_JOB', 'MAX_CONCURRENT_BATCH_JOBS', 'DB_FETCH_CHUNK_SIZE',
+            'ITERATIONS_PER_BATCH_JOB', 'MAX_CONCURRENT_BATCH_JOBS',
             'CLUSTERING_BATCH_TIMEOUT_MINUTES', 'CLUSTERING_MAX_FAILED_BATCHES',
-            'CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS',
             'TOP_N_ELITES', 'EXPLOITATION_START_FRACTION', 'EXPLOITATION_PROBABILITY_CONFIG',
             'MUTATION_INT_ABS_DELTA', 'MUTATION_FLOAT_ABS_DELTA', 'MUTATION_KMEANS_COORD_FRACTION',
             'TOP_K_MOODS_FOR_PURITY_CALCULATION', 'SCORE_WEIGHT_DIVERSITY', 'SCORE_WEIGHT_PURITY',
@@ -999,10 +998,35 @@ function testConnection() {
     });
 }
 
+// /api/setup answers 200 even when the workers never acknowledged their restart:
+// the configuration is durable and Flask restarts either way, so the save is not
+// an error. The response says so with `worker_restart_acknowledged: false` plus
+// the warning text to show, and that used to be dropped on the floor - the page
+// said "Configuration saved" and redirected as if everything had applied. The
+// warning goes in its OWN element: the countdown owns `save-feedback` and
+// rewrites it every second, so anything written there is erased.
+var saveRestartWarning = null;
+
+function showSaveRestartWarning(text) {
+    if (!saveRestartWarning) {
+        saveRestartWarning = document.createElement('p');
+        saveRestartWarning.id = 'save-restart-warning';
+        saveRestartWarning.className = 'inline-feedback status-pending';
+        saveRestartWarning.style.margin = '0.5rem 0 0';
+        saveRestartWarning.style.width = '100%';
+        saveFeedback.parentNode.insertBefore(saveRestartWarning, saveFeedback.nextSibling);
+    }
+    saveRestartWarning.textContent = text;
+    saveRestartWarning.style.display = 'block';
+}
+
 setupForm.addEventListener('submit', function(event) {
     event.preventDefault();
     saveButton.disabled = true;
     saveFeedback.style.display = 'none';
+    if (saveRestartWarning) {
+        saveRestartWarning.style.display = 'none';
+    }
     var passwordInput = document.getElementById('AUDIOMUSE_PASSWORD');
     var confirmInput = document.getElementById('AUDIOMUSE_PASSWORD_CONFIRM');
     var passwordValue = '';
@@ -1033,7 +1057,7 @@ setupForm.addEventListener('submit', function(event) {
     if (mlValue !== null) {
         config.MUSIC_LIBRARIES = mlValue;
     }
-    fetch('/api/setup', {
+    var saved = fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: config })
@@ -1044,20 +1068,27 @@ setupForm.addEventListener('submit', function(event) {
             }
             return data;
         });
-    }).then(function(data) {
-        saveFeedback.className = 'status-success inline-feedback';
-        saveFeedback.style.display = 'block';
-        var countdown = 20;
-        saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
-        var countdownInterval = setInterval(function() {
-            countdown -= 1;
-            if (countdown > 0) {
-                saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
-            } else {
-                clearInterval(countdownInterval);
-                if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
-            }
-        }, 1000);
+    });
+
+    // Started HERE, not in the success handler: /api/setup is held open for the
+    // whole worker restart, so counting down only once it answered meant the page
+    // froze and the countdown appeared when there was nothing left to wait for.
+    saveFeedback.className = 'status-success inline-feedback';
+    saveFeedback.style.display = 'block';
+    window.AudioMuseRestart.waitAndGo({
+        element: saveFeedback,
+        prefix: 'Configuration saved.',
+        target: '/',
+        until: saved
+    });
+
+    saved.then(function(data) {
+        if (data && data.worker_restart_acknowledged === false) {
+            showSaveRestartWarning(
+                data.warning
+                || 'The workers did not confirm their restart. Check the service logs.'
+            );
+        }
     }).catch(function(err) {
         saveFeedback.className = 'status-failure inline-feedback';
         saveFeedback.style.display = 'block';

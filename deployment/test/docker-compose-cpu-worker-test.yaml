@@ -15,7 +15,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-false}"
       TEMP_DIR: "/app/temp_audio"
     volumes:

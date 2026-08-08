@@ -15,14 +15,14 @@ maintainer: NeptuneHub <https://github.com/NeptuneHub/AudioMuse-AI>
 description: |
   AudioMuse-AI standalone (native Linux build).
   A self-contained music-analysis + smart-playlist app. Bundles its own Python
-  runtime, ONNX models, PostgreSQL (pgvector) and Redis -- no Docker and no
+  runtime, ONNX models and PostgreSQL (pgvector) -- no Docker and no
   separately installed database or broker required. Open http://127.0.0.1:8000
   after launching.
 homepage: https://github.com/NeptuneHub/AudioMuse-AI
 license: GPL-3.0
 
 # Runtime system libraries. Everything else (Python, onnxruntime, ffmpeg/PyAV,
-# PostgreSQL, Redis) is bundled inside /opt/AudioMuse-AI, so the dependency list
+# PostgreSQL) is bundled inside /opt/AudioMuse-AI, so the dependency list
 # is deliberately tiny. These two are the bits we rely on the host to provide:
 #   * libgomp -- OpenMP runtime onnxruntime links against (PyInstaller does not
 #     always vendor it reliably; depending on it guarantees analysis runs).

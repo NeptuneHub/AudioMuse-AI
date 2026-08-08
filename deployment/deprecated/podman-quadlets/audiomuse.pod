@@ -1,2 +1,0 @@
-[Pod]
-PublishPort=8000:8000

@@ -1,15 +1,4 @@
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: audiomuse-nvidia-test-redis
-    environment:
-      TZ: "${TZ:-UTC}"
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis-data:/data
-    restart: unless-stopped
-
   postgres:
     image: postgres:15-alpine
     container_name: audiomuse-nvidia-test-postgres
@@ -42,12 +31,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres"
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio
     depends_on:
-      - redis
       - postgres
     deploy:
       resources:
@@ -73,7 +60,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
       POSTGRES_HOST: "postgres"
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
@@ -81,7 +67,6 @@ services:
     volumes:
       - temp-audio-worker:/app/temp_audio
     depends_on:
-      - redis
       - postgres
     deploy:
       resources:
@@ -93,7 +78,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  redis-data:
   postgres-data:
   temp-audio-flask:
   temp-audio-worker:

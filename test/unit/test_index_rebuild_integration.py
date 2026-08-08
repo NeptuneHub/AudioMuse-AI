@@ -25,9 +25,13 @@ from contextlib import ExitStack, contextmanager
 import pytest
 from unittest.mock import MagicMock, patch
 
-
-agm = pytest.importorskip("tasks.artist_gmm_manager")
-ibh = pytest.importorskip("tasks.index_build_helpers")
+import tasks.artist_gmm_manager as agm
+import tasks.index_build_helpers as ibh
+import tasks.analysis.index as analysis_mod
+import tasks.ivf_manager  # noqa: F401  (builder modules patched in _patched)
+import tasks.clap_text_search  # noqa: F401
+import tasks.lyrics_manager  # noqa: F401
+import tasks.sem_grove_manager  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +45,13 @@ def _reset_artist_globals():
     _clear()
     yield
     _clear()
+
+
+def _seed_stale_globals():
+    agm.artist_index = object()
+    agm.artist_map = {0: "Stale Artist"}
+    agm.reverse_artist_map = {"Stale Artist": 0}
+    agm.artist_gmm_params = {"Stale Artist": {"means": [[0.9]], "weights": [1.0]}}
 
 
 def _fake_app_helper(conn):
@@ -99,43 +110,69 @@ class TestLoadArtistIndexForQuerying:
         assert agm.artist_gmm_params == fake_gmm
         assert agm.reverse_artist_map == {"Artist A": 0, "Artist B": 1}
 
-    def test_no_ivf_index_resets_cache(self):
+    def test_no_ivf_index_evicts_previously_loaded_stale_globals(self):
         conn, cur = _conn_returning(None)
+        _seed_stale_globals()
         with (
             patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
-            patch("tasks.paged_ivf.has_paged_ivf", return_value=False),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=False) as has_ivf,
+            patch("tasks.paged_ivf.load_paged_ivf_index") as load_ivf,
         ):
             agm.load_artist_index_for_querying(force_reload=True)
 
+        assert has_ivf.call_args.args == (conn, agm.ARTIST_INDEX_NAME)
+        assert not load_ivf.called
         assert agm.artist_index is None
         assert agm.artist_map is None
         assert agm.artist_gmm_params is None
         assert agm.reverse_artist_map is None
 
-    def test_missing_metadata_resets_cache(self):
+    def test_missing_metadata_blob_evicts_previously_loaded_stale_globals(self):
         conn, cur = _conn_returning(None)
         fake_index = MagicMock()
+        _seed_stale_globals()
         with (
             patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
             patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, {0: "A"}, {})),
-            patch.object(ibh, "load_segmented_blob", return_value=None),
+            patch.object(ibh, "load_segmented_blob", return_value=None) as load_blob,
+            patch.object(ibh, "unpack_artist_metadata") as unpack,
         ):
             agm.load_artist_index_for_querying(force_reload=True)
 
+        assert load_blob.call_args.args == (conn, "artist_metadata_data", "artist_metadata")
+        assert not unpack.called
         assert agm.artist_index is None
         assert agm.artist_map is None
+        assert agm.artist_gmm_params is None
+        assert agm.reverse_artist_map is None
 
+    def test_index_length_disagreeing_with_metadata_map_evicts_all_globals(self):
+        conn, cur = _conn_returning(None)
+        fake_index = MagicMock()
+        fake_index.__len__.return_value = 3
+        parsed_map = {0: "Artist A"}
+        parsed_gmm = {"Artist A": {"means": [[0.1]], "weights": [1.0]}}
+        _seed_stale_globals()
+        with (
+            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
+            patch(
+                "tasks.paged_ivf.load_paged_ivf_index",
+                return_value=(fake_index, parsed_map, {}),
+            ),
+            patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"),
+            patch.object(
+                ibh, "unpack_artist_metadata", return_value=(parsed_map, parsed_gmm)
+            ) as unpack,
+        ):
+            agm.load_artist_index_for_querying(force_reload=True)
 
-analysis_mod = None
-try:
-    import tasks.analysis.index as analysis_mod  # noqa: E402  (heavy: librosa/onnx)
-    import tasks.ivf_manager  # noqa: F401  (builder modules patched in _patched)
-    import tasks.clap_text_search  # noqa: F401
-    import tasks.lyrics_manager  # noqa: F401
-    import tasks.sem_grove_manager  # noqa: F401
-except Exception:
-    analysis_mod = None
+        assert unpack.call_args.args == (b"meta-blob",)
+        assert agm.artist_index is None
+        assert agm.artist_map is None
+        assert agm.artist_gmm_params is None
+        assert agm.reverse_artist_map is None
 
 
 _BUILDER_NAMES = [
@@ -161,9 +198,6 @@ _BUILDER_SOURCE_MODULES = {
 }
 
 
-@pytest.mark.skipif(
-    analysis_mod is None, reason="tasks.analysis (librosa/onnx) unavailable in this env"
-)
 class TestRunAllIndexBuilds:
     @contextmanager
     def _patched(self):
@@ -171,8 +205,11 @@ class TestRunAllIndexBuilds:
             mocks = {}
             for name, module in _BUILDER_SOURCE_MODULES.items():
                 mocks[name] = stack.enter_context(patch(f"{module}.{name}"))
-            for name in ("get_db", "redis_conn", "release_memory_to_os"):
+            for name in ("get_db", "release_memory_to_os"):
                 mocks[name] = stack.enter_context(patch.object(analysis_mod, name))
+            mocks["publish_event"] = stack.enter_context(
+                patch.object(analysis_mod.taskqueue, "publish_event")
+            )
             yield mocks
 
     def test_all_eight_builders_run_with_log_fn_none(self):
@@ -180,7 +217,7 @@ class TestRunAllIndexBuilds:
             analysis_mod._run_all_index_builds(log_fn=None)
         for name in _BUILDER_NAMES:
             assert mocks[name].called, f"{name} was not invoked by the orchestrator"
-        assert mocks["redis_conn"].publish.called
+        assert mocks["publish_event"].call_args.args == ('index-reload',)
         assert mocks["release_memory_to_os"].called
 
     def test_non_fatal_failure_does_not_abort_remaining_builders(self):
