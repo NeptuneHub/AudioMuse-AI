@@ -125,15 +125,7 @@ def _navidrome_auth_params_from_values(auth_key, auth_user, auth_pass):
 
 
 def get_navidrome_auth_params(username=None, password=None, api_key=None):
-    explicit = username is not None or password is not None or api_key is not None
-    if not explicit:
-        bound_creds = context.active_creds()
-        if bound_creds is not None:
-            return _navidrome_auth_params_from_values(
-                bound_creds.get('api_key') or '',
-                bound_creds.get('user') or '',
-                bound_creds.get('password') or '',
-            )
+    if username is None and password is None and api_key is None:
         return _navidrome_auth_params_from_values(
             config.NAVIDROME_API_KEY or '',
             config.NAVIDROME_USER or '',
@@ -160,9 +152,9 @@ def _auth_kwargs_from_creds(user_creds):
     if not user_creds:
         return {}
     return {
-        'username': user_creds.get('user'),
-        'password': user_creds.get('password'),
-        'api_key': user_creds.get('api_key'),
+        'username': user_creds.get('user') or '',
+        'password': user_creds.get('password') or '',
+        'api_key': user_creds.get('api_key') or '',
     }
 
 

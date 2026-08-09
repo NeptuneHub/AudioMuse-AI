@@ -703,6 +703,34 @@ class TestNavidromeAuthParams:
         url = mock_request.call_args[0][1]
         assert url.startswith('http://secondary:4533/')
 
+    def test_empty_creds_object_never_falls_back_to_global_config(self):
+        from tasks.mediaserver.navidrome import get_navidrome_auth_params
+
+        params = get_navidrome_auth_params(username='', password='', api_key='')
+
+        assert params == {}
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_url_only_creds_does_not_send_default_api_key(
+        self, mock_config, mock_request
+    ):
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+
+        mock_config.NAVIDROME_URL = 'http://default:4533'
+        mock_config.NAVIDROME_USER = 'default-user'
+        mock_config.NAVIDROME_PASSWORD = 'default-pass'
+        mock_config.NAVIDROME_API_KEY = 'default-server-api-key'
+        mock_config.APP_VERSION = '1.0'
+
+        data, err = _navidrome_request_ex(
+            'ping', user_creds={'url': 'http://attacker.example.com'}
+        )
+
+        assert data is None
+        assert err['kind'] == 'config'
+        mock_request.assert_not_called()
+
 
 class TestNavidromeMissingRequiredCreds:
     def test_api_key_only_is_complete(self):
