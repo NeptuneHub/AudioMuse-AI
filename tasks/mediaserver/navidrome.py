@@ -6,15 +6,15 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Navidrome (Subsonic API) backend for the AudioMuse-AI media-server abstraction.
+"""Navidrome (OpenSubsonic API) backend for the AudioMuse-AI media-server abstraction.
 
-Implements the provider interface against a Navidrome/Subsonic server.
+Implements the provider interface against a Navidrome/OpenSubsonic server.
 Dispatched by tasks/mediaserver/__init__.py when
 config.MEDIASERVER_TYPE == 'navidrome'.
 
 Main Features:
-* Fetches albums/tracks, downloads, and manages playlists via the Subsonic API.
-* Coerces single-dict responses to lists (Subsonic returns a dict, not a list,
+* Fetches albums/tracks, downloads, and manages playlists via the OpenSubsonic API.
+* Coerces single-dict responses to lists (OpenSubsonic returns a dict, not a list,
   when only one item exists).
 """
 
@@ -103,12 +103,16 @@ def list_libraries(user_creds=None):
     ]
 
 
-def get_navidrome_auth_params(username=None, password=None):
-    creds = context.active_creds()
-    auth_user = username or (creds.get('user') if creds else None) or config.NAVIDROME_USER
-    auth_pass = password or (creds.get('password') if creds else None) or config.NAVIDROME_PASSWORD
+def _navidrome_auth_params_from_values(auth_key, auth_user, auth_pass):
+    if auth_key:
+        return {
+            "apiKey": auth_key,
+            "v": "1.16.1",
+            "c": "AudioMuse-AI",
+            "f": "json",
+        }
     if not auth_user or not auth_pass:
-        logger.warning("Navidrome User or Password is not configured.")
+        logger.warning("Navidrome credentials are not configured (need apiKey or user/password).")
         return {}
     hex_encoded_password = auth_pass.encode('utf-8').hex()
     return {
@@ -120,13 +124,38 @@ def get_navidrome_auth_params(username=None, password=None):
     }
 
 
-_SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
+def get_navidrome_auth_params(username=None, password=None, api_key=None):
+    if username is None and password is None and api_key is None:
+        return _navidrome_auth_params_from_values(
+            config.NAVIDROME_API_KEY or '',
+            config.NAVIDROME_USER or '',
+            config.NAVIDROME_PASSWORD or '',
+        )
 
-_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&][pst]=)[^&\s]*')
+    return _navidrome_auth_params_from_values(
+        api_key or '',
+        username or '',
+        password or '',
+    )
+
+
+_OPENSUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
+
+_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:[pst]|apiKey)=)[^&\s]*')
 
 
 def _redact_navidrome_secrets(text):
     return _SECRET_QUERY_PARAM.sub(r'\1[REDACTED]', str(text))
+
+
+def _auth_kwargs_from_creds(user_creds):
+    if not user_creds:
+        return {}
+    return {
+        'username': user_creds.get('user') or '',
+        'password': user_creds.get('password') or '',
+        'api_key': user_creds.get('api_key') or '',
+    }
 
 
 def _navidrome_request_ex(
@@ -134,12 +163,9 @@ def _navidrome_request_ex(
 ):
     user_creds = context.active_creds(user_creds)
     params = params or {}
-    auth_params = get_navidrome_auth_params(
-        username=user_creds.get('user') if user_creds else None,
-        password=user_creds.get('password') if user_creds else None,
-    )
+    auth_params = get_navidrome_auth_params(**_auth_kwargs_from_creds(user_creds))
     if not auth_params:
-        msg = "Navidrome username or password is not configured."
+        msg = "Navidrome credentials are not configured (need apiKey or user/password)."
         logger.error(f"{msg} Cannot make API call.")
         return None, {'kind': 'config', 'message': msg}
 
@@ -158,22 +184,22 @@ def _navidrome_request_ex(
         if stream:
             return r, None
 
-        subsonic_response = r.json().get("subsonic-response", {})
-        if subsonic_response.get("status") == "failed":
-            error = subsonic_response.get("error", {}) or {}
+        opensubsonic_response = r.json().get("subsonic-response", {})
+        if opensubsonic_response.get("status") == "failed":
+            error = opensubsonic_response.get("error", {}) or {}
             message = error.get("message") or "Navidrome returned an error."
             logger.error(f"Navidrome API Error on '{endpoint}': {message}")
-            kind = 'auth' if error.get("code") in _SUBSONIC_AUTH_ERROR_CODES else 'server'
+            kind = 'auth' if error.get("code") in _OPENSUBSONIC_AUTH_ERROR_CODES else 'server'
             return None, {'kind': kind, 'message': message}
-        return subsonic_response, None
+        return opensubsonic_response, None
 
     except requests.exceptions.RequestException as e:
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")  # noqa: TRY400
         return None, {'kind': 'network', 'message': safe}
     except Exception as e:
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")  # noqa: TRY400
         return None, {'kind': 'server', 'message': safe}
 
 
@@ -220,9 +246,9 @@ def download_track(temp_dir, item):
             logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
             return local_filename
     except Exception as e:
-        logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        logger.error(  # NOSONAR(S8572) # noqa: TRY400
             f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {_redact_navidrome_secrets(e)}"
-        )  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        )
     return None
 
 

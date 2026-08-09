@@ -1000,14 +1000,26 @@ def purge_media_keys_from_app_config(cur):
 
 
 def missing_required_creds(server_type, creds):
+    """Required-but-empty credential keys for ``server_type``."""
+    server_type = (server_type or '').strip().lower()
+    creds = creds or {}
+    if server_type == 'navidrome':
+        missing = []
+        if not creds.get('url'):
+            missing.append('url')
+        if creds.get('api_key'):
+            return missing
+        if not creds.get('user'):
+            missing.append('user')
+        if not creds.get('password'):
+            missing.append('password')
+        return missing
+
     required = [
         config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
-        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(
-            (server_type or '').strip().lower(), []
-        )
+        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(server_type, [])
         if field in config.MEDIASERVER_CRED_KEY_BY_FIELD
     ]
-    creds = creds or {}
     return [key for key in required if not creds.get(key)]
 
 

@@ -27,9 +27,10 @@ The **mandatory** parameter that you need to change from the example are this:
 |----------------------|-------------------------------------------------------------------------|-----------------------------------|
 | **Mediaserver General**                        |                                                                 |                 |
 | `MEDIASERVER_TYPE`   | (Required) Which media server to use: `jellyfin`, `navidrome`, `emby`, `lyrion` or `plex`. | `jellyfin` |
-| `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_NAVIDROME_IP:4533`   |
-| `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
-| `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
+| `NAVIDROME_URL`      | (Required) Your Navidrome / OpenSubsonic server's full URL              | `http://YOUR_NAVIDROME_IP:4533`   |
+| `NAVIDROME_USER`     | (Required for password auth) Navidrome / OpenSubsonic username.         | *(N/A - from Secret)* |
+| `NAVIDROME_PASSWORD` | (Required for password auth) Navidrome / OpenSubsonic password.         | *(N/A - from Secret)* |
+| `NAVIDROME_API_KEY`  | (Required for API key auth) OpenSubsonic API key. Mutually exclusive with user/password. | *(N/A - from Secret)* |
 | `JELLYFIN_URL`       | (Required) Your Jellyfin server's full URL                              | `http://YOUR_JELLYFIN_IP:8096`    |
 | `JELLYFIN_USER_ID`   | (Required) Jellyfin User ID.                                            | *(N/A - from Secret)* |
 | `JELLYFIN_TOKEN`     | (Required) Jellyfin API Token.                                          | *(N/A - from Secret)* |

@@ -73,12 +73,14 @@ SECRET_FIELDS = {
     "JELLYFIN_TOKEN",
     "EMBY_TOKEN",
     "NAVIDROME_PASSWORD",
+    "NAVIDROME_API_KEY",
     "PLEX_TOKEN",
     "JWT_SECRET",
     "AI_CHAT_DB_USER_PASSWORD",
     "LYRICS_API_1_APIKEY_VALUE",
     "LYRICS_API_2_APIKEY_VALUE",
 }
+SECRET_PLACEHOLDER = '********'
 # Secrets whose own blank-handling lives elsewhere: AUDIOMUSE_PASSWORD goes
 # through the admin-user path, JWT_SECRET blank means "auto-generate". Every
 # other secret treats a blank submission as "keep the stored value".
@@ -302,7 +304,7 @@ def _merge_test_config(filtered_values):
     for key in TEST_CONFIG_KEYS:
         if key in filtered_values:
             value = filtered_values[key]
-            if key in SECRET_FIELDS and value == '********':
+            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == SECRET_PLACEHOLDER:
                 test_config[key] = getattr(config, key, '')
             else:
                 test_config[key] = _normalize_config_value(key, value)
@@ -311,6 +313,37 @@ def _merge_test_config(filtered_values):
     if 'MEDIASERVER_TYPE' in test_config and isinstance(test_config['MEDIASERVER_TYPE'], str):
         test_config['MEDIASERVER_TYPE'] = test_config['MEDIASERVER_TYPE'].lower()
     return test_config
+
+
+def _normalize_navidrome_auth_mode(auth_mode):
+    mode = (auth_mode or '').strip().lower()
+    if mode in ('apikey', 'password'):
+        return mode
+    return ''
+
+
+def _apply_navidrome_auth_mode_to_mapping(values, auth_mode):
+    if not isinstance(values, dict):
+        return
+    if (values.get('MEDIASERVER_TYPE') or '').strip().lower() != 'navidrome':
+        return
+    mode = _normalize_navidrome_auth_mode(auth_mode)
+    if mode == 'apikey':
+        values['NAVIDROME_USER'] = ''
+        values['NAVIDROME_PASSWORD'] = ''
+    elif mode == 'password':
+        values['NAVIDROME_API_KEY'] = ''
+
+
+def _apply_navidrome_auth_mode_to_creds(creds, auth_mode):
+    if not isinstance(creds, dict):
+        return
+    mode = _normalize_navidrome_auth_mode(auth_mode)
+    if mode == 'apikey':
+        creds['user'] = ''
+        creds['password'] = ''
+    elif mode == 'password':
+        creds['api_key'] = ''
 
 
 def _patch_config_for_test(test_config):
@@ -326,8 +359,9 @@ def _restore_config(original_config):
         setattr(config, key, value)
 
 
-def _test_media_server_connection(filtered_values):
+def _test_media_server_connection(filtered_values, navidrome_auth_mode=''):
     test_config = _merge_test_config(filtered_values)
+    _apply_navidrome_auth_mode_to_mapping(test_config, navidrome_auth_mode)
     original_config = _patch_config_for_test(test_config)
     try:
         media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
@@ -358,8 +392,9 @@ def _test_media_server_connection(filtered_values):
         _restore_config(original_config)
 
 
-def _list_provider_libraries(filtered_values):
+def _list_provider_libraries(filtered_values, navidrome_auth_mode=''):
     test_config = _merge_test_config(filtered_values)
+    _apply_navidrome_auth_mode_to_mapping(test_config, navidrome_auth_mode)
     original_config = _patch_config_for_test(test_config)
     try:
         media_type = (test_config.get('MEDIASERVER_TYPE') or '').strip().lower() or 'jellyfin'
@@ -542,12 +577,13 @@ def setup_api():
         filtered_values[key] = _normalize_config_value(key, value)
 
     is_test_connection = bool(data.get('test_connection', False))
+    navidrome_auth_mode = _normalize_navidrome_auth_mode(data.get('navidrome_auth_mode'))
     if not filtered_values and not is_test_connection:
         return jsonify({'error': 'No valid configuration values were provided'}), 400
 
     if not is_test_connection:
         for key, value in filtered_values.items():
-            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
+            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == SECRET_PLACEHOLDER:
                 return jsonify(
                     {
                         'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'
@@ -579,7 +615,7 @@ def setup_api():
 
     try:
         if is_test_connection:
-            result = _test_media_server_connection(filtered_values)
+            result = _test_media_server_connection(filtered_values, navidrome_auth_mode)
             return jsonify(
                 {
                     'status': 'ok',
@@ -606,7 +642,7 @@ def setup_api():
         new_admin_password = filtered_values.pop('AUDIOMUSE_PASSWORD', None)
         if isinstance(new_admin_user, str):
             new_admin_user = new_admin_user.strip()
-        if new_admin_password == '********':
+        if new_admin_password == SECRET_PLACEHOLDER:
             new_admin_password = None
 
         # Once an admin exists in audiomuse_users, the setup wizard is no
@@ -626,6 +662,11 @@ def setup_api():
             setattr(simulated, key, '')
         for key, value in filtered_values.items():
             setattr(simulated, key, value)
+        if new_server_type == 'navidrome' and navidrome_auth_mode == 'apikey':
+            simulated.NAVIDROME_USER = ''
+            simulated.NAVIDROME_PASSWORD = ''
+        elif new_server_type == 'navidrome' and navidrome_auth_mode == 'password':
+            simulated.NAVIDROME_API_KEY = ''
 
         if not setup_manager._is_valid_server_config(simulated):
             return jsonify({'error': 'Cannot save: media server configuration is incomplete.'}), 400
@@ -709,6 +750,8 @@ def setup_api():
                     default_creds[cred_key] = str(
                         media_values.get(field, getattr(config, field, '') or '')
                     )
+            if new_server_type == 'navidrome':
+                _apply_navidrome_auth_mode_to_creds(default_creds, navidrome_auth_mode)
             ms_registry.save_default_server_settings(
                 new_server_type,
                 default_creds,
@@ -842,6 +885,7 @@ def setup_provider_libraries_api():
     if not isinstance(config_values, dict):
         return jsonify({'error': 'Missing config data'}), 400
 
+    navidrome_auth_mode = _normalize_navidrome_auth_mode(data.get('navidrome_auth_mode'))
     allowed_setup_keys = _get_allowed_setup_keys()
     filtered_values = {}
     for key, value in config_values.items():
@@ -850,7 +894,7 @@ def setup_provider_libraries_api():
         filtered_values[key] = _normalize_config_value(key, value)
 
     try:
-        result = _list_provider_libraries(filtered_values)
+        result = _list_provider_libraries(filtered_values, navidrome_auth_mode)
     except Exception as exc:
         app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
         return jsonify(

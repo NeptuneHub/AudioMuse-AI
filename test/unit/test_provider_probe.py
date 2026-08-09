@@ -119,7 +119,7 @@ class TestNormalizeTrack:
         t = probe._normalize_track({'Id': 'p1', 'DurationSeconds': 215.5})
         assert t['duration'] == pytest.approx(215.5)
 
-    def test_subsonic_raw_duration_is_seconds(self, probe):
+    def test_opensubsonic_raw_duration_is_seconds(self, probe):
         t = probe._normalize_track({'id': 'n1', 'duration': 187})
         assert t['duration'] == pytest.approx(187.0)
 

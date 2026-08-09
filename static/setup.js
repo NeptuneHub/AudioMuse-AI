@@ -5,9 +5,10 @@ var serverFields = {
         {name: 'JELLYFIN_TOKEN', label: 'Jellyfin API token', placeholder: 'your-api-token', tooltip: 'API key for that Jellyfin user. Create one in Jellyfin under Dashboard \u2192 API Keys.'}
     ],
     navidrome: [
-        {name: 'NAVIDROME_URL', label: 'Navidrome URL', placeholder: 'http://your-navidrome-server:4533', tooltip: 'Base URL of your Navidrome server, including http:// or https:// and the port.'},
-        {name: 'NAVIDROME_USER', label: 'Navidrome username', placeholder: 'your-username', tooltip: 'Username of a Navidrome account that can read the music library.'},
-        {name: 'NAVIDROME_PASSWORD', label: 'Navidrome password', placeholder: 'your-password', tooltip: 'Password for the Navidrome user above.'}
+        {name: 'NAVIDROME_URL', label: 'Navidrome / OpenSubsonic URL', placeholder: 'http://your-navidrome-server:4533', tooltip: 'Base URL of your Navidrome or other OpenSubsonic server, including http:// or https:// and the port.', required: true, authGroup: 'always'},
+        {name: 'NAVIDROME_USER', label: 'Username', placeholder: 'your-username', tooltip: 'OpenSubsonic username used with password authentication.', required: true, authGroup: 'password'},
+        {name: 'NAVIDROME_PASSWORD', label: 'Password', placeholder: 'your-password', tooltip: 'OpenSubsonic password used with username authentication.', required: true, authGroup: 'password'},
+        {name: 'NAVIDROME_API_KEY', label: 'OpenSubsonic API key', placeholder: 'your-api-key', tooltip: 'OpenSubsonic apiKeyAuthentication token. When this mode is selected, username/password are not sent (do not combine with u=).', required: true, authGroup: 'apikey'}
     ],
     lyrion: [
         {name: 'LYRION_URL', label: 'Lyrion URL', placeholder: 'http://your-lyrion-server:9000', tooltip: 'Base URL of your Lyrion (Logitech Media Server) instance, including http:// and the port.'}
@@ -262,6 +263,76 @@ function createInputField(field, value) {
     return row;
 }
 
+function detectNavidromeAuthMode(values, hasValueMap) {
+    values = values || {};
+    hasValueMap = hasValueMap || {};
+    var keyValue = values.NAVIDROME_API_KEY || '';
+    if (hasValueMap.NAVIDROME_API_KEY || (keyValue && keyValue !== '********')) {
+        return 'apikey';
+    }
+    return 'password';
+}
+
+function getNavidromeAuthMode() {
+    var selected = document.querySelector('input[name="navidrome_auth_mode"]:checked');
+    return selected ? selected.value : 'password';
+}
+
+function applyNavidromeAuthMode() {
+    var mode = getNavidromeAuthMode();
+    var rows = serverConfigFields.querySelectorAll('[data-auth-group]');
+    for (var row of rows) {
+        var group = row.dataset.authGroup;
+        var active = (group === 'always') || (group === mode);
+        row.style.display = active ? '' : 'none';
+        var input = row.querySelector('input, textarea, select');
+        if (!input) {
+            continue;
+        }
+        input.disabled = !active;
+        input.required = active && (group === 'always' || group === mode);
+        if (active && !input.value && input.dataset.originalValue) {
+            input.value = input.dataset.originalValue;
+        }
+    }
+    updateTestButtonState();
+}
+
+function renderNavidromeAuthModeSelector(initialMode) {
+    var row = document.createElement('div');
+    row.className = 'field-row';
+    row.id = 'navidrome-auth-mode-row';
+    var label = document.createElement('label');
+    label.textContent = 'Authentication method';
+    label.classList.add('required-label');
+    row.appendChild(label);
+
+    function addOption(value, text) {
+        var optLabel = document.createElement('label');
+        optLabel.style.display = 'flex';
+        optLabel.style.alignItems = 'center';
+        optLabel.style.gap = '0.5rem';
+        optLabel.style.fontWeight = '500';
+        optLabel.style.marginBottom = '0.35rem';
+        var input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'navidrome_auth_mode';
+        input.value = value;
+        input.checked = (initialMode === value);
+        input.addEventListener('change', applyNavidromeAuthMode);
+        optLabel.appendChild(input);
+        optLabel.appendChild(document.createTextNode(text));
+        row.appendChild(optLabel);
+    }
+
+    addOption('password', 'Username + password (classic OpenSubsonic / Navidrome)');
+    addOption('apikey', 'OpenSubsonic API key (apiKeyAuthentication)');
+    var hint = document.createElement('small');
+    hint.textContent = 'Choose one method. API key mode sends apiKey= and does not send u=/p=.';
+    row.appendChild(hint);
+    return row;
+}
+
 function renderServerFields(serverType, values, hasValueMap) {
     hasValueMap = hasValueMap || {};
     serverConfigFields.innerHTML = '';
@@ -270,13 +341,17 @@ function renderServerFields(serverType, values, hasValueMap) {
         return;
     }
     var fields = serverFields[serverType];
+    var authMode = (serverType === 'navidrome')
+        ? detectNavidromeAuthMode(values, hasValueMap)
+        : null;
+    var authModeRowInserted = false;
     fields.forEach(function(field) {
         var value = '';
         if (values[field.name]) {
             value = values[field.name];
         }
         var secret = false;
-        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN'];
+        var secretKeys = ['NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN'];
         for (var i = 0; i < secretKeys.length; i++) {
             if (secretKeys[i] === field.name) {
                 secret = true;
@@ -292,18 +367,29 @@ function renderServerFields(serverType, values, hasValueMap) {
                 hasValue = true;
             }
         }
+        if (serverType === 'navidrome' && field.authGroup === 'password' && !authModeRowInserted) {
+            serverConfigFields.appendChild(renderNavidromeAuthModeSelector(authMode));
+            authModeRowInserted = true;
+        }
         var fieldCopy = {
             name: field.name,
             label: field.label,
             placeholder: field.placeholder,
-            required: true,
+            required: field.required !== false,
             secret: secret,
             has_value: hasValue,
             tooltip: field.tooltip,
             originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : value
         };
-        serverConfigFields.appendChild(createInputField(fieldCopy, value));
+        var row = createInputField(fieldCopy, value);
+        if (field.authGroup) {
+            row.dataset.authGroup = field.authGroup;
+        }
+        serverConfigFields.appendChild(row);
     });
+    if (serverType === 'navidrome') {
+        applyNavidromeAuthMode();
+    }
     maybeRenderPlexPin(serverType);
     updateTestButtonState();
 }
@@ -624,7 +710,7 @@ function loadSetupData() {
 
 function saveCurrentServerValues() {
     var currentServerType = document.getElementById('MEDIASERVER_TYPE').value;
-    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN'];
+    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN'];
     keys.forEach(function(key) {
         var input = document.getElementById(key);
         if (input) {
@@ -672,9 +758,22 @@ function splitLibraryList(value) {
     return String(value).split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 }
 
+function navidromeCredsHaveSavedValues(secretHasValue, basicData) {
+    if (!basicData?.NAVIDROME_URL) {
+        return false;
+    }
+    var hasKey = !!secretHasValue?.NAVIDROME_API_KEY;
+    var hasUser = !!basicData.NAVIDROME_USER;
+    var hasPass = !!secretHasValue?.NAVIDROME_PASSWORD;
+    return hasKey || (hasUser && hasPass);
+}
+
 function providerCredsHaveSavedValues(serverType, secretHasValue, basicData) {
     var fields = serverFields[serverType];
     if (!fields) return false;
+    if (serverType === 'navidrome') {
+        return navidromeCredsHaveSavedValues(secretHasValue, basicData);
+    }
     for (var i = 0; i < fields.length; i++) {
         var name = fields[i].name;
         // For secret fields the server returns has_value=true when a value is
@@ -704,10 +803,14 @@ function fetchProviderLibraries(serverType, configOverride) {
     var configPayload = configOverride || collectConfigFromForm(true);
     // MEDIASERVER_TYPE may be dropped by collectConfigFromForm if unchanged.
     configPayload.MEDIASERVER_TYPE = serverType;
+    var librariesPayload = { config: configPayload };
+    if (serverType === 'navidrome') {
+        librariesPayload.navidrome_auth_mode = getNavidromeAuthMode();
+    }
     fetch('/api/setup/providers/libraries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: configPayload })
+        body: JSON.stringify(librariesPayload)
     }).then(function(resp) {
         return resp.json().then(function(data) {
             if (!resp.ok) {
@@ -962,10 +1065,14 @@ function testConnection() {
     testFeedback.style.display = 'block';
     testFeedback.textContent = 'Testing connection...';
     var config = collectConfigFromForm(true);
+    var payload = { config: config, test_connection: true };
+    if (document.getElementById('MEDIASERVER_TYPE').value === 'navidrome') {
+        payload.navidrome_auth_mode = getNavidromeAuthMode();
+    }
     fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: config, test_connection: true })
+        body: JSON.stringify(payload)
     }).then(function(resp) {
         return resp.json().then(function(data) {
             if (!resp.ok) {
@@ -1057,10 +1164,14 @@ setupForm.addEventListener('submit', function(event) {
     if (mlValue !== null) {
         config.MUSIC_LIBRARIES = mlValue;
     }
+    var payload = { config: config };
+    if (document.getElementById('MEDIASERVER_TYPE').value === 'navidrome') {
+        payload.navidrome_auth_mode = getNavidromeAuthMode();
+    }
     var saved = fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: config })
+        body: JSON.stringify(payload)
     }).then(function(resp) {
         return resp.json().then(function(data) {
             if (!resp.ok) {

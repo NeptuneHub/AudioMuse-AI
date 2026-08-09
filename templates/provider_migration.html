@@ -438,16 +438,32 @@
             <!-- Navidrome creds -->
             <div class="mig-cred-field" data-for="navidrome">
                 <div class="mig-row">
-                    <label>Server URL:</label>
-                    <input type="text" data-cred="url" placeholder="http://navidrome.local:4533">
+                    <label for="mig-nav-url">Server URL:</label>
+                    <input id="mig-nav-url" type="text" data-cred="url" placeholder="http://navidrome.local:4533">
                 </div>
-                <div class="mig-row">
-                    <label>Username:</label>
-                    <input type="text" data-cred="user">
+                <div class="mig-row" style="flex-direction:column; align-items:flex-start;">
+                    <span style="font-weight:600; margin-bottom:0.35rem;">Authentication method:</span>
+                    <label style="display:flex; align-items:center; gap:0.5rem; font-weight:500;">
+                        <input type="radio" name="mig_navidrome_auth_mode" value="password" checked>
+                        Username + password
+                    </label>
+                    <label style="display:flex; align-items:center; gap:0.5rem; font-weight:500;">
+                        <input type="radio" name="mig_navidrome_auth_mode" value="apikey">
+                        OpenSubsonic API key
+                    </label>
+                    <small>Choose one method. Inactive credentials are ignored.</small>
                 </div>
-                <div class="mig-row">
-                    <label>Password:</label>
-                    <input type="password" data-cred="password">
+                <div class="mig-row" data-nav-auth="password">
+                    <label for="mig-nav-user">Username:</label>
+                    <input id="mig-nav-user" type="text" data-cred="user" placeholder="navidrome-user">
+                </div>
+                <div class="mig-row" data-nav-auth="password">
+                    <label for="mig-nav-password">Password:</label>
+                    <input id="mig-nav-password" type="password" data-cred="password" placeholder="navidrome-password">
+                </div>
+                <div class="mig-row" data-nav-auth="apikey" style="display:none;">
+                    <label for="mig-nav-api-key">OpenSubsonic API key:</label>
+                    <input id="mig-nav-api-key" type="password" data-cred="api_key" placeholder="opensubsonic-api-key">
                 </div>
             </div>
 
@@ -920,11 +936,30 @@
         targetCreds = {};
         const active = document.querySelector('.mig-cred-field.active');
         if (!active) return;
+        const authMode = (targetType === 'navidrome')
+            ? (document.querySelector('input[name="mig_navidrome_auth_mode"]:checked')?.value || 'password')
+            : null;
         active.querySelectorAll('[data-cred]').forEach(inp => {
+            const row = inp.closest('[data-nav-auth]');
+            if (authMode && row && row.dataset.navAuth !== authMode) {
+                return;
+            }
             const v = inp.value.trim();
             if (v) targetCreds[inp.dataset.cred] = v;
         });
     }
+
+    function applyMigNavidromeAuthMode() {
+        const mode = document.querySelector('input[name="mig_navidrome_auth_mode"]:checked')?.value || 'password';
+        document.querySelectorAll('.mig-cred-field[data-for="navidrome"] [data-nav-auth]').forEach(row => {
+            row.style.display = (row.dataset.navAuth === mode) ? '' : 'none';
+        });
+    }
+
+    document.querySelectorAll('input[name="mig_navidrome_auth_mode"]').forEach(input => {
+        input.addEventListener('change', applyMigNavidromeAuthMode);
+    });
+    applyMigNavidromeAuthMode();
 
     $('mig-test-connection').addEventListener('click', async () => {
         if (!targetType) return;

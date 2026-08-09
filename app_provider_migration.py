@@ -553,6 +553,7 @@ def _current_provider_creds():
             'url': getattr(cfg, 'NAVIDROME_URL', ''),
             'user': getattr(cfg, 'NAVIDROME_USER', ''),
             'password': getattr(cfg, 'NAVIDROME_PASSWORD', ''),
+            'api_key': getattr(cfg, 'NAVIDROME_API_KEY', ''),
         }
     if t == 'lyrion':
         return t, {'url': getattr(cfg, 'LYRION_URL', '')}

@@ -95,11 +95,14 @@ def _compute_headers():
 
 HEADERS = _compute_headers()
 
-# --- Navidrome (Subsonic API) Constants ---
+# --- Navidrome (OpenSubsonic API) Constants ---
 # These are used only if MEDIASERVER_TYPE is "navidrome".
 NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "")
 NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "")
 NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password directly
+# OpenSubsonic apiKey (https://opensubsonic.netlify.app/docs/extensions/apikeyauth/).
+# Wizard treats this as mutually exclusive with username/password.
+NAVIDROME_API_KEY = os.environ.get("NAVIDROME_API_KEY", "")
 
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
@@ -112,7 +115,7 @@ PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "") # X-Plex-Token for the Plex server
 
 MEDIASERVER_FIELDS_BY_TYPE = {
     'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
-    'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
+    'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY'],
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
     'plex': ['PLEX_URL', 'PLEX_TOKEN'],
@@ -137,6 +140,7 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
     'JELLYFIN_URL': 'url', 'JELLYFIN_USER_ID': 'user_id', 'JELLYFIN_TOKEN': 'token',
     'EMBY_URL': 'url', 'EMBY_USER_ID': 'user_id', 'EMBY_TOKEN': 'token',
     'NAVIDROME_URL': 'url', 'NAVIDROME_USER': 'user', 'NAVIDROME_PASSWORD': 'password',
+    'NAVIDROME_API_KEY': 'api_key',
     'LYRION_URL': 'url',
     'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
 }

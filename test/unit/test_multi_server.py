@@ -127,11 +127,18 @@ class TestCredHelpers:
     def test_mask_hides_secret_fields(self):
         import app_server_context as asc
 
-        masked = asc.mask_creds({'url': 'http://x', 'user': 'me', 'token': 'secret', 'password': 'pw'})
+        masked = asc.mask_creds({
+            'url': 'http://x',
+            'user': 'me',
+            'token': 'secret',
+            'password': 'pw',
+            'api_key': 'oss-key',
+        })
         assert masked['url'] == 'http://x'
         assert masked['user'] == 'me'
         assert masked['token'] == asc.CRED_MASK
         assert masked['password'] == asc.CRED_MASK
+        assert masked['api_key'] == asc.CRED_MASK
 
     def test_mask_leaves_empty_secret_empty(self):
         import app_server_context as asc
@@ -153,6 +160,16 @@ class TestCredHelpers:
 
         merged = asc.merge_creds({'token': 'old'}, {'token': 'brandnew'})
         assert merged['token'] == 'brandnew'
+
+    def test_merge_clears_api_key_when_empty_string_sent(self):
+        import app_server_context as asc
+
+        merged = asc.merge_creds(
+            {'url': 'http://x', 'api_key': 'old-key', 'user': 'u', 'password': 'p'},
+            {'api_key': '', 'user': 'u', 'password': 'p'},
+        )
+        assert merged['api_key'] == ''
+        assert merged['user'] == 'u'
 
 
 class TestRequestServerResolution:
@@ -182,8 +199,12 @@ class TestRegistryPureHelpers:
         monkeypatch.setattr(config, 'NAVIDROME_URL', 'http://nd', raising=False)
         monkeypatch.setattr(config, 'NAVIDROME_USER', 'user1', raising=False)
         monkeypatch.setattr(config, 'NAVIDROME_PASSWORD', 'pw1', raising=False)
+        monkeypatch.setattr(config, 'NAVIDROME_API_KEY', '', raising=False)
         assert registry.creds_from_config('navidrome') == {
-            'url': 'http://nd', 'user': 'user1', 'password': 'pw1'
+            'url': 'http://nd',
+            'user': 'user1',
+            'password': 'pw1',
+            'api_key': '',
         }
 
         monkeypatch.setattr(config, 'PLEX_URL', 'http://plex', raising=False)

@@ -159,3 +159,66 @@ class TestListLibrariesSeesUserValues:
         assert captured['JELLYFIN_TOKEN'] == 'user-token'
         assert result == [{'id': 'lib1', 'name': 'Music'}]
         _assert_config_matches(saved_config)
+
+    def test_list_libraries_applies_navidrome_password_auth_mode(self, saved_config, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(config, 'NAVIDROME_API_KEY', 'stale-saved-key')
+        monkeypatch.setattr(config, 'NAVIDROME_USER', 'saved-user')
+        monkeypatch.setattr(config, 'NAVIDROME_PASSWORD', 'saved-pass')
+
+        def fake_list_libraries(provider_type=None):
+            captured['provider_type'] = provider_type
+            captured['NAVIDROME_API_KEY'] = config.NAVIDROME_API_KEY
+            captured['NAVIDROME_USER'] = config.NAVIDROME_USER
+            return {'libraries': [{'id': '1', 'name': 'Music'}], 'unsupported': False}
+
+        monkeypatch.setattr(app_setup.mediaserver, 'list_libraries', fake_list_libraries)
+
+        result = app_setup._list_provider_libraries(
+            {
+                'MEDIASERVER_TYPE': 'navidrome',
+                'NAVIDROME_URL': 'http://nd:4533',
+                'NAVIDROME_USER': 'typed-user',
+                'NAVIDROME_PASSWORD': 'typed-pass',
+                # Stale key still present in the form payload (masked/saved),
+                # but password mode must clear it before the probe.
+                'NAVIDROME_API_KEY': '********',
+            },
+            navidrome_auth_mode='password',
+        )
+
+        assert captured['provider_type'] == 'navidrome'
+        assert captured['NAVIDROME_API_KEY'] == ''
+        assert captured['NAVIDROME_USER'] == 'typed-user'
+        assert result['libraries'][0]['name'] == 'Music'
+
+    def test_list_libraries_applies_navidrome_apikey_auth_mode(self, saved_config, monkeypatch):
+        # The reverse switch: existing config is password-based, the user
+        # switches the wizard to apiKey mode. Password mode's fields must be
+        # cleared before the probe, or a stale saved password could leak in.
+        captured = {}
+        monkeypatch.setattr(config, 'NAVIDROME_API_KEY', '')
+        monkeypatch.setattr(config, 'NAVIDROME_USER', 'saved-user')
+        monkeypatch.setattr(config, 'NAVIDROME_PASSWORD', 'saved-pass')
+
+        def fake_list_libraries(provider_type=None):
+            captured['provider_type'] = provider_type
+            captured['NAVIDROME_USER'] = config.NAVIDROME_USER
+            captured['NAVIDROME_PASSWORD'] = config.NAVIDROME_PASSWORD
+            return {'libraries': [{'id': '1', 'name': 'Music'}], 'unsupported': False}
+
+        monkeypatch.setattr(app_setup.mediaserver, 'list_libraries', fake_list_libraries)
+
+        result = app_setup._list_provider_libraries(
+            {
+                'MEDIASERVER_TYPE': 'navidrome',
+                'NAVIDROME_URL': 'http://nd:4533',
+                'NAVIDROME_API_KEY': 'typed-key',
+            },
+            navidrome_auth_mode='apikey',
+        )
+
+        assert captured['provider_type'] == 'navidrome'
+        assert captured['NAVIDROME_USER'] == ''
+        assert captured['NAVIDROME_PASSWORD'] == ''
+        assert result['libraries'][0]['name'] == 'Music'
