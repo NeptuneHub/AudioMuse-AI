@@ -80,6 +80,7 @@ SECRET_FIELDS = {
     "LYRICS_API_1_APIKEY_VALUE",
     "LYRICS_API_2_APIKEY_VALUE",
 }
+SECRET_PLACEHOLDER = '********'
 # Secrets whose own blank-handling lives elsewhere: AUDIOMUSE_PASSWORD goes
 # through the admin-user path, JWT_SECRET blank means "auto-generate". Every
 # other secret treats a blank submission as "keep the stored value".
@@ -303,7 +304,7 @@ def _merge_test_config(filtered_values):
     for key in TEST_CONFIG_KEYS:
         if key in filtered_values:
             value = filtered_values[key]
-            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
+            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == SECRET_PLACEHOLDER:
                 test_config[key] = getattr(config, key, '')
             else:
                 test_config[key] = _normalize_config_value(key, value)
@@ -582,7 +583,7 @@ def setup_api():
 
     if not is_test_connection:
         for key, value in filtered_values.items():
-            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
+            if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == SECRET_PLACEHOLDER:
                 return jsonify(
                     {
                         'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'
@@ -641,7 +642,7 @@ def setup_api():
         new_admin_password = filtered_values.pop('AUDIOMUSE_PASSWORD', None)
         if isinstance(new_admin_user, str):
             new_admin_user = new_admin_user.strip()
-        if new_admin_password == '********':
+        if new_admin_password == SECRET_PLACEHOLDER:
             new_admin_password = None
 
         # Once an admin exists in audiomuse_users, the setup wizard is no

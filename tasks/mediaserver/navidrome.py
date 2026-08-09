@@ -254,7 +254,7 @@ def download_track(temp_dir, item):
             logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
             return local_filename
     except Exception as e:
-        logger.error(  # noqa: TRY400
+        logger.error(  # NOSONAR(S8572) # noqa: TRY400
             f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {_redact_navidrome_secrets(e)}"
         )
     return None
