@@ -36,6 +36,7 @@ from psycopg2 import sql as pgsql
 # App-level singletons (the DB connection and the task queue). Importing here keeps
 # the blueprint file self-contained - the rest of the app doesn't need to hand
 # anything in.
+from app_helper import cancel_job_and_children_recursive
 from app_logging import sanitize_log_value
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 from database import (
@@ -233,6 +234,30 @@ def _migration_job_in_flight(cur, keys=_MIGRATION_TASK_KEYS):
     return False
 
 
+def _live_planner_job_id(cur):
+    # PLANNER keys only, never exec_task_id: a dry-run/source-refresh is a pure
+    # fetch with no external side effects, so Discard can cancel it. An active
+    # EXECUTE writes to the target server, so it stays behind the hard
+    # _no_migration_executing block instead of ever being auto-cancelled here.
+    # Session-agnostic on purpose, like _migration_job_in_flight: the shared
+    # migration advisory lock treats planning as a system-wide singleton.
+    cur.execute("SELECT state FROM migration_session")
+    states = [_session_state(row[0]) for row in (cur.fetchall() or [])]
+    job_ids = [
+        state.get(key)
+        for state in states
+        for key in _PLANNER_TASK_KEYS
+        if state.get(key)
+    ]
+    if not job_ids:
+        return None
+    jobs = _task_statuses_by_id(job_ids)
+    for job_id in job_ids:
+        if _task_is_live(jobs.get(job_id)):
+            return job_id
+    return None
+
+
 def _completed_sessions_safe_to_prune(cur):
     cur.execute(
         "SELECT id, state->>'exec_task_id', "
@@ -428,12 +453,20 @@ def _claim_and_enqueue_planner_locked(
 
         # The reservation and the queue row are the same transaction, so there
         # is no outcome to resolve: either both committed or neither did.
+        # max_attempts=0: a dry-run/source-refresh re-fetches the ENTIRE source or
+        # target catalogue with no checkpointing, so the normal worker-death retry
+        # (attempts+1 <= max_attempts, i.e. max_attempts=1 would still allow one
+        # silent retry) would restart a multi-minute fetch from scratch while
+        # leaving the session claimed - Discard blocked - for the whole extra
+        # attempt. Failing on the first worker death is more useful than an
+        # invisible do-over; it does not affect the task's normal first run.
         taskqueue.enqueue(
             func_name,
             args=tuple(job_args),
             task_id=job_id,
             task_type=MIGRATION_PLANNER_TASK_TYPE,
             queue=taskqueue.QUEUE_HIGH,
+            max_attempts=0,
             details={'message': 'Migration planner queued.'},
             conn=db,
         )
@@ -865,7 +898,12 @@ def session_discard(session_id):
     summary: Delete a non-terminal session row (used by the wizard's Discard button).
     description: |
       Refuses to touch sessions in `completed` or `failed` status - those are
-      pruned automatically on the next `session_start`.
+      pruned automatically on the next `session_start`. A live dry-run or
+      source-refresh job is cancelled first (the same global cancel Analysis &
+      Clustering's Cancel button uses) rather than blocking the discard,
+      since it is a pure fetch with no external side effects. A live execute
+      stays a hard block - it writes to the target server and is never
+      auto-cancelled here.
     parameters:
       - name: session_id
         in: path
@@ -880,6 +918,8 @@ def session_discard(session_id):
         description: Session not found.
       409:
         description: A migration is currently executing against this session.
+      503:
+        description: Could not verify whether a migration planner job is still live.
     """
     db = get_db()
     with db.cursor() as cur:
@@ -894,14 +934,44 @@ def session_discard(session_id):
             return jsonify({'error': 'cannot discard a finished session'}), 400
         # A session stays 'dry_run_ready' throughout the execute, so the status
         # check above cannot tell a running migration from an idle wizard. Deleting
-        # it mid-execute strands a repointed catalogue with no completion marker.
-        if not _no_migration_executing(cur) or _migration_job_in_flight(cur):
+        # it mid-execute strands a repointed catalogue with no completion marker,
+        # so an active execute - either as the main task, or per this backup
+        # task_status probe on exec_task_id - stays a hard block and is never
+        # auto-cancelled here.
+        exec_live = _migration_job_in_flight(cur, keys=('exec_task_id',))
+        if not _no_migration_executing(cur) or exec_live:
             return jsonify(
                 {
                     'error': 'A migration job is currently running against this '
                              'session. Wait for it to finish.'
                 }
             ), 409
+        # A live dry-run/source-refresh, unlike execute above, is a pure fetch
+        # with no external side effects - so cancel it (same global cancel the
+        # Analysis & Clustering Cancel button uses) instead of leaving the
+        # wizard stuck behind a job that could otherwise only be stopped by
+        # killing the worker outright.
+        try:
+            planner_job_id = _live_planner_job_id(cur)
+        except Exception:
+            logger.exception(
+                "Could not check for a live migration planner job; refusing to "
+                "discard session %s", session_id,
+            )
+            return jsonify(
+                {
+                    'error': 'Could not verify the migration planner job. Try '
+                             'again when the database is available.',
+                }
+            ), 503
+
+    if planner_job_id:
+        cancel_job_and_children_recursive(
+            planner_job_id,
+            reason=f'Migration session {session_id} discarded by user.',
+        )
+
+    with db.cursor() as cur:
         # The status was read above, but execute could have committed since. The
         # predicate makes the check and the delete one act, so a migration that
         # finished in that window keeps the completed marker its retry needs.

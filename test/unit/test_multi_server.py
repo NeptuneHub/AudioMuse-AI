@@ -1307,6 +1307,8 @@ class TestEmbeddingCanonicalization:
             def fetchone(self):
                 if self._last_sql == "SHOW statement_timeout":
                     return ('600s',)
+                if self._last_sql == "SHOW lock_timeout":
+                    return ('5s',)
                 return (None,)
 
             def close(self):
@@ -1351,11 +1353,15 @@ class TestEmbeddingCanonicalization:
         sqls = [sql for sql, _params in conn.executed]
         assert sqls == [
             "SHOW statement_timeout",
+            "SHOW lock_timeout",
             "SET statement_timeout = 0",
+            "SET lock_timeout = 0",
             "SELECT pg_advisory_xact_lock(%s)",
             "SET statement_timeout = %s",
+            "SET lock_timeout = %s",
         ]
-        assert conn.executed[3][1] == ('600s',)
+        assert conn.executed[5][1] == ('600s',)
+        assert conn.executed[6][1] == ('5s',)
         assert conn.autocommit_events == [False, True]
         assert conn.autocommit is True
         assert conn.commits >= 1

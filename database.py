@@ -105,13 +105,22 @@ _embedded_server = None
 
 # Server-side options applied to every app connection.
 #  - statement_timeout: cap runaway queries (10 min).
+#  - lock_timeout: cap time spent WAITING to acquire any lock, including the
+#    advisory locks used to serialize task claims / main-task starts / table
+#    bootstrap. Separate from statement_timeout so a crashed process that died
+#    holding one of those locks (without releasing it) cannot wedge every other
+#    process behind it for minutes; a legitimately long operation that must
+#    hold a lock past this (e.g. fingerprint_canonicalize's relabel) opts out
+#    per-connection with `SET lock_timeout = 0`.
 #  - max_parallel_workers_per_gather=0: force SERIAL query plans. A parallel plan
 #    allocates a dynamic shared-memory segment in /dev/shm, which is small by
 #    default on containers; a big scan (e.g. the analysis work-map over a large
 #    library) then dies with DiskFull ("could not resize shared memory segment").
 #    Serial plans need no DSM and spill to normal temp files, so the app runs on
 #    any cluster regardless of /dev/shm size.
-_CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gather=0'
+_CONNECT_OPTIONS = (
+    '-c statement_timeout=600000 -c lock_timeout=10000 -c max_parallel_workers_per_gather=0'
+)
 
 
 class ConnectionLostError(psycopg2.OperationalError):
