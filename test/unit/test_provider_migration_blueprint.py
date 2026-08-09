@@ -914,11 +914,29 @@ class TestSessionDiscard:
             resp = client.delete('/api/migration/session/2')
         assert resp.status_code == 200
         assert exec_ok.called
-        assert exec_live.call_args.kwargs.get('keys') == ('exec_task_id',)
+        assert exec_live.call_args_list[0].kwargs.get('keys') == ('exec_task_id',)
         cancel.assert_called_once()
         assert cancel.call_args[0][0] == 'job-123'
         assert '2' in cancel.call_args.kwargs['reason']
         db.commit.assert_called_once()
+
+    def test_a_job_that_races_in_after_cancel_blocks_the_delete(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.append(('in_progress',))
+        cancel = MagicMock()
+        with (
+            patch.object(bp_mod, '_no_migration_executing', return_value=True),
+            patch.object(
+                bp_mod, '_migration_job_in_flight', side_effect=[False, True]
+            ) as mig_flight,
+            patch.object(bp_mod, '_live_planner_job_id', return_value='job-123'),
+            patch.object(bp_mod, 'cancel_job_and_children_recursive', cancel),
+        ):
+            resp = client.delete('/api/migration/session/2')
+        assert resp.status_code == 409
+        cancel.assert_called_once()
+        assert mig_flight.call_count == 2
+        db.commit.assert_not_called()
 
     def test_no_live_planner_job_deletes_without_cancelling(self, bp_mod, client, fake_db):
         db, cur = fake_db
