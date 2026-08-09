@@ -15,7 +15,7 @@ enumerate libraries, and pull whole catalogues.
 Main Features:
 * Supports jellyfin, emby, navidrome, lyrion, and plex, rejecting any other
   provider type early.
-* Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, Subsonic
+* Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, OpenSubsonic
   camelCase, and lower-case variants) into one flat track dict, coercing the
   year to an int; track lists are normalised in place so the raw provider list
   never coexists with a full normalised copy.

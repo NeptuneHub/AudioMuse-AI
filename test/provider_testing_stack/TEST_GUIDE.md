@@ -123,7 +123,7 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
    - Username: e.g. `admin`
    - Password: e.g. `admin`
 3. Navidrome auto-scans `/music` on startup. Verify in the UI that tracks appear.
-4. **Navidrome uses username/password auth** (Subsonic API), not tokens.
+4. **Navidrome uses username/password auth** (OpenSubsonic API), not tokens.
 5. Update `.env.test`:
    ```
    NAVIDROME_USER=admin

@@ -95,7 +95,7 @@ def _compute_headers():
 
 HEADERS = _compute_headers()
 
-# --- Navidrome (Subsonic API) Constants ---
+# --- Navidrome (OpenSubsonic API) Constants ---
 # These are used only if MEDIASERVER_TYPE is "navidrome".
 NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "")
 NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "")

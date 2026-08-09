@@ -112,7 +112,7 @@ Both files start the whole stack: Flask, one worker and PostgreSQL.
    ```
 
 **Note:**
-> If you use LMS, create and use the Subsonic API token instead of a password. Other Subsonic-compatible servers may require the same token-based auth.
+> If you use LMS, create and use the OpenSubsonic API token instead of a password. Other OpenSubsonic-compatible servers may require the same token-based auth.
 
 **Scaling workers and the PostgreSQL connection budget:**
 The task queue lives in PostgreSQL itself, so worker replicas cost connections rather than a

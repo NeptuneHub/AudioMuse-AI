@@ -6,8 +6,8 @@ var serverFields = {
     ],
     navidrome: [
         {name: 'NAVIDROME_URL', label: 'Navidrome / OpenSubsonic URL', placeholder: 'http://your-navidrome-server:4533', tooltip: 'Base URL of your Navidrome or other OpenSubsonic server, including http:// or https:// and the port.', required: true, authGroup: 'always'},
-        {name: 'NAVIDROME_USER', label: 'Username', placeholder: 'your-username', tooltip: 'Subsonic username used with password authentication.', required: true, authGroup: 'password'},
-        {name: 'NAVIDROME_PASSWORD', label: 'Password', placeholder: 'your-password', tooltip: 'Subsonic password used with username authentication.', required: true, authGroup: 'password'},
+        {name: 'NAVIDROME_USER', label: 'Username', placeholder: 'your-username', tooltip: 'OpenSubsonic username used with password authentication.', required: true, authGroup: 'password'},
+        {name: 'NAVIDROME_PASSWORD', label: 'Password', placeholder: 'your-password', tooltip: 'OpenSubsonic password used with username authentication.', required: true, authGroup: 'password'},
         {name: 'NAVIDROME_API_KEY', label: 'OpenSubsonic API key', placeholder: 'your-api-key', tooltip: 'OpenSubsonic apiKeyAuthentication token. When this mode is selected, username/password are not sent (do not combine with u=).', required: true, authGroup: 'apikey'}
     ],
     lyrion: [
@@ -325,7 +325,7 @@ function renderNavidromeAuthModeSelector(initialMode) {
         row.appendChild(optLabel);
     }
 
-    addOption('password', 'Username + password (classic Subsonic / Navidrome)');
+    addOption('password', 'Username + password (classic OpenSubsonic / Navidrome)');
     addOption('apikey', 'OpenSubsonic API key (apiKeyAuthentication)');
     var hint = document.createElement('small');
     hint.textContent = 'Choose one method. API key mode sends apiKey= and does not send u=/p=.';

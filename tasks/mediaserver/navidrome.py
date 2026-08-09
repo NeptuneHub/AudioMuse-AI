@@ -6,15 +6,15 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Navidrome (Subsonic API) backend for the AudioMuse-AI media-server abstraction.
+"""Navidrome (OpenSubsonic API) backend for the AudioMuse-AI media-server abstraction.
 
-Implements the provider interface against a Navidrome/Subsonic server.
+Implements the provider interface against a Navidrome/OpenSubsonic server.
 Dispatched by tasks/mediaserver/__init__.py when
 config.MEDIASERVER_TYPE == 'navidrome'.
 
 Main Features:
-* Fetches albums/tracks, downloads, and manages playlists via the Subsonic API.
-* Coerces single-dict responses to lists (Subsonic returns a dict, not a list,
+* Fetches albums/tracks, downloads, and manages playlists via the OpenSubsonic API.
+* Coerces single-dict responses to lists (OpenSubsonic returns a dict, not a list,
   when only one item exists).
 """
 
@@ -104,7 +104,6 @@ def list_libraries(user_creds=None):
 
 
 def _navidrome_auth_params_from_values(auth_key, auth_user, auth_pass):
-    """Build Subsonic auth query params from one atomic credential set."""
     if auth_key:
         return {
             "apiKey": auth_key,
@@ -126,15 +125,6 @@ def _navidrome_auth_params_from_values(auth_key, auth_user, auth_pass):
 
 
 def get_navidrome_auth_params(username=None, password=None, api_key=None):
-    """Return Subsonic auth query params (OpenSubsonic apiKey, else u/p).
-
-    Credential resolution is atomic. Once an explicit credential set is in play
-    (kwargs and/or a bound media-server context), only those values are used -
-    never fall back to config globals for a missing sibling field (e.g. do not
-    attach the default server's NAVIDROME_API_KEY to a secondary server that
-    only has user/password). Config is the fallback only for the unbound
-    single-server path when no credential kwargs are supplied.
-    """
     explicit = username is not None or password is not None or api_key is not None
     if not explicit:
         bound_creds = context.active_creds()
@@ -157,7 +147,7 @@ def get_navidrome_auth_params(username=None, password=None, api_key=None):
     )
 
 
-_SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
+_OPENSUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
 
 _SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:[pst]|apiKey)=)[^&\s]*')
 
@@ -202,22 +192,22 @@ def _navidrome_request_ex(
         if stream:
             return r, None
 
-        subsonic_response = r.json().get("subsonic-response", {})
-        if subsonic_response.get("status") == "failed":
-            error = subsonic_response.get("error", {}) or {}
+        opensubsonic_response = r.json().get("subsonic-response", {})
+        if opensubsonic_response.get("status") == "failed":
+            error = opensubsonic_response.get("error", {}) or {}
             message = error.get("message") or "Navidrome returned an error."
             logger.error(f"Navidrome API Error on '{endpoint}': {message}")
-            kind = 'auth' if error.get("code") in _SUBSONIC_AUTH_ERROR_CODES else 'server'
+            kind = 'auth' if error.get("code") in _OPENSUBSONIC_AUTH_ERROR_CODES else 'server'
             return None, {'kind': kind, 'message': message}
-        return subsonic_response, None
+        return opensubsonic_response, None
 
     except requests.exceptions.RequestException as e:
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")  # noqa: TRY400
         return None, {'kind': 'network', 'message': safe}
     except Exception as e:
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")  # noqa: TRY400
         return None, {'kind': 'server', 'message': safe}
 
 
@@ -264,9 +254,9 @@ def download_track(temp_dir, item):
             logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
             return local_filename
     except Exception as e:
-        logger.error(  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        logger.error(  # noqa: TRY400
             f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {_redact_navidrome_secrets(e)}"
-        )  # noqa: TRY400 - .exception would leak the unredacted URL creds via the traceback
+        )
     return None
 
 

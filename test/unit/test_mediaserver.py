@@ -763,7 +763,7 @@ class TestNavidromeRequest:
 
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
-    def test_parses_subsonic_response_wrapper(self, mock_config, mock_request):
+    def test_parses_opensubsonic_response_wrapper(self, mock_config, mock_request):
         from tasks.mediaserver.navidrome import _navidrome_request
 
         self._password_config(mock_config)
