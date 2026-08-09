@@ -803,10 +803,14 @@ function fetchProviderLibraries(serverType, configOverride) {
     var configPayload = configOverride || collectConfigFromForm(true);
     // MEDIASERVER_TYPE may be dropped by collectConfigFromForm if unchanged.
     configPayload.MEDIASERVER_TYPE = serverType;
+    var librariesPayload = { config: configPayload };
+    if (serverType === 'navidrome') {
+        librariesPayload.navidrome_auth_mode = getNavidromeAuthMode();
+    }
     fetch('/api/setup/providers/libraries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: configPayload })
+        body: JSON.stringify(librariesPayload)
     }).then(function(resp) {
         return resp.json().then(function(data) {
             if (!resp.ok) {

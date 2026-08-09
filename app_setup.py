@@ -390,8 +390,9 @@ def _test_media_server_connection(filtered_values, navidrome_auth_mode=''):
         _restore_config(original_config)
 
 
-def _list_provider_libraries(filtered_values):
+def _list_provider_libraries(filtered_values, navidrome_auth_mode=''):
     test_config = _merge_test_config(filtered_values)
+    _apply_navidrome_auth_mode_to_mapping(test_config, navidrome_auth_mode)
     original_config = _patch_config_for_test(test_config)
     try:
         media_type = (test_config.get('MEDIASERVER_TYPE') or '').strip().lower() or 'jellyfin'
@@ -882,6 +883,7 @@ def setup_provider_libraries_api():
     if not isinstance(config_values, dict):
         return jsonify({'error': 'Missing config data'}), 400
 
+    navidrome_auth_mode = _normalize_navidrome_auth_mode(data.get('navidrome_auth_mode'))
     allowed_setup_keys = _get_allowed_setup_keys()
     filtered_values = {}
     for key, value in config_values.items():
@@ -890,7 +892,7 @@ def setup_provider_libraries_api():
         filtered_values[key] = _normalize_config_value(key, value)
 
     try:
-        result = _list_provider_libraries(filtered_values)
+        result = _list_provider_libraries(filtered_values, navidrome_auth_mode)
     except Exception as exc:
         app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
         return jsonify(

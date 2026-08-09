@@ -199,8 +199,12 @@ class TestRegistryPureHelpers:
         monkeypatch.setattr(config, 'NAVIDROME_URL', 'http://nd', raising=False)
         monkeypatch.setattr(config, 'NAVIDROME_USER', 'user1', raising=False)
         monkeypatch.setattr(config, 'NAVIDROME_PASSWORD', 'pw1', raising=False)
+        monkeypatch.setattr(config, 'NAVIDROME_API_KEY', '', raising=False)
         assert registry.creds_from_config('navidrome') == {
-            'url': 'http://nd', 'user': 'user1', 'password': 'pw1'
+            'url': 'http://nd',
+            'user': 'user1',
+            'password': 'pw1',
+            'api_key': '',
         }
 
         monkeypatch.setattr(config, 'PLEX_URL', 'http://plex', raising=False)

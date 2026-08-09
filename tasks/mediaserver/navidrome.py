@@ -103,15 +103,8 @@ def list_libraries(user_creds=None):
     ]
 
 
-def get_navidrome_auth_params(username=None, password=None, api_key=None):
-    """Return Subsonic auth query params (OpenSubsonic apiKey, else u/p)."""
-    creds = context.active_creds()
-    auth_key = (
-        api_key
-        or (creds.get('api_key') if creds else None)
-        or getattr(config, 'NAVIDROME_API_KEY', '')
-        or ''
-    )
+def _navidrome_auth_params_from_values(auth_key, auth_user, auth_pass):
+    """Build Subsonic auth query params from one atomic credential set."""
     if auth_key:
         return {
             "apiKey": auth_key,
@@ -119,9 +112,6 @@ def get_navidrome_auth_params(username=None, password=None, api_key=None):
             "c": "AudioMuse-AI",
             "f": "json",
         }
-
-    auth_user = username or (creds.get('user') if creds else None) or config.NAVIDROME_USER
-    auth_pass = password or (creds.get('password') if creds else None) or config.NAVIDROME_PASSWORD
     if not auth_user or not auth_pass:
         logger.warning("Navidrome credentials are not configured (need apiKey or user/password).")
         return {}
@@ -133,6 +123,38 @@ def get_navidrome_auth_params(username=None, password=None, api_key=None):
         "c": "AudioMuse-AI",
         "f": "json",
     }
+
+
+def get_navidrome_auth_params(username=None, password=None, api_key=None):
+    """Return Subsonic auth query params (OpenSubsonic apiKey, else u/p).
+
+    Credential resolution is atomic. Once an explicit credential set is in play
+    (kwargs and/or a bound media-server context), only those values are used -
+    never fall back to config globals for a missing sibling field (e.g. do not
+    attach the default server's NAVIDROME_API_KEY to a secondary server that
+    only has user/password). Config is the fallback only for the unbound
+    single-server path when no credential kwargs are supplied.
+    """
+    explicit = username is not None or password is not None or api_key is not None
+    if not explicit:
+        bound_creds = context.active_creds()
+        if bound_creds is not None:
+            return _navidrome_auth_params_from_values(
+                bound_creds.get('api_key') or '',
+                bound_creds.get('user') or '',
+                bound_creds.get('password') or '',
+            )
+        return _navidrome_auth_params_from_values(
+            config.NAVIDROME_API_KEY or '',
+            config.NAVIDROME_USER or '',
+            config.NAVIDROME_PASSWORD or '',
+        )
+
+    return _navidrome_auth_params_from_values(
+        api_key or '',
+        username or '',
+        password or '',
+    )
 
 
 _SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}

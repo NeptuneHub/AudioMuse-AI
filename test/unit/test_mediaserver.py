@@ -590,6 +590,119 @@ class TestNavidromeAuthParams:
 
         assert params == {}
 
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_bound_password_server_ignores_global_api_key(self, mock_config):
+        from tasks.mediaserver import context
+        from tasks.mediaserver.navidrome import get_navidrome_auth_params
+
+        # Default / config projection still holds an apiKey from another server.
+        mock_config.NAVIDROME_USER = 'default-user'
+        mock_config.NAVIDROME_PASSWORD = 'default-pass'
+        mock_config.NAVIDROME_API_KEY = 'default-server-api-key'
+
+        secondary = {
+            'server_id': 'sec',
+            'name': 'Secondary Navidrome',
+            'server_type': 'navidrome',
+            'creds': {
+                'url': 'http://secondary:4533',
+                'user': 'sec-user',
+                'password': 'sec-pass',
+                'api_key': '',
+            },
+            'music_libraries': '',
+            'is_default': False,
+        }
+        with context.use_server(secondary):
+            params = get_navidrome_auth_params(
+                username='sec-user',
+                password='sec-pass',
+                api_key='',
+            )
+
+        assert params.get('u') == 'sec-user'
+        assert params.get('p', '').startswith('enc:')
+        assert 'apiKey' not in params
+
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_bound_apikey_server_ignores_global_password(self, mock_config):
+        from tasks.mediaserver import context
+        from tasks.mediaserver.navidrome import get_navidrome_auth_params
+
+        mock_config.NAVIDROME_USER = 'default-user'
+        mock_config.NAVIDROME_PASSWORD = 'default-pass'
+        mock_config.NAVIDROME_API_KEY = ''
+
+        k7 = {
+            'server_id': 'k7',
+            'name': 'K7 OpenSubsonic',
+            'server_type': 'navidrome',
+            'creds': {
+                'url': 'http://k7:5001',
+                'user': '',
+                'password': '',
+                'api_key': 'k7-api-key',
+            },
+            'music_libraries': '',
+            'is_default': False,
+        }
+        with context.use_server(k7):
+            params = get_navidrome_auth_params(
+                username='',
+                password='',
+                api_key='k7-api-key',
+            )
+
+        assert params == {
+            'apiKey': 'k7-api-key',
+            'v': '1.16.1',
+            'c': 'AudioMuse-AI',
+            'f': 'json',
+        }
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_bound_password_server_does_not_send_global_api_key(
+        self, mock_config, mock_request
+    ):
+        from tasks.mediaserver import context
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+
+        mock_config.NAVIDROME_URL = 'http://default:4533'
+        mock_config.NAVIDROME_USER = 'default-user'
+        mock_config.NAVIDROME_PASSWORD = 'default-pass'
+        mock_config.NAVIDROME_API_KEY = 'default-server-api-key'
+        mock_config.APP_VERSION = '1.0'
+
+        mock_response = Mock()
+        mock_response.json.return_value = {'subsonic-response': {'status': 'ok'}}
+        mock_response.raise_for_status = Mock()
+        mock_request.return_value = mock_response
+
+        secondary = {
+            'server_id': 'sec',
+            'name': 'Secondary',
+            'server_type': 'navidrome',
+            'creds': {
+                'url': 'http://secondary:4533',
+                'user': 'sec-user',
+                'password': 'sec-pass',
+                'api_key': '',
+            },
+            'music_libraries': '',
+            'is_default': False,
+        }
+        with context.use_server(secondary):
+            data, err = _navidrome_request_ex('ping')
+
+        assert err is None
+        assert data is not None
+        params = mock_request.call_args[1]['params']
+        assert params['u'] == 'sec-user'
+        assert 'apiKey' not in params
+        url = mock_request.call_args[0][1]
+        assert url.startswith('http://secondary:4533/')
+
 
 class TestNavidromeMissingRequiredCreds:
     def test_api_key_only_is_complete(self):
@@ -618,15 +731,21 @@ class TestNavidromeMissingRequiredCreds:
 
 
 class TestNavidromeRequest:
+    @staticmethod
+    def _password_config(mock_config, user='admin', password='password', version='1.0'):
+        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
+        mock_config.NAVIDROME_USER = user
+        mock_config.NAVIDROME_PASSWORD = password
+        # MagicMock is truthy; unset NAVIDROME_API_KEY would pick the apiKey path.
+        mock_config.NAVIDROME_API_KEY = ''
+        mock_config.APP_VERSION = version
+
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_constructs_correct_url_with_view_suffix(self, mock_config, mock_request):
         from tasks.mediaserver.navidrome import _navidrome_request
 
-        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
-        mock_config.NAVIDROME_USER = 'admin'
-        mock_config.NAVIDROME_PASSWORD = 'password'
-        mock_config.APP_VERSION = '1.0'
+        self._password_config(mock_config)
 
         mock_response = Mock()
         mock_response.json.return_value = {'subsonic-response': {'status': 'ok'}}
@@ -647,10 +766,7 @@ class TestNavidromeRequest:
     def test_parses_subsonic_response_wrapper(self, mock_config, mock_request):
         from tasks.mediaserver.navidrome import _navidrome_request
 
-        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
-        mock_config.NAVIDROME_USER = 'admin'
-        mock_config.NAVIDROME_PASSWORD = 'password'
-        mock_config.APP_VERSION = '1.0'
+        self._password_config(mock_config)
 
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -674,10 +790,7 @@ class TestNavidromeRequest:
     def test_checks_status_field_for_failure(self, mock_config, mock_request):
         from tasks.mediaserver.navidrome import _navidrome_request
 
-        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
-        mock_config.NAVIDROME_USER = 'admin'
-        mock_config.NAVIDROME_PASSWORD = 'password'
-        mock_config.APP_VERSION = '1.0'
+        self._password_config(mock_config)
 
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -698,10 +811,7 @@ class TestNavidromeRequest:
     def test_includes_auth_params_in_request(self, mock_config, mock_request):
         from tasks.mediaserver.navidrome import _navidrome_request
 
-        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
-        mock_config.NAVIDROME_USER = 'testuser'
-        mock_config.NAVIDROME_PASSWORD = 'secret'
-        mock_config.APP_VERSION = '2.0'
+        self._password_config(mock_config, user='testuser', password='secret', version='2.0')
 
         mock_response = Mock()
         mock_response.json.return_value = {'subsonic-response': {'status': 'ok'}}
@@ -717,16 +827,14 @@ class TestNavidromeRequest:
         assert params.get('p').startswith('enc:'), "Password not hex-encoded"
         assert params.get('f') == 'json', "Format must be json"
         assert 'extra' in params, "Custom params not passed through"
+        assert 'apiKey' not in params
 
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_returns_none_on_http_error(self, mock_config, mock_request):
         from tasks.mediaserver.navidrome import _navidrome_request
 
-        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
-        mock_config.NAVIDROME_USER = 'admin'
-        mock_config.NAVIDROME_PASSWORD = 'password'
-        mock_config.APP_VERSION = '1.0'
+        self._password_config(mock_config)
 
         mock_request.side_effect = requests.exceptions.RequestException("Connection refused")
 
@@ -740,6 +848,7 @@ class TestNavidromeAuthDetection:
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
         mock_config.NAVIDROME_USER = 'admin'
         mock_config.NAVIDROME_PASSWORD = 'password'
+        mock_config.NAVIDROME_API_KEY = ''
         mock_config.APP_VERSION = '1.0'
 
     @patch('tasks.mediaserver.navidrome.requests.request')
@@ -871,6 +980,7 @@ class TestNavidromeAuthDetection:
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
         mock_config.NAVIDROME_USER = ''
         mock_config.NAVIDROME_PASSWORD = ''
+        mock_config.NAVIDROME_API_KEY = ''
 
         data, err = _navidrome_request_ex('search3')
 
