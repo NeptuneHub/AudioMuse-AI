@@ -787,6 +787,43 @@ class TestNavidromeRequest:
 
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
+    def test_migration_target_creds_win_over_source_default_api_key(
+        self, mock_config, mock_request
+    ):
+        # Provider Migration passes the TARGET server's creds explicitly and
+        # never binds a server context (unlike the bound-secondary-server
+        # tests in TestNavidromeAuthParams). If the app's own default/source
+        # Navidrome server authenticates via apiKey, that key must not leak
+        # into a request meant for a different (password-auth) target.
+        from tasks.mediaserver.navidrome import _navidrome_request
+
+        mock_config.NAVIDROME_URL = 'http://source-navidrome:4533'
+        mock_config.NAVIDROME_USER = ''
+        mock_config.NAVIDROME_PASSWORD = ''
+        mock_config.NAVIDROME_API_KEY = 'source-api-key'
+        mock_config.APP_VERSION = '1.0'
+
+        mock_response = Mock()
+        mock_response.json.return_value = {'subsonic-response': {'status': 'ok'}}
+        mock_response.raise_for_status = Mock()
+        mock_request.return_value = mock_response
+
+        target_creds = {
+            'url': 'http://target-navidrome:4533',
+            'user': 'target_user',
+            'password': 'target_pass',
+        }
+        _navidrome_request('search3', user_creds=target_creds)
+
+        call_args = mock_request.call_args
+        url = call_args[0][1]
+        sent_params = call_args[1]['params']
+        assert url == 'http://target-navidrome:4533/rest/search3.view'
+        assert sent_params['u'] == 'target_user'
+        assert 'apiKey' not in sent_params
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
     def test_checks_status_field_for_failure(self, mock_config, mock_request):
         from tasks.mediaserver.navidrome import _navidrome_request
 
