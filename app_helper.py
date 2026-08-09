@@ -250,14 +250,20 @@ def serialize_neighbor_results(
 
 
 def _project_matrix_2d(mat, label):
-    from tasks.alchemy_projections import _project_with_umap, _project_to_2d
+    from tasks.alchemy_projections import _project_with_umap, _project_to_2d, UMAP_MIN_SAMPLES
 
     projections = None
-    try:
-        projections = _project_with_umap(mat)
-    except Exception:
-        logger.exception(f"UMAP projection failed for {label}; falling back to PCA")
-        projections = None
+    if mat.shape[0] < UMAP_MIN_SAMPLES:
+        logger.info(
+            f"Skipping UMAP for {label}: only {mat.shape[0]} vector(s) found "
+            f"(need at least {UMAP_MIN_SAMPLES}); using PCA instead."
+        )
+    else:
+        try:
+            projections = _project_with_umap(mat)
+        except Exception:
+            logger.exception(f"UMAP projection failed for {label}; falling back to PCA")
+            projections = None
 
     if projections is None:
         try:

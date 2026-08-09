@@ -60,6 +60,58 @@ class TestProjectMatrix2d:
         with pytest.raises(RuntimeError, match='refusing to store'):
             app_helper._project_matrix_2d(np.zeros((3, 4), dtype=np.float32), 'test')
 
+    def test_a_single_song_skips_umap_and_uses_pca(self, monkeypatch):
+        umap_called = []
+
+        def fake_umap(mat):
+            umap_called.append(mat.shape[0])
+            return np.ones((mat.shape[0], 2))
+
+        monkeypatch.setattr(alchemy_projections, '_project_with_umap', fake_umap)
+        monkeypatch.setattr(
+            alchemy_projections, '_project_to_2d', lambda mat: np.ones((mat.shape[0], 2))
+        )
+
+        out = app_helper._project_matrix_2d(np.zeros((1, 4), dtype=np.float32), 'test')
+
+        assert umap_called == []
+        assert out.shape == (1, 2)
+
+    def test_fifteen_songs_still_below_the_umap_neighbour_floor_uses_pca(self, monkeypatch):
+        umap_called = []
+
+        def fake_umap(mat):
+            umap_called.append(mat.shape[0])
+            return np.ones((mat.shape[0], 2))
+
+        monkeypatch.setattr(alchemy_projections, '_project_with_umap', fake_umap)
+        monkeypatch.setattr(
+            alchemy_projections, '_project_to_2d', lambda mat: np.ones((mat.shape[0], 2))
+        )
+
+        out = app_helper._project_matrix_2d(np.zeros((15, 4), dtype=np.float32), 'test')
+
+        assert umap_called == []
+        assert out.shape == (15, 2)
+
+    def test_sixteen_songs_meets_the_umap_neighbour_floor_and_calls_umap(self, monkeypatch):
+        umap_called = []
+
+        def fake_umap(mat):
+            umap_called.append(mat.shape[0])
+            return np.ones((mat.shape[0], 2))
+
+        def pca_should_not_run(_mat):
+            raise AssertionError('PCA must not run when UMAP already produced output')
+
+        monkeypatch.setattr(alchemy_projections, '_project_with_umap', fake_umap)
+        monkeypatch.setattr(alchemy_projections, '_project_to_2d', pca_should_not_run)
+
+        out = app_helper._project_matrix_2d(np.zeros((16, 4), dtype=np.float32), 'test')
+
+        assert umap_called == [16]
+        assert out.shape == (16, 2)
+
 
 class TestMapProjectionBuild:
     def test_map_projection_build_propagates_projector_failure(self, monkeypatch):
