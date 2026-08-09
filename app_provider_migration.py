@@ -966,12 +966,29 @@ def session_discard(session_id):
             ), 503
 
     if planner_job_id:
+        # cancel_job_and_children_recursive commits internally, which ends the
+        # transaction that held the advisory lock above and releases it. That
+        # reopens exactly the window the lock exists to close: a fresh
+        # /api/migration/execute could slip in here, reserve exec_task_id and
+        # enqueue, and then get its session deleted out from under it by the
+        # DELETE below. The re-check right before the DELETE, in the SAME
+        # transaction as the DELETE, is what closes that window again - it
+        # re-acquires the lock and holds it continuously through the commit,
+        # so anything that raced in during the gap is caught here instead of
+        # silently stranding a migration.
         cancel_job_and_children_recursive(
             planner_job_id,
             reason=f'Migration session {session_id} discarded by user.',
         )
 
     with db.cursor() as cur:
+        if not _no_migration_executing(cur) or _migration_job_in_flight(cur):
+            return jsonify(
+                {
+                    'error': 'A migration job started while the previous one was '
+                             'being discarded. Try again.'
+                }
+            ), 409
         # The status was read above, but execute could have committed since. The
         # predicate makes the check and the delete one act, so a migration that
         # finished in that window keeps the completed marker its retry needs.

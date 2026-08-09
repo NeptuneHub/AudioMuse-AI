@@ -868,15 +868,11 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
     source_id = None
     provider_durations = {}
     prev_timeout = None
-    prev_lock_timeout = None
     try:
         if not own_conn:
             cur.execute("SHOW statement_timeout")
             prev_timeout = cur.fetchone()[0]
-            cur.execute("SHOW lock_timeout")
-            prev_lock_timeout = cur.fetchone()[0]
         cur.execute("SET statement_timeout = 0")
-        cur.execute("SET lock_timeout = 0")
         cur.execute("SELECT pg_advisory_xact_lock(%s)", (_RELABEL_ADVISORY_LOCK,))
         source_id = source_server_id or registry.get_default_server_id(db)
         if not source_id:
@@ -975,12 +971,6 @@ def canonicalize_fingerprinted_ids(conn=None, log_fn=None, source_server_id=None
                 db.commit()
             except Exception:
                 logger.debug("Could not restore statement_timeout", exc_info=True)
-        if not own_conn and prev_lock_timeout is not None:
-            try:
-                cur.execute("SET lock_timeout = %s", (prev_lock_timeout,))
-                db.commit()
-            except Exception:
-                logger.debug("Could not restore lock_timeout", exc_info=True)
         cur.close()
         if not own_conn and prev_autocommit is not None:
             try:

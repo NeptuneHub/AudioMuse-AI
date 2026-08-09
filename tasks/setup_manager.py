@@ -101,9 +101,7 @@ class SetupManager:
     def get_connection(self):
         if not self.database_url:
             raise RuntimeError("DATABASE_URL is not configured")
-        return psycopg2.connect(
-            self.database_url, connect_timeout=30, options='-c lock_timeout=10000'
-        )
+        return psycopg2.connect(self.database_url, connect_timeout=30)
 
     def ensure_table(self):
         if self.database_url is None:
