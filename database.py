@@ -184,14 +184,7 @@ def _build_task_note(task_type, details_obj):
         if 'analysis' in t:
             songs = details_obj.get('tracks_analyzed')
             songs = int(songs) if isinstance(songs, (int, float)) else 0
-            if songs > 0:
-                return f"Songs analyzed: {songs}"
-            albums = details_obj.get('albums_completed') or details_obj.get(
-                'total_albums_processed'
-            )
-            if albums:
-                return f"Albums analyzed: {albums}"
-            return ''
+            return f"Songs analyzed: {songs}"
 
         if 'clean' in t:
             for k in (
