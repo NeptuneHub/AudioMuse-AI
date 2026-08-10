@@ -40,7 +40,12 @@ from config import (
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAIL,
 )
-from database import get_db, save_task_status, MAX_LOG_ENTRIES_STORED
+from database import (
+    get_db,
+    save_task_status,
+    MAX_LOG_ENTRIES_STORED,
+    get_analysis_exclusions,
+)
 from psycopg2 import OperationalError
 from psycopg2 import sql as pgsql
 from sanitization import sanitize_string_for_db
@@ -158,6 +163,46 @@ def attach_catalog_item_ids(tracks, server_id=None):
     for item, provider_id in zip(tracks, provider_ids):
         item['_catalog_item_id'] = str(mapped.get(provider_id, provider_id))
     return tracks
+
+
+def track_duration_seconds(item):
+    value = item.get('DurationSeconds')
+    if value is None:
+        ticks = item.get('RunTimeTicks')
+        if ticks is not None:
+            try:
+                value = float(ticks) / 10_000_000.0
+            except (TypeError, ValueError):
+                value = None
+        else:
+            value = item.get('duration')
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def analysis_exclusion_metadata(item):
+    return {
+        'title': item['Name'],
+        'artist': item.get('AlbumArtist', 'Unknown'),
+        'duration_seconds': track_duration_seconds(item),
+    }
+
+
+def analysis_exclusion_matches(item, exclusion):
+    current = analysis_exclusion_metadata(item)
+    for field in ('title', 'artist'):
+        old_value = exclusion.get(field)
+        new_value = current.get(field)
+        old_normalized = str(old_value).strip().casefold() if old_value is not None else ''
+        new_normalized = str(new_value).strip().casefold() if new_value is not None else ''
+        if old_normalized != new_normalized:
+            return False
+    return True
 
 
 def get_existing_track_ids(track_ids):
@@ -379,6 +424,18 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
         track_ids, existing_ids, missing_lyrics_ids, top_n_moods, lyrics_enabled, album_name
     )
     return existing_ids, missing_clap_ids, missing_lyrics_ids, clap_label_embeddings, prior_moods
+
+
+def load_album_analysis_exclusions(tracks):
+    if not tracks:
+        return {}
+    from .song import provider_item_id
+    from tasks.mediaserver import context as server_context, registry
+
+    server_id = server_context.active_server_id() or registry.get_default_server_id()
+    return get_analysis_exclusions(
+        server_id, [provider_item_id(track) for track in tracks]
+    )
 
 
 def flush_pending_track_maps(pending_track_maps, map_flush_errors, album_name):

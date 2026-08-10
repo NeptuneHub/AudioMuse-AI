@@ -547,7 +547,12 @@ def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessi
                 logger.warning(f"Error during cleanup: {cleanup_error}")
 
 
-def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
+class AudioNotDecodableError(RuntimeError):
+    pass
+
+
+def _analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
+                   return_audio=False, raise_on_unreadable=False):
     name = os.path.basename(file_path)
     logger.info(f"Starting analysis for: {name}")
     nothing = (None, None, None, None) if return_audio else (None, None)
@@ -557,6 +562,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         logger.warning(
             f"Could not load a valid audio signal for {name} after all attempts. Skipping track."
         )
+        if raise_on_unreadable:
+            raise AudioNotDecodableError(f"no decodable audio for {name}")
         return nothing
 
     tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
@@ -587,6 +594,21 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     gc.collect()
     comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
     return return_values
+
+
+def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
+    return _analyze_track(
+        file_path, mood_labels_list, model_paths, onnx_sessions=onnx_sessions,
+        return_audio=return_audio,
+    )
+
+
+def analyze_track_for_album(file_path, mood_labels_list, model_paths,
+                            onnx_sessions=None, return_audio=False):
+    return _analyze_track(
+        file_path, mood_labels_list, model_paths, onnx_sessions=onnx_sessions,
+        return_audio=return_audio, raise_on_unreadable=True,
+    )
 
 
 def catalog_item_id(item):

@@ -917,6 +917,109 @@ def get_chromaprint(server_id, provider_track_id):
         cur.close()
 
 
+def record_analysis_exclusion(server_id, provider_item_id, duration_seconds=None,
+                              title=None, artist=None, reason_code=2007, conn=None):
+    if not server_id or not provider_item_id:
+        return False
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        duration = None
+        if duration_seconds is not None:
+            try:
+                duration = float(duration_seconds)
+            except (TypeError, ValueError):
+                duration = None
+        cur.execute(
+            """
+            INSERT INTO analysis_exclusions
+                (server_id, provider_item_id, duration_seconds, title, artist,
+                 reason_code, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (server_id, provider_item_id) DO UPDATE SET
+                duration_seconds = EXCLUDED.duration_seconds,
+                title = EXCLUDED.title,
+                artist = EXCLUDED.artist,
+                reason_code = EXCLUDED.reason_code,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                sanitize_string_for_db(str(server_id)),
+                sanitize_string_for_db(str(provider_item_id)),
+                duration,
+                sanitize_db_field(title, field_name="analysis exclusion title"),
+                sanitize_db_field(artist, field_name="analysis exclusion artist"),
+                int(reason_code),
+            ),
+        )
+        db.commit()
+        return True
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Analysis-exclusion rollback failed", exc_info=True)
+        logger.exception(
+            "Could not persist analysis exclusion for %s/%s",
+            server_id, provider_item_id,
+        )
+        return False
+    finally:
+        cur.close()
+
+
+def get_analysis_exclusions(server_id, provider_item_ids):
+    if not server_id or not provider_item_ids:
+        return {}
+    ids = [sanitize_string_for_db(str(item_id)) for item_id in provider_item_ids]
+    with get_db() as conn, conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            "SELECT server_id, provider_item_id, duration_seconds, title, artist, "
+            "reason_code, created_at, updated_at "
+            "FROM analysis_exclusions WHERE server_id = %s AND provider_item_id = ANY(%s)",
+            (sanitize_string_for_db(str(server_id)), ids),
+        )
+        return {
+            row['provider_item_id']: {
+                'server_id': row['server_id'],
+                'provider_item_id': row['provider_item_id'],
+                'duration_seconds': row['duration_seconds'],
+                'title': row['title'],
+                'artist': row['artist'],
+                'reason_code': row['reason_code'],
+                'created_at': row['created_at'],
+                'updated_at': row['updated_at'],
+            }
+            for row in cur.fetchall()
+        }
+
+
+def delete_stale_analysis_exclusions(server_id, present_provider_item_ids, conn=None):
+    if not server_id or not present_provider_item_ids:
+        return 0
+    ids = [sanitize_string_for_db(str(item_id)) for item_id in present_provider_item_ids]
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM analysis_exclusions "
+            "WHERE server_id = %s AND NOT (provider_item_id = ANY(%s))",
+            (sanitize_string_for_db(str(server_id)), ids),
+        )
+        deleted = cur.rowcount
+        db.commit()
+        return int(deleted if deleted is not None and deleted >= 0 else 0)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Stale analysis-exclusion rollback failed", exc_info=True)
+        logger.exception("Could not remove stale analysis exclusions for %s", server_id)
+        return 0
+    finally:
+        cur.close()
+
+
 def get_lyrics_axis_vectors(item_ids):
     if not item_ids:
         return {}
@@ -1603,6 +1706,23 @@ def init_db():
             except Exception:
                 logger.warning("music_servers has duplicate names; unique-name index skipped")
                 cur.execute("ROLLBACK TO SAVEPOINT ms_unique_name")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_exclusions (
+                    server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE,
+                    provider_item_id TEXT NOT NULL,
+                    duration_seconds DOUBLE PRECISION,
+                    title TEXT,
+                    artist TEXT,
+                    reason_code INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (server_id, provider_item_id)
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_exclusions_updated_at "
+                "ON analysis_exclusions (updated_at DESC)"
+            )
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS track_server_map (
                     item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE,

@@ -73,7 +73,7 @@ def dashboard_page():
 # so there is nothing to leak. Deep pages are clamped by DASHBOARD_BROWSE_MAX_OFFSET
 # so a 1M-row table can never be walked end to end.
 
-_BROWSE_KINDS = ('songs', 'artists', 'albums')
+_BROWSE_KINDS = ('songs', 'artists', 'albums', 'unanalyzable')
 _BROWSE_FILTERS = ('all', 'unique', 'duplicates', 'orphan')
 _BROWSE_MIN_QUERY = 2
 
@@ -180,6 +180,26 @@ def _browse_albums_sql(server_id, q):
     return sql, params
 
 
+def _browse_unanalyzable_sql(server_id, q):
+    params = []
+    sql = (
+        "SELECT e.title, e.artist, e.duration_seconds, e.reason_code, "
+        "e.created_at, e.updated_at, ms.name "
+        "FROM analysis_exclusions e JOIN music_servers ms ON ms.server_id = e.server_id"
+    )
+    where = []
+    if server_id:
+        where.append("e.server_id = %s")
+        params.append(server_id)
+    if q:
+        where.append("(COALESCE(e.title, '') ILIKE %s OR COALESCE(e.artist, '') ILIKE %s)")
+        params.extend((_browse_like(q), _browse_like(q)))
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY e.updated_at DESC NULLS LAST, e.title ASC, e.artist ASC"
+    return sql, params
+
+
 def _browse_serialize(kind, rows):
     out = []
     if kind == 'artists':
@@ -188,6 +208,17 @@ def _browse_serialize(kind, rows):
     elif kind == 'albums':
         for r in rows:
             out.append({'album_artist': r[0], 'album': r[1]})
+    elif kind == 'unanalyzable':
+        for r in rows:
+            out.append({
+                'title': r[0],
+                'artist': r[1],
+                'duration_seconds': float(r[2]) if r[2] is not None else None,
+                'reason_code': int(r[3]) if r[3] is not None else None,
+                'created_at': to_local_str(r[4]),
+                'updated_at': to_local_str(r[5]),
+                'server': r[6],
+            })
     else:
         for r in rows:
             item = {
@@ -233,6 +264,8 @@ def _browse_total(content, kind, server_id, server_name, filt, has_q):
         return content.get('distinct_artists')
     if kind == 'albums' and server_id is None:
         return content.get('distinct_albums')
+    if kind == 'unanalyzable' and server_id is None:
+        return content.get('unanalyzable_tracks')
     return None
 
 
@@ -285,6 +318,8 @@ def browse_api():
         sql, params = _browse_artists_sql(server_id, q)
     elif kind == 'albums':
         sql, params = _browse_albums_sql(server_id, q)
+    elif kind == 'unanalyzable':
+        sql, params = _browse_unanalyzable_sql(server_id, q)
     else:
         sql, params = _browse_songs_sql(server_id, filt, q)
 
@@ -527,6 +562,9 @@ def _collect_fast_metrics(cur):
         # A genuine subset of the catalogue: CLAP is a separate pass that runs
         # after analysis, so its percentage can really be < 100.
         'clap_indexed': _counted_or_none(cur, "SELECT COUNT(*) FROM clap_embedding"),
+        'unanalyzable_tracks': _counted_or_none(
+            cur, "SELECT COUNT(*) FROM analysis_exclusions"
+        ),
     }
     metrics['music_servers'] = _collect_music_server_metrics(
         cur, total_songs=metrics['total_songs']
@@ -550,7 +588,7 @@ def _collect_fast_metrics(cur):
         metrics[k] is None
         for k in (
             'total_songs', 'distinct_artists', 'distinct_albums',
-            'clap_indexed',
+            'clap_indexed', 'unanalyzable_tracks',
         )
     )
     return metrics
