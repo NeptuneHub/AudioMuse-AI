@@ -103,6 +103,26 @@ class TestBrowseArtistsAlbumsSql:
         assert params == ['%x%', '%x%']
 
 
+class TestBrowseUnanalyzable:
+    def test_sql_is_server_scoped_and_searchable_without_internal_ids(self):
+        sql, params = dash._browse_unanalyzable_sql('srv1', 'bad')
+        assert 'analysis_exclusions' in sql
+        assert 'e.server_id = %s' in sql
+        assert 'provider_item_id' not in sql.split(' FROM ')[0]
+        assert params == ['srv1', '%bad%', '%bad%']
+
+    def test_serialization_contains_error_details(self):
+        out = dash._browse_serialize(
+            'unanalyzable',
+            [('Song', 'Artist', 123.5, 2007, 'created', 'updated', 'Jellyfin')],
+        )
+        assert out == [{
+            'title': 'Song', 'artist': 'Artist', 'duration_seconds': 123.5,
+            'reason_code': 2007, 'created_at': 'created', 'updated_at': 'updated',
+            'server': 'Jellyfin',
+        }]
+
+
 class TestBrowseSerialize:
     def test_songs_carry_no_id_and_no_fp_value(self):
         out = dash._browse_serialize('songs', [('Title', 'Artist', 'Album', 'AA', 2020, None)])

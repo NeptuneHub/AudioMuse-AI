@@ -76,11 +76,16 @@ from ..memory_utils import (
     comprehensive_memory_cleanup,
 )
 from .. import chromaprint
-from database import persist_chromaprint, get_chromaprint
+from database import (
+    persist_chromaprint,
+    get_chromaprint,
+    record_analysis_exclusion,
+)
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
 from .song import (
-    analyze_track,
+    analyze_track_for_album,
+    AudioNotDecodableError,
     cleanup_musicnn_sessions,
     cleanup_optional_models,
     robust_load_audio_with_fallback,
@@ -89,9 +94,13 @@ from .song import (
 
 logger = logging.getLogger(__name__)
 
+analyze_track = analyze_track_for_album
+
 
 class TrackNotAnalyzable(Exception):
-    pass
+    def __init__(self, message, cacheable=False):
+        super().__init__(message)
+        self.cacheable = bool(cacheable)
 
 
 class TrackSourceUnavailable(Exception):
@@ -131,17 +140,23 @@ def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
     onnx_sessions = _ah.ensure_musicnn_sessions(
         onnx_sessions, model_paths, session_recycler, album_name
     )
-    if plan.lyrics:
-        analysis, embedding, track_audio, track_sr = analyze_track(
-            path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions, return_audio=True
-        )
-    else:
-        analysis, embedding = analyze_track(
-            path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions
-        )
-        track_audio = track_sr = None
+    try:
+        if plan.lyrics:
+            analysis, embedding, track_audio, track_sr = analyze_track(
+                path, MOOD_LABELS, model_paths,
+                onnx_sessions=onnx_sessions, return_audio=True,
+            )
+        else:
+            analysis, embedding = analyze_track(
+                path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions
+            )
+            track_audio = track_sr = None
+    except AudioNotDecodableError as exc:
+        raise TrackNotAnalyzable(str(exc), cacheable=True) from exc
     if analysis is None:
-        raise TrackNotAnalyzable(f"no decodable audio for {track_name_full}")
+        raise TrackNotAnalyzable(
+            f"analysis produced no result for {track_name_full}", cacheable=False
+        )
     session_recycler.increment()
     cleanup_cuda_memory(force=False)
     return onnx_sessions, analysis, embedding, track_audio, track_sr
@@ -431,6 +446,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 clap_label_embeddings,
                 existing_top_moods_by_id,
             ) = _ah.build_album_plan(album_name, tracks, top_n_moods, LYRICS_ENABLED)
+            analysis_exclusions = _ah.load_album_analysis_exclusions(tracks)
 
             _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album_name)
 
@@ -468,6 +484,20 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     return {"status": "REVOKED"}
 
                 track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
+                provider_id = _ah.provider_item_id(item)
+                exclusion = analysis_exclusions.get(provider_id)
+                if exclusion and _ah.analysis_exclusion_matches(item, exclusion):
+                    tracks_not_analyzable_count += 1
+                    logger.info(
+                        "Skipping '%s' - previously marked as not analyzable "
+                        "for this music server.", track_name_full
+                    )
+                    continue
+                if exclusion:
+                    logger.info(
+                        "Retrying '%s' because its provider metadata changed "
+                        "since the not-analyzable marker was written.", track_name_full
+                    )
                 plan = _ah.plan_track_stages(
                     _ah.catalog_item_id(item),
                     existing_track_ids_set,
@@ -506,6 +536,22 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     error_manager.record(
                         ERR_TRACK_NOT_ANALYZABLE, str(e), logger=logger, level=logging.WARNING
                     )
+                    if e.cacheable:
+                        from ..mediaserver import context as server_context
+
+                        server_id = (
+                            server_context.active_server_id()
+                            or registry.get_default_server_id()
+                        )
+                        metadata = _ah.analysis_exclusion_metadata(item)
+                        record_analysis_exclusion(
+                            server_id,
+                            provider_id,
+                            duration_seconds=metadata['duration_seconds'],
+                            title=metadata['title'],
+                            artist=metadata['artist'],
+                            reason_code=ERR_TRACK_NOT_ANALYZABLE,
+                        )
                     tracks_not_analyzable_count += 1
                 except TrackSourceUnavailable:
                     logger.warning(

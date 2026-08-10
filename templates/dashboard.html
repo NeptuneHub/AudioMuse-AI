@@ -547,6 +547,7 @@
             { title: 'Songs (unique)', value: totalSongs.toLocaleString(), kind: 'songs' },
             { title: 'Artists (unique)', value: totalArtists.toLocaleString(), kind: 'artists' },
             { title: 'Albums (unique)', value: (c.distinct_albums || 0).toLocaleString(), kind: 'albums' },
+            { title: 'Unanalyzable songs', value: (c.unanalyzable_tracks || 0).toLocaleString(), kind: 'unanalyzable' },
         ];
 
         cards.forEach(card => {

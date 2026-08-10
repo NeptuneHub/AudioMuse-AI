@@ -53,7 +53,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
 
     from flask_app import app
     from app_helper import get_db, get_task_info_from_db, save_task_status
-    from database import MAX_LOG_ENTRIES_STORED
+    from database import MAX_LOG_ENTRIES_STORED, delete_stale_analysis_exclusions
     from config import (
         TASK_STATUS_RUNNING,
         TASK_STATUS_SUCCESS,
@@ -135,6 +135,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
             unbound_total = 0
             unbound_by_server = {}
             total_tracks_on_servers = 0
+            deleted_analysis_exclusions = 0
 
             for server_idx, server in enumerate(servers):
                 cancel()
@@ -165,9 +166,9 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                     window_start + int(35 / len(servers)),
                 )
 
+                refused = []
                 if server_id:
                     _store_server_track_count(get_db(), server_id, len(provider_ids))
-                    refused = []
                     unbound = prune_stale_mappings(
                         get_db(), server_id, sorted(provider_ids), refused=refused
                     )
@@ -181,6 +182,11 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                             "(kept in the shared catalogue).",
                             window_start + int(70 / len(servers)),
                         )
+                marker_server_id = server_id or registry.get_default_server_id()
+                if marker_server_id and not refused:
+                    deleted_analysis_exclusions += delete_stale_analysis_exclusions(
+                        marker_server_id, provider_ids, conn=get_db()
+                    )
                 provider_list = sorted(provider_ids)
                 for start in range(0, len(provider_list), 5000):
                     cancel()
@@ -289,6 +295,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                 "failed_servers": failed_servers,
                 "prune_refused_servers": refused_servers,
                 "deleted_count": deleted_count,
+                "deleted_analysis_exclusions": deleted_analysis_exclusions,
                 "catalogue_deletion": clean_catalogue,
                 "chromaprint_splits": chromaprint_splits,
             }
@@ -298,7 +305,8 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                 message = (
                     f"Cleanup finished with problems: server(s) {', '.join(failed_servers)} "
                     f"could not be fully read and were skipped; {unbound_total} stale "
-                    "mappings unbound elsewhere. The catalogue was not modified."
+                    "mappings unbound elsewhere. Stale not-analyzable markers were "
+                    "removed only for complete server reads. The catalogue was not modified."
                 )
             elif refused_servers:
                 message = (
@@ -311,13 +319,15 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                 message = (
                     f"Cleanup complete: {unbound_total} stale server mappings unbound; "
                     f"{deleted_count} of {len(fully_unbound)} orphaned catalogue tracks "
-                    "(on no server) deleted."
+                    f"(on no server) deleted; {deleted_analysis_exclusions} stale "
+                    "not-analyzable marker(s) removed."
                 )
             else:
                 message = (
                     f"Cleanup complete: {unbound_total} stale server mappings unbound; "
                     f"{len(fully_unbound)} catalogue tracks are on no server and were "
-                    "kept (catalogue cleaning is off - enable it to delete them)."
+                    f"kept (catalogue cleaning is off - enable it to delete them); "
+                    f"{deleted_analysis_exclusions} stale not-analyzable marker(s) removed."
                 )
             log_and_update_main(message, 100, task_state=state, final_summary_details=summary)
             return {"status": TASK_STATUS_SUCCESS if not failed_servers else TASK_STATUS_FAILURE,
