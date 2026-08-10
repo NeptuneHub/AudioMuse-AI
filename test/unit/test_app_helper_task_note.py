@@ -14,7 +14,7 @@ query any more, so the builder takes no database handle at all and the tests
 that used to feed it a failing connection have nothing left to assert.
 
 Main Features:
-* Analysis: reports the parent's own tracks_analyzed, falls back to album counts
+* Analysis: always reports the parent's own tracks_analyzed, zero included
 * Cleaning: first recognized numeric key wins, floats truncated, zero reported
 * Clustering: sampled/cluster counts from best_params with graceful fallbacks;
   unknown task types and non-dict details yield an empty string
@@ -30,15 +30,16 @@ from app_helper import _build_task_note
 
 class TestAnalysisNote:
 
-    def test_falls_back_to_albums_completed(self):
-        assert _build_task_note('main_analysis', {'albums_completed': 7}) == 'Albums analyzed: 7'
+    def test_albums_completed_alone_reports_zero_songs(self):
+        result = _build_task_note('main_analysis', {'albums_completed': 7})
+        assert result == 'Songs analyzed: 0'
 
-    def test_falls_back_to_total_albums_processed(self):
+    def test_total_albums_processed_alone_reports_zero_songs(self):
         result = _build_task_note('main_analysis', {'total_albums_processed': 12})
-        assert result == 'Albums analyzed: 12'
+        assert result == 'Songs analyzed: 0'
 
-    def test_returns_empty_string_when_nothing_to_report(self):
-        assert _build_task_note('main_analysis', {}) == ''
+    def test_reports_zero_when_nothing_to_report(self):
+        assert _build_task_note('main_analysis', {}) == 'Songs analyzed: 0'
 
 
 class TestCleanNote:
@@ -133,10 +134,10 @@ class TestAnalysisNoteReadsTheParentsOwnTally:
             'connection parameter is how that query creeps back in'
         )
 
-    def test_a_zero_tally_falls_back_to_the_album_line(self):
+    def test_a_zero_tally_is_still_reported_as_songs(self):
         note = _build_task_note('main_analysis', {'tracks_analyzed': 0, 'albums_completed': 12})
 
-        assert 'Songs analyzed' not in (note or '')
+        assert note == 'Songs analyzed: 0'
 
     def test_a_float_tally_is_truncated(self):
         assert _build_task_note('main_analysis', {'tracks_analyzed': 9.9}) == 'Songs analyzed: 9'
