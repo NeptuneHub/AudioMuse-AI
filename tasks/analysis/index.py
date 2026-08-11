@@ -6,12 +6,16 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Similarity index rebuilds: the visible queue task and the eight build steps.
+"""Similarity index rebuilds: the visible queue task and the nine build steps.
 
 Main Features:
 * _run_all_index_builds: audio IVF (fatal), CLAP text, lyrics, lyrics axes,
-  SemGrove, artist similarity, song map and artist map; non-fatal failures are
-  recorded through the central error registry at WARNING and the run continues.
+  SemGrove, artist similarity, song map, artist map and the Hyperbolic Explorer
+  projection backfill + tree build (computed and persisted here, worker-side,
+  exactly like the map's UMAP fit - the Flask process only ever loads the
+  persisted result via the index-reload NOTIFY, never reclusters); non-fatal
+  failures are recorded through the central error registry at WARNING and the
+  run continues.
 * rebuild_all_indexes_task: the queue entry point, reporting into task_status and
   re-raising on failure so its enqueue-time Retry policy actually fires.
 """
@@ -47,6 +51,11 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
     from ..lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from ..sem_grove_manager import build_and_store_sem_grove_index
     from ..artist_gmm_manager import build_and_store_artist_index
+    from ..hyperbolic_manager import backfill_hyperbolic_columns, build_hyperbolic_tree_cache
+
+    def _build_hyperbolic():
+        backfill_hyperbolic_columns()
+        build_hyperbolic_tree_cache()
 
     steps = (
         ("IVF index rebuilt", "Building IVF audio index...",
@@ -65,6 +74,8 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
          lambda: build_and_store_map_projection('main_map'), False),
         ("Artist component projection rebuilt", "Building artist component projection...",
          lambda: build_and_store_artist_projection('artist_map'), False),
+        ("Hyperbolic Explorer projections rebuilt", "Building hyperbolic projections...",
+         _build_hyperbolic, False),
     )
     span = max(0, progress_end - progress_start)
 

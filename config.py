@@ -718,6 +718,35 @@ EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicn
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
 
+# --- Hyperbolic Explorer (Poincare ball over the MusiCNN embeddings) ---
+# proj(x) = tanh(||x|| / s) * (x / ||x||), R = ||proj(x)||. The scale s is
+# calibrated from the catalogue's real norm distribution (percentile
+# HYPERBOLIC_RADIUS_PERCENTILE) instead of hardcoded, because the bare formula
+# saturates tanh past ||x|| ~= 3 and flattens all radial separation. A value of
+# None means auto-calibrate once and persist the result in app_config.
+HYPERBOLIC_RADIUS_SCALE = float(os.environ.get("HYPERBOLIC_RADIUS_SCALE") or "0") or None
+HYPERBOLIC_RADIUS_PERCENTILE = float(os.environ.get("HYPERBOLIC_RADIUS_PERCENTILE", "95"))
+# Raw-space IVF candidate over-fetch multiplier before hyperbolic re-ranking.
+HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFETCH", "4"))
+HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "20"))
+HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
+# Directory tree shape: only TARGET sizes are configured; the actual number of
+# radial bands and the recursion depth of the k-means folders underneath them
+# are derived from the catalogue size at cache-build time (see
+# tasks.hyperbolic_manager._plan_tree_shape), so a 500-track library and a
+# 500,000-track library each get a browsable tree instead of one fixed shape.
+# Root radial band count is clamped to [HYPERBOLIC_MIN_BANDS, HYPERBOLIC_MAX_BANDS].
+HYPERBOLIC_MIN_BANDS = int(os.environ.get("HYPERBOLIC_MIN_BANDS", "4"))
+HYPERBOLIC_MAX_BANDS = int(os.environ.get("HYPERBOLIC_MAX_BANDS", "10"))
+# Below this many tracks, a folder (band or k-means cluster) stops splitting
+# and lists its tracks directly instead of recursing further.
+HYPERBOLIC_TARGET_LEAF_SIZE = int(os.environ.get("HYPERBOLIC_TARGET_LEAF_SIZE", "150"))
+# Desired number of k-means children per non-leaf folder below the root bands.
+HYPERBOLIC_TARGET_BRANCHING = int(os.environ.get("HYPERBOLIC_TARGET_BRANCHING", "8"))
+# Safety cap on k-means recursion depth below the root bands, in case a
+# pathological cluster (e.g. many near-identical embeddings) never shrinks.
+HYPERBOLIC_MAX_TREE_RECURSION = int(os.environ.get("HYPERBOLIC_MAX_TREE_RECURSION", "6"))
+
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.

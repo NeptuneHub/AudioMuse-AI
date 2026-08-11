@@ -1,0 +1,512 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 2px solid var(--border-color);
+    }
+    .tab-btn {
+        padding: 0.6rem 1.2rem;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: var(--text-muted);
+        transition: all 0.2s;
+    }
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+        font-weight: 600;
+    }
+    .tab-btn:hover { color: var(--color-primary); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    .hyper-title-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .autocomplete-container { position: relative; }
+    .autocomplete-results {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        z-index: 20;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        box-shadow: var(--shadow-card);
+        max-height: 280px;
+        overflow-y: auto;
+    }
+    .autocomplete-item {
+        padding: 0.55rem 0.75rem;
+        cursor: pointer;
+        border-bottom: 1px solid var(--border-color);
+        font-size: 0.9rem;
+    }
+    .autocomplete-item:last-child { border-bottom: none; }
+    .autocomplete-item:hover,
+    .autocomplete-item.selected { background: var(--color-primary-soft, rgba(99, 102, 241, 0.12)); }
+    .autocomplete-item .autocomplete-sub { color: var(--text-muted); font-size: 0.8rem; }
+
+    .hyper-status { margin: 0.75rem 0; font-size: 0.9rem; color: var(--text-muted); }
+    .hyper-error { color: #dc2626; font-size: 0.9rem; margin: 0.75rem 0; }
+    .hyper-success { color: #16a34a; font-size: 0.9rem; margin: 0.75rem 0; }
+
+    .tree-root { font-size: 0.92rem; }
+    .tree-folder { margin: 0.1rem 0; }
+    .tree-folder-head {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.3rem 0.45rem;
+        border-radius: 0.4rem;
+        cursor: pointer;
+        user-select: none;
+    }
+    .tree-folder-head:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
+    .tree-folder-head .tree-arrow {
+        display: inline-block;
+        width: 0.8rem;
+        color: var(--text-muted);
+        transition: transform 0.15s;
+    }
+    .tree-folder.open > .tree-folder-head .tree-arrow { transform: rotate(90deg); }
+    .tree-folder-head .tree-icon { color: var(--color-primary); }
+    .tree-children { margin-left: 1.15rem; padding-left: 0.5rem; border-left: 1px solid var(--border-color); display: none; }
+    .tree-folder.open > .tree-children { display: block; }
+    .tree-track {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.25rem 0.45rem;
+        border-radius: 0.4rem;
+    }
+    .tree-track:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
+    .tree-track .tree-icon { color: var(--text-muted); }
+    .tree-track .tree-meta { color: var(--text-muted); font-size: 0.8rem; margin-left: auto; }
+    .tree-summary { color: var(--text-muted); font-size: 0.75rem; }
+    .tree-leaf-playlist { margin: 0.3rem 0 0.6rem; padding: 0.5rem 0.6rem; border: 1px solid var(--border-color); border-radius: 0.5rem; background: var(--bg-card); }
+    .tree-leaf-playlist form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    .tree-leaf-playlist .tree-leaf-name { flex: 1 1 12rem; min-width: 0; }
+    .tree-leaf-playlist .tree-leaf-status { flex-basis: 100%; font-size: 0.85rem; }
+    .tree-loading { color: var(--text-muted); font-size: 0.9rem; margin: 0.5rem 0; }
+    .tree-error { color: #dc2626; font-size: 0.9rem; margin: 0.5rem 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <div class="hyper-title-row">
+        <h1 style="margin: 0;">Hyperbolic Explorer</h1>
+    </div>
+    <p class="hyper-summary" style="margin-top: 0.4rem; color: var(--text-muted);">
+        Explore the library through the Poincare ball: radial distance from the
+        origin separates foundational sounds from niche sub-genres.
+    </p>
+
+    <div class="tabs">
+        <button type="button" class="tab-btn active" data-tab="similar">Hyperbolic Similarity</button>
+        <button type="button" class="tab-btn" data-tab="tree">Hierarchy Directory</button>
+    </div>
+
+    <!-- Tab 1: Hyperbolic Similarity -->
+    <div class="tab-pane active" id="tab-similar">
+        <form id="hyper-similar-form">
+            <fieldset>
+                <legend>Seed Song</legend>
+                <div class="param-group">
+                    <div class="autocomplete-container">
+                        <label for="hyper-song-input">Search for a song:</label>
+                        <input type="text"
+                               id="hyper-song-input"
+                               name="song_query"
+                               placeholder="Start typing a title or artist..."
+                               autocomplete="off">
+                        <div id="hyper-autocomplete-results" class="autocomplete-results hidden"></div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Search Mode</legend>
+                <div class="param-group">
+                    <div>
+                        <label for="hyper-mode">Mode:</label>
+                        <select id="hyper-mode" name="mode">
+                            <option value="similar">Standard Similar</option>
+                            <option value="roots">Roots / Inward</option>
+                            <option value="niche">Niche / Outward</option>
+                        </select>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.4rem 0 0;">
+                            Roots pulls tracks closer to the origin (foundational);
+                            Niche pushes toward the ball edge (obscure sub-genres).
+                        </p>
+                    </div>
+                    <div>
+                        <label for="hyper-limit">Number of results:</label>
+                        <input type="number" id="hyper-limit" name="limit" value="20" min="1" max="100">
+                    </div>
+                </div>
+            </fieldset>
+
+            <button type="submit" class="btn btn-primary btn-block">
+                Find Hyperbolic Neighbors
+            </button>
+        </form>
+
+        <div id="hyper-status" class="hyper-status"></div>
+        <div id="hyper-error" class="hyper-error"></div>
+
+        <section id="hyper-results-section" class="hidden">
+            <h2 style="display:flex; align-items:center; gap:0.6rem; margin-bottom:1rem;">
+                <span style="width:0.35rem; height:1.4rem; border-radius:1rem; background: var(--color-primary);"></span>
+                Results
+            </h2>
+            <div id="results-table-wrapper"></div>
+
+            <div id="hyper-playlist-creator" class="hidden">
+                <h3>Create a Playlist from Results</h3>
+                <form id="hyper-playlist-form">
+                    <div class="param-group">
+                        <div>
+                            <label for="hyper-playlist-name">Playlist Name:</label>
+                            <input type="text" id="hyper-playlist-name" name="playlist_name" required placeholder="e.g., My Hyperbolic Mix">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success btn-block">
+                        Create Playlist on Media Server
+                    </button>
+                </form>
+                <div id="hyper-playlist-status"></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Tab 2: Hierarchy Directory -->
+    <div class="tab-pane" id="tab-tree">
+        <p style="color: var(--text-muted); font-size: 0.9rem;">
+            Browse the library as a virtual directory tree. Folders are radial
+            bands and k-means clusters of the Poincare ball; leaf folders list
+            the actual tracks.
+        </p>
+        <div id="hyper-tree" class="tree-root"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+    <script>
+        (() => {
+            const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
+                (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+
+            // ----- Tabs -----
+            const tabs = document.querySelectorAll('.tab-btn');
+            const panes = document.querySelectorAll('.tab-pane');
+            tabs.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    tabs.forEach(b => b.classList.remove('active'));
+                    panes.forEach(p => p.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+                });
+            });
+
+            // ----- Tab 1: song autocomplete -----
+            const songInput = document.getElementById('hyper-song-input');
+            const autocompleteResults = document.getElementById('hyper-autocomplete-results');
+            const similarForm = document.getElementById('hyper-similar-form');
+            const statusDiv = document.getElementById('hyper-status');
+            const errorDiv = document.getElementById('hyper-error');
+            let selectedSong = null;
+            let searchTimeout = null;
+
+            const hideAutocomplete = () => autocompleteResults.classList.add('hidden');
+
+            const handleSearchInput = () => {
+                clearTimeout(searchTimeout);
+                const query = songInput.value.trim();
+                if (!query) {
+                    selectedSong = null;
+                    hideAutocomplete();
+                    return;
+                }
+                searchTimeout = setTimeout(async () => {
+                    try {
+                        const params = new URLSearchParams({ search_query: query });
+                        const response = await fetch('{{ url_for("ivf_bp.search_tracks_endpoint") }}?' + params.toString());
+                        const tracks = await response.json();
+                        autocompleteResults.innerHTML = '';
+                        if (!tracks.length) {
+                            autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No songs found</em></div>';
+                        } else {
+                            tracks.forEach(t => {
+                                const item = document.createElement('div');
+                                item.className = 'autocomplete-item';
+                                item.textContent = (t.title || 'Unknown') + ' - ' + (t.author || 'Unknown');
+                                const sub = document.createElement('div');
+                                sub.className = 'autocomplete-sub';
+                                sub.textContent = t.album || '';
+                                item.appendChild(sub);
+                                item.addEventListener('click', () => {
+                                    selectedSong = t;
+                                    songInput.value = (t.title || '') + ' - ' + (t.author || '');
+                                    hideAutocomplete();
+                                });
+                                autocompleteResults.appendChild(item);
+                            });
+                        }
+                        autocompleteResults.classList.remove('hidden');
+                    } catch (err) {
+                        console.error('Autocomplete search error:', err);
+                        hideAutocomplete();
+                    }
+                }, 250);
+            };
+
+            songInput.addEventListener('input', handleSearchInput);
+            songInput.addEventListener('focus', () => {
+                if (autocompleteResults.children.length) autocompleteResults.classList.remove('hidden');
+            });
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.autocomplete-container')) hideAutocomplete();
+            });
+
+            const similarSection = document.getElementById('hyper-results-section');
+            const resultsWrapper = document.getElementById('results-table-wrapper');
+            let currentTrackIds = [];
+
+            const hyperbolicBadge = (s) => (typeof s.distance === 'number')
+                ? { text: s.distance.toFixed(3) + ' · R ' + Number(s.hyperbolic_radius).toFixed(3), cls: 'badge-neutral' }
+                : null;
+
+            const renderResults = (results) => {
+                currentTrackIds = results.map(r => r.item_id);
+                if (!results.length) {
+                    resultsWrapper.innerHTML = '<p class="hyper-status">No tracks found for this mode.</p>';
+                    return;
+                }
+                resultsWrapper.innerHTML = renderSongList(results, { metric: hyperbolicBadge });
+            };
+
+            similarForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                errorDiv.textContent = '';
+                statusDiv.textContent = '';
+                if (!selectedSong) {
+                    errorDiv.textContent = 'Select a song from the autocomplete suggestions first.';
+                    return;
+                }
+                const mode = document.getElementById('hyper-mode').value;
+                const limit = parseInt(document.getElementById('hyper-limit').value, 10) || 20;
+                statusDiv.textContent = 'Searching hyperbolic neighbors...';
+                try {
+                    const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_similar_api") }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ item_id: selectedSong.item_id, mode: mode, limit: limit })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        errorDiv.textContent = data.error || 'Search failed.';
+                        similarSection.classList.add('hidden');
+                        return;
+                    }
+                    statusDiv.textContent = `${data.count} track(s) found (${mode}).`;
+                    renderResults(data.results || []);
+                    document.getElementById('hyper-playlist-creator').classList.remove('hidden');
+                    similarSection.classList.remove('hidden');
+                } catch (err) {
+                    errorDiv.textContent = 'An unexpected error occurred.';
+                    console.error('Hyperbolic search error:', err);
+                }
+            });
+
+            // ----- Tab 1: create playlist -----
+            const playlistForm = document.getElementById('hyper-playlist-form');
+            const playlistStatus = document.getElementById('hyper-playlist-status');
+            playlistForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                playlistStatus.textContent = '';
+                const name = document.getElementById('hyper-playlist-name').value.trim();
+                if (!name) return;
+                const trackIds = currentTrackIds;
+                if (!trackIds.length) {
+                    playlistStatus.textContent = 'No tracks to add.';
+                    return;
+                }
+                try {
+                    const response = await fetch('{{ url_for("ivf_bp.create_media_server_playlist") }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ playlist_name: name, track_ids: trackIds })
+                    });
+                    const data = await response.json();
+                    playlistStatus.className = response.ok ? 'hyper-success' : 'hyper-error';
+                    playlistStatus.textContent = data.message || data.error || 'Playlist request finished.';
+                } catch (err) {
+                    playlistStatus.className = 'hyper-error';
+                    playlistStatus.textContent = 'Could not reach the playlist endpoint.';
+                    console.error('Playlist creation error:', err);
+                }
+            });
+
+            // ----- Tab 2: hierarchy tree -----
+            const treeContainer = document.getElementById('hyper-tree');
+
+            const icons = {
+                folder: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h4l1.5 1.5h7.5v8a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12V3a.5.5 0 0 1 .5-.5h-.5z"/></svg>',
+                track: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 2.5v7.05a2.5 2.5 0 1 0 1 2V6.5l5-1v-3L8 3.5z"/></svg>'
+            };
+
+            const buildLeafPlaylistForm = (trackItems) => {
+                const wrap = document.createElement('div');
+                wrap.className = 'tree-leaf-playlist';
+                const form = document.createElement('form');
+                form.innerHTML = `
+                    <input type="text" class="tree-leaf-name" placeholder="Playlist name..." required>
+                    <button type="submit" class="btn btn-primary">Create Playlist (${trackItems.length} tracks)</button>
+                    <span class="tree-leaf-status"></span>`;
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const nameInput = form.querySelector('.tree-leaf-name');
+                    const status = form.querySelector('.tree-leaf-status');
+                    const name = nameInput.value.trim();
+                    if (!name) return;
+                    status.textContent = 'Creating...';
+                    status.className = 'tree-leaf-status';
+                    try {
+                        const response = await fetch('{{ url_for("ivf_bp.create_media_server_playlist") }}', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                playlist_name: name,
+                                track_ids: trackItems.map(t => t.id)
+                            })
+                        });
+                        const data = await response.json();
+                        status.textContent = data.message || data.error || 'Playlist request finished.';
+                        status.className = 'tree-leaf-status ' + (response.ok ? 'hyper-success' : 'hyper-error');
+                    } catch (err) {
+                        status.textContent = 'Could not reach the playlist endpoint.';
+                        status.className = 'tree-leaf-status hyper-error';
+                        console.error('Tree playlist creation error:', err);
+                    }
+                });
+                wrap.appendChild(form);
+                return wrap;
+            };
+
+            const renderTree = (node) => {
+                treeContainer.innerHTML = '';
+                const mount = document.createElement('div');
+                mount.appendChild(buildTreeNode(node));
+                treeContainer.appendChild(mount);
+            };
+
+            const buildTreeNode = (node) => {
+                const holder = document.createElement('div');
+                holder.className = 'tree-folder';
+
+                const head = document.createElement('div');
+                head.className = 'tree-folder-head';
+                head.innerHTML = `
+                    <span class="tree-arrow">&#9656;</span>
+                    <span class="tree-icon">${icons.folder}</span>
+                    <span>${esc(node.name || node.id)}</span>
+                    <span class="tree-summary">(${node.children_count})</span>`;
+                holder.appendChild(head);
+
+                const children = document.createElement('div');
+                children.className = 'tree-children';
+                children.innerHTML = '<div class="tree-loading">Loading...</div>';
+                holder.appendChild(children);
+
+                head.addEventListener('click', async () => {
+                    const isOpen = holder.classList.contains('open');
+                    if (isOpen) {
+                        holder.classList.remove('open');
+                        return;
+                    }
+                    holder.classList.add('open');
+                    if (children.dataset.loaded === '1') return;
+                    children.dataset.loaded = '1';
+                    children.innerHTML = '<div class="tree-loading">Loading...</div>';
+                    try {
+                        const params = new URLSearchParams({ node_id: node.id });
+                        const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_tree_api") }}?' + params.toString());
+                        const data = await response.json();
+                        if (!response.ok) {
+                            children.innerHTML = `<div class="tree-error">${esc(data.error || 'Failed to load.')}</div>`;
+                            return;
+                        }
+                        const sub = data.node;
+                        if (!sub.items.length) {
+                            children.innerHTML = '<div class="tree-summary">Empty folder.</div>';
+                            return;
+                        }
+                        children.innerHTML = '';
+                        if (sub.leaf) {
+                            children.appendChild(buildLeafPlaylistForm(sub.items));
+                        }
+                        sub.items.forEach(item => {
+                            children.appendChild(buildTreeChild(item));
+                        });
+                    } catch (err) {
+                        children.innerHTML = '<div class="tree-error">Could not reach the tree endpoint.</div>';
+                        console.error('Tree browse error:', err);
+                    }
+                });
+                return holder;
+            };
+
+            const buildTreeChild = (item) => {
+                if (item.type === 'track') {
+                    const div = document.createElement('div');
+                    div.className = 'tree-track';
+                    div.innerHTML = `<span class="tree-icon">${icons.track}</span><span>${esc(item.name || item.id)}</span>`;
+                    return div;
+                }
+                const folder = buildTreeNode(item);
+                return folder;
+            };
+
+            const loadTreeRoot = async () => {
+                treeContainer.innerHTML = '<div class="tree-loading">Loading tree...</div>';
+                try {
+                    const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_tree_api") }}');
+                    const data = await response.json();
+                    if (!response.ok) {
+                        treeContainer.innerHTML = `<div class="tree-error">${esc(data.error || 'Failed to load the tree.')}</div>`;
+                        return;
+                    }
+                    renderTree(data.node);
+                } catch (err) {
+                    treeContainer.innerHTML = '<div class="tree-error">Could not reach the tree endpoint.</div>';
+                    console.error('Tree root load error:', err);
+                }
+            };
+
+            // Lazy-load the tree on first visit to its tab.
+            document.querySelector('.tab-btn[data-tab="tree"]').addEventListener('click', () => {
+                if (!treeContainer.dataset.loaded) {
+                    treeContainer.dataset.loaded = '1';
+                    loadTreeRoot();
+                }
+            });
+        })();
+    </script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

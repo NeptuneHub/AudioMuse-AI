@@ -14,7 +14,7 @@ IVF index and metadata, and the orchestrator that runs all index builders.
 Main Features:
 * Artist index load sets or resets the module globals depending on IVF presence
   and metadata availability
-* The orchestrator invokes all eight builders and publishes progress
+* The orchestrator invokes all nine builders and publishes progress
 * A non-fatal builder failure continues; a fatal IVF failure propagates and aborts
 """
 
@@ -32,6 +32,7 @@ import tasks.ivf_manager  # noqa: F401  (builder modules patched in _patched)
 import tasks.clap_text_search  # noqa: F401
 import tasks.lyrics_manager  # noqa: F401
 import tasks.sem_grove_manager  # noqa: F401
+import tasks.hyperbolic_manager  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -184,6 +185,8 @@ _BUILDER_NAMES = [
     "build_and_store_artist_index",
     "build_and_store_map_projection",
     "build_and_store_artist_projection",
+    "backfill_hyperbolic_columns",
+    "build_hyperbolic_tree_cache",
 ]
 
 _BUILDER_SOURCE_MODULES = {
@@ -195,6 +198,8 @@ _BUILDER_SOURCE_MODULES = {
     "build_and_store_artist_index": "tasks.artist_gmm_manager",
     "build_and_store_map_projection": "tasks.analysis.index",
     "build_and_store_artist_projection": "tasks.analysis.index",
+    "backfill_hyperbolic_columns": "tasks.hyperbolic_manager",
+    "build_hyperbolic_tree_cache": "tasks.hyperbolic_manager",
 }
 
 
@@ -212,7 +217,7 @@ class TestRunAllIndexBuilds:
             )
             yield mocks
 
-    def test_all_eight_builders_run_with_log_fn_none(self):
+    def test_all_nine_builders_run_with_log_fn_none(self):
         with self._patched() as mocks:
             analysis_mod._run_all_index_builds(log_fn=None)
         for name in _BUILDER_NAMES:

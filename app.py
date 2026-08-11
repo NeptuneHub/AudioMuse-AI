@@ -993,12 +993,23 @@ def listen_for_index_reloads():
                     logger.exception("SemGrove cache reload failed")
                     sg_success = False
 
+                try:
+                    logger.info("Reloading Hyperbolic Explorer tree cache...")
+                    from tasks.hyperbolic_manager import load_hyperbolic_tree_cache
+
+                    load_hyperbolic_tree_cache()
+                    hyper_success = True
+                except Exception:
+                    logger.exception("Hyperbolic Explorer cache reload failed")
+                    hyper_success = False
+
                 logger.info(
                     "In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP %s, "
-                    "Lyrics %s, SemGrove %s",
+                    "Lyrics %s, SemGrove %s, Hyperbolic %s",
                     'OK' if clap_success else 'X',
                     'OK' if lyrics_success else 'X',
                     'OK' if sg_success else 'X',
+                    'OK' if hyper_success else 'X',
                 )
             except Exception:
                 logger.exception("Error reloading indexes/maps from background listener")
@@ -1039,6 +1050,7 @@ def _register_blueprints(flask_app):
     from app_users import users_bp
     from app_sync import sync_bp
     from app_music_servers import music_servers_bp
+    from app_hyperbolic import hyperbolic_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
     flask_app.register_blueprint(clustering_bp)
@@ -1060,6 +1072,7 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(users_bp)
     flask_app.register_blueprint(sync_bp)
     flask_app.register_blueprint(music_servers_bp)
+    flask_app.register_blueprint(hyperbolic_bp)
 
     try:
         from plugin.blueprint import plugins_bp
@@ -1191,6 +1204,20 @@ if not _is_worker:
                 logger.exception('Background init_map_cache failed')
 
         t = threading.Thread(target=_start_map_init_background, daemon=True)
+        t.start()
+
+        def _start_hyperbolic_init_background():
+            try:
+                from tasks.hyperbolic_manager import init_hyperbolic_cache
+
+                logger.info('Loading Hyperbolic Explorer tree cache from app_config.')
+                with app.app_context():
+                    init_hyperbolic_cache()
+                logger.info('Hyperbolic Explorer tree cache load finished.')
+            except Exception:
+                logger.exception('Background init_hyperbolic_cache failed')
+
+        t = threading.Thread(target=_start_hyperbolic_init_background, daemon=True)
         t.start()
 
 # --- Start Background Listener Thread (Flask server only) ---
