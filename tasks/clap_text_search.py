@@ -269,6 +269,11 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             )
             return results
 
+        logger.error(
+            "CLAP index went unloaded between the entry guard and the query; returning no results."
+        )
+        return []
+
     except Exception:
         logger.exception(f"Text search failed for '{query_text}'")
         return []

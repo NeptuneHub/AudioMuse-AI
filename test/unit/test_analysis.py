@@ -26,6 +26,8 @@ Main Features:
 
 import numpy as np
 import pytest
+import config
+import taskqueue
 from unittest.mock import Mock, patch
 from tasks.analysis import (
     sigmoid,
@@ -46,10 +48,10 @@ def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
     ]
     events = []
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(
-        analysis, 'get_task_statuses', lambda ids: {i: 'STARTED' for i in ids}
+        analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
     )
     monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
     monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *args, **kwargs: None)
@@ -76,7 +78,6 @@ def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
 
 
 def _union_harness(monkeypatch, phase_results):
-    """Drive run_analysis_task over len(phase_results) servers, returning (result, saved)."""
     import tasks.analysis.main as analysis
 
     servers = [
@@ -85,10 +86,10 @@ def _union_harness(monkeypatch, phase_results):
     ]
     saved = []
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(
-        analysis, 'get_task_statuses', lambda ids: {i: 'STARTED' for i in ids}
+        analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
     )
     monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
     monkeypatch.setattr(
@@ -112,7 +113,7 @@ def _union_harness(monkeypatch, phase_results):
 
 def test_union_analysis_succeeds_when_only_some_servers_fail(monkeypatch):
     result, saved = _union_harness(
-        monkeypatch, [('Jellyfin', 'FAILURE'), ('Plex', 'SUCCESS')]
+        monkeypatch, [('Jellyfin', 'FAIL'), ('Plex', 'SUCCESS')]
     )
 
     assert result['status'] == 'SUCCESS'
@@ -127,20 +128,17 @@ def test_union_analysis_fails_only_when_every_server_fails(monkeypatch):
     from error.error_dictionary import ERR_ANALYSIS_SERVER_FAILED
 
     result, saved = _union_harness(
-        monkeypatch, [('Jellyfin', 'FAILURE'), ('Plex', 'FAILURE')]
+        monkeypatch, [('Jellyfin', 'FAIL'), ('Plex', 'FAIL')]
     )
 
-    assert result['status'] == 'FAILURE'
+    assert result['status'] == 'FAIL'
     status, details = saved[-1]
-    assert status == 'FAILURE'
+    assert status == 'FAIL'
     assert details['error']['error_code'] == ERR_ANALYSIS_SERVER_FAILED
     assert details['error']['error_code'] != 9999
 
 
 def test_union_analysis_treats_a_wiped_parent_row_as_revoked(monkeypatch):
-    """Cancel WIPES task_status, so a missing parent row IS the cancellation
-    signal. Reading it as 'carry on' let a cancelled union run keep launching
-    whole server phases onto the queue the cancel had just emptied."""
     import tasks.analysis.main as analysis
 
     servers = [
@@ -148,7 +146,7 @@ def test_union_analysis_treats_a_wiped_parent_row_as_revoked(monkeypatch):
         {'server_id': 's1', 'name': 'B', 'is_default': False},
     ]
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'get_task_statuses', lambda ids: {})
     monkeypatch.setattr(
         analysis, '_albums_per_server', lambda servers, n: [[] for _ in servers]
@@ -166,6 +164,57 @@ def test_union_analysis_treats_a_wiped_parent_row_as_revoked(monkeypatch):
     assert ran == [], "no phase may run after the cancel wiped the row"
 
 
+def test_dequeued_analysis_with_wiped_claim_stops_before_listing_servers(monkeypatch):
+    import tasks.analysis.main as analysis
+
+    job = Mock(id='analysis-cancelled')
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
+    monkeypatch.setattr(analysis, 'get_task_statuses', lambda ids: {})
+    list_servers = Mock(side_effect=AssertionError('cancelled job must not do work'))
+    monkeypatch.setattr(analysis, '_enabled_analysis_servers', list_servers)
+    save = Mock(side_effect=AssertionError('cancelled job must not recreate its row'))
+    monkeypatch.setattr(analysis, 'save_task_status', save)
+
+    result = analysis.run_analysis_task(0, 5)
+
+    assert result['status'] == 'REVOKED'
+    list_servers.assert_not_called()
+    save.assert_not_called()
+
+
+def test_dequeued_album_with_wiped_parent_stops_before_creating_child(monkeypatch):
+    import tasks.analysis.album as album
+
+    job = Mock(id='album-cancelled')
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
+    monkeypatch.setattr(album, 'get_task_statuses', lambda ids: {})
+    tracks = Mock(side_effect=AssertionError('cancelled album must not fetch tracks'))
+    monkeypatch.setattr(album, 'get_tracks_from_album', tracks)
+    save = Mock(side_effect=AssertionError('cancelled album must not create a row'))
+    monkeypatch.setattr(album, 'save_task_status', save)
+
+    result = album._analyze_album_task_impl('a1', 'Cancelled', 5, 'parent-1')
+
+    assert result['status'] == 'REVOKED'
+    tracks.assert_not_called()
+    save.assert_not_called()
+
+
+def test_dequeued_index_rebuild_with_wiped_parent_does_no_build(monkeypatch):
+    import tasks.analysis.index as index
+
+    job = Mock(id='index-cancelled')
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
+    monkeypatch.setattr('app_helper.get_task_statuses', lambda ids: {})
+    build = Mock(side_effect=AssertionError('cancelled rebuild must not run'))
+    monkeypatch.setattr(index, '_run_all_index_builds', build)
+
+    result = index.rebuild_all_indexes_task('parent-1')
+
+    assert result['status'] == 'REVOKED'
+    build.assert_not_called()
+
+
 def test_union_analysis_stops_when_a_phase_is_revoked(monkeypatch):
     result, _ = _union_harness(monkeypatch, [('Jellyfin', 'REVOKED'), ('Plex', 'SUCCESS')])
 
@@ -177,7 +226,7 @@ def test_run_analysis_task_skips_when_no_enabled_server_matches_scope(monkeypatc
     import tasks.analysis.main as analysis
 
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: [])
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     statuses = []
     monkeypatch.setattr(
         analysis,
@@ -246,7 +295,9 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
     registry = importlib.import_module('tasks.mediaserver.registry')
     album_tracks = tracks if tracks is not None else [item]
 
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: job)
+    monkeypatch.setattr(
+        taskqueue, 'current_task_id', lambda: job.id if job is not None else None
+    )
     monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
     monkeypatch.setattr(helper, 'save_task_status', lambda *args, **kwargs: None)
     monkeypatch.setattr(analysis, 'get_tracks_from_album', lambda album_id: album_tracks)
@@ -286,7 +337,7 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
     if clap_broken:
         monkeypatch.setattr(helper, 'run_clap_for_track', lambda *a, **k: None)
         monkeypatch.setattr(
-            clap, 'get_or_cache_other_feature_text_embeddings', lambda conn: None
+            clap, 'get_or_cache_other_feature_text_embeddings', lambda: None
         )
     monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 'srv-def')
     monkeypatch.setattr(
@@ -300,10 +351,6 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
         'attach_catalog_item_ids',
         lambda tracks, server_id=None, conn=None: tracks,
     )
-    # Mirrors the real thing: "which of these ids already have a score row". That is
-    # the catalogue this run started with, plus whatever it has persisted so far - so
-    # a JUST-MINTED id is absent, which is exactly what lets the mint path tell a
-    # genuinely new track from one another worker already wrote under the same id.
     seeded_catalogue = set(getattr(known_index, '_taken', set()))
 
     def _default_existing_ids(ids):
@@ -485,17 +532,6 @@ def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
 def test_degenerate_embedding_is_still_mapped_so_it_is_not_re_analyzed_forever(
     monkeypatch, tmp_path
 ):
-    """A constant/non-finite embedding has no signature, so resolve() returns no
-    canonical id. The track must STILL get a track_server_map row: without one
-    nothing records it as done for this server and every later run re-downloads
-    and re-runs MusiCNN on it, forever.
-
-    And it must NOT be catalogued under its raw provider id. A non-`fp_` id is what
-    the availability rule calls a pre-migration row and silently grants to the
-    DEFAULT server, so a SECONDARY's provider id would be counted as present on the
-    default in clustering, search, sync and the dashboard alike. It gets a
-    server-scoped `fp_0` id instead: deterministic, so the same file resolves to it
-    on every run and is skipped."""
     from tasks import simhash
 
     item = {'Id': 'prov-degenerate', 'Name': 'Song', 'AlbumArtist': 'Artist'}
@@ -530,10 +566,6 @@ def test_degenerate_embedding_is_still_mapped_so_it_is_not_re_analyzed_forever(
 
 
 def test_two_duplicate_files_on_one_server_both_get_a_map_row(monkeypatch, tmp_path):
-    """Two files of the SAME audio on one server share one canonical id. Both
-    provider ids must be mapped: the map is keyed by provider id, so the second
-    copy cannot evict the first. Before the N:1 fix only one row survived and the
-    duplicate was re-downloaded and re-analyzed on every run (the flip-flop)."""
     from tasks import simhash
 
     expected_id = simhash.canonical_id_str(simhash.embedding_signature(_FAKE_EMBEDDING))
@@ -547,13 +579,8 @@ def test_two_duplicate_files_on_one_server_both_get_a_map_row(monkeypatch, tmp_p
 
     assert result['status'] == 'SUCCESS'
     assert result['tracks_analyzed'] == 2
-    # The audio is persisted once (first track mints the canonical row); the
-    # second is recognised as a duplicate and only mapped.
     assert persisted_ids == [expected_id]
 
-    # Mappings are flushed per TRACK, not batched to the end of the album: a Stop
-    # or a killed worker mid-album must not strand an already-committed track with
-    # no map row, or the next run re-downloads and re-analyzes it forever.
     assert len(map_upserts) == 2
     assert {sid for sid, _ in map_upserts} == {'srv-def'}
     merged = {}
@@ -568,15 +595,6 @@ def test_two_duplicate_files_on_one_server_both_get_a_map_row(monkeypatch, tmp_p
 def test_a_signature_collision_is_refuted_against_the_catalogue_not_the_cache(
     monkeypatch,
 ):
-    """The concurrent-mint guard must compare against the CATALOGUE's embedding.
-
-    resolve() registers a freshly minted id with the CALLER'S OWN embedding before
-    returning it, and the resolver's lookup is cache-first. So asking the resolver
-    to confirm the candidate compared the track against ITSELF - cosine(x, x) == 0 -
-    and the refute branch could NEVER run: every real signature collision silently
-    ADOPTED the other recording's row, discarding this track's analysis and mapping
-    its file onto a different song.
-    """
     import tasks.analysis.helper as helper
     from tasks import simhash
 
@@ -586,11 +604,8 @@ def test_a_signature_collision_is_refuted_against_the_catalogue_not_the_cache(
 
     minted = simhash.canonical_id_str(simhash.embedding_signature(mine))
     resolver = simhash.CatalogResolver()
-    # Exactly what resolve() does on the mint path: the id is cached against OUR
-    # embedding. This is the poison that made the old guard a no-op.
     resolver.register(minted, embedding=mine)
 
-    # The DB already holds that id, and it belongs to a DIFFERENT recording.
     monkeypatch.setattr(
         helper, 'get_existing_track_ids', lambda ids: {i for i in ids if i == minted}
     )
@@ -610,14 +625,6 @@ def test_a_signature_collision_is_refuted_against_the_catalogue_not_the_cache(
 
 
 def test_a_failing_stage_never_blocks_a_later_one(monkeypatch, tmp_path):
-    """One model failing must not stop the models that come after it.
-
-    The stages run MusiCNN -> CLAP -> lyrics, and each is independently tracked by
-    its own work bit, so a failure in one must cost only that one. Raising inside
-    the CLAP stage meant that a track whose MusiCNN was ALREADY done (so nothing
-    had been produced yet this pass) and whose CLAP failed never reached the lyrics
-    stage at all - so as long as CLAP kept failing, its lyrics were never analyzed.
-    """
     import tasks.analysis.helper as helper
     from tasks import simhash
 
@@ -633,8 +640,6 @@ def test_a_failing_stage_never_blocks_a_later_one(monkeypatch, tmp_path):
     result = _run_album_impl(
         monkeypatch, tmp_path, item, simhash.CatalogResolver(),
         persisted_ids, map_upserts, clap_broken=True, lyrics_enabled=True,
-        # MusiCNN is ALREADY done for this track, so the CLAP stage is the first
-        # thing that could produce anything this pass - and it fails.
         existing_ids_fn=lambda ids: set(ids),
     )
 
@@ -646,16 +651,6 @@ def test_a_failing_stage_never_blocks_a_later_one(monkeypatch, tmp_path):
 def test_a_clap_failure_never_throws_away_a_completed_musicnn_analysis(
     monkeypatch, tmp_path
 ):
-    """CLAP failing must NOT discard the audio analysis that already succeeded.
-
-    The CLAP check runs BEFORE the score row is persisted, so raising there threw
-    away a completed MusiCNN pass AND its pending map row. The track then had no
-    score row and no map row, so the next run re-downloaded it and re-ran MusiCNN
-    on it - and the album still reported SUCCESS, so nothing ever said so.
-
-    `run_clap_for_track` swallows EVERY exception and returns None, so one corrupt
-    CLAP model did this to every new track in the library, forever, in silence.
-    """
     from tasks import simhash
 
     item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
@@ -679,13 +674,6 @@ def test_a_clap_failure_never_throws_away_a_completed_musicnn_analysis(
 
 
 def test_every_server_records_its_own_path_on_its_own_map_row(monkeypatch, tmp_path):
-    """A path is a property of a FILE ON A SERVER, not of the shared song row.
-
-    A SECONDARY server must record the path IT sees, exactly as the default does.
-    The old rule (only the default may write a path) left the sweep matcher's two
-    strongest tiers with no evidence at all for any track the default happens not
-    to have, so onboarding an 11th server could only match those by metadata.
-    """
     from tasks import simhash
     from tasks.mediaserver import context as ms_context
 
@@ -712,29 +700,41 @@ def test_every_server_records_its_own_path_on_its_own_map_row(monkeypatch, tmp_p
 
 
 def test_persist_musicnn_results_never_writes_a_path_to_the_shared_row(monkeypatch):
-    """The shared score row carries no path at all any more; it rides the map row."""
     import tasks.analysis.helper as helper
     import tasks.analysis.song as song
 
-    saved = {}
-    monkeypatch.setattr(
-        song,
-        'save_track_analysis_and_embedding',
-        lambda *args, **kwargs: saved.update(kwargs),
-    )
+    calls = []
+
+    def _capture(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(song, 'save_track_analysis_and_embedding', _capture)
     item = {
         'Id': 'p1', 'Name': 'Song', 'AlbumArtist': 'Artist',
         'FilePath': '/music/song.flac', '_catalog_item_id': 'fp_2abc',
     }
-    analysis = {'tempo': 120.0, 'energy': 0.5, 'key': 'C', 'scale': 'major'}
+    analysis = {
+        'tempo': 120.0, 'energy': 0.5, 'key': 'C', 'scale': 'major',
+        'duration_seconds': 231.4,
+    }
+    top_moods = {'happy': 0.9}
 
-    helper.persist_musicnn_results(item, analysis, {}, b'', '')
-    assert 'file_path' not in saved
+    helper.persist_musicnn_results(item, analysis, top_moods, b'emb', 'happy:0.90')
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == (
+        'fp_2abc', 'Song', 'Artist', 120.0, 'C', 'major', top_moods, b'emb',
+    )
+    assert kwargs['energy'] == 0.5
+    assert kwargs['other_features'] == 'happy:0.90'
+    assert kwargs['duration'] == analysis['duration_seconds']
+    assert 'file_path' not in kwargs
+    assert item['FilePath'] not in args
+    assert item['FilePath'] not in kwargs.values()
 
 
 def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tmp_path):
-    """The per-track loop used to run TWO get_task_info_from_db queries plus a
-    status write for every track, including skipped ones."""
     from unittest.mock import MagicMock
     from tasks import simhash
     import tasks.analysis.album as analysis
@@ -748,16 +748,11 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     job.meta = {}
 
     status_calls = []
-    # A row that EXISTS and is live. An empty answer would mean the cancel wiped
-    # task_status, which the run correctly reads as revoked.
     monkeypatch.setattr(
         analysis,
         'get_task_statuses',
-        lambda ids: status_calls.append(list(ids)) or {i: 'STARTED' for i in ids if i},
+        lambda ids: status_calls.append(list(ids)) or {i: 'RUNNING' for i in ids if i},
     )
-    # Widen the throttle window so the single-check invariant is decided by the
-    # per-album logic, not by wall-clock: on a slow runner the first track's model
-    # load can outlast the real 10s interval and fire a legitimate second check.
     monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 10_000_000)
 
     def forbidden(task_id):
@@ -771,12 +766,13 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     )
 
     assert result['status'] == 'SUCCESS'
-    assert len(status_calls) == 1
-    assert status_calls[0] == ['job-1', 'parent1']
+    assert len(status_calls) == 2
+    assert status_calls[0] == ['parent1']
+    assert status_calls[1] == ['job-1', 'parent1']
 
 
 def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
-                      terminal_children=None, status_calls=None,
+                      baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
                       extra_jobs=None):
     import importlib
@@ -786,7 +782,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
 
     registry = importlib.import_module('tasks.mediaserver.registry')
 
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
     def _record_status(*args, **kwargs):
         if status_calls is not None:
@@ -805,9 +801,6 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
             str(track.get('Id') or track.get('id')) for track in tracks_by_album[album_id]
         ],
     )
-    monkeypatch.setattr(
-        analysis, 'get_failed_child_summary', lambda task_id: (0, [])
-    )
     monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
     monkeypatch.setattr(analysis, 'LYRICS_ENABLED', False)
     monkeypatch.setattr(clap, 'is_clap_available', lambda: False)
@@ -824,49 +817,59 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
         monkeypatch.setattr(helper, name, forbidden)
 
     enqueued = []
-    jobs = dict(extra_jobs or {})
+    queued_ids = []
 
-    def _finished_job(job_id):
-        job = Mock()
-        job.id = job_id
-        job.get_status = lambda refresh=False: 'finished'
-        job.is_finished = True
-        job.is_failed = False
-        job.is_canceled = False
-        job.is_stopped = False
-        job.is_queued = False
-        job.is_scheduled = False
-        job.is_started = False
-        return job
+    def _fake_enqueue(func, args=None, **kwargs):
+        task_id = kwargs.get('task_id') or f'job-{len(enqueued)}'
+        enqueued.append(args)
+        queued_ids.append(task_id)
+        return task_id
 
-    class FakeQueue:
-        @staticmethod
-        def enqueue(func, args=None, **kwargs):
-            job = _finished_job(f'job-{len(enqueued)}')
-            jobs[job.id] = job
-            enqueued.append(args)
-            return job
-
-    class FakeJob:
-        @staticmethod
-        def fetch(job_id, connection=None):
-            return jobs[job_id]
-
-        @staticmethod
-        def fetch_many(job_ids, connection=None):
-            if expired_but_db_terminal:
-                return [None for _ in job_ids]
-            return [jobs.get(job_id) for job_id in job_ids]
-
-    monkeypatch.setattr(analysis, 'rq_queue_default', FakeQueue)
-    monkeypatch.setattr(analysis, 'Job', FakeJob)
-    # The monitor reconciles with ONE count now, not by fetching every child row.
-    monkeypatch.setattr(
-        analysis, 'count_terminal_children',
-        terminal_children or (lambda task_id: 0),
+    pending_ids = list(
+        row['task_id'] for row in (child_rows or [])
+        if row['status'] in (config.TASK_STATUS_NEW, config.TASK_STATUS_RUNNING)
     )
+    already_terminal_rows = [
+        {
+            'task_id': row['task_id'],
+            'status': row['status'],
+            'sub_type_identifier': row['sub_type_identifier'],
+            'details': row.get('details') or {},
+        }
+        for row in (child_rows or [])
+        if row['status'] not in (config.TASK_STATUS_NEW, config.TASK_STATUS_RUNNING)
+    ]
+    carried_over_read_done = []
+
+    def _fake_reap(parent_task_id, conn=None):
+        if not carried_over_read_done:
+            carried_over_read_done.append(True)
+            if baseline_read_error is not None:
+                raise baseline_read_error
+            return already_terminal_rows
+        pending_ids.extend(queued_ids)
+        queued_ids.clear()
+        reaped = [
+            {
+                'task_id': task_id,
+                'status': config.TASK_STATUS_SUCCESS,
+                'sub_type_identifier': f'album-for-{task_id}',
+                'details': {'tracks_analyzed': 1},
+            }
+            for task_id in pending_ids
+        ]
+        pending_ids.clear()
+        return reaped
+
+    monkeypatch.setattr(taskqueue, 'enqueue', _fake_enqueue)
+    monkeypatch.setattr(taskqueue, 'reap_finished_children', _fake_reap)
     monkeypatch.setattr(
-        analysis, 'get_child_tasks_from_db', lambda task_id: list(child_rows or [])
+        taskqueue, 'live_children',
+        lambda parent_task_id, conn=None: [
+            {'task_id': row['task_id'], 'sub_type_identifier': row['sub_type_identifier']}
+            for row in (child_rows or [])
+            if row['status'] in (config.TASK_STATUS_NEW, config.TASK_STATUS_RUNNING)
+        ],
     )
     if child_rows:
         monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
@@ -874,17 +877,14 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     def _statuses(ids):
         return {
             i: ('SUCCESS' if expired_but_db_terminal and str(i).startswith('job-')
-                else 'STARTED')
+                else 'RUNNING')
             for i in ids if i
         }
 
-    # The run's own row exists and is live. An empty answer would mean the cancel
-    # wiped task_status, which the dispatch loop correctly reads as revoked.
     monkeypatch.setattr(analysis, 'get_task_statuses', _statuses)
     if expired_but_db_terminal:
         monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
         monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
-        monkeypatch.setattr(analysis, '_rq_job_still_pending', lambda job_id: False)
 
     result = analysis._run_analysis_server_task_impl(
         0, 5, server_id='srv-def', task_id='parent-1'
@@ -893,8 +893,6 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
 
 
 def test_union_run_counts_albums_across_every_server(monkeypatch):
-    """The status line is 'Albums X/Y' where Y is the total across ALL servers, so
-    the number keeps climbing across phases instead of restarting per server."""
     import tasks.analysis.main as analysis
 
     servers = [
@@ -903,10 +901,10 @@ def test_union_run_counts_albums_across_every_server(monkeypatch):
     ]
     albums_by_server = {'a': [{'Id': 'a1'}, {'Id': 'a2'}], 'b': [{'Id': 'b1'}]}
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(
-        analysis, 'get_task_statuses', lambda ids: {i: 'STARTED' for i in ids}
+        analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
     )
     monkeypatch.setattr(analysis, 'save_task_status', lambda *a, **k: None)
     monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
@@ -931,8 +929,6 @@ def test_union_run_counts_albums_across_every_server(monkeypatch):
 
 
 def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatch):
-    """The whole point of the work map: a run with nothing to do costs ONE query,
-    not a handful per album."""
     import tasks.analysis.helper as helper
 
     albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
@@ -988,81 +984,58 @@ def test_retry_with_stale_child_rows_counts_each_album_once(monkeypatch):
     albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
     tracks_by_album = {f'al{i}': [{'Id': f'p{i}', 'Name': 't'}] for i in range(3)}
     work_map = {}
-
-    counts = iter([0])
-
-    def terminal_children(task_id):
-        return next(counts, 999)
+    child_rows = [
+        {
+            'task_id': 'stale-done-1', 'status': 'SUCCESS',
+            'sub_type_identifier': 'al0', 'details': {'tracks_analyzed': 4},
+        }
+    ]
 
     status_calls = []
     result, enqueued = _run_parent_phase(
         monkeypatch, albums, tracks_by_album, work_map,
-        terminal_children=terminal_children, status_calls=status_calls,
+        child_rows=child_rows, status_calls=status_calls,
     )
 
     assert result['status'] == 'SUCCESS'
     assert result['message'] == 'Albums 3/3'
+    assert result['albums_completed'] == 3
+    assert [args[0] for args in enqueued] == ['al0', 'al1', 'al2']
+    assert result['tracks_analyzed'] == 7
     reported = [d['albums_completed'] for d in status_calls if 'albums_completed' in d]
     assert reported
     assert max(reported) <= 3
 
 
-def test_baseline_read_failure_does_not_double_count_on_retry(monkeypatch):
+def test_baseline_read_failure_is_absorbed_and_does_not_inflate_the_track_tally(
+    monkeypatch, caplog
+):
+    import logging
+
     albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
     tracks_by_album = {f'al{i}': [{'Id': f'p{i}', 'Name': 't'}] for i in range(3)}
     work_map = {}
 
-    calls = {'n': 0}
-
-    def terminal_children(task_id):
-        calls['n'] += 1
-        if calls['n'] == 1:
-            raise RuntimeError('db blip while reading the baseline')
-        return 999
-
     status_calls = []
-    result, _ = _run_parent_phase(
-        monkeypatch, albums, tracks_by_album, work_map,
-        terminal_children=terminal_children, status_calls=status_calls,
-    )
+    with caplog.at_level(logging.ERROR, logger='tasks.analysis.main'):
+        result, enqueued = _run_parent_phase(
+            monkeypatch, albums, tracks_by_album, work_map,
+            baseline_read_error=RuntimeError('db blip while reading the baseline'),
+            status_calls=status_calls,
+        )
 
+    assert any(
+        'Could not clear the finished album jobs' in record.getMessage()
+        for record in caplog.records
+    )
     assert result['status'] == 'SUCCESS'
     assert result['message'] == 'Albums 3/3'
+    assert result['albums_completed'] == 3
+    assert [args[0] for args in enqueued] == ['al0', 'al1', 'al2']
+    assert result['tracks_analyzed'] == 3
     reported = [d['albums_completed'] for d in status_calls if 'albums_completed' in d]
     assert reported
     assert max(reported) <= 3
-
-
-def test_baseline_failure_still_counts_a_child_confirmed_done_after_redis_expiry(monkeypatch):
-    albums = [{'Id': 'al0', 'Name': 'Album 0'}]
-    tracks_by_album = {'al0': [{'Id': 'p0', 'Name': 't'}]}
-    work_map = {}
-
-    calls = {'n': 0}
-
-    def terminal_children(task_id):
-        calls['n'] += 1
-        if calls['n'] == 1:
-            raise RuntimeError('db blip while reading the baseline')
-        return 999
-
-    result, _ = _run_parent_phase(
-        monkeypatch, albums, tracks_by_album, work_map,
-        terminal_children=terminal_children, expired_but_db_terminal=True,
-    )
-
-    assert result['status'] == 'SUCCESS'
-    assert result['message'] == 'Albums 1/1'
-
-
-class _StillRunningStaleJob:
-    def __init__(self, job_id):
-        self.id = job_id
-        self.status_reads = 0
-
-    def get_status(self, refresh=False):
-        self.status_reads += 1
-        return 'started' if self.status_reads <= 2 else 'finished'
 
 
 def test_retry_adopts_previous_attempts_running_album_instead_of_duplicating(monkeypatch):
@@ -1070,15 +1043,10 @@ def test_retry_adopts_previous_attempts_running_album_instead_of_duplicating(mon
     tracks_by_album = {'al0': [{'Id': 'p0', 'Name': 't'}]}
     work_map = {}
     child_rows = [
-        {'task_id': 'stale-1', 'status': 'STARTED', 'sub_type_identifier': 'al0'}
+        {'task_id': 'stale-1', 'status': 'RUNNING', 'sub_type_identifier': 'al0'}
     ]
-    counts = iter([0, 0])
-
     result, enqueued = _run_parent_phase(
-        monkeypatch, albums, tracks_by_album, work_map,
-        terminal_children=lambda task_id: next(counts, 1),
-        child_rows=child_rows,
-        extra_jobs={'stale-1': _StillRunningStaleJob('stale-1')},
+        monkeypatch, albums, tracks_by_album, work_map, child_rows=child_rows,
     )
 
     assert result['status'] == 'SUCCESS'
@@ -1086,16 +1054,13 @@ def test_retry_adopts_previous_attempts_running_album_instead_of_duplicating(mon
     assert result['message'] == 'Albums 1/1'
 
 
-def test_retry_reenqueues_album_whose_previous_job_died_with_the_container(monkeypatch):
+def test_retry_reenqueues_an_album_whose_child_row_is_gone(monkeypatch):
     albums = [{'Id': 'al0', 'Name': 'Album 0'}]
     tracks_by_album = {'al0': [{'Id': 'p0', 'Name': 't'}]}
     work_map = {}
-    child_rows = [
-        {'task_id': 'stale-dead', 'status': 'PROGRESS', 'sub_type_identifier': 'al0'}
-    ]
 
     result, enqueued = _run_parent_phase(
-        monkeypatch, albums, tracks_by_album, work_map, child_rows=child_rows,
+        monkeypatch, albums, tracks_by_album, work_map, child_rows=[],
     )
 
     assert result['status'] == 'SUCCESS'
@@ -2155,11 +2120,15 @@ class TestMediaServerProbe:
             _probe_looks_like_auth_failure({'ok': False, 'error': 'connection timed out'}) is False
         )
 
-    def test_verify_returns_silently_when_reachable(self):
+    def test_verify_consults_the_media_server_and_returns_silently_when_reachable(self):
         from tasks.analysis import _verify_media_server_reachable
 
-        with patch('tasks.analysis.main.mediaserver_test_connection', return_value={'ok': True}):
-            _verify_media_server_reachable()
+        with patch(
+            'tasks.analysis.main.mediaserver_test_connection', return_value={'ok': True}
+        ) as probe:
+            assert _verify_media_server_reachable() is None
+
+        probe.assert_called_once_with()
 
     def test_verify_raises_auth_error_on_bad_credentials(self):
         from tasks.analysis import _verify_media_server_reachable
@@ -2188,7 +2157,7 @@ class TestMediaServerProbe:
         assert exc_info.value.code == ERR_MEDIASERVER_UNREACHABLE
 
 
-@pytest.mark.parametrize('terminal_status', ['REVOKED', 'FAILURE', 'SUCCESS'])
+@pytest.mark.parametrize('terminal_status', ['REVOKED', 'FAIL', 'SUCCESS'])
 def test_a_requeued_job_refuses_to_rerun_a_terminal_task(monkeypatch, terminal_status):
     import tasks.analysis.main as analysis
 
@@ -2204,7 +2173,7 @@ def test_a_requeued_job_refuses_to_rerun_a_terminal_task(monkeypatch, terminal_s
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', forbidden)
     monkeypatch.setattr(analysis, '_run_all_index_builds', forbidden)
     monkeypatch.setattr(analysis, '_run_chromaprint_backfill', forbidden)
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
 
     result = analysis.run_analysis_task(0, 5)
 
@@ -2218,9 +2187,9 @@ def test_a_run_cancelled_during_the_album_phases_never_reaches_chromaprint(monke
         {'server_id': 'a', 'name': 'A', 'is_default': True},
         {'server_id': 'b', 'name': 'B', 'is_default': False},
     ]
-    statuses = {'value': 'PROGRESS'}
+    statuses = {'value': 'RUNNING'}
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'save_task_status', lambda *a, **k: None)
     monkeypatch.setattr(
         analysis, 'get_task_statuses', lambda ids: {i: statuses['value'] for i in ids}
@@ -2250,9 +2219,9 @@ def test_a_live_run_is_not_blocked_by_the_terminal_guard(monkeypatch):
     import tasks.analysis.main as analysis
 
     monkeypatch.setattr(
-        analysis, 'get_task_statuses', lambda ids: {i: 'PROGRESS' for i in ids}
+        analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
     )
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'save_task_status', lambda *a, **k: None)
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: [])
 
@@ -2268,7 +2237,7 @@ def test_an_unreadable_status_lets_the_run_proceed_rather_than_stalling(monkeypa
         raise RuntimeError('db down')
 
     monkeypatch.setattr(analysis, 'get_task_statuses', boom)
-    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(analysis, 'save_task_status', lambda *a, **k: None)
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: [])
 
@@ -2385,3 +2354,90 @@ def test_chromaprint_backfill_covers_every_server_when_nothing_is_revoked(monkey
     )
 
     assert {server_id for server_id, _ in processed} == {'srv-a', 'srv-c'}
+
+
+def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkeypatch):
+    import tasks.analysis.index as index
+
+    job = Mock(id='index-1')
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
+    monkeypatch.setattr('app_helper.get_task_statuses', lambda ids: {ids[0]: 'RUNNING'})
+    monkeypatch.setattr(index, '_run_all_index_builds', lambda **kwargs: None)
+
+    captured = {}
+
+    def fake_reporter(task_id, task_type, message, **kwargs):
+        captured['task_type'] = task_type
+        captured['parent_task_id'] = kwargs.get('parent_task_id')
+        return lambda *a, **k: None
+
+    monkeypatch.setattr(index, 'make_task_reporter', fake_reporter)
+
+    index.rebuild_all_indexes_task('parent-1')
+
+    assert captured['task_type'] == 'index_rebuild'
+    assert captured['parent_task_id'] == 'parent-1'
+
+
+class TestARetryKeepsTheSongsItAlreadyAnalysed:
+    @staticmethod
+    def _child(task_id, status, tracks=None, album='Album A'):
+        details = {}
+        if tracks is not None:
+            details = {'final_summary_details': {'tracks_analyzed': tracks}}
+        return {
+            'task_id': task_id, 'status': status,
+            'sub_type_identifier': album, 'details': details,
+        }
+
+    def test_successes_are_carried_over_and_failures_are_dropped(self, monkeypatch):
+        from tasks.analysis import main as analysis_main
+
+        monkeypatch.setattr(
+            analysis_main.taskqueue, 'reap_finished_children',
+            lambda _pid: [
+                self._child('a', config.TASK_STATUS_SUCCESS, tracks=12),
+                self._child('b', config.TASK_STATUS_SUCCESS, tracks=7),
+                self._child('c', config.TASK_STATUS_FAILURE),
+            ],
+        )
+
+        assert analysis_main._carried_over_tracks('parent-1') == 19, (
+            'the songs a previous attempt analysed are real work and stay in the '
+            'recap; only its failures are dropped, or failed_count >= albums_launched '
+            'reports a fully successful retry as a failed phase'
+        )
+
+    def test_a_first_run_has_nothing_to_carry(self, monkeypatch):
+        from tasks.analysis import main as analysis_main
+
+        monkeypatch.setattr(
+            analysis_main.taskqueue, 'reap_finished_children', lambda _pid: []
+        )
+
+        assert analysis_main._carried_over_tracks('parent-1') == 0
+
+    def test_an_unreadable_child_list_carries_nothing_instead_of_raising(
+        self, monkeypatch
+    ):
+        from tasks.analysis import main as analysis_main
+
+        def boom(_pid):
+            raise RuntimeError('database went away')
+
+        monkeypatch.setattr(analysis_main.taskqueue, 'reap_finished_children', boom)
+
+        assert analysis_main._carried_over_tracks('parent-1') == 0
+
+    def test_the_index_rebuild_child_carries_no_album_count(self, monkeypatch):
+        from tasks.analysis import main as analysis_main
+
+        rebuild = self._child('r', config.TASK_STATUS_SUCCESS, tracks=99)
+        rebuild['sub_type_identifier'] = None
+        monkeypatch.setattr(
+            analysis_main.taskqueue, 'reap_finished_children', lambda _pid: [rebuild]
+        )
+
+        assert analysis_main._carried_over_tracks('parent-1') == 0, (
+            'an index rebuild is a child of the same parent but is not an album'
+        )

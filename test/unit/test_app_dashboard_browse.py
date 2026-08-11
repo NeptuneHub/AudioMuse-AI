@@ -103,6 +103,26 @@ class TestBrowseArtistsAlbumsSql:
         assert params == ['%x%', '%x%']
 
 
+class TestBrowseUnanalyzable:
+    def test_sql_is_server_scoped_and_searchable_without_internal_ids(self):
+        sql, params = dash._browse_unanalyzable_sql('srv1', 'bad')
+        assert 'analysis_exclusions' in sql
+        assert 'e.server_id = %s' in sql
+        assert 'provider_item_id' not in sql.split(' FROM ')[0]
+        assert params == ['srv1', '%bad%', '%bad%']
+
+    def test_serialization_contains_error_details(self):
+        out = dash._browse_serialize(
+            'unanalyzable',
+            [('Song', 'Artist', 123.5, 2007, 'created', 'updated', 'Jellyfin')],
+        )
+        assert out == [{
+            'title': 'Song', 'artist': 'Artist', 'duration_seconds': 123.5,
+            'reason_code': 2007, 'created_at': 'created', 'updated_at': 'updated',
+            'server': 'Jellyfin',
+        }]
+
+
 class TestBrowseSerialize:
     def test_songs_carry_no_id_and_no_fp_value(self):
         out = dash._browse_serialize('songs', [('Title', 'Artist', 'Album', 'AA', 2020, None)])
@@ -274,9 +294,29 @@ class TestBrowseApi:
         assert len(data['results']) == 1
         cur.execute.assert_called()
 
-    def test_no_fp_id_anywhere_in_the_response(self, client, monkeypatch):
-        self._mock_db(monkeypatch, [('Song', 'Artist', 'Album', 'AA', 2021, None)])
-        resp = client.get('/api/dashboard/browse?kind=songs')
+    def test_a_row_carrying_an_internal_id_is_projected_to_metadata_only(self, client, monkeypatch):
+        srv = {'server_id': 'id1', 'name': 'Jelly'}
+        monkeypatch.setattr(dash.registry, 'get_server', lambda x: srv if x == 'id1' else None)
+        monkeypatch.setattr(dash.registry, 'get_server_by_name',
+                            lambda x: srv if x == 'Jelly' else None)
+        cur = self._mock_db(monkeypatch, [
+            ('Song', 'Artist', 'Album', 'AA', 2021, 2,
+             ['/m/a.flac', '/m/b.flac'], 'fp_2_deadbeef')])
+
+        resp = client.get('/api/dashboard/browse?kind=songs&filter=duplicates&server=Jelly')
+
+        assert resp.status_code == 200
+        browse_sql = [c[0][0] for c in cur.execute.call_args_list
+                      if 'LIMIT %s OFFSET %s' in c[0][0]]
+        assert browse_sql, "the list query must be LIMIT-bounded"
+        projection = _projection(browse_sql[0])
+        assert 'item_id' not in projection
+        assert 'provider_track_id' not in projection
+        assert resp.get_json()['results'] == [{
+            'title': 'Song', 'author': 'Artist', 'album': 'Album',
+            'album_artist': 'AA', 'year': 2021, 'copies': 2,
+            'files': ['/m/a.flac', '/m/b.flac'],
+        }]
         assert 'fp_' not in resp.get_data(as_text=True)
 
 

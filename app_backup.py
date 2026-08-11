@@ -15,8 +15,25 @@ workers around a restore.
 Main Features:
 * Routes: `/backup` page, `/api/backup/create`, `/api/backup/download/<filename>`,
   `/api/backup/restore`.
-* Serializes restores across containers with a self-releasing Redis lock and
+* Connects exactly like the rest of the app: `pg_dump`/`psql` are handed
+  `config.DATABASE_URL`, with the password moved into PGPASSWORD so it never
+  reaches argv or the restore log.
+* Serializes restores with a self-releasing lock FILE (a restore replaces the
+  database, so the lock cannot live in it) that fails closed: only a lock that is
+  absent, or readable and older than the TTL, lets a new restore start, while one
+  that cannot be read counts as held. It also
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
+* The restore runs detached, so `/api/backup/restore` answers "started" long
+  before the outcome is known. The runner appends a `RESTORE-RESULT:` marker to
+  its log for whoever reads it; nothing polls it. The page counts down and
+  reloads, because a restart is a restart and not a state to poll.
+* A dump is restored exactly as it was taken. The backup saves everything and the
+  restore restores everything, including the task rows, because the queue IS
+  `task_status`: nothing here filters, rewrites or finishes what came back.
+* The stop and start requests around a restore wait the whole control-action
+  window, not the ack-wait budget: the workers must be provably down before psql
+  replaces the database under them, and reporting "they did not confirm" while
+  they are still legitimately stopping aborts a restore that was going fine.
 * Backups are compressed to .zip; restore accepts .sql or .zip uploads
   (zip detected by magic bytes and extracted before psql).
 """
@@ -32,11 +49,14 @@ import logging
 import tempfile
 import zipfile
 from datetime import datetime
+from functools import lru_cache
+import urllib.error
+import urllib.request
+from urllib.parse import unquote, urlsplit, urlunsplit
 from flask import Blueprint, render_template, jsonify, request, send_file
-from redis.exceptions import RedisError
-from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
+import config
+from sanitization import sanitize_for_log
 import restart_manager
-from taskqueue import new_redis_connection
 from error import error_manager
 from error.error_dictionary import (
     ERR_BACKUP_VERSION_MISMATCH,
@@ -51,66 +71,112 @@ backup_bp = Blueprint('backup_bp', __name__)
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/app/backup")
 RESTORE_LOG_DIR = os.environ.get("RESTORE_LOG_DIR", BACKUP_DIR)
 
-# Cross-container restore lock. Only one restore may run at a time.
-# TTL self-releases on crash; runner releases explicitly on clean exit.
-RESTORE_LOCK_KEY = 'audiomuse:restore_lock'
+# Only one restore may run at a time. The lock is a FILE, deliberately not a row:
+# a restore replaces the whole database, so a lock held in there would be wiped
+# by the very operation it guards. The timestamp inside makes it self-releasing,
+# so a crash mid-restore cannot block every later attempt forever.
 RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
+
+# A lock we cannot READ is not an absent one: a uid or permission mismatch on a
+# shared backup volume, or an I/O error on network storage, must refuse the
+# restore instead of trampling the one that may still be running. A negative age
+# never crosses the TTL, so an unreadable lock reads as held and never expires.
+RESTORE_LOCK_UNREADABLE_AGE = float('-inf')
+
+# Machine-readable outcome the detached runner appends to its log. The HTTP
+# request answers "started" long before the runner finishes, so this marker is
+# the only way the page can tell an abort from a completed restore.
+RESTORE_RESULT_MARKER = 'RESTORE-RESULT:'
+RESTORE_RESULT_ABORTED = 'aborted'
+RESTORE_RESULT_FAILED = 'failed'
+RESTORE_RESULT_COMPLETED = 'completed'
+RESTORE_RESULT_COMPLETED_DEGRADED = 'completed_degraded'
+RESTORE_LOG_NAME_PATTERN = re.compile(r'^restore_\d{8}_\d{6}\.log$')
+
+
+def _restore_lock_path():
+    return os.path.join(BACKUP_DIR, '.restore.lock')
+
+
+def _restore_lock_age():
+    try:
+        with open(_restore_lock_path(), encoding='utf-8') as fh:
+            raw = fh.read().strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logger.exception("Could not read the restore lock; treating it as held.")
+        return RESTORE_LOCK_UNREADABLE_AGE
+    try:
+        return time.time() - float(raw)
+    except ValueError:
+        logger.warning("The restore lock has no usable timestamp; treating it as expired.")
+        return float('inf')
 
 
 def _acquire_restore_lock():
-    """SET NX EX. Returns True if we got the lock, False if held or Redis is down."""
     try:
-        client = new_redis_connection(
-            socket_connect_timeout=5, socket_timeout=5, decode_responses=True
-        )
-        return bool(client.set(RESTORE_LOCK_KEY, '1', nx=True, ex=RESTORE_LOCK_TTL_SECONDS))
-    except RedisError:
-        logger.exception("Redis unavailable while acquiring restore lock; failing closed.")
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        age = _restore_lock_age()
+        if age == RESTORE_LOCK_UNREADABLE_AGE:
+            logger.warning(
+                "Refusing the restore: the lock cannot be read, so a restore may still be running."
+            )
+            return False
+        if age is not None and age > RESTORE_LOCK_TTL_SECONDS:
+            logger.warning("Clearing a restore lock left behind %.0fs ago.", age)
+            _release_restore_lock()
+        fd = os.open(_restore_lock_path(), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(str(time.time()))
+        return True
+    except FileExistsError:
+        logger.warning("Refusing the restore: another one holds the lock.")
+        return False
+    except OSError:
+        logger.exception("Could not take the restore lock; failing closed.")
         return False
 
 
 def _release_restore_lock():
     try:
-        new_redis_connection(socket_connect_timeout=5, socket_timeout=5).delete(RESTORE_LOCK_KEY)
-    except RedisError:
-        logger.exception("Redis unavailable while releasing restore lock; relying on TTL.")
+        os.unlink(_restore_lock_path())
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("Could not release the restore lock; it expires on its own.")
 
 
 def _restore_lock_held():
-    """Returns True if a restore lock is currently set in Redis.
+    age = _restore_lock_age()
+    return age is not None and age <= RESTORE_LOCK_TTL_SECONDS
 
-    On Redis errors, returns True to fail closed - better to refuse a chunk
-    than to let it write into a possibly-orphaned chunks_dir.
-    """
-    try:
-        client = new_redis_connection(
-            socket_connect_timeout=5, socket_timeout=5, decode_responses=True
-        )
-        return bool(client.exists(RESTORE_LOCK_KEY))
-    except RedisError:
-        logger.exception("Redis unavailable while checking restore lock; failing closed.")
-        return True
+
+@lru_cache(maxsize=1)
+def _split_conninfo(database_url):
+    parts = urlsplit(database_url)
+    userinfo, at, hostport = parts.netloc.rpartition('@')
+    user, _, password = userinfo.partition(':')
+    conninfo = urlunsplit(
+        (parts.scheme, f"{user}{at}{hostport}", parts.path, parts.query, parts.fragment)
+    )
+    return conninfo, unquote(password)
+
+
+def _pg_conninfo():
+    return _split_conninfo(config.DATABASE_URL)
 
 
 def _pg_env():
-    """Return a copy of os.environ with PGPASSWORD set."""
+    _, password = _pg_conninfo()
     env = os.environ.copy()
-    env['PGPASSWORD'] = POSTGRES_PASSWORD
+    env['PGPASSWORD'] = password
     return env
 
 
 def _pg_cmd(tool, *extra_args):
-    """Build a pg command list with common connection args."""
-    return [
-        tool,
-        '-h',
-        POSTGRES_HOST,
-        '-p',
-        POSTGRES_PORT,
-        '-U',
-        POSTGRES_USER,
-        *extra_args,
-    ]
+    conninfo, _ = _pg_conninfo()
+    return [tool, '-d', conninfo, *extra_args]
 
 
 # Only files created by create_backup may be served by the download route.
@@ -122,8 +188,37 @@ _BACKUP_FILENAME_RE = re.compile(r'audiomuse_backup_\d{8}_\d{6}\.(sql|zip)')
 _TXN_TIMEOUT_RE = re.compile(rb'(?m)^SET transaction_timeout\b[^\n]*\n')
 
 
+def _is_contained(path, *allowed_dirs):
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    for base in allowed_dirs:
+        try:
+            base_real = os.path.realpath(base)
+        except OSError:
+            continue
+        if os.path.commonpath([base_real, real]) == base_real:
+            return True
+    return False
+
+
+def _unlink_restore_artifact(path):
+    if not path:
+        return
+    if not _is_contained(path, BACKUP_DIR, RESTORE_LOG_DIR, tempfile.gettempdir()):
+        logger.error(
+            'Refusing to delete restore artifact outside the backup/temp dirs: %s',
+            sanitize_for_log(path),
+        )
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def _feed_dump(stdin, dump_file, result):
-    """Stream the dump into psql; record delivery in result so a short feed isn't reported as success."""
     try:
         with open(dump_file, 'rb') as src:
             head = _TXN_TIMEOUT_RE.sub(b'', src.read(1024 * 1024), count=1)
@@ -175,34 +270,131 @@ def _extract_sql_if_zip(dump_file, log):
         return None, None
 
 
+def _wait_for_flask(log=None):
+    deadline = time.monotonic() + config.FLASK_READY_TIMEOUT_SECONDS
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(config.FLASK_LOCAL_URL, timeout=3) as resp:
+                if resp.status < 500:
+                    return True
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500:
+                return True
+        except Exception as exc:
+            last_error = exc
+        time.sleep(1)
+    if log is not None:
+        log.write(
+            f"Flask did not answer within {config.FLASK_READY_TIMEOUT_SECONDS}s"
+            f"{f' (last error: {last_error})' if last_error else ''}\n"
+        )
+    return False
+
+
+def _publish_worker_start(log=None):
+    try:
+        # The listener starts all three worker services synchronously before it
+        # answers, so this waits the action window rather than the ack-wait budget:
+        # the default gave up at 30s on exactly the busy install where a fleet
+        # start takes longer, and then logged a start that had in fact succeeded
+        # as a failure.
+        started = restart_manager.publish_start_request(
+            timeout_seconds=config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+        )
+    except Exception as exc:
+        if log is not None:
+            log.write(f"Failed to request worker start: {exc}\n")
+            log.flush()
+        else:
+            logger.exception("Failed to request worker start")
+        return False
+    if log is not None:
+        if started:
+            log.write("Worker start request completed successfully.\n")
+        else:
+            log.write("Worker start request FAILED or was not acknowledged.\n")
+        log.flush()
+    elif not started:
+        logger.error("Worker start request failed or was not acknowledged")
+    return bool(started)
+
+
+def _write_restore_result(log, result, message):
+    try:
+        log.write(f"{RESTORE_RESULT_MARKER} {result} {message}\n")
+        log.flush()
+    except OSError:
+        logger.exception("Could not record the restore outcome marker")
+
+
 def _run_restore_runner(dump_file, log_file):
-    """Run the restore outside the Flask request in a detached process."""
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    env = _pg_env()
     with open(log_file, 'a', encoding='utf-8', errors='ignore') as log:
         log.write(f"Restore runner started at {datetime.now().isoformat()}\n")
         log.write(f"Dump file: {dump_file}\n")
         log.flush()
 
-        # Worker stop is published by the Flask restore endpoint before this
-        # detached runner starts. The runner only waits briefly to allow
-        # workers to settle before stopping the local Flask service.
-        time.sleep(5)
-        log.write("Wait complete. Proceeding with local Flask shutdown.\n")
-        log.flush()
-
         try:
-            if not restart_manager.stop_local_flask_service():
-                log.write("Failed to stop local Flask service. Continuing restore anyway.\n")
-                log.flush()
-            else:
+            env = _pg_env()
+        except ValueError as exc:
+            log.write(f"Restore FAILED: the configured database connection is unusable: {exc}\n")
+            log.flush()
+            _publish_worker_start(log)
+            _unlink_restore_artifact(dump_file)
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_FAILED,
+                'The database was NOT touched: the configured database connection is unusable.',
+            )
+            _release_restore_lock()
+            return 1
+
+        flask_stopped = False
+        try:
+            flask_stopped, stop_detail = restart_manager.stop_local_flask_service_detail()
+            if flask_stopped:
                 log.write("Stopped local Flask service.\n")
-                log.flush()
+            else:
+                log.write(
+                    "Restore ABORTED: local Flask service did not confirm it stopped. "
+                    f"supervisorctl said: {stop_detail}\n"
+                )
+            log.flush()
         except Exception as exc:
-            log.write(f"Failed to stop local Flask service: {exc}\n")
+            log.write(f"Restore ABORTED: failed to stop local Flask service: {exc}\n")
             log.flush()
-            log.write("Continuing restore despite local Flask stop failure.\n")
+
+        if not flask_stopped:
+            # Never run psql while the application may still be writing. The
+            # endpoint already stopped workers, so put them back before exiting.
+            _publish_worker_start(log)
+            try:
+                if restart_manager.start_local_flask_service():
+                    log.write("Ensured local Flask service is started after abort.\n")
+                else:
+                    log.write("Could not confirm local Flask start after abort.\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Failed to request local Flask start after abort: {exc}\n")
+                log.flush()
+            # Keep the uploaded dump. Deleting it forced the user to re-upload a
+            # multi-gigabyte file after an abort they did not cause, and the HTTP
+            # request already answered "restore started".
+            log.write(
+                f"THE DATABASE WAS NOT TOUCHED. The uploaded dump is kept at "
+                f"{dump_file}; retry the restore once the services are healthy.\n"
+            )
             log.flush()
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_ABORTED,
+                'The database was NOT touched: the local Flask service did not '
+                'confirm it stopped. Your uploaded dump was kept - retry once the '
+                'services are healthy.',
+            )
+            _release_restore_lock()
+            return 1
 
         try:
             from tasks.mcp_helper import _ensure_ai_chat_db_user
@@ -216,8 +408,6 @@ def _run_restore_runner(dump_file, log_file):
 
         restore_cmd = _pg_cmd(
             'psql',
-            '-d',
-            POSTGRES_DB,
             '-v',
             'ON_ERROR_STOP=1',
             '--single-transaction',
@@ -286,7 +476,7 @@ def _run_restore_runner(dump_file, log_file):
                 from database import USERS_PASSWORD_CHANGED_AT_DDL
 
                 ensure_cmd = _pg_cmd(
-                    'psql', '-d', POSTGRES_DB, '-v', 'ON_ERROR_STOP=1',
+                    'psql', '-v', 'ON_ERROR_STOP=1',
                     '-c', USERS_PASSWORD_CHANGED_AT_DDL,
                 )
                 ensure_ret = -1
@@ -314,22 +504,41 @@ def _run_restore_runner(dump_file, log_file):
                 )
                 log.flush()
 
+        workers_started = False
+        flask_started = False
         try:
+            # FLASK FIRST, THEN THE WORKERS. init_db() runs only in Flask, so it is
+            # the only process that migrates the schema the dump just restored -
+            # which may be older than this build. Starting the workers first let
+            # them hydrate their config and open their queues against an
+            # un-migrated database, so they ran on whatever the dump happened to
+            # contain until something restarted them again.
             try:
-                restart_manager.publish_start_request()
-                log.write("Published worker start request.\n")
-                log.flush()
-            except Exception as exc:
-                log.write(f"Failed to publish worker start request: {exc}\n")
-                log.flush()
-
-            try:
-                restart_manager.start_local_flask_service()
-                log.write("Started local Flask service.\n")
+                flask_started = restart_manager.start_local_flask_service()
+                if flask_started:
+                    log.write("Started local Flask service.\n")
+                else:
+                    log.write("Local Flask start request FAILED.\n")
                 log.flush()
             except Exception as exc:
                 log.write(f"Failed to start local Flask service: {exc}\n")
                 log.flush()
+
+            if flask_started:
+                if _wait_for_flask(log):
+                    log.write("Flask is serving again; the restored schema is migrated.\n")
+                else:
+                    log.write(
+                        "WARNING: Flask did not answer within "
+                        f"{config.FLASK_READY_TIMEOUT_SECONDS}s; starting the workers anyway.\n"
+                    )
+                log.flush()
+
+            try:
+                workers_started = _publish_worker_start(log)
+            except Exception:
+                # Cleanup must still run if worker start reporting itself fails.
+                logger.exception("Unexpected worker-start reporting failure")
 
             for path in (dump_file, extracted):
                 if not path:
@@ -350,7 +559,31 @@ def _run_restore_runner(dump_file, log_file):
                 pass
 
         log.write(f"Restore runner finished at {datetime.now().isoformat()}\n")
-        log.flush()
+        if ret == 0 and not (workers_started and flask_started):
+            log.write(
+                "Database restore completed, but service recovery FAILED; "
+                "the restored database was committed and services require manual recovery.\n"
+            )
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_COMPLETED_DEGRADED,
+                'The database WAS restored, but the services did not come back. '
+                'Restart AudioMuse manually.',
+            )
+            return 2
+        if ret == 0:
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_COMPLETED,
+                'Database restore completed and the services were restarted.',
+            )
+        else:
+            _write_restore_result(
+                log,
+                RESTORE_RESULT_FAILED,
+                'The restore command failed. Check the restore log and the '
+                'container logs; the database may be incomplete.',
+            )
 
     return ret
 
@@ -423,7 +656,7 @@ def create_backup():
     filename = f"audiomuse_backup_{timestamp}.sql"
     filepath = os.path.join(BACKUP_DIR, filename)
 
-    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '--no-owner', '--no-acl', '-d', POSTGRES_DB)
+    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '--no-owner', '--no-acl')
 
     try:
         with open(filepath, 'w') as f:
@@ -526,7 +759,7 @@ def restore_backup():
       - Backup
     summary: Upload a backup (.sql or .zip, single file or chunked) and replay it via psql.
     description: |
-      Acquires a 1-hour Redis lock (`audiomuse:restore_lock`) to prevent
+      Acquires a 1-hour file lock (`BACKUP_DIR/.restore.lock`) to prevent
       concurrent restores. The endpoint accepts either:
 
       - A single full upload (no `chunk_num`/`total_chunks` form fields).
@@ -596,11 +829,11 @@ def restore_backup():
       400:
         description: Confirmation phrase missing or chunk numbers invalid.
       409:
-        description: A restore is already in progress (Redis lock held), or the chunked-upload session was overtaken / expired mid-upload.
+        description: A restore is already in progress (restore lock file held), or the chunked-upload session was overtaken / expired mid-upload.
       500:
         description: Server-side failure during chunk save, reassembly, or runner spawn.
       503:
-        description: Lock service (Redis) unreachable.
+        description: The restore was not started because the workers did not confirm they stopped.
     """
     confirmation = request.form.get('confirmation', '')
     expected = "I want to restore the database from the backup. This action is not reversible"
@@ -618,6 +851,7 @@ def restore_backup():
     restore_file = None
     restore_log = None
     restore_pid = None
+    workers_require_recovery = False
 
     try:
         if chunk_num and total_chunks:
@@ -794,8 +1028,29 @@ def restore_backup():
 
         # Start restore only if all chunks received or single file upload
         if restore_file and all_chunks_received:
-            stop_requested = restart_manager.publish_stop_request()
-            logger.info('Published worker stop request: %s', stop_requested)
+            workers_require_recovery = True
+            # The workers must be DOWN before psql replaces the database under
+            # them, so this waits out the whole action window instead of the
+            # ack-wait budget. A three-worker stop legitimately takes 45-60s, and
+            # the 30s default answered 503 "workers did not confirm they stopped"
+            # while they were still stopping - on precisely the busy install where
+            # restoring a backup matters most.
+            stop_requested = restart_manager.publish_stop_request(
+                timeout_seconds=config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+            )
+            if not stop_requested:
+                logger.error(
+                    'Restore aborted: worker stop request failed or was not acknowledged'
+                )
+                _publish_worker_start()
+                workers_require_recovery = False
+                if restore_file and os.path.exists(restore_file):
+                    os.unlink(restore_file)
+                _release_restore_lock()
+                return jsonify({
+                    'error': 'Restore was not started because workers did not confirm they stopped.'
+                }), 503
+            logger.info('Worker stop request completed successfully')
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             restore_log = os.path.join(RESTORE_LOG_DIR, f"restore_{timestamp}.log")
@@ -820,6 +1075,8 @@ def restore_backup():
             if sys.platform == 'win32':
                 popen_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
             proc = subprocess.Popen(restore_cmd, **popen_kwargs)
+            # The detached runner now owns worker recovery and lock cleanup.
+            workers_require_recovery = False
             restore_pid = proc.pid
             logger.info("Restore started in detached process %s", restore_pid)
 
@@ -829,12 +1086,15 @@ def restore_backup():
                     'message': 'Database restore started.',
                     'restore_pid': restore_pid,
                     'restore_log': restore_log,
+                    'restore_log_name': os.path.basename(restore_log),
                     'all_chunks_received': True,
                 }
             )
 
     except FileNotFoundError:
         logger.exception("Python executable not found for restore runner")
+        if workers_require_recovery:
+            _publish_worker_start()
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
@@ -842,6 +1102,8 @@ def restore_backup():
         return jsonify({**err, 'error': err['error_message']}), 500
     except Exception:
         logger.exception("Restore failed")
+        if workers_require_recovery:
+            _publish_worker_start()
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()

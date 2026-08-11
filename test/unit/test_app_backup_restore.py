@@ -18,15 +18,20 @@ Main Features:
 * Create returning the zipped backup file name as JSON; download serving only
   filenames matching the backup pattern and 404ing everything else.
 * Zip-or-sql detection by magic bytes with in-zip .sql extraction for restore.
+* pg_dump/psql connection args come from config.DATABASE_URL, with the password
+  moved into PGPASSWORD so it never appears in argv.
 """
 
 import io
 import os
+import sys
+import types
 import zipfile
 from unittest.mock import MagicMock
 
 import pytest
 from flask import Flask
+from psycopg2.extensions import parse_dsn
 
 import app_backup
 
@@ -115,7 +120,7 @@ class TestCreateAndDownload:
         with zipfile.ZipFile(tmp_path / body['filename']) as zf:
             member = zf.namelist()[0]
             assert member.endswith('.sql')
-            assert zf.read(member) == b'-- dump\n'
+            assert zf.read(member).replace(b'\r\n', b'\n') == b'-- dump\n'
         assert not (tmp_path / member).exists()
 
     def test_download_serves_backup_as_attachment(self, client, monkeypatch, tmp_path):
@@ -240,6 +245,198 @@ class TestFeedDumpStrip:
         assert result.get('ok') is not True
         assert 'error' in result
         assert fake.closed is True
+
+
+class TestPgConnectionArgs:
+    def test_pg_dump_targets_the_database_url(self, monkeypatch):
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://audiomuse:pw@postgres:5432/audiomusedb'
+        )
+        cmd = app_backup._pg_cmd('pg_dump', '--clean')
+        assert cmd == [
+            'pg_dump', '-d', 'postgresql://audiomuse@postgres:5432/audiomusedb', '--clean',
+        ]
+
+    def test_password_goes_to_pgpassword_and_never_into_argv(self, monkeypatch):
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://audiomuse:s3cr%40t@db:5432/audiomusedb'
+        )
+        assert 's3cr' not in ' '.join(app_backup._pg_cmd('pg_dump'))
+        assert app_backup._pg_env()['PGPASSWORD'] == 's3cr@t'
+
+    def test_database_url_query_options_are_preserved_for_pg_dump(self, monkeypatch):
+        monkeypatch.setattr(
+            app_backup.config,
+            'DATABASE_URL',
+            'postgresql://user:pw@db:5432/music?sslmode=require&application_name=AudioMuse',
+        )
+        cmd = app_backup._pg_cmd('pg_dump')
+        assert cmd[2] == (
+            'postgresql://user@db:5432/music?sslmode=require&application_name=AudioMuse'
+        )
+        assert app_backup._pg_env()['PGPASSWORD'] == 'pw'
+
+    def test_unix_socket_url_still_resolves_to_the_socket_directory(self, monkeypatch):
+        monkeypatch.setattr(
+            app_backup.config,
+            'DATABASE_URL',
+            'postgresql://postgres:@%2Fvar%2Flib%2Fpgdata:5432/postgres',
+        )
+        cmd = app_backup._pg_cmd('psql', '-v', 'ON_ERROR_STOP=1')
+        assert cmd == [
+            'psql',
+            '-d',
+            'postgresql://postgres@%2Fvar%2Flib%2Fpgdata:5432/postgres',
+            '-v',
+            'ON_ERROR_STOP=1',
+        ]
+        assert parse_dsn(cmd[2])['host'] == '/var/lib/pgdata'
+        assert app_backup._pg_env()['PGPASSWORD'] == ''
+
+    def test_unusable_connection_releases_the_restore_lock_and_logs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_backup.config, 'DATABASE_URL', 'postgresql://u:p@[::1:5432/db')
+        released = []
+        monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: released.append(True))
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'publish_start_request', lambda **_kwargs: True
+        )
+        log_file = tmp_path / 'restore.log'
+        assert app_backup._run_restore_runner(str(tmp_path / 'dump.sql'), str(log_file)) == 1
+        assert released == [True]
+        assert 'unusable' in log_file.read_text()
+
+    def test_runner_aborts_before_psql_when_flask_stop_is_not_acked(
+        self, monkeypatch, tmp_path
+    ):
+        dump_file = tmp_path / 'dump.sql'
+        dump_file.write_text('SELECT 1;')
+        log_file = tmp_path / 'restore.log'
+        released = []
+        worker_start = MagicMock(return_value=True)
+        psql = MagicMock(side_effect=AssertionError('psql must not run'))
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://u:p@db:5432/music'
+        )
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'stop_local_flask_service_detail',
+            lambda: (False, 'exit 7: flask: ERROR (abnormal termination)'),
+        )
+        monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
+        monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', worker_start)
+        monkeypatch.setattr(app_backup.subprocess, 'Popen', psql)
+        monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: released.append(True))
+
+        assert app_backup._run_restore_runner(str(dump_file), str(log_file)) == 1
+        psql.assert_not_called()
+        worker_start.assert_called_once_with(
+            timeout_seconds=app_backup.config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+        )
+        assert released == [True]
+        assert dump_file.exists()
+        log_text = log_file.read_text()
+        assert 'Restore ABORTED' in log_text
+        assert 'THE DATABASE WAS NOT TOUCHED' in log_text
+        assert 'abnormal termination' in log_text
+        marker = next(
+            line for line in log_text.splitlines()
+            if line.startswith(app_backup.RESTORE_RESULT_MARKER)
+        )
+        assert marker.split()[1] == app_backup.RESTORE_RESULT_ABORTED
+
+    def test_successful_database_restore_returns_nonzero_when_services_do_not_recover(
+        self, monkeypatch, tmp_path
+    ):
+        dump_file = tmp_path / 'dump.sql'
+        dump_file.write_text('SELECT 1;')
+        log_file = tmp_path / 'restore.log'
+
+        class _PsqlProcess:
+            def __init__(self):
+                self.stdin = _FakeStdin()
+
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://u:p@db:5432/music'
+        )
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'stop_local_flask_service_detail', lambda: (True, '')
+        )
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'publish_start_request', lambda **_kwargs: False
+        )
+        monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
+        monkeypatch.setattr(app_backup.subprocess, 'Popen', lambda *_a, **_k: _PsqlProcess())
+        monkeypatch.setattr(
+            app_backup.subprocess, 'run', lambda *_a, **_k: MagicMock(returncode=0)
+        )
+        monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: None)
+        monkeypatch.setitem(
+            sys.modules,
+            'tasks.mcp_helper',
+            types.SimpleNamespace(_ensure_ai_chat_db_user=lambda: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            'database',
+            types.SimpleNamespace(USERS_PASSWORD_CHANGED_AT_DDL='ALTER TABLE users ADD x int'),
+        )
+
+        assert app_backup._run_restore_runner(str(dump_file), str(log_file)) == 2
+        log_text = log_file.read_text()
+        assert 'Restore command finished with return code 0' in log_text
+        assert 'service recovery FAILED' in log_text
+        assert 'restored database was committed' in log_text
+
+
+class TestRestoreWorkerStopSafety:
+    def test_endpoint_does_not_spawn_runner_without_worker_stop_ack(
+        self, client, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+        monkeypatch.setattr(app_backup, 'RESTORE_LOG_DIR', str(tmp_path))
+        monkeypatch.setattr(app_backup, '_acquire_restore_lock', lambda: True)
+        released = MagicMock()
+        worker_start = MagicMock(return_value=True)
+        runner = MagicMock(side_effect=AssertionError('restore runner must not start'))
+        monkeypatch.setattr(app_backup, '_release_restore_lock', released)
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'publish_stop_request', lambda **_kwargs: False
+        )
+        monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', worker_start)
+        monkeypatch.setattr(app_backup.subprocess, 'Popen', runner)
+
+        resp = _post(client)
+
+        assert resp.status_code == 503
+        assert 'did not confirm' in resp.get_json()['error']
+        runner.assert_not_called()
+        worker_start.assert_called_once_with(
+            timeout_seconds=app_backup.config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
+        )
+        released.assert_called_once_with()
+
+    def test_create_backup_runs_pg_dump_against_the_database_url(
+        self, client, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+        monkeypatch.setattr(
+            app_backup.config, 'DATABASE_URL', 'postgresql://audiomuse:pw@postgres:5432/audiomusedb'
+        )
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen['cmd'] = cmd
+            seen['env'] = kwargs['env']
+            kwargs['stdout'].write('-- dump\n')
+            return MagicMock(returncode=0, stderr='')
+
+        monkeypatch.setattr(app_backup.subprocess, 'run', fake_run)
+        assert client.post('/api/backup/create').status_code == 200
+        assert 'postgresql://audiomuse@postgres:5432/audiomusedb' in seen['cmd']
+        assert '-h' not in seen['cmd']
+        assert seen['env']['PGPASSWORD'] == 'pw'
 
 
 class TestRestoreChunkProgress:

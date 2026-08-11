@@ -102,6 +102,17 @@
        many servers are configured, and the scope only means something once there are
        at least two. #}
 
+    {# Shared frontend modules, loaded once here rather than per page. Every page
+       that polls a task needs the same five-value status vocabulary, and every
+       page that triggers a restart needs the same reconnect probe. Loading them
+       with a per-page <script> tag meant a missing or mistyped path degraded
+       silently to the old wrong behaviour on that page alone - an immediate
+       redirect into a server that had not come back yet, or a poll loop that
+       never recognised its own terminal status. They load BEFORE bodyAdditions
+       so a page script may use them at top level, not only after DOMContentLoaded. #}
+    <script src="{{ url_for('static', filename='task_status.js') }}"></script>
+    <script src="{{ url_for('static', filename='restart_wait.js') }}"></script>
+
     {% block bodyAdditions %}
         {# body additions from template will be set here #}
     {% endblock %}

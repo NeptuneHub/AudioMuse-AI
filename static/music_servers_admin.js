@@ -22,9 +22,10 @@
             { key: 'token', label: 'API Token', secret: true }
         ],
         navidrome: [
-            { key: 'url', label: 'Server URL', placeholder: 'http://navidrome:4533' },
-            { key: 'user', label: 'Username' },
-            { key: 'password', label: 'Password', secret: true }
+            { key: 'url', label: 'Server URL', placeholder: 'http://navidrome:4533', authGroup: 'always' },
+            { key: 'user', label: 'Username', authGroup: 'password' },
+            { key: 'password', label: 'Password', secret: true, authGroup: 'password' },
+            { key: 'api_key', label: 'OpenSubsonic API Key', secret: true, authGroup: 'apikey' }
         ],
         lyrion: [
             { key: 'url', label: 'Server URL', placeholder: 'http://lyrion:9000' }
@@ -54,6 +55,33 @@
         node.style.color = ok ? '' : '#c0392b';
     }
 
+    // The save paths reload the page, so a warning rendered before the reload is
+    // thrown away. Park it and render it once the new page is up.
+    var PENDING_WARNING_KEY = 'audiomuse_music_servers_warning';
+
+    function parkWarning(body) {
+        if (!body?.warning) { return; }
+        try {
+            window.sessionStorage.setItem(PENDING_WARNING_KEY, body.warning);
+        } catch (e) {
+            window.alert(body.warning);
+        }
+    }
+
+    function showParkedWarning() {
+        var parked = null;
+        try {
+            parked = window.sessionStorage.getItem(PENDING_WARNING_KEY);
+            window.sessionStorage.removeItem(PENDING_WARNING_KEY);
+        } catch (e) {
+            console.warn('Could not read the parked warning', e);
+            return;
+        }
+        if (parked) {
+            feedback(el('music-servers-error'), parked, false);
+        }
+    }
+
     function showRegistryForm() {
         var editor = el('default-server-editor');
         if (editor) { editor.style.display = 'none'; }
@@ -77,16 +105,85 @@
 
     function currentType() { return el('ms-type').value; }
 
+    function detectNavidromeAuthMode(values) {
+        values = values || {};
+        if (values.api_key) {
+            return 'apikey';
+        }
+        return 'password';
+    }
+
+    function getNavidromeAuthMode() {
+        var selected = document.querySelector('input[name="ms_navidrome_auth_mode"]:checked');
+        return selected ? selected.value : 'password';
+    }
+
+    function applyNavidromeAuthMode() {
+        var mode = getNavidromeAuthMode();
+        var mount = el('ms-cred-fields');
+        if (!mount) { return; }
+        mount.querySelectorAll('[data-auth-group]').forEach(function (wrap) {
+            var group = wrap.dataset.authGroup;
+            var active = (group === 'always') || (group === mode);
+            wrap.style.display = active ? 'flex' : 'none';
+            var input = wrap.querySelector('input');
+            if (input) {
+                input.disabled = !active;
+            }
+        });
+    }
+
+    function renderNavidromeAuthModeSelector(initialMode) {
+        var wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.gap = '0.25rem';
+        wrap.id = 'ms-navidrome-auth-mode';
+        var title = document.createElement('label');
+        title.textContent = 'Authentication method';
+        wrap.appendChild(title);
+
+        function addOption(value, text) {
+            var optLabel = document.createElement('label');
+            optLabel.style.cssText = 'display:flex; align-items:center; gap:0.5rem; font-weight:500;';
+            var input = document.createElement('input');
+            input.type = 'radio';
+            input.name = 'ms_navidrome_auth_mode';
+            input.value = value;
+            input.checked = (initialMode === value);
+            input.addEventListener('change', applyNavidromeAuthMode);
+            optLabel.appendChild(input);
+            optLabel.appendChild(document.createTextNode(text));
+            wrap.appendChild(optLabel);
+        }
+
+        addOption('password', 'Username + password');
+        addOption('apikey', 'OpenSubsonic API key');
+        var hint = document.createElement('small');
+        hint.textContent = 'Choose one method. Inactive credentials are cleared on save.';
+        wrap.appendChild(hint);
+        return wrap;
+    }
+
     function renderCredFields(values, editing) {
         if (window.PlexLink) { window.PlexLink.stop(); }
         var fields = CRED_FIELDS[currentType()] || [];
         var mount = el('ms-cred-fields');
         mount.innerHTML = '';
+        var authMode = (currentType() === 'navidrome') ? detectNavidromeAuthMode(values) : null;
+        var authModeInserted = false;
         fields.forEach(function (f) {
+            if (currentType() === 'navidrome' && f.authGroup === 'password' && !authModeInserted) {
+                mount.appendChild(renderNavidromeAuthModeSelector(authMode));
+                authModeInserted = true;
+            }
             var wrap = document.createElement('div');
             wrap.style.display = 'flex';
             wrap.style.flexDirection = 'column';
             wrap.style.gap = '0.25rem';
+            if (f.authGroup) {
+                wrap.dataset.authGroup = f.authGroup;
+            }
             var label = document.createElement('label');
             label.textContent = f.label;
             var input = document.createElement('input');
@@ -106,6 +203,9 @@
             wrap.appendChild(input);
             mount.appendChild(wrap);
         });
+        if (currentType() === 'navidrome') {
+            applyNavidromeAuthMode();
+        }
         if (currentType() === 'plex' && window.PlexLink) {
             var plexRow = document.createElement('div');
             plexRow.id = 'ms-plex-link';
@@ -115,6 +215,26 @@
                 getTokenInput: function () { return el('ms-cred-token'); }
             });
         }
+    }
+
+    function collectCreds(editing) {
+        var creds = {};
+        var fields = CRED_FIELDS[currentType()] || [];
+        var authMode = (currentType() === 'navidrome') ? getNavidromeAuthMode() : null;
+        fields.forEach(function (f) {
+            if (authMode && f.authGroup && f.authGroup !== 'always' && f.authGroup !== authMode) {
+                creds[f.key] = '';
+                return;
+            }
+            var input = el('ms-cred-' + f.key);
+            var value = input ? input.value.trim() : '';
+            if (f.secret && !value) {
+                if (editing) { creds[f.key] = CRED_MASK; }
+            } else {
+                creds[f.key] = value;
+            }
+        });
+        return creds;
     }
 
     function clearLibraryBoxes() {
@@ -184,21 +304,6 @@
                 }
             })
             .catch(function () { clearLibraryBoxes(); });
-    }
-
-    function collectCreds(editing) {
-        var creds = {};
-        var fields = CRED_FIELDS[currentType()] || [];
-        fields.forEach(function (f) {
-            var input = el('ms-cred-' + f.key);
-            var value = input ? input.value.trim() : '';
-            if (f.secret && !value) {
-                if (editing) { creds[f.key] = CRED_MASK; }
-            } else {
-                creds[f.key] = value;
-            }
-        });
-        return creds;
     }
 
     function resetForm() {
@@ -279,7 +384,6 @@
 
     var sweepTimer = null;
     var currentSweepTaskId = null;
-    var ACTIVE_STATES = ['PENDING', 'STARTED', 'PROGRESS', 'queued', 'started', 'deferred', 'scheduled'];
 
     function renderSweepProgress(pct, message, active, failed) {
         var box = el('sweep-progress');
@@ -314,8 +418,8 @@
                     consecutiveErrors = 0;
                     var msg = (d.details && (d.details.status_message || d.details.message)) || d.status_message || d.state || '';
                     var state = d.state || '';
-                    var terminal = ['SUCCESS', 'FAILURE', 'REVOKED', 'finished', 'failed', 'canceled'].indexOf(state) !== -1;
-                    var failed = state === 'FAILURE' || state === 'failed';
+                    var terminal = AudioMuseTaskStatus.isTerminal(state);
+                    var failed = AudioMuseTaskStatus.isFailure(state);
                     renderSweepProgress(terminal ? 100 : (d.progress || 0), msg, !terminal, failed);
                     if (terminal) {
                         stopSweepPolling();
@@ -341,7 +445,7 @@
     function maybeResumeSweep(data) {
         var t = data && data.sweep_task;
         if (!t || !t.task_id) { return; }
-        if (ACTIVE_STATES.indexOf(t.status) !== -1) {
+        if (AudioMuseTaskStatus.isLive(t.status)) {
             renderSweepProgress(t.progress || 0, t.message || 'Sweep in progress...', true, false);
             pollSweep(t.task_id);
         }
@@ -388,6 +492,7 @@
                     feedback(el('ms-feedback'), (res.d && res.d.error) || 'Save failed.', false);
                     return;
                 }
+                parkWarning(res.d);
                 if (res.d && res.d.is_default) {
                     // The default server IS what the setup form edits. Reload so
                     // that form shows the new default instead of re-saving the
@@ -398,6 +503,7 @@
                 hideRegistryForm();
                 resetForm();
                 loadServers();
+                showParkedWarning();
                 if (res.d && res.d.sweep_task_id) {
                     renderSweepProgress(0, 'Matching sweep queued...', true, false);
                     pollSweep(res.d.sweep_task_id);
@@ -432,6 +538,7 @@
                     feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not set the default server.', false);
                     return;
                 }
+                parkWarning(res.d);
                 // Same reason as in save(): the setup form edits the default
                 // server, so it must be re-read from the new one.
                 window.location.reload();
@@ -503,4 +610,5 @@
     resetForm();
     hideRegistryForm();
     loadServers();
+    showParkedWarning();
 })();

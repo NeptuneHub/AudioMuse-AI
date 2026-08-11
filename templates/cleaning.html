@@ -148,7 +148,7 @@
                     if (lastTask && lastTask.task_id && lastTask.task_type === 'cleaning') {
                         displayTaskStatus(lastTask);
                         // If it was successful and has results, show them
-                        if (['SUCCESS', 'FINISHED'].includes((lastTask.status || lastTask.state || '').toUpperCase()) &&
+                        if (AudioMuseTaskStatus.isSuccess(lastTask.status || lastTask.state) &&
                             lastTask.details?.final_summary_details) {
                             displayCleaningResults(lastTask.details.final_summary_details);
                             cleaningResults.style.display = 'block';
@@ -177,11 +177,10 @@
 
             let statusMessage = 'N/A';
             if (task.details) {
-                if (task.details.status_message) {
-                    statusMessage = task.details.status_message;
-                } else if (Array.isArray(task.details.log) && task.details.log.length > 0) {
-                    statusMessage = task.details.log[task.details.log.length - 1];
-                }
+                // No task writes a rolling `log` array into its details any more -
+                // the narration lives in the container log - so the fallback that
+                // read one could never fire. status_message is the one source.
+                statusMessage = task.details.status_message || statusMessage;
                 document.getElementById('status-details').textContent = JSON.stringify(task.details, null, 2);
             }
             document.getElementById('status-message').textContent = statusMessage;
@@ -207,7 +206,7 @@
                 if (activeResponse.ok) {
                     const activeData = await activeResponse.json();
                     if (activeData.task_id && activeData.task_type === 'cleaning' &&
-                        ['STARTED', 'PROGRESS'].includes(activeData.status)) {
+                        AudioMuseTaskStatus.isLive(activeData.status)) {
                         // Resume existing active task
                         currentTaskId = activeData.task_id;
                         startTime = Date.now() - (activeData.running_time_seconds * 1000);
@@ -335,21 +334,28 @@
 
                                 // Handle completion based on final status
                                 const finalStatus = (finalStatusData.state || finalStatusData.status || '').toUpperCase();
-                                if (finalStatus === 'SUCCESS') {
+                                if (AudioMuseTaskStatus.isSuccess(finalStatus)) {
                                     handleCleaningComplete(finalStatusData);
-                                } else if (['FAILURE', 'REVOKED'].includes(finalStatus)) {
+                                } else if (AudioMuseTaskStatus.isFailure(finalStatus)
+                                    || AudioMuseTaskStatus.isRevoked(finalStatus)) {
                                     handleCleaningError(finalStatusData);
                                 } else {
                                     // Unknown final state, treat as completion
                                     handleCleaningComplete(finalStatusData);
                                 }
                             } else {
-                                console.log('Could not get final status, treating as completed');
-                                handleCleaningComplete({ status: 'SUCCESS', task_id: currentTaskId });
+                                console.log('Could not get final status');
+                                handleCleaningError({
+                                    task_id: currentTaskId,
+                                    details: { error: 'The cleaning task finished but its final status could not be read. Check the container logs.' }
+                                });
                             }
                         } catch (e) {
                             console.error('Error getting final status:', e);
-                            handleCleaningComplete({ status: 'SUCCESS', task_id: currentTaskId });
+                            handleCleaningError({
+                                task_id: currentTaskId,
+                                details: { error: 'The cleaning task finished but its final status could not be read. Check the container logs.' }
+                            });
                         }
 
                         // Clear polling regardless
@@ -378,7 +384,7 @@
             document.getElementById('status-message').textContent = data.details?.status_message || 'N/A';
 
             // Update running time ONLY if task is still running
-            if (startTime && !['SUCCESS', 'FAILURE', 'REVOKED'].includes(stateUpper)) {
+            if (startTime && !AudioMuseTaskStatus.isTerminal(stateUpper)) {
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
                 const hours = Math.floor(elapsed / 3600);
                 const minutes = Math.floor((elapsed % 3600) / 60);

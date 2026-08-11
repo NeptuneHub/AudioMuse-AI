@@ -25,65 +25,8 @@ metadata:
 data:
   POSTGRES_HOST: "postgres-service.playlist" # Database host
   POSTGRES_PORT: "5432" # Database port
-  REDIS_URL: "redis://redis-service.playlist:6379/0"
   # Timezone applied inside containers. Default is UTC but you may set this in the ConfigMap or via deployment overrides
   TZ: "UTC"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis-master
-  namespace: playlist
-  labels:
-    app: redis
-    tier: backend
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-      tier: backend
-  template:
-    metadata:
-      labels:
-        app: redis
-        tier: backend
-    spec:
-      containers:
-      - name: master
-        image: redis:7-alpine # Lightweight Redis image
-        env:
-        - name: TZ
-          valueFrom:
-            configMapKeyRef:
-              name: audiomuse-ai-config
-              key: TZ
-        resources:
-          limits:
-            cpu: 2000m
-            memory: 8000Mi
-          requests:
-            cpu: 2000m
-            memory: 8000Mi
-        ports:
-        - containerPort: 6379
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis-service
-  namespace: playlist
-  labels:
-    app: redis
-    tier: backend
-spec:
-  ports:
-  - port: 6379
-    targetPort: 6379
-  selector:
-    app: redis
-    tier: backend
-  type: ClusterIP # Internal service only
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -308,7 +251,7 @@ metadata:
 spec:
   # Headless service required by the worker StatefulSet, so each worker pod keeps a
   # stable identity and therefore reattaches to the same plugins PVC across restarts.
-  # Workers only make outbound connections (to redis and postgres); the port is a
+  # Workers only make outbound connections (to postgres); the port is a
   # placeholder and nothing listens on it.
   clusterIP: None
   selector:
@@ -344,12 +287,12 @@ spec:
         runAsGroup: 0
         fsGroup: 0
       containers:
-      - name: rq-worker
+      - name: queue-worker
         image: ghcr.io/neptunehub/audiomuse-ai:latest # Your image from GHCR
         imagePullPolicy: Always
         env:
         - name: SERVICE_TYPE
-          value: "worker" # Tells the container to run the RQ worker
+          value: "worker" # Tells the container to run the queue workers
         - name: TZ
           valueFrom:
             configMapKeyRef:

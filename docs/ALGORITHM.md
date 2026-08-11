@@ -55,8 +55,8 @@ From the point of view of a user or an operator the system offers three things:
   playlist, administration) and the API behind them. The web process only
   handles short requests, status polling and static assets.
 - **Background processing.** Everything heavy (analysis, clustering, cleaning,
-  index rebuilds, server alignment sweeps, scheduled jobs) runs on RQ workers
-  through Redis. The web process only enqueues the job and then shows its
+  index rebuilds, server alignment sweeps, scheduled jobs) runs on queue workers
+  through PostgreSQL. The web process only enqueues the job and then shows its
   progress from the `task_status` table.
 - **Fast similarity search.** A family of disk-paged IVF indexes, built from the
   stored embeddings, answers nearest-neighbour queries in well under a second
@@ -85,11 +85,11 @@ Components and responsibilities:
   provider migration, dashboard, users, sync, music servers, plugins) and starts
   a few light background threads: the index reload listener, the cron poll, the
   map cache builder and the dashboard snapshot refresher.
-- **Workers (RQ)**: run the jobs defined under `tasks/`. Two queues are used, a
+- **Workers**: run the jobs defined under `tasks/`. Two queues are used, a
   high priority one for coordinator jobs (analysis, clustering, cleaning, sweep)
   and a default one for the children (album analysis, clustering batches, index
   rebuilds), so a flood of children can never starve a coordinator.
-- **Redis**: RQ queues, the `index-updates` pub/sub channel, and small cached
+- **PostgreSQL queue**: the `task_status` table plus `LISTEN`/`NOTIFY`, and small cached
   values such as the CLAP text embeddings of the "other feature" labels.
 - **PostgreSQL**: the source of truth. It holds `score` (one row per catalogue
   track), the embedding tables, `track_server_map` and `artist_server_map`,
@@ -115,8 +115,8 @@ Deployment notes:
   final stage pins the OS and Python dependencies. The image sets ONNX and MKL
   flags so inference is deterministic across CPU families.
 - The same image runs either role. `SERVICE_TYPE` decides whether the container
-  starts the web server or an RQ worker.
-- Scale by adding worker containers pointed at the same Redis and PostgreSQL.
+  starts the web server or a queue worker.
+- Scale by adding worker containers pointed at the same PostgreSQL.
   Keep a single web process responsible for cron and index reloads, or make sure
   only one instance claims a cron row (the code already claims each row
   atomically for its wall-clock minute).
@@ -129,10 +129,9 @@ database and edited in the Setup Wizard.
 Core infrastructure (environment only):
 
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`,
-  `POSTGRES_DB`: the parts used to build the connection string when
-  `DATABASE_URL` is not given directly.
-- `DATABASE_URL`: full PostgreSQL connection string.
-- `REDIS_URL`: Redis connection string used by RQ and by the pub/sub channel.
+  `POSTGRES_DB`: the five parts a deployment sets. `config.py` assembles them
+  into the PostgreSQL connection string used by the whole application, so
+  `DATABASE_URL` is derived, internal, and must not be set by hand.
 - `TZ`: the timezone used for logs and for cron evaluation.
 
 Runtime and model paths:
@@ -148,7 +147,7 @@ Job and queue limits:
 
 - `MAX_QUEUED_ANALYSIS_JOBS`, `MAX_CONCURRENT_BATCH_JOBS`,
   `ITERATIONS_PER_BATCH_JOB`, `REBUILD_INDEX_BATCH_SIZE`,
-  `RQ_MAX_JOBS`, `RQ_MAX_JOBS_HIGH`.
+  `QUEUE_MAX_JOBS`, `QUEUE_MAX_JOBS_HIGH`.
 
 AI providers:
 
@@ -174,7 +173,7 @@ Authentication:
 
 This section explains the patterns shared by every long job.
 
-**Parent and child tasks.** A long job is a *parent* RQ task that enumerates the
+**Parent and child tasks.** A long job is a *parent* task that enumerates the
 work and enqueues *child* tasks: album analysis children for analysis, batch
 children for clustering. The parent stays alive, drains the children and reports
 progress. This keeps one readable task in the UI instead of thousands of tiny
@@ -197,15 +196,13 @@ level: the task stops at the next check, removes its temporary files and updates
 its status. This makes "Cancel Current Task" work on jobs that are already
 running, not only on jobs still waiting in the queue.
 
-**Watchdogs.** A clustering batch that runs longer than
-`CLUSTERING_BATCH_TIMEOUT_MINUTES` is declared failed and its runs are counted as
-done, so the total can still complete. After `CLUSTERING_MAX_FAILED_BATCHES`
-failures no new batch is launched. If the completed-run counter does not move for
-the same timeout, the task force-completes with the best result found so far
-instead of hanging.
+**Failure ceiling.** After `CLUSTERING_MAX_FAILED_BATCHES` failures no new batch
+is launched and the run finishes with what completed. There is deliberately no
+time-based watchdog: slow hardware is never mistaken for a hang, and Cancel is
+the one way to stop a run early.
 
 **Observability.** Every task writes progress, a percentage and a rolling log
-into `task_status` and into the RQ job meta. The UI polls `/api/active_tasks` and
+into `task_status`. The UI polls `/api/active_tasks` and
 shows the last log lines plus the final summary. Errors are classified into the
 codes documented in [ERROR_CODES](ERROR_CODES.md); the full traceback only ever
 goes to the container log.
@@ -277,11 +274,11 @@ The parent runs one phase per configured server, default first. Each phase:
    `rebuild_all_indexes_task` job is enqueued, so newly analyzed songs become
    searchable while a long run is still going.
 6. **Final rebuild.** At the end of the run all indexes are rebuilt and a
-   `reload` message is published on the Redis `index-updates` channel, which
+   `index-reload` notification is published on the Postgres `audiomuse_event` channel, which
    makes the running web process swap in the new indexes without a restart.
 
 A run only fails if it crashed or if not a single song was analyzed (error codes
-2005 and 2006). Individual albums that fail are reported and retried by RQ.
+2005 and 2006). Individual albums that fail are reported; a job only restarts if its worker died.
 
 #### Stage 3: Album level (`analyze_album_task`)
 
@@ -311,7 +308,7 @@ is skipped as error 2007 and never fails the album.
    producing a 512-dimension embedding stored in `clap_embedding`.
 6. **Other features.** The six labels `danceable`, `aggressive`, `happy`,
    `party`, `relaxed` and `sad` are not a separate model. Their CLAP *text*
-   embeddings are computed once and cached in Redis, and each score is the cosine
+   embeddings are computed once and cached on disk, and each score is the cosine
    similarity between the track's CLAP audio embedding and the label embedding.
    `score.other_features` starts as zeros and is refreshed once CLAP lands.
 7. **Lyrics.** If `LYRICS_ENABLED` is true the lyrics pipeline runs, see
@@ -331,7 +328,8 @@ exception: a database outage is re-raised so the whole album is retried.
 
 **Core**
 
-- `DATABASE_URL` (or the `POSTGRES_*` parts), `REDIS_URL`: required.
+- The `POSTGRES_*` parts: required. The PostgreSQL connection
+  string is built from those parts by `config.py`.
 - `TEMP_DIR`: download directory for the audio files.
 
 **Media server**
@@ -354,7 +352,6 @@ read once, at first boot, to seed the registry.
   reconciliations in the monitor loop.
 - `MUSICNN_BATCH_SIZE`, `PER_SONG_MODEL_RELOAD`: inference batch size and model
   reload policy.
-- `DB_FETCH_CHUNK_SIZE`: chunk size when reading many tracks from the database.
 
 **Model and feature parameters**
 
@@ -860,7 +857,7 @@ There are three layers:
 
 - **Orchestrator** (`run_clustering_task`): prepares the data, splits the runs
   into batch jobs, monitors them, then finalizes the best result.
-- **Batch worker** (`run_clustering_batch_task`): an RQ job that runs a fixed
+- **Batch worker** (`run_clustering_batch_task`): a queue job that runs a fixed
   number of iterations and reports its best one.
 - **Iteration** (`_perform_single_clustering_iteration`): one attempt, from
   sample to score.
@@ -1073,22 +1070,19 @@ Raw cluster membership is not used directly. Each cluster is trimmed:
 
 #### Batch orchestration
 
-Iterations run as RQ jobs, and the orchestrator manages them defensively. The
+Iterations run as queue jobs, and the orchestrator manages them defensively. The
 overriding goal is that the task **always finishes**, even if individual batches
 die.
 
 - **Batching**: the requested runs are split into batches of
   `ITERATIONS_PER_BATCH_JOB`, with up to `MAX_CONCURRENT_BATCH_JOBS` active.
-- **Aggregation**: `_monitor_and_process_batches` collects each finished batch's
-  best result, updates the global best and feeds the elite pool.
-- **Per-batch timeout**: a batch running longer than
-  `CLUSTERING_BATCH_TIMEOUT_MINUTES` is declared failed, its runs are counted as
-  done so the total can still complete, and it is removed from the active set.
+- **Aggregation**: `_absorb_finished_batches` reaps each finished batch's row,
+  collects its best result, updates the global best and feeds the elite pool.
 - **Failure ceiling**: after `CLUSTERING_MAX_FAILED_BATCHES` failures no new
   batch launches and the remaining runs are force-completed.
-- **Staleness watchdog**: if the completed-run counter does not advance for the
-  same timeout, the task force-completes with the best result so far instead of
-  hanging near the end.
+- **No time-based watchdog**: a batch may take as long as the hardware needs.
+  A batch whose worker died is requeued by the queue itself within seconds, and
+  Cancel revokes the whole run on demand.
 - **State recovery**: on restart the task reloads its children from the database
   and resumes. A task already in a terminal state is skipped.
 
@@ -1190,8 +1184,7 @@ audio or lyrics.
 **Task tuning**
 
 - `ITERATIONS_PER_BATCH_JOB`, `MAX_CONCURRENT_BATCH_JOBS`,
-  `CLUSTERING_BATCH_TIMEOUT_MINUTES`, `CLUSTERING_MAX_FAILED_BATCHES`,
-  `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS`, `DB_FETCH_CHUNK_SIZE`.
+  `CLUSTERING_MAX_FAILED_BATCHES`.
 
 **Evolutionary tuning**
 
@@ -1255,7 +1248,7 @@ actually has.
 #### Index loading
 
 At startup the web process loads the audio IVF index and its id map. A background
-thread listens on the Redis `index-updates` channel and reloads the index in
+thread listens on the Postgres `audiomuse_event` channel and reloads the index in
 place when the workers publish a new build, so a long analysis does not require a
 restart.
 
@@ -1584,7 +1577,8 @@ button calls `/api/find_path` for each consecutive pair and draws the segments.
 
 The map has few settings of its own. What matters is the data behind it:
 
-- `DATABASE_URL`: read at startup to build the cache.
+- The PostgreSQL connection built from the `POSTGRES_*` parts: read at startup
+  to build the cache.
 - The **embeddings** produced by analysis decide the layout, and the
   `mood_vector` decides the colours and the legend.
 - The projection method actually used (stored UMAP projection, or an on-the-fly
@@ -1803,7 +1797,7 @@ serves them as clickable buttons.
 - `CLAP_TOP_QUERIES_COUNT`, `CLAP_CATEGORY_WEIGHTS`: how many candidate queries
   are generated and how the categories (Genre, Mood, Energy, Tempo,
   Instrumentation, Voice type, Production, Era) are weighted.
-- `CLAP_OTHER_FEATURES_REDIS_KEY`: the Redis key caching the text embeddings of
+- `CLAP_OTHER_FEATURES_CACHE_FILE`: the on-disk `.npz` caching the text embeddings of
   the six other-feature labels used during analysis.
 
 **Operational notes**
@@ -2069,7 +2063,9 @@ Like analysis and clustering, cleaning always covers **every** configured server
 1. **Enqueue.** `POST /api/cleaning/start` validates the request, writes a
    pending `task_status` row and enqueues
    `tasks.cleaning.identify_and_clean_orphaned_albums_task` on the high priority
-   queue with a retry policy.
+   queue. There is no retry policy: a task that raises is failed outright, and
+   the row is requeued only if the worker running it dies and the maintenance
+   pass reclaims it.
 2. **Enumerate.** For each configured server the job fetches the current track set
    through the **same** helpers the alignment sweep uses
    (`fetch_server_catalogue`), with that server's library filter applied. Reusing
@@ -2097,7 +2093,7 @@ Like analysis and clustering, cleaning always covers **every** configured server
    **inline**, and the task is not reported complete until the indexes reflect
    the cleaned catalogue and the reload message has been published.
 
-Database errors surface as error 4001 and let RQ retry the job. Failures are
+Database errors surface as error 4001 and fail the job. Failures are
 collected and returned in the summary rather than aborting the run.
 
 ### 15.3. Environment Variable Configuration
@@ -2110,7 +2106,7 @@ collected and returned in the summary rather than aborting the run.
 - `CHROMAPRINT_GATE_ENABLED` and the other Chromaprint settings: used by the
   duplicate repair step, see
   [chapter 2](#2-catalogue-identity-and-deduplication).
-- `REDIS_URL`, `DATABASE_URL` and the media server registry credentials.
+- The `POSTGRES_*` parts and the media server registry credentials.
 
 ---
 
@@ -2146,7 +2142,7 @@ same as when they are started from the page.
    minute. This is what makes a restart, or a second web process, unable to
    double-fire the same schedule.
 4. **Enqueue the batch work.** Analysis, clustering, sonic fingerprint and plugin
-   tasks are **enqueued** as RQ jobs, so a slow media server cannot swallow a
+   tasks are **enqueued** as queue jobs, so a slow media server cannot swallow a
    scheduling window or block the other schedules. The **alchemy radio** is the
    exception: it is an online feature that queries the in-memory similarity index,
    which only the Flask process loads, so the tick runs it inline right there. It

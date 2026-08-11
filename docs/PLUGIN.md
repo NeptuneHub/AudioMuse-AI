@@ -245,7 +245,10 @@ per music server**, on **every** configured server, one at a time - like every
 other batch task in AudioMuse-AI. There is no scope selector to choose from. Your
 function does not change: every media-server call inside it - playlist creation,
 listening history, downloads - already targets the server of the current run.
-Ask who that is, or target another server explicitly, through the API:
+It must not declare a `server_scope` or a `task_claim_required` parameter either:
+those two names are reserved for the runner and `add_cron_task` rejects them (see
+"Run a job in the background").
+Ask who the current server is, or target another server explicitly, through the API:
 
 ```python
 from plugin.api import active_server_id, list_servers, use_server
@@ -295,7 +298,9 @@ def rebuild():
     return render_page("<p>Rebuild started. Check the worker logs.</p>", title="My Plugin")
 ```
 
-Keyword arguments work too: `enqueue(rebuild_report, days=30)`. Use `queue='high'` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
+Keyword arguments work too: `enqueue(rebuild_report, days=30)`. Arguments must be JSON-serializable (str, int, float, bool, None, list, dict): pass an ISO string instead of a `datetime` and a list instead of a set, or `enqueue` raises a `TypeError` telling you which argument cannot be stored. It returns the queued task id (a string that also exposes `.id` for code written against the old job object). Use `queue='high'` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
+
+Two keyword names are **reserved**: `server_scope` and `task_claim_required`. AudioMuse-AI reads them itself before it calls your function, so a task function that declares a parameter with one of those names could never receive it. `enqueue`, `add_task` and `add_cron_task` raise a `TypeError` naming the offending parameter, so rename it (ask `active_server_id()` which server the current run targets instead). Passing `server_scope` **to** `enqueue` is fine and is what it is for: `enqueue(rebuild_report, 30, server_scope='all')` runs the job once per configured music server, `server_scope='default'` only on the default one, and a server id or name only on that server - exactly like a scheduled plugin task (see "Scheduled tasks and multiple music servers"). Without it the job runs once, against whichever server the worker is already bound to.
 
 One important rule: the job runs on the worker, so the worker must have your plugin's code - do not set `targets` to `["flask"]` (see "Choose where the plugin runs").
 
@@ -559,7 +564,7 @@ Nearly everything a plugin can do works the same on Docker, Kubernetes and the W
 | Per-plugin settings | Yes | Yes |
 | Create playlists on the media server | Yes | Yes |
 | Cron tasks and worker tasks | Yes | Yes |
-| Built-in libraries (Flask, numpy, psycopg2, onnxruntime, redis, rq, standard library) | Yes | Yes |
+| Built-in libraries (Flask, numpy, psycopg2, onnxruntime, standard library) | Yes | Yes |
 | Extra pip packages (`requirements`) | Yes, when `PLUGIN_ALLOW_PIP` is true (the default) | No, the plugin is marked "incompatible" |
 
 ## Configuration for admins

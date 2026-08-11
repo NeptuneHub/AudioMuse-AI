@@ -1,8 +1,8 @@
 [Unit]
 Description=An open-source environment that brings smart playlist generation to Jellyfin and Navidrome
 Documentation=https://neptunehub.github.io/AudioMuse-AI/
-Requires=audiomuse-redis.service audiomuse-postgres.service
-After=audiomuse-redis.service audiomuse-postgres.service
+Requires=audiomuse-postgres.service
+After=audiomuse-postgres.service
 
 [Container]
 ContainerName=audiomuse-ai-flask
@@ -15,7 +15,6 @@ AutoUpdate=registry
 Environment=SERVICE_TYPE=flask MEDIASERVER_TYPE=navidrome 
 Environment=POSTGRES_USER=audiomuse POSTGRES_PASSWORD=audiomusepassword 
 Environment=POSTGRES_DB=audiomusedb POSTGRES_HOST=localhost POSTGRES_PORT=5432 
-Environment=REDIS_URL=redis://localhost:6379/0 
 Environment=TEMP_DIR=/app/temp_audio
 
 #HealthCheck

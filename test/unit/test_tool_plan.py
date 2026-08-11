@@ -1168,17 +1168,22 @@ class TestListArgDedupe:
 
 
 class TestContradictoryExclusionStrip:
-    def test_exclude_artist_matching_a_seed_is_dropped(self, monkeypatch):
+    def test_exclude_artist_matching_a_seed_is_dropped(self):
         p = _plan()
-        _result, seen, _logs = _run_plan(
-            p, monkeypatch, 'like Miles Davis, nothing after 1970', [
-                {'name': 'seed_search',
-                 'arguments': {'seeds': [{'type': 'artist', 'name': 'Miles Davis'}]}},
-                {'name': 'search_database',
-                 'arguments': {'exclude_artists': ['Miles Davis'], 'year_max': 1970}},
-            ])
-        filters = [a for n, a in seen if n == 'search_database']
-        assert all('Miles Davis' not in (a.get('exclude_artists') or []) for a in filters)
+        plan = p.ToolPlan(
+            primaries=[{
+                'name': 'seed_search',
+                'arguments': {'seeds': [{'type': 'artist', 'name': 'Miles Davis'}]},
+            }],
+            filter={'exclude_artists': ['Miles Davis'], 'year_max': 1970},
+        )
+
+        p._strip_contradictory_exclusions(
+            plan, {}, 'like Miles Davis, nothing after 1970', []
+        )
+
+        assert not (plan.filter or {}).get('exclude_artists')
+        assert plan.filter['year_max'] == 1970
 
     def test_exclude_artist_matching_the_filter_artist_is_dropped(self):
         p = _plan()
@@ -1233,6 +1238,7 @@ class TestContradictoryExclusionStrip:
     def test_hate_cue_marks_a_genre_as_negated_not_positive(self):
         p = _plan()
         hints = p.extract_hints('party music, I hate country')
+        assert hints.get('exclude_genres') == ['country']
         assert 'country' not in [g.lower() for g in hints.get('genres') or []]
 
     def test_exclusions_that_would_empty_the_pool_are_reverted_with_a_note(self):
@@ -1445,10 +1451,14 @@ class TestPlannerLogLinesStayFrontendParsable:
         return logs_all
 
     def test_no_new_log_line_is_mistaken_for_a_filter_dimension(self, monkeypatch):
-        for line in self._all_logs(monkeypatch):
-            trimmed = line.strip()
-            if trimmed.startswith(('dedupe:', 'contradiction:', 'rescue:', 'gate:')):
-                assert not self.DIMENSION_RE.match(trimmed)
+        matched = [
+            line for line in self._all_logs(monkeypatch)
+            if self.DIMENSION_RE.match(line.strip())
+        ]
+
+        assert matched
+        for line in matched:
+            assert line.startswith('   '), line
 
     def test_only_real_tool_executions_emit_a_tool_or_primary_prefix(self, monkeypatch):
         prefixed = [

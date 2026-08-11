@@ -80,7 +80,7 @@ RUN set -ux; \
             ffmpeg libchromaprint-tools wget curl \
             supervisor procps \
             gcc g++ \
-            git vim redis-tools strace iputils-ping; then \
+            git vim strace iputils-ping; then \
             break; \
         fi; \
         n=$((n+1)); \

@@ -32,6 +32,12 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
+UMAP_N_NEIGHBORS = 15
+# Below this many rows, UMAP's neighbour graph can end up with zero edges
+# (all vertices disconnected) and crash inside simplicial_set_embedding
+# instead of degrading gracefully; PCA is used directly in that regime.
+UMAP_MIN_SAMPLES = UMAP_N_NEIGHBORS + 1
+
 
 def _stacked(vectors) -> np.ndarray:
     """The vectors as one 2-D matrix, without rebuilding one it already is.
@@ -84,8 +90,8 @@ def _project_with_umap(
     # sample, the resulting map is not worse - 0.937 against 0.935 - and the layout
     # was never stable across rebuilds anyway (random_state stays None).
     reducer = umap.UMAP(
-        n_components=n_components, random_state=None, n_jobs=-1,
-        init="random", n_epochs=100,
+        n_components=n_components, n_neighbors=UMAP_N_NEIGHBORS, random_state=None,
+        n_jobs=-1, init="random", n_epochs=100,
     )
     embedding = reducer.fit_transform(mat)
     emb_centered = embedding - embedding.mean(axis=0)

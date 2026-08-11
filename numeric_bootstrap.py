@@ -8,7 +8,7 @@
 
 """Numeric-stack startup guards for scipy/sklearn and numpy longdouble.
 
-Provides bootstrap helpers imported before the RQ worker forks, working around
+Provides bootstrap helpers imported before the queue worker forks, working around
 the macOS newlocale race that breaks ``numpy.longdouble`` parsing and warming
 the scipy/sklearn imports so analysis tasks do not fail on first use.
 

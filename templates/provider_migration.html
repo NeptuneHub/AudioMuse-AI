@@ -439,16 +439,32 @@
             <!-- Navidrome creds -->
             <div class="mig-cred-field" data-for="navidrome">
                 <div class="mig-row">
-                    <label>Server URL:</label>
-                    <input type="text" data-cred="url" placeholder="http://navidrome.local:4533">
+                    <label for="mig-nav-url">Server URL:</label>
+                    <input id="mig-nav-url" type="text" data-cred="url" placeholder="http://navidrome.local:4533">
                 </div>
-                <div class="mig-row">
-                    <label>Username:</label>
-                    <input type="text" data-cred="user">
+                <div class="mig-row" style="flex-direction:column; align-items:flex-start;">
+                    <span style="font-weight:600; margin-bottom:0.35rem;">Authentication method:</span>
+                    <label style="display:flex; align-items:center; gap:0.5rem; font-weight:500;">
+                        <input type="radio" name="mig_navidrome_auth_mode" value="password" checked>
+                        Username + password
+                    </label>
+                    <label style="display:flex; align-items:center; gap:0.5rem; font-weight:500;">
+                        <input type="radio" name="mig_navidrome_auth_mode" value="apikey">
+                        OpenSubsonic API key
+                    </label>
+                    <small>Choose one method. Inactive credentials are ignored.</small>
                 </div>
-                <div class="mig-row">
-                    <label>Password:</label>
-                    <input type="password" data-cred="password">
+                <div class="mig-row" data-nav-auth="password">
+                    <label for="mig-nav-user">Username:</label>
+                    <input id="mig-nav-user" type="text" data-cred="user" placeholder="navidrome-user">
+                </div>
+                <div class="mig-row" data-nav-auth="password">
+                    <label for="mig-nav-password">Password:</label>
+                    <input id="mig-nav-password" type="password" data-cred="password" placeholder="navidrome-password">
+                </div>
+                <div class="mig-row" data-nav-auth="apikey" style="display:none;">
+                    <label for="mig-nav-api-key">OpenSubsonic API key:</label>
+                    <input id="mig-nav-api-key" type="password" data-cred="api_key" placeholder="opensubsonic-api-key">
                 </div>
             </div>
 
@@ -937,11 +953,30 @@
         targetCreds = {};
         const active = document.querySelector('.mig-cred-field.active');
         if (!active) return;
+        const authMode = (targetType === 'navidrome')
+            ? (document.querySelector('input[name="mig_navidrome_auth_mode"]:checked')?.value || 'password')
+            : null;
         active.querySelectorAll('[data-cred]').forEach(inp => {
+            const row = inp.closest('[data-nav-auth]');
+            if (authMode && row && row.dataset.navAuth !== authMode) {
+                return;
+            }
             const v = inp.value.trim();
             if (v) targetCreds[inp.dataset.cred] = v;
         });
     }
+
+    function applyMigNavidromeAuthMode() {
+        const mode = document.querySelector('input[name="mig_navidrome_auth_mode"]:checked')?.value || 'password';
+        document.querySelectorAll('.mig-cred-field[data-for="navidrome"] [data-nav-auth]').forEach(row => {
+            row.style.display = (row.dataset.navAuth === mode) ? '' : 'none';
+        });
+    }
+
+    document.querySelectorAll('input[name="mig_navidrome_auth_mode"]').forEach(input => {
+        input.addEventListener('change', applyMigNavidromeAuthMode);
+    });
+    applyMigNavidromeAuthMode();
 
     $('mig-test-connection').addEventListener('click', async () => {
         if (!targetType) return;
@@ -1031,7 +1066,7 @@
             throw new Error('__source_refresh__');  // caught below, message discarded
         }
         if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
-        // The heavy fetch+match runs in an RQ worker now; poll for the result.
+        // The heavy fetch+match runs in a queue worker now; poll for the result.
         if (data.task_id) {
             return await pollMigrationJob(data.task_id);
         }
@@ -1046,12 +1081,12 @@
         while (true) {
             const res = await jsonFetch(statusUrl);
             const s = res.status || 'unknown';
-            if (s === 'finished') {
+            if (AudioMuseTaskStatus.isSuccess(s)) {
                 const r = res.result || {};
                 if (r && r.error) throw new Error(r.error);
                 return r;
             }
-            if (s === 'failed') {
+            if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
                 throw new Error(res.error || 'Background job failed. Check the container logs for details.');
             }
             await new Promise(r => setTimeout(r, 2000));
@@ -1096,7 +1131,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId }),
             });
-            // Heavy source re-probe runs in an RQ worker now; poll for it.
+            // Heavy source re-probe runs in a queue worker now; poll for it.
             const result = enq.task_id ? await pollMigrationJob(enq.task_id) : enq;
             if (result.path_format === 'absolute') {
                 statusEl.innerHTML = '<div class="mig-success">Loaded ' + result.overrides_count +
@@ -1556,7 +1591,7 @@
                 const res = await jsonFetch(statusUrl);
                 const s = res.status || 'unknown';
                 statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
-                if (s === 'finished') {
+                if (AudioMuseTaskStatus.isSuccess(s)) {
                     const r = res.result || {};
                     const indexNote = r.index_rebuild_needed
                         ? '<p style="margin:0.5rem 0 0;"><strong>Note:</strong> ' +
@@ -1583,25 +1618,18 @@
                     const countdownHost = document.createElement('p');
                     countdownHost.id = 'mig-restart-countdown';
                     countdownHost.style.cssText = 'margin:1rem 0 0; font-size:1.1rem; font-weight:700; color:#b45309; text-align:center;';
-                    countdownHost.textContent = 'Restarting services - redirecting to login in 20 seconds...';
                     statusEl.parentNode.insertBefore(countdownHost, statusEl.nextSibling);
-                    // Flask is restarting to pick up the new provider config cleanly
-                    // (same pattern as the setup wizard). Count down and redirect to
-                    // /login so the user reconnects to a fresh process.
-                    let countdown = 20;
-                    const cdInterval = setInterval(function() {
-                        countdown -= 1;
-                        if (countdown > 0) {
-                            countdownHost.textContent = 'Restarting services - redirecting to login in ' + countdown + ' second' + (countdown === 1 ? '' : 's') + '...';
-                        } else {
-                            countdownHost.textContent = 'Redirecting...';
-                            clearInterval(cdInterval);
-                            if (window.appRedirect) { window.appRedirect('/login'); } else { window.location.href = '/login'; }
-                        }
-                    }, 1000);
+                    // Flask restarts to pick up the new provider config cleanly (same
+                    // pattern as the setup wizard). The wait probes for the server
+                    // coming back rather than guessing a fixed number of seconds.
+                    window.AudioMuseRestart.waitAndGo({
+                        element: countdownHost,
+                        target: '/login',
+                        restartScheduled: res.restart_scheduled
+                    });
                     return;
                 }
-                if (s === 'failed') {
+                if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
                     showError(statusEl,
                         '<strong>Migration failed.</strong><br>' +
                         (res.error || 'Unknown error') +

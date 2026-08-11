@@ -41,7 +41,6 @@ PLATFORMS = {
     "windows": {
         "launcher": "native-build/windows/launcher.py",
         "vendor_dir": "native-build/windows/vendor",
-        "redis_bin": "redis-server.exe",
         "pg_contrib_glob": "*.dll",
         "initdb_bin": "initdb.exe",
         "use_pgserver": "always",
@@ -56,7 +55,6 @@ PLATFORMS = {
     "macos": {
         "launcher": "native-build/macos/launcher.py",
         "vendor_dir": "native-build/macos/vendor",
-        "redis_bin": "redis-server",
         "pg_contrib_glob": "*.dylib",
         "initdb_bin": "initdb",
         "use_pgserver": "always",
@@ -81,7 +79,6 @@ PLATFORMS = {
     "linux": {
         "launcher": "native-build/linux/launcher.py",
         "vendor_dir": "native-build/linux/vendor",
-        "redis_bin": "redis-server",
         "pg_contrib_glob": "*.so",
         "initdb_bin": "initdb",
         "use_pgserver": "arch",

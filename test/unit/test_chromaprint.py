@@ -68,15 +68,11 @@ class TestChromaprintsAgree:
         short = _fp_blob([1, 2, 3, 4, 5])
         assert chromaprint.chromaprints_agree(short, short) is None
 
-    def test_is_symmetric(self):
-        assert (
-            chromaprint.chromaprints_agree(FP_A, FP_FLIPPED)
-            == chromaprint.chromaprints_agree(FP_FLIPPED, FP_A)
-        )
-        assert (
-            chromaprint.chromaprints_agree(FP_A, FP_A_SHIFTED)
-            == chromaprint.chromaprints_agree(FP_A_SHIFTED, FP_A)
-        )
+    def test_swapping_the_arguments_keeps_the_same_verdict(self):
+        assert chromaprint.chromaprints_agree(FP_A, FP_FLIPPED) is False
+        assert chromaprint.chromaprints_agree(FP_FLIPPED, FP_A) is False
+        assert chromaprint.chromaprints_agree(FP_A, FP_A_SHIFTED) is True
+        assert chromaprint.chromaprints_agree(FP_A_SHIFTED, FP_A) is True
 
 
 def chromaprints_result(a, b):
@@ -101,11 +97,28 @@ class TestParseEncodeDecode:
 
 
 class TestComputeFailSoft:
-    def test_compute_returns_none_without_fpcalc(self, monkeypatch):
+    def test_compute_returns_none_without_ever_running_fpcalc_when_unavailable(self, monkeypatch):
         monkeypatch.setattr(chromaprint, "is_available", lambda: False)
+        monkeypatch.setattr(
+            chromaprint.subprocess,
+            "run",
+            lambda *a, **k: pytest.fail("fpcalc must not be invoked when it is unavailable"),
+        )
         assert chromaprint.compute("nonexistent-track.flac") is None
 
-    def test_compute_returns_none_on_empty_path(self):
+    def test_compute_returns_none_on_empty_path_without_probing_or_running_fpcalc(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            chromaprint,
+            "is_available",
+            lambda: pytest.fail("an empty path must short-circuit before probing fpcalc"),
+        )
+        monkeypatch.setattr(
+            chromaprint.subprocess,
+            "run",
+            lambda *a, **k: pytest.fail("an empty path must not shell out to fpcalc"),
+        )
         assert chromaprint.compute(None) is None
         assert chromaprint.compute("") is None
 

@@ -19,6 +19,10 @@ Main Features:
 * get_db_connection with _ensure_ai_chat_db_user: connect as the configured
   AI_CHAT_DB_USER when set, auto-creating or resetting that role's password, and
   fall back to the primary DATABASE_URL otherwise.
+* Swapping in those credentials replaces only the userinfo and carries the host
+  part of DATABASE_URL over verbatim: rebuilding it from urlparse's .hostname
+  would drop the brackets of an IPv6 literal, lowercase the host, and mangle the
+  percent-encoded socket directory of the standalone builds.
 """
 
 import logging
@@ -40,9 +44,7 @@ def _build_ai_chat_db_url():
     if not AI_CHAT_DB_USER_NAME:
         return DATABASE_URL
     parsed = urlparse(DATABASE_URL)
-    host = parsed.hostname or ''
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
+    host = parsed.netloc.rpartition('@')[2]
     return urlunparse(
         (
             parsed.scheme,

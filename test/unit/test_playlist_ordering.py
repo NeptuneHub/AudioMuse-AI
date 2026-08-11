@@ -15,13 +15,45 @@ Main Features:
 * Key distance is scale-aware, case-insensitive and neutral for missing keys
 * Composite distance combines tempo/energy with missing values treated as zero
 * order_playlist leaves too-short inputs and empty input unchanged
+* order_playlist seeds the greedy walk from the first energy quartile and
+  appends ids that have no score row
 """
 
-from test.unit.conftest import _import_module
+from test.unit.conftest import _import_module, make_dict_row
 
 
 def _load_playlist_ordering():
     return _import_module('tasks.playlist_ordering', 'tasks/playlist_ordering.py')
+
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, statement, params=None):
+        self.executed.append((statement, params))
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.closed = False
+
+    def cursor(self, **kwargs):
+        return self._cursor
+
+    def close(self):
+        self.closed = True
 
 
 class TestKeyDistance:
@@ -97,5 +129,34 @@ class TestOrderPlaylist:
         result = mod.order_playlist([])
         assert result == []
 
-    def test_minimum_songs_no_ordering(self):
-        _load_playlist_ordering()
+    def test_greedy_walk_starts_at_first_energy_quartile_and_appends_unscored_ids(
+        self, monkeypatch
+    ):
+        mod = _load_playlist_ordering()
+        rows = [
+            make_dict_row(
+                {'item_id': 'd', 'tempo': 200, 'energy': 0.12, 'key': 'C', 'scale': 'major'}
+            ),
+            make_dict_row(
+                {'item_id': 'c', 'tempo': 150, 'energy': 0.06, 'key': 'C', 'scale': 'major'}
+            ),
+            make_dict_row(
+                {'item_id': 'a', 'tempo': 100, 'energy': 0.02, 'key': 'C', 'scale': 'major'}
+            ),
+            make_dict_row(
+                {'item_id': 'b', 'tempo': 104, 'energy': 0.04, 'key': 'C', 'scale': 'major'}
+            ),
+        ]
+        cursor = _FakeCursor(rows)
+        conn = _FakeConnection(cursor)
+        import tasks.mcp_helper as mcp_helper
+
+        monkeypatch.setattr(mcp_helper, 'get_db_connection', lambda: conn)
+
+        result = mod.order_playlist(['a', 'b', 'c', 'd', 'ghost'])
+
+        assert result == ['b', 'a', 'c', 'd', 'ghost']
+        statement, params = cursor.executed[0]
+        assert params == ['a', 'b', 'c', 'd', 'ghost']
+        assert statement.count('%s') == 5
+        assert conn.closed is True

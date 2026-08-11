@@ -65,9 +65,11 @@ class TestRoundCoord:
 
 
 class TestSampleItems:
-    def test_deterministic_for_same_input(self):
-        items = list(range(40))
-        assert _sample_items(items, 0.5) == _sample_items(items, 0.5)
+    def test_fraction_half_of_ten_returns_evenly_spaced_items_0_2_4_6_9(self):
+        assert _sample_items(list(range(10)), 0.5) == [0, 2, 4, 6, 9]
+
+    def test_fraction_below_one_item_still_returns_the_first_item(self):
+        assert _sample_items(list(range(10)), 0.01) == [0]
 
     def test_fraction_075_of_100_returns_75(self):
         items = list(range(100))

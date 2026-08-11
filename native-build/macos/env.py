@@ -8,7 +8,7 @@
 
 """Child-process environment builder for the macOS standalone build.
 
-Assembles the environment variables each supervised child (Flask, RQ workers)
+Assembles the environment variables each supervised child (Flask, queue workers)
 inherits: embedded database/queue selection, per-user data and model paths,
 offline-model flags and the macOS fork-safety setting. The Windows/Linux
 ``env`` modules build the equivalent environments for their platforms.
@@ -16,18 +16,44 @@ offline-model flags and the macOS fork-safety setting. The Windows/Linux
 Main Features:
 * Points model, cache, temp, backup and control-socket paths at ``macos.paths``.
 * Forces offline HuggingFace/Transformers and the OBJC fork-safety workaround.
+* Derives POSTGRES_HOST/POSTGRES_PORT from the URL the embedded server reported,
+  so the children reach the socket it actually opened rather than a guess:
+  ``config.py`` builds every connection string from those two.
 """
 
 import os
+from urllib.parse import unquote, urlsplit
 
+import service_roles
 from macos import paths
 
-_WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
+_WORKER_ROLES = service_roles.WORKER_ROLES
 
 
-def build_child_env(role, database_url, redis_url):
+def _socket_dir_from_url(database_url):
+    marker = "?host="
+    at = (database_url or "").find(marker)
+    if at < 0:
+        marker = "&host="
+        at = (database_url or "").find(marker)
+    if at < 0:
+        return ""
+    return unquote((database_url or "")[at + len(marker):])
+
+
+def _pg_conn_parts(database_url):
+    parts = urlsplit(database_url or "")
+    socket_dir = _socket_dir_from_url(database_url)
+    return (
+        socket_dir or parts.hostname or paths.pgdata_dir(),
+        str(parts.port or 5432),
+    )
+
+
+def build_child_env(role, database_url):
     env = dict(os.environ)
     model_dir = paths.model_dir()
+    pg_host, pg_port = _pg_conn_parts(database_url)
     env.update(
         {
             "AUDIOMUSE_PLATFORM": "macos",
@@ -36,9 +62,7 @@ def build_child_env(role, database_url, redis_url):
             "APP_DATA_DIR": paths.app_support_dir(),
             "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
             "DATABASE_TYPE": "embedded",
-            "QUEUE_TYPE": "embedded",
             "DATABASE_URL": database_url,
-            "REDIS_URL": redis_url,
             "TEMP_DIR": paths.temp_audio_dir(),
             "NUMBA_CACHE_DIR": paths.numba_cache_dir(),
             "HF_HOME": os.path.join(model_dir, "huggingface"),
@@ -55,8 +79,8 @@ def build_child_env(role, database_url, redis_url):
             "LYRICS_GTE_TOKENIZER_DIR": os.path.join(model_dir, "gte-multilingual-base"),
             "BACKUP_DIR": paths.backup_dir(),
             "RESTORE_LOG_DIR": paths.backup_dir(),
-            "POSTGRES_HOST": paths.pgdata_dir(),
-            "POSTGRES_PORT": "5432",
+            "POSTGRES_HOST": pg_host,
+            "POSTGRES_PORT": pg_port,
             "POSTGRES_USER": "postgres",
             "POSTGRES_PASSWORD": "",
             "POSTGRES_DB": "postgres",

@@ -16,7 +16,7 @@ Main Features:
 * String normalization, same-song matching, and mood-feature parsing
 * Vector lookup prefers primed f32 over the index; load and neighbor queries raise
   when the index or id maps are unloaded
-* On-demand loading for processes that never preload (RQ workers), including the
+* On-demand loading for processes that never preload (queue workers), including the
   retry cooldown that keeps a missing index from being re-read per call
 * create_playlist_from_ids error paths and the LRU/TTL _ResultCache behavior
 """
@@ -330,19 +330,32 @@ class TestLoadIVFIndex:
                 mock_load.assert_called_once()
                 assert vm.ivf_index is mock_index
 
-    @patch('tasks.ivf_manager.ivf_index', None)
-    @patch('tasks.ivf_manager.id_map', None)
-    def test_handles_missing_index_gracefully(self):
-        with patch('app_helper.get_db') as mock_get_db:
-            mock_conn = Mock()
-            mock_cursor = Mock()
-            mock_get_db.return_value = mock_conn
-            mock_conn.cursor.return_value = mock_cursor
-            mock_cursor.fetchone.return_value = None
+    def test_index_missing_from_database_clears_stale_index_and_result_caches(self):
+        import tasks.ivf_manager as vm
+        from tasks.ivf_manager import _ResultCache, load_ivf_index_for_querying
 
-            from tasks.ivf_manager import load_ivf_index_for_querying
+        neighbor_cache = _ResultCache(60, 10)
+        max_distance_cache = _ResultCache(60, 10)
+        neighbor_cache.put('stale-neighbors', [{'item_id': 'item-1'}])
+        max_distance_cache.put('stale-max', {'max_distance': 1.0})
 
+        with (
+            patch.object(vm, 'ivf_index', Mock()),
+            patch.object(vm, 'id_map', {0: 'item-1'}),
+            patch.object(vm, 'reverse_id_map', {'item-1': 0}),
+            patch.object(vm, '_neighbor_result_cache', neighbor_cache),
+            patch.object(vm, '_max_distance_cache', max_distance_cache),
+            patch('app_helper.get_db', return_value=Mock()),
+            patch('tasks.paged_ivf.load_paged_ivf_index', return_value=None) as mock_load,
+        ):
             load_ivf_index_for_querying(force_reload=True)
+
+            mock_load.assert_called_once()
+            assert vm.ivf_index is None
+            assert vm.id_map is None
+            assert vm.reverse_id_map is None
+            assert neighbor_cache.get('stale-neighbors') is None
+            assert max_distance_cache.get('stale-max') is None
 
 
 class TestEnsureIvfIndexLoaded:
@@ -689,11 +702,17 @@ class TestResultCache:
         assert c.get("old") is None
         assert c.get("fresh") == 2
 
-    def test_sweep_expired_noop_when_ttl_zero(self):
+    def test_sweep_expired_leaves_entries_untouched_when_ttl_zero(self):
+        import time
         from tasks.ivf_manager import _ResultCache
 
         c = _ResultCache(0, 10)
+        c._data["k"] = (time.monotonic() - 1.0, 42)
+
         c.sweep_expired()
+
+        assert list(c._data.keys()) == ["k"]
+        assert c._data["k"][1] == 42
 
     def test_disabled_when_ttl_zero(self):
         from tasks.ivf_manager import _ResultCache

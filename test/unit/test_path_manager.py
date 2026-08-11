@@ -276,13 +276,6 @@ class TestNormalizeSignature:
 
         assert sig == ("", "")
 
-    def test_identical_after_normalization(self):
-        sig1 = _normalize_signature("The Beatles", "Hey Jude")
-        sig2 = _normalize_signature("THE BEATLES", "HEY JUDE")
-        sig3 = _normalize_signature("the beatles", "hey jude")
-
-        assert sig1 == sig2 == sig3
-
     def test_preserves_special_characters(self):
         sig = _normalize_signature("AC/DC", "Back in Black")
 

@@ -130,8 +130,9 @@ def test_wrong_field_count_is_rejected():
 
 
 def test_empty_expression_is_rejected():
-    assert _cron_expr_problem('') is not None
-    assert _cron_expr_problem(None) is not None
+    assert 'Enter a cron expression' in _cron_expr_problem('')
+    assert 'Enter a cron expression' in _cron_expr_problem('   ')
+    assert 'Enter a cron expression' in _cron_expr_problem(None)
 
 
 def test_out_of_domain_value_is_rejected():

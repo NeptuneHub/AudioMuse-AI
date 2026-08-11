@@ -358,17 +358,12 @@
                 return;
             }
             applyBtn.style.display = 'none';
-            let countdown = 20;
-            bannerText.textContent = 'Restarting AudioMuse-AI. Reloading in ' + countdown + ' seconds...';
-            const interval = setInterval(function () {
-                countdown -= 1;
-                if (countdown > 0) {
-                    bannerText.textContent = 'Restarting AudioMuse-AI. Reloading in ' + countdown + ' seconds...';
-                } else {
-                    clearInterval(interval);
-                    window.location.reload();
-                }
-            }, 1000);
+            window.AudioMuseRestart.waitAndGo({
+                element: bannerText,
+                prefix: 'Plugins applied.',
+                target: window.location.pathname,
+                restartScheduled: resp.flask_restart_scheduled
+            });
         }).catch(function (e) {
             applyBtn.disabled = false;
             notify(e.message, false);

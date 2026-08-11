@@ -2,7 +2,7 @@
 Type=Application
 Name=Quit AudioMuse-AI
 GenericName=Stop AudioMuse-AI services
-Comment=Cleanly stop AudioMuse-AI (PostgreSQL, Redis and all workers)
+Comment=Cleanly stop AudioMuse-AI (PostgreSQL and all workers)
 Exec=/usr/bin/audiomuse-ai stop
 Icon=audiomuse-ai
 Terminal=false

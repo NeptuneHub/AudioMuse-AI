@@ -25,6 +25,11 @@ Main Features:
   parameters in config.py, without rewriting values that are still valid.
 * Hashes secrets with Argon2, skips re-hashing values already hashed, treats
   placeholder values as unset, and reports whether server/auth setup is complete.
+* The connection is always ``config.DATABASE_URL`` and is resolved on first use,
+  not at construction, so importing this module never pulls in config. In a
+  frozen build only a supervised child connects at all: the standalone launcher
+  imports config before its embedded Postgres exists and must dial nothing, and
+  ``build_child_env`` sets SERVICE_TYPE on exactly the children.
 """
 
 import os
@@ -34,28 +39,8 @@ import psycopg2
 from argon2 import PasswordHasher
 from argon2 import exceptions as argon2_exceptions
 from psycopg2.extras import RealDictCursor
-from urllib.parse import quote
 
 DEFAULT_CONFIG_TABLE = "app_config"
-BASIC_SERVER_FIELDS = {
-    'MEDIASERVER_TYPE',
-    'JELLYFIN_URL',
-    'JELLYFIN_USER_ID',
-    'JELLYFIN_TOKEN',
-    'NAVIDROME_URL',
-    'NAVIDROME_USER',
-    'NAVIDROME_PASSWORD',
-    'LYRION_URL',
-    'EMBY_URL',
-    'EMBY_USER_ID',
-    'EMBY_TOKEN',
-    'PLEX_URL',
-    'PLEX_TOKEN',
-    'AMPACHE_URL',
-    'AMPACHE_USER',
-    'AMPACHE_PASSWORD',
-}
-AUTH_FIELDS = {'AUTH_ENABLED', 'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN'}
 
 _WARNED_NO_DEFAULT_SERVER = False
 
@@ -86,30 +71,32 @@ def hydrate_worker_config():
 
 class SetupManager:
     def __init__(self, database_url=None):
-        self.database_url = database_url or self._get_database_url()
+        self._database_url = database_url or None
+        self._database_url_resolved = self._database_url is not None
         self.logger = logging.getLogger(__name__)
         self._password_hasher = PasswordHasher()
 
-    def _get_database_url(self):
-        env_url = os.environ.get("DATABASE_URL")
-        if env_url:
-            return env_url
+    @property
+    def database_url(self):
+        if not self._database_url_resolved:
+            self._database_url = self._get_database_url()
+            self._database_url_resolved = True
+        return self._database_url
 
+    @database_url.setter
+    def database_url(self, value):
+        self._database_url = value
+        self._database_url_resolved = True
+
+    def _get_database_url(self):
         import sys
 
-        if getattr(sys, "frozen", False):
+        if getattr(sys, "frozen", False) and not os.environ.get("SERVICE_TYPE"):
             return None
 
         import config
 
-        user = os.environ.get("POSTGRES_USER") or config.POSTGRES_USER
-        password = os.environ.get("POSTGRES_PASSWORD") or config.POSTGRES_PASSWORD
-        host = os.environ.get("POSTGRES_HOST") or config.POSTGRES_HOST
-        port = os.environ.get("POSTGRES_PORT") or config.POSTGRES_PORT
-        db = os.environ.get("POSTGRES_DB") or config.POSTGRES_DB
-        user_escaped = quote(user, safe='')
-        password_escaped = quote(password, safe='')
-        return f"postgresql://{user_escaped}:{password_escaped}@{host}:{port}/{db}"
+        return config.DATABASE_URL
 
     def get_connection(self):
         if not self.database_url:
@@ -288,10 +275,21 @@ class SetupManager:
 
         return config.MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE
 
+    def _is_valid_navidrome_config(self, config_module):
+        if not self._is_valid_string(getattr(config_module, 'NAVIDROME_URL', '')):
+            return False
+        if self._is_valid_string(getattr(config_module, 'NAVIDROME_API_KEY', '')):
+            return True
+        return self._is_valid_string(
+            getattr(config_module, 'NAVIDROME_USER', '')
+        ) and self._is_valid_string(getattr(config_module, 'NAVIDROME_PASSWORD', ''))
+
     def _is_valid_server_config(self, config_module):
         media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
         if media_type not in self.server_required_fields:
             return False
+        if media_type == 'navidrome':
+            return self._is_valid_navidrome_config(config_module)
         optional = set(self.server_optional_fields.get(media_type, []))
         return all(
             self._is_valid_string(getattr(config_module, field, ''))

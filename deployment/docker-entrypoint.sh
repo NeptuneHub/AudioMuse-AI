@@ -92,7 +92,7 @@ log "ready to start ${SERVICE_TYPE}"
 case "$SERVICE_TYPE" in
   worker)
     log "starting worker processes via supervisord"
-    run_supervisorctl_checked start rq-worker-default rq-worker-high rq-janitor
+    run_supervisorctl_checked start queue-worker-default queue-worker-high queue-maintenance
     ;;
   flask)
     log "starting web service via supervisord"

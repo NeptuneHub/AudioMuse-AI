@@ -38,7 +38,7 @@ from flask import request
 
 logger = logging.getLogger(__name__)
 
-_SECRET_CRED_KEYS = ('token', 'password')
+_SECRET_CRED_KEYS = ('token', 'password', 'api_key')
 CRED_MASK = '__unchanged__'
 
 

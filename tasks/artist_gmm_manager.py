@@ -60,12 +60,6 @@ def fit_best_gmm(
     min_components: int = GMM_N_COMPONENTS_MIN,
     max_components: int = GMM_N_COMPONENTS_MAX,
 ) -> Tuple[int, Optional[GaussianMixture]]:
-    """The best-BIC component count AND the model fitted with it.
-
-    The winner is handed back so the caller does not refit it: the sweep already
-    fitted it on this data with these parameters and this random_state, so a
-    refit is one more restarted EM run for numbers we have.
-    """
     n_samples = len(embeddings)
 
     if n_samples == 1:
@@ -230,13 +224,6 @@ def _gmm_worker_count(pending: int) -> int:
 
 
 def _shutdown_gmm_pool() -> None:
-    """Release loky's worker processes, their semaphores and their temp folders.
-
-    loky holds its workers open for reuse across Parallel calls, which is right
-    while the fits are running and wrong afterwards: nothing else in this process
-    fits GMMs, and an RQ job process that exits with them still alive leaks every
-    semaphore and memmap folder they hold.
-    """
     try:
         from joblib.externals.loky import get_reusable_executor
 
@@ -264,7 +251,6 @@ def _release_gmm_pool_temp_folders() -> None:
 
 
 def _fit_artist_job(job: Tuple[str, np.ndarray, str]) -> Tuple[str, Optional[Dict]]:
-    """One artist's GMM. Top level so a worker process can unpickle it."""
     artist_name, embeddings, tracks_hash = job
     params = fit_artist_gmm(artist_name, embeddings)
     if params is None:
@@ -274,7 +260,6 @@ def _fit_artist_job(job: Tuple[str, np.ndarray, str]) -> Tuple[str, Optional[Dic
 
 
 def _cached_gmm_params(existing_gmm_params, artist_name, tracks_hash):
-    """The stored GMM for an artist whose tracks have not changed, else None."""
     if not existing_gmm_params:
         return None
     params = existing_gmm_params.get(artist_name)
@@ -284,7 +269,6 @@ def _cached_gmm_params(existing_gmm_params, artist_name, tracks_hash):
 
 
 def _artist_batches(pending, artist_tracks):
-    """Group artists so one embedding round trip covers ~_FETCH_TRACKS_PER_BATCH tracks."""
     batch = []
     tracks = 0
     for artist_name in pending:
@@ -299,7 +283,6 @@ def _artist_batches(pending, artist_tracks):
 
 
 def _artist_jobs(cur, batch, artist_tracks, artist_track_hashes):
-    """Fetch one batch of artists' embeddings and pack them into fit jobs."""
     wanted = [track['item_id'] for name in batch for track in artist_tracks[name]]
     cur.execute(
         "SELECT item_id, embedding FROM embedding "

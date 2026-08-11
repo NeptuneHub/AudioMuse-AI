@@ -421,7 +421,6 @@ class TestAdminPathEnforcement:
             ('/api/cron', True),
             ('/api/backup', True),
             ('/api/cancel/abc-123', True),
-            ('/api/cancel_all/main_analysis', True),
             ('/api/rebuild_map_cache', True),
             ('/api/clap/cache/refresh', True),
             ('/api/lyrics/cache/refresh', True),
@@ -460,7 +459,6 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             ('/api/status/task-1', True),
             ('/api/cancel/task-1', True),
             ('/api/analysis/start', False),
-            ('/api/cancel_all/analysis', False),
             ('/api/playlists', False),
         ],
     )
@@ -482,15 +480,51 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             assert app_auth.auth_setup_barrier() is None
             assert g.setup_needed is True
 
-    def test_no_setup_flag_once_setup_is_complete(self, app, monkeypatch):
+    def test_no_setup_flag_once_setup_is_complete_and_both_checks_run_in_order(
+        self, app, monkeypatch
+    ):
         from flask import g
 
+        calls = []
         monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
-        monkeypatch.setattr(app_auth, 'check_auth_needed', lambda secret: None)
-        monkeypatch.setattr(app_auth, 'check_admin_needed', lambda: None)
+        monkeypatch.setattr(app_auth, '_jwt_secret_getter', lambda: 'jwt-secret-abc')
+        monkeypatch.setattr(
+            app_auth,
+            'check_auth_needed',
+            lambda secret: calls.append(('auth', secret)),
+        )
+        monkeypatch.setattr(app_auth, 'check_admin_needed', lambda: calls.append(('admin',)))
         with app.test_request_context('/api/servers'):
             assert app_auth.auth_setup_barrier() is None
             assert getattr(g, 'setup_needed', False) is False
+        assert calls == [('auth', 'jwt-secret-abc'), ('admin',)]
+
+    def test_auth_rejection_is_returned_without_reaching_the_admin_check(self, app, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
+        monkeypatch.setattr(app_auth, '_jwt_secret_getter', lambda: 'jwt-secret-abc')
+
+        def _auth(secret):
+            calls.append('auth')
+            return 'unauthorized-sentinel', 401
+
+        def _admin():
+            calls.append('admin')
+            return 'forbidden-sentinel', 403
+
+        monkeypatch.setattr(app_auth, 'check_auth_needed', _auth)
+        monkeypatch.setattr(app_auth, 'check_admin_needed', _admin)
+        with app.test_request_context('/api/servers'):
+            assert app_auth.auth_setup_barrier() == ('unauthorized-sentinel', 401)
+        assert calls == ['auth']
+
+    def test_admin_rejection_is_returned_when_auth_passes(self, app, monkeypatch):
+        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
+        monkeypatch.setattr(app_auth, '_jwt_secret_getter', lambda: 'jwt-secret-abc')
+        monkeypatch.setattr(app_auth, 'check_auth_needed', lambda secret: None)
+        monkeypatch.setattr(app_auth, 'check_admin_needed', lambda: ('forbidden-sentinel', 403))
+        with app.test_request_context('/api/servers'):
+            assert app_auth.auth_setup_barrier() == ('forbidden-sentinel', 403)
 
 
 class TestPasswordHashingUnit:

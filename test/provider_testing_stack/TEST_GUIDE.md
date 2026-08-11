@@ -16,10 +16,10 @@
 │            │  shared network: audiomuse-test-net              │
 │  ┌─────────┼── docker-compose-test-audiomuse.yaml ─────────┐ │
 │  │         ▼                                                │ │
-│  │  AM-Jellyfin :8001  (redis + postgres:5433 + flask+wkr) │ │
-│  │  AM-Emby     :8002  (redis + postgres:5434 + flask+wkr) │ │
-│  │  AM-Navidrome:8003  (redis + postgres:5435 + flask+wkr) │ │
-│  │  AM-Lyrion   :8004  (redis + postgres:5436 + flask+wkr) │ │
+│  │  AM-Jellyfin :8001  (postgres:5433 + flask + worker)     │ │
+│  │  AM-Emby     :8002  (postgres:5434 + flask + worker)     │ │
+│  │  AM-Navidrome:8003  (postgres:5435 + flask + worker)     │ │
+│  │  AM-Lyrion   :8004  (postgres:5436 + flask + worker)     │ │
 │  └──────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -123,7 +123,7 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
    - Username: e.g. `admin`
    - Password: e.g. `admin`
 3. Navidrome auto-scans `/music` on startup. Verify in the UI that tracks appear.
-4. **Navidrome uses username/password auth** (Subsonic API), not tokens.
+4. **Navidrome uses username/password auth** (OpenSubsonic API), not tokens.
 5. Update `.env.test`:
    ```
    NAVIDROME_USER=admin
@@ -168,7 +168,7 @@ Verify all containers are running:
 docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test ps
 ```
 
-You should see 16 containers (4 × {redis, postgres, flask, worker}).
+You should see 12 containers (4 x {postgres, flask, worker}).
 
 Check GPU allocation:
 

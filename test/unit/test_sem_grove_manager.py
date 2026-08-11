@@ -9,54 +9,130 @@
 """Semantic-grove index that fuses lyrics and audio vectors for song search.
 
 Covers the sem-grove manager's merged-vector construction, in-memory cache
-helpers and song-seeded neighbour search, plus a small build-and-search round trip.
+helpers and song-seeded neighbour search, plus a build/load/search round trip
+driven through the real disk-paged IVF layer against an in-memory stand-in for
+the ivf_dir and ivf_cell tables.
 
 Main Features:
 * make_merged_vector returns a scaled float32 vector or None for zero inputs
 * Cache helpers report loaded state and item ids only once filled
 * search_by_song puts the seed first, excludes it from the limit and caps per artist
-* Same title/artist neighbours are de-duplicated; round trip is seed-first
+* Same title/artist neighbours are de-duplicated
+* build_and_store_sem_grove_index persists one IVF directory plus cells covering
+  every song, and load_sem_grove_cache_from_db reads them back so a search over
+  the reloaded index is seed-first
 """
 
+import re
 import sys
-import os
-import importlib.util
-import pytest
+import types
+
 import numpy as np
 from unittest.mock import MagicMock, patch
 
-
-def _load_sem_grove():
-    import types
-
-    if 'tasks' not in sys.modules:
-        stub = types.ModuleType('tasks')
-        stub.__path__ = []
-        sys.modules['tasks'] = stub
-
-    repo_root = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-    )
-
-    helper_path = os.path.join(repo_root, 'tasks', 'index_build_helpers.py')
-    helper_name = 'tasks.index_build_helpers'
-    if helper_name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(helper_name, helper_path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[helper_name] = mod
-        spec.loader.exec_module(mod)
-
-    mod_path = os.path.join(repo_root, 'tasks', 'sem_grove_manager.py')
-    mod_name = 'tasks.sem_grove_manager'
-    if mod_name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(mod_name, mod_path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[mod_name] = mod
-        spec.loader.exec_module(mod)
-    return sys.modules[mod_name]
+from tasks.paged_ivf import unpack_cell, unpack_directory
 
 
-_sgm = _load_sem_grove()
+def _blob_bytes(value):
+    return bytes(getattr(value, "adapted", value))
+
+
+def _segment_base(like_pattern):
+    base = like_pattern.replace("\\", "")
+    return base[: -len("_%_%")] if base.endswith("_%_%") else base
+
+
+def _segment_pattern(like_pattern):
+    return re.compile(r"^%s_\d+_\d+$" % re.escape(_segment_base(like_pattern)))
+
+
+class _FakeIvfCursor:
+    def __init__(self, db):
+        self._db = db
+        self._rows = []
+        self.connection = db
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def close(self):
+        return None
+
+    def mogrify(self, template, args):
+        self._db.mogrified.append(tuple(args))
+        return ("<<%d>>" % (len(self._db.mogrified) - 1)).encode("ascii")
+
+    def execute(self, sql, params=None):
+        text = sql.decode("utf-8") if isinstance(sql, (bytes, bytearray)) else sql
+        self._rows = self._db.run(" ".join(text.split()), params)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _FakeIvfDb:
+    encoding = "UTF8"
+
+    def __init__(self):
+        self.cells = {}
+        self.blobs = {}
+        self.mogrified = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self, *args, **kwargs):
+        return _FakeIvfCursor(self)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def run(self, sql, params):
+        if sql.startswith("DELETE FROM ivf_cell"):
+            for key in [k for k in self.cells if k[0] == params[0]]:
+                del self.cells[key]
+            return []
+        if sql.startswith("INSERT INTO ivf_cell"):
+            for token in re.findall(r"<<(\d+)>>", sql):
+                name, cell_id, blob = self.mogrified[int(token)]
+                self.cells[(name, int(cell_id))] = _blob_bytes(blob)
+            return []
+        if sql.startswith("DELETE FROM ivf_dir"):
+            pattern = _segment_pattern(params[1])
+            for name in [n for n in self.blobs if n == params[0] or pattern.match(n)]:
+                del self.blobs[name]
+            return []
+        if sql.startswith("INSERT INTO ivf_dir"):
+            self.blobs[params[0]] = _blob_bytes(params[1])
+            return []
+        if sql.startswith("SELECT blob_data FROM ivf_dir"):
+            blob = self.blobs.get(params[0])
+            return [(blob,)] if blob is not None else []
+        if sql.startswith("SELECT name, blob_data FROM ivf_dir"):
+            pattern = _segment_pattern(params[0])
+            return [(n, b) for n, b in self.blobs.items() if pattern.match(n)]
+        if sql.startswith("SELECT cell_id, octet_length(cell_data) FROM ivf_cell"):
+            return sorted(
+                (cell_id, len(blob))
+                for (name, cell_id), blob in self.cells.items()
+                if name == params[0]
+            )
+        if sql.startswith("SELECT cell_id, cell_data FROM ivf_cell"):
+            wanted = {int(c) for c in params[1]}
+            return [
+                (cell_id, blob)
+                for (name, cell_id), blob in self.cells.items()
+                if name == params[0] and cell_id in wanted
+            ]
+        raise AssertionError("unexpected SQL against the fake IVF database: " + sql)
 
 
 class TestMakeMergedVector:
@@ -227,7 +303,7 @@ class TestSearchBySong:
             patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata),
             patch("config.MAX_SONGS_PER_ARTIST", 0),
-            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", 0.0),
             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
         ):
             results = search_by_song(seed, limit=5)
@@ -249,7 +325,7 @@ class TestSearchBySong:
             patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata),
             patch("config.MAX_SONGS_PER_ARTIST", 0),
-            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", 0.0),
             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
         ):
             results = search_by_song(seed, limit=limit)
@@ -268,7 +344,7 @@ class TestSearchBySong:
             patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata),
             patch("config.MAX_SONGS_PER_ARTIST", 0),
-            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", 0.0),
             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
         ):
             results = search_by_song(seed, limit=8)
@@ -290,7 +366,7 @@ class TestSearchBySong:
             patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=same_artist_fetch),
             patch("config.MAX_SONGS_PER_ARTIST", 1),
-            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", 0.0),
             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
         ):
             results = search_by_song(seed, limit=10)
@@ -318,7 +394,7 @@ class TestSearchBySong:
             patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=dedup_fetch),
             patch("config.MAX_SONGS_PER_ARTIST", 0),
-            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", 0.0),
             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
         ):
             results = search_by_song(seed, limit=8)
@@ -328,175 +404,157 @@ class TestSearchBySong:
 
 
 class TestSemGroveRoundTrip:
-    pytest.importorskip("ivf", reason="ivf package required for round-trip test")
+    LYRICS_DIM = 16
+    AUDIO_DIM = 8
+    MERGED_DIM = 24
+    SONG_COUNT = 15
+    INDEX_NAME = "sem_grove_index"
+    DIRECTORY_NAME = "sem_grove_index__ivf_dir"
 
-    def _make_db_mock(self, n_songs, lyrics_dim=16, audio_dim=8):
+    def _build_into_fake_db(self):
+        from tasks.sem_grove_manager import build_and_store_sem_grove_index
+
         rng = np.random.default_rng(7)
-
-        lyrics_rows = []
-        audio_rows = []
-        for i in range(n_songs):
-            lid = f"song-{i}"
-            lv = rng.standard_normal(lyrics_dim).astype(np.float32).tobytes()
-            av = rng.standard_normal(audio_dim).astype(np.float32).tobytes()
-            lyrics_rows.append((lid, lv))
-            audio_rows.append((lid, av))
-
-        return lyrics_rows, audio_rows, lyrics_dim, audio_dim
-
-    def _make_cursor_mock(self, lyrics_rows, audio_rows):
-        mock_cur = MagicMock()
-        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
-        mock_cur.__exit__ = MagicMock(return_value=False)
-
-        call_count = {"n": 0}
-
-        def fetchall_side():
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                return lyrics_rows
-            return audio_rows
-
-        mock_cur.fetchall.side_effect = fetchall_side
-
-        mock_cur.fetchone.return_value = None
-        return mock_cur
-
-    def test_build_and_search_produces_seed_first(self):
-        import io
-
-        try:
-            import ivf  # noqa: F401
-        except ImportError:
-            pytest.skip("ivf not installed")
-
-        from tasks.sem_grove_manager import (
-            build_and_store_sem_grove_index,
-            search_by_song,
-            _SEM_GROVE_CACHE,
-        )
-
-        n = 15
-        lyrics_dim = 16
-        audio_dim = 8
-        lyrics_rows, audio_rows, ld, ad = self._make_db_mock(n, lyrics_dim, audio_dim)
-
-        stored: dict = {}
-
-        mock_cur = MagicMock()
-        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
-        mock_cur.__exit__ = MagicMock(return_value=False)
-        mock_cur.fetchone.return_value = None
-
-        def execute_side(sql, params=None):
-            if params and "INSERT" in sql.upper() and len(params) >= 4:
-                name, data, idmap, dim = params[0], params[1], params[2], params[3]
-                stored[name] = (bytes(data) if data else b"", idmap, int(dim))
-
-        mock_cur.execute.side_effect = execute_side
-
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = mock_cur
-        mock_conn.commit.return_value = None
+        item_ids = [f"song-{i}" for i in range(self.SONG_COUNT)]
+        lyrics = rng.standard_normal((self.SONG_COUNT, self.LYRICS_DIM)).astype(np.float32)
+        audio = rng.standard_normal((self.SONG_COUNT, self.AUDIO_DIM)).astype(np.float32)
 
         def fake_stream(table, column, dim, where_clause=None, **kwargs):
             if table == "lyrics_embedding":
-                rows = lyrics_rows
-            elif table == "embedding":
-                rows = audio_rows
-            else:
-                raise AssertionError(f"unexpected stream table: {table!r}")
-            ids = [r[0] for r in rows]
-            buf = np.empty((len(rows), dim), dtype=np.float32)
-            for i, (_, blob) in enumerate(rows):
-                buf[i] = np.frombuffer(blob, dtype=np.float32)
-            return buf, ids
+                return lyrics.copy(), list(item_ids)
+            if table == "embedding":
+                return audio.copy(), list(item_ids)
+            raise AssertionError(f"unexpected stream table: {table!r}")
 
-        import types as _t
-
-        _ah_stub = _t.ModuleType('app_helper')
-        _ah_stub.get_db = MagicMock(return_value=mock_conn)
-        _ah_stub.get_score_data_by_ids = lambda item_ids: []
-
+        db = _FakeIvfDb()
         with (
-            patch.dict(sys.modules, {'app_helper': _ah_stub}),
-            patch("config.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True),
-            patch("config.EMBEDDING_DIMENSION", audio_dim, create=True),
-            patch("tasks.index_build_helpers.stream_embeddings_to_buffer", side_effect=fake_stream),
+            patch("config.LYRICS_EMBEDDING_DIMENSION", self.LYRICS_DIM),
+            patch("config.EMBEDDING_DIMENSION", self.AUDIO_DIM),
+            patch("config.IVF_DISK_CACHE_ENABLED", False),
+            patch(
+                "tasks.index_build_helpers.stream_embeddings_to_buffer",
+                side_effect=fake_stream,
+            ),
         ):
-            from config import IVF_MAX_PART_SIZE_MB  # noqa: F401
+            ok = build_and_store_sem_grove_index(db_conn=db)
+        return ok, db, item_ids
 
-            ok = build_and_store_sem_grove_index(db_conn=mock_conn)
+    def _app_helper_stub(self, db):
+        stub = types.ModuleType("app_helper")
+        stub.get_db = lambda: db
+        return stub
 
-        if not ok or not stored:
-            pytest.skip(
-                "build_and_store_sem_grove_index did not store anything (likely missing config)"
-            )
+    def test_build_persists_one_ivf_directory_and_cells_covering_every_song(self):
+        ok, db, item_ids = self._build_into_fake_db()
 
-        whitening_row = stored.get("sem_grove_whitening")
-        index_row = stored.get("sem_grove_index")
+        assert ok is True
+        assert db.commits == 1
+        assert db.rollbacks == 0
+        assert set(db.blobs) == {self.DIRECTORY_NAME}
 
-        if not whitening_row or not index_row:
-            pytest.skip("Expected whitening and index rows not captured")
+        centroids, id2cell, stored_ids, dim, metric, normalized, storage_dtype = unpack_directory(
+            db.blobs[self.DIRECTORY_NAME]
+        )
+        assert stored_ids == sorted(item_ids)
+        assert dim == self.MERGED_DIM
+        assert metric == "angular"
+        assert normalized is True
+        assert centroids.shape[1] == self.MERGED_DIM
+        assert id2cell.shape == (self.SONG_COUNT,)
 
-        whitening_json = whitening_row[1]
-        index_binary = index_row[0]
-        index_idmap = index_row[1]
+        assert {name for name, _cell_id in db.cells} == {self.INDEX_NAME}
+        vector_ids = []
+        for blob in db.cells.values():
+            ids, vecs = unpack_cell(blob, dim, storage_dtype)
+            assert vecs.shape == (ids.shape[0], self.MERGED_DIM)
+            vector_ids.extend(int(i) for i in ids)
+        assert sorted(vector_ids) == list(range(self.SONG_COUNT))
 
-        def fake_load():
-            import json as _json
-            import ivf as _ivf
+    def test_stored_index_reloads_through_the_real_cache_loader(self):
+        import tasks.sem_grove_manager as sgm
+        from tasks.sem_grove_manager import (
+            get_sem_grove_item_ids,
+            is_sem_grove_cache_loaded,
+            load_sem_grove_cache_from_db,
+        )
 
-            whitening = _json.loads(whitening_json)
-            std_lyrics = np.array(whitening["std_lyrics"], dtype=np.float32)
-            std_audio = np.array(whitening["std_audio"], dtype=np.float32)
-            w_l = float(whitening["w_lyrics"])
-            w_a = float(whitening["w_audio"])
-            ld_ = int(whitening["lyrics_dim"])
-            ad_ = int(whitening["audio_dim"])
-
-            stream = io.BytesIO(index_binary)
-            loaded = _ivf.Index.load(stream)
-
-            id_map_ = {int(k): v for k, v in _json.loads(index_idmap).items()}
-            reverse_id_map = {v: k for k, v in id_map_.items()}
-
-            _SEM_GROVE_CACHE.update(
-                {
-                    "index": loaded,
-                    "id_map": id_map_,
-                    "reverse_id_map": reverse_id_map,
-                    "std_lyrics": std_lyrics,
-                    "std_audio": std_audio,
-                    "lyrics_dim": ld_,
-                    "audio_dim": ad_,
-                    "w_lyrics": w_l,
-                    "w_audio": w_a,
-                    "loaded": True,
-                    "song_count": len(id_map_),
-                }
-            )
-            return True
-
-        fake_load()
-
-        seed_id = "song-0"
-
-        def fake_fetch_meta(item_ids):
-            return {iid: {"title": f"Title {iid}", "author": f"Artist {iid}"} for iid in item_ids}
+        ok, db, item_ids = self._build_into_fake_db()
+        assert ok is True
 
         with (
-            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=fake_fetch_meta),
+            patch.dict(sys.modules, {"app_helper": self._app_helper_stub(db)}),
+            patch.dict(sgm._SEM_GROVE_CACHE, {}, clear=False),
+            patch("config.LYRICS_EMBEDDING_DIMENSION", self.LYRICS_DIM),
+            patch("config.EMBEDDING_DIMENSION", self.AUDIO_DIM),
+            patch("config.IVF_DISK_CACHE_ENABLED", False),
+        ):
+            loaded = load_sem_grove_cache_from_db()
+
+            assert loaded is True
+            assert is_sem_grove_cache_loaded() is True
+            assert get_sem_grove_item_ids() == set(item_ids)
+            assert sgm._SEM_GROVE_CACHE["song_count"] == self.SONG_COUNT
+            assert sgm._SEM_GROVE_CACHE["lyrics_dim"] == self.LYRICS_DIM
+            assert sgm._SEM_GROVE_CACHE["audio_dim"] == self.AUDIO_DIM
+            assert len(sgm._SEM_GROVE_CACHE["index"]) == self.SONG_COUNT
+
+    def test_missing_directory_row_leaves_the_cache_unloaded(self):
+        import tasks.sem_grove_manager as sgm
+        from tasks.sem_grove_manager import get_sem_grove_item_ids, load_sem_grove_cache_from_db
+
+        db = _FakeIvfDb()
+
+        with (
+            patch.dict(sys.modules, {"app_helper": self._app_helper_stub(db)}),
+            patch.dict(sgm._SEM_GROVE_CACHE, {}, clear=False),
+            patch("config.LYRICS_EMBEDDING_DIMENSION", self.LYRICS_DIM),
+            patch("config.EMBEDDING_DIMENSION", self.AUDIO_DIM),
+            patch("config.IVF_DISK_CACHE_ENABLED", False),
+        ):
+            assert load_sem_grove_cache_from_db() is False
+            assert sgm._SEM_GROVE_CACHE["loaded"] is False
+            assert sgm._SEM_GROVE_CACHE["song_count"] == 0
+            assert sgm._SEM_GROVE_CACHE["index"] is None
+            assert get_sem_grove_item_ids() == set()
+
+    def test_search_over_the_reloaded_index_is_seed_first_then_five_neighbours(self):
+        import tasks.sem_grove_manager as sgm
+        from tasks.sem_grove_manager import load_sem_grove_cache_from_db, search_by_song
+
+        ok, db, item_ids = self._build_into_fake_db()
+        assert ok is True
+
+        def fake_fetch_metadata(ids):
+            return {
+                iid: {"title": f"Title {iid}", "author": f"Artist {iid}", "album": ""}
+                for iid in ids
+            }
+
+        seed = "song-0"
+        with (
+            patch.dict(sys.modules, {"app_helper": self._app_helper_stub(db)}),
+            patch.dict(sgm._SEM_GROVE_CACHE, {}, clear=False),
+            patch("config.LYRICS_EMBEDDING_DIMENSION", self.LYRICS_DIM),
+            patch("config.EMBEDDING_DIMENSION", self.AUDIO_DIM),
+            patch("config.IVF_DISK_CACHE_ENABLED", False),
             patch("config.MAX_SONGS_PER_ARTIST", 0),
-            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
+            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=fake_fetch_metadata),
         ):
-            results = search_by_song(seed_id, limit=5)
+            assert load_sem_grove_cache_from_db() is True
+            results = search_by_song(seed, limit=5, radius_similarity=False)
 
-        assert results, "search_by_song returned nothing after round-trip build+load"
-        assert results[0]["item_id"] == seed_id
-        assert results[0].get("is_seed") is True
-        non_seed = [r for r in results if not r.get("is_seed")]
-        assert len(non_seed) <= 5
-        for r in non_seed:
-            assert r["item_id"] != seed_id
+        assert results[0]["item_id"] == seed
+        assert results[0]["is_seed"] is True
+        assert results[0]["similarity"] == 1.0
+        assert results[0]["title"] == "Title song-0"
+
+        neighbours = [r["item_id"] for r in results[1:]]
+        assert len(neighbours) == 5
+        assert len(set(neighbours)) == 5
+        assert seed not in neighbours
+        assert set(neighbours) <= set(item_ids)
+        assert all(r.get("is_seed") is None for r in results[1:])
+        assert [r["similarity"] for r in results[1:]] == sorted(
+            (r["similarity"] for r in results[1:]), reverse=True
+        )

@@ -8,34 +8,23 @@
 
 """Registry of configured media servers and cross-server track-id mapping.
 
-Persists every configured media server (the ``music_servers`` table) plus the
-per-track mapping from a canonical library ``item_id`` to that track's id on
-each server (the ``track_server_map`` table). The registry is the ONLY
-persistent home of media-server settings, the default server included: config
-module globals are a read-only projection of the default row (loaded by
-``config._apply_db_overrides`` at import/refresh), the setup wizard writes here
-via ``save_default_server_settings``, and init_db migrates legacy app_config
-rows in once and deletes them.
+Persists every configured media server (the music_servers table) plus the
+per-track mapping from a canonical library item_id to that track's id on each
+server (the track_server_map table). The registry is the ONLY persistent home of
+media-server settings, the default server included: config module globals are a
+read-only projection of the default row, the setup wizard writes here, and
+init_db migrates legacy app_config rows in once and deletes them.
 
 Main Features:
 * CRUD over the server registry with a single enforced default server.
-* ``save_default_server_settings`` persists the wizard's media settings;
-  ``creds_from_config`` remains only as first-boot migration seed material.
 * Resolves a normalized server context by id and translates canonical item_ids
-  to a target server's provider track ids (legacy raw ids may use identity on
-  the default server; canonical ids always require a mapping).
-* ``canonical_input_ids`` is the single input-side resolver turning
-  caller-supplied provider ids into canonical ids (fail-open pass-through).
-* ``servers_for_scope`` / ``has_secondary_servers`` resolve which servers a
-  multi-server operation should touch (None = legacy config default).
-* Self-heals the default server: the config globals are projected once, when the
-  config module is imported, so a worker that boots before the database is
-  reachable (or before the 3.0 migration filled the registry) keeps EMPTY
-  media-server settings for the life of the process and every default-server call
-  builds a URL like '/Items'; a worker that was never restarted after a wizard
-  change keeps the OLD ones and talks to the wrong machine. ``context_for``
-  compares the projection field by field against the default row and binds the row
-  itself whenever they disagree, instead of returning None.
+  to a target server's provider track ids.
+* canonical_input_ids is the single input-side resolver (fail-open pass-through).
+* servers_for_scope / has_secondary_servers resolve which servers a
+  multi-server operation should touch.
+* Self-heals the default server: context_for compares the config projection
+  against the default row and binds the row when they disagree, so a stale boot
+  never talks to the wrong machine.
 """
 
 import logging

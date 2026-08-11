@@ -2,7 +2,7 @@
 # Post-remove for the AudioMuse-AI native Linux package (deb + rpm).
 # Refresh the desktop-entry / icon caches after our files are gone. We do NOT
 # touch the user's data dir (~/.local/share/AudioMuse-AI -- the embedded
-# Postgres cluster, Redis state, logs and backups); a package removal must never
+# Postgres cluster, logs and backups); a package removal must never
 # destroy a user's analysis database. Removing it is left to the user.
 set -e
 
