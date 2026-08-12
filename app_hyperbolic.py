@@ -71,8 +71,11 @@ def hyperbolic_similar_api():
     ---
     tags:
       - Hyperbolic Explorer
-    summary: Re-rank raw-space candidates by exact Poincare distance, optionally
-      filtered inward (roots) or outward (niche) relative to the seed's radius.
+    summary: Re-rank candidates by exact Poincare distance. similar re-ranks
+      raw-space IVF neighbors; roots / niche draw their pool by radius (at
+      least HYPERBOLIC_RADIAL_SPREAD of the radial range away from the seed)
+      so they visibly move inward / outward instead of hugging the seed's
+      radius band.
     requestBody:
       required: true
       content:
@@ -126,6 +129,14 @@ def hyperbolic_similar_api():
                   type: integer
                 mode:
                   type: string
+                seed_radius:
+                  type: number
+                  format: float
+                  nullable: true
+                  description: Radius of the seed in the Poincare ball (mode boundary).
+                seed_item_id:
+                  type: string
+                  description: Provider id of the seed song on the selected server.
       400:
         description: Missing item_id, invalid mode, or seed without a projection.
       500:
@@ -133,7 +144,7 @@ def hyperbolic_similar_api():
     """
     import app_server_context
     from app_helper import attach_song_features
-    from tasks.hyperbolic_manager import hyperbolic_similar
+    from tasks.hyperbolic_manager import get_poincare_radius, hyperbolic_similar
 
     try:
         data = request.get_json() or {}
@@ -154,7 +165,16 @@ def hyperbolic_similar_api():
         _attach_title_author(results)
         attach_song_features(results)
         results = app_server_context.scope_results(results, id_key="item_id")
-        return jsonify({"results": results, "count": len(results), "mode": mode})
+        # Expose the seed's radius so the frontend can draw the mode boundary
+        # (roots = inside the seed radius, niche = outside it) on its ball view.
+        seed_id_map = app_server_context.translate_ids_for_request([canonical_id])
+        return jsonify({
+            "results": results,
+            "count": len(results),
+            "mode": mode,
+            "seed_radius": get_poincare_radius(canonical_id),
+            "seed_item_id": seed_id_map.get(canonical_id) or canonical_id,
+        })
 
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -257,7 +277,7 @@ def hyperbolic_cache_status():
     ---
     tags:
       - Hyperbolic Explorer
-    summary: Return the cached tree's root band count, node count and track count.
+    summary: Return the cached tree's root folder count, node count and track count.
     responses:
       200:
         description: Cache summary.

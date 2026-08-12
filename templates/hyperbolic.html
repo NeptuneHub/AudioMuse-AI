@@ -67,6 +67,79 @@
     .tree-leaf-playlist .tree-leaf-status { flex-basis: 100%; font-size: 0.85rem; }
     .tree-loading { color: var(--text-muted); font-size: 0.9rem; margin: 0.5rem 0; }
     .tree-error { color: #dc2626; font-size: 0.9rem; margin: 0.5rem 0; }
+
+    .autocomplete-container { position: relative; }
+    .autocomplete-results {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        z-index: 20;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        box-shadow: var(--shadow-card);
+        max-height: 280px;
+        overflow-y: auto;
+    }
+    .autocomplete-item {
+        padding: 0.55rem 0.75rem;
+        cursor: pointer;
+        border-bottom: 1px solid var(--border-color);
+        font-size: 0.9rem;
+    }
+    .autocomplete-item:last-child { border-bottom: none; }
+    .autocomplete-item:hover,
+    .autocomplete-item.selected { background: var(--color-primary-soft, rgba(99, 102, 241, 0.12)); }
+    .autocomplete-item .title { font-weight: 500; }
+    .autocomplete-item .artist { color: var(--text-muted); font-size: 0.85rem; }
+    .autocomplete-item .album { color: var(--text-muted); font-size: 0.8rem; }
+
+    /* Poincare ball panel */
+    .hyper-ball-panel {
+        margin: 1rem 0;
+        padding: 1rem;
+        border: 1px solid var(--border-color);
+        border-radius: 0.6rem;
+        background: var(--bg-card);
+    }
+    .hyper-ball-panel h2 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+    .hyper-ball-hint { margin: 0 0 0.75rem; color: var(--text-muted); font-size: 0.85rem; }
+    .hyper-ball-layout { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+    #hyper-ball { width: 300px; height: 300px; max-width: 100%; flex: 0 0 auto; }
+    #hyper-ball .ball-shell { fill: var(--bg-input, #f8fafc); stroke: var(--border-color); stroke-width: 2; }
+    #hyper-ball .ball-boundary { stroke-dasharray: 5 5; }
+    #hyper-ball .ball-dot { cursor: pointer; }
+    #hyper-ball .ball-dot:hover { stroke: var(--text-main); stroke-width: 1.5; }
+    .hyper-ball-side { flex: 1 1 14rem; min-width: 12rem; font-size: 0.85rem; }
+    .hyper-ball-legend { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.75rem; }
+    .ball-legend-title { font-weight: 600; margin-bottom: 0.2rem; }
+    .ball-legend-row {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        cursor: pointer;
+        padding: 0.15rem 0.3rem;
+        border-radius: 0.35rem;
+    }
+    .ball-legend-row:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
+    .ball-legend-row.is-active { font-weight: 600; }
+    .ball-legend-swatch {
+        display: inline-block;
+        width: 0.8rem;
+        height: 0.8rem;
+        border-radius: 0.25rem;
+        flex: 0 0 auto;
+    }
+    .ball-swatch-dot, .ball-swatch-seed { border-radius: 50%; }
+    .ball-legend-check { margin-left: auto; color: var(--color-primary); }
+    .hyper-ball-detail {
+        color: var(--text-main);
+        background: var(--bg-input, rgba(0, 0, 0, 0.03));
+        border: 1px solid var(--border-color);
+        border-radius: 0.4rem;
+        padding: 0.5rem 0.6rem;
+    }
 </style>
 {% endblock %}
 
@@ -124,6 +197,24 @@
             </button>
         </form>
 
+        <section class="hyper-ball-panel" aria-label="Poincare ball view">
+            <h2>Poincare Ball</h2>
+            <p class="hyper-ball-hint">
+                The highlighted region is what the selected mode searches: <strong>Standard Similar</strong>
+                scans a band around the seed, <strong>Roots / Inward</strong> looks toward the origin (foundational
+                sounds), <strong>Niche / Outward</strong> looks toward the boundary (obscure sub-genres).
+                After a search the result tracks appear as dots.
+            </p>
+            <div class="hyper-ball-layout">
+                <svg id="hyper-ball" viewBox="0 0 320 320" role="img"
+                     aria-label="Poincare ball showing the active search mode region and result positions"></svg>
+                <div class="hyper-ball-side">
+                    <div id="hyper-ball-legend" class="hyper-ball-legend"></div>
+                    <div id="hyper-ball-detail" class="hyper-ball-detail"></div>
+                </div>
+            </div>
+        </section>
+
         <div id="status" role="status" aria-live="polite"></div>
 
         <section id="hyper-results-section" class="hidden">
@@ -150,7 +241,7 @@
 
     <!-- Tab 2: Hierarchy Directory -->
     <div class="tab-pane" id="tab-tree">
-        <p>Browse the library as a virtual directory tree. The root splits by mood (Happy, Sad, Danceable, ...), then by main, second and third genre from each track's mood_vector; leaf folders list the actual tracks. Deep groups that have no further genre fall back to k-means sub-folders.</p>
+        <p>Browse the library as a virtual directory tree. The root splits by main genre, then by subgenre, then into named k-means clusters; leaf folders list the actual tracks. Without genre data the tree falls back to a mood partition followed by the main-genre and named-cluster levels.</p>
         <div id="hyper-tree" class="tree-root"></div>
     </div>
 </section>
@@ -239,8 +330,10 @@
                 ? { text: s.distance.toFixed(3) + ' · R ' + Number(s.hyperbolic_radius).toFixed(3), cls: 'badge-neutral' }
                 : null;
 
-            const renderResults = (results) => {
-                currentTrackIds = results.map(r => r.item_id);
+            const renderResults = (results, seedId) => {
+                // Like the similar-song page, the searched song is not shown in
+                // the results table but always leads the playlist.
+                currentTrackIds = [seedId, ...results.map(r => r.item_id)].filter(Boolean);
                 if (!results.length) {
                     statusDiv.textContent = 'No tracks found for this mode.';
                     statusDiv.className = '';
@@ -248,6 +341,164 @@
                 }
                 resultsWrapper.innerHTML = renderSongList(results, { metric: hyperbolicBadge });
             };
+
+            // ----- Poincare ball view -----
+            const MODE_META = {
+                similar: { label: 'Standard Similar', color: '#6366f1' },
+                roots:   { label: 'Roots / Inward',  color: '#14b8a6' },
+                niche:   { label: 'Niche / Outward', color: '#f97316' }
+            };
+            const MODE_REGION_DESC = {
+                similar: 'a band around the seed radius (nearest neighbors in every direction)',
+                roots:   'the inner disk (tracks closer to the origin - foundational sounds)',
+                niche:   'the outer annulus (tracks toward the boundary - obscure sub-genres)'
+            };
+            const BALL_CX = 160, BALL_CY = 160, BALL_R = 140;
+            const ballSvg = document.getElementById('hyper-ball');
+            const ballLegend = document.getElementById('hyper-ball-legend');
+            const ballDetail = document.getElementById('hyper-ball-detail');
+            const ballState = { seedRadius: null, seedLabel: null, mode: 'similar', results: [] };
+
+            const hashAngle = (s) => {
+                let h = 2166136261;
+                for (let i = 0; i < s.length; i++) {
+                    h ^= s.charCodeAt(i);
+                    h = Math.imul(h, 16777619);
+                }
+                return ((h >>> 0) % 3600) / 3600 * 2 * Math.PI;
+            };
+
+            const hexToRgb = (hex) => {
+                const n = parseInt(hex.slice(1), 16);
+                return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+            };
+
+            const mixRgb = (a, b, t) => {
+                const c = a.map((v, i) => Math.round(v + (b[i] - v) * t));
+                return 'rgb(' + c.join(',') + ')';
+            };
+
+            const ballPoint = (r, angle) => [
+                BALL_CX + r * BALL_R * Math.cos(angle),
+                BALL_CY + r * BALL_R * Math.sin(angle)
+            ];
+
+            const circlePath = (r) => {
+                const [x0, y0] = ballPoint(r, 0);
+                const [x1, y1] = ballPoint(r, Math.PI);
+                const rr = (r * BALL_R).toFixed(2);
+                return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${rr} ${rr} 0 1 0 ${x1.toFixed(2)} ${y1.toFixed(2)} ` +
+                       `A ${rr} ${rr} 0 1 0 ${x0.toFixed(2)} ${y0.toFixed(2)} Z`;
+            };
+
+            const ballRegion = (seedR, color) => {
+                const r0 = (seedR * BALL_R).toFixed(2);
+                const boundary = `<circle class="ball-boundary" cx="${BALL_CX}" cy="${BALL_CY}" r="${r0}" ` +
+                    `fill="none" stroke="${color}" stroke-width="1.5" opacity="0.9"/>`;
+                if (ballState.mode === 'roots') {
+                    return `<circle class="ball-region" cx="${BALL_CX}" cy="${BALL_CY}" r="${r0}" ` +
+                           `fill="${color}" opacity="0.22"/>` + boundary;
+                }
+                if (ballState.mode === 'niche') {
+                    return `<path class="ball-region" fill-rule="evenodd" fill="${color}" opacity="0.22" ` +
+                           `d="${circlePath(1)} ${circlePath(seedR)}"/>` + boundary;
+                }
+                // similar: faint full-disk wash plus a ring band around the seed radius
+                const band = 0.09 * BALL_R;
+                return `<circle class="ball-region" cx="${BALL_CX}" cy="${BALL_CY}" r="${BALL_R}" ` +
+                       `fill="${color}" opacity="0.07"/>` +
+                       `<circle class="ball-region" cx="${BALL_CX}" cy="${BALL_CY}" r="${r0}" fill="none" ` +
+                       `stroke="${color}" stroke-width="${(band * 2).toFixed(2)}" opacity="0.35"/>` + boundary;
+            };
+
+            const renderBallLegend = (meta, seedR) => {
+                ballLegend.innerHTML =
+                    '<div class="ball-legend-title">Mode region</div>' +
+                    Object.keys(MODE_META).map((k) => {
+                        const m = MODE_META[k];
+                        return `<div class="ball-legend-row${k === ballState.mode ? ' is-active' : ''}" data-mode="${k}">` +
+                            `<span class="ball-legend-swatch" style="background:${m.color}"></span>` +
+                            `<span>${esc(m.label)}</span>` +
+                            (k === ballState.mode ? '<span class="ball-legend-check">&#10003;</span>' : '') +
+                            '</div>';
+                    }).join('') +
+                    `<div class="ball-legend-row"><span class="ball-legend-swatch ball-swatch-seed" style="background:${meta.color}"></span>` +
+                    `<span>Seed${ballState.seedRadius !== null ? ' (R ' + seedR.toFixed(3) + ')' : ''}</span></div>` +
+                    '<div class="ball-legend-row"><span class="ball-legend-swatch ball-swatch-dot" style="background:' +
+                    meta.color + '"></span><span>Result dot (color = distance from seed)</span></div>';
+                ballLegend.querySelectorAll('[data-mode]').forEach((row) => {
+                    row.addEventListener('click', () => {
+                        const select = document.getElementById('hyper-mode');
+                        select.value = row.dataset.mode;
+                        select.dispatchEvent(new Event('change'));
+                    });
+                });
+            };
+
+            const renderBallDetail = (meta, seedR) => {
+                if (ballState.seedRadius === null) {
+                    ballDetail.innerHTML = '<strong>' + esc(meta.label) + '</strong> - the highlighted region is ' +
+                        esc(MODE_REGION_DESC[ballState.mode]) +
+                        '. Pick a seed song and run the search to plot results on the ball.';
+                    return;
+                }
+                const rows = ballState.results.length;
+                ballDetail.innerHTML = '<strong>' + esc(ballState.seedLabel || 'Seed song') + '</strong>' +
+                    '<br>Seed radius R ' + seedR.toFixed(3) +
+                    '<br>' + rows + ' result track(s) - mode ' + esc(meta.label);
+            };
+
+            const renderBall = () => {
+                const meta = MODE_META[ballState.mode] || MODE_META.similar;
+                const seedR = (typeof ballState.seedRadius === 'number' && isFinite(ballState.seedRadius))
+                    ? Math.min(Math.max(ballState.seedRadius, 0.05), 0.95)
+                    : 0.45;
+                const parts = [];
+                parts.push(`<circle class="ball-shell" cx="${BALL_CX}" cy="${BALL_CY}" r="${BALL_R}"/>`);
+                parts.push(ballRegion(seedR, meta.color));
+                const dists = ballState.results
+                    .map((r) => (typeof r.distance === 'number' && isFinite(r.distance)) ? r.distance : null)
+                    .filter((v) => v !== null);
+                const maxD = dists.length ? Math.max.apply(null, dists) : 1;
+                const near = hexToRgb(meta.color);
+                const far = hexToRgb('#9ca3af');
+                ballState.results.forEach((r, idx) => {
+                    const rad = Number(r.hyperbolic_radius);
+                    if (!isFinite(rad) || rad <= 0 || rad >= 1) return;
+                    const angle = hashAngle(String(r.item_id || ('r' + idx)));
+                    const [x, y] = ballPoint(Math.min(rad, 0.97), angle);
+                    const t = (typeof r.distance === 'number' && maxD > 0) ? Math.min(1, r.distance / maxD) : 1;
+                    const fill = mixRgb(near, far, t);
+                    const label = [r.title, r.author].filter(Boolean).join(' \u2014 ') || (r.item_id || 'Track');
+                    parts.push(
+                        `<circle class="ball-dot" data-idx="${idx}" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="4" fill="${fill}">` +
+                        `<title>${esc(label)}\nR ${rad.toFixed(3)} \u00b7 d ${(r.distance ?? 0).toFixed(3)}</title></circle>`
+                    );
+                });
+                if (ballState.seedRadius !== null) {
+                    const [sx, sy] = ballPoint(seedR, 0);
+                    parts.push(
+                        '<g class="ball-seed">' +
+                        `<circle cx="${sx.toFixed(2)}" cy="${sy.toFixed(2)}" r="8" fill="${meta.color}" opacity="0.25"/>` +
+                        `<circle cx="${sx.toFixed(2)}" cy="${sy.toFixed(2)}" r="4.5" fill="${meta.color}" stroke="#fff" stroke-width="1.5">` +
+                        `<title>Seed: ${esc(ballState.seedLabel || 'seed song')}\nR ${seedR.toFixed(3)}</title></circle></g>`
+                    );
+                }
+                ballSvg.innerHTML = parts.join('');
+                renderBallLegend(meta, seedR);
+                renderBallDetail(meta, seedR);
+            };
+
+            ballSvg.addEventListener('click', (e) => {
+                const dot = e.target.closest('.ball-dot');
+                if (!dot) return;
+                const r = ballState.results[Number(dot.dataset.idx)];
+                if (!r) return;
+                ballDetail.innerHTML = '<strong>' + esc(r.title || r.item_id) + '</strong>' +
+                    (r.author ? ' \u2014 ' + esc(r.author) : '') +
+                    '<br>R ' + Number(r.hyperbolic_radius).toFixed(3) +
+                    ' \u00b7 distance ' + (r.distance ?? 0).toFixed(3);
+            });
 
             similarForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
@@ -277,7 +528,15 @@
                     }
                     statusDiv.textContent = `${data.count} track(s) found (${mode}).`;
                     statusDiv.className = '';
-                    renderResults(data.results || []);
+                    ballState.mode = mode;
+                    ballState.seedRadius = (typeof data.seed_radius === 'number' && isFinite(data.seed_radius))
+                        ? data.seed_radius : ballState.seedRadius;
+                    ballState.seedLabel = selectedSong
+                        ? ((selectedSong.title || '') + (selectedSong.author ? ' \u2014 ' + selectedSong.author : '')) || 'Seed song'
+                        : 'Seed song';
+                    ballState.results = data.results || [];
+                    renderBall();
+                    renderResults(data.results || [], selectedSong.item_id);
                     document.getElementById('hyper-playlist-creator').classList.remove('hidden');
                     similarSection.classList.remove('hidden');
                 } catch (err) {
@@ -376,8 +635,6 @@
                 mood: 'Mood: ',
                 main_genre: 'Genre: ',
                 subgenre: 'Subgenre: ',
-                second_genre: 'Second genre: ',
-                third_genre: 'Third genre: ',
                 genre: 'Genre: ',
                 cluster: ''
             };
@@ -473,6 +730,14 @@
                     loadTreeRoot();
                 }
             });
+
+            // Poincare ball: re-render the mode region whenever the mode changes
+            // (before any search), and draw the initial preview.
+            document.getElementById('hyper-mode').addEventListener('change', () => {
+                ballState.mode = document.getElementById('hyper-mode').value;
+                renderBall();
+            });
+            renderBall();
         })();
     </script>
     <script src="{{ url_for('static', filename='menu.js') }}"></script>

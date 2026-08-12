@@ -20,13 +20,18 @@ Main Features:
   reuse by analysis workers, the web app, and the backfill job
 * save_hyperbolic_projection / backfill_hyperbolic_columns keep the hyperbolic
   columns in sync with the raw embedding, skipping rows with NULL embeddings
-* hyperbolic_similar over-fetches raw-space IVF candidates and re-ranks them
-  by exact Poincare distance, with similar / roots / niche radial mode
-  filtering driven by the target track's own radius R
-* build_hyperbolic_tree_cache does the expensive part - the mood partition,
-  the main/second/third-genre grouping, and any k-means fallback over the
-  whole catalogue - and persists the result as a gzipped JSON blob chunked
-  into 50 MB segmented BYTEA rows in ivf_dir (the same pattern the music map
+* hyperbolic_similar: similar over-fetches raw-space IVF candidates with the
+  shared similar-song defaults (radius walk, content dedup, per-artist cap) and
+  re-ranks them by exact Poincare distance; roots / niche instead draw their
+  candidate pool from the embedding table by radius (at least
+  HYPERBOLIC_RADIAL_SPREAD of the radial range away from the seed) so the two
+  modes visibly leave the seed's radius band, then rank by exact distance. All
+  modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
+  similar-song page
+* build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
+  partition, the mood fallback, and the named k-means clusters over the whole
+  catalogue - and persists the result as a gzipped JSON blob chunked into
+  50 MB segmented BYTEA rows in ivf_dir (the same pattern the music map
   and IVF directory use), worker-side only (analysis end).
   load_hyperbolic_tree_cache is
   the cheap counterpart: one row read, no reclustering, used at Flask startup
@@ -37,24 +42,26 @@ Main Features:
   cache, returning canonical ids for the caller to translate. The returned
   node is a reference into the shared cache, not a copy - callers must build
   a new structure rather than mutate it in place (id translation does this
-  already)
-* The directory tree is a semantic taxonomy over the same embedding space:
-  the root splits by MAIN GENRE taken from the data-driven genre_subgenre.json
-  centroids (nearest main genre at level 0), then by SUBGENRE (nearest of that
-  genre's subgenres at level 1). When the file is absent or dimensionally
-  incompatible the tree falls back to a legacy MOOD partition (nearest of the
-  precomputed mood centroids in mood_centroids_real_080_clap.json) followed by
-  main/second/third genre from each track's mood_vector. Folders keep
-  splitting until they reach HYPERBOLIC_TARGET_LEAF_SIZE, and groups with no
-  further genre (or still too large after the genre levels) fall back to
-  k-means sub-folders named from the nearest mood-centroid tags instead of a
-  bare "Cluster N" label
+  already). The persisted blob carries a schema version and is discarded on
+  load when it does not match, so an upgraded Flask never serves a stale
+  pre-upgrade tree.
+* The directory tree is a three-level semantic taxonomy over the same
+  embedding space: GENRE -> SUBGENRE -> NAMED CLUSTER. The root splits by
+  MAIN GENRE taken from the data-driven genre_subgenre.json centroids
+  (nearest main genre at level 0), then by SUBGENRE (nearest of that genre's
+  subgenres at level 1), then into named k-means clusters for any subgenre
+  still above HYPERBOLIC_TARGET_LEAF_SIZE - nothing deeper. When the file is
+  absent or dimensionally incompatible the tree falls back to a legacy MOOD
+  partition (nearest of the precomputed mood centroids in
+  mood_centroids_real_080_clap.json) followed by a main-genre partition and
+  the same named-cluster level. Clusters are always the terminal level and
+  are named from the nearest mood-centroid tags (or the ancestor genre path
+  plus the dominant mood) instead of a bare "Cluster N" label
 """
 
 import gzip
 import json
 import logging
-import math
 import re
 
 import numpy as np
@@ -318,6 +325,54 @@ def _fetch_all_poincare_rows():
     return out
 
 
+def _fetch_poincare_rows_in_radius(bound_radius, below=True, limit=100):
+    """Fetch up to ``limit`` projected tracks on one side of a radius bound.
+
+    Used by the roots/niche modes so their candidate pool spans the radius
+    range the mode promises instead of only the seed's own radius band:
+    ``below=True`` returns the tracks with ``hyperbolic_radius < bound``
+    ordered from the bound downward (closest to the seed first); ``below=False``
+    returns ``hyperbolic_radius > bound`` ordered from the bound upward.
+    Returns ``{item_id: (vec, radius)}``.
+    """
+    if bound_radius is None or not np.isfinite(bound_radius):
+        return {}
+    from app_helper import get_db
+
+    if below:
+        clause = "hyperbolic_radius < %s ORDER BY hyperbolic_radius DESC"
+    else:
+        clause = "hyperbolic_radius > %s ORDER BY hyperbolic_radius ASC"
+    sql = (
+        "SELECT item_id, poincare_embedding, hyperbolic_radius FROM embedding "
+        f"WHERE poincare_embedding IS NOT NULL AND hyperbolic_radius IS NOT NULL AND {clause} LIMIT %s"
+    )
+    out = {}
+    db_conn = get_db()
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute(sql, (float(bound_radius), int(limit)))
+            for item_id, blob, radius in cur.fetchall():
+                vec = np.frombuffer(bytes(blob), dtype=np.float32)
+                if _is_finite_row(vec, radius):
+                    out[item_id] = (vec, float(radius))
+    except Exception:
+        logger.exception("Could not fetch hyperbolic rows in radius window")
+    return out
+
+
+def get_poincare_radius(item_id):
+    """Return the hyperbolic radius of one track, or None when unavailable.
+
+    Used by the API layer to expose the seed's radius so the frontend can draw
+    the mode boundary (roots = inside the seed radius, niche = outside it).
+    """
+    if not item_id:
+        return None
+    row = _fetch_poincare_rows([item_id]).get(item_id)
+    return row[1] if row is not None else None
+
+
 def hyperbolic_similar(target_item_id, mode="similar", limit=20):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
     from tasks.ivf_manager import find_nearest_neighbors_by_id
@@ -335,15 +390,32 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20):
     overfetch = max(
         int(limit) * int(config.HYPERBOLIC_CANDIDATE_OVERFETCH), int(limit) + 50
     )
-    candidates = find_nearest_neighbors_by_id(
-        target_item_id,
-        n=overfetch,
-        eliminate_duplicates=False,
-        mood_similarity=False,
-        radius_similarity=False,
-    )
-    cand_ids = [c["item_id"] for c in candidates if c.get("item_id")]
-    rows = _fetch_poincare_rows(cand_ids)
+    if mode == "similar":
+        # Raw-space IVF neighbors re-ranked by exact Poincare distance. Like the
+        # similar-song page, use the shared defaults: radius walk enabled,
+        # content duplicates removed and MAX_SONGS_PER_ARTIST applied (passing
+        # None keeps the config-driven defaults).
+        candidates = find_nearest_neighbors_by_id(
+            target_item_id,
+            n=overfetch,
+            eliminate_duplicates=None,
+            mood_similarity=None,
+            radius_similarity=None,
+        )
+        cand_ids = [c["item_id"] for c in candidates if c.get("item_id")]
+        rows = _fetch_poincare_rows(cand_ids)
+    else:
+        # roots/niche must visibly leave the seed's radius band, so the pool is
+        # drawn from the embedding table by radius instead of by raw IVF
+        # distance: every candidate is at least HYPERBOLIC_RADIAL_SPREAD of the
+        # radial range away from the seed, then ranked by exact distance.
+        spread = min(max(float(config.HYPERBOLIC_RADIAL_SPREAD), 0.0), 0.99)
+        if mode == "roots":
+            bound = target_radius * (1.0 - spread)
+            rows = _fetch_poincare_rows_in_radius(bound, below=True, limit=overfetch)
+        else:  # niche
+            bound = target_radius + (1.0 - target_radius) * spread
+            rows = _fetch_poincare_rows_in_radius(bound, below=False, limit=overfetch)
     if not rows:
         return []
     ids = list(rows.keys())
@@ -368,10 +440,37 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20):
             }
         )
     results.sort(key=lambda r: r["distance"])
-    return results[:limit]
+    return _deduplicate_and_cap_results(results)[:limit]
+
+
+def _deduplicate_and_cap_results(results):
+    """Mirror the similar-song page on the final result list.
+
+    Drops content duplicates (same title + author under different item ids) and
+    caps the number of tracks per artist at MAX_SONGS_PER_ARTIST, so a playlist
+    built from any hyperbolic mode follows the same dedup rules as the
+    similar-song page. Tracks without resolvable author metadata are skipped by
+    the artist cap, matching the shared ivf_manager behaviour.
+    """
+    if not results:
+        return results
+    from app_helper import get_score_data_by_ids
+    from tasks.ivf_manager import _apply_artist_cap, _dedup_by_content
+
+    ids = [r["item_id"] for r in results]
+    details = {d["item_id"]: d for d in get_score_data_by_ids(ids)}
+    deduped = _dedup_by_content(results, details)
+    return _apply_artist_cap(
+        deduped, lambda song: (details.get(song["item_id"]) or {}).get("author")
+    )
 
 
 _TREE_CACHE = {"n_bands": None, "nodes": None, "flat_ids": None, "track_count": None}
+
+# Bump whenever the persisted tree schema changes (node id scheme, node kinds,
+# level structure). load_hyperbolic_tree_cache discards blobs whose version
+# does not match so an upgraded Flask never serves a stale pre-upgrade tree.
+_TREE_CACHE_VERSION = 2
 
 
 def reset_hyperbolic_tree_cache():
@@ -381,17 +480,7 @@ def reset_hyperbolic_tree_cache():
     _TREE_CACHE["track_count"] = None
 
 
-def _plan_band_count(total_tracks):
-    target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
-    ratio = max(int(total_tracks), 1) / target_leaf
-    raw = round(math.log2(ratio)) if ratio > 0 else int(config.HYPERBOLIC_MIN_BANDS)
-    return int(min(
-        int(config.HYPERBOLIC_MAX_BANDS),
-        max(int(config.HYPERBOLIC_MIN_BANDS), raw),
-    ))
-
-
-def build_hyperbolic_tree_cache(n_bands=None):
+def build_hyperbolic_tree_cache():
     rows = _fetch_all_poincare_rows()
     if not rows:
         _TREE_CACHE["n_bands"] = 0
@@ -418,7 +507,7 @@ def build_hyperbolic_tree_cache(n_bands=None):
         "n_bands": root_count, "nodes": nodes, "flat_ids": flat_ids, "track_count": track_count,
     })
     logger.info(
-        "Hyperbolic tree cache built and persisted: %d tracks across %d nodes (%d root moods)",
+        "Hyperbolic tree cache built and persisted: %d tracks across %d nodes (%d root folders)",
         track_count, len(nodes), root_count,
     )
     return track_count
@@ -427,11 +516,20 @@ def build_hyperbolic_tree_cache(n_bands=None):
 def load_hyperbolic_tree_cache():
     payload = _load_tree_cache_blob()
     if payload is None:
-        _TREE_CACHE["n_bands"] = 0
-        _TREE_CACHE["nodes"] = {}
-        _TREE_CACHE["flat_ids"] = {}
-        _TREE_CACHE["track_count"] = 0
+        _set_empty_tree_cache()
         logger.info("Hyperbolic tree cache empty: nothing persisted yet (run analysis first).")
+        return 0
+
+    if payload.get("version") != _TREE_CACHE_VERSION:
+        # A blob written by an older schema (radial bands, second/third genre
+        # levels, ...) would serve a stale, incompatible tree after an upgrade.
+        # Discard it so the next analysis run rebuilds the current structure.
+        logger.warning(
+            "Hyperbolic tree cache has schema version %r (current %r); discarding "
+            "it - run analysis to rebuild.", payload.get("version"), _TREE_CACHE_VERSION,
+        )
+        _delete_tree_cache_blob()
+        _set_empty_tree_cache()
         return 0
 
     _TREE_CACHE["n_bands"] = payload.get("n_bands")
@@ -444,6 +542,13 @@ def load_hyperbolic_tree_cache():
         track_count, len(_TREE_CACHE["nodes"]),
     )
     return track_count
+
+
+def _set_empty_tree_cache():
+    _TREE_CACHE["n_bands"] = 0
+    _TREE_CACHE["nodes"] = {}
+    _TREE_CACHE["flat_ids"] = {}
+    _TREE_CACHE["track_count"] = 0
 
 
 def _delete_tree_cache_blob():
@@ -472,6 +577,8 @@ def _persist_tree_cache_blob(payload):
     if payload is None:
         _delete_tree_cache_blob()
         return
+    payload = dict(payload)
+    payload["version"] = _TREE_CACHE_VERSION
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     db_conn = get_db()
     # store_segmented_blob clears any stale rows first, then stores the blob
@@ -667,10 +774,14 @@ def _partition_by_genre(members, vec_map, score_by_id, genre_subgenres, level, p
         return _partition_by_genre_centroids(
             members, vec_map, genre_subgenres, level, parent_genre
         )
+    if level != 0:
+        # The genre-less fallback has no subgenre data: only the main-genre
+        # partition exists and anything below it is the named-cluster level.
+        return None
     groups = {}
     for iid in members:
         rank = _genre_rank(score_by_id.get(iid))
-        label = rank[level] if level < len(rank) else "Other"
+        label = rank[0] if rank else "Other"
         groups.setdefault(label, []).append(iid)
     ordered = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     if len(ordered) < 2:
@@ -707,7 +818,6 @@ def _partition_by_genre_centroids(members, vec_map, genre_subgenres, level, pare
 
 
 _GENRE_KINDS = ("main_genre", "subgenre")
-_LEGACY_GENRE_KINDS = ("main_genre", "second_genre", "third_genre")
 
 
 def _materialize_mood(mood_label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):
@@ -730,7 +840,7 @@ def _materialize_mood(mood_label, members, vec_map, radii_map, score_by_id, mood
     if summary_items is None and len(members) > target_leaf:
         summary_items = _materialize_children(
             node_id, members, vec_map, radii_map, score_by_id,
-            mood_centroids, nodes, flat_ids, level=1,
+            mood_centroids, nodes, flat_ids,
         )
     if summary_items is None:
         return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind="mood")
@@ -762,16 +872,13 @@ def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score
         "track_count": len(members),
     }
     name = label.title()
-    if _genre_subgenres_usable(vec_map, genre_subgenres):
-        kinds = _GENRE_KINDS
-    else:
-        kinds = _LEGACY_GENRE_KINDS
-    kind = kinds[level] if 0 <= level < len(kinds) else "genre"
+    kind = _GENRE_KINDS[level] if 0 <= level < len(_GENRE_KINDS) else "genre"
     target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
-    genre_depth = max(1, int(config.HYPERBOLIC_GENRE_DEPTH))
 
     summary_items = None
-    if len(members) > target_leaf and label != "Other" and level + 1 < genre_depth:
+    if len(members) > target_leaf and label != "Other" and level < 1:
+        # Only the main-genre level (0) recurses into the subgenre level (1);
+        # below a subgenre the only level left is the named-cluster one.
         summary_items = _materialize_genre_level(
             node_id, members, vec_map, radii_map, score_by_id,
             mood_centroids, genre_subgenres, nodes, flat_ids, level + 1,
@@ -781,8 +888,7 @@ def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score
         prefix = _genre_path_prefix(node_id)
         summary_items = _materialize_children(
             node_id, members, vec_map, radii_map, score_by_id,
-            mood_centroids, nodes, flat_ids, level=1,
-            name_prefix=prefix or None,
+            mood_centroids, nodes, flat_ids, name_prefix=prefix or None,
         )
     if summary_items is None:
         return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
@@ -844,7 +950,7 @@ def _dedupe_name(base, used):
     return f"{base}_{i}"
 
 
-def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level, name_prefix=None):
+def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, name_prefix=None):
     n = len(members)
     target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
     branching = max(2, int(config.HYPERBOLIC_TARGET_BRANCHING))
@@ -857,7 +963,7 @@ def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, m
     ordered = [clusters[j] for j in sorted(clusters)]
     if len(ordered) < 2 or max(len(c) for c in ordered) > 0.95 * n:
         # k-means could not meaningfully separate this set (e.g. near-identical
-        # embeddings) - stop here rather than recurse without making progress.
+        # embeddings) - stop here rather than emit one giant cluster.
         return None
 
     summary_items = []
@@ -873,13 +979,16 @@ def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, m
             name = None
         cluster_node = _materialize_cluster(
             cluster_id, cids, vec_map, radii_map, score_by_id, mood_centroids,
-            nodes, flat_ids, level, name=name, name_prefix=name_prefix,
+            nodes, flat_ids, name=name,
         )
         summary_items.append({**cluster_node, "items": []})
     return summary_items
 
 
-def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level, name=None, name_prefix=None):
+def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, name=None):
+    # Clusters are always the terminal level of the tree (GENRE -> SUBGENRE ->
+    # NAMED CLUSTER): every track below them is listed directly, so a cluster
+    # never recurses into further folders.
     radii = np.array([radii_map[i] for i in members], dtype=np.float64)
     summary = {
         "radius_min": float(radii.min()),
@@ -888,17 +997,7 @@ def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood
     }
     if name is None:
         name = _cluster_name(members, vec_map, mood_centroids)
-
-    summary_items = None
-    target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
-    if name_prefix is None and len(members) > target_leaf and level < int(config.HYPERBOLIC_MAX_TREE_RECURSION):
-        summary_items = _materialize_children(
-            node_id, members, vec_map, radii_map, score_by_id, mood_centroids,
-            nodes, flat_ids, level + 1, name_prefix=name_prefix,
-        )
-    if summary_items is None:
-        return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids)
-    return _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids)
+    return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids)
 
 
 def _fit_clusters(vecs, k):

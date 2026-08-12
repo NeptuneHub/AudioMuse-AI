@@ -728,34 +728,33 @@ HYPERBOLIC_RADIUS_SCALE = float(os.environ.get("HYPERBOLIC_RADIUS_SCALE") or "0"
 HYPERBOLIC_RADIUS_PERCENTILE = float(os.environ.get("HYPERBOLIC_RADIUS_PERCENTILE", "95"))
 # Raw-space IVF candidate over-fetch multiplier before hyperbolic re-ranking.
 HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFETCH", "4"))
+# Fraction of the radial range that roots/niche modes must move before a
+# candidate qualifies, so the two modes visibly differ from plain similar.
+# Roots only returns tracks at least this fraction deeper toward the origin
+# (radius < seed_radius * (1 - spread)); niche only tracks at least this
+# fraction of the remaining distance toward the boundary (radius >
+# seed_radius + (1 - seed_radius) * spread). The candidates are then ranked by
+# exact Poincare distance within that window. 0 keeps the old band-hugging
+# behaviour where every mode returns the tracks nearest to the seed's radius.
+HYPERBOLIC_RADIAL_SPREAD = float(os.environ.get("HYPERBOLIC_RADIAL_SPREAD", "0.15"))
 HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "20"))
 HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
 # Directory tree shape: when genre_subgenre.json is present and dimensionally
 # usable the root is a MAIN GENRE partition (nearest genre centroid), then a
-# SUBGENRE partition (nearest of that genre's subgenres) for the levels below
-# HYPERBOLIC_GENRE_DEPTH, then k-means fallback for any group still above the
-# target leaf size. Without usable genre data the tree falls back to a legacy
-# mood partition (mood_centroids_real_080_clap.json) followed by main/second/
-# third genre from each track's mood_vector. MIN/MAX_BANDS only bound the
-# legacy band-count sizing helper (_plan_band_count); the k-means fallback
-# branching is HYPERBOLIC_TARGET_BRANCHING. Only TARGET sizes are derived
-# from the catalogue size at cache-build time, so a
-# 500-track library and a 500,000-track library each get a browsable tree
-# instead of one fixed shape.
-HYPERBOLIC_MIN_BANDS = int(os.environ.get("HYPERBOLIC_MIN_BANDS", "4"))
-HYPERBOLIC_MAX_BANDS = int(os.environ.get("HYPERBOLIC_MAX_BANDS", "10"))
-# Below this many tracks, a folder (mood, genre, or k-means cluster) stops
-# splitting and lists its tracks directly instead of recursing further.
+# SUBGENRE partition (nearest of that genre's subgenres), then named k-means
+# clusters for any subgenre still above the target leaf size - exactly three
+# levels (GENRE -> SUBGENRE -> NAMED CLUSTER), nothing deeper. Without usable
+# genre data the tree falls back to a legacy mood partition
+# (mood_centroids_real_080_clap.json) followed by a main-genre partition, then
+# the same named-cluster level. The k-means fallback branching is
+# HYPERBOLIC_TARGET_BRANCHING; only TARGET sizes are derived from the catalogue
+# size at cache-build time, so a 500-track library and a 500,000-track library
+# each get a browsable tree instead of one fixed shape.
+# Below this many tracks, a folder (mood, genre, subgenre) stops splitting and
+# lists its tracks directly instead of generating clusters.
 HYPERBOLIC_TARGET_LEAF_SIZE = int(os.environ.get("HYPERBOLIC_TARGET_LEAF_SIZE", "150"))
-# Desired number of k-means children per non-leaf fallback folder.
+# Desired number of named-cluster children per non-leaf fallback folder.
 HYPERBOLIC_TARGET_BRANCHING = int(os.environ.get("HYPERBOLIC_TARGET_BRANCHING", "8"))
-# Safety cap on k-means recursion depth below the genre levels, in case a
-# pathological cluster (e.g. many near-identical embeddings) never shrinks.
-HYPERBOLIC_MAX_TREE_RECURSION = int(os.environ.get("HYPERBOLIC_MAX_TREE_RECURSION", "6"))
-# Number of genre levels below the mood level in the Hyperbolic Explorer tree
-# (main genre, second genre, third genre). A group still above the target leaf
-# size after this many genre levels falls back to k-means sub-folders.
-HYPERBOLIC_GENRE_DEPTH = int(os.environ.get("HYPERBOLIC_GENRE_DEPTH", "3"))
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"

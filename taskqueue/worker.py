@@ -462,12 +462,13 @@ class Worker:
         finally:
             self._unload_job_models()
 
-    def _attempt(self, job, kwargs):
+    def _attempt(self, job, kwargs, hydrate=True):
         from . import resolve_func
 
         task_id = job['task_id']
         try:
-            self.hydrate_config()
+            if hydrate:
+                self.hydrate_config()
             func = resolve_func(job['func'])
             result = func(*job['args'], **kwargs)
         except Exception as exc:
@@ -525,7 +526,9 @@ class Worker:
         try:
             _bind_to_parent_death(parent_pid)
             os.close(read_fd)
-            payload = _encode_outcome(self._attempt(job, kwargs))
+            # The parent already hydrated the worker config before forking;
+            # hydrating again here would throw that refresh away with the child.
+            payload = _encode_outcome(self._attempt(job, kwargs, hydrate=False))
             with os.fdopen(write_fd, 'wb') as pipe:
                 pipe.write(payload)
             exit_code = 0
@@ -811,7 +814,8 @@ _PARENT_WATCHDOG_INTERVAL = 1.0
 
 def _bind_to_parent_death(parent_pid):
     if sys.platform == 'linux':
-        _bind_linux_pdeathsig(parent_pid)
+        if not _bind_linux_pdeathsig(parent_pid):
+            _watch_parent_death(parent_pid)
     else:
         _watch_parent_death(parent_pid)
 
@@ -823,15 +827,16 @@ def _bind_linux_pdeathsig(parent_pid):
 
         libc_name = ctypes.util.find_library('c')
         if not libc_name:
-            return
+            return False
         ctypes.CDLL(libc_name, use_errno=True).prctl(
             _PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0
         )
     except Exception:
         logger.debug("Could not bind the job process to the worker's death", exc_info=True)
-        return
+        return False
     if os.getppid() != parent_pid:
         os._exit(1)
+    return True
 
 
 def _watch_parent_death(parent_pid):

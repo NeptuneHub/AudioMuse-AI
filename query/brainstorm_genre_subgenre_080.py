@@ -40,12 +40,16 @@ import urllib.parse
 import numpy as np
 import psycopg2
 
+# Connection is taken from the environment so no credentials live in the
+# repo (SonarCloud S2068/S1313). Example:
+#   AUDIOMUSE_DB_HOST=192.168.3.208 AUDIOMUSE_DB_PASSWORD=... python \
+#       query/brainstorm_genre_subgenre_080.py
 DB_CONFIG = {
-    'host': '192.168.3.208',
-    'port': 5432,
-    'user': 'audiomuse',
-    'password': 'audiomusepassword',
-    'dbname': 'audiomusedb',
+    'host': os.environ.get('AUDIOMUSE_DB_HOST', '127.0.0.1'),
+    'port': int(os.environ.get('AUDIOMUSE_DB_PORT', '5432')),
+    'user': os.environ.get('AUDIOMUSE_DB_USER', 'postgres'),
+    'password': os.environ.get('AUDIOMUSE_DB_PASSWORD', ''),
+    'dbname': os.environ.get('AUDIOMUSE_DB_NAME', 'audiomusedb'),
     'options': '-c default_transaction_read_only=on',
 }
 
@@ -82,7 +86,13 @@ NON_GENRE_TAGS = {
     'featuring', 'remix', 'trumpet', 'saxophone', 'piano', 'canadian',
     'canada', 'usa', 'england', 'atlanta', 'new york', 'chicago', 'detroit',
     'memphis', 'los angeles', 'young money', 'swag', 'crew', 'label',
-    'under 2000 listeners', 'my top songs', 'legend',
+    'under 2000 listeners', 'my top songs', 'legend', 'french', 'japanese',
+    'irish', 'united states', 'queen of pop', 'king of pop', 'favourite',
+    'favorite', 'scandinavian', 'german', 'italian', 'spanish language',
+    '60s soul', '70s soul', 'greatest', 'top', 'best', 'disney', 'diva',
+    'one direction', 'british invasion', 'east coast', 'california',
+    'brazil', 'slow jams', 'divas', 'boy band', 'soundtrack', 'movie',
+    'hollywood', 'pop music', 'rock music', 'dance music', 'hip hop music',
 }
 
 _WEB_CACHE = {}
@@ -236,7 +246,7 @@ def aggregate_web_tags(sample):
     return {name: w for name, w in agg.items() if counts[name] >= 2}
 
 
-def lastfm_genre_subgenres(genre, main_keys, limit_artists=20, min_artists=2, top_n=20):
+def lastfm_genre_subgenres(genre, main_keys, limit_artists=30, min_artists=2, top_n=40):
     """Real Last.fm subgenres for a genre, discovered through its top artists.
 
     tag.getTopTags returns the same global tag cloud for every tag, so it cannot

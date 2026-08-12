@@ -21,17 +21,18 @@ import onnx
 import numpy as np
 import psycopg2
 import json
+import os
 from onnx import numpy_helper
 from sklearn.mixture import GaussianMixture
 import warnings
 warnings.filterwarnings('ignore')
 
 DB_CONFIG = {
-    'host': '192.168.3.208',
-    'port': 5432,
-    'user': 'audiomuse',
-    'password': 'audiomusepassword',
-    'dbname': 'audiomusedb',
+    'host': os.environ.get('AUDIOMUSE_DB_HOST', '127.0.0.1'),
+    'port': int(os.environ.get('AUDIOMUSE_DB_PORT', '5432')),
+    'user': os.environ.get('AUDIOMUSE_DB_USER', 'postgres'),
+    'password': os.environ.get('AUDIOMUSE_DB_PASSWORD', ''),
+    'dbname': os.environ.get('AUDIOMUSE_DB_NAME', 'audiomusedb'),
 }
 
 MOOD_ONNX = {

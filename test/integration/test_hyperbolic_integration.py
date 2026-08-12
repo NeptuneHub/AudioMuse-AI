@@ -132,10 +132,14 @@ def hyper_db(pg_dsn):
 
 
 @pytest.fixture
-def _point_get_db_to_test(monkeypatch, hyper_db):
+def _point_get_db_to_test(monkeypatch, hyper_db, pg_dsn):
+    # NOTE: patch with the raw pg_dsn, never hyper_db.dsn - psycopg2's
+    # conn.dsn REDACTS the password to 'xxx', so the streaming side
+    # connection (_open_side_connection) would fail auth on any server that
+    # actually checks passwords (CI's postgres service does).
     monkeypatch.setattr("app_helper.get_db", lambda: hyper_db)
     monkeypatch.setattr("database.get_db", lambda: hyper_db)
-    monkeypatch.setattr(config, "DATABASE_URL", hyper_db.dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     yield hyper_db
 
 
@@ -249,22 +253,44 @@ class TestSimilarityEngine:
             assert r["item_id"] != target
             assert 0.0 < r["hyperbolic_radius"] < 1.0
 
-    def test_hyperbolic_similar_roots_and_niche_split_by_radius(self, _point_get_db_to_test):
+    def test_hyperbolic_similar_roots_and_niche_split_by_radius(
+        self, _point_get_db_to_test, monkeypatch
+    ):
         conn = _point_get_db_to_test
         _seed_poincare(conn)
         hm = _load_hyperbolic_manager()
         target = "item-010"
         target_radius = _get_radius(conn, target)
-        candidates = [{"item_id": f"item-{i:03d}"} for i in range(20) if f"item-{i:03d}" != target]
+        monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
 
-        with patch("tasks.ivf_manager.find_nearest_neighbors_by_id", return_value=candidates):
-            roots = hm.hyperbolic_similar(target, mode="roots", limit=50)
-            niche = hm.hyperbolic_similar(target, mode="niche", limit=50)
+        roots = hm.hyperbolic_similar(target, mode="roots", limit=50)
+        niche = hm.hyperbolic_similar(target, mode="niche", limit=50)
 
         assert roots
         assert niche
         assert all(r["hyperbolic_radius"] < target_radius for r in roots)
         assert all(r["hyperbolic_radius"] > target_radius for r in niche)
+        # The radius window must move the modes visibly away from the seed's
+        # radius band, not just a hair inward / outward.
+        roots_hi = target_radius * (1.0 - 0.15)
+        niche_lo = target_radius + (1.0 - target_radius) * 0.15
+        assert all(r["hyperbolic_radius"] < roots_hi for r in roots)
+        assert all(r["hyperbolic_radius"] > niche_lo for r in niche)
+
+    def test_get_poincare_radius_returns_seed_radius(self, _point_get_db_to_test):
+        conn = _point_get_db_to_test
+        _seed_poincare(conn)
+        hm = _load_hyperbolic_manager()
+        expected = _get_radius(conn, "item-010")
+        assert hm.get_poincare_radius("item-010") == expected
+
+    def test_get_poincare_radius_none_when_unavailable(self, _point_get_db_to_test):
+        hm = _load_hyperbolic_manager()
+        # Unknown id and empty id must not raise, and an id whose hyperbolic
+        # columns are still NULL must yield None too.
+        assert hm.get_poincare_radius("item-999") is None
+        assert hm.get_poincare_radius("") is None
+        assert hm.get_poincare_radius(None) is None
 
 
 @pytest.mark.integration
@@ -276,7 +302,7 @@ class TestTreeEngine:
 
         hm.reset_hyperbolic_tree_cache()
         try:
-            track_count = hm.build_hyperbolic_tree_cache(n_bands=3)
+            track_count = hm.build_hyperbolic_tree_cache()
             node, flat = hm.build_hyperbolic_tree(None)
             assert node["id"] == "root"
             assert node["type"] == "folder"
@@ -307,7 +333,7 @@ class TestTreeEngine:
 
         hm.reset_hyperbolic_tree_cache()
         try:
-            built_count = hm.build_hyperbolic_tree_cache(n_bands=3)
+            built_count = hm.build_hyperbolic_tree_cache()
             built_node_ids = set(hm._TREE_CACHE["nodes"].keys())
             built_root = hm._TREE_CACHE["nodes"]["root"]
 
@@ -356,7 +382,7 @@ class TestTreeEngine:
                 )
                 part_count = cur.fetchone()[0]
             assert part_count >= 2
-            assert hm._load_tree_cache_blob() == payload
+            assert hm._load_tree_cache_blob() == {**payload, "version": hm._TREE_CACHE_VERSION}
         finally:
             hm.reset_hyperbolic_tree_cache()
             hm._persist_tree_cache_blob(None)
@@ -374,7 +400,7 @@ class TestTreeEngine:
 
         hm.reset_hyperbolic_tree_cache()
         try:
-            track_count = hm.build_hyperbolic_tree_cache(n_bands=3)
+            track_count = hm.build_hyperbolic_tree_cache()
             node, flat = hm.build_hyperbolic_tree(None)
         finally:
             hm.reset_hyperbolic_tree_cache()
@@ -412,7 +438,12 @@ class TestTreeEngine:
         hm = _load_hyperbolic_manager()
         hm.reset_hyperbolic_tree_cache()
         try:
-            hm.build_hyperbolic_tree_cache(n_bands=2)
+            # The mood fallback path (no genre_subgenre.json data) is the one
+            # whose clusters are named by blending the nearest mood-centroid
+            # tags; with the genre file usable the clusters sit under a genre
+            # path and are prefix-named instead.
+            with patch.object(hm, "_load_projected_genre_subgenres", return_value={}):
+                hm.build_hyperbolic_tree_cache()
             nodes = hm._TREE_CACHE["nodes"]
             cluster_names = [n["name"] for node_id, n in nodes.items() if ".c" in node_id]
         finally:
@@ -444,13 +475,19 @@ class TestEndpoints:
         assert response.status_code == 400
 
     def test_similar_endpoint_returns_200(self, _point_get_db_to_test, monkeypatch):
+        conn = _point_get_db_to_test
         import app_server_context
         from app_hyperbolic import hyperbolic_bp
 
+        _seed_poincare(conn)
         monkeypatch.setattr(app_server_context, "resolve_input_item_id", lambda raw, data=None: raw)
         monkeypatch.setattr(
             app_server_context, "scope_results",
             lambda rows, requested_n=None, id_key="item_id": rows,
+        )
+        monkeypatch.setattr(
+            app_server_context, "translate_ids_for_request",
+            lambda item_ids: {str(i): str(i) for i in (item_ids or [])},
         )
 
         canned = [
@@ -471,6 +508,8 @@ class TestEndpoints:
         assert payload["mode"] == "niche"
         assert payload["count"] == 2
         assert payload["results"][0]["item_id"] == "item-001"
+        assert payload["seed_item_id"] == "item-000"
+        assert payload["seed_radius"] == _get_radius(conn, "item-000")
         sim.assert_called_once()
 
     def test_similar_endpoint_attaches_title_author_even_when_ids_are_translated(
@@ -487,6 +526,10 @@ class TestEndpoints:
             return rows
 
         monkeypatch.setattr(app_server_context, "scope_results", _fake_scope_results)
+        monkeypatch.setattr(
+            app_server_context, "translate_ids_for_request",
+            lambda item_ids: {str(i): str(i) for i in (item_ids or [])},
+        )
 
         canned = [
             {"item_id": "item-001", "distance": 0.25, "hyperbolic_radius": 0.55},

@@ -147,6 +147,7 @@ def test_similar_mode_returns_sorted_by_distance(monkeypatch):
         "fp_c": (_vec(0.4, -0.2), 0.35),
     }
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(mapping))
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
     with patch("tasks.ivf_manager.find_nearest_neighbors_by_id",
                return_value=[{"item_id": "fp_c"}, {"item_id": "fp_a"},
                              {"item_id": "fp_b"}, {"item_id": "fp_x"}]):
@@ -158,29 +159,97 @@ def test_similar_mode_returns_sorted_by_distance(monkeypatch):
 
 
 def test_roots_mode_filters_radius_below_target(monkeypatch):
-    mapping = {
-        "fp_t": (_vec(0.5, 0.0), 0.6),
-        "fp_inner": (_vec(0.1, 0.0), 0.2),
-        "fp_outer": (_vec(0.7, 0.0), 0.8),
-    }
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(mapping))
-    with patch("tasks.ivf_manager.find_nearest_neighbors_by_id",
-               return_value=[{"item_id": "fp_inner"}, {"item_id": "fp_outer"}]):
-        results = hm.hyperbolic_similar("fp_t", mode="roots", limit=20)
-    assert [r["item_id"] for r in results] == ["fp_inner"]
+    captured = {}
+
+    def _fake_window(bound, below=True, limit=100):
+        captured["bound"] = bound
+        captured["below"] = below
+        captured["limit"] = limit
+        return {"fp_inner": (_vec(0.1, 0.0), 0.2), "fp_deep": (_vec(0.02, 0.0), 0.05)}
+
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
+    results = hm.hyperbolic_similar("fp_t", mode="roots", limit=2)
+    assert captured["below"] is True
+    assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.15))
+    # both candidates sit inside the window; the nearest (fp_inner, R 0.2) ranks first
+    assert [r["item_id"] for r in results] == ["fp_inner", "fp_deep"]
 
 
 def test_niche_mode_filters_radius_above_target(monkeypatch):
-    mapping = {
-        "fp_t": (_vec(0.5, 0.0), 0.6),
-        "fp_inner": (_vec(0.1, 0.0), 0.2),
-        "fp_outer": (_vec(0.7, 0.0), 0.8),
-    }
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(mapping))
-    with patch("tasks.ivf_manager.find_nearest_neighbors_by_id",
-               return_value=[{"item_id": "fp_inner"}, {"item_id": "fp_outer"}]):
-        results = hm.hyperbolic_similar("fp_t", mode="niche", limit=20)
-    assert [r["item_id"] for r in results] == ["fp_outer"]
+    captured = {}
+
+    def _fake_window(bound, below=True, limit=100):
+        captured["bound"] = bound
+        captured["below"] = below
+        captured["limit"] = limit
+        return {"fp_outer": (_vec(0.7, 0.0), 0.8), "fp_edge": (_vec(0.9, 0.0), 0.95)}
+
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
+    results = hm.hyperbolic_similar("fp_t", mode="niche", limit=2)
+    assert captured["below"] is False
+    assert captured["bound"] == pytest.approx(0.6 + (1.0 - 0.6) * 0.15)
+    # both candidates sit outside the window; the nearest (fp_outer, R 0.8) ranks first
+    assert [r["item_id"] for r in results] == ["fp_outer", "fp_edge"]
+
+
+def test_roots_empty_window_returns_empty(monkeypatch):
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", lambda bound, below=True, limit=100: {})
+    results = hm.hyperbolic_similar("fp_t", mode="roots", limit=5)
+    assert results == []
+
+
+def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
+    # spread=0 degenerates to the whole inner half (radius < seed), so the
+    # closest inward candidate is the one just below the seed's radius.
+    captured = {}
+
+    def _fake_window(bound, below=True, limit=100):
+        captured["bound"] = bound
+        return {}
+
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.0)
+    hm.hyperbolic_similar("fp_t", mode="roots", limit=2)
+    assert captured["bound"] == pytest.approx(0.6)
+
+
+def test_deduplicate_and_cap_results_matches_similar_song_rules(monkeypatch):
+    fake_details = [
+        {"item_id": "d1", "title": "Same Song", "author": "Artist A"},
+        {"item_id": "d2", "title": "same song", "author": "artist a"},  # content dup of d1 (case-insensitive)
+        {"item_id": "d3", "title": "Other", "author": "Artist A"},
+        {"item_id": "d4", "title": "Another", "author": "Artist A"},
+        {"item_id": "d5", "title": "Yet Another", "author": "Artist A"},
+        {"item_id": "d6", "title": "Lone", "author": "Artist B"},
+        {"item_id": "d7", "title": "No Author", "author": ""},
+    ]
+    monkeypatch.setattr(
+        "app_helper.get_score_data_by_ids",
+        lambda ids: [d for d in fake_details if d["item_id"] in ids],
+    )
+    results = [
+        {"item_id": "d1", "distance": 0.1, "hyperbolic_radius": 0.5},
+        {"item_id": "d2", "distance": 0.2, "hyperbolic_radius": 0.5},  # duplicate -> dropped
+        {"item_id": "d3", "distance": 0.3, "hyperbolic_radius": 0.6},
+        {"item_id": "d4", "distance": 0.4, "hyperbolic_radius": 0.6},
+        {"item_id": "d5", "distance": 0.5, "hyperbolic_radius": 0.7},  # 4th Artist A -> capped
+        {"item_id": "d6", "distance": 0.6, "hyperbolic_radius": 0.7},
+        {"item_id": "d7", "distance": 0.7, "hyperbolic_radius": 0.8},  # no author -> skipped
+    ]
+    out = hm._deduplicate_and_cap_results(results)
+    assert [r["item_id"] for r in out] == ["d1", "d3", "d4", "d6"]
+
+
+def test_deduplicate_and_cap_results_empty_is_noop():
+    assert hm._deduplicate_and_cap_results([]) == []
 
 
 def test_similar_missing_target_projection_raises(monkeypatch):
@@ -322,7 +391,7 @@ def _mood_centroids_for(moods):
     ]
 
 
-def _rebuild_tree_cache(mapping, n_bands=None, score_rows=None, mood_centroids=None,
+def _rebuild_tree_cache(mapping, score_rows=None, mood_centroids=None,
                         genre_subgenres=None):
     hm.reset_hyperbolic_tree_cache()
     with patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
@@ -332,7 +401,7 @@ def _rebuild_tree_cache(mapping, n_bands=None, score_rows=None, mood_centroids=N
          patch.object(hm, "_load_projected_genre_subgenres",
                       return_value=genre_subgenres if genre_subgenres is not None else {}), \
          patch.object(hm, "_persist_tree_cache_blob"):
-        return hm.build_hyperbolic_tree_cache(n_bands=n_bands)
+        return hm.build_hyperbolic_tree_cache()
 
 
 def test_tree_root_partitions_by_mood(monkeypatch):
@@ -357,7 +426,7 @@ def test_tree_root_partitions_by_mood(monkeypatch):
 def test_tree_build_cache_returns_track_count(monkeypatch):
     mapping = _make_catalogue()
     try:
-        track_count = _rebuild_tree_cache(mapping, n_bands=3)
+        track_count = _rebuild_tree_cache(mapping)
     finally:
         hm.reset_hyperbolic_tree_cache()
     assert track_count == len(mapping)
@@ -402,7 +471,7 @@ def test_tree_cluster_node_returns_tracks(monkeypatch):
     mapping = _make_catalogue(n_per_band=200, bands=1)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 30)
     try:
-        _rebuild_tree_cache(mapping, n_bands=1)
+        _rebuild_tree_cache(mapping)
         mood, _ = hm.build_hyperbolic_tree("mgeneral")
         cluster_id = mood["items"][0]["id"]
         node, flat = hm.build_hyperbolic_tree(cluster_id)
@@ -448,7 +517,7 @@ def test_tree_repeated_reads_return_the_same_cached_node(monkeypatch):
     mapping = _make_catalogue(n_per_band=200, bands=1)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 30)
     try:
-        _rebuild_tree_cache(mapping, n_bands=1)
+        _rebuild_tree_cache(mapping)
         mood, _ = hm.build_hyperbolic_tree("mgeneral")
         cluster_id = mood["items"][0]["id"]
         first = hm.build_hyperbolic_tree(cluster_id)[0]
@@ -460,7 +529,7 @@ def test_tree_repeated_reads_return_the_same_cached_node(monkeypatch):
 
 def test_tree_empty_catalogue_returns_empty_node(monkeypatch):
     try:
-        _rebuild_tree_cache({}, n_bands=3)
+        _rebuild_tree_cache({})
         node, flat = hm.build_hyperbolic_tree(None)
     finally:
         hm.reset_hyperbolic_tree_cache()
@@ -481,31 +550,11 @@ def test_tree_read_before_cache_built_returns_empty_node(monkeypatch):
 def test_tree_unknown_node_raises(monkeypatch):
     mapping = _make_catalogue()
     try:
-        _rebuild_tree_cache(mapping, n_bands=3)
+        _rebuild_tree_cache(mapping)
         with pytest.raises(ValueError):
             hm.build_hyperbolic_tree("zz9")
     finally:
         hm.reset_hyperbolic_tree_cache()
-
-
-def test_plan_band_count_scales_up_for_a_large_catalogue(monkeypatch):
-    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 150)
-    monkeypatch.setattr(config, "HYPERBOLIC_MIN_BANDS", 4)
-    monkeypatch.setattr(config, "HYPERBOLIC_MAX_BANDS", 10)
-    small = hm._plan_band_count(500)
-    large = hm._plan_band_count(200_000)
-    assert small >= 4
-    assert large > 3
-    assert large >= small
-    assert 4 <= large <= 10
-
-
-def test_plan_band_count_clamps_to_configured_bounds(monkeypatch):
-    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 150)
-    monkeypatch.setattr(config, "HYPERBOLIC_MIN_BANDS", 5)
-    monkeypatch.setattr(config, "HYPERBOLIC_MAX_BANDS", 7)
-    assert hm._plan_band_count(1) == 5
-    assert hm._plan_band_count(10_000_000) == 7
 
 
 def test_tree_root_has_all_six_moods_for_a_large_catalogue(monkeypatch):
@@ -520,7 +569,7 @@ def test_tree_root_has_all_six_moods_for_a_large_catalogue(monkeypatch):
     assert {item["id"] for item in node["items"]} == {f"m{m}" for m in moods}
 
 
-def test_tree_genre_nesting_reaches_main_second_and_third(monkeypatch):
+def test_tree_genre_nesting_stops_at_named_clusters(monkeypatch):
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
@@ -533,7 +582,11 @@ def test_tree_genre_nesting_reaches_main_second_and_third(monkeypatch):
     finally:
         hm.reset_hyperbolic_tree_cache()
     assert mood.get("leaf") is False
-    assert {"main_genre", "second_genre", "third_genre"} <= kinds
+    # The genre-less fallback is mood -> main genre -> named clusters: the
+    # old second/third genre levels are gone.
+    assert "main_genre" in kinds
+    assert "second_genre" not in kinds
+    assert "third_genre" not in kinds
 
 
 def test_tree_root_is_genre_and_splits_into_subgenres(monkeypatch):
@@ -595,7 +648,9 @@ def test_tree_genre_centroids_fall_back_when_dims_differ(monkeypatch):
         kinds = {n.get("kind") for n in nodes.values() if n.get("type") == "folder"}
     finally:
         hm.reset_hyperbolic_tree_cache()
-    assert {"main_genre", "second_genre", "third_genre"} <= kinds
+    assert "main_genre" in kinds
+    assert "second_genre" not in kinds
+    assert "third_genre" not in kinds
 
 
 def test_tree_leaf_folders_stay_near_target_size(monkeypatch):
@@ -623,7 +678,7 @@ def test_materialize_children_bails_out_on_degenerate_clustering(monkeypatch):
     vec_map = {m: np.array([1.0, 0.0], dtype=np.float64) for m in members}
     radii_map = {m: 0.5 for m in members}
     monkeypatch.setattr(hm, "_fit_clusters", lambda vecs, k: np.zeros(len(vecs), dtype=int))
-    result = hm._materialize_children("b0", members, vec_map, radii_map, {}, [], {}, {}, level=1)
+    result = hm._materialize_children("b0", members, vec_map, radii_map, {}, [], {}, {})
     assert result is None
 
 
@@ -687,7 +742,7 @@ def test_genre_cluster_names_use_ancestor_prefix_and_dedupe(monkeypatch):
     flat_ids = {}
     children = hm._materialize_children(
         "root.grock.gprogressive-rock", members, vec_map, radii_map,
-        score_by_id, [], nodes, flat_ids, level=1,
+        score_by_id, [], nodes, flat_ids,
         name_prefix="ROCK_PROGRESSIVE_ROCK",
     )
     assert children
@@ -768,7 +823,7 @@ def test_build_tree_cache_raises_when_persist_fails(monkeypatch):
              patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
              patch.object(hm, "_persist_tree_cache_blob", side_effect=RuntimeError("db exploded")):
             with pytest.raises(RuntimeError, match="db exploded"):
-                hm.build_hyperbolic_tree_cache(n_bands=3)
+                hm.build_hyperbolic_tree_cache()
     finally:
         hm.reset_hyperbolic_tree_cache()
 
@@ -782,7 +837,7 @@ def test_build_tree_cache_persists_a_loadable_blob(monkeypatch):
              patch("app_helper.get_score_data_by_ids", return_value=[]), \
              patch("app_helper.get_db", return_value=MagicMock()), \
              patch("tasks.index_build_helpers.store_segmented_blob", side_effect=fake_store):
-            hm.build_hyperbolic_tree_cache(n_bands=3)
+            hm.build_hyperbolic_tree_cache()
         built_node_ids = set(hm._TREE_CACHE["nodes"].keys())
         built_root = hm._TREE_CACHE["nodes"]["root"]
         assert store.get(hm._TREE_CACHE_BLOB_NAME)
@@ -806,7 +861,7 @@ def test_load_tree_cache_never_scans_the_embedding_table_or_reclusters(monkeypat
          patch("app_helper.get_score_data_by_ids", return_value=[]), \
          patch("app_helper.get_db", return_value=MagicMock()), \
          patch("tasks.index_build_helpers.store_segmented_blob", side_effect=fake_store):
-        hm.build_hyperbolic_tree_cache(n_bands=3)
+        hm.build_hyperbolic_tree_cache()
 
     hm.reset_hyperbolic_tree_cache()
     try:
@@ -834,6 +889,36 @@ def test_load_tree_cache_empty_when_nothing_persisted(monkeypatch):
     assert track_count == 0
     assert node["items"] == []
     assert flat == []
+
+
+def test_load_tree_cache_discards_an_old_schema_blob(monkeypatch):
+    # A blob written by a previous tree schema (no "version" or an older one)
+    # must be discarded, not served: after an upgrade Flask would otherwise
+    # keep showing the stale pre-upgrade tree until the next analysis run.
+    import gzip
+    import json as _json
+
+    stale = gzip.compress(_json.dumps({
+        "n_bands": 3, "nodes": {"root": {"id": "root"}},
+        "flat_ids": {}, "track_count": 42,
+    }).encode("utf-8"))
+    deleted = {"called": False}
+
+    def _fake_delete():
+        deleted["called"] = True
+
+    hm.reset_hyperbolic_tree_cache()
+    try:
+        with patch("app_helper.get_db", return_value=MagicMock()), \
+             patch("tasks.index_build_helpers.load_segmented_blob", return_value=stale), \
+             patch.object(hm, "_delete_tree_cache_blob", side_effect=_fake_delete):
+            track_count = hm.load_hyperbolic_tree_cache()
+        node, flat = hm.build_hyperbolic_tree(None)
+    finally:
+        hm.reset_hyperbolic_tree_cache()
+    assert track_count == 0
+    assert node["items"] == []
+    assert deleted["called"] is True
 
 
 def test_init_hyperbolic_cache_loads_not_builds():
