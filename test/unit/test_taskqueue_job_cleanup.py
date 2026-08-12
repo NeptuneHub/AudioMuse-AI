@@ -363,10 +363,6 @@ class TestParentDeathBinding:
 
         monkeypatch.setattr(threading, 'Thread', _FakeThread)
         exit_calls = []
-        # os._exit is patched (so the loop would otherwise spin forever), and
-        # getppid reports the parent is gone -> the watchdog hard-exits on its
-        # first poll. time.sleep is patched to raise so the loop stops after
-        # the assertion instead of hanging the test.
         monkeypatch.setattr('taskqueue.worker.os._exit', exit_calls.append)
         monkeypatch.setattr('taskqueue.worker.os.getppid', lambda: 999)
 

@@ -418,9 +418,6 @@ class TestTreeEngine:
         finally:
             hm.reset_hyperbolic_tree_cache()
         assert cluster_names
-        # This tiny catalogue (20 tracks) collapses the genre partition to one
-        # group, so the tree falls back to the legacy mood path whose k-means
-        # clusters are named from the real mood-centroid tags.
         for name in cluster_names:
             assert " / " in name
             assert name.split(" (")[0].count(" / ") == 1

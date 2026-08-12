@@ -92,7 +92,6 @@ def hyperbolic_distance_matrix(targets, candidates):
         c = c.reshape(1, -1)
     t_norm2 = np.sum(t * t, axis=1)
     c_norm2 = np.sum(c * c, axis=1)
-    # ||u - v||^2 = ||u||^2 + ||v||^2 - 2 u.v avoids an (n, k, d) temp.
     diff2 = t_norm2[:, None] + c_norm2[None, :] - 2.0 * (t @ c.T)
     denom = np.maximum((1.0 - t_norm2[:, None]) * (1.0 - c_norm2[None, :]), 1e-12)
     arg = 1.0 + 2.0 * diff2 / denom

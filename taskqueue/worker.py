@@ -486,9 +486,6 @@ class Worker:
 
     def _run_in_child(self, job, kwargs):
         task_id = job['task_id']
-        # Hydrate in the parent before forking so a first-success config refresh
-        # (e.g. the setup wizard completing after worker boot) latches in the
-        # worker process instead of being thrown away with the job child.
         self.hydrate_config()
         try:
             read_fd, write_fd = os.pipe()
@@ -809,7 +806,6 @@ def _encode_outcome(outcome):
 
 
 _PR_SET_PDEATHSIG = 1
-# Poll interval for the non-Linux getppid() parent-death watchdog.
 _PARENT_WATCHDOG_INTERVAL = 1.0
 
 
@@ -839,12 +835,6 @@ def _bind_linux_pdeathsig(parent_pid):
 
 
 def _watch_parent_death(parent_pid):
-    # macOS (and any non-Linux POSIX) forks but has no prctl(PR_SET_PDEATHSIG),
-    # so a kill -9 of just the worker process (not the process group) would
-    # orphan the job child, which then keeps the claim connection's socket
-    # alive and delays reclaim. A tiny getppid() watchdog thread in the child
-    # hard-exits it the moment the parent disappears, mirroring the Linux
-    # parent-death binding.
     def _watch():
         while True:
             try:

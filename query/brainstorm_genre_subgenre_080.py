@@ -61,8 +61,6 @@ MAX_WEB_LOOKUPS = 900
 WEB_SLEEP = 0.35
 SEED = 42
 
-# The genre labels the system maps in top mood (MSD genre vocabulary + the
-# project's stratified genres). These ARE the main genres.
 GENRE_LABELS = [
     'rock', 'pop', 'alternative', 'indie', 'electronic', 'jazz', 'metal',
     'classic rock', 'soul', 'indie rock', 'electronica', 'folk', 'punk',
@@ -71,14 +69,11 @@ GENRE_LABELS = [
     'indie pop', 'House', 'alternative rock', 'dance',
 ]
 
-# MSD tags that are NOT genres (vocal/era/descriptor/mood words). Used to keep
-# cluster names on real genre labels.
 NON_GENRE_TAGS = {
     'female vocalists', 'male vocalists', 'female vocalist', 'guitar', 'oldies',
     'beautiful', 'sexy', 'catchy', 'mellow', 'chill', 'instrumental', 'party',
     'happy', 'sad', '90s', '80s', '70s', '60s', '00s', 'easy listening',
     'live', 'seen live', 'favorites', 'love', 'chillout', 'lo-fi', 'lofi',
-    # non-genre noise from web tag sources (chart/format/locale descriptors)
     'american', 'billboard hot 100', 'love at first listen', 'peak', 'motomano',
     'hot hits', 'top 40', 'hit', 'hits', 'mainstream', 'underground',
     'beautiful voice', 'nice voice', 'great voice', 'danceable', 'sing along',
@@ -120,16 +115,10 @@ def norm_tag(tag):
     return str(tag).strip().lower().replace('&amp;', '&').replace('  ', ' ')
 
 
-# Collision key matching the runtime's _slugify (tasks/hyperbolic_manager.py):
-# two names that would produce the same tree node id must never both be
-# emitted, whatever their case or punctuation ("Progressive rock" vs
-# "progressive rock").
 def name_key(tag):
     return re.sub(r'[^a-z0-9]+', '-', str(tag).lower()).strip('-')
 
 
-# Chart / playlist / year noise that leaks from web tag sources and is never
-# a genre label.
 _CHART_NOISE = re.compile(
     r'(billboard|hot 100|top 40|top 100|viral|trending|playlist|stream|'
     r'chart|20[0-9]{2}|hits?$)', re.IGNORECASE)
@@ -141,7 +130,6 @@ def is_genre_like(tag):
             and not _CHART_NOISE.search(t))
 
 
-# --- web tag lookup (real data) ---
 def _http_json(url):
     import requests
 
@@ -225,7 +213,6 @@ def web_genre_tags(title, artist):
     if LASTFM_API_KEY:
         tags.extend(_lastfm_tags(title, artist))
     if not tags:
-        # Fall back to the keyless sources when Last.fm has no match.
         tags.extend(_deezer_tags(title, artist))
         tags.extend(_musicbrainz_tags(title, artist))
     _WEB_CACHE[key] = tags
@@ -234,8 +221,6 @@ def web_genre_tags(title, artist):
 
 
 def aggregate_web_tags(sample):
-    # A tag only counts if it appears on >= 2 distinct sampled tracks, so a
-    # single odd track (e.g. a stray "thank u" tag) can never name a cluster.
     agg = {}
     counts = {}
     for title, artist in sample:
@@ -355,9 +340,6 @@ def main():
                         and name_key(name) != genre_key):
                     cands[name] = cands.get(name, 0.0) + val * 1.0
             if not cands:
-                # The fallback obeys the same uniqueness rules as the normal
-                # path; without them it shipped duplicate and self-named
-                # subgenres ("jazz > jazz", two "Progressive rock" folders).
                 top = next(
                     (t for t in top_msd[c]
                      if name_key(t) not in used and name_key(t) != genre_key),

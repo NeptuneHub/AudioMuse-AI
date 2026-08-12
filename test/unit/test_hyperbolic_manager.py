@@ -284,9 +284,6 @@ def _score_row(item_id, mood_vector=None, other_features=None):
     return row
 
 
-# (main, second, third) genre triples used to build a deterministic 3-level
-# genre taxonomy: main genre splits rock/jazz, second splits pop/metal/blues/
-# swing, third splits each of those into two.
 _GENRE_PATTERNS = [
     ("rock", "pop", "indie"),
     ("rock", "pop", "alternative"),
@@ -402,8 +399,6 @@ def test_tree_mood_node_splits_by_main_genre_when_large(monkeypatch):
 
 
 def test_tree_cluster_node_returns_tracks(monkeypatch):
-    # No metadata and no mood centroids -> the root collapses to a "General"
-    # mood, whose oversized group falls back to k-means clusters.
     mapping = _make_catalogue(n_per_band=200, bands=1)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 30)
     try:
@@ -537,26 +532,15 @@ def test_tree_genre_nesting_reaches_main_second_and_third(monkeypatch):
         kinds = {n.get("kind") for n in nodes.values() if n.get("type") == "folder"}
     finally:
         hm.reset_hyperbolic_tree_cache()
-    # 400 tracks: main genre (2x200) -> second genre (4x100) -> third genre
-    # (8x50) -> k-means fallback below 50, so all three genre levels appear
-    # instead of dumping every track into one folder.
     assert mood.get("leaf") is False
     assert {"main_genre", "second_genre", "third_genre"} <= kinds
 
 
 def test_tree_root_is_genre_and_splits_into_subgenres(monkeypatch):
-    # The data-driven genre_subgenre.json path takes over when the projected
-    # genre/subgenre centroids are dimensionally compatible with the vectors:
-    # the ROOT is now the main genre partition, and each genre folder splits
-    # into its own subgenres - no mood level, no mood_vector STRATIFIED_GENRES
-    # ranking.
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
-    # 2-dim centroids matching the test catalogue's embedding plane: rock
-    # patterns sit near x~0.15, jazz patterns near x~0.17, with subgenres
-    # separated by small x offsets.
     genre_subgenres = {
         "rock": {
             "vec": np.array([0.156, 0.0]),
@@ -590,9 +574,6 @@ def test_tree_root_is_genre_and_splits_into_subgenres(monkeypatch):
 
 
 def test_tree_genre_centroids_fall_back_when_dims_differ(monkeypatch):
-    # Genre centroids from a different embedding dimension cannot be compared
-    # with the projected vectors, so the tree silently falls back to the
-    # mood_vector STRATIFIED_GENRES partition (the legacy path).
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
@@ -614,7 +595,6 @@ def test_tree_genre_centroids_fall_back_when_dims_differ(monkeypatch):
         kinds = {n.get("kind") for n in nodes.values() if n.get("type") == "folder"}
     finally:
         hm.reset_hyperbolic_tree_cache()
-    # The main genre partition still comes from the legacy mood_vector path.
     assert {"main_genre", "second_genre", "third_genre"} <= kinds
 
 
@@ -654,8 +634,6 @@ def test_genre_path_prefix_builds_ancestor_chain():
 
 
 def test_cluster_descriptor_prefers_dominant_clap_mood():
-    # All three tracks lean happy -> the CLAP mood wins, not a voice tag that
-    # only one track carries.
     score_by_id = {
         "a": {"other_features": "happy:0.9,party:0.1", "mood_vector": "pop:0.5,female vocalists:0.9"},
         "b": {"other_features": "happy:0.8,party:0.2", "mood_vector": "pop:0.5"},
@@ -665,8 +643,6 @@ def test_cluster_descriptor_prefers_dominant_clap_mood():
 
 
 def test_cluster_descriptor_voice_not_used_when_mood_is_confident():
-    # A confident dominant mood always wins, even when a voice tag is on every
-    # track - mood is the primary descriptor, voice is only a fallback.
     score_by_id = {
         "a": {"other_features": "happy:0.5", "mood_vector": "female vocalists:0.9,pop:0.5"},
         "b": {"other_features": "happy:0.5", "mood_vector": "female vocalists:0.8,pop:0.5"},
@@ -676,8 +652,6 @@ def test_cluster_descriptor_voice_not_used_when_mood_is_confident():
 
 
 def test_cluster_descriptor_voice_only_when_no_confident_mood():
-    # No single mood is confident (all tracks tie happy/sad), but the voice
-    # tag dominates a clear majority -> voice names the cluster as fallback.
     score_by_id = {
         "a": {"other_features": "happy:0.4,sad:0.4", "mood_vector": "female vocalists:0.9,pop:0.5"},
         "b": {"other_features": "happy:0.4,sad:0.4", "mood_vector": "female vocalists:0.8,pop:0.5"},
@@ -687,7 +661,6 @@ def test_cluster_descriptor_voice_only_when_no_confident_mood():
 
 
 def test_cluster_descriptor_none_when_not_confident():
-    # No confident mood majority and no dominant voice -> no fabricated label.
     score_by_id = {
         "a": {"other_features": "happy:0.5,sad:0.5", "mood_vector": "rock:0.5"},
         "b": {"other_features": "sad:0.5,happy:0.5", "mood_vector": "rock:0.5"},
@@ -697,10 +670,6 @@ def test_cluster_descriptor_none_when_not_confident():
 
 
 def test_genre_cluster_names_use_ancestor_prefix_and_dedupe(monkeypatch):
-    # A subgenre folder too large for the leaf falls back to k-means clusters
-    # whose names are GENRE_SUBGENRE_MOOD/VOICE (never a mood-centroid genre
-    # pairing), deduped with _1/_2. A cluster without a confident descriptor
-    # keeps just the ancestor path (deduped) instead of a made-up label.
     members = [f"t{i}" for i in range(60)]
     vec_map = {m: np.array([0.01 * i, 0.0], dtype=np.float64) for i, m in enumerate(members)}
     radii_map = {m: 0.5 for m in members}
@@ -724,7 +693,6 @@ def test_genre_cluster_names_use_ancestor_prefix_and_dedupe(monkeypatch):
     assert children
     names = [c["name"] for c in children]
     assert all(n.startswith("ROCK_PROGRESSIVE_ROCK") for n in names)
-    # All descriptors are mood words, never genres like "Pop / Female Vocalist".
     assert all(" / " not in n for n in names)
     assert len(names) == len(set(names))
 
@@ -754,8 +722,6 @@ def test_cluster_name_skips_a_repeated_tag_from_the_second_centroid():
         _mood_centroid([0.49, 0.00], ["pop", "indie"]),
     ]
     name = hm._cluster_name(["a"], vec_map, mood_centroids)
-    # The second centroid's top tag ("pop") duplicates the first pick, so its
-    # next distinct tag ("indie") is used instead of showing "Pop / Pop".
     assert name == "Pop / Indie (1 tracks)"
 
 
