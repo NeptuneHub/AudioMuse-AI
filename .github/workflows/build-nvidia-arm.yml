@@ -110,8 +110,12 @@ jobs:
           push: true
           platforms: linux/arm64
           tags: ${{ steps.docker_tags.outputs.docker_tags }}
+          # DGX Spark / GB10 is compute capability sm_121, only targetable by CUDA
+          # 13+ (CUDA 12.8 cannot generate code for it). BASE_IMAGE must stay on
+          # CUDA 13.x to match the onnxruntime-gpu wheel below, which is linked
+          # against libcudart.so.13 / libcudnn.so.9 (built for CUDA 13.1.1).
           build-args: |
-            BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+            BASE_IMAGE=nvidia/cuda:13.1.1-cudnn-runtime-ubuntu24.04
             ONNXRUNTIME_WHEEL_URL=https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/onnxruntime_gpu-1.25.0-cp312-cp312-linux_aarch64.whl
           cache-from: type=gha,scope=nvidia-arm
           cache-to: type=gha,scope=nvidia-arm,mode=max
