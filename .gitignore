@@ -73,3 +73,4 @@ testing_suite/
 analysis.md
 .claude/
 lyrics_model_gte_vnni.tar.gz
+.reasonix/
