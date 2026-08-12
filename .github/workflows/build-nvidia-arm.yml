@@ -1,0 +1,121 @@
+name: Build and Push AudioMuse AI Docker Image with NVIDIA support (ARM64 / DGX Spark)
+
+on:
+  push:
+    branches:
+      - main      # Trigger on merge/push to main -> 'devel-nvidia-arm' tag
+    # Trigger on version tags for stable releases
+    tags:
+      - 'v*.*.*'  # Trigger for version tags like v1.0.0
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+  # Allow manual runs from the Actions UI
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag (e.g., v0.7.12-beta)'
+        required: true
+        type: string
+
+jobs:
+  build-and-push:
+    # Run on non-PR events; for PR events skip drafts and fork PRs (the
+    # latter only get a read-only GITHUB_TOKEN and cannot push to ghcr.io).
+    # Maintainers can build a fork PR manually via workflow_dispatch.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    # Native arm64 runner: builds linux/arm64 without QEMU emulation, so pip
+    # resolves aarch64 wheels natively (fast and reliable).
+    runs-on: ubuntu-24.04-arm
+
+    permissions:
+      contents: read # Allow checkout to read repository contents
+      packages: write # Allow pushing to GitHub Container Registry
+
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          swap-storage: false
+          large-packages: true  # Remove large packages (saves ~8-10 GB)
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          docker-images: true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Docker image tags
+        id: docker_tags
+        run: |
+          REPO_NAME_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          ALL_TAGS=""
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # When compiling from a version tag, create both the versioned tag and latest-nvidia-arm
+            VERSION_TAG=$(echo "${GITHUB_REF}" | sed -e 's|refs/tags/v||g')
+            VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia-arm"
+            LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia-arm"
+            ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
+            echo "Building versioned tag: $VERSIONED_TAG"
+            echo "Also tagging as latest: $LATEST_TAG"
+          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            # When compiling from main (merged PR), create devel-nvidia-arm tag
+            DEVEL_TAG="ghcr.io/$REPO_NAME_LOWER:devel-nvidia-arm"
+            ALL_TAGS="${DEVEL_TAG}"
+            echo "Building devel tag: $DEVEL_TAG"
+          elif [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.draft }}" == "false" ]]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            PR_TAG="ghcr.io/$REPO_NAME_LOWER:pr-${PR_NUM}-nvidia-arm"
+            ALL_TAGS="${PR_TAG}"
+            echo "Building PR tag: $PR_TAG"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual run with version input
+            VERSION_TAG=$(echo "${{ inputs.version_tag }}" | sed -e 's|^v||g')
+            VERSIONED_TAG="ghcr.io/$REPO_NAME_LOWER:${VERSION_TAG}-nvidia-arm"
+            LATEST_TAG="ghcr.io/$REPO_NAME_LOWER:latest-nvidia-arm"
+            ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
+            echo "Building manual version tag: $VERSIONED_TAG"
+            echo "Also tagging as latest: $LATEST_TAG"
+          else
+            echo "This workflow is intended to run on tag pushes (refs/tags/v*), devel branch, non-draft pull requests, or manual dispatch. Exiting."
+            exit 1
+          fi
+
+          # Export the tags for subsequent steps (comma-separated)
+          echo "docker_tags=$ALL_TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and Push AudioMuse AI Image (ARM64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.docker_tags.outputs.docker_tags }}
+          # DGX Spark / GB10 is compute capability sm_121, only targetable by CUDA
+          # 13+ (CUDA 12.8 cannot generate code for it). BASE_IMAGE must stay on
+          # CUDA 13.x to match the onnxruntime-gpu wheel below, which is linked
+          # against libcudart.so.13 / libcudnn.so.9 (built for CUDA 13.1.1).
+          build-args: |
+            BASE_IMAGE=nvidia/cuda:13.1.1-cudnn-runtime-ubuntu24.04
+            ONNXRUNTIME_WHEEL_URL=https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/onnxruntime_gpu-1.25.0-cp312-cp312-linux_aarch64.whl
+          cache-from: type=gha,scope=nvidia-arm
+          cache-to: type=gha,scope=nvidia-arm,mode=max
