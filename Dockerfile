@@ -7,6 +7,11 @@
 #   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
 
 ARG BASE_IMAGE=ubuntu:24.04
+# Optional: URL of a prebuilt aarch64 onnxruntime-gpu wheel. There is no official
+# linux/aarch64 wheel for onnxruntime-gpu on PyPI, so ARM64 (DGX Spark / GB10) GPU
+# builds install this URL instead of the onnxruntime-gpu pin in gpu.txt.
+# Example: https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/onnxruntime_gpu-1.25.0-cp312-cp312-linux_aarch64.whl
+ARG ONNXRUNTIME_WHEEL_URL=""
 
 # ============================================================================
 # Stage 1: Download ML models (cached separately for faster rebuilds)
@@ -418,6 +423,7 @@ RUN set -ux; \
 FROM base AS libraries
 
 ARG BASE_IMAGE
+ARG ONNXRUNTIME_WHEEL_URL
 
 WORKDIR /app
 
@@ -431,8 +437,14 @@ COPY requirements/ /app/requirements/
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED; \
     export UV_BREAK_SYSTEM_PACKAGES=1; \
     if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, torch+cuda)"; \
-        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+        if [[ -n "$ONNXRUNTIME_WHEEL_URL" ]]; then \
+            echo "NVIDIA (arm64) base: installing GPU packages with prebuilt aarch64 onnxruntime-gpu wheel"; \
+            grep -v '^onnxruntime-gpu' /app/requirements/gpu.txt > /tmp/gpu-no-ort.txt; \
+            uv pip install --system --no-cache --index-strategy unsafe-best-match -r /tmp/gpu-no-ort.txt -r /app/requirements/common.txt "$ONNXRUNTIME_WHEEL_URL" || exit 1; \
+        else \
+            echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, torch+cuda)"; \
+            uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+        fi \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
