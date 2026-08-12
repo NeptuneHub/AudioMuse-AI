@@ -10,9 +10,33 @@
 
 Run as python -m taskqueue.worker --queue high or --queue default. The
 claim is a single UPDATE whose subquery takes FOR UPDATE SKIP LOCKED, so N
-workers racing need no coordination. The job runs IN THIS PROCESS - cancelling
-means ending the process, the worker recycles after QUEUE_MAX_JOBS, and the
-ONNX models stay warm for its whole life.
+workers racing need no coordination.
+
+Where the OS can fork (Linux, macOS, every container - detected by os.fork
+existing) the job runs in a FORKED CHILD that reports its outcome over a pipe
+and exits,
+so all the memory the job allocated - ONNX models, the transformers stack,
+numpy buffers - is returned to the OS the moment the job ends, exactly like
+the old RQ fork-per-job worker. The child inherits the claim by copy but only
+the parent ever touches the claim connection and the advisory lock; the child
+opens its own database connections through the task's app context and leaves
+through os._exit, so the parent's sockets are never written or closed by the
+child. A child that dies without reporting (OOM kill, segfault) fails the job
+with its signal or exit code instead of taking the whole worker down. The
+child binds itself to the parent's death (PR_SET_PDEATHSIG on Linux; a
+getppid() watchdog thread on other POSIX platforms), so a worker killed
+uncleanly cannot leave an orphaned job still writing after the task's
+advisory lock died with the parent and reclaim handed the row to another
+worker. Config is hydrated in the parent before forking so a first-success
+refresh latches in the worker instead of being thrown away with the child.
+
+Windows cannot fork, so there the job runs in the worker process itself (the
+shape the old SimpleWorker had) and any heavy analysis models the job loaded
+are unloaded again when it finishes (_unload_job_models): the sessions are
+dropped and the heap trimmed, keeping an idle worker at the library floor
+instead of the loaded-model footprint. Either way cancelling means ending the
+worker's process tree, which includes the job child, and the worker recycles
+after QUEUE_MAX_JOBS.
 
 Liveness is the advisory lock held on the task's own connection; if the process
 dies the lock dies with it, so no heartbeat is needed. ensure_hold retakes
@@ -26,6 +50,8 @@ ordering reason.
 
 Main Features:
 * Claim/drain loop that blocks on LISTEN when no work exists
+* Fork-per-job on POSIX gives every byte of job memory back to the OS;
+  Windows runs the job in-process and unloads the models after each job
 * A cancel notification ends the process tree in about 50ms
 * Boot reclaims orphaned tasks bounded by QUEUE_MAX_ATTEMPTS
 * A lost connection (SQLSTATE class 08, 57Pxx, InterfaceError) requeues the row
@@ -35,6 +61,8 @@ Main Features:
 
 import logging
 import os
+import pickle
+import signal
 import sys
 import threading
 import time
@@ -96,6 +124,11 @@ APPLICATION_NAME_LIMIT = 63
 
 UNCHARGED_REQUEUE_LIMIT = 3
 
+_OPTIONAL_JOB_MODELS = (
+    ('tasks.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
+    ('lyrics', 'is_lyrics_loaded', 'unload_lyrics_models'),
+)
+
 
 def build_identity(queue, hostname, pid):
     suffix_len = len(sql.WORKER_LISTEN_SUFFIX)
@@ -126,6 +159,7 @@ class Worker:
         self._abandoned = []
         self._uncharged = {}
         self._claim_txn = threading.Lock()
+        self._fork_jobs = hasattr(os, 'fork')
 
     def reconnect(self):
         try:
@@ -384,7 +418,7 @@ class Worker:
                 stop_hard(f"recycling after {self._jobs_done} jobs")
 
     def run_job(self, job):
-        from . import resolve_func, set_current_task_id
+        from . import set_current_task_id
 
         task_id = job['task_id']
         set_current_task_id(task_id)
@@ -393,25 +427,11 @@ class Worker:
             task_id, job['func'], job['attempts'], job['max_attempts'],
         )
         started = time.time()
-        result = None
-        try:
-            self.hydrate_config()
-            func = resolve_func(job['func'])
-            result = func(*job['args'], **self.hydrate_shared(job['kwargs']))
-        except Exception as exc:
-            logger.exception("Task %s raised", task_id)
-            outcome, summary = config.TASK_STATUS_FAIL, _error_summary(exc)
-            if _is_connectivity_error(exc):
-                logger.warning(
-                    "Task %s lost its database connection; putting its row back "
-                    "on the queue instead of failing it.", task_id,
-                )
-                outcome = None
-                if task_id not in self._abandoned:
-                    self._abandoned.append(task_id)
+        outcome, summary, result = self._execute(job)
+        if outcome is None:
+            if task_id not in self._abandoned:
+                self._abandoned.append(task_id)
         else:
-            outcome, summary = config.TASK_STATUS_SUCCESS, None
-        if outcome is not None:
             self._uncharged.pop(task_id, None)
         try:
             with self._claim_txn:
@@ -427,6 +447,148 @@ class Worker:
                     logger.exception("Could not release the hold on %s", task_id)
         finally:
             logger.info("Finished %s in %.1fs", task_id, time.time() - started)
+
+    def _execute(self, job):
+        task_id = job['task_id']
+        try:
+            kwargs = self.hydrate_shared(job['kwargs'])
+        except Exception as exc:
+            logger.exception("Task %s raised", task_id)
+            return self._failure(task_id, exc)
+        if self._fork_jobs:
+            return self._run_in_child(job, kwargs)
+        try:
+            return self._attempt(job, kwargs)
+        finally:
+            self._unload_job_models()
+
+    def _attempt(self, job, kwargs):
+        from . import resolve_func
+
+        task_id = job['task_id']
+        try:
+            self.hydrate_config()
+            func = resolve_func(job['func'])
+            result = func(*job['args'], **kwargs)
+        except Exception as exc:
+            logger.exception("Task %s raised", task_id)
+            return self._failure(task_id, exc)
+        return config.TASK_STATUS_SUCCESS, None, result
+
+    def _failure(self, task_id, exc):
+        if _is_connectivity_error(exc):
+            logger.warning(
+                "Task %s lost its database connection; putting its row back "
+                "on the queue instead of failing it.", task_id,
+            )
+            return None, _error_summary(exc), None
+        return config.TASK_STATUS_FAIL, _error_summary(exc), None
+
+    def _run_in_child(self, job, kwargs):
+        task_id = job['task_id']
+        # Hydrate in the parent before forking so a first-success config refresh
+        # (e.g. the setup wizard completing after worker boot) latches in the
+        # worker process instead of being thrown away with the job child.
+        self.hydrate_config()
+        try:
+            read_fd, write_fd = os.pipe()
+        except OSError as exc:
+            logger.exception("Could not open the report pipe for %s", task_id)
+            return config.TASK_STATUS_FAIL, _error_summary(exc), None
+        parent_pid = os.getpid()
+        try:
+            pid = os.fork()
+        except OSError as exc:
+            os.close(read_fd)
+            os.close(write_fd)
+            logger.exception("Could not fork the job process for %s", task_id)
+            return config.TASK_STATUS_FAIL, _error_summary(exc), None
+        if pid == 0:
+            self._child_main(job, kwargs, read_fd, write_fd, parent_pid)
+        os.close(write_fd)
+        payload = b''
+        try:
+            with os.fdopen(read_fd, 'rb') as pipe:
+                payload = pipe.read()
+        except Exception:
+            logger.exception("Reading the job process report for %s failed", task_id)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                logger.debug("SIGKILL to the job process failed", exc_info=True)
+        try:
+            _, status = os.waitpid(pid, 0)
+        except OSError:
+            logger.exception("Could not reap the job process for %s", task_id)
+            status = 0
+        return self._child_outcome(task_id, status, payload)
+
+    def _child_main(self, job, kwargs, read_fd, write_fd, parent_pid):
+        exit_code = 1
+        try:
+            _bind_to_parent_death(parent_pid)
+            os.close(read_fd)
+            payload = _encode_outcome(self._attempt(job, kwargs))
+            with os.fdopen(write_fd, 'wb') as pipe:
+                pipe.write(payload)
+            exit_code = 0
+        except BaseException:
+            try:
+                logger.exception(
+                    "The job process for %s could not report back", job['task_id']
+                )
+            except BaseException:
+                pass
+        finally:
+            os._exit(exit_code)
+
+    def _child_outcome(self, task_id, status, payload):
+        if payload:
+            try:
+                outcome = pickle.loads(payload)
+            except Exception:
+                logger.exception("Could not decode the job process report for %s", task_id)
+            else:
+                if isinstance(outcome, tuple) and len(outcome) == 3:
+                    return outcome
+                logger.error("The job process report for %s is malformed", task_id)
+        summary = _child_death_summary(status)
+        logger.error("Task %s: %s", task_id, summary)
+        return config.TASK_STATUS_FAIL, summary, None
+
+    def _unload_job_models(self):
+        if not self._unload_resident_models():
+            return
+        try:
+            from tasks.memory_utils import release_memory_to_os
+
+            release_memory_to_os()
+        except Exception:
+            logger.debug("Worker job-end heap trim failed", exc_info=True)
+
+    def _unload_resident_models(self):
+        if 'tasks.analysis.song' in sys.modules:
+            try:
+                from tasks.analysis.song import cleanup_optional_models
+
+                cleanup_optional_models(context="worker job end")
+            except Exception:
+                logger.debug("Worker job-end optional-model cleanup failed", exc_info=True)
+            return True
+        resident = False
+        for module_name, is_loaded_name, unload_name in _OPTIONAL_JOB_MODELS:
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            resident = True
+            try:
+                if getattr(module, is_loaded_name)():
+                    getattr(module, unload_name)()
+            except Exception:
+                logger.debug(
+                    "Worker job-end unload of %s failed", module_name, exc_info=True
+                )
+        return resident
 
     def _drop_claim_conn(self):
         try:
@@ -633,6 +795,84 @@ def _error_summary(exc):
     return text[:500]
 
 
+def _encode_outcome(outcome):
+    status, summary, result = outcome
+    if not isinstance(result, dict):
+        result = None
+    try:
+        return pickle.dumps((status, summary, result))
+    except Exception:
+        logger.exception(
+            "The task result could not be pickled; reporting the outcome without it"
+        )
+        return pickle.dumps((status, summary, None))
+
+
+_PR_SET_PDEATHSIG = 1
+# Poll interval for the non-Linux getppid() parent-death watchdog.
+_PARENT_WATCHDOG_INTERVAL = 1.0
+
+
+def _bind_to_parent_death(parent_pid):
+    if sys.platform == 'linux':
+        _bind_linux_pdeathsig(parent_pid)
+    else:
+        _watch_parent_death(parent_pid)
+
+
+def _bind_linux_pdeathsig(parent_pid):
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library('c')
+        if not libc_name:
+            return
+        ctypes.CDLL(libc_name, use_errno=True).prctl(
+            _PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0
+        )
+    except Exception:
+        logger.debug("Could not bind the job process to the worker's death", exc_info=True)
+        return
+    if os.getppid() != parent_pid:
+        os._exit(1)
+
+
+def _watch_parent_death(parent_pid):
+    # macOS (and any non-Linux POSIX) forks but has no prctl(PR_SET_PDEATHSIG),
+    # so a kill -9 of just the worker process (not the process group) would
+    # orphan the job child, which then keeps the claim connection's socket
+    # alive and delays reclaim. A tiny getppid() watchdog thread in the child
+    # hard-exits it the moment the parent disappears, mirroring the Linux
+    # parent-death binding.
+    def _watch():
+        while True:
+            try:
+                if os.getppid() != parent_pid:
+                    os._exit(1)
+            except Exception:
+                pass
+            time.sleep(_PARENT_WATCHDOG_INTERVAL)
+
+    threading.Thread(
+        target=_watch, name='worker-parent-watchdog', daemon=True
+    ).start()
+
+
+def _child_death_summary(status):
+    code = os.waitstatus_to_exitcode(status)
+    if code < 0:
+        return (
+            f"The job process died on signal {-code} before it could report back. "
+            "This usually means the system ran out of memory. "
+            "Check the container logs for details."
+        )
+    return (
+        f"The job process exited with code {code} without reporting back. "
+        "Check the container logs for details."
+    )
+
+
 def main():
     from app_logging import configure_logging
 
@@ -670,6 +910,14 @@ def main():
     worker.ensure_schema()
     worker.reclaim_orphans()
     worker.start_listener()
+    if worker._fork_jobs:
+        logger.info(
+            "Jobs run in a forked child process; job memory returns to the OS at job end."
+        )
+    else:
+        logger.info(
+            "Jobs run in the worker process; analysis models are unloaded after each job."
+        )
     logger.info("Worker %s ready; recycling after %s jobs.", worker.identity, worker.max_jobs)
     worker.run_forever()
 

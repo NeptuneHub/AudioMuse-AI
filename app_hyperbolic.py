@@ -183,17 +183,18 @@ def hyperbolic_tree_api():
     ---
     tags:
       - Hyperbolic Explorer
-    summary: Return a node of the radial-band/k-means tree; root, band, or
-      cluster nodes render folders, leaf bands render tracks.
+    summary: Return a node of the mood/genre taxonomy tree; root, mood, genre,
+      or k-means fallback nodes render folders, leaf folders render tracks.
     parameters:
       - name: node_id
         in: query
         required: false
         description: >-
-          Node id (root, b{band}, b{band}.c{cluster}.c{cluster}...); defaults
-          to root. The tree's radial band count and k-means recursion depth
-          are both derived automatically from the catalogue size when the
-          cache is built - there is no caller-facing depth parameter.
+          Node id (root, m{mood}, m{mood}.g{genre}, nested genre ids, and
+          .c{cluster} ids for the k-means fallback); defaults to root. The
+          mood partition and genre depth are derived automatically from the
+          mood centroids and each track's mood_vector when the cache is built
+          - there is no caller-facing depth parameter.
         schema:
           type: string
     responses:
@@ -286,6 +287,7 @@ def hyperbolic_cache_status():
         if not nodes:
             return jsonify({"ok": False, "reason": "empty_cache", "n_bands": None,
                              "node_count": 0, "track_count": 0})
+        # n_bands is the number of root folders in the cached tree.
         return jsonify({
             "ok": True,
             "n_bands": _TREE_CACHE.get("n_bands"),
@@ -303,10 +305,10 @@ def _translate_tree_ids(node, mapping):
     Walks the tree and rebuilds each node as a copy (never mutating the shared
     cache). Tracks not present on the request's selected server are dropped.
     Only a LEAF folder (whose children are tracks) is pruned when every track
-    was dropped; lazy folders - a non-leaf band whose children are cluster
-    summaries, or a cluster summary with an empty ``items`` list by design -
-    are kept so the root and band levels survive the per-server pass and the
-    client can expand them on demand.
+    was dropped; lazy folders - a non-leaf mood or genre folder whose children
+    are cluster summaries, or a summary with an empty ``items`` list by design
+    - are kept so the root and mood/genre levels survive the per-server pass
+    and the client can expand them on demand.
     """
 
     def walk(n):

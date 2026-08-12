@@ -730,22 +730,32 @@ HYPERBOLIC_RADIUS_PERCENTILE = float(os.environ.get("HYPERBOLIC_RADIUS_PERCENTIL
 HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFETCH", "4"))
 HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "20"))
 HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
-# Directory tree shape: only TARGET sizes are configured; the actual number of
-# radial bands and the recursion depth of the k-means folders underneath them
-# are derived from the catalogue size at cache-build time (see
-# tasks.hyperbolic_manager._plan_tree_shape), so a 500-track library and a
-# 500,000-track library each get a browsable tree instead of one fixed shape.
-# Root radial band count is clamped to [HYPERBOLIC_MIN_BANDS, HYPERBOLIC_MAX_BANDS].
+# Directory tree shape: when genre_subgenre.json is present and dimensionally
+# usable the root is a MAIN GENRE partition (nearest genre centroid), then a
+# SUBGENRE partition (nearest of that genre's subgenres) for the levels below
+# HYPERBOLIC_GENRE_DEPTH, then k-means fallback for any group still above the
+# target leaf size. Without usable genre data the tree falls back to a legacy
+# mood partition (mood_centroids_real_080_clap.json) followed by main/second/
+# third genre from each track's mood_vector. MIN/MAX_BANDS only bound the
+# legacy band-count sizing helper (_plan_band_count); the k-means fallback
+# branching is HYPERBOLIC_TARGET_BRANCHING. Only TARGET sizes are derived
+# from the catalogue size at cache-build time, so a
+# 500-track library and a 500,000-track library each get a browsable tree
+# instead of one fixed shape.
 HYPERBOLIC_MIN_BANDS = int(os.environ.get("HYPERBOLIC_MIN_BANDS", "4"))
 HYPERBOLIC_MAX_BANDS = int(os.environ.get("HYPERBOLIC_MAX_BANDS", "10"))
-# Below this many tracks, a folder (band or k-means cluster) stops splitting
-# and lists its tracks directly instead of recursing further.
+# Below this many tracks, a folder (mood, genre, or k-means cluster) stops
+# splitting and lists its tracks directly instead of recursing further.
 HYPERBOLIC_TARGET_LEAF_SIZE = int(os.environ.get("HYPERBOLIC_TARGET_LEAF_SIZE", "150"))
-# Desired number of k-means children per non-leaf folder below the root bands.
+# Desired number of k-means children per non-leaf fallback folder.
 HYPERBOLIC_TARGET_BRANCHING = int(os.environ.get("HYPERBOLIC_TARGET_BRANCHING", "8"))
-# Safety cap on k-means recursion depth below the root bands, in case a
+# Safety cap on k-means recursion depth below the genre levels, in case a
 # pathological cluster (e.g. many near-identical embeddings) never shrinks.
 HYPERBOLIC_MAX_TREE_RECURSION = int(os.environ.get("HYPERBOLIC_MAX_TREE_RECURSION", "6"))
+# Number of genre levels below the mood level in the Hyperbolic Explorer tree
+# (main genre, second genre, third genre). A group still above the target leaf
+# size after this many genre levels falls back to k-means sub-folders.
+HYPERBOLIC_GENRE_DEPTH = int(os.environ.get("HYPERBOLIC_GENRE_DEPTH", "3"))
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
@@ -1023,6 +1033,11 @@ PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
 # Path to the JSON file containing mood centroids for the path-to-mood feature.
 MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap.json')
+
+# Path to the JSON file containing genre -> subgenre centroids used by the
+# Hyperbolic Explorer tree's genre levels (main genre, then subgenre). Built
+# offline by query/brainstorm_genre_subgenre_080.py from the live catalogue.
+GENRE_SUBGENRE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_subgenre.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)

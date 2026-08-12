@@ -76,6 +76,29 @@ def hyperbolic_distances_to(target, candidates):
     return np.arccosh(np.clip(arg, 1.0, None))
 
 
+def hyperbolic_distance_matrix(targets, candidates):
+    """Pairwise Poincare distances between two sets of points.
+
+    Returns an (n, k) matrix where row i / column j is d_H(targets[i],
+    candidates[j]). Vectorized so partitioning a large catalogue against a
+    handful of centroids (mood, genre, subgenre) is one NumPy pass instead of
+    a Python loop of scalar distance calls, which dominated tree build time.
+    """
+    t = np.asarray(targets, dtype=np.float64)
+    c = np.asarray(candidates, dtype=np.float64)
+    if t.ndim == 1:
+        t = t.reshape(1, -1)
+    if c.ndim == 1:
+        c = c.reshape(1, -1)
+    t_norm2 = np.sum(t * t, axis=1)
+    c_norm2 = np.sum(c * c, axis=1)
+    # ||u - v||^2 = ||u||^2 + ||v||^2 - 2 u.v avoids an (n, k, d) temp.
+    diff2 = t_norm2[:, None] + c_norm2[None, :] - 2.0 * (t @ c.T)
+    denom = np.maximum((1.0 - t_norm2[:, None]) * (1.0 - c_norm2[None, :]), 1e-12)
+    arg = 1.0 + 2.0 * diff2 / denom
+    return np.arccosh(np.clip(arg, 1.0, None))
+
+
 def calibrate_scale(norms, percentile=95.0):
     norms = np.asarray(norms, dtype=np.float64)
     if norms.size == 0:

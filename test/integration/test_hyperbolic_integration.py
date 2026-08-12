@@ -17,8 +17,8 @@ Main Features:
 * set_hyperbolic_projection round-trips a projected vector and radius
 * backfill_hyperbolic_columns fills the new columns for every non-NULL embedding
 * hyperbolic_similar re-ranks candidates by exact Poincare distance
-* build_hyperbolic_tree_cache materializes root / band / track nodes from real
-  rows; build_hyperbolic_tree then reads them back from the cache
+* build_hyperbolic_tree_cache materializes root / mood / genre / track nodes
+  from real rows; build_hyperbolic_tree then reads them back from the cache
 * The tree cache persists as segmented BYTEA rows in ivf_dir (50 MB chunks,
   like every other index) and reassembles on load, so analysis writes it and
   Flask reads it back at startup
@@ -392,6 +392,18 @@ class TestTreeEngine:
             assert np.linalg.norm(c["vec"]) < 1.0
             assert c["tags"]
 
+    def test_load_projected_genre_subgenres_reads_the_real_file(self, _point_get_db_to_test):
+        hm = _load_hyperbolic_manager()
+        genre_subgenres = hm._load_projected_genre_subgenres()
+        assert genre_subgenres
+        for genre, info in genre_subgenres.items():
+            assert info["vec"].shape == (_DIM,)
+            assert np.linalg.norm(info["vec"]) < 1.0
+            assert len(info["subgenres"]) >= 2
+            for s in info["subgenres"]:
+                assert s["vec"].shape == (_DIM,)
+                assert s["name"]
+
     def test_tree_cluster_names_blend_tags_from_real_centroids(self, _point_get_db_to_test, monkeypatch):
         conn = _point_get_db_to_test
         _seed_poincare(conn)
@@ -406,6 +418,9 @@ class TestTreeEngine:
         finally:
             hm.reset_hyperbolic_tree_cache()
         assert cluster_names
+        # This tiny catalogue (20 tracks) collapses the genre partition to one
+        # group, so the tree falls back to the legacy mood path whose k-means
+        # clusters are named from the real mood-centroid tags.
         for name in cluster_names:
             assert " / " in name
             assert name.split(" (")[0].count(" / ") == 1

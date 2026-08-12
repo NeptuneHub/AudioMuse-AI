@@ -19,8 +19,9 @@ Main Features:
   roots / niche radial filtering relative to the target radius
 * Invalid modes and missing target projections raise ValueError
 * backfill_hyperbolic_columns writes projections for every streamed batch
-* build_hyperbolic_tree renders root / band / cluster / track nodes with
-  quantile bands and deterministic k-means folders
+* build_hyperbolic_tree renders root / mood / main-genre / second-genre /
+  third-genre / cluster / track nodes, with a k-means fallback for groups
+  with no further genre metadata
 * build_hyperbolic_tree_cache persists the built tree; load_hyperbolic_tree_cache
   restores it from that persisted blob without touching the embedding table
   or refitting any k-means, and init_hyperbolic_cache always loads, never builds
@@ -270,27 +271,78 @@ def _make_catalogue(n_per_band=8, bands=3):
     return mapping
 
 
-def _score_row(item_id):
-    return {
+def _score_row(item_id, mood_vector=None, other_features=None):
+    row = {
         "item_id": item_id,
         "title": f"Title {item_id}",
         "author": f"Author {item_id}",
     }
+    if mood_vector is not None:
+        row["mood_vector"] = mood_vector
+    if other_features is not None:
+        row["other_features"] = other_features
+    return row
 
 
-def _rebuild_tree_cache(mapping, n_bands=None, score_rows=None):
+# (main, second, third) genre triples used to build a deterministic 3-level
+# genre taxonomy: main genre splits rock/jazz, second splits pop/metal/blues/
+# swing, third splits each of those into two.
+_GENRE_PATTERNS = [
+    ("rock", "pop", "indie"),
+    ("rock", "pop", "alternative"),
+    ("rock", "metal", "punk"),
+    ("rock", "metal", "hard rock"),
+    ("jazz", "blues", "folk"),
+    ("jazz", "blues", "country"),
+    ("jazz", "swing", "bebop"),
+    ("jazz", "swing", "dixieland"),
+]
+
+
+def _make_mood_catalogue(n_per_mood=8, moods=("happy", "sad", "danceable")):
+    mapping = {}
+    score_rows = []
+    for mi, mood in enumerate(moods):
+        base = 0.15 + 0.25 * mi
+        for pattern, (g1, g2, g3) in enumerate(_GENRE_PATTERNS):
+            for i in range(n_per_mood):
+                iid = f"fp_{mood}_{pattern}_{i}"
+                vec = np.array([base + 0.004 * pattern, 0.008 * i], dtype=np.float32)
+                mapping[iid] = (vec, float(np.tanh(np.linalg.norm(vec) / 2.0)))
+                score_rows.append(_score_row(
+                    iid,
+                    mood_vector=f"{g1}:0.9,{g2}:0.6,{g3}:0.3",
+                    other_features=f"{mood}:0.9,other:0.1",
+                ))
+    return mapping, score_rows
+
+
+def _mood_centroids_for(moods):
+    return [
+        {"vec": np.array([0.15 + 0.25 * mi, 0.0], dtype=np.float64),
+         "tags": ["pop", "rock"], "mood": mood}
+        for mi, mood in enumerate(moods)
+    ]
+
+
+def _rebuild_tree_cache(mapping, n_bands=None, score_rows=None, mood_centroids=None,
+                        genre_subgenres=None):
     hm.reset_hyperbolic_tree_cache()
     with patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
          patch("app_helper.get_score_data_by_ids", return_value=score_rows or []), \
-         patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
+         patch.object(hm, "_load_projected_mood_centroids",
+                      return_value=mood_centroids if mood_centroids is not None else []), \
+         patch.object(hm, "_load_projected_genre_subgenres",
+                      return_value=genre_subgenres if genre_subgenres is not None else {}), \
          patch.object(hm, "_persist_tree_cache_blob"):
         return hm.build_hyperbolic_tree_cache(n_bands=n_bands)
 
 
-def test_tree_root_returns_band_folders(monkeypatch):
-    mapping = _make_catalogue()
+def test_tree_root_partitions_by_mood(monkeypatch):
+    mapping, score_rows = _make_mood_catalogue(moods=("happy", "sad", "danceable"))
+    mood_centroids = _mood_centroids_for(("happy", "sad", "danceable"))
     try:
-        _rebuild_tree_cache(mapping, n_bands=3)
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
         node, flat = hm.build_hyperbolic_tree(None)
     finally:
         hm.reset_hyperbolic_tree_cache()
@@ -298,7 +350,8 @@ def test_tree_root_returns_band_folders(monkeypatch):
     assert node["id"] == "root"
     assert node["children_count"] == len(node["items"])
     assert all(item["type"] == "folder" for item in node["items"])
-    assert all(item["id"].startswith("b") for item in node["items"])
+    assert {item["id"] for item in node["items"]} == {"mhappy", "msad", "mdanceable"}
+    assert all(item.get("kind") == "mood" for item in node["items"])
     # Non-leaf nodes carry no per-track ids - only the leaf being displayed
     # needs its own members for id translation; ancestors never aggregate them.
     assert flat == []
@@ -313,45 +366,50 @@ def test_tree_build_cache_returns_track_count(monkeypatch):
     assert track_count == len(mapping)
 
 
-def test_tree_band_node_lists_tracks_when_small(monkeypatch):
-    mapping = _make_catalogue(n_per_band=5, bands=2)
+def test_tree_mood_node_lists_tracks_when_small(monkeypatch):
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=2, moods=("happy",))
+    mood_centroids = _mood_centroids_for(("happy",))
     try:
-        _rebuild_tree_cache(mapping, n_bands=2)
-        node, flat = hm.build_hyperbolic_tree("b0")
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
+        node, flat = hm.build_hyperbolic_tree("mhappy")
     finally:
         hm.reset_hyperbolic_tree_cache()
     assert node["type"] == "folder"
-    assert node["id"] == "b0"
+    assert node["id"] == "mhappy"
     assert node.get("leaf") is True
     assert all(item["type"] == "track" for item in node["items"])
     assert len(flat) == len(node["items"])
 
 
-def test_tree_band_node_clusters_when_large(monkeypatch):
-    mapping = _make_catalogue(n_per_band=200, bands=1)
+def test_tree_mood_node_splits_by_main_genre_when_large(monkeypatch):
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=100, moods=("happy",))
+    mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 60)
     try:
-        _rebuild_tree_cache(mapping, n_bands=1)
-        node, flat = hm.build_hyperbolic_tree("b0")
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
+        node, flat = hm.build_hyperbolic_tree("mhappy")
     finally:
         hm.reset_hyperbolic_tree_cache()
     assert node["type"] == "folder"
     assert node.get("leaf") is False
     assert node["items"]
-    assert all(item["type"] == "folder" and item["id"].startswith("b0.c")
+    assert all(item["type"] == "folder" and item["id"].startswith("mhappy.g")
                for item in node["items"])
+    assert all(item.get("kind") == "main_genre" for item in node["items"])
     assert all(item["items"] == [] for item in node["items"])
     assert all(item["children_count"] > 0 for item in node["items"])
     assert flat == []
 
 
 def test_tree_cluster_node_returns_tracks(monkeypatch):
+    # No metadata and no mood centroids -> the root collapses to a "General"
+    # mood, whose oversized group falls back to k-means clusters.
     mapping = _make_catalogue(n_per_band=200, bands=1)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 30)
     try:
         _rebuild_tree_cache(mapping, n_bands=1)
-        band, _ = hm.build_hyperbolic_tree("b0")
-        cluster_id = band["items"][0]["id"]
+        mood, _ = hm.build_hyperbolic_tree("mgeneral")
+        cluster_id = mood["items"][0]["id"]
         node, flat = hm.build_hyperbolic_tree(cluster_id)
     finally:
         hm.reset_hyperbolic_tree_cache()
@@ -361,13 +419,43 @@ def test_tree_cluster_node_returns_tracks(monkeypatch):
     assert len(flat) == len(node["items"])
 
 
+def test_tree_falls_back_to_general_mood_without_centroids(monkeypatch):
+    mapping = _make_catalogue()
+    try:
+        _rebuild_tree_cache(mapping)
+        node, _ = hm.build_hyperbolic_tree(None)
+    finally:
+        hm.reset_hyperbolic_tree_cache()
+    assert len(node["items"]) == 1
+    assert node["items"][0]["id"] == "mgeneral"
+    assert node["items"][0]["name"] == "General"
+
+
+def test_tree_mood_falls_back_to_other_features_without_centroids(monkeypatch):
+    mapping = {}
+    score_rows = []
+    for i in range(10):
+        iid = f"fp_{i}"
+        mapping[iid] = (np.array([0.3, 0.0], dtype=np.float32), 0.3)
+        mood = "happy" if i < 6 else "sad"
+        score_rows.append(_score_row(iid, other_features=f"{mood}:0.9,other:0.1"))
+    try:
+        _rebuild_tree_cache(mapping, score_rows=score_rows)
+        node, _ = hm.build_hyperbolic_tree(None)
+    finally:
+        hm.reset_hyperbolic_tree_cache()
+    ids = [item["id"] for item in node["items"]]
+    assert "mhappy" in ids
+    assert "msad" in ids
+
+
 def test_tree_repeated_reads_return_the_same_cached_node(monkeypatch):
     mapping = _make_catalogue(n_per_band=200, bands=1)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 30)
     try:
         _rebuild_tree_cache(mapping, n_bands=1)
-        band, _ = hm.build_hyperbolic_tree("b0")
-        cluster_id = band["items"][0]["id"]
+        mood, _ = hm.build_hyperbolic_tree("mgeneral")
+        cluster_id = mood["items"][0]["id"]
         first = hm.build_hyperbolic_tree(cluster_id)[0]
         second = hm.build_hyperbolic_tree(cluster_id)[0]
     finally:
@@ -425,47 +513,118 @@ def test_plan_band_count_clamps_to_configured_bounds(monkeypatch):
     assert hm._plan_band_count(10_000_000) == 7
 
 
-def test_tree_root_has_more_than_three_bands_for_a_large_catalogue(monkeypatch):
-    mapping = _make_catalogue(n_per_band=60, bands=8)
-    monkeypatch.setattr(config, "HYPERBOLIC_MIN_BANDS", 4)
-    monkeypatch.setattr(config, "HYPERBOLIC_MAX_BANDS", 10)
+def test_tree_root_has_all_six_moods_for_a_large_catalogue(monkeypatch):
+    moods = ("happy", "sad", "danceable", "party", "relaxed", "aggressive")
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=8, moods=moods)
+    mood_centroids = _mood_centroids_for(moods)
     try:
-        _rebuild_tree_cache(mapping)  # n_bands=None -> auto-planned
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
         node, _ = hm.build_hyperbolic_tree(None)
     finally:
         hm.reset_hyperbolic_tree_cache()
-    assert len(node["items"]) > 3
+    assert {item["id"] for item in node["items"]} == {f"m{m}" for m in moods}
 
 
-def test_tree_recurses_more_than_one_level_for_a_big_band(monkeypatch):
-    mapping = _make_catalogue(n_per_band=400, bands=1)
+def test_tree_genre_nesting_reaches_main_second_and_third(monkeypatch):
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
+    mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
     try:
-        _rebuild_tree_cache(mapping, n_bands=1)
-        band, _ = hm.build_hyperbolic_tree("b0")
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
+        mood, _ = hm.build_hyperbolic_tree("mhappy")
         nodes = hm._TREE_CACHE["nodes"]
-        leaf_depths = [
-            node_id.count(".c") for node_id, n in nodes.items()
-            if n.get("type") == "folder" and n.get("leaf")
-        ]
+        kinds = {n.get("kind") for n in nodes.values() if n.get("type") == "folder"}
     finally:
         hm.reset_hyperbolic_tree_cache()
-    # A band of 400 tracks split by branching=4 gives ~100 tracks per first
-    # level cluster - still above the leaf target of 20, so at least one
-    # branch must recurse a second time instead of dumping ~100 tracks
-    # straight into one folder.
-    assert band.get("leaf") is False
-    assert leaf_depths
-    assert max(leaf_depths) >= 2
+    # 400 tracks: main genre (2x200) -> second genre (4x100) -> third genre
+    # (8x50) -> k-means fallback below 50, so all three genre levels appear
+    # instead of dumping every track into one folder.
+    assert mood.get("leaf") is False
+    assert {"main_genre", "second_genre", "third_genre"} <= kinds
+
+
+def test_tree_root_is_genre_and_splits_into_subgenres(monkeypatch):
+    # The data-driven genre_subgenre.json path takes over when the projected
+    # genre/subgenre centroids are dimensionally compatible with the vectors:
+    # the ROOT is now the main genre partition, and each genre folder splits
+    # into its own subgenres - no mood level, no mood_vector STRATIFIED_GENRES
+    # ranking.
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
+    mood_centroids = _mood_centroids_for(("happy",))
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
+    # 2-dim centroids matching the test catalogue's embedding plane: rock
+    # patterns sit near x~0.15, jazz patterns near x~0.17, with subgenres
+    # separated by small x offsets.
+    genre_subgenres = {
+        "rock": {
+            "vec": np.array([0.156, 0.0]),
+            "subgenres": [
+                {"name": "pop", "vec": np.array([0.152, 0.0])},
+                {"name": "metal", "vec": np.array([0.160, 0.0])},
+            ],
+        },
+        "jazz": {
+            "vec": np.array([0.172, 0.0]),
+            "subgenres": [
+                {"name": "blues", "vec": np.array([0.168, 0.0])},
+                {"name": "swing", "vec": np.array([0.176, 0.0])},
+            ],
+        },
+    }
+    try:
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids,
+                            genre_subgenres=genre_subgenres)
+        root, _ = hm.build_hyperbolic_tree(None)
+        root_ids = {item["id"] for item in root["items"]}
+        nodes = hm._TREE_CACHE["nodes"]
+        kinds = {n.get("kind") for n in nodes.values() if n.get("type") == "folder"}
+    finally:
+        hm.reset_hyperbolic_tree_cache()
+    assert root["type"] == "folder"
+    assert root_ids == {"root.grock", "root.gjazz"}
+    assert all(item.get("kind") == "main_genre" for item in root["items"])
+    assert "subgenre" in kinds
+    assert "mood" not in kinds
+
+
+def test_tree_genre_centroids_fall_back_when_dims_differ(monkeypatch):
+    # Genre centroids from a different embedding dimension cannot be compared
+    # with the projected vectors, so the tree silently falls back to the
+    # mood_vector STRATIFIED_GENRES partition (the legacy path).
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
+    mood_centroids = _mood_centroids_for(("happy",))
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
+    genre_subgenres = {
+        "rock": {
+            "vec": np.zeros(200),
+            "subgenres": [
+                {"name": "pop", "vec": np.zeros(200)},
+                {"name": "metal", "vec": np.zeros(200)},
+            ],
+        },
+    }
+    try:
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids,
+                            genre_subgenres=genre_subgenres)
+        mood, _ = hm.build_hyperbolic_tree("mhappy")
+        nodes = hm._TREE_CACHE["nodes"]
+        kinds = {n.get("kind") for n in nodes.values() if n.get("type") == "folder"}
+    finally:
+        hm.reset_hyperbolic_tree_cache()
+    # The main genre partition still comes from the legacy mood_vector path.
+    assert {"main_genre", "second_genre", "third_genre"} <= kinds
 
 
 def test_tree_leaf_folders_stay_near_target_size(monkeypatch):
-    mapping = _make_catalogue(n_per_band=400, bands=1)
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
+    mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
     try:
-        _rebuild_tree_cache(mapping, n_bands=1)
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
         nodes = hm._TREE_CACHE["nodes"]
         leaf_sizes = [
             n["summary"]["track_count"] for n in nodes.values()
@@ -486,6 +645,88 @@ def test_materialize_children_bails_out_on_degenerate_clustering(monkeypatch):
     monkeypatch.setattr(hm, "_fit_clusters", lambda vecs, k: np.zeros(len(vecs), dtype=int))
     result = hm._materialize_children("b0", members, vec_map, radii_map, {}, [], {}, {}, level=1)
     assert result is None
+
+
+def test_genre_path_prefix_builds_ancestor_chain():
+    assert hm._genre_path_prefix("root.grock.gprogressive-rock.c0") == "ROCK_PROGRESSIVE_ROCK"
+    assert hm._genre_path_prefix("root.gpop") == "POP"
+    assert hm._genre_path_prefix("root.c0") == ""
+
+
+def test_cluster_descriptor_prefers_dominant_clap_mood():
+    # All three tracks lean happy -> the CLAP mood wins, not a voice tag that
+    # only one track carries.
+    score_by_id = {
+        "a": {"other_features": "happy:0.9,party:0.1", "mood_vector": "pop:0.5,female vocalists:0.9"},
+        "b": {"other_features": "happy:0.8,party:0.2", "mood_vector": "pop:0.5"},
+        "c": {"other_features": "happy:0.7,sad:0.1", "mood_vector": "rock:0.5"},
+    }
+    assert hm._cluster_descriptor(["a", "b", "c"], score_by_id) == "HAPPY"
+
+
+def test_cluster_descriptor_voice_not_used_when_mood_is_confident():
+    # A confident dominant mood always wins, even when a voice tag is on every
+    # track - mood is the primary descriptor, voice is only a fallback.
+    score_by_id = {
+        "a": {"other_features": "happy:0.5", "mood_vector": "female vocalists:0.9,pop:0.5"},
+        "b": {"other_features": "happy:0.5", "mood_vector": "female vocalists:0.8,pop:0.5"},
+        "c": {"other_features": "happy:0.5", "mood_vector": "female vocalists:0.8,pop:0.5"},
+    }
+    assert hm._cluster_descriptor(["a", "b", "c"], score_by_id) == "HAPPY"
+
+
+def test_cluster_descriptor_voice_only_when_no_confident_mood():
+    # No single mood is confident (all tracks tie happy/sad), but the voice
+    # tag dominates a clear majority -> voice names the cluster as fallback.
+    score_by_id = {
+        "a": {"other_features": "happy:0.4,sad:0.4", "mood_vector": "female vocalists:0.9,pop:0.5"},
+        "b": {"other_features": "happy:0.4,sad:0.4", "mood_vector": "female vocalists:0.8,pop:0.5"},
+        "c": {"other_features": "happy:0.4,sad:0.4", "mood_vector": "female vocalists:0.8,pop:0.5"},
+    }
+    assert hm._cluster_descriptor(["a", "b", "c"], score_by_id) == "FEMALE_VOCALISTS"
+
+
+def test_cluster_descriptor_none_when_not_confident():
+    # No confident mood majority and no dominant voice -> no fabricated label.
+    score_by_id = {
+        "a": {"other_features": "happy:0.5,sad:0.5", "mood_vector": "rock:0.5"},
+        "b": {"other_features": "sad:0.5,happy:0.5", "mood_vector": "rock:0.5"},
+        "c": {"other_features": "happy:0.5,sad:0.5", "mood_vector": "rock:0.5"},
+    }
+    assert hm._cluster_descriptor(["a", "b", "c"], score_by_id) is None
+
+
+def test_genre_cluster_names_use_ancestor_prefix_and_dedupe(monkeypatch):
+    # A subgenre folder too large for the leaf falls back to k-means clusters
+    # whose names are GENRE_SUBGENRE_MOOD/VOICE (never a mood-centroid genre
+    # pairing), deduped with _1/_2. A cluster without a confident descriptor
+    # keeps just the ancestor path (deduped) instead of a made-up label.
+    members = [f"t{i}" for i in range(60)]
+    vec_map = {m: np.array([0.01 * i, 0.0], dtype=np.float64) for i, m in enumerate(members)}
+    radii_map = {m: 0.5 for m in members}
+    score_by_id = {
+        m: {"other_features": "happy:0.9", "mood_vector": "rock:0.5"}
+        for m in members
+    }
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
+    monkeypatch.setattr(
+        hm, "_fit_clusters",
+        lambda vecs, k: np.array([i % k for i in range(len(vecs))], dtype=int),
+    )
+    nodes = {}
+    flat_ids = {}
+    children = hm._materialize_children(
+        "root.grock.gprogressive-rock", members, vec_map, radii_map,
+        score_by_id, [], nodes, flat_ids, level=1,
+        name_prefix="ROCK_PROGRESSIVE_ROCK",
+    )
+    assert children
+    names = [c["name"] for c in children]
+    assert all(n.startswith("ROCK_PROGRESSIVE_ROCK") for n in names)
+    # All descriptors are mood words, never genres like "Pop / Female Vocalist".
+    assert all(" / " not in n for n in names)
+    assert len(names) == len(set(names))
 
 
 def _mood_centroid(vec, tags):

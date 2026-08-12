@@ -203,7 +203,7 @@ def _claim_replacement_sweep(task_id):
                 cur,
                 task_id,
                 SWEEP_TASK_TYPE,
-                {'message': 'Server alignment queued for all servers.'},
+                {'message': 'Server alignment queued.'},
             )
             if not staged:
                 raise RuntimeError(
@@ -251,7 +251,7 @@ def _task_blocking_a_sweep():
     return None
 
 
-def _enqueue_sweep(at_front=False):
+def _enqueue_sweep(at_front=False, server_ids=None, full_refresh=None):
     task_id = str(uuid.uuid4())
     try:
         # Cleaning's own gate sees sweeps (exclude_task_types=()), so without the
@@ -272,10 +272,23 @@ def _enqueue_sweep(at_front=False):
             # insert the replacement in one transaction.
             db = get_db()
             records = _claim_replacement_sweep(task_id)
+            if records:
+                # The revoked sweeps' scope is unknown here, so the replacement
+                # must cover at least everything they might have covered: widen
+                # to a full all-server alignment whenever anything was
+                # superseded, or a one-server sweep could silently swallow a
+                # queued full sweep and leave the other servers unaligned.
+                server_ids = None
+                full_refresh = None
             try:
+                sweep_kwargs = {'task_id': task_id}
+                if server_ids is not None:
+                    sweep_kwargs['server_ids'] = list(server_ids)
+                if full_refresh is not None:
+                    sweep_kwargs['full_refresh'] = bool(full_refresh)
                 taskqueue.enqueue(
                     'tasks.multiserver_sync.sweep_all_secondary_servers',
-                    kwargs={'task_id': task_id},
+                    kwargs=sweep_kwargs,
                     task_id=task_id,
                     task_type=SWEEP_TASK_TYPE,
                     queue=taskqueue.QUEUE_HIGH,
@@ -422,7 +435,7 @@ def add_server():
     # The sweep aligns the new server; it does not depend on workers having
     # acknowledged the restart. Skipping it left a committed server row permanently
     # unaligned, with no path to retry it (re-submitting hits "already exists").
-    sweep_task_id = _enqueue_sweep()
+    sweep_task_id = _enqueue_sweep(server_ids=[server_id], full_refresh=False)
     body = server_public_dict(created)
     body['sweep_task_id'] = sweep_task_id
     if not restart_acknowledged:
@@ -482,7 +495,11 @@ def update_server(server_id):
         or (new_libraries is not None and new_libraries != existing['music_libraries'])
     )
     if needs_sweep:
-        sweep_task_id = _enqueue_sweep()
+        # full_refresh=True, not False: an edited server may already be fully
+        # mapped, and the non-refresh sweep early-returns on "already aligned"
+        # and never prunes - so narrowing music_libraries or repointing creds
+        # would otherwise never remove the now-stale mappings.
+        sweep_task_id = _enqueue_sweep(server_ids=[server_id], full_refresh=True)
     body = server_public_dict(registry.get_server(server_id))
     body['sweep_task_id'] = sweep_task_id
     if not restart_acknowledged:

@@ -197,9 +197,11 @@
     <!-- Tab 2: Hierarchy Directory -->
     <div class="tab-pane" id="tab-tree">
         <p style="color: var(--text-muted); font-size: 0.9rem;">
-            Browse the library as a virtual directory tree. Folders are radial
-            bands and k-means clusters of the Poincare ball; leaf folders list
-            the actual tracks.
+            Browse the library as a virtual directory tree. The root splits by
+            mood (Happy, Sad, Danceable, ...), then by main, second and third
+            genre from each track's mood_vector; leaf folders list the actual
+            tracks. Deep groups that have no further genre fall back to
+            k-means sub-folders.
         </p>
         <div id="hyper-tree" class="tree-root"></div>
     </div>
@@ -416,16 +418,28 @@
                 treeContainer.appendChild(mount);
             };
 
+            const KIND_LABELS = {
+                root: '',
+                mood: 'Mood: ',
+                main_genre: 'Genre: ',
+                subgenre: 'Subgenre: ',
+                second_genre: 'Second genre: ',
+                third_genre: 'Third genre: ',
+                genre: 'Genre: ',
+                cluster: ''
+            };
+
             const buildTreeNode = (node) => {
                 const holder = document.createElement('div');
                 holder.className = 'tree-folder';
 
                 const head = document.createElement('div');
                 head.className = 'tree-folder-head';
+                const prefix = KIND_LABELS[node.kind] || '';
                 head.innerHTML = `
                     <span class="tree-arrow">&#9656;</span>
                     <span class="tree-icon">${icons.folder}</span>
-                    <span>${esc(node.name || node.id)}</span>
+                    <span>${prefix}${esc(node.name || node.id)}</span>
                     <span class="tree-summary">(${node.children_count})</span>`;
                 holder.appendChild(head);
 

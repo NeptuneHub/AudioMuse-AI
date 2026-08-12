@@ -91,6 +91,7 @@ def _worker():
     instance._uncharged = {}
     instance._wake = threading.Event()
     instance._claim_txn = threading.Lock()
+    instance._fork_jobs = False
     return instance
 
 

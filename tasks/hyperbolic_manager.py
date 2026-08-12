@@ -23,10 +23,11 @@ Main Features:
 * hyperbolic_similar over-fetches raw-space IVF candidates and re-ranks them
   by exact Poincare distance, with similar / roots / niche radial mode
   filtering driven by the target track's own radius R
-* build_hyperbolic_tree_cache does the expensive part - recursive k-means
-  over the whole catalogue - and persists the result as a gzipped JSON blob
-  chunked into 50 MB segmented BYTEA rows in ivf_dir (the same pattern the
-  music map and IVF directory use), worker-side only (analysis end).
+* build_hyperbolic_tree_cache does the expensive part - the mood partition,
+  the main/second/third-genre grouping, and any k-means fallback over the
+  whole catalogue - and persists the result as a gzipped JSON blob chunked
+  into 50 MB segmented BYTEA rows in ivf_dir (the same pattern the music map
+  and IVF directory use), worker-side only (analysis end).
   load_hyperbolic_tree_cache is
   the cheap counterpart: one row read, no reclustering, used at Flask startup
   and by the index-reload NOTIFY handler, exactly like the music map keeps
@@ -37,19 +38,24 @@ Main Features:
   node is a reference into the shared cache, not a copy - callers must build
   a new structure rather than mutate it in place (id translation does this
   already)
-* Root radial band count and k-means recursion depth are both derived from
-  the catalogue size at build time (_plan_band_count), not fixed, so the tree
-  stays browsable whether the library has 500 or 500,000 tracks; folders keep
-  splitting until they reach HYPERBOLIC_TARGET_LEAF_SIZE
-* Cluster folder names are derived from the dominant genre (and, below the
-  first clustering level, the dominant mood) of their member tracks instead
-  of a bare "Cluster N" label
+* The directory tree is a semantic taxonomy over the same embedding space:
+  the root splits by MAIN GENRE taken from the data-driven genre_subgenre.json
+  centroids (nearest main genre at level 0), then by SUBGENRE (nearest of that
+  genre's subgenres at level 1). When the file is absent or dimensionally
+  incompatible the tree falls back to a legacy MOOD partition (nearest of the
+  precomputed mood centroids in mood_centroids_real_080_clap.json) followed by
+  main/second/third genre from each track's mood_vector. Folders keep
+  splitting until they reach HYPERBOLIC_TARGET_LEAF_SIZE, and groups with no
+  further genre (or still too large after the genre levels) fall back to
+  k-means sub-folders named from the nearest mood-centroid tags instead of a
+  bare "Cluster N" label
 """
 
 import gzip
 import json
 import logging
 import math
+import re
 
 import numpy as np
 
@@ -386,6 +392,8 @@ def _plan_band_count(total_tracks):
 
 
 def build_hyperbolic_tree_cache(n_bands=None):
+    # n_bands is advisory and kept for API compatibility: the root is now a
+    # mood partition, so the reported root count comes from the built tree.
     rows = _fetch_all_poincare_rows()
     if not rows:
         _TREE_CACHE["n_bands"] = 0
@@ -396,23 +404,24 @@ def build_hyperbolic_tree_cache(n_bands=None):
         logger.info("Hyperbolic tree cache built empty: no projected tracks yet.")
         return 0
 
-    resolved_bands = int(n_bands) if n_bands else _plan_band_count(len(rows))
     from app_helper import get_score_data_by_ids
 
     score_by_id = {d["item_id"]: d for d in get_score_data_by_ids(list(rows.keys()))}
     mood_centroids = _load_projected_mood_centroids()
-    nodes, flat_ids = _build_tree_nodes(rows, resolved_bands, score_by_id, mood_centroids)
+    genre_subgenres = _load_projected_genre_subgenres()
+    nodes, flat_ids = _build_tree_nodes(rows, score_by_id, mood_centroids, genre_subgenres)
+    root_count = len(nodes["root"]["items"])
     track_count = len(rows)
-    _TREE_CACHE["n_bands"] = resolved_bands
+    _TREE_CACHE["n_bands"] = root_count
     _TREE_CACHE["nodes"] = nodes
     _TREE_CACHE["flat_ids"] = flat_ids
     _TREE_CACHE["track_count"] = track_count
     _persist_tree_cache_blob({
-        "n_bands": resolved_bands, "nodes": nodes, "flat_ids": flat_ids, "track_count": track_count,
+        "n_bands": root_count, "nodes": nodes, "flat_ids": flat_ids, "track_count": track_count,
     })
     logger.info(
-        "Hyperbolic tree cache built and persisted: %d tracks across %d nodes (%d root bands)",
-        track_count, len(nodes), resolved_bands,
+        "Hyperbolic tree cache built and persisted: %d tracks across %d nodes (%d root moods)",
+        track_count, len(nodes), root_count,
     )
     return track_count
 
@@ -505,47 +514,60 @@ def build_hyperbolic_tree(node_id=None, depth=None):
     return node, _TREE_CACHE["flat_ids"].get(key, [])
 
 
-def _build_tree_nodes(rows, n_bands, score_by_id, mood_centroids):
-    from tasks.hyperbolic_geometry import assign_radial_bands, split_radial_bands
-
+def _build_tree_nodes(rows, score_by_id, mood_centroids, genre_subgenres):
     item_ids = list(rows.keys())
-    radii_map = {iid: rows[iid][1] for iid in item_ids}
     vec_map = {iid: rows[iid][0] for iid in item_ids}
-    radii = np.array([radii_map[i] for i in item_ids], dtype=np.float64)
-    boundaries = split_radial_bands(radii, max(1, int(n_bands)))
-    band_assign = assign_radial_bands(radii, boundaries)
-    band_members = {bi: [] for bi in range(len(boundaries))}
-    for iid, bi in zip(item_ids, band_assign):
-        band_members[int(bi)].append(iid)
+    radii_map = {iid: rows[iid][1] for iid in item_ids}
 
     nodes = {}
     flat_ids = {}
     root_items = []
-    for bi in sorted(band_members):
-        members = band_members[bi]
-        if not members:
-            continue
-        band_node = _materialize_band(
-            bi, boundaries, members, radii_map, vec_map, score_by_id, mood_centroids, nodes, flat_ids
+    # The root is a MAIN GENRE partition when genre_subgenre.json centroids
+    # are dimensionally usable: every track is assigned to the nearest main
+    # genre, and each genre folder then splits into its subgenres. Without
+    # usable genre data we fall back to the legacy mood partition (nearest
+    # precomputed mood centroid, then dominant CLAP mood, then a single
+    # "General" bucket) so the tree still renders.
+    if _genre_subgenres_usable(vec_map, genre_subgenres):
+        genre_ordered = _partition_by_genre_centroids(
+            item_ids, vec_map, genre_subgenres, level=0,
         )
-        root_items.append(band_node)
+        if genre_ordered:
+            for slug, label, members in _merge_by_slug(genre_ordered):
+                if not members:
+                    continue
+                genre_node = _materialize_genre_folder(
+                    f"root.g{slug}", label, members, vec_map, radii_map,
+                    score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level=0,
+                )
+                root_items.append(genre_node)
+    if not root_items:
+        for mood_label, members in _partition_by_mood(item_ids, vec_map, mood_centroids, score_by_id):
+            if not members:
+                continue
+            mood_node = _materialize_mood(
+                mood_label, members, vec_map, radii_map, score_by_id,
+                mood_centroids, genre_subgenres, nodes, flat_ids,
+            )
+            root_items.append(mood_node)
 
     nodes["root"] = {
         "id": "root",
         "name": "Hyperbolic Explorer",
         "type": "folder",
+        "kind": "root",
         "children_count": len(root_items),
-        "summary": {"track_count": sum(len(m) for m in band_members.values())},
+        "summary": {"track_count": len(item_ids)},
         "items": root_items,
     }
     flat_ids["root"] = []
     return nodes, flat_ids
 
 
-def _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids):
+def _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind="cluster"):
     items = [_track_node(i, score_by_id) for i in members]
     node = {
-        "id": node_id, "name": name, "type": "folder", "leaf": True,
+        "id": node_id, "name": name, "type": "folder", "leaf": True, "kind": kind,
         "children_count": len(items), "summary": summary, "items": items,
     }
     nodes[node_id] = node
@@ -553,9 +575,9 @@ def _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids):
     return node
 
 
-def _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids):
+def _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids, kind="cluster"):
     node = {
-        "id": node_id, "name": name, "type": "folder", "leaf": False,
+        "id": node_id, "name": name, "type": "folder", "leaf": False, "kind": kind,
         "children_count": len(summary_items), "summary": summary, "items": summary_items,
     }
     nodes[node_id] = node
@@ -565,28 +587,320 @@ def _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids):
     return node
 
 
-def _materialize_band(band_index, boundaries, members, radii_map, vec_map, score_by_id, mood_centroids, nodes, flat_ids):
-    lo, hi = boundaries[band_index]
+def _slugify(label):
+    slug = re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-")
+    return slug or "other"
+
+
+def _merge_by_slug(ordered):
+    # Sibling labels that slugify identically ("Progressive rock" vs
+    # "progressive rock", both present in the shipped genre_subgenre.json)
+    # would share a node id, and the second _leaf_folder/_branch_folder write
+    # would silently overwrite the first in nodes/flat_ids, orphaning its
+    # tracks while the parent still counts them - merge such groups instead.
+    merged = {}
+    for label, members in ordered:
+        slug = _slugify(label)
+        if slug in merged:
+            merged[slug][1].extend(members)
+        else:
+            merged[slug] = (label, list(members))
+    return [(slug, label, members) for slug, (label, members) in merged.items()]
+
+
+def _parse_label_scores(raw):
+    scores = {}
+    if not raw or not isinstance(raw, str):
+        return scores
+    for part in raw.split(","):
+        label, _, value = part.partition(":")
+        label = label.strip()
+        if not label:
+            continue
+        try:
+            scores[label] = float(value)
+        except ValueError:
+            continue
+    return scores
+
+
+def _dominant_mood(info):
+    if not info:
+        return None
+    scores = _parse_label_scores(info.get("other_features"))
+    candidates = [m for m in config.OTHER_FEATURE_LABELS if m in scores]
+    if not candidates:
+        return None
+    return max(candidates, key=scores.get)
+
+
+def _genre_rank(info):
+    # Ordered genre labels for a track (STRATIFIED_GENRES only), highest score
+    # first; index 0 is the main genre, 1 the second, 2 the third.
+    if not info:
+        return []
+    scores = _parse_label_scores(info.get("mood_vector"))
+    genres = [g for g in config.STRATIFIED_GENRES if g in scores]
+    genres.sort(key=lambda g: -scores[g])
+    return genres
+
+
+def _partition_by_mood(item_ids, vec_map, mood_centroids, score_by_id):
+    assigns = {}
+    if mood_centroids:
+        # One vectorized distance matrix over the whole catalogue instead of
+        # a per-track scalar loop; this ran over ~1M scalar calls before.
+        from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
+
+        vecs = np.stack([vec_map[i] for i in item_ids]).astype(np.float64)
+        cent = np.stack([c["vec"] for c in mood_centroids]).astype(np.float64)
+        dists = hyperbolic_distance_matrix(vecs, cent)
+        best = np.argmin(dists, axis=1)
+        for iid, idx in zip(item_ids, best):
+            assigns[iid] = mood_centroids[int(idx)]["mood"]
+    else:
+        for iid in item_ids:
+            assigns[iid] = _dominant_mood(score_by_id.get(iid)) or "general"
+
+    used = set(assigns.values())
+    ordered = [m for m in config.OTHER_FEATURE_LABELS if m in used]
+    ordered += sorted(used - set(ordered))
+    return [
+        (mood, [iid for iid, m in assigns.items() if m == mood])
+        for mood in ordered
+    ]
+
+
+def _genre_subgenres_usable(vec_map, genre_subgenres):
+    # The genre_subgenre.json centroids only drive the tree when they live in
+    # the same embedding dimension as the projected vectors (a mismatch means
+    # the file belongs to a different model or library).
+    if not genre_subgenres or not vec_map:
+        return False
+    ref = next(iter(vec_map.values()))
+    info = next(iter(genre_subgenres.values()))
+    return bool(info) and info["vec"].shape[0] == ref.shape[0]
+
+
+def _partition_by_genre(members, vec_map, score_by_id, genre_subgenres, level, parent_genre=None):
+    # Data-driven genre taxonomy from genre_subgenre.json when its centroids
+    # are dimensionally usable. Level 0 assigns every track to the nearest
+    # main genre; level 1, within a main genre, to the nearest of that genre's
+    # subgenres. There is no deeper genre data, so the caller falls back to
+    # k-means for oversized groups - never to the mixed mood_vector genre
+    # ranking.
+    if _genre_subgenres_usable(vec_map, genre_subgenres):
+        return _partition_by_genre_centroids(
+            members, vec_map, genre_subgenres, level, parent_genre
+        )
+    # Fallback (no usable genre_subgenre.json): ordered mood_vector genre
+    # labels (STRATIFIED_GENRES), highest score first, so index 0 is main,
+    # 1 second, 2 third genre.
+    groups = {}
+    for iid in members:
+        rank = _genre_rank(score_by_id.get(iid))
+        label = rank[level] if level < len(rank) else "Other"
+        groups.setdefault(label, []).append(iid)
+    ordered = sorted(groups.items(), key=lambda kv: -len(kv[1]))
+    if len(ordered) < 2:
+        return None
+    return ordered
+
+
+def _partition_by_genre_centroids(members, vec_map, genre_subgenres, level, parent_genre=None):
+    from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
+
+    if not members:
+        return None
+    ref = vec_map[members[0]]
+    if level == 0:
+        centroids = [{"name": g, "vec": info["vec"]}
+                     for g, info in genre_subgenres.items()]
+    elif level == 1 and parent_genre in genre_subgenres:
+        subs = genre_subgenres[parent_genre]["subgenres"]
+        centroids = [{"name": s["name"], "vec": s["vec"]} for s in subs]
+    else:
+        # Only one genre level (and one subgenre level) is encoded in
+        # genre_subgenre.json, so deeper genre splits are k-means.
+        return None
+    if len(centroids) < 2 or centroids[0]["vec"].shape[0] != ref.shape[0]:
+        return None
+    vecs = np.stack([vec_map[i] for i in members]).astype(np.float64)
+    cent = np.stack([c["vec"] for c in centroids]).astype(np.float64)
+    best = np.argmin(hyperbolic_distance_matrix(vecs, cent), axis=1)
+    groups = {}
+    for iid, idx in zip(members, best):
+        groups.setdefault(centroids[int(idx)]["name"], []).append(iid)
+    ordered = sorted(groups.items(), key=lambda kv: -len(kv[1]))
+    if len(ordered) < 2:
+        return None
+    return ordered
+
+
+# Genre folder kinds in the data-driven tree (genre_subgenre.json): level 0
+# is the main genre, level 1 the subgenre. The legacy mood_vector path still
+# uses main/second/third names for its three STRATIFIED_GENRES levels.
+_GENRE_KINDS = ("main_genre", "subgenre")
+_LEGACY_GENRE_KINDS = ("main_genre", "second_genre", "third_genre")
+
+
+def _materialize_mood(mood_label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):
+    node_id = f"m{_slugify(mood_label)}"
+    name = mood_label.title()
     radii = np.array([radii_map[i] for i in members], dtype=np.float64)
-    node_id = f"b{band_index}"
-    name = f"Band {band_index + 1} (radius {lo:.3f} - {hi:.3f})"
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
         "track_count": len(members),
     }
+    target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
 
     summary_items = None
-    if len(members) > int(config.HYPERBOLIC_TARGET_LEAF_SIZE):
+    if len(members) > target_leaf:
+        summary_items = _materialize_genre_level(
+            node_id, members, vec_map, radii_map, score_by_id,
+            mood_centroids, genre_subgenres, nodes, flat_ids, level=0,
+        )
+    if summary_items is None and len(members) > target_leaf:
         summary_items = _materialize_children(
-            node_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level=1
+            node_id, members, vec_map, radii_map, score_by_id,
+            mood_centroids, nodes, flat_ids, level=1,
         )
     if summary_items is None:
-        return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids)
-    return _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids)
+        return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind="mood")
+    return _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids, kind="mood")
 
 
-def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level):
+def _materialize_genre_level(parent_id, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level, parent_genre=None):
+    ordered = _partition_by_genre(
+        members, vec_map, score_by_id, genre_subgenres, level, parent_genre
+    )
+    if not ordered:
+        return None
+    summary_items = []
+    for slug, label, gmembers in _merge_by_slug(ordered):
+        gid = f"{parent_id}.g{slug}"
+        genre_node = _materialize_genre_folder(
+            gid, label, gmembers, vec_map, radii_map, score_by_id,
+            mood_centroids, genre_subgenres, nodes, flat_ids, level,
+        )
+        summary_items.append({**genre_node, "items": []})
+    return summary_items
+
+
+def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level):
+    radii = np.array([radii_map[i] for i in members], dtype=np.float64)
+    summary = {
+        "radius_min": float(radii.min()),
+        "radius_max": float(radii.max()),
+        "track_count": len(members),
+    }
+    name = label.title()
+    if _genre_subgenres_usable(vec_map, genre_subgenres):
+        kinds = _GENRE_KINDS
+    else:
+        kinds = _LEGACY_GENRE_KINDS
+    kind = kinds[level] if 0 <= level < len(kinds) else "genre"
+    target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
+    genre_depth = max(1, int(config.HYPERBOLIC_GENRE_DEPTH))
+
+    summary_items = None
+    if len(members) > target_leaf and label != "Other" and level + 1 < genre_depth:
+        summary_items = _materialize_genre_level(
+            node_id, members, vec_map, radii_map, score_by_id,
+            mood_centroids, genre_subgenres, nodes, flat_ids, level + 1,
+            parent_genre=label,
+        )
+    if summary_items is None and len(members) > target_leaf:
+        # Genre depth exhausted (or no meaningful genre split): fall back to
+        # k-means so oversized groups stay browsable. Clusters under a
+        # genre/subgenre folder are named from their ancestors plus the
+        # dominant mood/voice (e.g. ROCK_PROGRESSIVE_ROCK_HAPPY), never from
+        # the mood-centroid genre pairing.
+        prefix = _genre_path_prefix(node_id)
+        summary_items = _materialize_children(
+            node_id, members, vec_map, radii_map, score_by_id,
+            mood_centroids, nodes, flat_ids, level=1,
+            name_prefix=prefix or None,
+        )
+    if summary_items is None:
+        return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
+    return _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids, kind=kind)
+
+
+def _genre_path_prefix(node_id):
+    # Build the uppercase underscore parent path from a node id so a k-means
+    # cluster under a genre/subgenre folder is named from its ancestors,
+    # e.g. root.grock.gprogressive-rock.c0 -> "ROCK_PROGRESSIVE_ROCK".
+    parts = []
+    for seg in str(node_id).split("."):
+        if seg.startswith("g") and len(seg) > 1:
+            parts.append(seg[1:].replace("-", "_").upper())
+    return "_".join(parts)
+
+
+def _cluster_descriptor(members, score_by_id):
+    # The mood/voice that most represents a cluster. The PRIMARY descriptor is
+    # the dominant CLAP mood from OTHER_FEATURE_LABELS (danceable / aggressive /
+    # happy / party / relaxed / sad) - the label with the highest accumulated
+    # value across the cluster. A VOICE_VOCAB tag (female/male vocalists) is
+    # appended only as a fallback, when no single mood is confident AND the
+    # voice tag genuinely dominates the cluster. A label only names the folder
+    # when it is truly representative - never invented; returns None so the
+    # caller falls back to a numbered ancestor-path name instead.
+    n = max(1, len(members))
+    mood = {}
+    mood_presence = {}
+    voice = {}
+    voice_presence = {}
+    voice_vocab = {v.lower() for v in config.VOICE_VOCAB}
+    for iid in members:
+        info = score_by_id.get(iid)
+        if not info:
+            continue
+        scores = _parse_label_scores(info.get("other_features"))
+        for label in config.OTHER_FEATURE_LABELS:
+            if label in scores:
+                mood[label] = mood.get(label, 0.0) + scores[label]
+                mood_presence[label] = mood_presence.get(label, 0) + 1
+        for label, val in _parse_label_scores(info.get("mood_vector")).items():
+            low = label.lower()
+            if low in voice_vocab:
+                voice[label] = voice.get(label, 0.0) + val
+                voice_presence[label] = voice_presence.get(label, 0) + 1
+    # Dominant CLAP mood first: the label with the highest accumulated value,
+    # present on a clear majority of the cluster. A tie (two moods within a
+    # tiny epsilon) or a split cluster gets no fabricated label - the caller
+    # falls back to a numbered ancestor-path name instead.
+    if mood_presence:
+        top_mood = max(mood, key=mood.get)
+        top_presence = mood_presence[top_mood]
+        if top_presence >= max(2, round(0.6 * n)):
+            runner_up = max(
+                (v for label, v in mood.items() if label != top_mood),
+                default=0.0,
+            )
+            if mood[top_mood] - runner_up > 1e-9:
+                return top_mood.upper()
+    # Voice as fallback only: a VOICE_VOCAB tag must dominate a clear majority
+    # of the cluster, and there must be no confident mood to describe it with.
+    if voice_presence:
+        top_voice = max(voice, key=voice.get)
+        if voice_presence[top_voice] >= max(2, round(0.6 * n)):
+            return top_voice.upper().replace(" ", "_")
+    return None
+
+
+def _dedupe_name(base, used):
+    if base not in used:
+        return base
+    i = 1
+    while f"{base}_{i}" in used:
+        i += 1
+    return f"{base}_{i}"
+
+
+def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level, name_prefix=None):
     n = len(members)
     target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
     branching = max(2, int(config.HYPERBOLIC_TARGET_BRANCHING))
@@ -603,29 +917,44 @@ def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, m
         return None
 
     summary_items = []
+    used_names = set()
     for ci, cids in enumerate(ordered):
         cluster_id = f"{parent_id}.c{ci}"
+        if name_prefix:
+            descriptor = _cluster_descriptor(cids, score_by_id)
+            base = f"{name_prefix}_{descriptor}" if descriptor else name_prefix
+            name = _dedupe_name(base, used_names)
+            used_names.add(name)
+        else:
+            name = None
         cluster_node = _materialize_cluster(
-            cluster_id, cids, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level
+            cluster_id, cids, vec_map, radii_map, score_by_id, mood_centroids,
+            nodes, flat_ids, level, name=name, name_prefix=name_prefix,
         )
         summary_items.append({**cluster_node, "items": []})
     return summary_items
 
 
-def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level):
+def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level, name=None, name_prefix=None):
     radii = np.array([radii_map[i] for i in members], dtype=np.float64)
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
         "track_count": len(members),
     }
-    name = _cluster_name(members, vec_map, mood_centroids)
+    if name is None:
+        name = _cluster_name(members, vec_map, mood_centroids)
 
     summary_items = None
     target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
-    if len(members) > target_leaf and level < int(config.HYPERBOLIC_MAX_TREE_RECURSION):
+    # In the data-driven genre tree (name_prefix set) a cluster is a terminal
+    # leaf: the taxonomy is GENRE -> SUBGENRE -> CLUSTERS and never deeper. The
+    # legacy mood path may keep splitting oversized clusters when it has no
+    # genre data to lean on.
+    if name_prefix is None and len(members) > target_leaf and level < int(config.HYPERBOLIC_MAX_TREE_RECURSION):
         summary_items = _materialize_children(
-            node_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, level + 1
+            node_id, members, vec_map, radii_map, score_by_id, mood_centroids,
+            nodes, flat_ids, level + 1, name_prefix=name_prefix,
         )
     if summary_items is None:
         return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids)
@@ -673,6 +1002,53 @@ def _load_projected_mood_centroids():
             ranked_tags = [t for t, _ in sorted(tags_by_score.items(), key=lambda kv: -kv[1])]
             vec = project_to_poincare(np.asarray(raw, dtype=np.float32), scale)
             out.append({"vec": vec.astype(np.float64), "tags": ranked_tags, "mood": mood})
+    return out
+
+
+def _load_projected_genre_subgenres():
+    try:
+        with open(config.GENRE_SUBGENRE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        logger.warning(
+            "Could not load genre/subgenre centroids for hyperbolic tree from %s",
+            config.GENRE_SUBGENRE_FILE,
+        )
+        return {}
+
+    scale = resolve_hyperbolic_scale(auto_calibrate=False)
+    if not scale:
+        return {}
+
+    from tasks.hyperbolic_geometry import project_to_poincare
+
+    out = {}
+    for genre, info in data.items():
+        subgenres = info.get("subgenres") or []
+        projected = []
+        raw_vecs = []
+        for s in subgenres:
+            raw = s.get("centroid")
+            name = s.get("name")
+            if not raw or not name:
+                continue
+            arr = np.asarray(raw, dtype=np.float32)
+            vec = project_to_poincare(arr, scale)
+            raw_vecs.append(arr.astype(np.float64))
+            projected.append({"name": name, "vec": vec.astype(np.float64)})
+        if not projected:
+            continue
+        # Main genre representative: mean of the RAW subgenre centroids,
+        # projected afterwards. Averaging already-projected points shrinks
+        # the representative toward the origin in proportion to the genre's
+        # spread, and the hyperbolic metric then keeps every large-radius
+        # track away from it - the broadest genres (rock, pop) would almost
+        # never win the nearest-centroid root partition.
+        genre_raw = np.mean(np.stack(raw_vecs), axis=0)
+        genre_vec = project_to_poincare(
+            genre_raw.astype(np.float32), scale
+        ).astype(np.float64)
+        out[genre] = {"vec": genre_vec, "subgenres": projected}
     return out
 
 
