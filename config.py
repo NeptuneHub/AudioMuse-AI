@@ -755,6 +755,12 @@ HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
 HYPERBOLIC_TARGET_LEAF_SIZE = int(os.environ.get("HYPERBOLIC_TARGET_LEAF_SIZE", "150"))
 # Desired number of named-cluster children per non-leaf fallback folder.
 HYPERBOLIC_TARGET_BRANCHING = int(os.environ.get("HYPERBOLIC_TARGET_BRANCHING", "8"))
+# Minimum songs a named cluster must hold to survive tree build. Clusters below
+# this are pruned, and any subgenre left without at least one surviving cluster
+# is hidden entirely (a genre with no subgenres is hidden too). The tree is
+# built per server, so each server only shows genres/subgenres it can actually
+# back with a real cluster of songs.
+HYPERBOLIC_MIN_CLUSTER_SIZE = int(os.environ.get("HYPERBOLIC_MIN_CLUSTER_SIZE", "20"))
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"

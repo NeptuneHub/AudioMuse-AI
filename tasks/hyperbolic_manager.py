@@ -29,22 +29,27 @@ Main Features:
   modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
   similar-song page
 * build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
-  partition, the mood fallback, and the named k-means clusters over the whole
-  catalogue - and persists the result as a gzipped JSON blob chunked into
-  50 MB segmented BYTEA rows in ivf_dir (the same pattern the music map
+  partition, the mood fallback, and the named k-means clusters - PER SERVER,
+  and persists one tree per configured server as gzipped JSON blobs chunked
+  into 50 MB segmented BYTEA rows in ivf_dir (the same pattern the music map
   and IVF directory use), worker-side only (analysis end).
   load_hyperbolic_tree_cache is
-  the cheap counterpart: one row read, no reclustering, used at Flask startup
-  and by the index-reload NOTIFY handler, exactly like the music map keeps
+  the cheap counterpart: one row read per server, no reclustering, used at Flask
+  startup and by the index-reload NOTIFY handler, exactly like the music map keeps
   its expensive UMAP fit in map_projection_data and only re-does cheap JSON
   assembly in Flask. The request path (build_hyperbolic_tree) is then a pure
-  dict lookup against whichever of the two last populated the in-memory
-  cache, returning canonical ids for the caller to translate. The returned
-  node is a reference into the shared cache, not a copy - callers must build
-  a new structure rather than mutate it in place (id translation does this
-  already). The persisted blob carries a schema version and is discarded on
-  load when it does not match, so an upgraded Flask never serves a stale
-  pre-upgrade tree.
+  dict lookup against the selected server's cached tree, returning canonical
+  ids for the caller to translate. Clusters are sized to
+  HYPERBOLIC_TARGET_LEAF_SIZE (default 150, i.e. ~100-200 songs) with a floor of
+  HYPERBOLIC_MIN_CLUSTER_SIZE (default 20): clusters below that floor are
+  pruned, a subgenre left without a valid cluster is hidden, and a genre whose
+  subgenres all vanished is hidden too - so a server only shows genres and
+  subgenres it can actually back with real clusters of songs.
+  The returned node is a reference into the shared cache, not a copy - callers
+  must build a new structure rather than mutate it in place (id translation
+  does this already). The persisted blob carries a schema version and is
+  discarded on load when it does not match, so an upgraded Flask never serves a
+  stale pre-upgrade tree.
 * The directory tree is a three-level semantic taxonomy over the same
   embedding space: GENRE -> SUBGENRE -> NAMED CLUSTER. The root splits by
   MAIN GENRE taken from the data-driven genre_subgenre.json centroids
@@ -294,7 +299,7 @@ def _fetch_poincare_rows(item_ids):
     return out
 
 
-def _fetch_all_poincare_rows():
+def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
     from app_helper import get_db
 
     out = {}
@@ -302,12 +307,23 @@ def _fetch_all_poincare_rows():
     db_conn = get_db()
     try:
         with db_conn.cursor() as cur:
-            cur.execute(
-                "SELECT item_id, poincare_embedding, hyperbolic_radius "
-                "FROM embedding WHERE poincare_embedding IS NOT NULL "
-                "AND hyperbolic_radius IS NOT NULL "
-                "ORDER BY item_id"
-            )
+            if server_id is None:
+                cur.execute(
+                    "SELECT item_id, poincare_embedding, hyperbolic_radius "
+                    "FROM embedding WHERE poincare_embedding IS NOT NULL "
+                    "AND hyperbolic_radius IS NOT NULL "
+                    "ORDER BY item_id"
+                )
+            else:
+                from tasks.mediaserver.registry import availability_sql
+
+                where = availability_sql("e")
+                cur.execute(
+                    "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius "
+                    "FROM embedding e WHERE e.poincare_embedding IS NOT NULL "
+                    f"AND e.hyperbolic_radius IS NOT NULL AND {where} ORDER BY e.item_id",
+                    (server_id, bool(include_legacy_default)),
+                )
             for item_id, blob, radius in cur.fetchall():
                 vec = np.frombuffer(bytes(blob), dtype=np.float32)
                 if _is_finite_row(vec, radius):
@@ -465,12 +481,22 @@ def _deduplicate_and_cap_results(results):
     )
 
 
-_TREE_CACHE = {"n_bands": None, "nodes": None, "flat_ids": None, "track_count": None}
+_TREE_CACHE = {
+    "n_bands": None, "nodes": None, "flat_ids": None, "track_count": None,
+    "servers": {},
+}
 
 # Bump whenever the persisted tree schema changes (node id scheme, node kinds,
 # level structure). load_hyperbolic_tree_cache discards blobs whose version
 # does not match so an upgraded Flask never serves a stale pre-upgrade tree.
-_TREE_CACHE_VERSION = 2
+_TREE_CACHE_VERSION = 3
+
+
+# The default server's tree is kept under the "__default__" key (requests with
+# no ?server= resolve to it) and mirrored into the legacy top-level fields so
+# single-server installs and tests keep working unchanged. Each configured
+# secondary server gets its own tree under its server_id.
+_DEFAULT_SERVER_KEY = "__default__"
 
 
 def reset_hyperbolic_tree_cache():
@@ -478,39 +504,122 @@ def reset_hyperbolic_tree_cache():
     _TREE_CACHE["nodes"] = None
     _TREE_CACHE["flat_ids"] = None
     _TREE_CACHE["track_count"] = None
+    _TREE_CACHE["servers"] = {}
+
+
+def _tree_build_targets():
+    """The (server_key, server_id, is_default) trees to build at analysis end.
+
+    Every configured server gets its own tree so a request scoped to that
+    server only sees genres/subgenres/clusters that server can actually back
+    with songs. An empty or unreadable registry falls back to one legacy tree
+    over the whole catalogue (the single-server behaviour).
+    """
+    from tasks.mediaserver import registry
+
+    try:
+        servers = registry.list_servers()
+    except Exception:
+        servers = []
+    if not servers:
+        return [(_DEFAULT_SERVER_KEY, None, True)]
+    try:
+        default_id = registry.get_default_server_id()
+    except Exception:
+        default_id = None
+    targets = [(_DEFAULT_SERVER_KEY, default_id, True)]
+    for s in servers:
+        if s["server_id"] != default_id:
+            targets.append((s["server_id"], s["server_id"], False))
+    return targets
+
+
+def _blob_name_for(server_key):
+    if not server_key or server_key == _DEFAULT_SERVER_KEY:
+        return _TREE_CACHE_BLOB_NAME
+    return f"{_TREE_CACHE_BLOB_NAME}__{server_key}"
+
+
+def tree_for_server(server_id=None):
+    """The in-memory tree dict for a request's selected server.
+
+    ``server_id`` None (or the default server key) resolves to the default
+    server's tree; any other id resolves to that server's own tree, falling
+    back to the default tree when the server has none loaded (e.g. it was
+    added after the last analysis run).
+    """
+    if server_id and server_id != _DEFAULT_SERVER_KEY:
+        return _TREE_CACHE["servers"].get(server_id) or _TREE_CACHE
+    return _TREE_CACHE
 
 
 def build_hyperbolic_tree_cache():
-    rows = _fetch_all_poincare_rows()
-    if not rows:
-        _TREE_CACHE["n_bands"] = 0
-        _TREE_CACHE["nodes"] = {}
-        _TREE_CACHE["flat_ids"] = {}
-        _TREE_CACHE["track_count"] = 0
-        _persist_tree_cache_blob(None)
-        logger.info("Hyperbolic tree cache built empty: no projected tracks yet.")
-        return 0
+    targets = _tree_build_targets()
+    default_track_count = 0
+    for server_key, server_id, is_default in targets:
+        rows = _fetch_all_poincare_rows(
+            server_id=server_id, include_legacy_default=is_default
+        )
+        if not rows:
+            tree = {"n_bands": 0, "nodes": {}, "flat_ids": {}, "track_count": 0}
+        else:
+            from app_helper import get_score_data_by_ids
 
-    from app_helper import get_score_data_by_ids
-
-    score_by_id = {d["item_id"]: d for d in get_score_data_by_ids(list(rows.keys()))}
-    mood_centroids = _load_projected_mood_centroids()
-    genre_subgenres = _load_projected_genre_subgenres()
-    nodes, flat_ids = _build_tree_nodes(rows, score_by_id, mood_centroids, genre_subgenres)
-    root_count = len(nodes["root"]["items"])
-    track_count = len(rows)
-    _TREE_CACHE["n_bands"] = root_count
-    _TREE_CACHE["nodes"] = nodes
-    _TREE_CACHE["flat_ids"] = flat_ids
-    _TREE_CACHE["track_count"] = track_count
-    _persist_tree_cache_blob({
-        "n_bands": root_count, "nodes": nodes, "flat_ids": flat_ids, "track_count": track_count,
-    })
+            score_by_id = {d["item_id"]: d for d in get_score_data_by_ids(list(rows.keys()))}
+            mood_centroids = _load_projected_mood_centroids()
+            genre_subgenres = _load_projected_genre_subgenres()
+            nodes, flat_ids = _build_tree_nodes(
+                rows, score_by_id, mood_centroids, genre_subgenres
+            )
+            root_count = len(nodes["root"]["items"])
+            tree = {
+                "n_bands": root_count, "nodes": nodes,
+                "flat_ids": flat_ids, "track_count": len(rows),
+            }
+        _TREE_CACHE["servers"][server_key] = tree
+        if is_default:
+            _TREE_CACHE["n_bands"] = tree["n_bands"]
+            _TREE_CACHE["nodes"] = tree["nodes"]
+            _TREE_CACHE["flat_ids"] = tree["flat_ids"]
+            _TREE_CACHE["track_count"] = tree["track_count"]
+            default_track_count = tree["track_count"]
+        _persist_tree_cache_blob(tree, name=_blob_name_for(server_key))
     logger.info(
-        "Hyperbolic tree cache built and persisted: %d tracks across %d nodes (%d root folders)",
-        track_count, len(nodes), root_count,
+        "Hyperbolic tree cache built and persisted: %d server tree(s) "
+        "(%d tracks in the default tree).", len(targets), default_track_count,
     )
-    return track_count
+    return default_track_count
+
+
+def _scan_tree_cache_blob_names():
+    """Distinct per-server tree blob base names persisted in ivf_dir.
+
+    Segmented "name_i_n" rows are folded back to their base name. Only the
+    per-server blobs (the default prefix plus "__") are returned, so Flask can
+    warm every secondary server tree at startup without touching the registry.
+    """
+    from app_helper import get_db
+
+    prefix = _TREE_CACHE_BLOB_NAME + "__"
+    # The trailing % must be an UNESCAPED wildcard: prefix's underscores are
+    # escaped with backslashes, but the suffix separator is a real LIKE
+    # wildcard so "hyperbolic_tree_cache__<server_id>" blobs are discovered.
+    like = prefix.replace("_", r"\_") + "%"
+    try:
+        db_conn = get_db()
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT name FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+                (like,),
+            )
+            names = set()
+            for (raw,) in cur.fetchall():
+                base = re.sub(r"_\d+_\d+$", "", raw)
+                if base.startswith(prefix):
+                    names.add(base)
+            return sorted(names)
+    except Exception:
+        return []
 
 
 def load_hyperbolic_tree_cache():
@@ -537,9 +646,16 @@ def load_hyperbolic_tree_cache():
     _TREE_CACHE["flat_ids"] = payload.get("flat_ids") or {}
     track_count = int(payload.get("track_count") or 0)
     _TREE_CACHE["track_count"] = track_count
+    _TREE_CACHE["servers"] = {_DEFAULT_SERVER_KEY: payload}
+    for blob_name in _scan_tree_cache_blob_names():
+        server_id = blob_name[len(_TREE_CACHE_BLOB_NAME) + 2:]
+        per_server = _load_tree_cache_blob(name=blob_name)
+        if per_server and per_server.get("version") == _TREE_CACHE_VERSION:
+            _TREE_CACHE["servers"][server_id] = per_server
     logger.info(
-        "Hyperbolic tree cache loaded from ivf_dir: %d tracks across %d nodes.",
-        track_count, len(_TREE_CACHE["nodes"]),
+        "Hyperbolic tree cache loaded from ivf_dir: %d tracks across %d nodes "
+        "(%d server trees).", track_count, len(_TREE_CACHE["nodes"]),
+        len(_TREE_CACHE["servers"]),
     )
     return track_count
 
@@ -549,13 +665,14 @@ def _set_empty_tree_cache():
     _TREE_CACHE["nodes"] = {}
     _TREE_CACHE["flat_ids"] = {}
     _TREE_CACHE["track_count"] = 0
+    _TREE_CACHE["servers"] = {}
 
 
 def _delete_tree_cache_blob():
     from app_helper import get_db
 
     db_conn = get_db()
-    like_pattern = _TREE_CACHE_BLOB_NAME.replace("_", r"\_") + r"\_%\_%"
+    like_pattern = _TREE_CACHE_BLOB_NAME.replace("_", r"\_") + r"\_%"
     with db_conn.cursor() as cur:
         cur.execute(
             "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE '\\'",
@@ -564,7 +681,7 @@ def _delete_tree_cache_blob():
     db_conn.commit()
 
 
-def _persist_tree_cache_blob(payload):
+def _persist_tree_cache_blob(payload, name=None):
     # Deliberately not wrapped in try/except: a persist failure here must
     # propagate to the worker step (_run_all_index_builds catches it,
     # records it through error_manager, and the run continues since this
@@ -574,6 +691,7 @@ def _persist_tree_cache_blob(payload):
     from app_helper import get_db
     from tasks.index_build_helpers import store_segmented_blob
 
+    name = name or _TREE_CACHE_BLOB_NAME
     if payload is None:
         _delete_tree_cache_blob()
         return
@@ -583,16 +701,17 @@ def _persist_tree_cache_blob(payload):
     db_conn = get_db()
     # store_segmented_blob clears any stale rows first, then stores the blob
     # as one row or as IVF_MAX_PART_SIZE_MB (50 MB) "name_i_n" rows.
-    store_segmented_blob(db_conn, _TREE_CACHE_TABLE, _TREE_CACHE_BLOB_NAME, gzip.compress(raw))
+    store_segmented_blob(db_conn, _TREE_CACHE_TABLE, name, gzip.compress(raw))
     db_conn.commit()
 
 
-def _load_tree_cache_blob():
+def _load_tree_cache_blob(name=None):
     try:
         from app_helper import get_db
         from tasks.index_build_helpers import load_segmented_blob
 
-        blob = load_segmented_blob(get_db(), _TREE_CACHE_TABLE, _TREE_CACHE_BLOB_NAME)
+        name = name or _TREE_CACHE_BLOB_NAME
+        blob = load_segmented_blob(get_db(), _TREE_CACHE_TABLE, name)
         if not blob:
             return None
         return json.loads(gzip.decompress(blob).decode("utf-8"))
@@ -608,15 +727,16 @@ def init_hyperbolic_cache():
         logger.exception("init_hyperbolic_cache failed")
 
 
-def build_hyperbolic_tree(node_id=None):
-    nodes = _TREE_CACHE["nodes"]
+def build_hyperbolic_tree(node_id=None, server_id=None):
+    tree = tree_for_server(server_id)
+    nodes = tree.get("nodes")
     if not nodes:
         return _empty_node(node_id, "Hyperbolic Explorer"), []
     key = (node_id or "root").strip() or "root"
     node = nodes.get(key)
     if node is None:
         raise ValueError(f"Unknown tree node id: {node_id}")
-    return node, _TREE_CACHE["flat_ids"].get(key, [])
+    return node, (tree.get("flat_ids") or {}).get(key, [])
 
 
 def _build_genre_root_items(item_ids, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):
@@ -633,7 +753,8 @@ def _build_genre_root_items(item_ids, vec_map, radii_map, score_by_id, mood_cent
                     f"root.g{slug}", label, members, vec_map, radii_map,
                     score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level=0,
                 )
-                root_items.append(genre_node)
+                if genre_node is not None:
+                    root_items.append(genre_node)
     return root_items
 
 
@@ -646,7 +767,8 @@ def _build_mood_root_items(item_ids, vec_map, radii_map, score_by_id, mood_centr
             mood_label, members, vec_map, radii_map, score_by_id,
             mood_centroids, genre_subgenres, nodes, flat_ids,
         )
-        root_items.append(mood_node)
+        if mood_node is not None:
+            root_items.append(mood_node)
     return root_items
 
 
@@ -875,8 +997,10 @@ def _materialize_genre_level(parent_id, members, vec_map, radii_map, score_by_id
             gid, label, gmembers, vec_map, radii_map, score_by_id,
             mood_centroids, genre_subgenres, nodes, flat_ids, level,
         )
+        if genre_node is None:
+            continue
         summary_items.append({**genre_node, "items": []})
-    return summary_items
+    return summary_items or None
 
 
 def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level):
@@ -888,26 +1012,36 @@ def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score
     }
     name = label.title()
     kind = _GENRE_KINDS[level] if 0 <= level < len(_GENRE_KINDS) else "genre"
-    target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
+    genre_data_usable = _genre_subgenres_usable(vec_map, genre_subgenres)
 
-    summary_items = None
-    if len(members) > target_leaf and label != "Other" and level < 1:
-        # Only the main-genre level (0) recurses into the subgenre level (1);
-        # below a subgenre the only level left is the named-cluster one.
-        summary_items = _materialize_genre_level(
+    if genre_data_usable and level == 0:
+        # GENRE -> SUBGENRE -> CLUSTER: a genre is only kept when at least one
+        # of its subgenres forms a real cluster. Genres whose subgenres all
+        # failed to cluster (or that have no subgenres) are pruned entirely.
+        sub_items = _materialize_genre_level(
             node_id, members, vec_map, radii_map, score_by_id,
             mood_centroids, genre_subgenres, nodes, flat_ids, level + 1,
             parent_genre=label,
         )
-    if summary_items is None and len(members) > target_leaf:
-        prefix = _genre_path_prefix(node_id)
-        summary_items = _materialize_children(
-            node_id, members, vec_map, radii_map, score_by_id,
-            mood_centroids, nodes, flat_ids, name_prefix=prefix or None,
-        )
-    if summary_items is None:
-        return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
-    return _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids, kind=kind)
+        if not sub_items:
+            return None
+        return _branch_folder(node_id, name, summary, sub_items, nodes, flat_ids, kind=kind)
+
+    # SUBGENRE, or a main genre in the legacy mood fallback (no usable genre
+    # file): split into named clusters of ~HYPERBOLIC_TARGET_LEAF_SIZE songs.
+    # Clusters below HYPERBOLIC_MIN_CLUSTER_SIZE are pruned; a folder left with
+    # no valid cluster is pruned (strict genre path) or listed as a legacy leaf
+    # (mood fallback) so tiny single-server moods still browse.
+    prefix = _genre_path_prefix(node_id)
+    cluster_items = _materialize_children(
+        node_id, members, vec_map, radii_map, score_by_id,
+        mood_centroids, nodes, flat_ids, name_prefix=prefix or None,
+    )
+    if not cluster_items:
+        if not genre_data_usable:
+            return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
+        return None
+    return _branch_folder(node_id, name, summary, cluster_items, nodes, flat_ids, kind=kind)
 
 
 def _genre_path_prefix(node_id):
@@ -975,22 +1109,30 @@ def _dedupe_name(base, used):
 def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, name_prefix=None):
     n = len(members)
     target_leaf = max(1, int(config.HYPERBOLIC_TARGET_LEAF_SIZE))
-    branching = max(2, int(config.HYPERBOLIC_TARGET_BRANCHING))
-    k = min(branching, max(2, round(n / target_leaf)))
+    min_cluster = max(1, int(config.HYPERBOLIC_MIN_CLUSTER_SIZE))
+    if n < min_cluster:
+        return None
+    k = max(1, round(n / target_leaf))
+    k = min(k, n)
     vecs = np.stack([vec_map[i] for i in members]).astype(np.float64)
     labels = _fit_clusters(vecs, k)
     clusters = {}
     for label, iid in zip(labels, members):
         clusters.setdefault(int(label), []).append(iid)
     ordered = [clusters[j] for j in sorted(clusters)]
-    if len(ordered) < 2 or max(len(c) for c in ordered) > 0.95 * n:
-        # k-means could not meaningfully separate this set (e.g. near-identical
-        # embeddings) - stop here rather than emit one giant cluster.
+    # A split was expected (k > 1) but k-means collapsed everything into one
+    # giant cluster: the set cannot be meaningfully separated, so bail.
+    if k > 1 and max(len(c) for c in ordered) > 0.95 * n:
+        return None
+    # Prune clusters smaller than the minimum; a folder with no surviving
+    # cluster is hidden entirely rather than shown as an empty/giant node.
+    kept = [c for c in ordered if len(c) >= min_cluster]
+    if not kept:
         return None
 
     summary_items = []
     used_names = set()
-    for ci, cids in enumerate(ordered):
+    for ci, cids in enumerate(kept):
         cluster_id = f"{parent_id}.c{ci}"
         if name_prefix:
             descriptor = _cluster_descriptor(cids, score_by_id)

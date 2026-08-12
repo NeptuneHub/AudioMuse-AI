@@ -245,14 +245,27 @@ def hyperbolic_tree_api():
         description: Internal error.
     """
     import app_server_context
-    from tasks.hyperbolic_manager import build_hyperbolic_tree
+    from tasks.hyperbolic_manager import build_hyperbolic_tree, tree_for_server
 
     try:
         node_id = (request.args.get("node_id") or "").strip() or None
 
-        node, flat_ids = build_hyperbolic_tree(node_id)
-        mapping = app_server_context.translate_ids_for_request(flat_ids)
-        node = _translate_tree_ids(node, mapping)
+        # The tree is built PER SERVER at analysis time, so a request scoped to
+        # a server already sees only that server's genres/subgenres/clusters.
+        server_id = app_server_context.resolve_request_server_id()
+        node, _flat = build_hyperbolic_tree(node_id, server_id=server_id)
+        # Rewrite canonical ids to the selected server's provider ids for the
+        # returned node (the tree structure itself is already per-server).
+        tree = tree_for_server(server_id)
+        tree_nodes = tree.get("nodes") or {}
+        tree_flat_ids = tree.get("flat_ids") or {}
+        subtree_ids = _tree_subtree_ids(node["id"], tree_nodes, tree_flat_ids)
+        mapping = app_server_context.translate_ids_for_request(subtree_ids)
+        node = _translate_tree_ids(
+            node, mapping,
+            tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,
+            present_ids=set(mapping),
+        )
         if node is None:
             node = {
                 "id": node_id or "root",
@@ -319,16 +332,53 @@ def hyperbolic_cache_status():
         return jsonify({"ok": False, "reason": "exception", "error": "Internal server error"}), 500
 
 
-def _translate_tree_ids(node, mapping):
+def _tree_subtree_ids(node_id, nodes, flat_ids):
+    """All canonical track ids beneath a cached tree node."""
+    ids = set()
+    seen = set()
+    stack = [node_id]
+    while stack:
+        nid = stack.pop()
+        if not nid or nid in seen:
+            continue
+        seen.add(nid)
+        ids.update(flat_ids.get(nid) or [])
+        node = nodes.get(nid) or {}
+        for child in node.get("items") or []:
+            cid = child.get("id")
+            if cid:
+                stack.append(cid)
+    return ids
+
+
+def _subtree_has_present_track(n, present_ids, tree_nodes, tree_flat_ids):
+    stack = [n.get("id")]
+    seen = set()
+    while stack:
+        nid = stack.pop()
+        if not nid or nid in seen:
+            continue
+        seen.add(nid)
+        if any(i in present_ids for i in (tree_flat_ids.get(nid) or [])):
+            return True
+        node = tree_nodes.get(nid) or {}
+        for child in node.get("items") or []:
+            cid = child.get("id")
+            if cid:
+                stack.append(cid)
+    return False
+
+
+def _translate_tree_ids(node, mapping, tree_nodes=None, tree_flat_ids=None, present_ids=None):
     """Rewrite canonical ids to the selected server's provider ids.
 
     Walks the tree and rebuilds each node as a copy (never mutating the shared
     cache). Tracks not present on the request's selected server are dropped.
-    Only a LEAF folder (whose children are tracks) is pruned when every track
-    was dropped; lazy folders - a non-leaf mood or genre folder whose children
-    are cluster summaries, or a summary with an empty ``items`` list by design
-    - are kept so the root and mood/genre levels survive the per-server pass
-    and the client can expand them on demand.
+    Lazy folders - a non-leaf mood or genre folder whose children are cluster
+    summaries, or a summary with an empty ``items`` list by design - are kept
+    unless per-server info is supplied, in which case a folder with no track on
+    the selected server is pruned so switching servers never shows genres or
+    subgenres that only exist on another server.
     """
 
     def walk(n):
@@ -339,15 +389,18 @@ def _translate_tree_ids(node, mapping):
             return {**n, "id": translated}
         items = n.get("items") or []
         if not items:
+            if present_ids is not None and not _subtree_has_present_track(
+                n, present_ids, tree_nodes, tree_flat_ids
+            ):
+                return None
             return {**n}
         kept = []
         for child in items:
             rebuilt = walk(child)
             if rebuilt is not None:
                 kept.append(rebuilt)
-        if items[0].get("type") == "track":
-            if not kept:
-                return None
+        if not kept:
+            return None
         return {**n, "items": kept, "children_count": len(kept)}
 
     return walk(node)

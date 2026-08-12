@@ -10,15 +10,19 @@
 
 Covers ``app_hyperbolic._translate_tree_ids``, the pass that rewrites the
 cached tree's canonical ids to the selected server's provider ids. The tree is
-a shared in-memory cache, so translation must rebuild every node as a copy and
-must keep lazy (non-leaf) folders - a band holding cluster summaries, or a
-summary with an empty ``items`` list by design - so the root never collapses
-when a library has non-leaf bands.
+a shared in-memory cache built from every server's tracks, so translation must
+rebuild every node as a copy. With no per-server info supplied a lazy (non-leaf)
+folder - a band holding cluster summaries, or a summary with an empty ``items``
+list by design - is kept so the root never collapses. When per-server info is
+supplied, a lazy folder whose subtree has no track on the selected server is
+pruned, so switching servers never shows genres or subgenres that only exist on
+another server.
 
 Main Features:
 * Track nodes are translated to provider ids
 * Leaf folders translate their tracks and prune only when every track is dropped
-* Lazy folders (empty items) and non-leaf bands survive the per-server pass
+* Lazy folders (empty items) and non-leaf bands survive without per-server info
+* With per-server info, lazy folders with no track on the server are pruned
 * The root keeps its bands instead of collapsing to an empty node
 * Translation never mutates the shared cached node (returns copies)
 """
@@ -150,3 +154,89 @@ def test_translation_does_not_mutate_the_cached_node():
     assert node["items"] == original_items
     assert node["items"][0]["id"] == "fp_a"
     assert node["children_count"] == 2
+
+
+def _cached_folder(cid, children):
+    return {
+        "id": cid,
+        "name": cid,
+        "type": "folder",
+        "leaf": False,
+        "children_count": len(children),
+        "items": children,
+    }
+
+
+def _lazy_summary(cid):
+    return {"id": cid, "name": cid, "type": "folder", "children_count": 1, "items": []}
+
+
+def test_lazy_folder_pruned_when_no_track_on_server():
+    tree_nodes = {
+        "g0": _cached_folder("g0", [{"id": "g0.c0", "type": "folder", "items": []}]),
+        "g0.c0": _cached_folder("g0.c0", []),
+        "g1": _cached_folder("g1", [{"id": "g1.c0", "type": "folder", "items": []}]),
+        "g1.c0": _cached_folder("g1.c0", []),
+    }
+    tree_flat_ids = {"g0.c0": ["fp_a", "fp_b"], "g1.c0": ["fp_c"]}
+    root = {
+        "id": "root",
+        "name": "Hyperbolic Explorer",
+        "type": "folder",
+        "children_count": 2,
+        "items": [_lazy_summary("g0"), _lazy_summary("g1")],
+    }
+    out = _translate_tree_ids(
+        root, {"fp_a": "prov-a"},
+        tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,
+        present_ids={"fp_a"},
+    )
+    assert out is not None
+    assert [c["id"] for c in out["items"]] == ["g0"]
+    assert out["children_count"] == 1
+
+
+def test_lazy_folder_kept_when_subtree_present_on_server():
+    tree_nodes = {
+        "g0": _cached_folder("g0", [{"id": "g0.c0", "type": "folder", "items": []}]),
+        "g0.c0": _cached_folder("g0.c0", []),
+    }
+    tree_flat_ids = {"g0.c0": ["fp_a", "fp_b"]}
+    root = {
+        "id": "root",
+        "name": "Hyperbolic Explorer",
+        "type": "folder",
+        "children_count": 1,
+        "items": [_lazy_summary("g0")],
+    }
+    out = _translate_tree_ids(
+        root, {"fp_a": "prov-a", "fp_b": "prov-b"},
+        tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,
+        present_ids={"fp_a", "fp_b"},
+    )
+    assert out is not None
+    assert [c["id"] for c in out["items"]] == ["g0"]
+    assert out["children_count"] == 1
+
+
+def test_nested_lazy_folder_pruning_propagates_up():
+    tree_nodes = {
+        "genre": _cached_folder("genre", [{"id": "genre.sub", "type": "folder", "items": []}]),
+        "genre.sub": _cached_folder("genre.sub", []),
+    }
+    tree_flat_ids = {"genre.sub": ["fp_x"]}
+    root = {
+        "id": "root",
+        "name": "Hyperbolic Explorer",
+        "type": "folder",
+        "children_count": 1,
+        "items": [_lazy_summary("genre")],
+    }
+    # The only genre's only subgenre has no track on the selected server, so the
+    # whole root collapses to None; the API turns that into an empty node.
+    out = _translate_tree_ids(
+        root, {},
+        tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,
+        present_ids=set(),
+    )
+    assert out is None

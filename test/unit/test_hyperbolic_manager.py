@@ -394,7 +394,9 @@ def _mood_centroids_for(moods):
 def _rebuild_tree_cache(mapping, score_rows=None, mood_centroids=None,
                         genre_subgenres=None):
     hm.reset_hyperbolic_tree_cache()
-    with patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
+    with patch.object(hm, "_tree_build_targets",
+                      return_value=[(hm._DEFAULT_SERVER_KEY, None, True)]), \
+         patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
          patch("app_helper.get_score_data_by_ids", return_value=score_rows or []), \
          patch.object(hm, "_load_projected_mood_centroids",
                       return_value=mood_centroids if mood_centroids is not None else []), \
@@ -430,6 +432,56 @@ def test_tree_build_cache_returns_track_count(monkeypatch):
     finally:
         hm.reset_hyperbolic_tree_cache()
     assert track_count == len(mapping)
+
+
+def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
+    # The default server and each secondary server get their OWN tree, built
+    # from only that server's tracks (the caller feeds per-server rows via
+    # _fetch_all_poincare_rows(server_id=...)), persisted under distinct blob
+    # names, and the request path resolves the right tree per server.
+    default_mapping = _make_catalogue(n_per_band=200, bands=1)
+    sec_mapping = _make_catalogue(n_per_band=20, bands=1)
+    # Make the secondary set distinguishable: fewer bands -> different cluster
+    # structure than the default tree.
+    sec_mapping = {f"sec_{iid}": row for iid, row in sec_mapping.items()}
+    persisted = {}
+
+    def _fake_fetch(server_id=None, include_legacy_default=True):
+        if server_id == "sec":
+            return sec_mapping
+        return default_mapping
+
+    def _fake_persist(payload, name=None):
+        persisted[name] = payload
+
+    hm.reset_hyperbolic_tree_cache()
+    try:
+        with patch.object(
+                hm, "_tree_build_targets",
+                return_value=[(hm._DEFAULT_SERVER_KEY, None, True), ("sec", "sec", False)]), \
+             patch.object(hm, "_fetch_all_poincare_rows", side_effect=_fake_fetch), \
+             patch("app_helper.get_score_data_by_ids", return_value=[]), \
+             patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
+             patch.object(hm, "_load_projected_genre_subgenres", return_value={}), \
+             patch.object(hm, "_persist_tree_cache_blob", side_effect=_fake_persist):
+            default_count = hm.build_hyperbolic_tree_cache()
+
+        # The default tree is mirrored into the legacy top-level fields; the
+        # secondary tree lives only under its own server key.
+        assert default_count == len(default_mapping)
+        assert hm._TREE_CACHE["servers"][hm._DEFAULT_SERVER_KEY]["track_count"] == len(default_mapping)
+        assert hm._TREE_CACHE["servers"]["sec"]["track_count"] == len(sec_mapping)
+        assert hm._TREE_CACHE["nodes"]["root"]["summary"]["track_count"] == len(default_mapping)
+        # Distinct blob names per server.
+        assert hm._blob_name_for(hm._DEFAULT_SERVER_KEY) == hm._TREE_CACHE_BLOB_NAME
+        assert hm._blob_name_for("sec") == f"{hm._TREE_CACHE_BLOB_NAME}__sec"
+        assert set(persisted) == {hm._TREE_CACHE_BLOB_NAME, f"{hm._TREE_CACHE_BLOB_NAME}__sec"}
+        # The request path resolves the right tree per server.
+        assert hm.tree_for_server(None)["track_count"] == len(default_mapping)
+        assert hm.tree_for_server("sec")["track_count"] == len(sec_mapping)
+        assert hm.tree_for_server("sec")["nodes"]["root"]["summary"]["track_count"] == len(sec_mapping)
+    finally:
+        hm.reset_hyperbolic_tree_cache()
 
 
 def test_tree_mood_node_lists_tracks_when_small(monkeypatch):
@@ -677,6 +729,7 @@ def test_materialize_children_bails_out_on_degenerate_clustering(monkeypatch):
     members = [f"t{i}" for i in range(50)]
     vec_map = {m: np.array([1.0, 0.0], dtype=np.float64) for m in members}
     radii_map = {m: 0.5 for m in members}
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
     monkeypatch.setattr(hm, "_fit_clusters", lambda vecs, k: np.zeros(len(vecs), dtype=int))
     result = hm._materialize_children("b0", members, vec_map, radii_map, {}, [], {}, {})
     assert result is None

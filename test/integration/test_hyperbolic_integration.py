@@ -139,6 +139,11 @@ def _point_get_db_to_test(monkeypatch, hyper_db, pg_dsn):
     # actually checks passwords (CI's postgres service does).
     monkeypatch.setattr("app_helper.get_db", lambda: hyper_db)
     monkeypatch.setattr("database.get_db", lambda: hyper_db)
+    # tasks.mediaserver.registry binds get_db by value at import time, and the
+    # tree build now imports the registry (per-server tree targets), so point
+    # its captured reference at the live test connection too. Without this the
+    # registry keeps talking to a previous test's closed hyper_db connection.
+    monkeypatch.setattr("tasks.mediaserver.registry.get_db", lambda: hyper_db)
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     yield hyper_db
 
@@ -358,6 +363,53 @@ class TestTreeEngine:
         finally:
             hm.reset_hyperbolic_tree_cache()
 
+    def test_load_tree_cache_warms_per_server_blobs(self, _point_get_db_to_test):
+        # A secondary server's tree blob must actually be DISCOVERED and loaded
+        # at startup, not silently skipped. The scan LIKE pattern escapes the
+        # prefix's underscores but the trailing % must stay a WILDCARD - a
+        # literal-escaped % would match nothing and every server except the
+        # default would silently fall back to the union tree (clusters labeled
+        # with the union's track counts that only held that server's few tracks
+        # when opened).
+        conn = _point_get_db_to_test
+        hm = _load_hyperbolic_manager()
+        blob_name = f"{hm._TREE_CACHE_BLOB_NAME}__sec"
+
+        payload = {
+            "n_bands": 1,
+            "nodes": {"root": {"id": "root", "type": "folder", "name": "Root",
+                               "children_count": 0, "items": []}},
+            "flat_ids": {},
+            "track_count": 7,
+        }
+        default_payload = {
+            "n_bands": 0,
+            "nodes": {"root": {"id": "root", "type": "folder", "name": "Root",
+                               "children_count": 0, "items": []}},
+            "flat_ids": {},
+            "track_count": 3,
+        }
+        hm.reset_hyperbolic_tree_cache()
+        try:
+            # The load path requires the default blob to exist (as it always
+            # does after an analysis run) before it scans for per-server blobs.
+            hm._persist_tree_cache_blob(default_payload, name=hm._TREE_CACHE_BLOB_NAME)
+            hm._persist_tree_cache_blob(payload, name=blob_name)
+            assert hm._scan_tree_cache_blob_names() == [blob_name]
+
+            hm.reset_hyperbolic_tree_cache()
+            hm.load_hyperbolic_tree_cache()
+            sec_tree = hm._TREE_CACHE["servers"].get("sec")
+            assert sec_tree is not None
+            assert sec_tree["track_count"] == 7
+            assert hm.tree_for_server("sec")["track_count"] == 7
+        finally:
+            hm.reset_hyperbolic_tree_cache()
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ivf_dir WHERE name IN (%s, %s)",
+                            (hm._TREE_CACHE_BLOB_NAME, blob_name))
+            conn.commit()
+
     def test_tree_cache_persists_segmented_and_reassembles(
         self, _point_get_db_to_test, monkeypatch
     ):
@@ -435,6 +487,9 @@ class TestTreeEngine:
         _seed_poincare(conn)
         monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 2)
         monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 2)
+        # This test catalog is tiny (20 tracks) purely to exercise the naming
+        # path; the per-server pruning floor would otherwise hide every cluster.
+        monkeypatch.setattr(config, "HYPERBOLIC_MIN_CLUSTER_SIZE", 1)
         hm = _load_hyperbolic_manager()
         hm.reset_hyperbolic_tree_cache()
         try:
@@ -452,6 +507,100 @@ class TestTreeEngine:
         for name in cluster_names:
             assert " / " in name
             assert name.split(" (")[0].count(" / ") == 1
+
+    def test_tree_build_is_per_server_with_two_configured_servers(
+        self, _point_get_db_to_test, monkeypatch
+    ):
+        """The tree is built PER SERVER at analysis time, not as one union.
+
+        With a default server and a secondary server configured in
+        track_server_map, build_hyperbolic_tree_cache must produce two trees:
+        the default tree from the default server's tracks and the secondary
+        tree from only that server's tracks (no cross-server leakage), each
+        persisted under its own blob name, and each resolvable through
+        tree_for_server for the request path.
+        """
+        conn = _point_get_db_to_test
+        from tasks.mediaserver import registry
+
+        _seed_poincare(conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS music_servers ("
+                "server_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                "server_type TEXT NOT NULL, creds JSONB NOT NULL DEFAULT '{}'::jsonb, "
+                "music_libraries TEXT NOT NULL DEFAULT '', is_default BOOLEAN NOT NULL DEFAULT FALSE)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS track_server_map ("
+                "item_id TEXT NOT NULL, server_id TEXT NOT NULL, "
+                "provider_track_id TEXT NOT NULL, match_tier TEXT, "
+                "PRIMARY KEY (item_id, server_id))"
+            )
+            cur.execute("DELETE FROM track_server_map")
+            cur.execute("DELETE FROM music_servers")
+            cur.executemany(
+                "INSERT INTO music_servers (server_id, name, server_type, is_default) "
+                "VALUES (%s, %s, %s, %s)",
+                [
+                    ("def", "Home", "jellyfin", True),
+                    ("sec", "Plex", "plex", False),
+                ],
+            )
+            # 10 tracks only on the default server, 10 only on Plex. Each
+            # server's tree must be built from only that server's tracks.
+            cur.executemany(
+                "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier) "
+                "VALUES (%s, %s, %s, %s)",
+                [(f"item-{i:03d}", "def", f"home-{i:03d}", "fingerprint") for i in range(10)]
+                + [(f"item-{i:03d}", "sec", f"plex-{i:03d}", "fingerprint") for i in range(10, 20)],
+            )
+        registry.invalidate_server_cache()
+
+        hm = _load_hyperbolic_manager()
+        hm.reset_hyperbolic_tree_cache()
+        persisted = {}
+
+        def _fake_persist(payload, name=None):
+            persisted[name] = payload
+
+        try:
+            with patch.object(hm, "_persist_tree_cache_blob", side_effect=_fake_persist):
+                default_count = hm.build_hyperbolic_tree_cache()
+
+            # The default server keeps the legacy whole-catalogue semantic
+            # (all non-fp_ tracks are available on it), so its tree spans the
+            # full catalogue; the secondary server is strictly scoped to its
+            # own mapped tracks.
+            assert default_count == 20
+            default_tree = hm._TREE_CACHE["servers"][hm._DEFAULT_SERVER_KEY]
+            sec_tree = hm._TREE_CACHE["servers"]["sec"]
+            assert default_tree["track_count"] == 20
+            assert sec_tree["track_count"] == 10
+            # No cross-server leakage: the secondary tree's leaf ids are
+            # exactly the tracks mapped to that server.
+            def _leaf_ids(tree):
+                ids = set()
+                for node in tree["nodes"].values():
+                    if node.get("leaf"):
+                        ids.update(tree["flat_ids"].get(node["id"]) or [])
+                return ids
+
+            assert _leaf_ids(default_tree) == {f"item-{i:03d}" for i in range(20)}
+            assert _leaf_ids(sec_tree) == {f"item-{i:03d}" for i in range(10, 20)}
+            # Persisted under distinct per-server blob names.
+            assert set(persisted) == {hm._TREE_CACHE_BLOB_NAME, f"{hm._TREE_CACHE_BLOB_NAME}__sec"}
+            # The request path resolves the right tree per server.
+            assert hm.tree_for_server(None)["track_count"] == 20
+            assert hm.tree_for_server("sec")["track_count"] == 10
+            assert hm.tree_for_server("def")["track_count"] == 20
+        finally:
+            hm.reset_hyperbolic_tree_cache()
+            registry.invalidate_server_cache()
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS track_server_map")
+                cur.execute("DROP TABLE IF EXISTS music_servers")
 
 
 @pytest.mark.integration
@@ -552,9 +701,94 @@ class TestEndpoints:
         assert by_id["provider-item-002"]["title"] == "Title 2"
         assert by_id["provider-item-002"]["author"] == "Author 2"
 
+    def test_similar_endpoint_scopes_results_to_the_selected_server(
+        self, _point_get_db_to_test, monkeypatch
+    ):
+        """End-to-end per-server scoping of the similar search.
+
+        Uses the REAL scope_results / resolve_input_item_id / translate_ids with
+        two configured servers in track_server_map: a track that only exists on
+        the default server must NOT leak into a Plex-scoped response, and every
+        surviving id must be Plex's own provider id.
+        """
+        conn = _point_get_db_to_test
+        from app_hyperbolic import hyperbolic_bp
+        from tasks.mediaserver import registry
+
+        _seed_poincare(conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS music_servers ("
+                "server_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                "server_type TEXT NOT NULL, creds JSONB NOT NULL DEFAULT '{}'::jsonb, "
+                "music_libraries TEXT NOT NULL DEFAULT '', is_default BOOLEAN NOT NULL DEFAULT FALSE)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS track_server_map ("
+                "item_id TEXT NOT NULL, server_id TEXT NOT NULL, "
+                "provider_track_id TEXT NOT NULL, match_tier TEXT, "
+                "PRIMARY KEY (item_id, server_id))"
+            )
+            cur.execute("DELETE FROM track_server_map")
+            cur.execute("DELETE FROM music_servers")
+            cur.executemany(
+                "INSERT INTO music_servers (server_id, name, server_type, is_default) "
+                "VALUES (%s, %s, %s, %s)",
+                [
+                    ("def", "Home", "jellyfin", True),
+                    ("sec", "Plex", "plex", False),
+                ],
+            )
+            # item-001 and item-002 exist on BOTH servers; item-003 only on the
+            # default server; item-004 only on Plex.
+            cur.executemany(
+                "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier) "
+                "VALUES (%s, %s, %s, %s)",
+                [
+                    ("item-001", "def", "home-001", "fingerprint"),
+                    ("item-001", "sec", "plex-001", "fingerprint"),
+                    ("item-002", "def", "home-002", "fingerprint"),
+                    ("item-002", "sec", "plex-002", "fingerprint"),
+                    ("item-003", "def", "home-003", "fingerprint"),
+                    ("item-004", "sec", "plex-004", "fingerprint"),
+                ],
+            )
+        registry.invalidate_server_cache()
+
+        canned = [
+            {"item_id": "item-001", "distance": 0.25, "hyperbolic_radius": 0.55},
+            {"item_id": "item-002", "distance": 0.4, "hyperbolic_radius": 0.6},
+            {"item_id": "item-003", "distance": 0.5, "hyperbolic_radius": 0.65},
+            {"item_id": "item-004", "distance": 0.6, "hyperbolic_radius": 0.7},
+        ]
+        try:
+            with patch("tasks.hyperbolic_manager.hyperbolic_similar", return_value=canned):
+                app = Flask(__name__)
+                app.config["TESTING"] = True
+                app.register_blueprint(hyperbolic_bp)
+                response = app.test_client().post(
+                    "/api/hyperbolic/similar?server=Plex",
+                    json={"item_id": "plex-001", "mode": "similar", "limit": 10},
+                )
+        finally:
+            registry.invalidate_server_cache()
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS track_server_map")
+                cur.execute("DROP TABLE IF EXISTS music_servers")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        result_ids = [r["item_id"] for r in payload["results"]]
+        # Plex only: item-003 (default-only) dropped, ids are Plex provider ids.
+        assert result_ids == ["plex-001", "plex-002", "plex-004"]
+        assert not any(str(i).startswith(("item-", "home-", "fp_")) for i in result_ids)
+        assert payload["seed_item_id"] == "plex-001"
+
     def test_tree_endpoint_returns_directory_json(self, _point_get_db_to_test, monkeypatch):
         import app_server_context
         from app_hyperbolic import hyperbolic_bp
+        from tasks.hyperbolic_manager import _TREE_CACHE
 
         monkeypatch.setattr(
             app_server_context,
@@ -568,11 +802,22 @@ class TestEndpoints:
             "children_count": 1,
             "items": [{"id": "item-001", "name": "T - A", "type": "track", "children_count": 0, "items": []}],
         }
-        with patch("tasks.hyperbolic_manager.build_hyperbolic_tree", return_value=(node, ["item-001"])) as tree:
-            app = Flask(__name__)
-            app.config["TESTING"] = True
-            app.register_blueprint(hyperbolic_bp)
-            response = app.test_client().get("/api/hyperbolic/tree")
+        # The API scopes the tree to the request's server by walking the shared
+        # cache, so the test must populate the cache's nodes/flat_ids the way a
+        # real build does.
+        saved = dict(_TREE_CACHE)
+        try:
+            _TREE_CACHE["nodes"] = {"root": node}
+            _TREE_CACHE["flat_ids"] = {"root": ["item-001"]}
+            with patch("tasks.hyperbolic_manager.build_hyperbolic_tree",
+                       return_value=(node, ["item-001"])) as tree:
+                app = Flask(__name__)
+                app.config["TESTING"] = True
+                app.register_blueprint(hyperbolic_bp)
+                response = app.test_client().get("/api/hyperbolic/tree")
+        finally:
+            _TREE_CACHE.clear()
+            _TREE_CACHE.update(saved)
 
         assert response.status_code == 200
         payload = response.get_json()
@@ -590,7 +835,7 @@ class TestEndpoints:
             lambda ids: {i: i for i in ids},
         )
 
-        def _boom(node_id):
+        def _boom(node_id, server_id=None):
             raise ValueError("Unknown tree node id: nope")
 
         with patch("tasks.hyperbolic_manager.build_hyperbolic_tree", side_effect=_boom):
@@ -604,6 +849,7 @@ class TestEndpoints:
     def test_tree_endpoint_keeps_non_leaf_bands_in_the_root(self, _point_get_db_to_test, monkeypatch):
         import app_server_context
         from app_hyperbolic import hyperbolic_bp
+        from tasks.hyperbolic_manager import _TREE_CACHE
 
         monkeypatch.setattr(
             app_server_context,
@@ -645,12 +891,43 @@ class TestEndpoints:
                 },
             ],
         }
-        with patch("tasks.hyperbolic_manager.build_hyperbolic_tree",
-                   return_value=(root, ["item-001", "item-002"])):
-            app = Flask(__name__)
-            app.config["TESTING"] = True
-            app.register_blueprint(hyperbolic_bp)
-            response = app.test_client().get("/api/hyperbolic/tree")
+        # Populate the shared cache the way a real build does so the per-server
+        # scope walk can find every track under the non-leaf band b0.
+        cached_b0 = dict(root["items"][0])
+        cached_b0["items"] = [
+            {"id": "b0.c0", "name": "Cluster 1", "type": "folder", "children_count": 60,
+             "summary": {"track_count": 60}, "items": []},
+            {"id": "b0.c1", "name": "Cluster 2", "type": "folder", "children_count": 60,
+             "summary": {"track_count": 60}, "items": []},
+        ]
+        cached_b1 = dict(root["items"][1])
+        cached_b1["items"] = [
+            {"id": "item-001", "name": "T - A", "type": "track", "children_count": 0, "items": []},
+            {"id": "item-002", "name": "T2 - A2", "type": "track", "children_count": 0, "items": []},
+        ]
+        saved = dict(_TREE_CACHE)
+        try:
+            _TREE_CACHE["nodes"] = {
+                "root": root,
+                "b0": cached_b0,
+                "b0.c0": {"id": "b0.c0", "type": "folder", "items": []},
+                "b0.c1": {"id": "b0.c1", "type": "folder", "items": []},
+                "b1": cached_b1,
+            }
+            _TREE_CACHE["flat_ids"] = {
+                "b0.c0": ["item-001"],
+                "b0.c1": ["item-002"],
+                "b1": ["item-001", "item-002"],
+            }
+            with patch("tasks.hyperbolic_manager.build_hyperbolic_tree",
+                       return_value=(root, ["item-001", "item-002"])):
+                app = Flask(__name__)
+                app.config["TESTING"] = True
+                app.register_blueprint(hyperbolic_bp)
+                response = app.test_client().get("/api/hyperbolic/tree")
+        finally:
+            _TREE_CACHE.clear()
+            _TREE_CACHE.update(saved)
 
         assert response.status_code == 200
         node = response.get_json()["node"]
