@@ -28,42 +28,6 @@
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
 
-    .hyper-title-row {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        margin-bottom: 0.25rem;
-    }
-
-    .autocomplete-container { position: relative; }
-    .autocomplete-results {
-        position: absolute;
-        top: 100%;
-        left: 0;
-        right: 0;
-        z-index: 20;
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        border-radius: 0.5rem;
-        box-shadow: var(--shadow-card);
-        max-height: 280px;
-        overflow-y: auto;
-    }
-    .autocomplete-item {
-        padding: 0.55rem 0.75rem;
-        cursor: pointer;
-        border-bottom: 1px solid var(--border-color);
-        font-size: 0.9rem;
-    }
-    .autocomplete-item:last-child { border-bottom: none; }
-    .autocomplete-item:hover,
-    .autocomplete-item.selected { background: var(--color-primary-soft, rgba(99, 102, 241, 0.12)); }
-    .autocomplete-item .autocomplete-sub { color: var(--text-muted); font-size: 0.8rem; }
-
-    .hyper-status { margin: 0.75rem 0; font-size: 0.9rem; color: var(--text-muted); }
-    .hyper-error { color: #dc2626; font-size: 0.9rem; margin: 0.75rem 0; }
-    .hyper-success { color: #16a34a; font-size: 0.9rem; margin: 0.75rem 0; }
-
     .tree-root { font-size: 0.92rem; }
     .tree-folder { margin: 0.1rem 0; }
     .tree-folder-head {
@@ -108,13 +72,10 @@
 
 {% block content %}
 <section>
-    <div class="hyper-title-row">
-        <h1 style="margin: 0;">Hyperbolic Explorer</h1>
-    </div>
-    <p class="hyper-summary" style="margin-top: 0.4rem; color: var(--text-muted);">
-        Explore the library through the Poincare ball: radial distance from the
-        origin separates foundational sounds from niche sub-genres.
-    </p>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Hyperbolic Explorer</h1>
+        <p>Explore the library through the Poincare ball: radial distance from the origin separates foundational sounds from niche sub-genres.</p>
+    </header>
 
     <div class="tabs">
         <button type="button" class="tab-btn active" data-tab="similar">Hyperbolic Similarity</button>
@@ -149,10 +110,7 @@
                             <option value="roots">Roots / Inward</option>
                             <option value="niche">Niche / Outward</option>
                         </select>
-                        <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.4rem 0 0;">
-                            Roots pulls tracks closer to the origin (foundational);
-                            Niche pushes toward the ball edge (obscure sub-genres).
-                        </p>
+                        <p>Roots pulls tracks closer to the origin (foundational); Niche pushes toward the ball edge (obscure sub-genres).</p>
                     </div>
                     <div>
                         <label for="hyper-limit">Number of results:</label>
@@ -166,43 +124,33 @@
             </button>
         </form>
 
-        <div id="hyper-status" class="hyper-status"></div>
-        <div id="hyper-error" class="hyper-error"></div>
+        <div id="status" role="status" aria-live="polite"></div>
 
         <section id="hyper-results-section" class="hidden">
-            <h2 style="display:flex; align-items:center; gap:0.6rem; margin-bottom:1rem;">
-                <span style="width:0.35rem; height:1.4rem; border-radius:1rem; background: var(--color-primary);"></span>
-                Results
-            </h2>
+            <h2>Results</h2>
             <div id="results-table-wrapper"></div>
+        </section>
 
-            <div id="hyper-playlist-creator" class="hidden">
-                <h3>Create a Playlist from Results</h3>
-                <form id="hyper-playlist-form">
-                    <div class="param-group">
-                        <div>
-                            <label for="hyper-playlist-name">Playlist Name:</label>
-                            <input type="text" id="hyper-playlist-name" name="playlist_name" required placeholder="e.g., My Hyperbolic Mix">
-                        </div>
+        <section id="hyper-playlist-creator" class="hidden">
+            <h3>Create a Playlist from Results</h3>
+            <form id="hyper-playlist-form">
+                <div class="param-group">
+                    <div>
+                        <label for="hyper-playlist-name">Playlist Name:</label>
+                        <input type="text" id="hyper-playlist-name" name="playlist_name" required placeholder="e.g., My Hyperbolic Mix">
                     </div>
-                    <button type="submit" class="btn btn-success btn-block">
-                        Create Playlist on Media Server
-                    </button>
-                </form>
-                <div id="hyper-playlist-status"></div>
-            </div>
+                </div>
+                <button type="submit" class="btn btn-success btn-block">
+                    Create Playlist on Media Server
+                </button>
+            </form>
+            <div id="playlist-status" role="status" aria-live="polite"></div>
         </section>
     </div>
 
     <!-- Tab 2: Hierarchy Directory -->
     <div class="tab-pane" id="tab-tree">
-        <p style="color: var(--text-muted); font-size: 0.9rem;">
-            Browse the library as a virtual directory tree. The root splits by
-            mood (Happy, Sad, Danceable, ...), then by main, second and third
-            genre from each track's mood_vector; leaf folders list the actual
-            tracks. Deep groups that have no further genre fall back to
-            k-means sub-folders.
-        </p>
+        <p>Browse the library as a virtual directory tree. The root splits by mood (Happy, Sad, Danceable, ...), then by main, second and third genre from each track's mood_vector; leaf folders list the actual tracks. Deep groups that have no further genre fall back to k-means sub-folders.</p>
         <div id="hyper-tree" class="tree-root"></div>
     </div>
 </section>
@@ -230,8 +178,7 @@
             const songInput = document.getElementById('hyper-song-input');
             const autocompleteResults = document.getElementById('hyper-autocomplete-results');
             const similarForm = document.getElementById('hyper-similar-form');
-            const statusDiv = document.getElementById('hyper-status');
-            const errorDiv = document.getElementById('hyper-error');
+            const statusDiv = document.getElementById('status');
             let selectedSong = null;
             let searchTimeout = null;
 
@@ -257,11 +204,9 @@
                             tracks.forEach(t => {
                                 const item = document.createElement('div');
                                 item.className = 'autocomplete-item';
-                                item.textContent = (t.title || 'Unknown') + ' - ' + (t.author || 'Unknown');
-                                const sub = document.createElement('div');
-                                sub.className = 'autocomplete-sub';
-                                sub.textContent = t.album || '';
-                                item.appendChild(sub);
+                                item.innerHTML = '<div class="title">' + esc(t.title || 'Unknown') + '</div>' +
+                                    '<div class="artist">' + esc(t.author || 'Unknown') + '</div>' +
+                                    '<div class="album">Album: ' + esc(t.album || 'Unknown') + '</div>';
                                 item.addEventListener('click', () => {
                                     selectedSong = t;
                                     songInput.value = (t.title || '') + ' - ' + (t.author || '');
@@ -297,7 +242,8 @@
             const renderResults = (results) => {
                 currentTrackIds = results.map(r => r.item_id);
                 if (!results.length) {
-                    resultsWrapper.innerHTML = '<p class="hyper-status">No tracks found for this mode.</p>';
+                    statusDiv.textContent = 'No tracks found for this mode.';
+                    statusDiv.className = '';
                     return;
                 }
                 resultsWrapper.innerHTML = renderSongList(results, { metric: hyperbolicBadge });
@@ -305,15 +251,17 @@
 
             similarForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
-                errorDiv.textContent = '';
                 statusDiv.textContent = '';
+                statusDiv.className = '';
                 if (!selectedSong) {
-                    errorDiv.textContent = 'Select a song from the autocomplete suggestions first.';
+                    statusDiv.textContent = 'Select a song from the autocomplete suggestions first.';
+                    statusDiv.className = 'status-error';
                     return;
                 }
                 const mode = document.getElementById('hyper-mode').value;
                 const limit = parseInt(document.getElementById('hyper-limit').value, 10) || 20;
                 statusDiv.textContent = 'Searching hyperbolic neighbors...';
+                statusDiv.className = '';
                 try {
                     const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_similar_api") }}', {
                         method: 'POST',
@@ -322,31 +270,36 @@
                     });
                     const data = await response.json();
                     if (!response.ok) {
-                        errorDiv.textContent = data.error || 'Search failed.';
+                        statusDiv.textContent = data.error || 'Search failed.';
+                        statusDiv.className = 'status-error';
                         similarSection.classList.add('hidden');
                         return;
                     }
                     statusDiv.textContent = `${data.count} track(s) found (${mode}).`;
+                    statusDiv.className = '';
                     renderResults(data.results || []);
                     document.getElementById('hyper-playlist-creator').classList.remove('hidden');
                     similarSection.classList.remove('hidden');
                 } catch (err) {
-                    errorDiv.textContent = 'An unexpected error occurred.';
+                    statusDiv.textContent = 'An unexpected error occurred.';
+                    statusDiv.className = 'status-error';
                     console.error('Hyperbolic search error:', err);
                 }
             });
 
             // ----- Tab 1: create playlist -----
             const playlistForm = document.getElementById('hyper-playlist-form');
-            const playlistStatus = document.getElementById('hyper-playlist-status');
+            const playlistStatus = document.getElementById('playlist-status');
             playlistForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
                 playlistStatus.textContent = '';
+                playlistStatus.className = '';
                 const name = document.getElementById('hyper-playlist-name').value.trim();
                 if (!name) return;
                 const trackIds = currentTrackIds;
                 if (!trackIds.length) {
                     playlistStatus.textContent = 'No tracks to add.';
+                    playlistStatus.className = 'status-error';
                     return;
                 }
                 try {
@@ -356,10 +309,10 @@
                         body: JSON.stringify({ playlist_name: name, track_ids: trackIds })
                     });
                     const data = await response.json();
-                    playlistStatus.className = response.ok ? 'hyper-success' : 'hyper-error';
+                    playlistStatus.className = response.ok ? 'status-success' : 'status-error';
                     playlistStatus.textContent = data.message || data.error || 'Playlist request finished.';
                 } catch (err) {
-                    playlistStatus.className = 'hyper-error';
+                    playlistStatus.className = 'status-error';
                     playlistStatus.textContent = 'Could not reach the playlist endpoint.';
                     console.error('Playlist creation error:', err);
                 }
@@ -400,10 +353,10 @@
                         });
                         const data = await response.json();
                         status.textContent = data.message || data.error || 'Playlist request finished.';
-                        status.className = 'tree-leaf-status ' + (response.ok ? 'hyper-success' : 'hyper-error');
+                        status.className = 'tree-leaf-status ' + (response.ok ? 'status-success' : 'status-error');
                     } catch (err) {
                         status.textContent = 'Could not reach the playlist endpoint.';
-                        status.className = 'tree-leaf-status hyper-error';
+                        status.className = 'tree-leaf-status status-error';
                         console.error('Tree playlist creation error:', err);
                     }
                 });

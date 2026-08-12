@@ -72,14 +72,17 @@ GENRE_LABELS = [
 NON_GENRE_TAGS = {
     'female vocalists', 'male vocalists', 'female vocalist', 'guitar', 'oldies',
     'beautiful', 'sexy', 'catchy', 'mellow', 'chill', 'instrumental', 'party',
-    'happy', 'sad', '90s', '80s', '70s', '60s', '00s', 'easy listening',
-    'live', 'seen live', 'favorites', 'love', 'chillout', 'lo-fi', 'lofi',
-    'american', 'billboard hot 100', 'love at first listen', 'peak', 'motomano',
-    'hot hits', 'top 40', 'hit', 'hits', 'mainstream', 'underground',
+    'happy', 'sad', '90s', '80s', '70s', '60s', '00s', '50s', '40s', '30s',
+    'easy listening', 'live', 'seen live', 'favorites', 'love', 'chillout',
+    'lo-fi', 'lofi', 'american', 'billboard hot 100', 'love at first listen',
+    'peak', 'motomano', 'hot hits', 'top 40', 'hit', 'hits', 'mainstream',
     'beautiful voice', 'nice voice', 'great voice', 'danceable', 'sing along',
-    'epic', 'marco', 'amazing', 'awesome', 'greatest hits',
-    'london', 'spanish', 'religious', 'british', 'american classic',
-    'thank u', 'feat', 'featuring', 'remix',
+    'epic', 'marco', 'amazing', 'awesome', 'greatest hits', 'london',
+    'spanish', 'religious', 'british', 'american classic', 'thank u', 'feat',
+    'featuring', 'remix', 'trumpet', 'saxophone', 'piano', 'canadian',
+    'canada', 'usa', 'england', 'atlanta', 'new york', 'chicago', 'detroit',
+    'memphis', 'los angeles', 'young money', 'swag', 'crew', 'label',
+    'under 2000 listeners', 'my top songs', 'legend',
 }
 
 _WEB_CACHE = {}
@@ -233,6 +236,50 @@ def aggregate_web_tags(sample):
     return {name: w for name, w in agg.items() if counts[name] >= 2}
 
 
+def lastfm_genre_subgenres(genre, main_keys, limit_artists=20, min_artists=2, top_n=20):
+    """Real Last.fm subgenres for a genre, discovered through its top artists.
+
+    tag.getTopTags returns the same global tag cloud for every tag, so it cannot
+    describe a genre's subgenres. The hierarchy is instead derived from artists:
+    the top artists of a genre each carry their own tags, and the most common
+    genre-like tags among them are the real subgenres. Any name that equals
+    another main genre is dropped, so no main genre ever appears as a subgenre
+    of another genre.
+    """
+    if not LASTFM_API_KEY:
+        return []
+    agg = {}
+    try:
+        url = 'https://ws.audioscrobbler.com/2.0/?' + urllib.parse.urlencode({
+            'method': 'tag.getTopArtists', 'api_key': LASTFM_API_KEY,
+            'tag': genre, 'limit': limit_artists, 'format': 'json'})
+        data = _http_json(url)
+        artists = data.get('topartists', {}).get('artist', []) or []
+    except Exception:
+        return []
+    for a in artists:
+        aname = a.get('name', '')
+        if not aname:
+            continue
+        try:
+            url = 'https://ws.audioscrobbler.com/2.0/?' + urllib.parse.urlencode({
+                'method': 'artist.getTopTags', 'api_key': LASTFM_API_KEY,
+                'artist': aname, 'autocorrect': 1, 'format': 'json'})
+            t = _http_json(url)
+        except Exception:
+            continue
+        for tg in t.get('toptags', {}).get('tag', []) or []:
+            n = norm_tag(tg.get('name', ''))
+            if not n or not is_genre_like(n):
+                continue
+            if name_key(n) in main_keys:
+                continue
+            agg[n] = agg.get(n, 0) + 1
+        time.sleep(0.2)
+    ranked = sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [n for n, c in ranked[:top_n] if c >= min_artists]
+
+
 def load_library():
     print('Loading library (read-only)...')
     conn = psycopg2.connect(**DB_CONFIG)
@@ -276,6 +323,7 @@ def main():
     print('top-mood genre assignment:')
     for g in sorted(by_genre, key=lambda g: -len(by_genre[g])):
         print(f'  {g:20s} {len(by_genre[g])}')
+    main_keys = {name_key(g) for g in by_genre}
 
     from sklearn.cluster import MiniBatchKMeans
 
@@ -322,9 +370,16 @@ def main():
         order = sorted(range(k), key=lambda c: -sizes[c])
         used = set()
         genre_key = name_key(genre)
+        vocab = lastfm_genre_subgenres(genre, main_keys)
+        vocab_by_key = {}
+        for v in vocab:
+            vk = name_key(v)
+            if vk != genre_key and vk not in vocab_by_key:
+                vocab_by_key[vk] = v
         names = {}
-        for c in order:
-            if sizes[c] < 5:
+        scored = []
+        for c in range(k):
+            if sizes[c] < MIN_CLUSTER_SONGS:
                 names[c] = None
                 continue
             cands = {}
@@ -333,25 +388,40 @@ def main():
                 if sample:
                     web_budget -= len(sample)
                     for name, w in aggregate_web_tags(sample).items():
-                        if name_key(name) not in used and name_key(name) != genre_key:
-                            cands[name] = cands.get(name, 0.0) + w
+                        ck = name_key(name)
+                        if ck in vocab_by_key and ck not in used:
+                            cands[ck] = cands.get(ck, 0.0) + w * 2.0
             for name, val in mean_tags[c].items():
-                if (is_genre_like(name) and name_key(name) not in used
-                        and name_key(name) != genre_key):
-                    cands[name] = cands.get(name, 0.0) + val * 1.0
-            if not cands:
+                ck = name_key(name)
+                if ck in vocab_by_key and ck not in used:
+                    cands[ck] = cands.get(ck, 0.0) + val
+            scored.append((c, cands))
+        for c, cands in sorted(scored, key=lambda x: -max(x[1].values()) if x[1] else -1):
+            if names.get(c) is not None:
+                continue
+            avail = {k: v for k, v in cands.items() if k not in used}
+            if not avail:
+                continue
+            best_k = max(avail.items(), key=lambda kv: kv[1])[0]
+            names[c] = vocab_by_key[best_k]
+            used.add(best_k)
+        for c in order:
+            if names.get(c) is not None:
+                continue
+            nxt = next((v for k, v in vocab_by_key.items() if k not in used), None)
+            if nxt is None:
                 top = next(
                     (t for t in top_msd[c]
-                     if name_key(t) not in used and name_key(t) != genre_key),
+                     if name_key(t) not in main_keys and name_key(t) not in used
+                     and is_genre_like(t)),
                     None,
                 )
                 names[c] = top or 'Mixed'
                 if top:
                     used.add(name_key(top))
-                continue
-            best = max(cands.items(), key=lambda kv: kv[1])[0]
-            names[c] = best
-            used.add(name_key(best))
+            else:
+                names[c] = nxt
+                used.add(name_key(nxt))
 
         sub_list = []
         for c in range(k):
