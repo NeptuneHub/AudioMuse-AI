@@ -28,8 +28,13 @@
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
 
-    .tree-root { font-size: 0.92rem; }
-    .tree-folder { margin: 0.1rem 0; }
+    .tree-root {
+        font-size: 0.92rem;
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .tree-folder { margin: 0.1rem 0; min-width: 0; }
     .tree-folder-head {
         display: flex;
         align-items: center;
@@ -38,17 +43,24 @@
         border-radius: 0.4rem;
         cursor: pointer;
         user-select: none;
+        min-width: 0;
+    }
+    .tree-folder-head .tree-label {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .tree-folder-head:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
     .tree-folder-head .tree-arrow {
         display: inline-block;
         width: 0.8rem;
+        flex: 0 0 auto;
         color: var(--text-muted);
         transition: transform 0.15s;
     }
     .tree-folder.open > .tree-folder-head .tree-arrow { transform: rotate(90deg); }
-    .tree-folder-head .tree-icon { color: var(--color-primary); }
-    .tree-children { margin-left: 1.15rem; padding-left: 0.5rem; border-left: 1px solid var(--border-color); display: none; }
+    .tree-folder-head .tree-icon { color: var(--color-primary); flex: 0 0 auto; }
+    .tree-children { margin-left: 1.15rem; padding-left: 0.5rem; border-left: 1px solid var(--border-color); display: none; min-width: 0; }
     .tree-folder.open > .tree-children { display: block; }
     .tree-track {
         display: flex;
@@ -56,12 +68,18 @@
         gap: 0.45rem;
         padding: 0.25rem 0.45rem;
         border-radius: 0.4rem;
+        min-width: 0;
+    }
+    .tree-track .tree-track-label {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .tree-track:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
-    .tree-track .tree-icon { color: var(--text-muted); }
-    .tree-track .tree-meta { color: var(--text-muted); font-size: 0.8rem; margin-left: auto; }
-    .tree-summary { color: var(--text-muted); font-size: 0.75rem; }
-    .tree-leaf-playlist { margin: 0.3rem 0 0.6rem; padding: 0.5rem 0.6rem; border: 1px solid var(--border-color); border-radius: 0.5rem; background: var(--bg-card); }
+    .tree-track .tree-icon { color: var(--text-muted); flex: 0 0 auto; }
+    .tree-track .tree-meta { color: var(--text-muted); font-size: 0.8rem; margin-left: auto; flex: 0 0 auto; }
+    .tree-summary { color: var(--text-muted); font-size: 0.75rem; flex: 0 0 auto; }
+    .tree-leaf-playlist { margin: 0.3rem 0 0.6rem; padding: 0.5rem 0.6rem; border: 1px solid var(--border-color); border-radius: 0.5rem; background: var(--bg-card); min-width: 0; }
     .tree-leaf-playlist form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
     .tree-leaf-playlist .tree-leaf-name { flex: 1 1 12rem; min-width: 0; }
     .tree-leaf-playlist .tree-leaf-status { flex-basis: 100%; font-size: 0.85rem; }
@@ -653,7 +671,7 @@
                 head.innerHTML = `
                     <span class="tree-arrow">&#9656;</span>
                     <span class="tree-icon">${icons.folder}</span>
-                    <span>${prefix}${esc(node.name || node.id)}</span>
+                    <span class="tree-label">${prefix}${esc(node.name || node.id)}</span>
                     <span class="tree-summary">(${node.children_count})</span>`;
                 holder.appendChild(head);
 
@@ -704,7 +722,7 @@
                 if (item.type === 'track') {
                     const div = document.createElement('div');
                     div.className = 'tree-track';
-                    div.innerHTML = `<span class="tree-icon">${icons.track}</span><span>${esc(item.name || item.id)}</span>`;
+                    div.innerHTML = `<span class="tree-icon">${icons.track}</span><span class="tree-track-label">${esc(item.name || item.id)}</span>`;
                     return div;
                 }
                 const folder = buildTreeNode(item);
