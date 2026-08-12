@@ -32,7 +32,7 @@ def project_to_poincare(vectors, scale):
     scale = float(scale) if scale else 1.0
     vecs = np.asarray(vectors, dtype=np.float64)
     norms = np.linalg.norm(vecs, axis=-1, keepdims=True)
-    safe = np.where(norms == 0.0, 1.0, norms)
+    safe = np.where(norms <= 1e-12, 1.0, norms)
     unit = vecs / safe
     # tanh mathematically stays in (-1, 1), but the separate unit-vector
     # division can reintroduce enough float error that the product's norm

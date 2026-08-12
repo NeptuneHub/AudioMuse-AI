@@ -12,6 +12,10 @@ Verifies that GET /hyperbolic renders through the Flask blueprint with the
 expected template context and answers 200, without touching the database or
 the real template (render_template is patched), following the repo's
 unit-test conventions.
+
+Main Features:
+* GET /hyperbolic answers 200 and renders through the blueprint
+* The template context carries the page title, active tab and app version
 """
 
 from unittest.mock import patch

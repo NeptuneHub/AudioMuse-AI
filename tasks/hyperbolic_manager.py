@@ -608,7 +608,7 @@ def init_hyperbolic_cache():
         logger.exception("init_hyperbolic_cache failed")
 
 
-def build_hyperbolic_tree(node_id=None, depth=None):
+def build_hyperbolic_tree(node_id=None):
     nodes = _TREE_CACHE["nodes"]
     if not nodes:
         return _empty_node(node_id, "Hyperbolic Explorer"), []
@@ -619,13 +619,7 @@ def build_hyperbolic_tree(node_id=None, depth=None):
     return node, _TREE_CACHE["flat_ids"].get(key, [])
 
 
-def _build_tree_nodes(rows, score_by_id, mood_centroids, genre_subgenres):
-    item_ids = list(rows.keys())
-    vec_map = {iid: rows[iid][0] for iid in item_ids}
-    radii_map = {iid: rows[iid][1] for iid in item_ids}
-
-    nodes = {}
-    flat_ids = {}
+def _build_genre_root_items(item_ids, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):
     root_items = []
     if _genre_subgenres_usable(vec_map, genre_subgenres):
         genre_ordered = _partition_by_genre_centroids(
@@ -640,15 +634,36 @@ def _build_tree_nodes(rows, score_by_id, mood_centroids, genre_subgenres):
                     score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level=0,
                 )
                 root_items.append(genre_node)
+    return root_items
+
+
+def _build_mood_root_items(item_ids, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):
+    root_items = []
+    for mood_label, members in _partition_by_mood(item_ids, vec_map, mood_centroids, score_by_id):
+        if not members:
+            continue
+        mood_node = _materialize_mood(
+            mood_label, members, vec_map, radii_map, score_by_id,
+            mood_centroids, genre_subgenres, nodes, flat_ids,
+        )
+        root_items.append(mood_node)
+    return root_items
+
+
+def _build_tree_nodes(rows, score_by_id, mood_centroids, genre_subgenres):
+    item_ids = list(rows.keys())
+    vec_map = {iid: rows[iid][0] for iid in item_ids}
+    radii_map = {iid: rows[iid][1] for iid in item_ids}
+
+    nodes = {}
+    flat_ids = {}
+    root_items = _build_genre_root_items(
+        item_ids, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids
+    )
     if not root_items:
-        for mood_label, members in _partition_by_mood(item_ids, vec_map, mood_centroids, score_by_id):
-            if not members:
-                continue
-            mood_node = _materialize_mood(
-                mood_label, members, vec_map, radii_map, score_by_id,
-                mood_centroids, genre_subgenres, nodes, flat_ids,
-            )
-            root_items.append(mood_node)
+        root_items = _build_mood_root_items(
+            item_ids, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids
+        )
 
     nodes["root"] = {
         "id": "root",
@@ -903,13 +918,11 @@ def _genre_path_prefix(node_id):
     return "_".join(parts)
 
 
-def _cluster_descriptor(members, score_by_id):
-    n = max(1, len(members))
+def _aggregate_cluster_features(members, score_by_id, voice_vocab):
     mood = {}
     mood_presence = {}
     voice = {}
     voice_presence = {}
-    voice_vocab = {v.lower() for v in config.VOICE_VOCAB}
     for iid in members:
         info = score_by_id.get(iid)
         if not info:
@@ -924,6 +937,15 @@ def _cluster_descriptor(members, score_by_id):
             if low in voice_vocab:
                 voice[label] = voice.get(label, 0.0) + val
                 voice_presence[label] = voice_presence.get(label, 0) + 1
+    return mood, mood_presence, voice, voice_presence
+
+
+def _cluster_descriptor(members, score_by_id):
+    n = max(1, len(members))
+    voice_vocab = {v.lower() for v in config.VOICE_VOCAB}
+    mood, mood_presence, voice, voice_presence = _aggregate_cluster_features(
+        members, score_by_id, voice_vocab
+    )
     if mood_presence:
         top_mood = max(mood, key=mood.get)
         top_presence = mood_presence[top_mood]

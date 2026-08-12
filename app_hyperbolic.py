@@ -340,20 +340,14 @@ def _translate_tree_ids(node, mapping):
         items = n.get("items") or []
         if not items:
             return {**n}
-        if items[0].get("type") == "track":
-            kept = []
-            for child in items:
-                rebuilt = walk(child)
-                if rebuilt is not None:
-                    kept.append(rebuilt)
-            if not kept:
-                return None
-            return {**n, "items": kept, "children_count": len(kept)}
         kept = []
         for child in items:
             rebuilt = walk(child)
             if rebuilt is not None:
                 kept.append(rebuilt)
+        if items[0].get("type") == "track":
+            if not kept:
+                return None
         return {**n, "items": kept, "children_count": len(kept)}
 
     return walk(node)

@@ -42,7 +42,7 @@ import psycopg2
 
 # Connection is taken from the environment so no credentials live in the
 # repo (SonarCloud S2068/S1313). Example:
-#   AUDIOMUSE_DB_HOST=192.168.3.208 AUDIOMUSE_DB_PASSWORD=... python \
+#   AUDIOMUSE_DB_HOST=<db-host> AUDIOMUSE_DB_PASSWORD=<password> python \
 #       query/brainstorm_genre_subgenre_080.py
 DB_CONFIG = {
     'host': os.environ.get('AUDIOMUSE_DB_HOST', '127.0.0.1'),
@@ -56,6 +56,7 @@ DB_CONFIG = {
 OUTPUT_FILE = 'genre_subgenre.json'
 
 LASTFM_API_KEY = os.environ.get('LASTFM_API_KEY', '')
+LASTFM_API_BASE = 'https://ws.audioscrobbler.com/2.0/?'
 WEB_UA = 'AudioMuseResearch/1.0 (genre-subgenre research)'
 MIN_CLUSTER_SONGS = 40
 MIN_PER_GENRE = 80
@@ -169,7 +170,7 @@ def _lastfm_tags(title, artist):
         'artist': artist, 'track': title, 'format': 'json', 'autocorrect': 1,
     })
     try:
-        data = _http_json('https://ws.audioscrobbler.com/2.0/?' + params)
+        data = _http_json(LASTFM_API_BASE + params)
         toptags = data.get('track', {}).get('toptags', {}).get('tag', []) or []
         for tg in toptags[:12]:
             name = norm_tag(tg.get('name', ''))
@@ -246,6 +247,24 @@ def aggregate_web_tags(sample):
     return {name: w for name, w in agg.items() if counts[name] >= 2}
 
 
+def _lastfm_artist_subgenre_tags(aname, main_keys, genre_key, agg):
+    try:
+        url = LASTFM_API_BASE + urllib.parse.urlencode({
+            'method': 'artist.getTopTags', 'api_key': LASTFM_API_KEY,
+            'artist': aname, 'autocorrect': 1, 'format': 'json'})
+        t = _http_json(url)
+    except Exception:
+        return agg
+    for tg in t.get('toptags', {}).get('tag', []) or []:
+        n = norm_tag(tg.get('name', ''))
+        if not n or not is_genre_like(n):
+            continue
+        if name_key(n) in main_keys or name_key(n) == genre_key:
+            continue
+        agg[n] = agg.get(n, 0) + 1
+    return agg
+
+
 def lastfm_genre_subgenres(genre, main_keys, limit_artists=30, min_artists=2, top_n=40):
     """Real Last.fm subgenres for a genre, discovered through its top artists.
 
@@ -258,9 +277,10 @@ def lastfm_genre_subgenres(genre, main_keys, limit_artists=30, min_artists=2, to
     """
     if not LASTFM_API_KEY:
         return []
+    genre_key = name_key(genre)
     agg = {}
     try:
-        url = 'https://ws.audioscrobbler.com/2.0/?' + urllib.parse.urlencode({
+        url = LASTFM_API_BASE + urllib.parse.urlencode({
             'method': 'tag.getTopArtists', 'api_key': LASTFM_API_KEY,
             'tag': genre, 'limit': limit_artists, 'format': 'json'})
         data = _http_json(url)
@@ -271,20 +291,7 @@ def lastfm_genre_subgenres(genre, main_keys, limit_artists=30, min_artists=2, to
         aname = a.get('name', '')
         if not aname:
             continue
-        try:
-            url = 'https://ws.audioscrobbler.com/2.0/?' + urllib.parse.urlencode({
-                'method': 'artist.getTopTags', 'api_key': LASTFM_API_KEY,
-                'artist': aname, 'autocorrect': 1, 'format': 'json'})
-            t = _http_json(url)
-        except Exception:
-            continue
-        for tg in t.get('toptags', {}).get('tag', []) or []:
-            n = norm_tag(tg.get('name', ''))
-            if not n or not is_genre_like(n):
-                continue
-            if name_key(n) in main_keys:
-                continue
-            agg[n] = agg.get(n, 0) + 1
+        agg = _lastfm_artist_subgenre_tags(aname, main_keys, genre_key, agg)
         time.sleep(0.2)
     ranked = sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))
     return [n for n, c in ranked[:top_n] if c >= min_artists]
@@ -317,12 +324,135 @@ def load_library():
     return ids, np.stack(vecs), tags, titles, artists
 
 
+def _cluster_per_genre(genre, members, X, tags, titles, artists):
+    from sklearn.cluster import MiniBatchKMeans
+
+    n = len(members)
+    k = min(MAX_K, max(4, round(n / 400)))
+    k = min(k, max(4, round(n / MIN_CLUSTER_SONGS)))
+    print(f'\n== {genre}: {n} songs, k={k}')
+    sub_x = X[members]
+    km = MiniBatchKMeans(n_clusters=k, batch_size=1024, n_init=4,
+                         max_iter=100, random_state=SEED)
+    labels = km.fit_predict(sub_x)
+
+    cluster_idx = [[] for _ in range(k)]
+    for j, lab in enumerate(labels):
+        cluster_idx[int(lab)].append(j)
+
+    centroids, sizes, mean_tags, top_msd, sample_tracks = [], [], [], [], []
+    for c in range(k):
+        cids = cluster_idx[c]
+        sizes.append(len(cids))
+        cent = sub_x[cids].mean(axis=0)
+        centroids.append(cent)
+        prof = {}
+        for j in cids:
+            for tag, val in tags[members[j]].items():
+                prof[tag] = prof.get(tag, 0.0) + val
+        mn = len(cids)
+        mean_tags.append({t: v / mn for t, v in prof.items()})
+        ranked = sorted(mean_tags[c].items(), key=lambda kv: -kv[1])
+        top_msd.append([t for t, _ in ranked if is_genre_like(t)][:10])
+        dists = np.linalg.norm(sub_x[cids] - cent, axis=1)
+        order = np.argsort(dists)[:WEB_SAMPLE_PER_CLUSTER]
+        sample_tracks.append([
+            (titles[members[cids[j]]], artists[members[cids[j]]])
+            for j in order if titles[members[cids[j]]]
+        ])
+    return centroids, sizes, mean_tags, top_msd, sample_tracks
+
+
+def _name_genre_clusters(genre, sizes, mean_tags, top_msd, sample_tracks, main_keys, web_budget):
+    k = len(sizes)
+    order = sorted(range(k), key=lambda c, sz=sizes: -sz[c])
+    used = set()
+    genre_key = name_key(genre)
+    vocab = lastfm_genre_subgenres(genre, main_keys)
+    vocab_by_key = {}
+    for v in vocab:
+        vk = name_key(v)
+        if vk != genre_key and vk not in vocab_by_key:
+            vocab_by_key[vk] = v
+    names = {}
+    scored = []
+    for c in range(k):
+        if sizes[c] < MIN_CLUSTER_SONGS:
+            names[c] = None
+            continue
+        cands = {}
+        if web_budget > 0:
+            sample = sample_tracks[c][:WEB_SAMPLE_PER_CLUSTER]
+            if sample:
+                web_budget -= len(sample)
+                for name, w in aggregate_web_tags(sample).items():
+                    ck = name_key(name)
+                    if ck in vocab_by_key and ck not in used:
+                        cands[ck] = cands.get(ck, 0.0) + w * 2.0
+        for name, val in mean_tags[c].items():
+            ck = name_key(name)
+            if ck in vocab_by_key and ck not in used:
+                cands[ck] = cands.get(ck, 0.0) + val
+        scored.append((c, cands))
+    for c, cands in sorted(scored, key=lambda x: -max(x[1].values()) if x[1] else -1):
+        if names.get(c) is not None:
+            continue
+        avail = {k: v for k, v in cands.items() if k not in used}
+        if not avail:
+            continue
+        best_k = max(avail.items(), key=lambda kv: kv[1])[0]
+        names[c] = vocab_by_key[best_k]
+        used.add(best_k)
+    for c in order:
+        if names.get(c) is not None:
+            continue
+        nxt = next((v for k, v in vocab_by_key.items() if k not in used), None)
+        if nxt is None:
+            top = next(
+                (t for t in top_msd[c]
+                 if name_key(t) not in main_keys and name_key(t) not in used
+                 and is_genre_like(t)),
+                None,
+            )
+            names[c] = top or 'Mixed'
+            if top:
+                used.add(name_key(top))
+        else:
+            names[c] = nxt
+            used.add(name_key(nxt))
+    return names, web_budget
+
+
+def _build_genre_subgenres(genre, members, X, tags, titles, artists, main_keys, web_budget):
+    centroids, sizes, mean_tags, top_msd, sample_tracks = _cluster_per_genre(
+        genre, members, X, tags, titles, artists
+    )
+    names, web_budget = _name_genre_clusters(
+        genre, sizes, mean_tags, top_msd, sample_tracks, main_keys, web_budget
+    )
+    sub_list = []
+    for c in range(len(sizes)):
+        if sizes[c] < MIN_CLUSTER_SONGS or names.get(c) is None:
+            continue
+        top = sorted(mean_tags[c].items(), key=lambda kv: -kv[1])[:8]
+        sub_list.append({
+            'name': names[c],
+            'n_songs': int(sizes[c]),
+            'centroid': centroids[c].astype(np.float32).tolist(),
+            'top_tags': {t: float(v) for t, v in top},
+        })
+    sub_list.sort(key=lambda s: -s['n_songs'])
+    for s in sub_list:
+        print(f"  {s['n_songs']:6d}  {s['name']:24s} tags={list(s['top_tags'].keys())[:4]}")
+    return sub_list, len(members), web_budget
+
+
 def main():
     global _DEZER_GENRES
     _DEZER_GENRES = _load_deezer_genres()
     print(f'  deezer genres loaded: {len(_DEZER_GENRES)}')
 
-    ids, X, tags, titles, artists = load_library()
+    _, X, tags, titles, artists = load_library()
 
     genre_of = [top_genre(t) for t in tags]
     by_genre = {}
@@ -335,119 +465,16 @@ def main():
         print(f'  {g:20s} {len(by_genre[g])}')
     main_keys = {name_key(g) for g in by_genre}
 
-    from sklearn.cluster import MiniBatchKMeans
-
     results = {}
     web_budget = MAX_WEB_LOOKUPS
     for genre, members in by_genre.items():
         if len(members) < MIN_PER_GENRE:
             print(f'== {genre}: too few ({len(members)}), skipping')
             continue
-        n = len(members)
-        k = min(MAX_K, max(4, round(n / 400)))
-        k = min(k, max(4, round(n / MIN_CLUSTER_SONGS)))
-        print(f'\n== {genre}: {n} songs, k={k}')
-        sub_x = X[members]
-        km = MiniBatchKMeans(n_clusters=k, batch_size=1024, n_init=4,
-                             max_iter=100, random_state=SEED)
-        labels = km.fit_predict(sub_x)
-
-        cluster_idx = [[] for _ in range(k)]
-        for j, lab in enumerate(labels):
-            cluster_idx[int(lab)].append(j)
-
-        centroids, sizes, mean_tags, top_msd, sample_tracks = [], [], [], [], []
-        for c in range(k):
-            cids = cluster_idx[c]
-            sizes.append(len(cids))
-            cent = sub_x[cids].mean(axis=0)
-            centroids.append(cent)
-            prof = {}
-            for j in cids:
-                for tag, val in tags[members[j]].items():
-                    prof[tag] = prof.get(tag, 0.0) + val
-            mn = len(cids)
-            mean_tags.append({t: v / mn for t, v in prof.items()})
-            ranked = sorted(mean_tags[c].items(), key=lambda kv: -kv[1])
-            top_msd.append([t for t, _ in ranked if is_genre_like(t)][:10])
-            dists = np.linalg.norm(sub_x[cids] - cent, axis=1)
-            order = np.argsort(dists)[:WEB_SAMPLE_PER_CLUSTER]
-            sample_tracks.append([
-                (titles[members[cids[j]]], artists[members[cids[j]]])
-                for j in order if titles[members[cids[j]]]
-            ])
-
-        order = sorted(range(k), key=lambda c: -sizes[c])
-        used = set()
-        genre_key = name_key(genre)
-        vocab = lastfm_genre_subgenres(genre, main_keys)
-        vocab_by_key = {}
-        for v in vocab:
-            vk = name_key(v)
-            if vk != genre_key and vk not in vocab_by_key:
-                vocab_by_key[vk] = v
-        names = {}
-        scored = []
-        for c in range(k):
-            if sizes[c] < MIN_CLUSTER_SONGS:
-                names[c] = None
-                continue
-            cands = {}
-            if web_budget > 0:
-                sample = sample_tracks[c][:WEB_SAMPLE_PER_CLUSTER]
-                if sample:
-                    web_budget -= len(sample)
-                    for name, w in aggregate_web_tags(sample).items():
-                        ck = name_key(name)
-                        if ck in vocab_by_key and ck not in used:
-                            cands[ck] = cands.get(ck, 0.0) + w * 2.0
-            for name, val in mean_tags[c].items():
-                ck = name_key(name)
-                if ck in vocab_by_key and ck not in used:
-                    cands[ck] = cands.get(ck, 0.0) + val
-            scored.append((c, cands))
-        for c, cands in sorted(scored, key=lambda x: -max(x[1].values()) if x[1] else -1):
-            if names.get(c) is not None:
-                continue
-            avail = {k: v for k, v in cands.items() if k not in used}
-            if not avail:
-                continue
-            best_k = max(avail.items(), key=lambda kv: kv[1])[0]
-            names[c] = vocab_by_key[best_k]
-            used.add(best_k)
-        for c in order:
-            if names.get(c) is not None:
-                continue
-            nxt = next((v for k, v in vocab_by_key.items() if k not in used), None)
-            if nxt is None:
-                top = next(
-                    (t for t in top_msd[c]
-                     if name_key(t) not in main_keys and name_key(t) not in used
-                     and is_genre_like(t)),
-                    None,
-                )
-                names[c] = top or 'Mixed'
-                if top:
-                    used.add(name_key(top))
-            else:
-                names[c] = nxt
-                used.add(name_key(nxt))
-
-        sub_list = []
-        for c in range(k):
-            if sizes[c] < MIN_CLUSTER_SONGS or names.get(c) is None:
-                continue
-            top = sorted(mean_tags[c].items(), key=lambda kv: -kv[1])[:8]
-            sub_list.append({
-                'name': names[c],
-                'n_songs': int(sizes[c]),
-                'centroid': centroids[c].astype(np.float32).tolist(),
-                'top_tags': {t: float(v) for t, v in top},
-            })
-        sub_list.sort(key=lambda s: -s['n_songs'])
+        sub_list, n, web_budget = _build_genre_subgenres(
+            genre, members, X, tags, titles, artists, main_keys, web_budget
+        )
         results[genre] = {'n_songs': int(n), 'subgenres': sub_list}
-        for s in sub_list:
-            print(f"  {s['n_songs']:6d}  {s['name']:24s} tags={list(s['top_tags'].keys())[:4]}")
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2)

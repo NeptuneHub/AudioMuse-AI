@@ -362,14 +362,14 @@
             const hashAngle = (s) => {
                 let h = 2166136261;
                 for (let i = 0; i < s.length; i++) {
-                    h ^= s.charCodeAt(i);
+                    h ^= s.codePointAt(i);
                     h = Math.imul(h, 16777619);
                 }
                 return ((h >>> 0) % 3600) / 3600 * 2 * Math.PI;
             };
 
             const hexToRgb = (hex) => {
-                const n = parseInt(hex.slice(1), 16);
+                const n = Number.parseInt(hex.slice(1), 16);
                 return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
             };
 
@@ -435,6 +435,12 @@
                 });
             };
 
+            const formatSeedLabel = (song) => {
+                if (!song) return 'Seed song';
+                const base = ((song.title || '') + (song.author ? ' \u2014 ' + song.author : '')).trim();
+                return base || 'Seed song';
+            };
+
             const renderBallDetail = (meta, seedR) => {
                 if (ballState.seedRadius === null) {
                     ballDetail.innerHTML = '<strong>' + esc(meta.label) + '</strong> - the highlighted region is ' +
@@ -450,21 +456,21 @@
 
             const renderBall = () => {
                 const meta = MODE_META[ballState.mode] || MODE_META.similar;
-                const seedR = (typeof ballState.seedRadius === 'number' && isFinite(ballState.seedRadius))
+                const seedR = (typeof ballState.seedRadius === 'number' && Number.isFinite(ballState.seedRadius))
                     ? Math.min(Math.max(ballState.seedRadius, 0.05), 0.95)
                     : 0.45;
                 const parts = [];
                 parts.push(`<circle class="ball-shell" cx="${BALL_CX}" cy="${BALL_CY}" r="${BALL_R}"/>`);
                 parts.push(ballRegion(seedR, meta.color));
                 const dists = ballState.results
-                    .map((r) => (typeof r.distance === 'number' && isFinite(r.distance)) ? r.distance : null)
+                    .map((r) => (typeof r.distance === 'number' && Number.isFinite(r.distance)) ? r.distance : null)
                     .filter((v) => v !== null);
                 const maxD = dists.length ? Math.max.apply(null, dists) : 1;
                 const near = hexToRgb(meta.color);
                 const far = hexToRgb('#9ca3af');
                 ballState.results.forEach((r, idx) => {
                     const rad = Number(r.hyperbolic_radius);
-                    if (!isFinite(rad) || rad <= 0 || rad >= 1) return;
+                    if (!Number.isFinite(rad) || rad <= 0 || rad >= 1) return;
                     const angle = hashAngle(String(r.item_id || ('r' + idx)));
                     const [x, y] = ballPoint(Math.min(rad, 0.97), angle);
                     const t = (typeof r.distance === 'number' && maxD > 0) ? Math.min(1, r.distance / maxD) : 1;
@@ -510,7 +516,7 @@
                     return;
                 }
                 const mode = document.getElementById('hyper-mode').value;
-                const limit = parseInt(document.getElementById('hyper-limit').value, 10) || 20;
+                const limit = Number.parseInt(document.getElementById('hyper-limit').value, 10) || 20;
                 statusDiv.textContent = 'Searching hyperbolic neighbors...';
                 statusDiv.className = '';
                 try {
@@ -529,11 +535,9 @@
                     statusDiv.textContent = `${data.count} track(s) found (${mode}).`;
                     statusDiv.className = '';
                     ballState.mode = mode;
-                    ballState.seedRadius = (typeof data.seed_radius === 'number' && isFinite(data.seed_radius))
+                    ballState.seedRadius = (typeof data.seed_radius === 'number' && Number.isFinite(data.seed_radius))
                         ? data.seed_radius : ballState.seedRadius;
-                    ballState.seedLabel = selectedSong
-                        ? ((selectedSong.title || '') + (selectedSong.author ? ' \u2014 ' + selectedSong.author : '')) || 'Seed song'
-                        : 'Seed song';
+                    ballState.seedLabel = formatSeedLabel(selectedSong);
                     ballState.results = data.results || [];
                     renderBall();
                     renderResults(data.results || [], selectedSong.item_id);
