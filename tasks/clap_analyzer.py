@@ -127,15 +127,7 @@ def _load_audio_model():
 
     from tasks.analysis.song import resolve_providers
 
-    provider_options = resolve_providers(
-        allow_coreml=True,
-        cuda_options={
-            'device_id': 0,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        },
-        label='clap',
-    )
+    provider_options = resolve_providers(allow_coreml=True, label='clap')
 
     def _create_session(model_input, providers, provider_opts):
         return ort.InferenceSession(
@@ -220,14 +212,7 @@ def _load_text_model():
     else:
         from tasks.analysis.song import resolve_providers
 
-        provider_options = resolve_providers(
-            cuda_options={
-                'device_id': 0,
-                'arena_extend_strategy': 'kSameAsRequested',
-                'cudnn_conv_algo_search': 'DEFAULT',
-            },
-            label='clap_text',
-        )
+        provider_options = resolve_providers(label='clap_text')
 
     try:
         session = ort.InferenceSession(
