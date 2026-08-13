@@ -55,7 +55,7 @@ More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/AR
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **ghcr.io/neptunehub/audiomuse-ai:devel-nvidia-arm** is the new **experimental** image that support GPU on ARM, created for **DGX Spark**.
+> * **Version 3.3.0** introduce the `-nvidia-arm` image in order to support the DGX Spark and other machine based on the GB10 GPU. This new image is **experimental**
 > * **Version 3.2.0** implemented queue on postgresql, this means that Redis is not needed anymore. Just check the new deployment/docker-compose example.
 > * **Version 3.0.0** added multiple music server support on a single deployment, with duplicate detection so a song shared by more servers is analyzed only once.
 > * **Version 2.6.0** added support for third party plugin. Give a look to the [plugin documentation](docs/PLUGIN.md) to know how to develop one and to the [official 3rd party catalog](https://github.com/NeptuneHub/AudioMuse-AI-plugins). The plugin system requires a persistent volume mounted on both the Flask and worker containers, otherwise installed plugins are lost whenever the containers restart; the deployment example has been updated accordingly.
@@ -212,8 +212,8 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
   Images that support the use of GPU for both Analysis and Clustering.
   **Not recommended** for old GPU.
   
-* **`-devel-nvidia-arm`** variants
-  Images that support the use of GPU on ARM processor for both Analysis and Clustering **EXPERIMENTAL FOR DGX SPARK**.
+* **`-nvidia-arm`** variants
+  Images that support the use of GPU of DGX SPARK on ARM processor for both Analysis and Clustering **EXPERIMENTAL**.
 
 > Versioning is Major.Minor.Patch release. Eventually (rare) model change that could require a new analysis could happen in Major and Minor release.
 > Read the [release note](https://github.com/NeptuneHub/AudioMuse-AI/releases) before any update especially for Major and Minor release.

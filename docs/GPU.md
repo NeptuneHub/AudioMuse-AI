@@ -1,6 +1,8 @@
 # GPU deployment
 
-NVidia GPU **EXPERIMENTAL** support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
+Nvidia GPU support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
+
+**ARM (DGX Spark / GB10) support:** the `-nvidia-arm` image adds support for NVIDIA GPUs on ARM64 hosts, such as the DGX Spark and other GB10-based machines, for both analysis and clustering. This image is **EXPERIMENTAL**. Use it the same way as the regular `-nvidia` image, just pick the `-nvidia-arm` tag.
 
 We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING OutOFMemory error (that are handled by switching to CPU). The `PER_SONG_MODEL_RELOAD` env variable, that by default is TRUE, help cleaning the memory by entirely reloading the model each time, on the other side it slow the analysis process.
 
