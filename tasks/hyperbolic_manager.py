@@ -504,6 +504,8 @@ _TREE_CACHE_LOCK = threading.RLock()
 
 _TREE_STATE = {"full_loaded": False, "full_load_running": False}
 
+_FULL_LOAD_LOCK = threading.Lock()
+
 # Bump whenever the persisted tree schema changes (node id scheme, node kinds,
 # level structure). load_hyperbolic_tree_cache discards blobs whose version
 # does not match so an upgraded Flask never serves a stale pre-upgrade tree.
@@ -860,7 +862,7 @@ def _start_background_full_load():
         try:
             from flask_app import app
             with app.app_context():
-                load_hyperbolic_tree_cache()
+                _ensure_full_tree_loaded()
         except Exception:
             logger.exception("Background full hyperbolic tree load failed")
         finally:
@@ -869,8 +871,12 @@ def _start_background_full_load():
     threading.Thread(target=_load, daemon=True).start()
 
 
-def _load_full_tree_sync():
-    load_hyperbolic_tree_cache()
+def _ensure_full_tree_loaded():
+    if _TREE_STATE["full_loaded"]:
+        return
+    with _FULL_LOAD_LOCK:
+        if not _TREE_STATE["full_loaded"]:
+            load_hyperbolic_tree_cache()
 
 
 def warmup_hyperbolic_tree_cache():
@@ -927,7 +933,7 @@ def build_hyperbolic_tree(node_id=None, server_id=None):
         node = nodes.get(key)
         full_loaded = _TREE_STATE["full_loaded"]
     if node is None and not full_loaded:
-        _load_full_tree_sync()
+        _ensure_full_tree_loaded()
         with _TREE_CACHE_LOCK:
             tree = tree_for_server(server_id)
             nodes = tree.get("nodes") or {}

@@ -526,6 +526,7 @@ class Worker:
         try:
             _bind_to_parent_death(parent_pid)
             os.close(read_fd)
+            _close_inherited_sockets(self)
             # The parent already hydrated the worker config before forking;
             # hydrating again here would throw that refresh away with the child.
             payload = _encode_outcome(self._attempt(job, kwargs, hydrate=False))
@@ -793,6 +794,26 @@ def _is_connectivity_error(exc):
 def _error_summary(exc):
     text = str(exc).strip() or exc.__class__.__name__
     return text[:500]
+
+
+def _close_inherited_sockets(worker):
+    conns = [worker._conn]
+    listener = getattr(worker, "_listener", None)
+    if listener is not None:
+        conns.append(getattr(listener, "_conn", None))
+    for conn in conns:
+        if conn is None:
+            continue
+        try:
+            fd = conn.fileno()
+        except Exception:
+            continue
+        if not isinstance(fd, int) or fd < 0:
+            continue
+        try:
+            os.close(fd)
+        except Exception:
+            pass
 
 
 def _encode_outcome(outcome):
