@@ -37,6 +37,8 @@ from flask import Blueprint, jsonify, render_template, request
 
 logger = logging.getLogger(__name__)
 
+_INTERNAL_ERROR_MSG = "An internal error occurred."
+
 hyperbolic_bp = Blueprint("hyperbolic_bp", __name__, template_folder="../templates")
 
 
@@ -215,7 +217,7 @@ def hyperbolic_similar_api():
         return jsonify({"error": str(exc)}), 400
     except Exception:
         logger.exception("Hyperbolic similar search failed")
-        return jsonify({"error": "An internal error occurred."}), 500
+        return jsonify({"error": _INTERNAL_ERROR_MSG}), 500
 
 
 def _attach_title_author(results):
@@ -297,18 +299,17 @@ def hyperbolic_tree_api():
         # a server already sees only that server's genres/subgenres/clusters.
         server_id = app_server_context.resolve_request_server_id()
         node, _flat = build_hyperbolic_tree(node_id, server_id=server_id)
-        # Rewrite canonical ids to the selected server's provider ids for the
-        # returned node (the tree structure itself is already per-server).
-        tree = tree_for_server(server_id)
-        tree_nodes = tree.get("nodes") or {}
-        tree_flat_ids = tree.get("flat_ids") or {}
-        subtree_ids = _tree_subtree_ids(node["id"], tree_nodes, tree_flat_ids)
-        mapping = app_server_context.translate_ids_for_request(subtree_ids)
-        node = _translate_tree_ids(
-            node, mapping,
-            tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,
-            present_ids=set(mapping),
-        )
+        if node.get("leaf"):
+            tree = tree_for_server(server_id)
+            tree_nodes = tree.get("nodes") or {}
+            tree_flat_ids = tree.get("flat_ids") or {}
+            subtree_ids = _tree_subtree_ids(node["id"], tree_nodes, tree_flat_ids)
+            mapping = app_server_context.translate_ids_for_request(subtree_ids)
+            node = _translate_tree_ids(
+                node, mapping,
+                tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,
+                present_ids=set(mapping),
+            )
         if node is None:
             node = {
                 "id": node_id or "root",
@@ -323,7 +324,7 @@ def hyperbolic_tree_api():
         return jsonify({"error": str(exc)}), 400
     except Exception:
         logger.exception("Hyperbolic tree browse failed")
-        return jsonify({"error": "An internal error occurred."}), 500
+        return jsonify({"error": _INTERNAL_ERROR_MSG}), 500
 
 
 @hyperbolic_bp.route("/api/hyperbolic/warmup", methods=["POST"])
@@ -352,7 +353,7 @@ def hyperbolic_warmup_api():
         return jsonify(warmup_hyperbolic_tree_cache())
     except Exception:
         logger.exception("Hyperbolic tree cache warmup failed")
-        return jsonify({"error": "An internal error occurred.", "loaded": False}), 500
+        return jsonify({"error": _INTERNAL_ERROR_MSG, "loaded": False}), 500
 
 
 @hyperbolic_bp.route("/api/hyperbolic/warmup/status", methods=["GET"])
@@ -462,6 +463,37 @@ def _subtree_has_present_track(n, present_ids, tree_nodes, tree_flat_ids):
     return False
 
 
+def _translate_track_node(n, mapping):
+    translated = mapping.get(n["id"])
+    if translated is None:
+        return None
+    return {**n, "id": translated}
+
+
+def _translate_folder_node(n, mapping, tree_nodes, tree_flat_ids, present_ids):
+    items = n.get("items") or []
+    if not items:
+        if present_ids is not None and not _subtree_has_present_track(
+            n, present_ids, tree_nodes, tree_flat_ids
+        ):
+            return None
+        return {**n}
+    kept = []
+    for child in items:
+        rebuilt = _translate_node(child, mapping, tree_nodes, tree_flat_ids, present_ids)
+        if rebuilt is not None:
+            kept.append(rebuilt)
+    if not kept:
+        return None
+    return {**n, "items": kept, "children_count": len(kept)}
+
+
+def _translate_node(n, mapping, tree_nodes, tree_flat_ids, present_ids):
+    if n.get("type") == "track":
+        return _translate_track_node(n, mapping)
+    return _translate_folder_node(n, mapping, tree_nodes, tree_flat_ids, present_ids)
+
+
 def _translate_tree_ids(node, mapping, tree_nodes=None, tree_flat_ids=None, present_ids=None):
     """Rewrite canonical ids to the selected server's provider ids.
 
@@ -473,27 +505,4 @@ def _translate_tree_ids(node, mapping, tree_nodes=None, tree_flat_ids=None, pres
     the selected server is pruned so switching servers never shows genres or
     subgenres that only exist on another server.
     """
-
-    def walk(n):
-        if n.get("type") == "track":
-            translated = mapping.get(n["id"])
-            if translated is None:
-                return None
-            return {**n, "id": translated}
-        items = n.get("items") or []
-        if not items:
-            if present_ids is not None and not _subtree_has_present_track(
-                n, present_ids, tree_nodes, tree_flat_ids
-            ):
-                return None
-            return {**n}
-        kept = []
-        for child in items:
-            rebuilt = walk(child)
-            if rebuilt is not None:
-                kept.append(rebuilt)
-        if not kept:
-            return None
-        return {**n, "items": kept, "children_count": len(kept)}
-
-    return walk(node)
+    return _translate_node(node, mapping, tree_nodes, tree_flat_ids, present_ids)

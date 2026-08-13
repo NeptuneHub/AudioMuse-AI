@@ -395,7 +395,7 @@ class TestTreeEngine:
             # does after an analysis run) before it scans for per-server blobs.
             hm._persist_tree_cache_blob(default_payload, name=hm._TREE_CACHE_BLOB_NAME)
             hm._persist_tree_cache_blob(payload, name=blob_name)
-            assert hm._scan_tree_cache_blob_names() == [blob_name]
+            assert hm._scan_tree_cache_blob_names(hm._TREE_CACHE_BLOB_NAME) == [blob_name]
 
             hm.reset_hyperbolic_tree_cache()
             hm.load_hyperbolic_tree_cache()
@@ -591,8 +591,11 @@ class TestTreeEngine:
 
             assert _leaf_ids(default_tree) == {f"item-{i:03d}" for i in range(20)}
             assert _leaf_ids(sec_tree) == {f"item-{i:03d}" for i in range(10, 20)}
-            # Persisted under distinct per-server blob names.
-            assert set(persisted) == {hm._TREE_CACHE_BLOB_NAME, f"{hm._TREE_CACHE_BLOB_NAME}__sec"}
+            # Persisted under distinct per-server blob names (full + skeleton).
+            assert set(persisted) == {
+                hm._TREE_CACHE_BLOB_NAME, f"{hm._TREE_CACHE_BLOB_NAME}__sec",
+                hm._TREE_SKELETON_BLOB_NAME, f"{hm._TREE_SKELETON_BLOB_NAME}__sec",
+            }
             # The request path resolves the right tree per server.
             assert hm.tree_for_server(None)["track_count"] == 20
             assert hm.tree_for_server("sec")["track_count"] == 10

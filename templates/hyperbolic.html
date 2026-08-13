@@ -220,7 +220,8 @@
                                    value="{{ hyperbolic_radial_spread_default }}">
                             <span id="hyper-spread-label" style="font-weight: 500;">{{ '%.2f'|format(hyperbolic_radial_spread_default) }}</span>
                             <input type="number" id="hyper-spread-input" min="0" max="0.99" step="0.01"
-                                   value="{{ '%.2f'|format(hyperbolic_radial_spread_default) }}">
+                                   value="{{ '%.2f'|format(hyperbolic_radial_spread_default) }}"
+                                   aria-label="Search depth (radial spread)">
                         </div>
                     </div>
                 </div>
@@ -726,7 +727,13 @@
             const renderTree = (node) => {
                 treeContainer.innerHTML = '';
                 const mount = document.createElement('div');
-                mount.appendChild(buildTreeNode(node));
+                const rootNode = buildTreeNode(node);
+                const children = rootNode.querySelector('.tree-children');
+                children.innerHTML = '';
+                children.dataset.loaded = '1';
+                (node.items || []).forEach(item => children.appendChild(buildTreeChild(item)));
+                rootNode.classList.add('open');
+                mount.appendChild(rootNode);
                 treeContainer.appendChild(mount);
             };
 

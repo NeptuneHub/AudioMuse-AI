@@ -85,6 +85,7 @@ logger = logging.getLogger(__name__)
 # table), so analysis persists it and Flask loads it back at startup.
 _TREE_CACHE_TABLE = "ivf_dir"
 _TREE_CACHE_BLOB_NAME = "hyperbolic_tree_cache"
+_TREE_SKELETON_BLOB_NAME = "hyperbolic_tree_skeleton"
 
 _FALLBACK_SCALE = 1.0
 _SCALE_CACHE = {"value": None}
@@ -400,30 +401,10 @@ def get_poincare_radius(item_id):
     return row[1] if row is not None else None
 
 
-def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None):
-    from tasks.hyperbolic_geometry import hyperbolic_distances_to
-    from tasks.ivf_manager import find_nearest_neighbors_by_id
-
-    mode = (mode or "similar").strip().lower()
-    if mode not in ("similar", "roots", "niche"):
-        raise ValueError('mode must be one of "similar", "roots", "niche"')
-    limit = max(1, min(int(limit), int(config.HYPERBOLIC_MAX_LIMIT)))
-    if radial_spread is None:
-        radial_spread = config.HYPERBOLIC_RADIAL_SPREAD
-    target = _fetch_poincare_rows([target_item_id]).get(target_item_id)
-    if target is None:
-        raise ValueError(
-            "Target track has no hyperbolic projection; run the hyperbolic backfill job first"
-        )
-    target_vec, target_radius = target
-    overfetch = max(
-        int(limit) * int(config.HYPERBOLIC_CANDIDATE_OVERFETCH), int(limit) + 50
-    )
+def _gather_mode_candidates(target_item_id, target_radius, mode, radial_spread, overfetch):
     if mode == "similar":
-        # Raw-space IVF neighbors re-ranked by exact Poincare distance. Like the
-        # similar-song page, use the shared defaults: radius walk enabled,
-        # content duplicates removed and MAX_SONGS_PER_ARTIST applied (passing
-        # None keeps the config-driven defaults).
+        from tasks.ivf_manager import find_nearest_neighbors_by_id
+
         candidates = find_nearest_neighbors_by_id(
             target_item_id,
             n=overfetch,
@@ -432,26 +413,16 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
             radius_similarity=None,
         )
         cand_ids = [c["item_id"] for c in candidates if c.get("item_id")]
-        rows = _fetch_poincare_rows(cand_ids)
-    else:
-        # roots/niche must visibly leave the seed's radius band, so the pool is
-        # drawn from the embedding table by radius instead of by raw IVF
-        # distance: every candidate is at least radial_spread of the radial
-        # range away from the seed (caller-supplied, defaulting to
-        # HYPERBOLIC_RADIAL_SPREAD), then ranked by exact distance.
-        spread = min(max(float(radial_spread), 0.0), 0.99)
-        if mode == "roots":
-            bound = target_radius * (1.0 - spread)
-            rows = _fetch_poincare_rows_in_radius(bound, below=True, limit=overfetch)
-        else:  # niche
-            bound = target_radius + (1.0 - target_radius) * spread
-            rows = _fetch_poincare_rows_in_radius(bound, below=False, limit=overfetch)
-    if not rows:
-        return []
-    ids = list(rows.keys())
-    cand_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float64)
-    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float64)
-    distances = hyperbolic_distances_to(target_vec, cand_vecs)
+        return _fetch_poincare_rows(cand_ids)
+    spread = min(max(float(radial_spread), 0.0), 0.99)
+    if mode == "roots":
+        bound = target_radius * (1.0 - spread)
+        return _fetch_poincare_rows_in_radius(bound, below=True, limit=overfetch)
+    bound = target_radius + (1.0 - target_radius) * spread
+    return _fetch_poincare_rows_in_radius(bound, below=False, limit=overfetch)
+
+
+def _rank_mode_results(ids, distances, cand_radii, mode, target_radius):
     if mode == "roots":
         keep = cand_radii < target_radius
     elif mode == "niche":
@@ -470,6 +441,35 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
             }
         )
     results.sort(key=lambda r: r["distance"])
+    return results
+
+
+def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None):
+    from tasks.hyperbolic_geometry import hyperbolic_distances_to
+
+    mode = (mode or "similar").strip().lower()
+    if mode not in ("similar", "roots", "niche"):
+        raise ValueError('mode must be one of "similar", "roots", "niche"')
+    limit = max(1, min(int(limit), int(config.HYPERBOLIC_MAX_LIMIT)))
+    if radial_spread is None:
+        radial_spread = config.HYPERBOLIC_RADIAL_SPREAD
+    target = _fetch_poincare_rows([target_item_id]).get(target_item_id)
+    if target is None:
+        raise ValueError(
+            "Target track has no hyperbolic projection; run the hyperbolic backfill job first"
+        )
+    target_vec, target_radius = target
+    overfetch = max(
+        int(limit) * int(config.HYPERBOLIC_CANDIDATE_OVERFETCH), int(limit) + 50
+    )
+    rows = _gather_mode_candidates(target_item_id, target_radius, mode, radial_spread, overfetch)
+    if not rows:
+        return []
+    ids = list(rows.keys())
+    cand_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float64)
+    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float64)
+    distances = hyperbolic_distances_to(target_vec, cand_vecs)
+    results = _rank_mode_results(ids, distances, cand_radii, mode, target_radius)
     return _deduplicate_and_cap_results(results)[:limit]
 
 
@@ -502,6 +502,8 @@ _TREE_CACHE = {
 
 _TREE_CACHE_LOCK = threading.RLock()
 
+_TREE_STATE = {"full_loaded": False, "full_load_running": False}
+
 # Bump whenever the persisted tree schema changes (node id scheme, node kinds,
 # level structure). load_hyperbolic_tree_cache discards blobs whose version
 # does not match so an upgraded Flask never serves a stale pre-upgrade tree.
@@ -522,6 +524,7 @@ def reset_hyperbolic_tree_cache():
         _TREE_CACHE["flat_ids"] = None
         _TREE_CACHE["track_count"] = None
         _TREE_CACHE["servers"] = {}
+        _TREE_STATE["full_loaded"] = False
 
 
 def _tree_build_targets():
@@ -555,6 +558,26 @@ def _blob_name_for(server_key):
     if not server_key or server_key == _DEFAULT_SERVER_KEY:
         return _TREE_CACHE_BLOB_NAME
     return f"{_TREE_CACHE_BLOB_NAME}__{server_key}"
+
+
+def _skeleton_blob_name_for(server_key):
+    if not server_key or server_key == _DEFAULT_SERVER_KEY:
+        return _TREE_SKELETON_BLOB_NAME
+    return f"{_TREE_SKELETON_BLOB_NAME}__{server_key}"
+
+
+def _skeleton_tree(tree):
+    nodes = tree.get("nodes") or {}
+    skeleton_nodes = {
+        nid: node for nid, node in nodes.items()
+        if node.get("type") == "folder" and not node.get("leaf")
+    }
+    return {
+        "n_bands": tree.get("n_bands"),
+        "nodes": skeleton_nodes,
+        "flat_ids": {},
+        "track_count": tree.get("track_count") or 0,
+    }
 
 
 def tree_for_server(server_id=None):
@@ -602,6 +625,8 @@ def build_hyperbolic_tree_cache():
             _TREE_CACHE["track_count"] = tree["track_count"]
             default_track_count = tree["track_count"]
         _persist_tree_cache_blob(tree, name=_blob_name_for(server_key))
+        _persist_tree_cache_blob(_skeleton_tree(tree), name=_skeleton_blob_name_for(server_key))
+    _TREE_STATE["full_loaded"] = True
     logger.info(
         "Hyperbolic tree cache built and persisted: %d server tree(s) "
         "(%d tracks in the default tree).", len(targets), default_track_count,
@@ -609,19 +634,19 @@ def build_hyperbolic_tree_cache():
     return default_track_count
 
 
-def _scan_tree_cache_blob_names():
+def _scan_tree_cache_blob_names(base_name):
     """Distinct per-server tree blob base names persisted in ivf_dir.
 
     Segmented "name_i_n" rows are folded back to their base name. Only the
-    per-server blobs (the default prefix plus "__") are returned, so Flask can
+    per-server blobs (the base prefix plus "__") are returned, so Flask can
     warm every secondary server tree at startup without touching the registry.
     """
     from app_helper import get_db
 
-    prefix = _TREE_CACHE_BLOB_NAME + "__"
+    prefix = base_name + "__"
     # The trailing % must be an UNESCAPED wildcard: prefix's underscores are
     # escaped with backslashes, but the suffix separator is a real LIKE
-    # wildcard so "hyperbolic_tree_cache__<server_id>" blobs are discovered.
+    # wildcard so "<base>__<server_id>" blobs are discovered.
     like = prefix.replace("_", r"\_") + "%"
     try:
         db_conn = get_db()
@@ -666,7 +691,8 @@ def load_hyperbolic_tree_cache():
         _TREE_CACHE["flat_ids"] = payload.get("flat_ids") or {}
         _TREE_CACHE["track_count"] = track_count
         _TREE_CACHE["servers"] = {_DEFAULT_SERVER_KEY: payload}
-    for blob_name in _scan_tree_cache_blob_names():
+        _TREE_STATE["full_loaded"] = True
+    for blob_name in _scan_tree_cache_blob_names(_TREE_CACHE_BLOB_NAME):
         server_id = blob_name[len(_TREE_CACHE_BLOB_NAME) + 2:]
         per_server = _load_tree_cache_blob(name=blob_name)
         if per_server and per_server.get("version") == _TREE_CACHE_VERSION:
@@ -680,6 +706,28 @@ def load_hyperbolic_tree_cache():
     return track_count
 
 
+def load_hyperbolic_tree_skeleton():
+    payload = _load_tree_cache_blob(name=_TREE_SKELETON_BLOB_NAME)
+    if payload is None or payload.get("version") != _TREE_CACHE_VERSION:
+        return False
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE["n_bands"] = payload.get("n_bands")
+        _TREE_CACHE["nodes"] = payload.get("nodes") or {}
+        _TREE_CACHE["flat_ids"] = {}
+        _TREE_CACHE["track_count"] = int(payload.get("track_count") or 0)
+        _TREE_CACHE["servers"] = {_DEFAULT_SERVER_KEY: payload}
+        _TREE_STATE["full_loaded"] = False
+    for blob_name in _scan_tree_cache_blob_names(_TREE_SKELETON_BLOB_NAME):
+        server_id = blob_name[len(_TREE_SKELETON_BLOB_NAME) + 2:]
+        skeleton = _load_tree_cache_blob(name=blob_name)
+        if skeleton and skeleton.get("version") == _TREE_CACHE_VERSION:
+            with _TREE_CACHE_LOCK:
+                _TREE_CACHE["servers"][server_id] = skeleton
+    logger.info("Hyperbolic tree skeleton loaded: %d nodes (%d server trees).",
+                len(_TREE_CACHE["nodes"]), len(_TREE_CACHE["servers"]))
+    return True
+
+
 def _set_empty_tree_cache():
     with _TREE_CACHE_LOCK:
         _TREE_CACHE["n_bands"] = 0
@@ -687,6 +735,7 @@ def _set_empty_tree_cache():
         _TREE_CACHE["flat_ids"] = {}
         _TREE_CACHE["track_count"] = 0
         _TREE_CACHE["servers"] = {}
+        _TREE_STATE["full_loaded"] = False
 
 
 def _delete_tree_cache_blob():
@@ -694,10 +743,12 @@ def _delete_tree_cache_blob():
 
     db_conn = get_db()
     like_pattern = _TREE_CACHE_BLOB_NAME.replace("_", r"\_") + r"\_%"
+    skeleton_like = _TREE_SKELETON_BLOB_NAME.replace("_", r"\_") + r"\_%"
     with db_conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE '\\'",
-            (_TREE_CACHE_BLOB_NAME, like_pattern),
+            "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE '\\' "
+            "OR name = %s OR name LIKE %s ESCAPE '\\'",
+            (_TREE_CACHE_BLOB_NAME, like_pattern, _TREE_SKELETON_BLOB_NAME, skeleton_like),
         )
     db_conn.commit()
 
@@ -782,11 +833,37 @@ def _unload_tree_timer_worker():
         time.sleep(min(1.0, max(0.05, time_remaining)))
 
 
+def _start_background_full_load():
+    with _TREE_CACHE_LOCK:
+        if _TREE_STATE["full_loaded"] or _TREE_STATE["full_load_running"]:
+            return
+        _TREE_STATE["full_load_running"] = True
+
+    def _load():
+        try:
+            from flask_app import app
+            with app.app_context():
+                load_hyperbolic_tree_cache()
+        except Exception:
+            logger.exception("Background full hyperbolic tree load failed")
+        finally:
+            _TREE_STATE["full_load_running"] = False
+
+    threading.Thread(target=_load, daemon=True).start()
+
+
+def _load_full_tree_sync():
+    load_hyperbolic_tree_cache()
+
+
 def warmup_hyperbolic_tree_cache():
     with _TREE_WARM_CACHE["lock"]:
         if not is_hyperbolic_tree_cache_loaded():
             logger.info("Warming up Hyperbolic Explorer tree cache...")
-            init_hyperbolic_cache()
+            if not load_hyperbolic_tree_skeleton():
+                init_hyperbolic_cache()
+        if is_hyperbolic_tree_cache_loaded() and not _TREE_STATE["full_loaded"]:
+            _start_background_full_load()
 
         duration = config.HYPERBOLIC_TREE_WARMUP_DURATION
         _TREE_WARM_CACHE["expiry_time"] = time.time() + duration
@@ -815,16 +892,23 @@ def get_hyperbolic_tree_warm_status():
 
 
 def build_hyperbolic_tree(node_id=None, server_id=None):
+    key = (node_id or "root").strip() or "root"
     with _TREE_CACHE_LOCK:
         tree = tree_for_server(server_id)
         nodes = tree.get("nodes")
         if not nodes:
             return _empty_node(node_id, "Hyperbolic Explorer"), []
-        key = (node_id or "root").strip() or "root"
         node = nodes.get(key)
-        if node is None:
-            raise ValueError(f"Unknown tree node id: {node_id}")
-        return node, (tree.get("flat_ids") or {}).get(key, [])
+        full_loaded = _TREE_STATE["full_loaded"]
+    if node is None and not full_loaded:
+        _load_full_tree_sync()
+        with _TREE_CACHE_LOCK:
+            tree = tree_for_server(server_id)
+            nodes = tree.get("nodes") or {}
+            node = nodes.get(key)
+    if node is None:
+        raise ValueError(f"Unknown tree node id: {node_id}")
+    return node, (tree.get("flat_ids") or {}).get(key, [])
 
 
 def _build_genre_root_items(item_ids, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):

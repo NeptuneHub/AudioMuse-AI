@@ -517,7 +517,14 @@ def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
         # Distinct blob names per server.
         assert hm._blob_name_for(hm._DEFAULT_SERVER_KEY) == hm._TREE_CACHE_BLOB_NAME
         assert hm._blob_name_for("sec") == f"{hm._TREE_CACHE_BLOB_NAME}__sec"
-        assert set(persisted) == {hm._TREE_CACHE_BLOB_NAME, f"{hm._TREE_CACHE_BLOB_NAME}__sec"}
+        assert set(persisted) == {
+            hm._TREE_CACHE_BLOB_NAME, f"{hm._TREE_CACHE_BLOB_NAME}__sec",
+            hm._TREE_SKELETON_BLOB_NAME, f"{hm._TREE_SKELETON_BLOB_NAME}__sec",
+        }
+        assert set(persisted[hm._TREE_SKELETON_BLOB_NAME]["nodes"]) == {
+            nid for nid, n in persisted[hm._TREE_CACHE_BLOB_NAME]["nodes"].items()
+            if not n.get("leaf")
+        }
         # The request path resolves the right tree per server.
         assert hm.tree_for_server(None)["track_count"] == len(default_mapping)
         assert hm.tree_for_server("sec")["track_count"] == len(sec_mapping)
