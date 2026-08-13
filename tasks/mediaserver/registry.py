@@ -483,6 +483,9 @@ def availability_sql(alias='s'):
     )
 
 
+_TRANSLATE_IDS_CHUNK = 5000
+
+
 def translate_ids(item_ids, server_id=None, conn=None):
     """Map canonical library item_ids to their ids on ``server_id``.
 
@@ -502,23 +505,26 @@ def translate_ids(item_ids, server_id=None, conn=None):
         from tasks.simhash import is_fingerprint_id
         return {i: i for i in ids if not is_fingerprint_id(i)}
     cur = db.cursor()
+    mapped = {}
     try:
         # N provider tracks may map to one item_id on a server (duplicate files);
         # pick ONE deterministically - strongest match tier, then the smallest
         # provider id as a stable tiebreak - so a playlist target never changes
         # between runs.
-        cur.execute(
-            "SELECT DISTINCT ON (item_id) item_id, provider_track_id "
-            "FROM track_server_map WHERE server_id = %s AND item_id = ANY(%s) "
-            "ORDER BY item_id, "
-            "  CASE match_tier "
-            "    WHEN 'fingerprint' THEN 0 WHEN 'path' THEN 1 WHEN 'tail' THEN 2 "
-            "    WHEN 'exact_meta' THEN 3 WHEN 'default' THEN 4 WHEN 'norm_meta' THEN 5 "
-            "    WHEN 'title_artist' THEN 6 WHEN 'analysis' THEN 7 ELSE 8 END, "
-            "  provider_track_id",
-            (target, ids),
-        )
-        mapped = {r[0]: r[1] for r in cur.fetchall()}
+        for start in range(0, len(ids), _TRANSLATE_IDS_CHUNK):
+            chunk = ids[start:start + _TRANSLATE_IDS_CHUNK]
+            cur.execute(
+                "SELECT DISTINCT ON (item_id) item_id, provider_track_id "
+                "FROM track_server_map WHERE server_id = %s AND item_id = ANY(%s) "
+                "ORDER BY item_id, "
+                "  CASE match_tier "
+                "    WHEN 'fingerprint' THEN 0 WHEN 'path' THEN 1 WHEN 'tail' THEN 2 "
+                "    WHEN 'exact_meta' THEN 3 WHEN 'default' THEN 4 WHEN 'norm_meta' THEN 5 "
+                "    WHEN 'title_artist' THEN 6 WHEN 'analysis' THEN 7 ELSE 8 END, "
+                "  provider_track_id",
+                (target, chunk),
+            )
+            mapped.update({r[0]: r[1] for r in cur.fetchall()})
     finally:
         cur.close()
     if is_default:

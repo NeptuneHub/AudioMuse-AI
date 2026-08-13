@@ -8,8 +8,6 @@ name: Ruff (TRY400 + pyflakes)
 on:
   pull_request:
     branches: [ main ]
-  push:
-    branches: [ main ]
 
 permissions:
   contents: read

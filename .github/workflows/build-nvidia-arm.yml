@@ -7,11 +7,6 @@ on:
     # Trigger on version tags for stable releases
     tags:
       - 'v*.*.*'  # Trigger for version tags like v1.0.0
-  pull_request:
-    types:
-      - opened
-      - reopened
-      - synchronize
   # Allow manual runs from the Actions UI
   workflow_dispatch:
     inputs:
@@ -22,13 +17,6 @@ on:
 
 jobs:
   build-and-push:
-    # Run on non-PR events; for PR events skip drafts and fork PRs (the
-    # latter only get a read-only GITHUB_TOKEN and cannot push to ghcr.io).
-    # Maintainers can build a fork PR manually via workflow_dispatch.
-    if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository)
     # Native arm64 runner: builds linux/arm64 without QEMU emulation, so pip
     # resolves aarch64 wheels natively (fast and reliable).
     runs-on: ubuntu-24.04-arm
@@ -81,11 +69,6 @@ jobs:
             DEVEL_TAG="ghcr.io/$REPO_NAME_LOWER:devel-nvidia-arm"
             ALL_TAGS="${DEVEL_TAG}"
             echo "Building devel tag: $DEVEL_TAG"
-          elif [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.draft }}" == "false" ]]; then
-            PR_NUM="${{ github.event.pull_request.number }}"
-            PR_TAG="ghcr.io/$REPO_NAME_LOWER:pr-${PR_NUM}-nvidia-arm"
-            ALL_TAGS="${PR_TAG}"
-            echo "Building PR tag: $PR_TAG"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             # Manual run with version input
             VERSION_TAG=$(echo "${{ inputs.version_tag }}" | sed -e 's|^v||g')
@@ -95,7 +78,7 @@ jobs:
             echo "Building manual version tag: $VERSIONED_TAG"
             echo "Also tagging as latest: $LATEST_TAG"
           else
-            echo "This workflow is intended to run on tag pushes (refs/tags/v*), devel branch, non-draft pull requests, or manual dispatch. Exiting."
+            echo "This workflow is intended to run on tag pushes (refs/tags/v*), the main branch, or manual dispatch. Exiting."
             exit 1
           fi
 

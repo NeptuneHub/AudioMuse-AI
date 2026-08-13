@@ -749,6 +749,30 @@ def _clamp_rating(rating):
         return None
 
 
+def _persist_hyperbolic_inline(item_id, embedding_vector, cur):
+    try:
+        from tasks.hyperbolic_manager import compute_hyperbolic_projection
+
+        proj, radius = compute_hyperbolic_projection(embedding_vector, auto_calibrate=False)
+        if proj is None or radius is None:
+            return
+        embedding_blob = np.asarray(proj, dtype=np.float32).tobytes()
+        cur.execute(
+            """
+            INSERT INTO embedding (item_id, poincare_embedding, hyperbolic_radius)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET
+                poincare_embedding = EXCLUDED.poincare_embedding,
+                hyperbolic_radius = EXCLUDED.hyperbolic_radius
+        """,
+            (item_id, psycopg2.Binary(embedding_blob), float(radius)),
+        )
+    except Exception:
+        logger.debug(
+            "Could not persist hyperbolic projection inline for %s", item_id, exc_info=True
+        )
+
+
 def save_track_analysis_and_embedding(
     item_id,
     title,
@@ -828,6 +852,7 @@ def save_track_analysis_and_embedding(
             """,
                 (item_id, psycopg2.Binary(embedding_blob)),
             )
+            _persist_hyperbolic_inline(item_id, embedding_vector, cur)
 
         conn.commit()
     except Exception:
@@ -859,6 +884,33 @@ def save_clap_embedding(item_id, clap_embedding_vector):
     except Exception:
         conn.rollback()
         logger.exception(f"Error saving CLAP embedding for {item_id}")
+        raise
+    finally:
+        cur.close()
+
+
+def set_hyperbolic_projection(item_id, poincare_embedding, hyperbolic_radius):
+    if poincare_embedding is None or hyperbolic_radius is None:
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        embedding_blob = np.asarray(poincare_embedding, dtype=np.float32).tobytes()
+        cur.execute(
+            """
+            INSERT INTO embedding (item_id, poincare_embedding, hyperbolic_radius)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET
+                poincare_embedding = EXCLUDED.poincare_embedding,
+                hyperbolic_radius = EXCLUDED.hyperbolic_radius
+        """,
+            (item_id, psycopg2.Binary(embedding_blob), float(hyperbolic_radius)),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception(f"Error saving hyperbolic projection for {item_id}")
         raise
     finally:
         cur.close()
@@ -1461,6 +1513,16 @@ def init_db():
             )
             if not cur.fetchone()[0]:
                 cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'poincare_embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE embedding ADD COLUMN poincare_embedding BYTEA")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'hyperbolic_radius')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE embedding ADD COLUMN hyperbolic_radius DOUBLE PRECISION")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )

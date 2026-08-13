@@ -754,7 +754,7 @@ html.dark-mode button:not(.btn):disabled {
 /* --- App Version in Sidebar --- */
 .app-version {
     /* This will now appear directly after the navigation links */
-    padding: 2rem 1rem 1rem 1rem; /* Extra top padding to space it from the last link */
+    padding: 1rem 1rem 0.5rem 1rem; /* Extra top padding to space it from the last link */
     font-size: 0.8rem; /* Smaller font */
     color: #6B7280; /* Grey text color */
     text-align: center;

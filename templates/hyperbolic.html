@@ -1,0 +1,860 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 2px solid var(--border-color);
+    }
+    .tab-btn {
+        padding: 0.6rem 1.2rem;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: var(--text-muted);
+        transition: all 0.2s;
+    }
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+        font-weight: 600;
+    }
+    .tab-btn:hover { color: var(--color-primary); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    .tree-root {
+        font-size: 0.92rem;
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .tree-folder { margin: 0.1rem 0; min-width: 0; }
+    .tree-folder-head {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.3rem 0.45rem;
+        border-radius: 0.4rem;
+        cursor: pointer;
+        user-select: none;
+        min-width: 0;
+    }
+    .tree-folder-head .tree-label {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+    .tree-folder-head:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
+    .tree-folder-head .tree-arrow {
+        display: inline-block;
+        width: 0.8rem;
+        flex: 0 0 auto;
+        color: var(--text-muted);
+        transition: transform 0.15s;
+    }
+    .tree-folder.open > .tree-folder-head .tree-arrow { transform: rotate(90deg); }
+    .tree-folder-head .tree-icon { color: var(--color-primary); flex: 0 0 auto; }
+    .tree-children { margin-left: 1.15rem; padding-left: 0.5rem; border-left: 1px solid var(--border-color); display: none; min-width: 0; }
+    .tree-folder.open > .tree-children { display: block; }
+    .tree-track {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.25rem 0.45rem;
+        border-radius: 0.4rem;
+        min-width: 0;
+    }
+    .tree-track .tree-track-label {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+    .tree-track:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
+    .tree-track .tree-icon { color: var(--text-muted); flex: 0 0 auto; }
+    .tree-track .tree-meta { color: var(--text-muted); font-size: 0.8rem; margin-left: auto; flex: 0 0 auto; }
+    .tree-summary { color: var(--text-muted); font-size: 0.75rem; flex: 0 0 auto; }
+    .tree-leaf-playlist { margin: 0.3rem 0 0.6rem; padding: 0.5rem 0.6rem; border: 1px solid var(--border-color); border-radius: 0.5rem; background: var(--bg-card); min-width: 0; }
+    .tree-leaf-playlist form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    .tree-leaf-playlist .tree-leaf-name { flex: 1 1 12rem; min-width: 0; }
+    .tree-leaf-playlist .tree-leaf-status { flex-basis: 100%; font-size: 0.85rem; }
+    .tree-loading { color: var(--text-muted); font-size: 0.9rem; margin: 0.5rem 0; }
+    .tree-error { color: #dc2626; font-size: 0.9rem; margin: 0.5rem 0; }
+
+    .autocomplete-container { position: relative; }
+    .autocomplete-results {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        z-index: 20;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        box-shadow: var(--shadow-card);
+        max-height: 280px;
+        overflow-y: auto;
+    }
+    .autocomplete-item {
+        padding: 0.55rem 0.75rem;
+        cursor: pointer;
+        border-bottom: 1px solid var(--border-color);
+        font-size: 0.9rem;
+    }
+    .autocomplete-item:last-child { border-bottom: none; }
+    .autocomplete-item:hover,
+    .autocomplete-item.selected { background: var(--color-primary-soft, rgba(99, 102, 241, 0.12)); }
+    .autocomplete-item .title { font-weight: 500; }
+    .autocomplete-item .artist { color: var(--text-muted); font-size: 0.85rem; }
+    .autocomplete-item .album { color: var(--text-muted); font-size: 0.8rem; }
+
+    /* Poincare ball panel */
+    .hyper-ball-panel {
+        margin: 1rem 0;
+        padding: 1rem;
+        border: 1px solid var(--border-color);
+        border-radius: 0.6rem;
+        background: var(--bg-card);
+    }
+    .hyper-ball-panel h2 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+    .hyper-ball-hint { margin: 0 0 0.75rem; color: var(--text-muted); font-size: 0.85rem; }
+    .hyper-ball-layout { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+    #hyper-ball { width: 300px; height: 300px; max-width: 100%; flex: 0 0 auto; }
+    #hyper-ball .ball-shell { fill: var(--bg-input, #f8fafc); stroke: var(--border-color); stroke-width: 2; }
+    #hyper-ball .ball-boundary { stroke-dasharray: 5 5; }
+    #hyper-ball .ball-dot { cursor: pointer; }
+    #hyper-ball .ball-dot:hover { stroke: var(--text-main); stroke-width: 1.5; }
+    .hyper-ball-side { flex: 1 1 14rem; min-width: 12rem; font-size: 0.85rem; }
+    .hyper-ball-legend { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.75rem; }
+    .ball-legend-title { font-weight: 600; margin-bottom: 0.2rem; }
+    .ball-legend-row {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        cursor: pointer;
+        padding: 0.15rem 0.3rem;
+        border-radius: 0.35rem;
+    }
+    .ball-legend-row:hover { background: var(--color-primary-soft, rgba(99, 102, 241, 0.08)); }
+    .ball-legend-row.is-active { font-weight: 600; }
+    .ball-legend-swatch {
+        display: inline-block;
+        width: 0.8rem;
+        height: 0.8rem;
+        border-radius: 0.25rem;
+        flex: 0 0 auto;
+    }
+    .ball-swatch-dot, .ball-swatch-seed { border-radius: 50%; }
+    .ball-legend-check { margin-left: auto; color: var(--color-primary); }
+    .hyper-ball-detail {
+        color: var(--text-main);
+        background: var(--bg-input, rgba(0, 0, 0, 0.03));
+        border: 1px solid var(--border-color);
+        border-radius: 0.4rem;
+        padding: 0.5rem 0.6rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Hyperbolic Explorer</h1>
+        <p>Discover distant songs and playlists with hyperbolic exploration.</p>
+    </header>
+
+    <div class="tabs">
+        <button type="button" class="tab-btn active" data-tab="similar">Hyperbolic Similarity</button>
+        <button type="button" class="tab-btn" data-tab="tree">Hierarchy Directory</button>
+    </div>
+
+    <!-- Tab 1: Hyperbolic Similarity -->
+    <div class="tab-pane active" id="tab-similar">
+        <form id="hyper-similar-form">
+            <fieldset>
+                <legend>Seed Song</legend>
+                <div class="param-group">
+                    <div class="autocomplete-container">
+                        <label for="hyper-song-input">Search for a song:</label>
+                        <input type="text"
+                               id="hyper-song-input"
+                               name="song_query"
+                               placeholder="Start typing a title or artist..."
+                               autocomplete="off">
+                        <div id="hyper-autocomplete-results" class="autocomplete-results hidden"></div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Search Mode</legend>
+                <div class="param-group">
+                    <div>
+                        <label for="hyper-mode">Mode:</label>
+                        <select id="hyper-mode" name="mode">
+                            <option value="similar">Standard Similar</option>
+                            <option value="roots">Roots / Inward</option>
+                            <option value="niche">Niche / Outward</option>
+                        </select>
+                        <p>Roots pulls tracks closer to the origin (foundational); Niche pushes toward the ball edge (obscure sub-genres).</p>
+                    </div>
+                    <div>
+                        <label for="hyper-limit">Number of results:</label>
+                        <input type="number" id="hyper-limit" name="limit" value="20" min="1" max="100">
+                    </div>
+                    <div>
+                        <label for="hyper-spread-slider" class="label-with-tooltip">
+                            Search depth (radial spread):
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Only affects Roots / Niche. Fraction of the seed's remaining radial range the search must clear before candidates are considered - toward the origin for Roots, toward the ball edge for Niche. Higher = go further inward or outward from the seed.</span>
+                            </span>
+                        </label>
+                        <div class="param-row">
+                            <input type="range" id="hyper-spread-slider" min="0" max="0.99" step="0.01"
+                                   value="{{ hyperbolic_radial_spread_default }}">
+                            <span id="hyper-spread-label" style="font-weight: 500;">{{ '%.2f'|format(hyperbolic_radial_spread_default) }}</span>
+                            <input type="number" id="hyper-spread-input" min="0" max="0.99" step="0.01"
+                                   value="{{ '%.2f'|format(hyperbolic_radial_spread_default) }}"
+                                   aria-label="Search depth (radial spread)">
+                        </div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <button type="submit" class="btn btn-primary btn-block">
+                Find Hyperbolic Neighbors
+            </button>
+        </form>
+
+        <section class="hyper-ball-panel" aria-label="Poincare ball view">
+            <h2>Poincare Ball</h2>
+            <p class="hyper-ball-hint">
+                The highlighted region is what the selected mode searches: <strong>Standard Similar</strong>
+                scans a band around the seed, <strong>Roots / Inward</strong> looks toward the origin (foundational
+                sounds), <strong>Niche / Outward</strong> looks toward the boundary (obscure sub-genres).
+                After a search the result tracks appear as dots.
+            </p>
+            <div class="hyper-ball-layout">
+                <svg id="hyper-ball" viewBox="0 0 320 320" role="img"
+                     aria-label="Poincare ball showing the active search mode region and result positions"></svg>
+                <div class="hyper-ball-side">
+                    <div id="hyper-ball-legend" class="hyper-ball-legend"></div>
+                    <div id="hyper-ball-detail" class="hyper-ball-detail"></div>
+                </div>
+            </div>
+        </section>
+
+        <div id="status" role="status" aria-live="polite"></div>
+
+        <section id="hyper-results-section" class="hidden">
+            <h2>Results</h2>
+            <div id="results-table-wrapper"></div>
+        </section>
+
+        <section id="hyper-playlist-creator" class="hidden">
+            <h3>Create a Playlist from Results</h3>
+            <form id="hyper-playlist-form">
+                <div class="param-group">
+                    <div>
+                        <label for="hyper-playlist-name">Playlist Name:</label>
+                        <input type="text" id="hyper-playlist-name" name="playlist_name" required placeholder="e.g., My Hyperbolic Mix">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-success btn-block">
+                    Create Playlist on Media Server
+                </button>
+            </form>
+            <div id="playlist-status" role="status" aria-live="polite"></div>
+        </section>
+    </div>
+
+    <!-- Tab 2: Hierarchy Directory -->
+    <div class="tab-pane" id="tab-tree">
+        <p>Browse the library as a virtual directory tree. The root splits by main genre, then by subgenre, then into named k-means clusters; leaf folders list the actual tracks. Without genre data the tree falls back to a mood partition followed by the main-genre and named-cluster levels.</p>
+        <div id="hyper-tree" class="tree-root"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+    <script>
+        (() => {
+            const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
+                (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+
+            // Warm up the tree cache on page load (it is not loaded at Flask
+            // startup - see tasks.hyperbolic_manager) so the Hierarchy Directory
+            // tab has no cold-load delay on first browse.
+            (async function warmupHyperbolicTree() {
+                try {
+                    const r = await fetch("{{ url_for('hyperbolic_bp.hyperbolic_warmup_api') }}", {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const d = await r.json();
+                    if (d.loaded) console.log(`Hyperbolic tree cache warmed up (expires in ${d.expiry_seconds}s)`);
+                } catch (e) {
+                    console.error('Failed to warmup hyperbolic tree cache:', e);
+                }
+            })();
+
+            // ----- Tabs -----
+            const tabs = document.querySelectorAll('.tab-btn');
+            const panes = document.querySelectorAll('.tab-pane');
+            tabs.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    tabs.forEach(b => b.classList.remove('active'));
+                    panes.forEach(p => p.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+                });
+            });
+
+            // ----- Tab 1: song autocomplete -----
+            const songInput = document.getElementById('hyper-song-input');
+            const autocompleteResults = document.getElementById('hyper-autocomplete-results');
+            const similarForm = document.getElementById('hyper-similar-form');
+            const statusDiv = document.getElementById('status');
+            let selectedSong = null;
+            let searchTimeout = null;
+
+            const hideAutocomplete = () => autocompleteResults.classList.add('hidden');
+
+            const handleSearchInput = () => {
+                clearTimeout(searchTimeout);
+                const query = songInput.value.trim();
+                if (!query) {
+                    selectedSong = null;
+                    hideAutocomplete();
+                    return;
+                }
+                searchTimeout = setTimeout(async () => {
+                    try {
+                        const params = new URLSearchParams({ search_query: query });
+                        const response = await fetch('{{ url_for("ivf_bp.search_tracks_endpoint") }}?' + params.toString());
+                        const tracks = await response.json();
+                        autocompleteResults.innerHTML = '';
+                        if (!tracks.length) {
+                            autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No songs found</em></div>';
+                        } else {
+                            tracks.forEach(t => {
+                                const item = document.createElement('div');
+                                item.className = 'autocomplete-item';
+                                item.innerHTML = '<div class="title">' + esc(t.title || 'Unknown') + '</div>' +
+                                    '<div class="artist">' + esc(t.author || 'Unknown') + '</div>' +
+                                    '<div class="album">Album: ' + esc(t.album || 'Unknown') + '</div>';
+                                item.addEventListener('click', () => {
+                                    selectedSong = t;
+                                    songInput.value = (t.title || '') + ' - ' + (t.author || '');
+                                    hideAutocomplete();
+                                });
+                                autocompleteResults.appendChild(item);
+                            });
+                        }
+                        autocompleteResults.classList.remove('hidden');
+                    } catch (err) {
+                        console.error('Autocomplete search error:', err);
+                        hideAutocomplete();
+                    }
+                }, 250);
+            };
+
+            songInput.addEventListener('input', handleSearchInput);
+            songInput.addEventListener('focus', () => {
+                if (autocompleteResults.children.length) autocompleteResults.classList.remove('hidden');
+            });
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.autocomplete-container')) hideAutocomplete();
+            });
+
+            const similarSection = document.getElementById('hyper-results-section');
+            const resultsWrapper = document.getElementById('results-table-wrapper');
+            let currentTrackIds = [];
+
+            const hyperbolicBadge = (s) => (typeof s.distance === 'number')
+                ? { text: s.distance.toFixed(3), cls: 'badge-neutral' }
+                : null;
+
+            const renderResults = (results, seedId) => {
+                // Like the similar-song page, the searched song is not shown in
+                // the results table but always leads the playlist.
+                currentTrackIds = [seedId, ...results.map(r => r.item_id)].filter(Boolean);
+                if (!results.length) {
+                    statusDiv.textContent = 'No tracks found for this mode.';
+                    statusDiv.className = '';
+                    resultsWrapper.innerHTML = '';
+                    return;
+                }
+                resultsWrapper.innerHTML = renderSongList(results, { metric: hyperbolicBadge });
+            };
+
+            // ----- Poincare ball view -----
+            const MODE_META = {
+                similar: { label: 'Standard Similar', color: '#6366f1' },
+                roots:   { label: 'Roots / Inward',  color: '#14b8a6' },
+                niche:   { label: 'Niche / Outward', color: '#f97316' }
+            };
+            const MODE_REGION_DESC = {
+                similar: 'a band around the seed radius (nearest neighbors in every direction)',
+                roots:   'the inner disk (tracks closer to the origin - foundational sounds)',
+                niche:   'the outer annulus (tracks toward the boundary - obscure sub-genres)'
+            };
+            const BALL_CX = 160, BALL_CY = 160, BALL_R = 140;
+            const ballSvg = document.getElementById('hyper-ball');
+            const ballLegend = document.getElementById('hyper-ball-legend');
+            const ballDetail = document.getElementById('hyper-ball-detail');
+            const ballState = { seedRadius: null, seedLabel: null, mode: 'similar', results: [], spread: {{ hyperbolic_radial_spread_default }} };
+
+            // ----- Radial spread control (slider + textbox, kept in sync) -----
+            const spreadSlider = document.getElementById('hyper-spread-slider');
+            const spreadInput = document.getElementById('hyper-spread-input');
+            const spreadLabel = document.getElementById('hyper-spread-label');
+            const clampSpread = (v) => Number.isFinite(v) ? Math.min(0.99, Math.max(0, v)) : ballState.spread;
+
+            const applySpread = (v) => {
+                ballState.spread = clampSpread(v);
+                spreadSlider.value = ballState.spread;
+                spreadInput.value = ballState.spread.toFixed(2);
+                spreadLabel.textContent = ballState.spread.toFixed(2);
+            };
+
+            spreadSlider.addEventListener('input', () => {
+                applySpread(Number.parseFloat(spreadSlider.value));
+                renderBall();
+            });
+            spreadInput.addEventListener('input', () => {
+                const v = Number.parseFloat(spreadInput.value);
+                if (Number.isNaN(v)) return;
+                applySpread(v);
+                renderBall();
+            });
+            spreadInput.addEventListener('change', () => {
+                applySpread(Number.parseFloat(spreadInput.value));
+                renderBall();
+            });
+
+            const hashAngle = (s) => {
+                let h = 2166136261;
+                for (let i = 0; i < s.length; i++) {
+                    h ^= s.codePointAt(i);
+                    h = Math.imul(h, 16777619);
+                }
+                return ((h >>> 0) % 3600) / 3600 * 2 * Math.PI;
+            };
+
+            const hexToRgb = (hex) => {
+                const n = Number.parseInt(hex.slice(1), 16);
+                return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+            };
+
+            const mixRgb = (a, b, t) => {
+                const c = a.map((v, i) => Math.round(v + (b[i] - v) * t));
+                return 'rgb(' + c.join(',') + ')';
+            };
+
+            const ballPoint = (r, angle) => [
+                BALL_CX + r * BALL_R * Math.cos(angle),
+                BALL_CY + r * BALL_R * Math.sin(angle)
+            ];
+
+            const circlePath = (r) => {
+                const [x0, y0] = ballPoint(r, 0);
+                const [x1, y1] = ballPoint(r, Math.PI);
+                const rr = (r * BALL_R).toFixed(2);
+                return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${rr} ${rr} 0 1 0 ${x1.toFixed(2)} ${y1.toFixed(2)} ` +
+                       `A ${rr} ${rr} 0 1 0 ${x0.toFixed(2)} ${y0.toFixed(2)} Z`;
+            };
+
+            const ballRegion = (seedR, color) => {
+                const r0 = (seedR * BALL_R).toFixed(2);
+                const boundary = `<circle class="ball-boundary" cx="${BALL_CX}" cy="${BALL_CY}" r="${r0}" ` +
+                    `fill="none" stroke="${color}" stroke-width="1.5" opacity="0.9"/>`;
+                const spread = clampSpread(ballState.spread);
+                if (ballState.mode === 'roots') {
+                    // Candidates must clear a gap of `spread` of the seed's
+                    // remaining distance to the origin, so only the disk out to
+                    // that bound - not all the way to the seed - is searched.
+                    const bound = seedR * (1 - spread);
+                    return `<circle class="ball-region" cx="${BALL_CX}" cy="${BALL_CY}" r="${(bound * BALL_R).toFixed(2)}" ` +
+                           `fill="${color}" opacity="0.22"/>` + boundary;
+                }
+                if (ballState.mode === 'niche') {
+                    // Mirror of roots: the gap is `spread` of the seed's
+                    // remaining distance to the ball edge.
+                    const bound = seedR + (1 - seedR) * spread;
+                    return `<path class="ball-region" fill-rule="evenodd" fill="${color}" opacity="0.22" ` +
+                           `d="${circlePath(1)} ${circlePath(bound)}"/>` + boundary;
+                }
+                // similar: faint full-disk wash plus a ring band around the seed radius
+                const band = 0.09 * BALL_R;
+                return `<circle class="ball-region" cx="${BALL_CX}" cy="${BALL_CY}" r="${BALL_R}" ` +
+                       `fill="${color}" opacity="0.07"/>` +
+                       `<circle class="ball-region" cx="${BALL_CX}" cy="${BALL_CY}" r="${r0}" fill="none" ` +
+                       `stroke="${color}" stroke-width="${(band * 2).toFixed(2)}" opacity="0.35"/>` + boundary;
+            };
+
+            const renderBallLegend = (meta, seedR) => {
+                ballLegend.innerHTML =
+                    '<div class="ball-legend-title">Mode region</div>' +
+                    Object.keys(MODE_META).map((k) => {
+                        const m = MODE_META[k];
+                        return `<div class="ball-legend-row${k === ballState.mode ? ' is-active' : ''}" data-mode="${k}">` +
+                            `<span class="ball-legend-swatch" style="background:${m.color}"></span>` +
+                            `<span>${esc(m.label)}</span>` +
+                            (k === ballState.mode ? '<span class="ball-legend-check">&#10003;</span>' : '') +
+                            '</div>';
+                    }).join('') +
+                    `<div class="ball-legend-row"><span class="ball-legend-swatch ball-swatch-seed" style="background:${meta.color}"></span>` +
+                    `<span>Seed${ballState.seedRadius !== null ? ' (R ' + seedR.toFixed(3) + ')' : ''}</span></div>` +
+                    '<div class="ball-legend-row"><span class="ball-legend-swatch ball-swatch-dot" style="background:' +
+                    meta.color + '"></span><span>Result dot (color = distance from seed)</span></div>';
+                ballLegend.querySelectorAll('[data-mode]').forEach((row) => {
+                    row.addEventListener('click', () => {
+                        const select = document.getElementById('hyper-mode');
+                        select.value = row.dataset.mode;
+                        select.dispatchEvent(new Event('change'));
+                    });
+                });
+            };
+
+            const formatSeedLabel = (song) => {
+                if (!song) return 'Seed song';
+                const base = ((song.title || '') + (song.author ? ' \u2014 ' + song.author : '')).trim();
+                return base || 'Seed song';
+            };
+
+            const renderBallDetail = (meta, seedR) => {
+                if (ballState.seedRadius === null) {
+                    ballDetail.innerHTML = '<strong>' + esc(meta.label) + '</strong> - the highlighted region is ' +
+                        esc(MODE_REGION_DESC[ballState.mode]) +
+                        '. Pick a seed song and run the search to plot results on the ball.';
+                    return;
+                }
+                const rows = ballState.results.length;
+                ballDetail.innerHTML = '<strong>' + esc(ballState.seedLabel || 'Seed song') + '</strong>' +
+                    '<br>Seed radius R ' + seedR.toFixed(3) +
+                    '<br>' + rows + ' result track(s) - mode ' + esc(meta.label);
+            };
+
+            const renderBall = () => {
+                const meta = MODE_META[ballState.mode] || MODE_META.similar;
+                const seedR = (typeof ballState.seedRadius === 'number' && Number.isFinite(ballState.seedRadius))
+                    ? Math.min(Math.max(ballState.seedRadius, 0.05), 0.95)
+                    : 0.45;
+                const parts = [];
+                parts.push(`<circle class="ball-shell" cx="${BALL_CX}" cy="${BALL_CY}" r="${BALL_R}"/>`);
+                parts.push(ballRegion(seedR, meta.color));
+                const dists = ballState.results
+                    .map((r) => (typeof r.distance === 'number' && Number.isFinite(r.distance)) ? r.distance : null)
+                    .filter((v) => v !== null);
+                const maxD = dists.length ? Math.max.apply(null, dists) : 1;
+                const near = hexToRgb(meta.color);
+                const far = hexToRgb('#9ca3af');
+                ballState.results.forEach((r, idx) => {
+                    const rad = Number(r.hyperbolic_radius);
+                    if (!Number.isFinite(rad) || rad <= 0 || rad >= 1) return;
+                    const angle = hashAngle(String(r.item_id || ('r' + idx)));
+                    const [x, y] = ballPoint(Math.min(rad, 0.97), angle);
+                    const t = (typeof r.distance === 'number' && maxD > 0) ? Math.min(1, r.distance / maxD) : 1;
+                    const fill = mixRgb(near, far, t);
+                    const label = [r.title, r.author].filter(Boolean).join(' \u2014 ') || (r.item_id || 'Track');
+                    parts.push(
+                        `<circle class="ball-dot" data-idx="${idx}" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="4" fill="${fill}">` +
+                        `<title>${esc(label)}\nR ${rad.toFixed(3)} \u00b7 d ${(r.distance ?? 0).toFixed(3)}</title></circle>`
+                    );
+                });
+                if (ballState.seedRadius !== null) {
+                    const [sx, sy] = ballPoint(seedR, 0);
+                    parts.push(
+                        '<g class="ball-seed">' +
+                        `<circle cx="${sx.toFixed(2)}" cy="${sy.toFixed(2)}" r="8" fill="${meta.color}" opacity="0.25"/>` +
+                        `<circle cx="${sx.toFixed(2)}" cy="${sy.toFixed(2)}" r="4.5" fill="${meta.color}" stroke="#fff" stroke-width="1.5">` +
+                        `<title>Seed: ${esc(ballState.seedLabel || 'seed song')}\nR ${seedR.toFixed(3)}</title></circle></g>`
+                    );
+                }
+                ballSvg.innerHTML = parts.join('');
+                renderBallLegend(meta, seedR);
+                renderBallDetail(meta, seedR);
+            };
+
+            ballSvg.addEventListener('click', (e) => {
+                const dot = e.target.closest('.ball-dot');
+                if (!dot) return;
+                const r = ballState.results[Number(dot.dataset.idx)];
+                if (!r) return;
+                ballDetail.innerHTML = '<strong>' + esc(r.title || r.item_id) + '</strong>' +
+                    (r.author ? ' \u2014 ' + esc(r.author) : '') +
+                    '<br>R ' + Number(r.hyperbolic_radius).toFixed(3) +
+                    ' \u00b7 distance ' + (r.distance ?? 0).toFixed(3);
+            });
+
+            similarForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                statusDiv.textContent = '';
+                statusDiv.className = '';
+                if (!selectedSong) {
+                    statusDiv.textContent = 'Select a song from the autocomplete suggestions first.';
+                    statusDiv.className = 'status-error';
+                    return;
+                }
+                const mode = document.getElementById('hyper-mode').value;
+                const limit = Number.parseInt(document.getElementById('hyper-limit').value, 10) || 20;
+                const radialSpread = clampSpread(Number.parseFloat(spreadInput.value));
+                statusDiv.textContent = 'Searching hyperbolic neighbors...';
+                statusDiv.className = '';
+                try {
+                    const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_similar_api") }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            item_id: selectedSong.item_id,
+                            mode: mode,
+                            limit: limit,
+                            radial_spread: radialSpread
+                        })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        statusDiv.textContent = data.error || 'Search failed.';
+                        statusDiv.className = 'status-error';
+                        similarSection.classList.add('hidden');
+                        return;
+                    }
+                    statusDiv.textContent = `${data.count} track(s) found (${mode}).`;
+                    statusDiv.className = '';
+                    ballState.mode = mode;
+                    ballState.seedRadius = (typeof data.seed_radius === 'number' && Number.isFinite(data.seed_radius))
+                        ? data.seed_radius : ballState.seedRadius;
+                    if (typeof data.radial_spread === 'number' && Number.isFinite(data.radial_spread)) {
+                        applySpread(data.radial_spread);
+                    }
+                    ballState.seedLabel = formatSeedLabel(selectedSong);
+                    ballState.results = data.results || [];
+                    renderBall();
+                    renderResults(data.results || [], selectedSong.item_id);
+                    document.getElementById('hyper-playlist-creator').classList.remove('hidden');
+                    similarSection.classList.remove('hidden');
+                } catch (err) {
+                    statusDiv.textContent = 'An unexpected error occurred.';
+                    statusDiv.className = 'status-error';
+                    console.error('Hyperbolic search error:', err);
+                }
+            });
+
+            // ----- Tab 1: create playlist -----
+            const playlistForm = document.getElementById('hyper-playlist-form');
+            const playlistStatus = document.getElementById('playlist-status');
+            playlistForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                playlistStatus.textContent = '';
+                playlistStatus.className = '';
+                const name = document.getElementById('hyper-playlist-name').value.trim();
+                if (!name) return;
+                const trackIds = currentTrackIds;
+                if (!trackIds.length) {
+                    playlistStatus.textContent = 'No tracks to add.';
+                    playlistStatus.className = 'status-error';
+                    return;
+                }
+                try {
+                    const response = await fetch('{{ url_for("ivf_bp.create_media_server_playlist") }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ playlist_name: name, track_ids: trackIds })
+                    });
+                    const data = await response.json();
+                    playlistStatus.className = response.ok ? 'status-success' : 'status-error';
+                    playlistStatus.textContent = data.message || data.error || 'Playlist request finished.';
+                } catch (err) {
+                    playlistStatus.className = 'status-error';
+                    playlistStatus.textContent = 'Could not reach the playlist endpoint.';
+                    console.error('Playlist creation error:', err);
+                }
+            });
+
+            // ----- Tab 2: hierarchy tree -----
+            const treeContainer = document.getElementById('hyper-tree');
+
+            const icons = {
+                folder: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h4l1.5 1.5h7.5v8a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12V3a.5.5 0 0 1 .5-.5h-.5z"/></svg>',
+                track: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 2.5v7.05a2.5 2.5 0 1 0 1 2V6.5l5-1v-3L8 3.5z"/></svg>'
+            };
+
+            const buildLeafPlaylistForm = (trackItems, name) => {
+                const wrap = document.createElement('div');
+                wrap.className = 'tree-leaf-playlist';
+                const form = document.createElement('form');
+                form.innerHTML = `
+                    <input type="text" class="tree-leaf-name" value="${esc(name || '')}" placeholder="Playlist name..." required>
+                    <button type="submit" class="btn btn-primary">Create Playlist (${trackItems.length} tracks)</button>
+                    <span class="tree-leaf-status"></span>`;
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const nameInput = form.querySelector('.tree-leaf-name');
+                    const status = form.querySelector('.tree-leaf-status');
+                    const name = nameInput.value.trim();
+                    if (!name) return;
+                    status.textContent = 'Creating...';
+                    status.className = 'tree-leaf-status';
+                    try {
+                        const response = await fetch('{{ url_for("ivf_bp.create_media_server_playlist") }}', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                playlist_name: name,
+                                track_ids: trackItems.map(t => t.id)
+                            })
+                        });
+                        const data = await response.json();
+                        status.textContent = data.message || data.error || 'Playlist request finished.';
+                        status.className = 'tree-leaf-status ' + (response.ok ? 'status-success' : 'status-error');
+                    } catch (err) {
+                        status.textContent = 'Could not reach the playlist endpoint.';
+                        status.className = 'tree-leaf-status status-error';
+                        console.error('Tree playlist creation error:', err);
+                    }
+                });
+                wrap.appendChild(form);
+                return wrap;
+            };
+
+            const renderTree = (node) => {
+                treeContainer.innerHTML = '';
+                const mount = document.createElement('div');
+                const rootNode = buildTreeNode(node);
+                const children = rootNode.querySelector('.tree-children');
+                children.innerHTML = '';
+                children.dataset.loaded = '1';
+                (node.items || []).forEach(item => children.appendChild(buildTreeChild(item)));
+                rootNode.classList.add('open');
+                mount.appendChild(rootNode);
+                treeContainer.appendChild(mount);
+            };
+
+            const KIND_LABELS = {
+                root: '',
+                mood: 'Mood: ',
+                main_genre: 'Genre: ',
+                subgenre: 'Subgenre: ',
+                genre: 'Genre: ',
+                cluster: ''
+            };
+
+            const buildTreeNode = (node) => {
+                const holder = document.createElement('div');
+                holder.className = 'tree-folder';
+
+                const head = document.createElement('div');
+                head.className = 'tree-folder-head';
+                const prefix = KIND_LABELS[node.kind] || '';
+                head.innerHTML = `
+                    <span class="tree-arrow">&#9656;</span>
+                    <span class="tree-icon">${icons.folder}</span>
+                    <span class="tree-label">${prefix}${esc(node.name || node.id)}</span>
+                    <span class="tree-summary">(${node.children_count})</span>`;
+                holder.appendChild(head);
+
+                const children = document.createElement('div');
+                children.className = 'tree-children';
+                children.innerHTML = '<div class="tree-loading">Loading...</div>';
+                holder.appendChild(children);
+
+                head.addEventListener('click', async () => {
+                    const isOpen = holder.classList.contains('open');
+                    if (isOpen) {
+                        holder.classList.remove('open');
+                        return;
+                    }
+                    holder.classList.add('open');
+                    if (children.dataset.loaded === '1') return;
+                    children.dataset.loaded = '1';
+                    children.innerHTML = '<div class="tree-loading">Loading...</div>';
+                    try {
+                        const params = new URLSearchParams({ node_id: node.id });
+                        const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_tree_api") }}?' + params.toString());
+                        const data = await response.json();
+                        if (!response.ok) {
+                            children.innerHTML = `<div class="tree-error">${esc(data.error || 'Failed to load.')}</div>`;
+                            return;
+                        }
+                        const sub = data.node;
+                        if (!sub.items.length) {
+                            children.innerHTML = '<div class="tree-summary">Empty folder.</div>';
+                            return;
+                        }
+                        children.innerHTML = '';
+                        if (sub.leaf) {
+                            children.appendChild(buildLeafPlaylistForm(sub.items, sub.name || node.name));
+                        }
+                        sub.items.forEach(item => {
+                            children.appendChild(buildTreeChild(item));
+                        });
+                    } catch (err) {
+                        children.innerHTML = '<div class="tree-error">Could not reach the tree endpoint.</div>';
+                        console.error('Tree browse error:', err);
+                    }
+                });
+                return holder;
+            };
+
+            const buildTreeChild = (item) => {
+                if (item.type === 'track') {
+                    const div = document.createElement('div');
+                    div.className = 'tree-track';
+                    div.innerHTML = `<span class="tree-icon">${icons.track}</span><span class="tree-track-label">${esc(item.name || item.id)}</span>`;
+                    return div;
+                }
+                const folder = buildTreeNode(item);
+                return folder;
+            };
+
+            const loadTreeRoot = async () => {
+                treeContainer.innerHTML = '<div class="tree-loading">Loading tree...</div>';
+                try {
+                    const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_tree_api") }}');
+                    const data = await response.json();
+                    if (!response.ok) {
+                        treeContainer.innerHTML = `<div class="tree-error">${esc(data.error || 'Failed to load the tree.')}</div>`;
+                        return;
+                    }
+                    renderTree(data.node);
+                } catch (err) {
+                    treeContainer.innerHTML = '<div class="tree-error">Could not reach the tree endpoint.</div>';
+                    console.error('Tree root load error:', err);
+                }
+            };
+
+            // Lazy-load the tree on first visit to its tab.
+            document.querySelector('.tab-btn[data-tab="tree"]').addEventListener('click', () => {
+                if (!treeContainer.dataset.loaded) {
+                    treeContainer.dataset.loaded = '1';
+                    loadTreeRoot();
+                }
+            });
+
+            // Poincare ball: re-render the mode region whenever the mode changes
+            // (before any search), and draw the initial preview. The radial
+            // spread control only affects roots/niche, so it is disabled
+            // (but still visible, keeping its value) for standard similar.
+            const updateSpreadEnabled = () => {
+                const disabled = document.getElementById('hyper-mode').value === 'similar';
+                spreadSlider.disabled = disabled;
+                spreadInput.disabled = disabled;
+            };
+            document.getElementById('hyper-mode').addEventListener('change', () => {
+                ballState.mode = document.getElementById('hyper-mode').value;
+                updateSpreadEnabled();
+                renderBall();
+            });
+            updateSpreadEnabled();
+            renderBall();
+        })();
+    </script>
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

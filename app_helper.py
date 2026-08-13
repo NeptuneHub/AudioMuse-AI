@@ -56,6 +56,7 @@ from database import (  # noqa: F401
 )
 from config import (  # noqa: F401
     STRATIFIED_GENRES,
+    OTHER_FEATURE_LABELS,
     TASK_STATUS_NEW,
     TASK_STATUS_RUNNING,
     TASK_STATUS_PENDING,
@@ -196,6 +197,29 @@ def top_stratified_genre(mood_vector):
     return max(candidates, key=scores.get)
 
 
+def top_clap_mood(other_features):
+    # Dominant CLAP mood label from the stored other_features (danceable /
+    # aggressive / happy / party / relaxed / sad), mirroring how top genre is
+    # derived from mood_vector. Returns None when no mood is present so callers
+    # can skip the mood entirely instead of inventing one.
+    if not other_features or not isinstance(other_features, str):
+        return None
+    scores = {}
+    for part in other_features.split(','):
+        label, _, value = part.partition(':')
+        label = label.strip()
+        if not label:
+            continue
+        try:
+            scores[label] = float(value)
+        except ValueError:
+            continue
+    candidates = [m for m in OTHER_FEATURE_LABELS if m in scores]
+    if not candidates:
+        return None
+    return max(candidates, key=scores.get)
+
+
 def attach_song_features(rows, id_key='item_id'):
     if not rows:
         return rows
@@ -212,6 +236,7 @@ def attach_song_features(rows, id_key='item_id'):
             r.setdefault('mood_vector', s.get('mood_vector'))
             r.setdefault('other_features', s.get('other_features'))
             r.setdefault('top_genre', top_stratified_genre(s.get('mood_vector')))
+            r.setdefault('top_mood', top_clap_mood(s.get('other_features')))
     return rows
 
 
@@ -242,6 +267,7 @@ def serialize_neighbor_results(
             "mood_vector": info.get('mood_vector'),
             "other_features": info.get('other_features'),
             "top_genre": top_stratified_genre(info.get('mood_vector')),
+            "top_mood": top_clap_mood(info.get('other_features')),
         }
         if include_album_artist:
             row["album_artist"] = info.get('album_artist') or 'unknown'

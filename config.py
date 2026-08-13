@@ -718,6 +718,53 @@ EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicn
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
 
+# --- Hyperbolic Explorer (Poincare ball over the MusiCNN embeddings) ---
+# proj(x) = tanh(||x|| / s) * (x / ||x||), R = ||proj(x)||. The scale s is
+# calibrated from the catalogue's real norm distribution (percentile
+# HYPERBOLIC_RADIUS_PERCENTILE) instead of hardcoded, because the bare formula
+# saturates tanh past ||x|| ~= 3 and flattens all radial separation. A value of
+# None means auto-calibrate once and persist the result in app_config.
+HYPERBOLIC_RADIUS_SCALE = float(os.environ.get("HYPERBOLIC_RADIUS_SCALE") or "0") or None
+HYPERBOLIC_RADIUS_PERCENTILE = float(os.environ.get("HYPERBOLIC_RADIUS_PERCENTILE", "95"))
+# Raw-space IVF candidate over-fetch multiplier before hyperbolic re-ranking.
+HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFETCH", "4"))
+# Fraction of the radial range that roots/niche modes must move before a
+# candidate qualifies, so the two modes visibly differ from plain similar.
+# Roots only returns tracks at least this fraction deeper toward the origin
+# (radius < seed_radius * (1 - spread)); niche only tracks at least this
+# fraction of the remaining distance toward the boundary (radius >
+# seed_radius + (1 - seed_radius) * spread). The candidates are then ranked by
+# exact Poincare distance within that window. 0 keeps the old band-hugging
+# behaviour where every mode returns the tracks nearest to the seed's radius.
+HYPERBOLIC_RADIAL_SPREAD = float(os.environ.get("HYPERBOLIC_RADIAL_SPREAD", "0.15"))
+HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "20"))
+HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
+# Directory tree shape: when genre_subgenre.json is present and dimensionally
+# usable the root is a MAIN GENRE partition (nearest genre centroid), then a
+# SUBGENRE partition (nearest of that genre's subgenres), then named k-means
+# clusters for any subgenre still above the target leaf size - exactly three
+# levels (GENRE -> SUBGENRE -> NAMED CLUSTER), nothing deeper. Without usable
+# genre data the tree falls back to a legacy mood partition
+# (mood_centroids_real_080_clap.json) followed by a main-genre partition, then
+# the same named-cluster level. Only TARGET sizes are derived from the
+# catalogue size at cache-build time, so a 500-track library and a 500,000-track
+# library each get a browsable tree instead of one fixed shape.
+# Below this many tracks, a folder (mood, genre, subgenre) stops splitting and
+# lists its tracks directly instead of generating clusters.
+HYPERBOLIC_TARGET_LEAF_SIZE = int(os.environ.get("HYPERBOLIC_TARGET_LEAF_SIZE", "150"))
+# Minimum songs a named cluster must hold to survive tree build. Clusters below
+# this are pruned, and any subgenre left without at least one surviving cluster
+# is hidden entirely (a genre with no subgenres is hidden too). The tree is
+# built per server, so each server only shows genres/subgenres it can actually
+# back with a real cluster of songs.
+HYPERBOLIC_MIN_CLUSTER_SIZE = int(os.environ.get("HYPERBOLIC_MIN_CLUSTER_SIZE", "20"))
+
+# Duration (in seconds) to keep the Hyperbolic Explorer tree cache loaded after
+# last use. Unlike the other indexes it is a fully materialized Python object
+# tree (not disk-paged), so it is lazy-loaded when the /hyperbolic page opens
+# and auto-unloads after this idle period to free RAM.
+HYPERBOLIC_TREE_WARMUP_DURATION = int(os.environ.get("HYPERBOLIC_TREE_WARMUP_DURATION", "300"))
+
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
@@ -994,6 +1041,11 @@ PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
 # Path to the JSON file containing mood centroids for the path-to-mood feature.
 MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap.json')
+
+# Path to the JSON file containing genre -> subgenre centroids used by the
+# Hyperbolic Explorer tree's genre levels (main genre, then subgenre). Built
+# offline by query/brainstorm_genre_subgenre_080.py from the live catalogue.
+GENRE_SUBGENRE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_subgenre.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
