@@ -994,10 +994,19 @@ def listen_for_index_reloads():
                     sg_success = False
 
                 try:
-                    logger.info("Reloading Hyperbolic Explorer tree cache...")
-                    from tasks.hyperbolic_manager import load_hyperbolic_tree_cache
+                    from tasks.hyperbolic_manager import (
+                        is_hyperbolic_tree_cache_loaded,
+                        load_hyperbolic_tree_cache,
+                    )
 
-                    load_hyperbolic_tree_cache()
+                    if is_hyperbolic_tree_cache_loaded():
+                        logger.info("Reloading Hyperbolic Explorer tree cache...")
+                        load_hyperbolic_tree_cache()
+                    else:
+                        logger.info(
+                            "Hyperbolic Explorer tree cache is idle; skipping reload "
+                            "(lazy-loads fresh data on next /hyperbolic page open)."
+                        )
                     hyper_success = True
                 except Exception:
                     logger.exception("Hyperbolic Explorer cache reload failed")
@@ -1206,19 +1215,12 @@ if not _is_worker:
         t = threading.Thread(target=_start_map_init_background, daemon=True)
         t.start()
 
-        def _start_hyperbolic_init_background():
-            try:
-                from tasks.hyperbolic_manager import init_hyperbolic_cache
-
-                logger.info('Loading Hyperbolic Explorer tree cache from app_config.')
-                with app.app_context():
-                    init_hyperbolic_cache()
-                logger.info('Hyperbolic Explorer tree cache load finished.')
-            except Exception:
-                logger.exception('Background init_hyperbolic_cache failed')
-
-        t = threading.Thread(target=_start_hyperbolic_init_background, daemon=True)
-        t.start()
+        # The Hyperbolic Explorer tree cache is NOT loaded here: unlike the
+        # indexes above it is a fully materialized Python object tree whose RSS
+        # scales with catalogue size, so it lazy-loads on the first /hyperbolic
+        # page open (warmup_hyperbolic_tree_cache, called from the page and from
+        # the tree API) and auto-unloads after HYPERBOLIC_TREE_WARMUP_DURATION
+        # idle seconds instead of staying resident for the life of the process.
 
 # --- Start Background Listener Thread (Flask server only) ---
 if not _is_worker:

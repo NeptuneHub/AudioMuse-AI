@@ -746,21 +746,24 @@ HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
 # levels (GENRE -> SUBGENRE -> NAMED CLUSTER), nothing deeper. Without usable
 # genre data the tree falls back to a legacy mood partition
 # (mood_centroids_real_080_clap.json) followed by a main-genre partition, then
-# the same named-cluster level. The k-means fallback branching is
-# HYPERBOLIC_TARGET_BRANCHING; only TARGET sizes are derived from the catalogue
-# size at cache-build time, so a 500-track library and a 500,000-track library
-# each get a browsable tree instead of one fixed shape.
+# the same named-cluster level. Only TARGET sizes are derived from the
+# catalogue size at cache-build time, so a 500-track library and a 500,000-track
+# library each get a browsable tree instead of one fixed shape.
 # Below this many tracks, a folder (mood, genre, subgenre) stops splitting and
 # lists its tracks directly instead of generating clusters.
 HYPERBOLIC_TARGET_LEAF_SIZE = int(os.environ.get("HYPERBOLIC_TARGET_LEAF_SIZE", "150"))
-# Desired number of named-cluster children per non-leaf fallback folder.
-HYPERBOLIC_TARGET_BRANCHING = int(os.environ.get("HYPERBOLIC_TARGET_BRANCHING", "8"))
 # Minimum songs a named cluster must hold to survive tree build. Clusters below
 # this are pruned, and any subgenre left without at least one surviving cluster
 # is hidden entirely (a genre with no subgenres is hidden too). The tree is
 # built per server, so each server only shows genres/subgenres it can actually
 # back with a real cluster of songs.
 HYPERBOLIC_MIN_CLUSTER_SIZE = int(os.environ.get("HYPERBOLIC_MIN_CLUSTER_SIZE", "20"))
+
+# Duration (in seconds) to keep the Hyperbolic Explorer tree cache loaded after
+# last use. Unlike the other indexes it is a fully materialized Python object
+# tree (not disk-paged), so it is lazy-loaded when the /hyperbolic page opens
+# and auto-unloads after this idle period to free RAM.
+HYPERBOLIC_TREE_WARMUP_DURATION = int(os.environ.get("HYPERBOLIC_TREE_WARMUP_DURATION", "300"))
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"

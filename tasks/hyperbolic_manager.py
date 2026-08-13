@@ -23,11 +23,11 @@ Main Features:
 * hyperbolic_similar: similar over-fetches raw-space IVF candidates with the
   shared similar-song defaults (radius walk, content dedup, per-artist cap) and
   re-ranks them by exact Poincare distance; roots / niche instead draw their
-  candidate pool from the embedding table by radius (at least
-  HYPERBOLIC_RADIAL_SPREAD of the radial range away from the seed) so the two
-  modes visibly leave the seed's radius band, then rank by exact distance. All
-  modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
-  similar-song page
+  candidate pool from the embedding table by radius (at least radial_spread of
+  the radial range away from the seed, caller-supplied and defaulting to
+  HYPERBOLIC_RADIAL_SPREAD) so the two modes visibly leave the seed's radius
+  band, then rank by exact distance. All modes end with the same content-dedup
+  + MAX_SONGS_PER_ARTIST pass as the similar-song page
 * build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
   partition, the mood fallback, and the named k-means clusters - PER SERVER,
   and persists one tree per configured server as gzipped JSON blobs chunked
@@ -68,6 +68,8 @@ import gzip
 import json
 import logging
 import re
+import threading
+import time
 
 import numpy as np
 
@@ -389,7 +391,7 @@ def get_poincare_radius(item_id):
     return row[1] if row is not None else None
 
 
-def hyperbolic_similar(target_item_id, mode="similar", limit=20):
+def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
     from tasks.ivf_manager import find_nearest_neighbors_by_id
 
@@ -397,6 +399,8 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20):
     if mode not in ("similar", "roots", "niche"):
         raise ValueError('mode must be one of "similar", "roots", "niche"')
     limit = max(1, min(int(limit), int(config.HYPERBOLIC_MAX_LIMIT)))
+    if radial_spread is None:
+        radial_spread = config.HYPERBOLIC_RADIAL_SPREAD
     target = _fetch_poincare_rows([target_item_id]).get(target_item_id)
     if target is None:
         raise ValueError(
@@ -423,9 +427,10 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20):
     else:
         # roots/niche must visibly leave the seed's radius band, so the pool is
         # drawn from the embedding table by radius instead of by raw IVF
-        # distance: every candidate is at least HYPERBOLIC_RADIAL_SPREAD of the
-        # radial range away from the seed, then ranked by exact distance.
-        spread = min(max(float(config.HYPERBOLIC_RADIAL_SPREAD), 0.0), 0.99)
+        # distance: every candidate is at least radial_spread of the radial
+        # range away from the seed (caller-supplied, defaulting to
+        # HYPERBOLIC_RADIAL_SPREAD), then ranked by exact distance.
+        spread = min(max(float(radial_spread), 0.0), 0.99)
         if mode == "roots":
             bound = target_radius * (1.0 - spread)
             rows = _fetch_poincare_rows_in_radius(bound, below=True, limit=overfetch)
@@ -725,6 +730,72 @@ def init_hyperbolic_cache():
         load_hyperbolic_tree_cache()
     except Exception:
         logger.exception("init_hyperbolic_cache failed")
+
+
+def is_hyperbolic_tree_cache_loaded() -> bool:
+    return bool(_TREE_CACHE.get("nodes"))
+
+
+# The tree cache is a fully materialized Python object tree (one dict per
+# track/folder), not disk-paged like the IVF indexes, so its RSS cost scales
+# with catalogue size. It is lazy-loaded on the first /hyperbolic page open
+# (or tree API call after an idle unload) and dropped again after
+# HYPERBOLIC_TREE_WARMUP_DURATION seconds with no further activity - the same
+# warm-cache-timer shape as tasks.gte_warm_cache and the CLAP text model.
+_TREE_WARM_CACHE = {
+    "expiry_time": None,
+    "timer_thread": None,
+    "lock": threading.RLock(),
+}
+
+
+def _unload_tree_timer_worker():
+    while True:
+        with _TREE_WARM_CACHE["lock"]:
+            expiry = _TREE_WARM_CACHE["expiry_time"]
+            if expiry is None:
+                break
+            if expiry - time.time() <= 0:
+                if is_hyperbolic_tree_cache_loaded():
+                    logger.info("Hyperbolic tree warm cache expired - unloading tree cache")
+                    reset_hyperbolic_tree_cache()
+                _TREE_WARM_CACHE["expiry_time"] = None
+                _TREE_WARM_CACHE["timer_thread"] = None
+                break
+            time_remaining = expiry - time.time()
+        time.sleep(min(1.0, max(0.05, time_remaining)))
+
+
+def warmup_hyperbolic_tree_cache():
+    with _TREE_WARM_CACHE["lock"]:
+        if not is_hyperbolic_tree_cache_loaded():
+            logger.info("Warming up Hyperbolic Explorer tree cache...")
+            init_hyperbolic_cache()
+
+        duration = config.HYPERBOLIC_TREE_WARMUP_DURATION
+        _TREE_WARM_CACHE["expiry_time"] = time.time() + duration
+
+        if (
+            _TREE_WARM_CACHE["timer_thread"] is None
+            or not _TREE_WARM_CACHE["timer_thread"].is_alive()
+        ):
+            thread = threading.Thread(target=_unload_tree_timer_worker, daemon=True)
+            thread.start()
+            _TREE_WARM_CACHE["timer_thread"] = thread
+            logger.info("Started Hyperbolic tree warm cache timer (%ss)", duration)
+        else:
+            logger.debug("Reset Hyperbolic tree warm cache timer (%ss)", duration)
+
+    return {"loaded": is_hyperbolic_tree_cache_loaded(), "expiry_seconds": duration}
+
+
+def get_hyperbolic_tree_warm_status():
+    with _TREE_WARM_CACHE["lock"]:
+        expiry = _TREE_WARM_CACHE["expiry_time"]
+
+    if expiry is None or not is_hyperbolic_tree_cache_loaded():
+        return {"active": False, "seconds_remaining": 0}
+    return {"active": True, "seconds_remaining": max(0, int(expiry - time.time()))}
 
 
 def build_hyperbolic_tree(node_id=None, server_id=None):

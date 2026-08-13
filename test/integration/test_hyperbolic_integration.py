@@ -486,7 +486,6 @@ class TestTreeEngine:
         conn = _point_get_db_to_test
         _seed_poincare(conn)
         monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 2)
-        monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 2)
         # This test catalog is tiny (20 tracks) purely to exercise the naming
         # path; the per-server pruning floor would otherwise hide every cluster.
         monkeypatch.setattr(config, "HYPERBOLIC_MIN_CLUSTER_SIZE", 1)
@@ -622,6 +621,86 @@ class TestEndpoints:
             "/api/hyperbolic/similar", json={"item_id": "item-000", "mode": "bogus"}
         )
         assert response.status_code == 400
+
+    def test_similar_endpoint_non_numeric_radial_spread_400(self, _point_get_db_to_test):
+        client = self._client()
+        response = client.post(
+            "/api/hyperbolic/similar",
+            json={"item_id": "item-000", "mode": "roots", "radial_spread": "not-a-number"},
+        )
+        assert response.status_code == 400
+
+    def test_similar_endpoint_out_of_range_radial_spread_400(self, _point_get_db_to_test):
+        client = self._client()
+        response = client.post(
+            "/api/hyperbolic/similar",
+            json={"item_id": "item-000", "mode": "roots", "radial_spread": 1.5},
+        )
+        assert response.status_code == 400
+
+    def test_similar_endpoint_passes_caller_radial_spread_to_manager(
+        self, _point_get_db_to_test, monkeypatch
+    ):
+        conn = _point_get_db_to_test
+        import app_server_context
+        from app_hyperbolic import hyperbolic_bp
+
+        _seed_poincare(conn)
+        monkeypatch.setattr(app_server_context, "resolve_input_item_id", lambda raw, data=None: raw)
+        monkeypatch.setattr(
+            app_server_context, "scope_results",
+            lambda rows, requested_n=None, id_key="item_id": rows,
+        )
+        monkeypatch.setattr(
+            app_server_context, "translate_ids_for_request",
+            lambda item_ids: {str(i): str(i) for i in (item_ids or [])},
+        )
+
+        with patch("tasks.hyperbolic_manager.hyperbolic_similar", return_value=[]) as sim:
+            app = Flask(__name__)
+            app.config["TESTING"] = True
+            app.register_blueprint(hyperbolic_bp)
+            response = app.test_client().post(
+                "/api/hyperbolic/similar",
+                json={"item_id": "item-000", "mode": "roots", "radial_spread": 0.42},
+            )
+
+        assert response.status_code == 200
+        assert response.get_json()["radial_spread"] == pytest.approx(0.42)
+        sim.assert_called_once()
+        assert sim.call_args.kwargs["radial_spread"] == pytest.approx(0.42)
+
+    def test_similar_endpoint_defaults_radial_spread_to_config(
+        self, _point_get_db_to_test, monkeypatch
+    ):
+        conn = _point_get_db_to_test
+        import app_server_context
+        from app_hyperbolic import hyperbolic_bp
+
+        _seed_poincare(conn)
+        monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.33)
+        monkeypatch.setattr(app_server_context, "resolve_input_item_id", lambda raw, data=None: raw)
+        monkeypatch.setattr(
+            app_server_context, "scope_results",
+            lambda rows, requested_n=None, id_key="item_id": rows,
+        )
+        monkeypatch.setattr(
+            app_server_context, "translate_ids_for_request",
+            lambda item_ids: {str(i): str(i) for i in (item_ids or [])},
+        )
+
+        with patch("tasks.hyperbolic_manager.hyperbolic_similar", return_value=[]) as sim:
+            app = Flask(__name__)
+            app.config["TESTING"] = True
+            app.register_blueprint(hyperbolic_bp)
+            response = app.test_client().post(
+                "/api/hyperbolic/similar",
+                json={"item_id": "item-000", "mode": "niche"},
+            )
+
+        assert response.status_code == 200
+        assert response.get_json()["radial_spread"] == pytest.approx(0.33)
+        assert sim.call_args.kwargs["radial_spread"] == pytest.approx(0.33)
 
     def test_similar_endpoint_returns_200(self, _point_get_db_to_test, monkeypatch):
         conn = _point_get_db_to_test

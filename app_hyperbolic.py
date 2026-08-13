@@ -8,19 +8,24 @@
 
 """Hyperbolic Explorer Flask blueprint (hyperbolic_bp).
 
-Serves the ``/hyperbolic`` UI and its two APIs, delegating the projection
-engine to ``tasks.hyperbolic_manager``. PER SERVER scope: caller-supplied ids
-are resolved to canonical ids on input and every response is translated to the
+Serves the ``/hyperbolic`` UI and its APIs, delegating the projection engine
+to ``tasks.hyperbolic_manager``. PER SERVER scope: caller-supplied ids are
+resolved to canonical ids on input and every response is translated to the
 selected server's provider ids on output, so no internal canonical id leaks.
 
 Main Features:
 * POST /api/hyperbolic/similar: seed-song hyperbolic similarity re-ranked by
   exact Poincare distance, with similar / roots / niche radial modes.
-* GET /api/hyperbolic/tree: served from the in-memory tree cache built at
-  Flask startup and rebuilt on every index-reload NOTIFY (like the music
-  map), so a request is a dict lookup, never a catalogue scan or a k-means
-  refit. There is no manual rebuild endpoint by design - the cache is always
-  kept in sync automatically, at analysis end and at process startup.
+* GET /api/hyperbolic/tree: served from the in-memory tree cache, lazily
+  loaded on demand (see warmup below) and rebuilt on every index-reload
+  NOTIFY while warm (like the music map), so a request is a dict lookup,
+  never a catalogue scan or a k-means refit. There is no manual rebuild
+  endpoint by design - the cache is always kept in sync automatically.
+* POST /api/hyperbolic/warmup + GET /api/hyperbolic/warmup/status: the tree
+  cache is a fully materialized Python object tree (not disk-paged like the
+  other indexes), so it is not loaded at Flask startup. The page calls
+  warmup on load so the tree is ready for the first browse, and it
+  auto-unloads after HYPERBOLIC_TREE_WARMUP_DURATION idle seconds.
 * GET /api/hyperbolic/cache_status: read-only diagnostic for that cache.
 * GET /hyperbolic: the two-tab explorer page.
 """
@@ -58,6 +63,7 @@ def hyperbolic_page():
             title="AudioMuse-AI - Hyperbolic Explorer",
             active="hyperbolic",
             app_version=APP_VERSION,
+            hyperbolic_radial_spread_default=min(max(config.HYPERBOLIC_RADIAL_SPREAD, 0.0), 0.99),
         )
     except Exception:
         logger.exception("Error rendering hyperbolic.html")
@@ -73,9 +79,10 @@ def hyperbolic_similar_api():
       - Hyperbolic Explorer
     summary: Re-rank candidates by exact Poincare distance. similar re-ranks
       raw-space IVF neighbors; roots / niche draw their pool by radius (at
-      least HYPERBOLIC_RADIAL_SPREAD of the radial range away from the seed)
-      so they visibly move inward / outward instead of hugging the seed's
-      radius band.
+      least radial_spread, default HYPERBOLIC_RADIAL_SPREAD and
+      caller-overridable, of the radial range away from the seed) so they
+      visibly move inward / outward instead of hugging the seed's radius
+      band.
     requestBody:
       required: true
       content:
@@ -96,6 +103,18 @@ def hyperbolic_similar_api():
                 minimum: 1
                 maximum: 100
                 default: 20
+              radial_spread:
+                type: number
+                format: float
+                minimum: 0
+                maximum: 0.99
+                description: >-
+                  Only used by "roots" / "niche" modes. Fraction of the
+                  seed's remaining radial range (toward the origin for
+                  roots, toward the ball edge for niche) the candidate pool
+                  must clear before it is considered - i.e. how far inward
+                  or outward the search goes. Defaults to
+                  HYPERBOLIC_RADIAL_SPREAD.
     responses:
       200:
         description: Tracks sorted by hyperbolic distance.
@@ -137,6 +156,10 @@ def hyperbolic_similar_api():
                 seed_item_id:
                   type: string
                   description: Provider id of the seed song on the selected server.
+                radial_spread:
+                  type: number
+                  format: float
+                  description: The radial_spread value actually used for this search.
       400:
         description: Missing item_id, invalid mode, or seed without a projection.
       500:
@@ -160,8 +183,19 @@ def hyperbolic_similar_api():
             return jsonify({"error": 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), config.HYPERBOLIC_MAX_LIMIT)
 
+        radial_spread = data.get("radial_spread")
+        if radial_spread is None:
+            radial_spread = config.HYPERBOLIC_RADIAL_SPREAD
+        else:
+            try:
+                radial_spread = float(radial_spread)
+            except (TypeError, ValueError):
+                return jsonify({"error": 'Invalid "radial_spread" value.'}), 400
+            if not (0.0 <= radial_spread <= 0.99):
+                return jsonify({"error": '"radial_spread" must be between 0 and 0.99.'}), 400
+
         canonical_id = app_server_context.resolve_input_item_id(item_id, data)
-        results = hyperbolic_similar(canonical_id, mode=mode, limit=limit)
+        results = hyperbolic_similar(canonical_id, mode=mode, limit=limit, radial_spread=radial_spread)
         _attach_title_author(results)
         attach_song_features(results)
         results = app_server_context.scope_results(results, id_key="item_id")
@@ -174,6 +208,7 @@ def hyperbolic_similar_api():
             "mode": mode,
             "seed_radius": get_poincare_radius(canonical_id),
             "seed_item_id": seed_id_map.get(canonical_id) or canonical_id,
+            "radial_spread": radial_spread,
         })
 
     except ValueError as exc:
@@ -245,10 +280,18 @@ def hyperbolic_tree_api():
         description: Internal error.
     """
     import app_server_context
-    from tasks.hyperbolic_manager import build_hyperbolic_tree, tree_for_server
+    from tasks.hyperbolic_manager import (
+        build_hyperbolic_tree,
+        tree_for_server,
+        warmup_hyperbolic_tree_cache,
+    )
 
     try:
         node_id = (request.args.get("node_id") or "").strip() or None
+
+        # Lazy-load (or reset the idle-unload timer on) the tree cache so a
+        # browse after an idle unload self-heals instead of returning empty.
+        warmup_hyperbolic_tree_cache()
 
         # The tree is built PER SERVER at analysis time, so a request scoped to
         # a server already sees only that server's genres/subgenres/clusters.
@@ -281,6 +324,56 @@ def hyperbolic_tree_api():
     except Exception:
         logger.exception("Hyperbolic tree browse failed")
         return jsonify({"error": "An internal error occurred."}), 500
+
+
+@hyperbolic_bp.route("/api/hyperbolic/warmup", methods=["POST"])
+def hyperbolic_warmup_api():
+    """
+    Warm up the Hyperbolic Explorer tree cache.
+    ---
+    tags:
+      - Hyperbolic Explorer
+    summary: Preload the tree cache and (re)set its idle-eviction timer.
+    description: >-
+      Call this when the /hyperbolic page loads so the Hierarchy Directory
+      tab is ready without a cold-load delay on first browse. The tree is a
+      fully materialized Python object tree (not disk-paged like the other
+      indexes), so it is not loaded at Flask startup and auto-unloads after
+      HYPERBOLIC_TREE_WARMUP_DURATION idle seconds.
+    responses:
+      200:
+        description: Tree cache loaded (or already warm); idle timer reset.
+      500:
+        description: Warmup failed.
+    """
+    from tasks.hyperbolic_manager import warmup_hyperbolic_tree_cache
+
+    try:
+        return jsonify(warmup_hyperbolic_tree_cache())
+    except Exception:
+        logger.exception("Hyperbolic tree cache warmup failed")
+        return jsonify({"error": "An internal error occurred.", "loaded": False}), 500
+
+
+@hyperbolic_bp.route("/api/hyperbolic/warmup/status", methods=["GET"])
+def hyperbolic_warmup_status_api():
+    """
+    Hyperbolic Explorer tree cache warm status.
+    ---
+    tags:
+      - Hyperbolic Explorer
+    summary: Return whether the tree cache is warm and seconds until idle-unload.
+    responses:
+      200:
+        description: Warm cache state.
+    """
+    from tasks.hyperbolic_manager import get_hyperbolic_tree_warm_status
+
+    try:
+        return jsonify(get_hyperbolic_tree_warm_status())
+    except Exception:
+        logger.exception("Failed to get Hyperbolic tree cache warmup status")
+        return jsonify({"active": False, "seconds_remaining": 0})
 
 
 @hyperbolic_bp.route("/api/hyperbolic/cache_status", methods=["GET"])

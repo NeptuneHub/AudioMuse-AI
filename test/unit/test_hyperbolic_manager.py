@@ -221,6 +221,48 @@ def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
     assert captured["bound"] == pytest.approx(0.6)
 
 
+def test_roots_mode_caller_spread_overrides_config(monkeypatch):
+    captured = {}
+
+    def _fake_window(bound, below=True, limit=100):
+        captured["bound"] = bound
+        return {}
+
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
+    hm.hyperbolic_similar("fp_t", mode="roots", limit=2, radial_spread=0.5)
+    # A caller-supplied spread wins over the HYPERBOLIC_RADIAL_SPREAD default.
+    assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.5))
+
+
+def test_niche_mode_caller_spread_overrides_config(monkeypatch):
+    captured = {}
+
+    def _fake_window(bound, below=True, limit=100):
+        captured["bound"] = bound
+        return {}
+
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
+    hm.hyperbolic_similar("fp_t", mode="niche", limit=2, radial_spread=0.5)
+    assert captured["bound"] == pytest.approx(0.6 + (1.0 - 0.6) * 0.5)
+
+
+def test_roots_mode_clamps_out_of_range_caller_spread(monkeypatch):
+    captured = {}
+
+    def _fake_window(bound, below=True, limit=100):
+        captured["bound"] = bound
+        return {}
+
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    hm.hyperbolic_similar("fp_t", mode="roots", limit=2, radial_spread=5.0)
+    assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.99))
+
+
 def test_deduplicate_and_cap_results_matches_similar_song_rules(monkeypatch):
     fake_details = [
         {"item_id": "d1", "title": "Same Song", "author": "Artist A"},
@@ -625,7 +667,6 @@ def test_tree_genre_nesting_stops_at_named_clusters(monkeypatch):
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
-    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
     try:
         _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
         mood, _ = hm.build_hyperbolic_tree("mhappy")
@@ -645,7 +686,6 @@ def test_tree_root_is_genre_and_splits_into_subgenres(monkeypatch):
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
-    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
     genre_subgenres = {
         "rock": {
             "vec": np.array([0.156, 0.0]),
@@ -682,7 +722,6 @@ def test_tree_genre_centroids_fall_back_when_dims_differ(monkeypatch):
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
-    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
     genre_subgenres = {
         "rock": {
             "vec": np.zeros(200),
@@ -709,7 +748,6 @@ def test_tree_leaf_folders_stay_near_target_size(monkeypatch):
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
-    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
     try:
         _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids)
         nodes = hm._TREE_CACHE["nodes"]
@@ -786,7 +824,6 @@ def test_genre_cluster_names_use_ancestor_prefix_and_dedupe(monkeypatch):
         for m in members
     }
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
-    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_BRANCHING", 4)
     monkeypatch.setattr(
         hm, "_fit_clusters",
         lambda vecs, k: np.array([i % k for i in range(len(vecs))], dtype=int),

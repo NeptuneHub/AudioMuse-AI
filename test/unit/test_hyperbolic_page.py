@@ -23,6 +23,7 @@ from unittest.mock import patch
 from flask import Flask
 
 import app_hyperbolic
+import config
 
 
 def test_hyperbolic_page_renders_template():
@@ -39,3 +40,15 @@ def test_hyperbolic_page_renders_template():
     assert kwargs["title"] == "AudioMuse-AI - Hyperbolic Explorer"
     assert kwargs["active"] == "hyperbolic"
     assert kwargs["app_version"] == "v3.2.0"
+    assert kwargs["hyperbolic_radial_spread_default"] == config.HYPERBOLIC_RADIAL_SPREAD
+
+
+def test_hyperbolic_page_clamps_out_of_range_spread_default(monkeypatch):
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 5.0)
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.register_blueprint(app_hyperbolic.hyperbolic_bp)
+    with patch("app_hyperbolic.render_template", return_value="<html>ok</html>") as mock_rt:
+        app.test_client().get("/hyperbolic")
+
+    assert mock_rt.call_args.kwargs["hyperbolic_radial_spread_default"] == 0.99
