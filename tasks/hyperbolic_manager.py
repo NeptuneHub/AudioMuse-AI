@@ -527,6 +527,15 @@ def reset_hyperbolic_tree_cache():
         _TREE_STATE["full_loaded"] = False
 
 
+def _resolve_default_server_id():
+    from tasks.mediaserver import registry
+
+    try:
+        return registry.get_default_server_id()
+    except Exception:
+        return None
+
+
 def _tree_build_targets():
     """The (server_key, server_id, is_default) trees to build at analysis end.
 
@@ -543,10 +552,7 @@ def _tree_build_targets():
         servers = []
     if not servers:
         return [(_DEFAULT_SERVER_KEY, None, True)]
-    try:
-        default_id = registry.get_default_server_id()
-    except Exception:
-        default_id = None
+    default_id = _resolve_default_server_id()
     targets = [(_DEFAULT_SERVER_KEY, default_id, True)]
     for s in servers:
         if s["server_id"] != default_id:
@@ -583,15 +589,18 @@ def _skeleton_tree(tree):
 def tree_for_server(server_id=None):
     """The in-memory tree dict for a request's selected server.
 
-    ``server_id`` None (or the default server key) resolves to the default
-    server's tree; any other id resolves to that server's own tree, falling
-    back to the default tree when the server has none loaded (e.g. it was
-    added after the last analysis run).
+    ``server_id`` None resolves to the default server's tree. The default
+    server's real id is dual-keyed into ``servers`` alongside the sentinel
+    default key (see the load/build functions below) so looking it up by
+    either name hits the same tree. Any other id that has no tree of its own
+    yet (e.g. a server added after the last analysis run) returns an empty
+    tree rather than silently falling back to the default server's tree -
+    a selected server must never show another server's genres/subgenres.
     """
     with _TREE_CACHE_LOCK:
-        if server_id and server_id != _DEFAULT_SERVER_KEY:
-            return _TREE_CACHE["servers"].get(server_id) or _TREE_CACHE
-        return _TREE_CACHE
+        if not server_id or server_id == _DEFAULT_SERVER_KEY:
+            return _TREE_CACHE
+        return _TREE_CACHE["servers"].get(server_id) or {}
 
 
 def build_hyperbolic_tree_cache():
@@ -624,6 +633,8 @@ def build_hyperbolic_tree_cache():
             _TREE_CACHE["flat_ids"] = tree["flat_ids"]
             _TREE_CACHE["track_count"] = tree["track_count"]
             default_track_count = tree["track_count"]
+            if server_id and server_id != server_key:
+                _TREE_CACHE["servers"][server_id] = tree
         _persist_tree_cache_blob(tree, name=_blob_name_for(server_key))
         _persist_tree_cache_blob(_skeleton_tree(tree), name=_skeleton_blob_name_for(server_key))
     _TREE_STATE["full_loaded"] = True
@@ -685,12 +696,15 @@ def load_hyperbolic_tree_cache():
         return 0
 
     track_count = int(payload.get("track_count") or 0)
+    default_id = _resolve_default_server_id()
     with _TREE_CACHE_LOCK:
         _TREE_CACHE["n_bands"] = payload.get("n_bands")
         _TREE_CACHE["nodes"] = payload.get("nodes") or {}
         _TREE_CACHE["flat_ids"] = payload.get("flat_ids") or {}
         _TREE_CACHE["track_count"] = track_count
         _TREE_CACHE["servers"] = {_DEFAULT_SERVER_KEY: payload}
+        if default_id:
+            _TREE_CACHE["servers"][default_id] = payload
         _TREE_STATE["full_loaded"] = True
     for blob_name in _scan_tree_cache_blob_names(_TREE_CACHE_BLOB_NAME):
         server_id = blob_name[len(_TREE_CACHE_BLOB_NAME) + 2:]
@@ -710,12 +724,15 @@ def load_hyperbolic_tree_skeleton():
     payload = _load_tree_cache_blob(name=_TREE_SKELETON_BLOB_NAME)
     if payload is None or payload.get("version") != _TREE_CACHE_VERSION:
         return False
+    default_id = _resolve_default_server_id()
     with _TREE_CACHE_LOCK:
         _TREE_CACHE["n_bands"] = payload.get("n_bands")
         _TREE_CACHE["nodes"] = payload.get("nodes") or {}
         _TREE_CACHE["flat_ids"] = {}
         _TREE_CACHE["track_count"] = int(payload.get("track_count") or 0)
         _TREE_CACHE["servers"] = {_DEFAULT_SERVER_KEY: payload}
+        if default_id:
+            _TREE_CACHE["servers"][default_id] = payload
         _TREE_STATE["full_loaded"] = False
     for blob_name in _scan_tree_cache_blob_names(_TREE_SKELETON_BLOB_NAME):
         server_id = blob_name[len(_TREE_SKELETON_BLOB_NAME) + 2:]
@@ -897,6 +914,15 @@ def build_hyperbolic_tree(node_id=None, server_id=None):
         tree = tree_for_server(server_id)
         nodes = tree.get("nodes")
         if not nodes:
+            # A specific (non-default) server with no tree of its own is a
+            # different situation from "nothing analyzed at all yet" - tell
+            # the caller so the UI can say so, instead of silently rendering
+            # an indistinguishable empty folder.
+            if server_id and server_id != _DEFAULT_SERVER_KEY and server_id not in _TREE_CACHE["servers"]:
+                raise ValueError(
+                    "Hyperbolic Explorer tree is not available for this "
+                    "server yet - run analysis to build it."
+                )
             return _empty_node(node_id, "Hyperbolic Explorer"), []
         node = nodes.get(key)
         full_loaded = _TREE_STATE["full_loaded"]

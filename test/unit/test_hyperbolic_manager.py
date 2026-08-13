@@ -529,6 +529,39 @@ def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
         assert hm.tree_for_server(None)["track_count"] == len(default_mapping)
         assert hm.tree_for_server("sec")["track_count"] == len(sec_mapping)
         assert hm.tree_for_server("sec")["nodes"]["root"]["summary"]["track_count"] == len(sec_mapping)
+        # A server with no tree of its own (e.g. added after the last analysis
+        # run) must never fall back to the default server's tree - that would
+        # leak the default server's genres/subgenres under another server's
+        # selection. tree_for_server reports no tree, and build_hyperbolic_tree
+        # raises a clear "not available yet" error instead of silently
+        # rendering an empty folder the user could mistake for a real result.
+        assert hm.tree_for_server("third") == {}
+        with pytest.raises(ValueError, match="not available"):
+            hm.build_hyperbolic_tree(None, server_id="third")
+    finally:
+        hm.reset_hyperbolic_tree_cache()
+
+
+def test_tree_for_server_resolves_default_by_its_real_server_id(monkeypatch):
+    # The default tree is stored under the sentinel _DEFAULT_SERVER_KEY, but a
+    # request can legitimately pass the default server's real id (a client
+    # explicitly selecting "the server that happens to be default"). That must
+    # still resolve to the default tree, not to the untreed-server empty case.
+    default_mapping = _make_catalogue(n_per_band=20, bands=1)
+    hm.reset_hyperbolic_tree_cache()
+    try:
+        with patch.object(
+                hm, "_tree_build_targets",
+                return_value=[(hm._DEFAULT_SERVER_KEY, "def-real", True)]), \
+             patch.object(hm, "_fetch_all_poincare_rows", return_value=default_mapping), \
+             patch("app_helper.get_score_data_by_ids", return_value=[]), \
+             patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
+             patch.object(hm, "_load_projected_genre_subgenres", return_value={}), \
+             patch.object(hm, "_persist_tree_cache_blob"):
+            hm.build_hyperbolic_tree_cache()
+
+        assert hm.tree_for_server("def-real")["track_count"] == len(default_mapping)
+        assert hm.tree_for_server("def-real")["nodes"] == hm.tree_for_server(None)["nodes"]
     finally:
         hm.reset_hyperbolic_tree_cache()
 

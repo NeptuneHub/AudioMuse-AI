@@ -599,7 +599,17 @@ class TestTreeEngine:
             # The request path resolves the right tree per server.
             assert hm.tree_for_server(None)["track_count"] == 20
             assert hm.tree_for_server("sec")["track_count"] == 10
+            # "def" is the default server's own real id (not the sentinel key)
+            # - it must resolve to the default tree, not to the empty case below.
             assert hm.tree_for_server("def")["track_count"] == 20
+            # A server added after this analysis run has no tree of its own yet
+            # and must NEVER fall back to the default tree - that would leak
+            # the default server's genres/subgenres under its selection. The
+            # request path must surface a clear "not available yet" error
+            # instead of silently rendering an empty folder.
+            assert hm.tree_for_server("new-server-not-yet-analyzed") == {}
+            with pytest.raises(ValueError, match="not available"):
+                hm.build_hyperbolic_tree(None, server_id="new-server-not-yet-analyzed")
         finally:
             hm.reset_hyperbolic_tree_cache()
             registry.invalidate_server_cache()
