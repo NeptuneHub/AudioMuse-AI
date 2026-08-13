@@ -326,7 +326,16 @@ def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
                     f"AND e.hyperbolic_radius IS NOT NULL AND {where} ORDER BY e.item_id",
                     (server_id, bool(include_legacy_default)),
                 )
-            for item_id, blob, radius in cur.fetchall():
+            rows = cur.fetchall()
+            if not rows and server_id is not None and include_legacy_default:
+                cur.execute(
+                    "SELECT item_id, poincare_embedding, hyperbolic_radius "
+                    "FROM embedding WHERE poincare_embedding IS NOT NULL "
+                    "AND hyperbolic_radius IS NOT NULL "
+                    "ORDER BY item_id"
+                )
+                rows = cur.fetchall()
+            for item_id, blob, radius in rows:
                 vec = np.frombuffer(bytes(blob), dtype=np.float32)
                 if _is_finite_row(vec, radius):
                     out[item_id] = (vec, float(radius))
@@ -491,6 +500,8 @@ _TREE_CACHE = {
     "servers": {},
 }
 
+_TREE_CACHE_LOCK = threading.RLock()
+
 # Bump whenever the persisted tree schema changes (node id scheme, node kinds,
 # level structure). load_hyperbolic_tree_cache discards blobs whose version
 # does not match so an upgraded Flask never serves a stale pre-upgrade tree.
@@ -505,11 +516,12 @@ _DEFAULT_SERVER_KEY = "__default__"
 
 
 def reset_hyperbolic_tree_cache():
-    _TREE_CACHE["n_bands"] = None
-    _TREE_CACHE["nodes"] = None
-    _TREE_CACHE["flat_ids"] = None
-    _TREE_CACHE["track_count"] = None
-    _TREE_CACHE["servers"] = {}
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE["n_bands"] = None
+        _TREE_CACHE["nodes"] = None
+        _TREE_CACHE["flat_ids"] = None
+        _TREE_CACHE["track_count"] = None
+        _TREE_CACHE["servers"] = {}
 
 
 def _tree_build_targets():
@@ -553,9 +565,10 @@ def tree_for_server(server_id=None):
     back to the default tree when the server has none loaded (e.g. it was
     added after the last analysis run).
     """
-    if server_id and server_id != _DEFAULT_SERVER_KEY:
-        return _TREE_CACHE["servers"].get(server_id) or _TREE_CACHE
-    return _TREE_CACHE
+    with _TREE_CACHE_LOCK:
+        if server_id and server_id != _DEFAULT_SERVER_KEY:
+            return _TREE_CACHE["servers"].get(server_id) or _TREE_CACHE
+        return _TREE_CACHE
 
 
 def build_hyperbolic_tree_cache():
@@ -646,17 +659,19 @@ def load_hyperbolic_tree_cache():
         _set_empty_tree_cache()
         return 0
 
-    _TREE_CACHE["n_bands"] = payload.get("n_bands")
-    _TREE_CACHE["nodes"] = payload.get("nodes") or {}
-    _TREE_CACHE["flat_ids"] = payload.get("flat_ids") or {}
     track_count = int(payload.get("track_count") or 0)
-    _TREE_CACHE["track_count"] = track_count
-    _TREE_CACHE["servers"] = {_DEFAULT_SERVER_KEY: payload}
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE["n_bands"] = payload.get("n_bands")
+        _TREE_CACHE["nodes"] = payload.get("nodes") or {}
+        _TREE_CACHE["flat_ids"] = payload.get("flat_ids") or {}
+        _TREE_CACHE["track_count"] = track_count
+        _TREE_CACHE["servers"] = {_DEFAULT_SERVER_KEY: payload}
     for blob_name in _scan_tree_cache_blob_names():
         server_id = blob_name[len(_TREE_CACHE_BLOB_NAME) + 2:]
         per_server = _load_tree_cache_blob(name=blob_name)
         if per_server and per_server.get("version") == _TREE_CACHE_VERSION:
-            _TREE_CACHE["servers"][server_id] = per_server
+            with _TREE_CACHE_LOCK:
+                _TREE_CACHE["servers"][server_id] = per_server
     logger.info(
         "Hyperbolic tree cache loaded from ivf_dir: %d tracks across %d nodes "
         "(%d server trees).", track_count, len(_TREE_CACHE["nodes"]),
@@ -666,11 +681,12 @@ def load_hyperbolic_tree_cache():
 
 
 def _set_empty_tree_cache():
-    _TREE_CACHE["n_bands"] = 0
-    _TREE_CACHE["nodes"] = {}
-    _TREE_CACHE["flat_ids"] = {}
-    _TREE_CACHE["track_count"] = 0
-    _TREE_CACHE["servers"] = {}
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE["n_bands"] = 0
+        _TREE_CACHE["nodes"] = {}
+        _TREE_CACHE["flat_ids"] = {}
+        _TREE_CACHE["track_count"] = 0
+        _TREE_CACHE["servers"] = {}
 
 
 def _delete_tree_cache_blob():
@@ -733,7 +749,7 @@ def init_hyperbolic_cache():
 
 
 def is_hyperbolic_tree_cache_loaded() -> bool:
-    return bool(_TREE_CACHE.get("nodes"))
+    return _TREE_CACHE.get("nodes") is not None
 
 
 # The tree cache is a fully materialized Python object tree (one dict per
@@ -799,15 +815,16 @@ def get_hyperbolic_tree_warm_status():
 
 
 def build_hyperbolic_tree(node_id=None, server_id=None):
-    tree = tree_for_server(server_id)
-    nodes = tree.get("nodes")
-    if not nodes:
-        return _empty_node(node_id, "Hyperbolic Explorer"), []
-    key = (node_id or "root").strip() or "root"
-    node = nodes.get(key)
-    if node is None:
-        raise ValueError(f"Unknown tree node id: {node_id}")
-    return node, (tree.get("flat_ids") or {}).get(key, [])
+    with _TREE_CACHE_LOCK:
+        tree = tree_for_server(server_id)
+        nodes = tree.get("nodes")
+        if not nodes:
+            return _empty_node(node_id, "Hyperbolic Explorer"), []
+        key = (node_id or "root").strip() or "root"
+        node = nodes.get(key)
+        if node is None:
+            raise ValueError(f"Unknown tree node id: {node_id}")
+        return node, (tree.get("flat_ids") or {}).get(key, [])
 
 
 def _build_genre_root_items(item_ids, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):

@@ -525,20 +525,23 @@ class TestTreeEngine:
         _seed_poincare(conn)
 
         with conn.cursor() as cur:
+            # Other integration files (run earlier in the shared test DB) may
+            # leave a music_servers table behind with an older schema plus a
+            # chromaprint FK into it; DROP CASCADE + fresh CREATE guarantees
+            # this test's own schema instead of silently no-opping against theirs.
+            cur.execute("DROP TABLE IF EXISTS track_server_map, music_servers CASCADE")
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS music_servers ("
+                "CREATE TABLE music_servers ("
                 "server_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
                 "server_type TEXT NOT NULL, creds JSONB NOT NULL DEFAULT '{}'::jsonb, "
                 "music_libraries TEXT NOT NULL DEFAULT '', is_default BOOLEAN NOT NULL DEFAULT FALSE)"
             )
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS track_server_map ("
+                "CREATE TABLE track_server_map ("
                 "item_id TEXT NOT NULL, server_id TEXT NOT NULL, "
                 "provider_track_id TEXT NOT NULL, match_tier TEXT, "
                 "PRIMARY KEY (item_id, server_id))"
             )
-            cur.execute("DELETE FROM track_server_map")
-            cur.execute("DELETE FROM music_servers")
             cur.executemany(
                 "INSERT INTO music_servers (server_id, name, server_type, is_default) "
                 "VALUES (%s, %s, %s, %s)",
@@ -598,8 +601,7 @@ class TestTreeEngine:
             hm.reset_hyperbolic_tree_cache()
             registry.invalidate_server_cache()
             with conn.cursor() as cur:
-                cur.execute("DROP TABLE IF EXISTS track_server_map")
-                cur.execute("DROP TABLE IF EXISTS music_servers")
+                cur.execute("DROP TABLE IF EXISTS track_server_map, music_servers CASCADE")
 
 
 @pytest.mark.integration
@@ -797,20 +799,23 @@ class TestEndpoints:
         _seed_poincare(conn)
 
         with conn.cursor() as cur:
+            # Other integration files (run earlier in the shared test DB) may
+            # leave a music_servers table behind with an older schema plus a
+            # chromaprint FK into it; DROP CASCADE + fresh CREATE guarantees
+            # this test's own schema instead of silently no-opping against theirs.
+            cur.execute("DROP TABLE IF EXISTS track_server_map, music_servers CASCADE")
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS music_servers ("
+                "CREATE TABLE music_servers ("
                 "server_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
                 "server_type TEXT NOT NULL, creds JSONB NOT NULL DEFAULT '{}'::jsonb, "
                 "music_libraries TEXT NOT NULL DEFAULT '', is_default BOOLEAN NOT NULL DEFAULT FALSE)"
             )
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS track_server_map ("
+                "CREATE TABLE track_server_map ("
                 "item_id TEXT NOT NULL, server_id TEXT NOT NULL, "
                 "provider_track_id TEXT NOT NULL, match_tier TEXT, "
                 "PRIMARY KEY (item_id, server_id))"
             )
-            cur.execute("DELETE FROM track_server_map")
-            cur.execute("DELETE FROM music_servers")
             cur.executemany(
                 "INSERT INTO music_servers (server_id, name, server_type, is_default) "
                 "VALUES (%s, %s, %s, %s)",
@@ -853,8 +858,7 @@ class TestEndpoints:
         finally:
             registry.invalidate_server_cache()
             with conn.cursor() as cur:
-                cur.execute("DROP TABLE IF EXISTS track_server_map")
-                cur.execute("DROP TABLE IF EXISTS music_servers")
+                cur.execute("DROP TABLE IF EXISTS track_server_map, music_servers CASCADE")
 
         assert response.status_code == 200
         payload = response.get_json()

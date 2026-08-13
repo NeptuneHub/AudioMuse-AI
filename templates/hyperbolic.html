@@ -165,7 +165,7 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Hyperbolic Explorer</h1>
-        <p>Explore the library through the Poincare ball: radial distance from the origin separates foundational sounds from niche sub-genres.</p>
+        <p>Discover distant songs and playlists with hyperbolic exploration.</p>
     </header>
 
     <div class="tabs">
@@ -377,7 +377,7 @@
             let currentTrackIds = [];
 
             const hyperbolicBadge = (s) => (typeof s.distance === 'number')
-                ? { text: s.distance.toFixed(3) + ' · R ' + Number(s.hyperbolic_radius).toFixed(3), cls: 'badge-neutral' }
+                ? { text: s.distance.toFixed(3), cls: 'badge-neutral' }
                 : null;
 
             const renderResults = (results, seedId) => {
@@ -387,6 +387,7 @@
                 if (!results.length) {
                     statusDiv.textContent = 'No tracks found for this mode.';
                     statusDiv.className = '';
+                    resultsWrapper.innerHTML = '';
                     return;
                 }
                 resultsWrapper.innerHTML = renderSongList(results, { metric: hyperbolicBadge });
@@ -684,12 +685,12 @@
                 track: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 2.5v7.05a2.5 2.5 0 1 0 1 2V6.5l5-1v-3L8 3.5z"/></svg>'
             };
 
-            const buildLeafPlaylistForm = (trackItems) => {
+            const buildLeafPlaylistForm = (trackItems, name) => {
                 const wrap = document.createElement('div');
                 wrap.className = 'tree-leaf-playlist';
                 const form = document.createElement('form');
                 form.innerHTML = `
-                    <input type="text" class="tree-leaf-name" placeholder="Playlist name..." required>
+                    <input type="text" class="tree-leaf-name" value="${esc(name || '')}" placeholder="Playlist name..." required>
                     <button type="submit" class="btn btn-primary">Create Playlist (${trackItems.length} tracks)</button>
                     <span class="tree-leaf-status"></span>`;
                 form.addEventListener('submit', async (e) => {
@@ -782,7 +783,7 @@
                         }
                         children.innerHTML = '';
                         if (sub.leaf) {
-                            children.appendChild(buildLeafPlaylistForm(sub.items));
+                            children.appendChild(buildLeafPlaylistForm(sub.items, sub.name || node.name));
                         }
                         sub.items.forEach(item => {
                             children.appendChild(buildTreeChild(item));

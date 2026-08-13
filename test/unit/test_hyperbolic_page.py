@@ -39,7 +39,7 @@ def test_hyperbolic_page_renders_template():
     kwargs = mock_rt.call_args.kwargs
     assert kwargs["title"] == "AudioMuse-AI - Hyperbolic Explorer"
     assert kwargs["active"] == "hyperbolic"
-    assert kwargs["app_version"] == "v3.2.0"
+    assert kwargs["app_version"] == config.APP_VERSION
     assert kwargs["hyperbolic_radial_spread_default"] == config.HYPERBOLIC_RADIAL_SPREAD
 
 
