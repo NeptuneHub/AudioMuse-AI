@@ -39,8 +39,11 @@ from database import (
     NON_BLOCKING_TASK_TYPES,
     clean_up_previous_main_tasks,
     get_active_main_task,
+    get_queue_blocking_task,
     main_task_start_lock,
 )
+
+from app_helper import queue_busy_error_body, queue_race_error_body
 
 logger = logging.getLogger(__name__)
 
@@ -143,15 +146,9 @@ def start_analysis_endpoint():
     # unique index only prevents two LIVE rows; it cannot stop an archive from
     # retiring a row that was legitimately accepted first.
     with main_task_start_lock():
-        active_task = get_active_main_task()
+        active_task = get_queue_blocking_task()
         if active_task:
-            return jsonify(
-                {
-                    "error": "An active batch task is already in progress.",
-                    "task_id": active_task['task_id'],
-                    "status": active_task['status'],
-                }
-            ), 409
+            return jsonify(queue_busy_error_body(active_task, 'analysis')), 409
 
         clean_up_previous_main_tasks()
         try:
@@ -165,13 +162,7 @@ def start_analysis_endpoint():
             )
         except taskqueue.TaskAlreadyRunning as exc:
             active_task = get_active_main_task()
-            return jsonify(
-                {
-                    "error": exc.user_message,
-                    "task_id": active_task['task_id'] if active_task else None,
-                    "status": active_task['status'] if active_task else None,
-                }
-            ), exc.status_code
+            return jsonify(queue_race_error_body(exc.user_message, active_task)), exc.status_code
         except Exception:
             logger.exception("Could not queue the analysis task")
             return jsonify({"error": "Could not queue the analysis. Check the logs."}), 500
@@ -229,15 +220,9 @@ def start_cleaning_endpoint():
     # under the session start lock, so this start's archive cannot REVOKE a main
     # task another caller enqueued between our gate read and our archive.
     with main_task_start_lock():
-        active_task = get_active_main_task(exclude_task_types=NON_BLOCKING_TASK_TYPES)
+        active_task = get_queue_blocking_task() or get_active_main_task(task_type='server_sweep')
         if active_task:
-            return jsonify(
-                {
-                    "error": "An active batch task is already in progress.",
-                    "task_id": active_task['task_id'],
-                    "status": active_task['status'],
-                }
-            ), 409
+            return jsonify(queue_busy_error_body(active_task, 'cleaning')), 409
 
         clean_up_previous_main_tasks()
         try:
@@ -255,13 +240,7 @@ def start_cleaning_endpoint():
             # actually holds the gate - the same contract analysis and clustering use -
             # so an API consumer polling the returned id does not get a 404.
             active_task = get_active_main_task(exclude_task_types=NON_BLOCKING_TASK_TYPES)
-            return jsonify(
-                {
-                    "error": exc.user_message,
-                    "task_id": active_task['task_id'] if active_task else None,
-                    "status": active_task['status'] if active_task else None,
-                }
-            ), exc.status_code
+            return jsonify(queue_race_error_body(exc.user_message, active_task)), exc.status_code
         except Exception:
             logger.exception("Could not queue the cleaning task")
             return jsonify({"error": "Could not queue the cleaning. Check the logs."}), 500

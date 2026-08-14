@@ -41,6 +41,15 @@ TASK_STATUS_FAILURE = TASK_STATUS_FAIL
 TASK_STATUS_TERMINAL = (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL, TASK_STATUS_REVOKED)
 TASK_STATUS_LIVE = (TASK_STATUS_NEW, TASK_STATUS_RUNNING)
 
+# --- Queue Guard ---
+# Every task type that enqueues catalogue work and must never run in parallel
+# with any other member of this set. The centralized queue guard checks this
+# for the cron scheduler and the manual start endpoints alike.
+QUEUE_BLOCKING_TASK_TYPES = (
+    'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
+    'sonic_fingerprint',
+)
+
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
 
@@ -1169,6 +1178,13 @@ SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
     "Sonic Fingerprint by AudioMuse-AI",
 )
+
+# --- Cron Scheduler Retry ---
+# A scheduled run that is blocked by a live queue-guard task is retried every
+# CRON_RETRY_INTERVAL_MINUTES up to CRON_RETRY_MAX_MINUTES after the first
+# block, then recorded as skipped (fail-safe: never run on expiry).
+CRON_RETRY_MAX_MINUTES = int(os.environ.get("CRON_RETRY_MAX_MINUTES", "240")) # Max minutes a blocked scheduled run waits in the retry list
+CRON_RETRY_INTERVAL_MINUTES = int(os.environ.get("CRON_RETRY_INTERVAL_MINUTES", "10")) # Minutes between re-attempts of blocked scheduled runs
 
 # --- Database Cleaning Safety ---
 CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report

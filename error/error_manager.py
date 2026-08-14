@@ -124,6 +124,8 @@ def classify(exc, default_code=UNKNOWN_ERROR_CODE):
 def http_status_for_code(code):
     if 1100 <= code < 1200:
         return 502
+    if 1200 <= code < 1300:
+        return 409
     if 1000 <= code < 1100:
         return 400
     if 3000 <= code < 3100:

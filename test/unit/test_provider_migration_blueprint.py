@@ -16,6 +16,7 @@ Main Features:
 * Source-path override refresh stores overrides and warns on non-absolute paths
 * Dry-run gate returns 409 on bad source paths unless overridden or bypassed
 * Execute gate requires backup confirmation and dry-run-ready state; probe URLs SSRF-validated
+* Execute gate also refuses while a server_sweep is running, not just the queue-guard types
 """
 
 import os
@@ -586,6 +587,26 @@ class TestExecuteGate:
         assert resp.status_code == 400
         err = resp.get_json().get('error', '').lower()
         assert 'dry' in err or 'status' in err
+
+    def test_rejects_while_a_server_sweep_is_running(self, bp_mod, client, fake_db):
+        # A migration rewrites track_server_map the same way a sweep does, so
+        # it must keep blocking on a live sweep too - the same invariant the
+        # cleaning start already enforces - not just the queue-guard types.
+        db, cur = fake_db
+        cur._fetchone_queue.extend([(0,), (0,)])
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append((False,))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        sweep = {'task_id': 'sweep-1', 'task_type': 'server_sweep', 'status': 'RUNNING'}
+
+        with (
+            patch.object(bp_mod, 'get_queue_blocking_task', return_value=None),
+            patch.object(bp_mod, 'get_active_main_task', return_value=sweep),
+        ):
+            resp = client.post('/api/migration/execute', json=self._base_payload())
+
+        assert resp.status_code == 409
+        assert resp.get_json()['task_id'] == 'sweep-1'
 
     def test_happy_path_enqueues_job(self, bp_mod, client, fake_db):
         db, cur = fake_db

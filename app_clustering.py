@@ -72,8 +72,11 @@ from config import TASK_STATUS_NEW
 from database import (
     clean_up_previous_main_tasks,
     get_active_main_task,
+    get_queue_blocking_task,
     main_task_start_lock,
 )
+
+from app_helper import queue_busy_error_body, queue_race_error_body
 
 
 logger = logging.getLogger(__name__)
@@ -380,15 +383,9 @@ def start_clustering_endpoint():
     # or this start's archive can REVOKE a main task another caller enqueued
     # between our gate read and our archive.
     with main_task_start_lock():
-        active_task = get_active_main_task()
+        active_task = get_queue_blocking_task()
         if active_task:
-            return jsonify(
-                {
-                    "error": "An active batch task is already in progress.",
-                    "task_id": active_task['task_id'],
-                    "status": active_task['status'],
-                }
-            ), 409
+            return jsonify(queue_busy_error_body(active_task, 'clustering')), 409
 
         clean_up_previous_main_tasks()
         try:
@@ -402,13 +399,7 @@ def start_clustering_endpoint():
             )
         except taskqueue.TaskAlreadyRunning as exc:
             active_task = get_active_main_task()
-            return jsonify(
-                {
-                    "error": exc.user_message,
-                    "task_id": active_task['task_id'] if active_task else None,
-                    "status": active_task['status'] if active_task else None,
-                }
-            ), exc.status_code
+            return jsonify(queue_race_error_body(exc.user_message, active_task)), exc.status_code
         except Exception:
             logger.exception("Could not queue the clustering task")
             return jsonify({"error": "Could not queue the clustering. Check the logs."}), 500

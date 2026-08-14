@@ -36,15 +36,15 @@ from psycopg2 import sql as pgsql
 # App-level singletons (the DB connection and the task queue). Importing here keeps
 # the blueprint file self-contained - the rest of the app doesn't need to hand
 # anything in.
-from app_helper import cancel_job_and_children_recursive
+from app_helper import cancel_job_and_children_recursive, queue_busy_error_body
 from app_logging import sanitize_log_value
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 from database import (
     GLOBAL_CANCEL_EPOCH_KEY,
-    NON_BLOCKING_TASK_TYPES,
     get_app_config_value,
     get_db,
     get_active_main_task,
+    get_queue_blocking_task,
     save_task_status,
     main_task_start_lock,
 )
@@ -1978,16 +1978,12 @@ def _execute_locked(db, session_id, confirmation_text):
             }
         ), 400
 
-    active = get_active_main_task(exclude_task_types=NON_BLOCKING_TASK_TYPES)
+    # A migration rewrites track_server_map the same way a sweep does, so it has
+    # to keep blocking on a live sweep too, not just the queue-guard types -
+    # the same reasoning the cleaning start already applies.
+    active = get_queue_blocking_task() or get_active_main_task(task_type='server_sweep')
     if active:
-        return jsonify(
-            {
-                'error': 'Another task is running. Wait for it to finish before migrating.',
-                'task_id': active['task_id'],
-                'task_type': active['task_type'],
-                'status': active['status'],
-            }
-        ), 409
+        return jsonify(queue_busy_error_body(active, 'the provider migration')), 409
 
     job_id = str(uuid.uuid4())
     save_task_status(

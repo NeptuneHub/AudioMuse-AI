@@ -69,7 +69,7 @@ from config import (  # noqa: F401
 )
 
 from error import error_manager
-from error.error_dictionary import UNKNOWN_ERROR_CODE
+from error.error_dictionary import ERR_TASK_IN_PROGRESS, UNKNOWN_ERROR_CODE
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,26 @@ logger = logging.getLogger(__name__)
 def index_error_body(code, message):
     payload = error_manager.build(code)
     payload["error"] = message
+    return payload
+
+
+def queue_busy_error_body(active_task, action):
+    payload = error_manager.build(
+        ERR_TASK_IN_PROGRESS,
+        f"Another queue job ({active_task['task_type']}) is still running. "
+        f"Wait for it to finish before starting {action}.",
+    )
+    payload["error"] = payload["error_message"]
+    payload["task_id"] = active_task["task_id"]
+    payload["status"] = active_task["status"]
+    return payload
+
+
+def queue_race_error_body(exc_message, active_task):
+    payload = error_manager.build(ERR_TASK_IN_PROGRESS, exc_message)
+    payload["error"] = payload["error_message"]
+    payload["task_id"] = active_task["task_id"] if active_task else None
+    payload["status"] = active_task["status"] if active_task else None
     return payload
 
 

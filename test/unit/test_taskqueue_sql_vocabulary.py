@@ -31,6 +31,7 @@ import importlib
 import re
 
 import pytest
+from unittest.mock import patch
 
 import config
 from taskqueue import sql
@@ -65,12 +66,16 @@ def _sql_strings(module):
 class _RecordingCursor:
     def __init__(self):
         self.calls = []
+        self.rows = []
 
     def execute(self, statement, params=None):
         self.calls.append((statement, params))
 
     def fetchone(self):
         return None
+
+    def fetchall(self):
+        return list(self.rows)
 
 
 @pytest.fixture
@@ -182,6 +187,49 @@ class TestTheShippedPredicatesKeepTheirExactText:
     def test_the_claim_still_moves_new_to_running(self):
         assert "SET status='RUNNING'" in sql._CLAIM
         assert "WHERE status='NEW' AND queue_name = %s" in sql._CLAIM
+
+    def test_the_main_retire_keeps_only_the_newest_live_main_root(self):
+        cur = _RecordingCursor()
+        # ORDER BY id DESC means the first row is the newest; the retire keeps
+        # it and revokes every older live main root.
+        cur.rows = [('fingerprint-live',), ('analysis-live',)]
+
+        with (
+            patch('taskqueue.sql.try_hold', return_value=True),
+            patch('taskqueue.sql.release'),
+        ):
+            assert sql._retire_surplus_main_live_roots(cur) is True
+
+        update = next(
+            statement for statement, _ in cur.calls
+            if statement.startswith('UPDATE task_status')
+        )
+        assert "task_id = ANY(%s)" in update
+        assert cur.calls[-1][1] == (config.TASK_STATUS_REVOKED, ['analysis-live'])
+
+    def test_the_main_retire_never_revokes_a_row_a_worker_is_still_running(self):
+        cur = _RecordingCursor()
+        cur.rows = [('analysis-live',), ('fingerprint-live',)]
+
+        def _try_hold(c, task_id):
+            return task_id != 'fingerprint-live'
+
+        with patch('taskqueue.sql.try_hold', side_effect=_try_hold):
+            assert sql._retire_surplus_main_live_roots(cur) is True
+
+        assert cur.calls[-1][1] == (config.TASK_STATUS_REVOKED, ['analysis-live'])
+
+    def test_the_main_retire_defers_when_two_rows_are_still_running(self):
+        cur = _RecordingCursor()
+        cur.rows = [('analysis-live',), ('fingerprint-live',)]
+
+        with patch('taskqueue.sql.try_hold', return_value=False):
+            assert sql._retire_surplus_main_live_roots(cur) is False
+
+        assert all(
+            not statement.startswith('UPDATE task_status')
+            for statement, _ in cur.calls
+        )
 
     def test_the_terminal_write_still_requires_a_running_row(self):
         assert "AND status = 'RUNNING'" in sql._FINISH_TASK

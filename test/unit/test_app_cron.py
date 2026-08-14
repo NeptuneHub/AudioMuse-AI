@@ -25,6 +25,8 @@ Main Features:
 
 from unittest.mock import MagicMock, patch
 
+import time
+
 
 def _make_cron_row(task_type='sonic_fingerprint'):
     return {
@@ -65,6 +67,8 @@ def test_sonic_fingerprint_row_enqueues_instead_of_running_inline(mock_get_db, _
 
     with (
         patch('app_cron.save_task_status'),
+        patch('app_cron.get_queue_blocking_task', return_value=None),
+        patch('app_cron.clean_up_previous_main_tasks'),
         patch('app_cron.taskqueue.enqueue') as enqueue,
         patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint') as gen,
     ):
@@ -120,6 +124,8 @@ def test_the_minute_claim_writes_last_run_only_when_it_is_older_than_this_minute
 
     with (
         patch('app_cron.save_task_status'),
+        patch('app_cron.get_queue_blocking_task', return_value=None),
+        patch('app_cron.clean_up_previous_main_tasks'),
         patch('app_cron.taskqueue.enqueue'),
     ):
         run_due_cron_jobs()
@@ -346,7 +352,8 @@ def test_cron_analysis_does_not_start_a_second_run_while_one_is_live(mock_get_db
 
     active = {'task_id': 'live-1', 'task_type': 'main_analysis', 'status': 'RUNNING'}
     with (
-        patch('app_cron.get_active_main_task', return_value=active),
+        patch('app_cron.get_queue_blocking_task', return_value=active),
+        patch('app_cron.record_cron_retry') as retry,
         patch('app_cron.save_task_status') as save,
         patch('app_cron.taskqueue.enqueue') as enqueue,
     ):
@@ -354,6 +361,8 @@ def test_cron_analysis_does_not_start_a_second_run_while_one_is_live(mock_get_db
 
     enqueue.assert_not_called()
     save.assert_not_called()
+    retry.assert_called_once()
+    assert retry.call_args[0][0] == 'analysis'
 
 
 @patch('app_cron.cron_matches_now', return_value=True)
@@ -365,7 +374,7 @@ def test_a_failed_queue_write_leaves_no_row_behind(mock_get_db, _matches):
     mock_get_db.return_value = db
 
     with (
-        patch('app_cron.get_active_main_task', return_value=None),
+        patch('app_cron.get_queue_blocking_task', return_value=None),
         patch('app_cron.save_task_status') as save,
         patch(
             'app_cron.taskqueue.enqueue', side_effect=RuntimeError("database is down")
@@ -391,6 +400,7 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
     row['options'] = {'server_scope': 'default'}
     cur = MagicMock()
     cur.fetchall.return_value = [row]
+    cur.fetchone.return_value = None
     cur.rowcount = 1
     db = MagicMock()
     db.cursor.return_value = cur
@@ -415,3 +425,79 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
         'server_scope': 'all',
         'task_claim_required': True,
     }
+
+
+def _cron_api_client():
+    from flask import Flask
+    from app_cron import cron_bp
+
+    app = Flask(__name__)
+    app.register_blueprint(cron_bp)
+    app.config['TESTING'] = True
+    return app.test_client()
+
+
+def test_get_cron_entries_exposes_the_pending_retry_state():
+    client = _cron_api_client()
+
+    cur = MagicMock()
+    cur.fetchall.return_value = [{
+        'id': 1,
+        'name': 'Clustering',
+        'task_type': 'clustering',
+        'cron_expr': '0 2 * * *',
+        'enabled': True,
+        'last_run': 123.0,
+        'created_at': None,
+        'options': {},
+    }]
+    db = MagicMock()
+    db.cursor.return_value = cur
+    retry_row = {
+        'task_type': 'clustering',
+        'retry_until': time.time() + 3600,
+        'attempts': 3,
+        'created_at': None,
+        'blocker_task_id': 'live-1',
+        'blocker_task_type': 'main_analysis',
+    }
+
+    with (
+        patch('app_cron.get_db', return_value=db),
+        patch('app_cron.list_pending_cron_retries', return_value=[retry_row]),
+    ):
+        response = client.get('/api/cron')
+
+    assert response.status_code == 200
+    entry = response.get_json()[0]
+    assert entry['retry_pending'] is True
+    assert entry['retry_attempts'] == 3
+    assert entry['retry_blocker_task_type'] == 'main_analysis'
+    assert entry['retry_until'] == retry_row['retry_until']
+
+
+def test_get_cron_entries_marks_entries_without_a_retry_as_not_pending():
+    client = _cron_api_client()
+
+    cur = MagicMock()
+    cur.fetchall.return_value = [{
+        'id': 1,
+        'name': 'Analysis',
+        'task_type': 'analysis',
+        'cron_expr': '0 2 * * *',
+        'enabled': True,
+        'last_run': 123.0,
+        'created_at': None,
+        'options': {},
+    }]
+    db = MagicMock()
+    db.cursor.return_value = cur
+
+    with (
+        patch('app_cron.get_db', return_value=db),
+        patch('app_cron.list_pending_cron_retries', return_value=[]),
+    ):
+        response = client.get('/api/cron')
+
+    assert response.status_code == 200
+    assert response.get_json()[0]['retry_pending'] is False
