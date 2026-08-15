@@ -20,6 +20,7 @@ Main Features:
 """
 
 import os
+import sys
 import tempfile
 
 # --- Task Status Constants ---
@@ -1048,13 +1049,19 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 # in potentially shorter paths). Can be overridden via env var PATH_FIX_SIZE.
 PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
+def _bundle_data_root():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 # Path to the JSON file containing mood centroids for the path-to-mood feature.
-MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap.json')
+MOOD_CENTROIDS_FILE = os.path.join(_bundle_data_root(), 'mood_centroids_real_080_clap.json')
 
 # Path to the JSON file containing genre -> subgenre centroids used by the
 # Hyperbolic Explorer tree's genre levels (main genre, then subgenre). Built
 # offline by query/brainstorm_genre_subgenre_080.py from the live catalogue.
-GENRE_SUBGENRE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_subgenre.json')
+GENRE_SUBGENRE_FILE = os.path.join(_bundle_data_root(), 'genre_subgenre.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
