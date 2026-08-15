@@ -35,6 +35,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+from cpu_budget import usable_cpu_count
+
 logger = logging.getLogger(__name__)
 
 LYRICS_WHISPER_MIN_FREE_RAM_GB = float(os.environ.get("LYRICS_WHISPER_MIN_FREE_RAM_GB", "2.5"))
@@ -55,12 +57,12 @@ WHISPER_COMPRESSION_RATIO_THRESHOLD = float(
 def _resolve_whisper_threads() -> int:
     raw = os.environ.get('LYRICS_WHISPER_INTRA_OP_THREADS', '').strip()
     if raw == '':
-        cpu_count = os.cpu_count() or 1
+        cpu_count = usable_cpu_count() or os.cpu_count() or 1
         return max(1, cpu_count // 3)
     try:
         return max(0, int(raw))
     except ValueError:
-        cpu_count = os.cpu_count() or 1
+        cpu_count = usable_cpu_count() or os.cpu_count() or 1
         return max(1, cpu_count // 3)
 
 

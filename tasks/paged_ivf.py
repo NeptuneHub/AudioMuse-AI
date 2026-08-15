@@ -48,6 +48,8 @@ from psycopg2.extras import execute_values
 
 import config
 
+from cpu_budget import usable_cpu_count
+
 from . import ivf_quant as quant
 
 logger = logging.getLogger(__name__)
@@ -492,10 +494,7 @@ _QUERY_THREAD_PREFIX = "ivf-query"
 
 
 def _query_worker_count() -> int:
-    try:
-        cpu = len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        cpu = os.cpu_count() or 1
+    cpu = usable_cpu_count() or os.cpu_count() or 1
     return max(cpu // 2, 1)
 
 

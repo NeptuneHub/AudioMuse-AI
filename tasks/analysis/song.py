@@ -34,6 +34,8 @@ import numpy as np
 import librosa
 import onnxruntime as ort
 
+from cpu_budget import usable_cpu_count
+
 from config import (
     AUDIO_LOAD_TIMEOUT,
     MUSICNN_BATCH_SIZE,
@@ -269,6 +271,9 @@ def _default_sess_options():
     opts = ort.SessionOptions()
     opts.enable_cpu_mem_arena = False
     opts.enable_mem_pattern = False
+    threads = usable_cpu_count()
+    if threads is not None:
+        opts.intra_op_num_threads = threads
     return opts
 
 
@@ -359,7 +364,11 @@ def run_inference_with_oom_fallback(
             except Exception:
                 logger.exception("Error during memory cleanup before %s CPU fallback", label)
 
-            cpu_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            cpu_session = ort.InferenceSession(
+                model_path,
+                providers=['CPUExecutionProvider'],
+                sess_options=_default_sess_options(),
+            )
             result = run_inference(cpu_session, feed_dict, output_tensor_name)
             if result is None:
                 raise RuntimeError(

@@ -67,6 +67,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_SAMPLE_RATE = 16000
 MAX_AUDIO_SECONDS = float(os.environ.get('LYRICS_MAX_AUDIO_SECONDS', '240'))
 
+from cpu_budget import usable_cpu_count
+
 from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as MIN_CHARS_FOR_EMBEDDING
 from config import LYRICS_ASR_MIN_AVG_LOGPROB as ASR_MIN_AVG_LOGPROB
 from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOGPROB
@@ -192,7 +194,7 @@ MUSIC_ANALYSIS_AXES = {
 
 
 def get_lyrics_threads() -> int:
-    cpus = os.cpu_count() or 2
+    cpus = usable_cpu_count() or os.cpu_count() or 2
     return max(2, cpus // 2)
 
 

@@ -37,6 +37,8 @@ from psycopg2.extras import DictCursor
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
+from cpu_budget import usable_cpu_count
+
 from config import (
     EMBEDDING_DIMENSION,
     INDEX_NAME,
@@ -131,7 +133,7 @@ except Exception:
 _thread_pool = None
 _thread_pool_lock = threading.Lock()
 
-MAX_WORKER_THREADS = max(1, (os.cpu_count() or 1) - 1)
+MAX_WORKER_THREADS = max(1, (usable_cpu_count() or os.cpu_count() or 1) - 1)
 BATCH_SIZE_VECTOR_OPS = 50
 BATCH_SIZE_DB_OPS = 100
 SCORE_DETAIL_COLUMNS = 'title, author'
