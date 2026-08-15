@@ -40,6 +40,8 @@ _HOMES = {
     'sigmoid': 'song',
     'analyze_track': 'song',
     'robust_load_audio_with_fallback': 'song',
+    'resample_audio': 'song',
+    'decode_audio_once': 'song',
     'make_task_reporter': 'helper',
     '_bind_server_context': 'helper',
 }

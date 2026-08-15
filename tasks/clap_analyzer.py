@@ -429,7 +429,7 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
     return mel.astype(np.float32)
 
 
-def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
+def analyze_audio_file(audio_path: str, native_audio=None, native_sr=None) -> Tuple[Optional[np.ndarray], float, int]:
     if not config.CLAP_ENABLED:
         return None, 0, 0
 
@@ -440,9 +440,12 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         SEGMENT_LENGTH = _SEGMENT_LENGTH_SAMPLES
         HOP_LENGTH = 240000
 
-        from tasks.analysis import robust_load_audio_with_fallback
+        from tasks.analysis import resample_audio, robust_load_audio_with_fallback
 
-        audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
+        if native_audio is not None and native_sr is not None:
+            audio_data = resample_audio(native_audio, native_sr, SAMPLE_RATE)
+        else:
+            audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
 
         if audio_data is None or audio_data.size == 0:
             logger.warning(f"Could not load audio for CLAP analysis: {audio_path}")

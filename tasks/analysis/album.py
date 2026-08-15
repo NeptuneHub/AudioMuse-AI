@@ -88,6 +88,7 @@ from .song import (
     AudioNotDecodableError,
     cleanup_musicnn_sessions,
     cleanup_optional_models,
+    decode_audio_once,
     robust_load_audio_with_fallback,
 )
 
@@ -136,7 +137,7 @@ def _stage_collect_chromaprint(item, path, track_name_full):
 
 
 def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
-                   onnx_sessions, album_name):
+                   onnx_sessions, album_name, native_audio=None, native_sr=None):
     onnx_sessions = _ah.ensure_musicnn_sessions(
         onnx_sessions, model_paths, session_recycler, album_name
     )
@@ -145,10 +146,12 @@ def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
             analysis, embedding, track_audio, track_sr = analyze_track(
                 path, MOOD_LABELS, model_paths,
                 onnx_sessions=onnx_sessions, return_audio=True,
+                native_audio=native_audio, native_sr=native_sr,
             )
         else:
             analysis, embedding = analyze_track(
-                path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions
+                path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions,
+                native_audio=native_audio, native_sr=native_sr,
             )
             track_audio = track_sr = None
     except AudioNotDecodableError as exc:
@@ -212,8 +215,11 @@ def _stage_persist_musicnn(item, track_name_full, track_id_str, musicnn_analysis
     )
 
 
-def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings):
-    embedding = _ah.run_clap_for_track(path, track_name_full)
+def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings,
+                native_audio=None, native_sr=None):
+    embedding = _ah.run_clap_for_track(
+        path, track_name_full, native_audio=native_audio, native_sr=native_sr
+    )
     if embedding is None:
         logger.warning(
             "  - CLAP produced no embedding for '%s'; its other stages still run "
@@ -252,6 +258,7 @@ def _analyze_single_track(
     track_id_str = _ah.catalog_item_id(item)
     path = None
     track_audio = track_sr = None
+    native_audio = native_sr = None
     musicnn_analysis = musicnn_embedding = None
     clap_embedding = None
     top_moods = None
@@ -262,6 +269,9 @@ def _analyze_single_track(
 
         if plan.musicnn:
             _stage_collect_chromaprint(item, path, track_name_full)
+
+        if path and (plan.musicnn or plan.clap):
+            native_audio, native_sr = decode_audio_once(path)
 
         def ensure_download():
             nonlocal path
@@ -274,6 +284,7 @@ def _analyze_single_track(
                 _stage_musicnn(
                     path, track_name_full, plan, model_paths, session_recycler,
                     onnx_sessions, album_name,
+                    native_audio=native_audio, native_sr=native_sr,
                 )
             )
             top_moods = _ah.top_moods_from(musicnn_analysis, top_n_moods)
@@ -303,7 +314,8 @@ def _analyze_single_track(
 
         if plan.clap:
             clap_embedding, clap_saved = _stage_clap(
-                path, track_id_str, track_name_full, clap_label_embeddings
+                path, track_id_str, track_name_full, clap_label_embeddings,
+                native_audio=native_audio, native_sr=native_sr,
             )
             produced = produced or clap_saved
 
