@@ -43,6 +43,7 @@ def queued(monkeypatch):
 
     monkeypatch.setattr(app_analysis.taskqueue, 'enqueue', _fake_enqueue)
     monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
     monkeypatch.setattr(app_analysis, 'get_active_main_task', lambda **_kw: None)
     return calls
 
@@ -60,14 +61,17 @@ def _lose_the_admission_race(monkeypatch, winner):
     attempted = []
 
     def _active(**kwargs):
+        if kwargs.get('task_type') == 'server_sweep':
+            return None
         reads.append(kwargs)
-        return winner if len(reads) > 1 else None
+        return winner
 
     def _reject(func, **kwargs):
         attempted.append(func)
         raise taskqueue.TaskAlreadyRunning()
 
     monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
     monkeypatch.setattr(app_analysis, 'get_active_main_task', _active)
     monkeypatch.setattr(app_analysis.taskqueue, 'enqueue', _reject)
     return attempted
@@ -111,6 +115,7 @@ class TestStartAnalysis:
         monkeypatch.setattr(
             app_analysis, 'clean_up_previous_main_tasks', lambda: order.append('cleanup')
         )
+        monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
         monkeypatch.setattr(app_analysis, 'get_active_main_task', lambda **_kw: None)
         monkeypatch.setattr(
             app_analysis.taskqueue, 'enqueue',
@@ -126,8 +131,11 @@ class TestStartAnalysis:
     ):
         monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
         monkeypatch.setattr(
-            app_analysis, 'get_active_main_task',
-            lambda **_kw: {'task_id': 'live-1', 'status': config.TASK_STATUS_RUNNING},
+            app_analysis, 'get_queue_blocking_task',
+            lambda **_kw: {
+                'task_id': 'live-1', 'task_type': 'main_analysis',
+                'status': config.TASK_STATUS_RUNNING,
+            },
         )
         calls = []
         monkeypatch.setattr(
@@ -140,7 +148,8 @@ class TestStartAnalysis:
         body = response.get_json()
         assert body['task_id'] == 'live-1'
         assert body['status'] == config.TASK_STATUS_RUNNING
-        assert 'already in progress' in body['error'].lower()
+        assert 'still running' in body['error'].lower()
+        assert body['error_code'] == 1201
         assert calls == [], 'nothing may be queued once the gate has refused'
 
     def test_a_start_that_passed_the_gate_then_lost_the_insert_answers_409_not_500(
@@ -177,6 +186,7 @@ class TestStartAnalysis:
 
     def test_a_queue_failure_answers_500(self, client, monkeypatch):
         monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
         monkeypatch.setattr(app_analysis, 'get_active_main_task', lambda **_kw: None)
 
         def _boom(func, **kwargs):
@@ -215,29 +225,23 @@ class TestStartCleaning:
     def test_cleaning_refuses_while_a_sweep_runs_which_analysis_does_not(
         self, client, monkeypatch
     ):
-        seen = {}
-
-        def _active(**kwargs):
-            seen.update(kwargs)
-            return {'task_id': 'sweep-1', 'status': config.TASK_STATUS_RUNNING}
-
-        monkeypatch.setattr(app_analysis, 'get_active_main_task', _active)
+        monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
+        monkeypatch.setattr(
+            app_analysis, 'get_active_main_task',
+            lambda **_kw: {
+                'task_id': 'sweep-1', 'task_type': 'server_sweep',
+                'status': config.TASK_STATUS_RUNNING,
+            },
+        )
         monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
 
         response = client.post('/api/cleaning/start', json={})
 
         assert response.status_code == 409
-        excluded = seen.get('exclude_task_types')
-        assert 'server_sweep' not in excluded, (
+        assert response.get_json()['task_id'] == 'sweep-1', (
             'a sweep writes the same mappings cleaning rewrites, so it has to keep '
             'blocking the start'
         )
-        assert 'worker_control' in excluded, (
-            'a restart handshake is machinery, not catalogue work; excluding '
-            'NOTHING made an in-flight handshake answer 409 to a cleaning the user '
-            'had just asked for'
-        )
-        assert response.get_json()['task_id'] == 'sweep-1'
 
     def test_a_cleaning_that_passed_the_gate_then_lost_the_insert_answers_409_not_500(
         self, client, monkeypatch

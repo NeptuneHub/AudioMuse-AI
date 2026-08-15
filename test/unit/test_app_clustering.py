@@ -41,6 +41,7 @@ def queued(monkeypatch):
 
     monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _fake_enqueue)
     monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_clustering, 'get_queue_blocking_task', lambda **_kw: None)
     monkeypatch.setattr(app_clustering, 'get_active_main_task', lambda **_kw: None)
     return calls
 
@@ -63,13 +64,14 @@ def _lose_the_admission_race(monkeypatch, winner):
 
     def _active(**kwargs):
         reads.append(kwargs)
-        return winner if len(reads) > 1 else None
+        return winner
 
     def _reject(func, **kwargs):
         attempted.append(func)
         raise taskqueue.TaskAlreadyRunning()
 
     monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(app_clustering, 'get_queue_blocking_task', lambda **_kw: None)
     monkeypatch.setattr(app_clustering, 'get_active_main_task', _active)
     monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _reject)
     return attempted
@@ -123,8 +125,11 @@ class TestStartClustering:
     ):
         monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
         monkeypatch.setattr(
-            app_clustering, 'get_active_main_task',
-            lambda **_kw: {'task_id': 'live-1', 'status': config.TASK_STATUS_RUNNING},
+            app_clustering, 'get_queue_blocking_task',
+            lambda **_kw: {
+                'task_id': 'live-1', 'task_type': 'main_clustering',
+                'status': config.TASK_STATUS_RUNNING,
+            },
         )
         calls = []
         monkeypatch.setattr(
@@ -135,6 +140,7 @@ class TestStartClustering:
 
         assert response.status_code == 409
         assert response.get_json()['task_id'] == 'live-1'
+        assert response.get_json()['error_code'] == 1201
         assert calls == [], 'nothing may be queued once the gate has refused'
 
     def test_a_start_that_passed_the_gate_then_lost_the_insert_answers_409_not_500(
@@ -162,6 +168,7 @@ class TestStartClustering:
         self, client, monkeypatch
     ):
         monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(app_clustering, 'get_queue_blocking_task', lambda **_kw: None)
         monkeypatch.setattr(app_clustering, 'get_active_main_task', lambda **_kw: None)
 
         def _boom(func, **kwargs):

@@ -25,6 +25,7 @@ internal detail leaks to the frontend.
 |-------|--------|
 | 1000–1099 | Configuration / Setup |
 | 1100–1199 | Music Server Connection |
+| 1200–1299 | Task Queue (blocked starts) |
 | 2000–2099 | Analysis / Model |
 | 3000–3099 | Index / Similarity |
 | 4000–4099 | Database |
@@ -60,6 +61,7 @@ internal detail leaks to the frontend.
 | 5002 | Lyrics Transcription Error | The analysis-time lyrics pipeline (ASR transcription + embedding) fails for a track | [tasks/analysis/song.py](../tasks/analysis/song.py) `run_lyrics_for_track` | Per-track lyrics failure (skipped, best-effort); check the log for the model/ASR error. |
 | 6001 | Clustering Error | A clustering batch / main task fails | [tasks/clustering.py](../tasks/clustering.py), [app_clustering.py](../app_clustering.py) | Check the log for the clustering failure; verify embeddings/index are present and parameters are valid. |
 | 6002 | Cleaning Error | The cleaning task fails | [tasks/cleaning.py](../tasks/cleaning.py) | Check the log; if it was a DB outage it surfaces as 4001 instead. |
+| 1201 | Task In Progress | A manual start (analysis, clustering, cleaning, provider migration) is refused because a queue-guard task (analysis, clustering, cleaning, provider migration, sonic fingerprint or any plugin task) is already live | [app_analysis.py](../app_analysis.py), [app_clustering.py](../app_clustering.py), [app_provider_migration.py](../app_provider_migration.py) | Wait for the running task to finish, or let the scheduled retry (up to `CRON_RETRY_MAX_MINUTES`) pick it up. |
 | 9999 | Unknown Error | Any failed task that didn't record a structured error (legacy / un-migrated jobs), or any otherwise-unhandled route exception | [app.py](../app.py) `/api/status` fallback and the global `errorhandler(Exception)` | Open the container log - the generic message intentionally hides specifics from the frontend. Migrate the call site to record a structured code. |
 
 ## Errors that are defined but not yet wired
@@ -103,6 +105,7 @@ structured body with it):
 | Code range | HTTP status |
 |------------|-------------|
 | 1100–1199 (music server connection / auth) | 502 Bad Gateway |
+| 1200–1299 (task queue / blocked starts) | 409 Conflict |
 | 1000–1099 (configuration / setup) | 400 Bad Request |
 | 3000–3099 (index / similarity) | 503 Service Unavailable |
 | 4000–4099 (database) | 503 Service Unavailable |

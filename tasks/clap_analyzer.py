@@ -30,6 +30,8 @@ os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
 
+from cpu_budget import usable_cpu_count
+
 try:
     from config import AUDIO_LOAD_TIMEOUT
 except Exception:
@@ -103,7 +105,12 @@ def _clap_session_options(label):
         sess_options.inter_op_num_threads = 1
         logger.info("CLAP %s: Using Python threading, ONNX single-threaded", label)
     else:
-        logger.info("CLAP %s: Using ONNX Runtime automatic thread management", label)
+        threads = usable_cpu_count()
+        if threads is None:
+            logger.info("CLAP %s: Using ONNX Runtime automatic thread management", label)
+        else:
+            sess_options.intra_op_num_threads = threads
+            logger.info("CLAP %s: ONNX limited to %s threads", label, threads)
     return sess_options
 
 

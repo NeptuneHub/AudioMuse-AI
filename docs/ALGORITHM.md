@@ -2149,10 +2149,22 @@ same as when they are started from the page.
    still gets a task row (STARTED, then SUCCESS or FAILURE) and so stays visible
    in the task panel; the cost is that the poll thread waits for the run, which is
    the accepted trade for a schedule that fires once a day.
-5. **Conflict check.** For analysis and clustering, a row is skipped when a task
-   of that type is already active, so a schedule cannot pile runs on top of each
+5. **Queue guard.** Analysis, clustering, sonic fingerprint, plugin tasks (and,
+   when started manually, cleaning and provider migration) are mutually
+   exclusive: a scheduled run is skipped while any other queue-guard task is
+   still queued or running, so a schedule cannot pile heavy runs on top of each
    other.
-6. **Error isolation.** An exception on one row is logged and the loop continues
+6. **Retry on conflict.** A skipped scheduled run (analysis, clustering, sonic
+   fingerprint or a plugin task) is recorded in a `cron_retry` list instead of
+   being dropped silently. The cron thread re-attempts it every
+   `CRON_RETRY_INTERVAL_MINUTES` (clamped below `CRON_RETRY_MAX_MINUTES`), up to
+   `CRON_RETRY_MAX_MINUTES` after the first block; once the guard clears it
+   starts, and if the window expires it is recorded as a visible failed run
+   rather than running (fail-safe). `GET /api/cron` exposes the pending state
+   (`retry_pending`, `retry_attempts`, `retry_blocker_task_type`) so the
+   Scheduled Tasks page can show that a schedule is waiting instead of looking
+   like it fired normally.
+7. **Error isolation.** An exception on one row is logged and the loop continues
    with the others. A failed enqueue is recorded as a failed task so it is
    visible in the UI.
 
@@ -2170,4 +2182,8 @@ Cron reuses the defaults of the tasks it starts:
   AI naming settings: used to compose the scheduled clustering job.
 - `SONIC_FINGERPRINT_CRON_PLAYLIST_NAME`: the stable playlist name used by the
   scheduled sonic fingerprint.
+- `CRON_RETRY_MAX_MINUTES`: how long a scheduled run blocked by the queue guard
+  waits in the retry list before it is recorded as skipped.
+- `CRON_RETRY_INTERVAL_MINUTES`: how often the cron thread re-attempts blocked
+  scheduled runs.
 - `TZ`: the timezone the expressions are evaluated in.

@@ -20,6 +20,7 @@ Main Features:
 """
 
 import os
+import sys
 import tempfile
 
 # --- Task Status Constants ---
@@ -40,6 +41,15 @@ TASK_STATUS_FAILURE = TASK_STATUS_FAIL
 
 TASK_STATUS_TERMINAL = (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL, TASK_STATUS_REVOKED)
 TASK_STATUS_LIVE = (TASK_STATUS_NEW, TASK_STATUS_RUNNING)
+
+# --- Queue Guard ---
+# Every task type that enqueues catalogue work and must never run in parallel
+# with any other member of this set. The centralized queue guard checks this
+# for the cron scheduler and the manual start endpoints alike.
+QUEUE_BLOCKING_TASK_TYPES = (
+    'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
+    'sonic_fingerprint',
+)
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
@@ -226,7 +236,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.3.0"
+APP_VERSION = "v3.3.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1039,13 +1049,19 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 # in potentially shorter paths). Can be overridden via env var PATH_FIX_SIZE.
 PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
+def _bundle_data_root():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 # Path to the JSON file containing mood centroids for the path-to-mood feature.
-MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap.json')
+MOOD_CENTROIDS_FILE = os.path.join(_bundle_data_root(), 'mood_centroids_real_080_clap.json')
 
 # Path to the JSON file containing genre -> subgenre centroids used by the
 # Hyperbolic Explorer tree's genre levels (main genre, then subgenre). Built
 # offline by query/brainstorm_genre_subgenre_080.py from the live catalogue.
-GENRE_SUBGENRE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_subgenre.json')
+GENRE_SUBGENRE_FILE = os.path.join(_bundle_data_root(), 'genre_subgenre.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
@@ -1169,6 +1185,13 @@ SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
     "Sonic Fingerprint by AudioMuse-AI",
 )
+
+# --- Cron Scheduler Retry ---
+# A scheduled run that is blocked by a live queue-guard task is retried every
+# CRON_RETRY_INTERVAL_MINUTES up to CRON_RETRY_MAX_MINUTES after the first
+# block, then recorded as skipped (fail-safe: never run on expiry).
+CRON_RETRY_MAX_MINUTES = int(os.environ.get("CRON_RETRY_MAX_MINUTES", "240")) # Max minutes a blocked scheduled run waits in the retry list
+CRON_RETRY_INTERVAL_MINUTES = int(os.environ.get("CRON_RETRY_INTERVAL_MINUTES", "10")) # Minutes between re-attempts of blocked scheduled runs
 
 # --- Database Cleaning Safety ---
 CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report

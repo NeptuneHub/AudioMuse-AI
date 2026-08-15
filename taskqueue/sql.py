@@ -28,11 +28,14 @@ Main Features:
 
 import hashlib
 import json
+import logging
 import socket
 import zlib
 
 import config
 import queue_names
+
+logger = logging.getLogger(__name__)
 
 LOCK_CLASS = 0x41554449
 MAINTENANCE_LOCK_CLASS = 0x4155444A
@@ -98,7 +101,10 @@ PARENT_INDEX_SQL = """
       ON task_status (parent_task_id) WHERE parent_task_id IS NOT NULL
 """.format(PARENT_INDEX_NAME)
 
-MAIN_TASK_TYPES = ('main_analysis', 'main_clustering', 'cleaning', 'provider_migration')
+MAIN_TASK_TYPES = (
+    'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
+    'sonic_fingerprint',
+)
 
 MAIN_INDEX_PREFIX = 'idx_task_status_one_live_main'
 
@@ -134,6 +140,39 @@ _ONE_LIVE_MAIN_INDEX = """
     statuses=_LIVE_STATUS_SQL,
     types=', '.join(f"'{name}'" for name in MAIN_TASK_TYPES),
 )
+
+
+def _retire_surplus_main_live_roots(cur):
+    cur.execute(
+        "SELECT task_id FROM task_status "
+        "WHERE parent_task_id IS NULL AND status IN ({live}) "
+        "AND task_type IN ({types}) ORDER BY id DESC".format(
+            live=_LIVE_IN_LIST,
+            types=', '.join(f"'{name}'" for name in MAIN_TASK_TYPES),
+        )
+    )
+    rows = [row[0] for row in cur.fetchall()]
+    if len(rows) <= 1:
+        return True
+    running = []
+    for task_id in rows:
+        if try_hold(cur, task_id):
+            release(cur, task_id)
+        else:
+            running.append(task_id)
+    if len(running) > 1:
+        logger.warning(
+            "Queue schema: %d main tasks are still executing; deferring the "
+            "one-live-main index build to a later startup.", len(running),
+        )
+        return False
+    keep = running[0] if running else rows[0]
+    revoke = [task_id for task_id in rows if task_id != keep]
+    cur.execute(
+        "UPDATE task_status SET status=%s, progress=100 WHERE task_id = ANY(%s)",
+        (_REVOKED, revoke),
+    )
+    return True
 
 SWEEP_TASK_TYPE = 'server_sweep'
 
@@ -244,8 +283,16 @@ def ensure_schema(cur):
     if _index_missing(cur, PARENT_INDEX_NAME):
         cur.execute(PARENT_INDEX_SQL)
     if _index_missing(cur, MAIN_INDEX_NAME):
-        cur.execute(_ONE_LIVE_MAIN_INDEX)
-        cur.execute(_DROP_STALE_INDEXES, (MAIN_INDEX_PREFIX + '%', MAIN_INDEX_NAME))
+        # The one-live-main index now also covers sonic_fingerprint. An upgrade
+        # can leave a live batch root and a live fingerprint side by side (the
+        # old index never admitted the fingerprint), so retire every live main
+        # root but the newest before the unique index is (re)created. A row a
+        # live worker is still executing (its per-task advisory lock is held) is
+        # never revoked; if two are executing the build is deferred to a later
+        # boot rather than force-revoking a running task.
+        if _retire_surplus_main_live_roots(cur):
+            cur.execute(_ONE_LIVE_MAIN_INDEX)
+            cur.execute(_DROP_STALE_INDEXES, (MAIN_INDEX_PREFIX + '%', MAIN_INDEX_NAME))
     if _index_missing(cur, SWEEP_INDEX_NAME):
         cur.execute(_ONE_LIVE_SWEEP_INDEX)
         cur.execute(_DROP_STALE_INDEXES, (SWEEP_INDEX_PREFIX + '%', SWEEP_INDEX_NAME))

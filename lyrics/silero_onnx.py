@@ -32,6 +32,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from cpu_budget import usable_cpu_count
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_PATH = '/app/model/silero_vad.onnx'
@@ -63,7 +65,7 @@ def _load_session(model_path: Optional[str] = None):
 
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
+        opts.intra_op_num_threads = max(1, (usable_cpu_count() or os.cpu_count() or 2) // 2)
         opts.inter_op_num_threads = 1
         opts.enable_cpu_mem_arena = False
         opts.enable_mem_pattern = False

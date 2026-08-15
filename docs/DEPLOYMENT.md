@@ -65,6 +65,9 @@ AudioMuse-AI provides two Docker Compose examples:
 
 Both files start the whole stack: Flask, one worker and PostgreSQL.
 
+**Note on CPU limits:**
+If you cap the stack with `--cpus`, `--cpuset-cpus`, `deploy.resources.limits.cpus` or a systemd `CPUQuota`, the worker and ONNX analysis thread caps are sized from that limit (keeping a small bare minimum) instead of the host's core count. Without any limit they keep using the full host CPU, so behavior on native Linux, macOS and Windows installs is unchanged.
+
 **Prerequisites:**
 * Docker and Docker Compose installed
 * A media server already installed: Navidrome, Jellyfin, Emby, Lyrion or Plex

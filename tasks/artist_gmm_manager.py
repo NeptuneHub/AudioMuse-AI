@@ -34,6 +34,7 @@ from collections import defaultdict
 from joblib import Parallel, delayed
 from sklearn.mixture import GaussianMixture
 
+from cpu_budget import usable_cpu_count
 from config import INDEX_BUILD_WORKERS
 
 logger = logging.getLogger(__name__)
@@ -220,7 +221,7 @@ def _gmm_worker_count(pending: int) -> int:
         return 1
     if INDEX_BUILD_WORKERS > 1:
         return min(INDEX_BUILD_WORKERS, pending)
-    return max(1, min(8, (os.cpu_count() or 2) // 2, pending))
+    return max(1, min(8, (usable_cpu_count() or os.cpu_count() or 2) // 2, pending))
 
 
 def _shutdown_gmm_pool() -> None:

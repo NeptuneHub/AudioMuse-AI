@@ -345,6 +345,48 @@ class TestAdmissionIsAUniqueIndexNotALock:
             _enqueue(queue_db, 'main-2', task_type='main_clustering')
         queue_db.rollback()
 
+    def test_upgrade_retires_conflicting_live_roots_before_recreating_the_index(
+        self, queue_db
+    ):
+        # Simulate a pre-upgrade state: no one-live-main index, and a live batch
+        # root alongside a live sonic-fingerprint root (the gap this feature
+        # closes). ensure_schema must retire every live main root but the newest
+        # before it can build the unique index, or the CREATE would fail.
+        with queue_db.cursor() as cur:
+            cur.execute(f"DROP INDEX IF EXISTS {sql.MAIN_INDEX_NAME}")
+        queue_db.commit()
+
+        for task_id, task_type in (
+            ('analysis-live', 'main_analysis'),
+            ('fingerprint-live', 'sonic_fingerprint'),
+        ):
+            with queue_db.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO task_status (task_id, task_type, status) "
+                    "VALUES (%s, %s, %s)",
+                    (task_id, task_type, config.TASK_STATUS_RUNNING),
+                )
+            queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            sql.ensure_schema(cur)
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "SELECT task_id FROM task_status "
+                "WHERE parent_task_id IS NULL AND status = %s",
+                (config.TASK_STATUS_RUNNING,),
+            )
+            live = cur.fetchall()
+        assert len(live) == 1, (
+            'the upgrade retire must leave exactly one live main root'
+        )
+
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            _enqueue(queue_db, 'main-3', task_type='main_clustering')
+        queue_db.rollback()
+
     def test_a_sweep_and_a_main_task_coexist(self, queue_db):
         assert _enqueue(queue_db, 'main-1', task_type='main_analysis')
         assert _enqueue(queue_db, 'sweep-1', task_type='server_sweep')

@@ -344,7 +344,9 @@ class TestHttpStatus:
         assert em.http_status_for_code(1099) == 400
         assert em.http_status_for_code(1100) == 502
         assert em.http_status_for_code(1199) == 502
-        assert em.http_status_for_code(1200) == 500
+        assert em.http_status_for_code(1200) == 409
+        assert em.http_status_for_code(1299) == 409
+        assert em.http_status_for_code(1300) == 500
         assert em.http_status_for_code(3000) == 503
         assert em.http_status_for_code(3099) == 503
         assert em.http_status_for_code(3100) == 500

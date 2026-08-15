@@ -758,6 +758,46 @@ def test_tree_root_is_genre_and_splits_into_subgenres(monkeypatch):
     assert "mood" not in kinds
 
 
+def test_tree_genre_root_lists_tracks_directly_when_subgenres_cannot_cluster(monkeypatch):
+    # On a small library no subgenre can form a cluster of HYPERBOLIC_MIN_CLUSTER_SIZE
+    # or more, so the strict path used to hide every genre and silently fall back to
+    # the mood root. A genre whose subgenres all vanished must instead list its
+    # tracks directly under the genre, keeping the genre root (not mood).
+    mapping, score_rows = _make_mood_catalogue(n_per_mood=2, moods=("happy",))
+    mood_centroids = _mood_centroids_for(("happy",))
+    monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
+    genre_subgenres = {
+        "rock": {
+            "vec": np.array([0.156, 0.0]),
+            "subgenres": [
+                {"name": "pop", "vec": np.array([0.152, 0.0])},
+                {"name": "metal", "vec": np.array([0.160, 0.0])},
+            ],
+        },
+        "jazz": {
+            "vec": np.array([0.172, 0.0]),
+            "subgenres": [
+                {"name": "blues", "vec": np.array([0.168, 0.0])},
+                {"name": "swing", "vec": np.array([0.176, 0.0])},
+            ],
+        },
+    }
+    try:
+        _rebuild_tree_cache(mapping, score_rows=score_rows, mood_centroids=mood_centroids,
+                            genre_subgenres=genre_subgenres)
+        root, _ = hm.build_hyperbolic_tree(None)
+        root_ids = {item["id"] for item in root["items"]}
+        nodes = hm._TREE_CACHE["nodes"]
+        kinds = {n.get("kind") for n in nodes.values() if n.get("type") == "folder"}
+    finally:
+        hm.reset_hyperbolic_tree_cache()
+    assert root_ids == {"root.grock", "root.gjazz"}
+    assert all(item.get("kind") == "main_genre" for item in root["items"])
+    assert all(item.get("leaf") is True for item in root["items"])
+    assert "subgenre" not in kinds
+    assert "mood" not in kinds
+
+
 def test_tree_genre_centroids_fall_back_when_dims_differ(monkeypatch):
     mapping, score_rows = _make_mood_catalogue(n_per_mood=50, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))

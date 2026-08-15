@@ -1585,6 +1585,28 @@ def init_db():
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_task_type ON cron (task_type)"
             )
             cur.execute(
+                "CREATE TABLE IF NOT EXISTS cron_retry ("
+                "task_type TEXT PRIMARY KEY, "
+                "retry_until DOUBLE PRECISION, "
+                "attempts INTEGER DEFAULT 0, "
+                "first_blocked_at DOUBLE PRECISION, "
+                "blocker_task_id TEXT, "
+                "blocker_task_type TEXT)"
+            )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_retry_task_type "
+                "ON cron_retry (task_type)"
+            )
+            cur.execute(
+                "ALTER TABLE cron_retry ADD COLUMN IF NOT EXISTS first_blocked_at DOUBLE PRECISION"
+            )
+            cur.execute(
+                "ALTER TABLE cron_retry DROP COLUMN IF EXISTS created_at"
+            )
+            cur.execute(
+                "ALTER TABLE cron_retry DROP COLUMN IF EXISTS last_attempt_at"
+            )
+            cur.execute(
                 "CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
             cur.execute(
@@ -2513,6 +2535,97 @@ def get_active_main_task(
     active_task = cur.fetchone()
     cur.close()
     return dict(active_task) if active_task else None
+
+
+def get_queue_blocking_task(conn=None):
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
+    try:
+        cur.execute(
+            "SELECT task_id, task_type, status, details "
+            "FROM task_status "
+            "WHERE status IN %s AND parent_task_id IS NULL "
+            "AND (task_type = ANY(%s) OR task_type LIKE %s) "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (non_terminal_statuses, list(config.QUEUE_BLOCKING_TASK_TYPES), 'plugin.%'),
+        )
+        active_task = cur.fetchone()
+    finally:
+        cur.close()
+    return dict(active_task) if active_task else None
+
+
+def record_cron_retry(task_type, retry_until, first_blocked_at, blocker_task_id=None, blocker_task_type=None, conn=None):
+    db = conn or get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO cron_retry "
+            "(task_type, retry_until, first_blocked_at, blocker_task_id, blocker_task_type) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (task_type) DO UPDATE SET "
+            "blocker_task_id = EXCLUDED.blocker_task_id, "
+            "blocker_task_type = EXCLUDED.blocker_task_type",
+            (task_type, retry_until, first_blocked_at, blocker_task_id, blocker_task_type),
+        )
+        db.commit()
+
+
+def bump_cron_retry(task_type, blocker_task_id=None, blocker_task_type=None, conn=None):
+    db = conn or get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE cron_retry SET attempts = attempts + 1, "
+            "blocker_task_id = %s, blocker_task_type = %s "
+            "WHERE task_type = %s",
+            (blocker_task_id, blocker_task_type, task_type),
+        )
+        db.commit()
+
+
+def list_pending_cron_retries(conn=None):
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT task_type, retry_until, attempts, first_blocked_at, blocker_task_id, blocker_task_type "
+            "FROM cron_retry ORDER BY task_type"
+        )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        cur.close()
+
+
+def cron_retry_task_already_done(cron_task_type, first_blocked_at, conn=None):
+    queue_type = {
+        'analysis': 'main_analysis',
+        'clustering': 'main_clustering',
+        'sonic_fingerprint': 'sonic_fingerprint',
+    }.get(cron_task_type)
+    if queue_type is None and cron_task_type.startswith('plugin.'):
+        queue_type = cron_task_type
+    if queue_type is None:
+        return False
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM task_status "
+            "WHERE task_type = %s AND status = %s "
+            "AND start_time >= %s)",
+            (queue_type, TASK_STATUS_SUCCESS, first_blocked_at),
+        )
+        return bool(cur.fetchone()[0])
+    finally:
+        cur.close()
+
+
+def clear_cron_retry(task_type, conn=None):
+    db = conn or get_db()
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM cron_retry WHERE task_type = %s", (task_type,))
+        db.commit()
 
 
 def get_child_tasks_from_db(parent_task_id):

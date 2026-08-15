@@ -70,6 +70,8 @@ import time
 import queue_names
 import service_roles
 
+from cpu_budget import detect_cpu_count
+
 _QUEUE_FLAG = '--queue'
 
 
@@ -84,10 +86,15 @@ def _queue_from_argv(argv=None):
 
 
 def _apply_thread_caps(queue):
-    cpu_count = os.cpu_count() or 2
     if queue == queue_names.QUEUE_HIGH:
+        cpu_count, source = detect_cpu_count(
+            os.cpu_count() or 1, 1, label='High-priority worker'
+        )
         cap = max(1, cpu_count // 3)
     else:
+        cpu_count, source = detect_cpu_count(
+            os.cpu_count() or 2, 2, label='Default worker'
+        )
         cap = max(2, cpu_count // 2)
     for key in (
         'OMP_NUM_THREADS',
@@ -99,6 +106,7 @@ def _apply_thread_caps(queue):
         os.environ[key] = str(cap)
     os.environ.setdefault('GOMP_SPINCOUNT', '0')
     os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
+    print(f"{queue} worker CPU thread cap = {cap} ({cpu_count} CPUs from {source})")
     return cap
 
 
@@ -110,7 +118,6 @@ if _UNPARSED_QUEUE not in queue_names.QUEUE_NAMES:
 QUEUE = _UNPARSED_QUEUE
 service_roles.declare_worker_role(force=True)
 THREAD_CAP = _apply_thread_caps(QUEUE)
-print(f"{QUEUE} worker CPU thread cap = {THREAD_CAP}")
 
 import config  # noqa: E402
 from . import sql  # noqa: E402
