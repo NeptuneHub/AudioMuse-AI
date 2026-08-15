@@ -42,9 +42,10 @@ Main Features:
   ids for the caller to translate. Clusters are sized to
   HYPERBOLIC_TARGET_LEAF_SIZE (default 150, i.e. ~100-200 songs) with a floor of
   HYPERBOLIC_MIN_CLUSTER_SIZE (default 20): clusters below that floor are
-  pruned, a subgenre left without a valid cluster is hidden, and a genre whose
-  subgenres all vanished is hidden too - so a server only shows genres and
-  subgenres it can actually back with real clusters of songs.
+  pruned and a subgenre left without a valid cluster is hidden; a genre whose
+  subgenres all vanished lists its tracks directly instead, so the genre root
+  is always shown when the genre data is usable (only genuinely unusable data
+  falls back to the legacy mood partition).
   The returned node is a reference into the shared cache, not a copy - callers
   must build a new structure rather than mutate it in place (id translation
   does this already). The persisted blob carries a schema version and is
@@ -1219,33 +1220,32 @@ def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score
     genre_data_usable = _genre_subgenres_usable(vec_map, genre_subgenres)
 
     if genre_data_usable and level == 0:
-        # GENRE -> SUBGENRE -> CLUSTER: a genre is only kept when at least one
-        # of its subgenres forms a real cluster. Genres whose subgenres all
-        # failed to cluster (or that have no subgenres) are pruned entirely.
         sub_items = _materialize_genre_level(
             node_id, members, vec_map, radii_map, score_by_id,
             mood_centroids, genre_subgenres, nodes, flat_ids, level + 1,
             parent_genre=label,
         )
-        if not sub_items:
-            return None
-        return _branch_folder(node_id, name, summary, sub_items, nodes, flat_ids, kind=kind)
+        if sub_items:
+            return _branch_folder(node_id, name, summary, sub_items, nodes, flat_ids, kind=kind)
+        # No subgenre could form a real cluster (small library): list all of
+        # the genre's tracks directly under it instead of the mood fallback.
+        return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
 
     # SUBGENRE, or a main genre in the legacy mood fallback (no usable genre
     # file): split into named clusters of ~HYPERBOLIC_TARGET_LEAF_SIZE songs.
-    # Clusters below HYPERBOLIC_MIN_CLUSTER_SIZE are pruned; a folder left with
-    # no valid cluster is pruned (strict genre path) or listed as a legacy leaf
-    # (mood fallback) so tiny single-server moods still browse.
+    # Clusters below HYPERBOLIC_MIN_CLUSTER_SIZE are pruned; a subgenre left
+    # with no valid cluster is hidden, and a folder in the legacy mood fallback
+    # lists its tracks as a leaf so tiny single-server moods still browse.
     prefix = _genre_path_prefix(node_id)
     cluster_items = _materialize_children(
         node_id, members, vec_map, radii_map, score_by_id,
         mood_centroids, nodes, flat_ids, name_prefix=prefix or None,
     )
-    if not cluster_items:
-        if not genre_data_usable:
-            return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
-        return None
-    return _branch_folder(node_id, name, summary, cluster_items, nodes, flat_ids, kind=kind)
+    if cluster_items:
+        return _branch_folder(node_id, name, summary, cluster_items, nodes, flat_ids, kind=kind)
+    if not genre_data_usable:
+        return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
+    return None
 
 
 def _genre_path_prefix(node_id):
