@@ -15,7 +15,7 @@ GPU-accelerated clustering is also available through RAPIDS cuML. It can give a 
 - Works with all existing clustering configurations and parameters
 - Compatible with NVIDIA GPUs on CUDA 13 or later (*)
 
-(*) Older drivers are NOT supported by the published build, but you can try to build your own image as described in https://github.com/NeptuneHub/AudioMuse-AI/issues/265
+(*) CUDA 13 raises the minimum host driver to >=580.x (up from >=570.x for the previous CUDA 12.8 image) - older drivers are NOT supported by the published build, but you can try to build your own image as described in https://github.com/NeptuneHub/AudioMuse-AI/issues/265
 
 **To enable GPU clustering:**
 
