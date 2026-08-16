@@ -1,20 +1,19 @@
 # syntax=docker/dockerfile:1
 # AudioMuse-AI Dockerfile
-# Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04) builds
+# Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04) builds
 #
 # Build examples:
 #   CPU:  docker build -t audiomuse-ai .
-#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
+#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
 
 ARG BASE_IMAGE=ubuntu:24.04
 # Optional: URL of a prebuilt aarch64 onnxruntime-gpu wheel. There is no official
 # linux/aarch64 wheel for onnxruntime-gpu on PyPI or pypi.nvidia.com, so ARM64
 # (DGX Spark / GB10, compute capability sm_121) GPU builds install this URL
-# instead of the onnxruntime-gpu pin in gpu.txt. sm_121 is only targetable by
-# CUDA 13+, so this wheel is linked against CUDA 13/cuDNN 9 - when this arg is
-# set, BASE_IMAGE must be a CUDA 13.x image and requirements/gpu-arm64.txt
-# (cupy-cuda13x, cuml-cu13) is installed instead of gpu.txt (cupy-cuda12x,
-# cuml-cu12), which target CUDA 12.x and would fail to load.
+# instead of the onnxruntime-gpu pin in gpu.txt. Both GPU requirement files now
+# target CUDA 13 / cuDNN 9: gpu.txt pins onnxruntime-gpu 1.28.0 (CUDA 13) plus
+# cupy-cuda13x/cuml-cu13, and gpu-arm64.txt uses the same cupy/cuml pins with
+# this prebuilt wheel. When this arg is set, BASE_IMAGE must be a CUDA 13.x image.
 # Example: https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/onnxruntime_gpu-1.25.0-cp312-cp312-linux_aarch64.whl
 ARG ONNXRUNTIME_WHEEL_URL=""
 
@@ -455,8 +454,11 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED; \
     fi \
     && echo "Verifying psycopg2 installation..." \
     && python3 -c "import psycopg2; print('psycopg2 OK')" \
-    && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
-    && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+    && find /usr/local/lib/python3.*/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.*/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete \
+    && PYV=$(python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])') \
+    && mkdir -p /app/site-packages && cp -a /usr/local/lib/$PYV/dist-packages/. /app/site-packages/ \
+    && du -sh /app/site-packages
 
 # ============================================================================
 # Stage 4: Runner - Final production image
@@ -497,7 +499,11 @@ RUN ls -lah /app/.cache/huggingface/ && \
     du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
 
 # Copy Python packages from libraries stage
-COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+COPY --from=libraries /app/site-packages/ /tmp/site-packages/
+RUN PYV=$(python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])') && \
+    mkdir -p /usr/local/lib/$PYV/dist-packages && \
+    cp -a /tmp/site-packages/. /usr/local/lib/$PYV/dist-packages/ && \
+    rm -rf /tmp/site-packages
 # Copy console entrypoints (gunicorn, etc.) from libraries stage
 COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 

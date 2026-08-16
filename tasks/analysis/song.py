@@ -391,6 +391,7 @@ _MINOR = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
 
 def extract_basic_features(audio, sr):
     tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
+    tempo = float(np.ravel(tempo)[0])
     energy = float(np.mean(librosa.feature.rms(y=audio)))
     chroma_mean = np.mean(librosa.feature.chroma_stft(y=audio, sr=sr), axis=1)
     maj = np.array([np.corrcoef(chroma_mean, np.roll(_MAJOR, i))[0, 1] for i in range(12)])

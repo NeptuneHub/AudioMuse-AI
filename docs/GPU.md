@@ -13,13 +13,13 @@ GPU-accelerated clustering is also available through RAPIDS cuML. It can give a 
 - GPU-accelerated KMeans, DBSCAN, and PCA using RAPIDS cuML
 - Automatic fallback to CPU if the GPU is unavailable or hits an error
 - Works with all existing clustering configurations and parameters
-- Compatible with NVIDIA GPUs on CUDA 12.8.1 or later (*)
+- Compatible with NVIDIA GPUs on CUDA 13 or later (*)
 
 (*) Older drivers are NOT supported by the published build, but you can try to build your own image as described in https://github.com/NeptuneHub/AudioMuse-AI/issues/265
 
 **To enable GPU clustering:**
 
-1. Use the NVIDIA image (for example `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`)
+1. Use the NVIDIA image (for example `nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04`)
 2. Set the value in your `.env` file, or in the Setup Wizard:
    ```
    USE_GPU_CLUSTERING=true

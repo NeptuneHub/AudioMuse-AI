@@ -3,7 +3,7 @@
 # onnxruntime is pinned in cpu.txt/gpu.txt (the container variants) but not in
 # common.txt, so the macOS build must request it explicitly or analysis fails at
 # runtime with `No module named 'onnxruntime'` (tasks/analysis.py).
-onnxruntime==1.19.2
+onnxruntime==1.28.0
 
 # pgserver ships a prebuilt PostgreSQL; 0.1.4 bundles PostgreSQL 16.2. Pinned
 # because contrib modules are NOT ABI-stable across PG minors -- the vendored
