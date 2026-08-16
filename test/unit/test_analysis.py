@@ -1380,7 +1380,7 @@ class TestRobustLoadAudioWithFallback:
     @patch('tasks.analysis.song._decode_audio_with_pyav')
     def test_fallback_on_librosa_failure(self, mock_pyav_decode, mock_librosa_load):
         mock_librosa_load.side_effect = Exception("Librosa failed")
-        mock_pyav_decode.return_value = np.random.rand(16000).astype(np.float32)
+        mock_pyav_decode.return_value = (np.random.rand(16000).astype(np.float32), 16000)
 
         audio, sr = robust_load_audio_with_fallback('corrupted.mp3')
 
@@ -1410,7 +1410,7 @@ class TestRobustLoadAudioWithFallback:
     @patch('tasks.analysis.song._decode_audio_with_pyav')
     def test_fallback_handles_silent_audio(self, mock_pyav_decode, mock_librosa_load):
         mock_librosa_load.side_effect = Exception("Librosa failed")
-        mock_pyav_decode.return_value = np.zeros(16000, dtype=np.float32)
+        mock_pyav_decode.return_value = (np.zeros(16000, dtype=np.float32), 16000)
 
         audio, sr = robust_load_audio_with_fallback('silent.mp3')
 

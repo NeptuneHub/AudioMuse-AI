@@ -426,15 +426,20 @@ def _decode_audio_with_pyav(file_path, target_sr):
     import av
 
     resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=target_sr)
-    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if AUDIO_LOAD_TIMEOUT else None
+    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if (AUDIO_LOAD_TIMEOUT and target_sr) else None
     chunks = []
     total = 0
+    actual_sr = target_sr
     with av.open(file_path) as container:
         if not container.streams.audio:
-            return np.array([], dtype=np.float32)
+            return np.array([], dtype=np.float32), actual_sr
         stream = container.streams.audio[0]
         for frame in container.decode(stream):
             for rframe in resampler.resample(frame):
+                if actual_sr is None:
+                    actual_sr = rframe.sample_rate
+                    if AUDIO_LOAD_TIMEOUT:
+                        max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
                 arr = rframe.to_ndarray().reshape(-1)
                 if arr.size:
                     chunks.append(arr)
@@ -442,15 +447,19 @@ def _decode_audio_with_pyav(file_path, target_sr):
             if max_samples and total >= max_samples:
                 break
         for rframe in resampler.resample(None):
+            if actual_sr is None:
+                actual_sr = rframe.sample_rate
+                if AUDIO_LOAD_TIMEOUT:
+                    max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
             arr = rframe.to_ndarray().reshape(-1)
             if arr.size:
                 chunks.append(arr)
     if not chunks:
-        return np.array([], dtype=np.float32)
+        return np.array([], dtype=np.float32), actual_sr
     audio = np.concatenate(chunks).astype(np.float32, copy=False)
     if max_samples:
         audio = audio[:max_samples]
-    return audio
+    return audio, actual_sr
 
 
 def robust_load_audio_with_fallback(file_path, target_sr=16000):
@@ -464,14 +473,24 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting PyAV fallback.")
 
     try:
-        audio = _decode_audio_with_pyav(file_path, target_sr)
+        audio, sr = _decode_audio_with_pyav(file_path, target_sr)
         if audio is None or audio.size == 0 or not np.any(audio):
             logger.error(f"PyAV fallback resulted in empty/silent audio for {name}.")
             return None, None
-        return audio, target_sr
+        return audio, sr
     except Exception:
         logger.exception(f"PyAV fallback loading also failed for {name}")
         return None, None
+
+
+def resample_audio(audio, orig_sr, target_sr):
+    if orig_sr == target_sr:
+        return audio
+    return librosa.resample(audio, orig_sr=orig_sr, target_sr=target_sr, res_type='soxr_hq')
+
+
+def decode_audio_once(file_path):
+    return robust_load_audio_with_fallback(file_path, target_sr=None)
 
 
 def _patches_for_track(audio, sr, name):
@@ -561,12 +580,16 @@ class AudioNotDecodableError(RuntimeError):
 
 
 def _analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
-                   return_audio=False, raise_on_unreadable=False):
+                   return_audio=False, raise_on_unreadable=False,
+                   native_audio=None, native_sr=None):
     name = os.path.basename(file_path)
     logger.info(f"Starting analysis for: {name}")
     nothing = (None, None, None, None) if return_audio else (None, None)
 
-    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
+    if native_audio is not None and native_sr is not None:
+        audio, sr = resample_audio(native_audio, native_sr, 16000), 16000
+    else:
+        audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
     if audio is None or not np.any(audio) or audio.size == 0:
         logger.warning(
             f"Could not load a valid audio signal for {name} after all attempts. Skipping track."
@@ -605,18 +628,21 @@ def _analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
     return return_values
 
 
-def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
+def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
+                  return_audio=False, native_audio=None, native_sr=None):
     return _analyze_track(
         file_path, mood_labels_list, model_paths, onnx_sessions=onnx_sessions,
-        return_audio=return_audio,
+        return_audio=return_audio, native_audio=native_audio, native_sr=native_sr,
     )
 
 
 def analyze_track_for_album(file_path, mood_labels_list, model_paths,
-                            onnx_sessions=None, return_audio=False):
+                            onnx_sessions=None, return_audio=False,
+                            native_audio=None, native_sr=None):
     return _analyze_track(
         file_path, mood_labels_list, model_paths, onnx_sessions=onnx_sessions,
         return_audio=return_audio, raise_on_unreadable=True,
+        native_audio=native_audio, native_sr=native_sr,
     )
 
 
@@ -645,12 +671,12 @@ def ensure_musicnn_sessions(onnx_sessions, model_paths, session_recycler, album_
     return load_musicnn_sessions(model_paths)
 
 
-def run_clap_for_track(path, track_name_full):
+def run_clap_for_track(path, track_name_full, native_audio=None, native_sr=None):
     logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
     try:
         from ..clap_analyzer import analyze_audio_file
 
-        emb, _, _ = analyze_audio_file(path)
+        emb, _, _ = analyze_audio_file(path, native_audio=native_audio, native_sr=native_sr)
         if PER_SONG_MODEL_RELOAD:
             try:
                 from ..clap_analyzer import unload_clap_audio_only
