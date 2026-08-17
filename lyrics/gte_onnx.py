@@ -94,7 +94,7 @@ def load_gte_model():
 
         logger.info('Loading gte ONNX session from %s', onnx_path)
         sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
         sess_options.enable_cpu_mem_arena = False
         sess_options.enable_mem_pattern = False
         sess_options.intra_op_num_threads = max(1, (usable_cpu_count() or os.cpu_count() or 2) // 2)

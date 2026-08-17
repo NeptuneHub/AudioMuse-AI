@@ -33,9 +33,7 @@ import numpy as np
 from collections import Counter, defaultdict
 
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans, DBSCAN, SpectralClustering
 from sklearn.decomposition import PCA
-from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 
 logger = logging.getLogger(__name__)
@@ -59,8 +57,6 @@ from config import (
     MIN_PLAYLIST_SIZE_FOR_TOP_N,
     CLUSTERING_MAX_PLAYLIST_SONGS,
     CLUSTERING_SUBSET_SONGS,
-    GMM_COVARIANCE_TYPE,
-    SPECTRAL_N_NEIGHBORS,
     TOP_K_MOODS_FOR_PURITY_CALCULATION,
     LN_MOOD_DIVERSITY_STATS,
     LN_MOOD_PURITY_STATS,
@@ -563,7 +559,7 @@ def _mutate_parameters(
     }
 
 
-def _split_oversized_clusters(labels, data):
+def _split_oversized_clusters(labels, data, use_gpu=False):
     labels = np.asarray(labels).copy()
     target = max(2 * MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_MAX_PLAYLIST_SONGS // 2)
     next_label = int(labels.max()) + 1
@@ -572,9 +568,10 @@ def _split_oversized_clusters(labels, data):
         if len(idx) <= CLUSTERING_MAX_PLAYLIST_SONGS:
             continue
         n_sub = min(len(idx), max(2, -(-len(idx) // target)))
-        sub_labels = KMeans(
-            n_clusters=n_sub, init='k-means++', n_init=3
-        ).fit_predict(data[idx])
+        sub_model = get_clustering_model(
+            'kmeans', {'n_clusters': n_sub}, use_gpu=use_gpu, n_init=3
+        )
+        sub_labels = sub_model.fit_predict(data[idx])
         labels[idx] = next_label + sub_labels
         next_label += n_sub
     return labels
@@ -601,42 +598,25 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
             try:
                 model = get_clustering_model(method, params, use_gpu=True)
                 labels = model.fit_predict(data)
-                logger.debug(f"{log_prefix} Iteration {run_idx}: GPU clustering used for {method}")
-            except Exception as e:
-                logger.warning(f"{log_prefix} GPU clustering failed, falling back to CPU: {e}")
+                use_gpu = bool(getattr(model, 'using_gpu', False))
+            except Exception:
+                logger.warning(
+                    f"{log_prefix} GPU clustering failed, falling back to CPU", exc_info=True
+                )
+                model = None
                 use_gpu = False
 
-        if not use_gpu:
-            if method == 'kmeans':
-                model = KMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=10)
-            elif method == 'dbscan':
-                model = DBSCAN(eps=params['eps'], min_samples=params['min_samples'])
-            elif method == 'gmm':
-                model = GaussianMixture(
-                    n_components=params['n_components'],
-                    covariance_type=GMM_COVARIANCE_TYPE,
-                    init_params='k-means++',
-                    n_init=3,
-                    random_state=None,
-                    reg_covar=1e-4,
-                )
-            elif method == 'spectral':
-                model = SpectralClustering(
-                    n_clusters=params['n_clusters'],
-                    assign_labels='kmeans',
-                    affinity='nearest_neighbors',
-                    n_neighbors=SPECTRAL_N_NEIGHBORS,
-                    random_state=params.get("random_state"),
-                    n_init=10,
-                    verbose=False,
-                )
+        if model is None:
+            if method == 'gmm':
+                model = get_clustering_model(method, params, use_gpu=False, n_init=3)
             else:
-                raise ValueError(f"Unsupported clustering method: {method}")
-
+                model = get_clustering_model(method, params, use_gpu=False)
             labels = model.fit_predict(data)
+        elif use_gpu:
+            logger.debug(f"{log_prefix} Iteration {run_idx}: GPU clustering used for {method}")
 
         if method == 'dbscan' and labels is not None:
-            labels = _split_oversized_clusters(labels, data)
+            labels = _split_oversized_clusters(labels, data, use_gpu=use_gpu)
 
         centers = {}
         if hasattr(model, 'cluster_centers_') and model.cluster_centers_ is not None:

@@ -46,7 +46,7 @@ if USE_PGSERVER:
 if not USE_PGSERVER:
     datas += [(os.path.join(ROOT, cfg["vendor_dir"], "postgres", arch), "pgsql")]
 
-for _pkg in ("librosa", "resampy", "flasgger", "wn", "langdetect"):
+for _pkg in ("librosa", "soxr", "flasgger", "wn", "langdetect"):
     datas += collect_data_files(_pkg)
 datas += collect_data_files("transformers", include_py_files=False)
 

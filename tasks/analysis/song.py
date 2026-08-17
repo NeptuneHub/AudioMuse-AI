@@ -15,7 +15,11 @@ each result under the canonical catalogue id.
 
 Main Features:
 * analyze_track / robust_load_audio_with_fallback: decode a file and produce the
-  MusiCNN moods + embedding; a track that cannot be decoded returns None.
+  MusiCNN moods + embedding; a track that cannot be decoded returns None. The PyAV
+  fallback averages the channels itself rather than letting swresample downmix,
+  because swresample is power-preserving (1/sqrt(2) per channel) while librosa is
+  amplitude-preserving ((L+R)/2); the two decoders must agree or the same file
+  yields different embeddings depending on which one opened it.
 * run_clap_for_track / run_lyrics_for_track: the optional per-song stages; every
   failure is recorded through the central error registry and never raised past
   the stage (a DB outage is the one exception: it re-raises so the album retries).
@@ -391,6 +395,7 @@ _MINOR = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
 
 def extract_basic_features(audio, sr):
     tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
+    tempo = float(np.ravel(tempo)[0])
     energy = float(np.mean(librosa.feature.rms(y=audio)))
     chroma_mean = np.mean(librosa.feature.chroma_stft(y=audio, sr=sr), axis=1)
     maj = np.array([np.corrcoef(chroma_mean, np.roll(_MAJOR, i))[0, 1] for i in range(12)])
@@ -422,10 +427,18 @@ def prepare_spectrogram_patches(audio, sr):
     return np.array(patches).transpose(0, 2, 1).astype(np.float32)
 
 
+def _frame_to_mono_mean(rframe):
+    arr = rframe.to_ndarray()
+    if arr.ndim > 1:
+        arr = arr.mean(axis=0)
+    else:
+        arr = arr.reshape(-1)
+    return arr.astype(np.float32, copy=False)
+
+
 def _decode_audio_with_pyav(file_path, target_sr):
     import av
 
-    resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=target_sr)
     max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if (AUDIO_LOAD_TIMEOUT and target_sr) else None
     chunks = []
     total = 0
@@ -434,13 +447,16 @@ def _decode_audio_with_pyav(file_path, target_sr):
         if not container.streams.audio:
             return np.array([], dtype=np.float32), actual_sr
         stream = container.streams.audio[0]
+        resampler = av.audio.resampler.AudioResampler(
+            format="fltp", layout=stream.layout, rate=target_sr
+        )
         for frame in container.decode(stream):
             for rframe in resampler.resample(frame):
                 if actual_sr is None:
                     actual_sr = rframe.sample_rate
                     if AUDIO_LOAD_TIMEOUT:
                         max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
-                arr = rframe.to_ndarray().reshape(-1)
+                arr = _frame_to_mono_mean(rframe)
                 if arr.size:
                     chunks.append(arr)
                     total += arr.size
@@ -451,7 +467,7 @@ def _decode_audio_with_pyav(file_path, target_sr):
                 actual_sr = rframe.sample_rate
                 if AUDIO_LOAD_TIMEOUT:
                     max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
-            arr = rframe.to_ndarray().reshape(-1)
+            arr = _frame_to_mono_mean(rframe)
             if arr.size:
                 chunks.append(arr)
     if not chunks:

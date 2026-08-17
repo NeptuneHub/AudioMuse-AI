@@ -2,7 +2,12 @@
 # Install these in your virtualenv. We intentionally exclude system-level
 # components (ffmpeg, voyager index DB, etc.) which should be stubbed.
 # IMPORTANT: Versions aligned with requirements/common.txt and Dockerfile
-# Updated: 2026-01-08 - Aligned with Ubuntu 24.04/Python 3.12 dependencies:
+# Updated: 2026-08-16 - Aligned with the CUDA 13 / librosa 1.0 bump (CPU and GPU
+#   images both on Ubuntu 24.04 / Python 3.12; librosa 1.0 requires >=3.12, so the
+#   CI test jobs run Python 3.12):
+#   - numpy: 1.26.4 → 2.4.6, numba: 0.60.0 → 0.64.0
+#   - librosa: 0.11.0 → 1.0.0 (resampy dropped; soxr is now the default resampler)
+#   - onnxruntime: 1.19.2 → 1.28.0
 #   - scipy: 1.15.3 → 1.16.3
 #   - onnx: 1.16.0 → 1.22.0 (CVE fixes incl. CVE-2026-44512; aligned with common.txt)
 #   - scikit-learn: 1.7.2 → 1.8.0
@@ -10,16 +15,20 @@
 #   - sentencepiece: unversioned → 0.2.1
 #   - google-generativeai → google-genai==1.57.0 (package renamed)
 #   - pydub: unversioned → >=0.25.1
+# Updated: 2026-08-17 - av==17.1.0 added. The PyAV downmix tests encode real WAV
+#   fixtures and decode them through _decode_audio_with_pyav, so without it they
+#   skip the one thing they exist to guard. PyAV bundles its own FFmpeg libraries
+#   in the wheel, so this is NOT the excluded system ffmpeg binary noted below.
 
-numpy==1.26.4
-librosa==0.11.0
+numpy==2.4.6
+librosa==1.0.0
 scipy==1.16.3
-numba==0.60.0
+numba==0.64.0
 numkong==7.7.0
 soundfile==0.13.1
-resampy==0.4.3
+av==17.1.0
 onnx==1.22.0
-onnxruntime==1.19.2
+onnxruntime==1.28.0
 pydub==0.25.1
 scikit-learn==1.8.0
 psycopg2-binary==2.9.12

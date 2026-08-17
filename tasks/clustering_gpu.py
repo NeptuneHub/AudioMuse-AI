@@ -19,9 +19,14 @@ Main Features:
   once and cache the result, so a missing driver degrades silently to CPU.
 * GPU wrapper classes (GPUKMeans, GPUDBSCAN, GPUPCA, GPUGaussianMixture,
   GPUSpectralClustering) exposing the sklearn-style fit/predict surface.
+* KMeans, DBSCAN, PCA and SpectralClustering run on cuML; GaussianMixture has no
+  cuML estimator and stays on scikit-learn.
 """
 
 import logging
+
+import numpy as np
+
 from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS
 
 logger = logging.getLogger(__name__)
@@ -114,8 +119,8 @@ class GPUKMeans:
                 logger.debug(f"GPU KMeans completed: {self.n_clusters} clusters")
                 return labels
 
-            except Exception as e:
-                logger.warning(f"GPU KMeans failed, falling back to CPU: {e}")
+            except Exception:
+                logger.warning("GPU KMeans failed, falling back to CPU", exc_info=True)
 
         from sklearn.cluster import KMeans
 
@@ -160,8 +165,8 @@ class GPUDBSCAN:
                 )
                 return labels
 
-            except Exception as e:
-                logger.warning(f"GPU DBSCAN failed, falling back to CPU: {e}")
+            except Exception:
+                logger.warning("GPU DBSCAN failed, falling back to CPU", exc_info=True)
 
         from sklearn.cluster import DBSCAN
 
@@ -179,6 +184,7 @@ class GPUPCA:
         self.n_components = n_components
         self.model = None
         self.components_ = None
+        self.mean_ = None
         self.explained_variance_ratio_ = None
         self.n_components_ = n_components
         self.using_gpu = False
@@ -192,6 +198,7 @@ class GPUPCA:
 
                 X_transformed = self.model.fit_transform(_to_gpu_array(X))
                 self.components_ = self.model.components_
+                self.mean_ = self.model.mean_
                 self.explained_variance_ratio_ = self.model.explained_variance_ratio_
                 self.n_components_ = self.model.n_components_
                 self.using_gpu = True
@@ -199,14 +206,15 @@ class GPUPCA:
                 logger.debug(f"GPU PCA completed: {self.n_components_} components")
                 return X_transformed
 
-            except Exception as e:
-                logger.warning(f"GPU PCA failed, falling back to CPU: {e}")
+            except Exception:
+                logger.warning("GPU PCA failed, falling back to CPU", exc_info=True)
 
         from sklearn.decomposition import PCA
 
         self.model = PCA(n_components=self.n_components)
         X_transformed = self.model.fit_transform(X)
         self.components_ = self.model.components_
+        self.mean_ = self.model.mean_
         self.explained_variance_ratio_ = self.model.explained_variance_ratio_
         self.n_components_ = self.model.n_components_
         self.using_gpu = False
@@ -221,8 +229,12 @@ class GPUPCA:
         if self.using_gpu:
             try:
                 return self.model.inverse_transform(_to_gpu_array(X))
-            except Exception as e:
-                logger.warning(f"GPU PCA inverse_transform failed: {e}")
+            except Exception:
+                logger.warning(
+                    "GPU PCA inverse_transform failed, using CPU reconstruction", exc_info=True
+                )
+            if self.components_ is not None and self.mean_ is not None:
+                return np.asarray(X) @ self.components_ + self.mean_
 
         return self.model.inverse_transform(X)
 
@@ -269,32 +281,87 @@ class GPUSpectralClustering:
         n_init=10,
         verbose=False,
     ):
+        self.n_clusters = n_clusters
+        self.assign_labels = assign_labels
+        self.affinity = affinity
+        self.n_neighbors = n_neighbors
+        self.random_state = random_state
+        self.n_init = n_init
+        self.verbose = verbose
+        self.model = None
+        self.labels_ = None
+        self.using_gpu = False
+
+    def _gpu_supported(self):
+        return self.assign_labels == 'kmeans' and self.affinity in (
+            'nearest_neighbors',
+            'precomputed',
+        )
+
+    def fit_predict(self, X):
+        gpu_available = check_gpu_available()
+        gpu_supported = self._gpu_supported()
+
+        if gpu_available and not gpu_supported:
+            logger.warning(
+                "GPU SpectralClustering skipped, cuML has no assign_labels parameter and supports "
+                f"only nearest_neighbors/precomputed affinity: assign_labels={self.assign_labels} "
+                f"affinity={self.affinity}"
+            )
+
+        if gpu_available and gpu_supported:
+            try:
+                from cuml.cluster import SpectralClustering as cuSpectralClustering
+
+                spectral_kwargs = {
+                    'n_clusters': int(self.n_clusters),
+                    'affinity': self.affinity,
+                    'n_neighbors': int(self.n_neighbors),
+                    'n_init': int(self.n_init),
+                    'verbose': bool(self.verbose),
+                    'output_type': 'numpy',
+                }
+                if self.random_state is not None:
+                    spectral_kwargs['random_state'] = int(self.random_state)
+
+                self.model = cuSpectralClustering(**spectral_kwargs)
+
+                labels = self.model.fit_predict(_to_gpu_array(X))
+                self.labels_ = labels
+                self.using_gpu = True
+
+                logger.debug(f"GPU SpectralClustering completed: {self.n_clusters} clusters")
+                return labels
+
+            except Exception:
+                logger.warning("GPU SpectralClustering failed, falling back to CPU", exc_info=True)
+
         from sklearn.cluster import SpectralClustering
 
         self.model = SpectralClustering(
-            n_clusters=n_clusters,
-            assign_labels=assign_labels,
-            affinity=affinity,
-            n_neighbors=n_neighbors,
-            random_state=random_state,
-            n_init=n_init,
-            verbose=verbose,
+            n_clusters=self.n_clusters,
+            assign_labels=self.assign_labels,
+            affinity=self.affinity,
+            n_neighbors=self.n_neighbors,
+            random_state=self.random_state,
+            n_init=self.n_init,
+            verbose=self.verbose,
         )
-        self.n_clusters = n_clusters
+        labels = self.model.fit_predict(X)
+        self.labels_ = labels
         self.using_gpu = False
-        logger.debug("SpectralClustering using CPU (no GPU implementation available)")
 
-    def fit_predict(self, X):
-        return self.model.fit_predict(X)
+        logger.debug(f"CPU SpectralClustering completed: {self.n_clusters} clusters")
+        return labels
 
 
-def get_clustering_model(method, params, use_gpu=False):
+def get_clustering_model(method, params, use_gpu=False, n_init=10):
     if not use_gpu:
         from sklearn.cluster import KMeans, DBSCAN, SpectralClustering
         from sklearn.mixture import GaussianMixture
 
         if method == 'kmeans':
-            return KMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=10)
+            return KMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=n_init)
         elif method == 'dbscan':
             return DBSCAN(eps=params['eps'], min_samples=params['min_samples'])
         elif method == 'gmm':
@@ -302,7 +369,7 @@ def get_clustering_model(method, params, use_gpu=False):
                 n_components=params['n_components'],
                 covariance_type=GMM_COVARIANCE_TYPE,
                 init_params='k-means++',
-                n_init=10,
+                n_init=n_init,
                 random_state=None,
                 reg_covar=1e-4,
             )
@@ -313,12 +380,12 @@ def get_clustering_model(method, params, use_gpu=False):
                 affinity='nearest_neighbors',
                 n_neighbors=SPECTRAL_N_NEIGHBORS,
                 random_state=params.get("random_state"),
-                n_init=10,
+                n_init=n_init,
                 verbose=False,
             )
 
     if method == 'kmeans':
-        return GPUKMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=10)
+        return GPUKMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=n_init)
     elif method == 'dbscan':
         return GPUDBSCAN(eps=params['eps'], min_samples=params['min_samples'])
     elif method == 'gmm':
@@ -326,7 +393,7 @@ def get_clustering_model(method, params, use_gpu=False):
             n_components=params['n_components'],
             covariance_type=GMM_COVARIANCE_TYPE,
             init_params='k-means++',
-            n_init=10,
+            n_init=n_init,
             random_state=None,
             reg_covar=1e-4,
         )
@@ -337,7 +404,7 @@ def get_clustering_model(method, params, use_gpu=False):
             affinity='nearest_neighbors',
             n_neighbors=SPECTRAL_N_NEIGHBORS,
             random_state=params.get("random_state"),
-            n_init=10,
+            n_init=n_init,
             verbose=False,
         )
 
