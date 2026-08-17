@@ -34,7 +34,7 @@ from tasks.analysis import (
     robust_load_audio_with_fallback,
     analyze_track,
 )
-from tasks.analysis.song import run_inference, _find_onnx_name
+from tasks.analysis.song import run_inference, _find_onnx_name, _decode_audio_with_pyav
 
 
 def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
@@ -1437,6 +1437,87 @@ class TestRobustLoadAudioWithFallback:
         call_args = mock_librosa_load.call_args
         assert 'duration' in call_args.kwargs
         assert call_args.kwargs['duration'] == 600
+
+
+class TestPyAVDecodeDownmix:
+    RATE = 16000
+
+    def _write_wav(self, path, channels, layout):
+        import av
+
+        with av.open(str(path), 'w') as container:
+            stream = container.add_stream('pcm_f32le', rate=self.RATE, layout=layout)
+            frame = av.AudioFrame.from_ndarray(
+                np.stack(channels).astype(np.float32), format='fltp', layout=layout
+            )
+            frame.sample_rate = self.RATE
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+
+    def test_stereo_downmix_averages_channels_instead_of_scaling_by_sqrt2(self, tmp_path):
+        path = tmp_path / 'stereo.wav'
+        left = np.full(self.RATE, 0.5, dtype=np.float32)
+        right = np.full(self.RATE, 0.25, dtype=np.float32)
+        self._write_wav(path, [left, right], 'stereo')
+
+        audio, sr = _decode_audio_with_pyav(str(path), self.RATE)
+
+        assert sr == self.RATE
+        assert audio.ndim == 1
+        assert audio.dtype == np.float32
+        np.testing.assert_allclose(audio, 0.375, atol=1e-5)
+        assert not np.allclose(audio, 0.75 / np.sqrt(2), atol=1e-3)
+
+    def test_stereo_downmix_matches_librosa_mono_load(self, tmp_path):
+        import librosa
+
+        path = tmp_path / 'stereo_music.wav'
+        t = np.arange(self.RATE * 2, dtype=np.float32) / self.RATE
+        left = (0.6 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        right = (0.3 * np.sin(2 * np.pi * 660 * t + 0.7)).astype(np.float32)
+        self._write_wav(path, [left, right], 'stereo')
+
+        pyav_audio, _ = _decode_audio_with_pyav(str(path), self.RATE)
+        librosa_audio, _ = librosa.load(str(path), sr=self.RATE, mono=True)
+
+        assert len(pyav_audio) == len(librosa_audio)
+        np.testing.assert_allclose(pyav_audio, librosa_audio, atol=1e-6)
+
+    def test_mono_source_passes_through_unscaled(self, tmp_path):
+        path = tmp_path / 'mono.wav'
+        signal = np.full(self.RATE, 0.4, dtype=np.float32)
+        self._write_wav(path, [signal], 'mono')
+
+        audio, sr = _decode_audio_with_pyav(str(path), self.RATE)
+
+        assert sr == self.RATE
+        assert audio.ndim == 1
+        np.testing.assert_allclose(audio, 0.4, atol=1e-5)
+
+    def test_multichannel_source_averages_every_channel(self, tmp_path):
+        path = tmp_path / 'surround.wav'
+        channels = [np.full(self.RATE, 0.1 * (i + 1), dtype=np.float32) for i in range(6)]
+        self._write_wav(path, channels, '5.1')
+
+        audio, sr = _decode_audio_with_pyav(str(path), self.RATE)
+
+        assert sr == self.RATE
+        assert audio.ndim == 1
+        np.testing.assert_allclose(audio, 0.35, atol=1e-5)
+
+    def test_native_rate_decode_reports_source_sample_rate(self, tmp_path):
+        path = tmp_path / 'native.wav'
+        left = np.full(self.RATE, 0.5, dtype=np.float32)
+        right = np.full(self.RATE, 0.25, dtype=np.float32)
+        self._write_wav(path, [left, right], 'stereo')
+
+        audio, sr = _decode_audio_with_pyav(str(path), None)
+
+        assert sr == self.RATE
+        assert audio.ndim == 1
+        np.testing.assert_allclose(audio, 0.375, atol=1e-5)
 
 
 class TestAnalyzeTrack:
