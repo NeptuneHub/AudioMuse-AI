@@ -15,6 +15,10 @@
 #   - sentencepiece: unversioned → 0.2.1
 #   - google-generativeai → google-genai==1.57.0 (package renamed)
 #   - pydub: unversioned → >=0.25.1
+# Updated: 2026-08-17 - av==17.1.0 added. The PyAV downmix tests encode real WAV
+#   fixtures and decode them through _decode_audio_with_pyav, so without it they
+#   skip the one thing they exist to guard. PyAV bundles its own FFmpeg libraries
+#   in the wheel, so this is NOT the excluded system ffmpeg binary noted below.
 
 numpy==2.4.6
 librosa==1.0.0
@@ -22,6 +26,7 @@ scipy==1.16.3
 numba==0.64.0
 numkong==7.7.0
 soundfile==0.13.1
+av==17.1.0
 onnx==1.22.0
 onnxruntime==1.28.0
 pydub==0.25.1
