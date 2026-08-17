@@ -10,7 +10,7 @@ We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING Ou
 GPU-accelerated clustering is also available through RAPIDS cuML. It can give a **10-30x speedup** on clustering tasks.
 
 **Features:**
-- GPU-accelerated KMeans, DBSCAN, and PCA using RAPIDS cuML
+- GPU-accelerated KMeans, DBSCAN, PCA and SpectralClustering using RAPIDS cuML
 - Automatic fallback to CPU if the GPU is unavailable or hits an error
 - Works with all existing clustering configurations and parameters
 - Compatible with NVIDIA GPUs on CUDA 13 or later (*)
@@ -27,16 +27,9 @@ GPU-accelerated clustering is also available through RAPIDS cuML. It can give a 
 3. Make sure the NVIDIA Container Toolkit is installed on the host
 4. Use the GPU compose file `deployment/docker-compose-nvidia.yaml`. A worker-only GPU example is kept in `deployment/test/docker-compose-nvidia-worker-test.yaml`
 
-**Performance Impact:**
-- **KMeans**: 10-50x faster than CPU
-- **DBSCAN**: 5-100x faster than CPU
-- **PCA**: 10-40x faster than CPU
-- **Overall clustering task**: 10-30x speedup for typical workloads (5000 iterations)
-
-**Example:** A clustering task that takes 2-4 hours on CPU may finish in 5-15 minutes on GPU.
-
 **Notes:**
-- GMM and Spectral clustering stay on CPU, there is no cuML implementation for them in this build
+- GMM stays on CPU, there is no cuML implementation for it
+- Spectral clustering runs on cuML only with `assign_labels='kmeans'` and a `nearest_neighbors` / `precomputed` affinity (what the clustering search uses); any other combination falls back to scikit-learn
 - GPU clustering is disabled by default (`USE_GPU_CLUSTERING=false`)
 - The GPU is also used by the audio analysis models (ONNX inference)
 - The index build and the similarity queries are not GPU accelerated; they are IO bound rather than compute bound, see [ALGORITHM](ALGORITHM.md#4-similarity-indexes-disk-paged-ivf)

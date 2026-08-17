@@ -1,4 +1,4 @@
 --extra-index-url https://pypi.nvidia.com
-cupy-cuda13x==13.6.0
+cupy-cuda13x==14.1.1
 onnxruntime-gpu==1.28.0
-cuml-cu13==26.6.0
+cuml-cu13==26.8.0
