@@ -222,6 +222,26 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # import, so a persisted app_config row would replace the floored value with a
     # smaller one and re-open that incident. Excluded so the floor always wins.
     'CONTROL_IPC_TIMEOUT_SECONDS',
+    # Filesystem locations resolved from the RUNNING build, not chosen. Each is
+    # computed at import from the bundle root (_bundle_data_root, which is
+    # sys._MEIPASS on a frozen build) or from APP_DATA_DIR / the system temp dir,
+    # so the correct value differs per container, per install and per launch.
+    # Persisting one process's answer pins every other process to a path that
+    # may not exist there, and the wizard hides them precisely because there is
+    # no value an operator could usefully type. Excluded so they are never
+    # written, never override, and any row an older version left is pruned.
+    'MOOD_CENTROIDS_FILE',
+    'GENRE_SUBGENRE_FILE',
+    'PLUGINS_DIR',
+    'IVF_DISK_CACHE_DIR',
+    # The queue guard's task-type set is a correctness constant like the two
+    # above it: a stale row from an older version would let a task type that has
+    # since become blocking run in parallel with a catalogue job.
+    'QUEUE_BLOCKING_TASK_TYPES',
+    # Import-time facts about THIS process, not settings. They are reassigned at
+    # the end of _apply_db_overrides anyway, so a row only ever added junk.
+    'DB_OVERRIDES_LOADED',
+    'DB_DEFAULT_SERVER_PROJECTED',
     # Per-container process plumbing, NOT install-wide preferences. app_config is
     # shared by every container, so persisting one container's value forces it on
     # all of them at the next boot. AUDIO_MUSE_LISTENER_ID is the worst case: it
