@@ -115,6 +115,21 @@ ENUM_FIELD_OPTIONS = {
 }
 
 HIDDEN_ADVANCED_FIELDS = {
+    # Internal vocabularies and derived/runtime state that are not settings at
+    # all. They are already in SETUP_BOOTSTRAP_EXCLUDED_KEYS or recomputed on
+    # every import, so editing them in the wizard changes nothing while making
+    # the advanced list look like they are tunable.
+    'QUEUE_BLOCKING_TASK_TYPES',
+    'MEDIASERVER_CONFIG_KEYS',
+    'APP_CONFIG_RUNTIME_KEYS',
+    'QUEUE_CONTROL_ACTION_WINDOW_SECONDS',
+    'DB_OVERRIDES_LOADED',
+    'DB_DEFAULT_SERVER_PROJECTED',
+    # Filesystem locations of bundled data and installed code. They follow the
+    # build layout (bundle root, APP_DATA_DIR) and pointing them elsewhere from
+    # the browser only breaks the install, so they are never user-editable.
+    'GENRE_SUBGENRE_FILE',
+    'PLUGINS_DIR',
     'DURATION_TOLERANCE_SECONDS',
     'FPCALC_BINARY',
     'CHROMAPRINT_MAX_ALIGN_OFFSET',
@@ -214,15 +229,14 @@ HIDDEN_ADVANCED_FIELDS = {
     'RADIUS_INSTRUMENTATION',
     'ENERGY_MIN',
     'ENERGY_MAX',
-    'CLAP_TEXT_SEARCH_WARMUP_DURATION',
     'CLAP_TOP_QUERIES_COUNT',
-    'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR',
-    'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
+    'CLAP_TEXT_SEARCH_WARMUP_DURATION',
     'ALCHEMY_PLAYLIST_MAX_SONGS',
     'ALCHEMY_PLAYLIST_MAX_CENTROIDS',
     'ALCHEMY_MAX_ANCHOR_POINTS',
+    'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR',
+    'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
     'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
-    'SONIC_FINGERPRINT_CRON_PLAYLIST_NAME',
     # Worker / queue / batch-orchestration infra knobs (operator-level)
     'QUEUE_POLL_INTERVAL_SECONDS',
     'QUEUE_MAX_ATTEMPTS',
