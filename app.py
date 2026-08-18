@@ -1330,6 +1330,55 @@ if not _is_worker:
 
     dashboard_stats_thread = threading.Thread(target=_dashboard_stats_refresher_loop, daemon=True)
     dashboard_stats_thread.start()
+
+    # Reclaim the dead rows autovacuum will never get to. Its threshold counts ROWS
+    # (50 + 20% of the live count), so a table holding a handful of huge blobs needs
+    # ~50 rebuilds to qualify and sits at several times its useful size until then.
+    #
+    # Hourly, not minutes: dead rows only appear when an index rebuild or analysis
+    # replaces a blob, and a swept table drops to zero dead rows and leaves the set
+    # until it dirties again. Sweeping more often would only re-read those tables
+    # into the page cache for nothing.
+    #
+    # This deliberately lives in the WEB process, not the worker: a restore stops
+    # Flask before psql replaces the database (see app_backup), so this thread is
+    # already dead by the time a restore takes its ACCESS EXCLUSIVE locks. It is a
+    # daemon thread, so a setup-wizard restart kills it the same way; the connection
+    # drops and Postgres rolls the VACUUM back, which is crash-safe by design.
+    #
+    # A dedicated connection, because VACUUM cannot run inside a transaction and the
+    # app-context connections are mid-transaction by definition.
+    def _blob_reclaim_loop():
+        try:
+            from time import sleep
+            from database import connect_raw
+            from taskqueue import sql as queue_sql
+            from taskqueue.maintenance import reclaim_blob_space
+
+            # Let the startup index loads finish before adding any VACUUM I/O.
+            sleep(120)
+            conn = None
+            while True:
+                try:
+                    if conn is None or conn.closed:
+                        conn = connect_raw(
+                            application_name=f"audiomuse-blob-reclaim-{os.getpid()}"
+                        )
+                    reclaim_blob_space(conn)
+                except Exception:
+                    app.logger.exception('blob space reclaim cycle failed')
+                    if conn is not None:
+                        try:
+                            conn.close()
+                        except Exception:
+                            app.logger.exception('closing the blob reclaim connection failed')
+                    conn = None
+                sleep(queue_sql.BLOB_RECLAIM_INTERVAL_SECONDS)
+        except Exception:
+            app.logger.exception('blob space reclaim main loop error')
+
+    blob_reclaim_thread = threading.Thread(target=_blob_reclaim_loop, daemon=True)
+    blob_reclaim_thread.start()
 else:
     logger.info('Running as a queue worker: skipping index loading, the event listener and the cron thread.')
 
