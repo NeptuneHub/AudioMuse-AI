@@ -17,7 +17,7 @@ Main Features:
 * _sample_items samples a deterministic fraction, returning a fresh list
 * _translated_bucket rewrites canonical ids to a server's provider ids, drops
   fp_/unmapped rows, and fails closed on a registry error (never leaks fp_)
-* build_map_cache streams the catalogue through a named server-side cursor and
+* build_map_cache reads the catalogue through a plain client-side cursor and
   keeps a vector only for rows the stored projection does not already cover
 """
 
@@ -138,7 +138,7 @@ class TestBuildMapCacheStreaming:
         cur = MagicMock()
         cur.__enter__ = MagicMock(return_value=cur)
         cur.__exit__ = MagicMock(return_value=False)
-        cur.__iter__ = MagicMock(return_value=iter(rows))
+        cur.fetchall = MagicMock(return_value=list(rows))
         conn = MagicMock()
         conn.cursor.return_value = cur
 
@@ -149,7 +149,7 @@ class TestBuildMapCacheStreaming:
         app_map.build_map_cache()
         return conn, cur
 
-    def test_catalogue_scan_uses_a_named_server_side_cursor(self, monkeypatch):
+    def test_catalogue_scan_uses_a_plain_client_side_cursor(self, monkeypatch):
         emb = np.array([0.1, 0.2], dtype=np.float32).tobytes()
         conn, cur = self._run(
             monkeypatch,
@@ -157,8 +157,8 @@ class TestBuildMapCacheStreaming:
             ['a'],
             np.array([[1.0, 2.0]], dtype=np.float32),
         )
-        assert conn.cursor.call_args.kwargs.get('name') == 'map_cache_scan'
-        assert cur.itersize == 20000
+        assert conn.cursor.call_args.kwargs.get('name') is None
+        cur.fetchall.assert_called_once()
 
     def test_row_already_in_the_projection_never_parses_its_embedding(self, monkeypatch):
         self._run(

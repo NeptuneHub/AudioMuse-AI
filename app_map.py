@@ -19,9 +19,9 @@ Main Features:
   are labelled by their top mood parsed from the stored mood_vector string.
 * Multi-server: responses are filtered per request to the selected server's
   catalogue; the shared cache always holds the full union.
-* build_map_cache streams the catalogue through a named server-side cursor and
-  loads the stored projection first, so a row it already covers drops its
-  embedding on read instead of every vector staying resident until projection.
+* build_map_cache reads the catalogue through a plain client-side cursor, so
+  Postgres streams the rows and holds nothing server-side; the transient peak
+  lands in the web process, which is the one this app can release.
 * The build is the web process's largest short-lived allocation, so it ends by
   handing the freed heap back to the kernel: gc alone only returns it to the
   allocator's free lists and the pod would keep the peak RSS for good.
@@ -192,49 +192,48 @@ def build_map_cache():
     has_canonical = False
 
     conn = get_db()
-    # A NAMED server-side cursor streams the join in itersize chunks. An unnamed
-    # cursor buffers every row - embedding bytea included, and psycopg2 receives
-    # bytea as hex, so twice its binary size - inside libpq AND again as Python
-    # objects before the first row is visible, which is this process's peak RSS.
-    with conn.cursor(name='map_cache_scan') as cur:
-        cur.itersize = 20000
+    # A plain client-side cursor delivers the whole join into this process.
+    # Postgres streams the rows and holds nothing server-side, so the transient
+    # peak lands here, where this app owns the release, instead of on the
+    # database container. The raw rows are dropped before the projection step so
+    # the heap release at the end returns real memory, not just free lists.
+    with conn.cursor() as cur:
         cur.execute("""
             SELECT s.item_id, s.title, s.author, s.mood_vector, e.embedding
             FROM score s
             JOIN embedding e ON s.item_id = e.item_id
         """)
-        for item_id, title, author, mood_vector, emb_blob in cur:
-            if emb_blob is None:
-                continue
-            iid = str(item_id)
-            if not has_canonical and is_fingerprint_id(iid):
-                has_canonical = True
-            coord = coords_by_id.get(iid)
-            if coord is None:
-                # Only an item the stored projection does not cover needs its
-                # vector kept. The copy is mandatory: np.frombuffer aliases the
-                # chunk buffer that the next itersize fetch overwrites.
+        rows = cur.fetchall()
+    for item_id, title, author, mood_vector, emb_blob in rows:
+        if emb_blob is None:
+            continue
+        iid = str(item_id)
+        if not has_canonical and is_fingerprint_id(iid):
+            has_canonical = True
+        coord = coords_by_id.get(iid)
+        if coord is None:
+            try:
+                emb = np.frombuffer(emb_blob, dtype=np.float32)
+            except Exception:
+                # fallback if already stored as list
                 try:
-                    emb = np.frombuffer(emb_blob, dtype=np.float32).copy()
+                    emb = np.array(emb_blob, dtype=np.float32)
                 except Exception:
-                    # fallback if already stored as list
-                    try:
-                        emb = np.array(emb_blob, dtype=np.float32)
-                    except Exception:
-                        continue
-                missing_slots.append((len(full_light), emb))
-                coord = (0.0, 0.0)
-            full_light.append(
-                {
-                    'artist': author or '',
-                    'embedding_2d': _round_coord(coord),
-                    'item_id': iid,
-                    'mood_vector': _pick_top_mood(mood_vector),
-                    'title': title or '',
-                }
-            )
+                    continue
+            missing_slots.append((len(full_light), emb))
+            coord = (0.0, 0.0)
+        full_light.append(
+            {
+                'artist': author or '',
+                'embedding_2d': _round_coord(coord),
+                'item_id': iid,
+                'mood_vector': _pick_top_mood(mood_vector),
+                'title': title or '',
+            }
+        )
+    rows = None
 
-    # Set the canonical-id memo from the ids just streamed - NO extra DB probe. The
+    # Set the canonical-id memo from the ids just loaded - NO extra DB probe. The
     # fast path may stream these cached bytes verbatim only when NONE is a canonical
     # fp_ id; a rebuild (e.g. after canonicalization) reflects the legacy->fp_ flip
     # exactly here, instead of a reset that re-triggered a score seq-scan on every
