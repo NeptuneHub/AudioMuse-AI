@@ -1022,6 +1022,17 @@ def listen_for_index_reloads():
                 )
             except Exception:
                 logger.exception("Error reloading indexes/maps from background listener")
+            finally:
+                # A reload replaces every index in place, so the whole previous
+                # generation plus each rebuild's scratch is garbage by now. Hand
+                # it back to the kernel instead of letting RSS ratchet up once
+                # per reload for the life of the process.
+                try:
+                    from tasks.memory_utils import release_memory_to_os
+
+                    release_memory_to_os()
+                except Exception:
+                    logger.exception("Index reload: heap release to the OS failed")
 
     listener = Listener(
         (CHANNEL_EVENT,),
@@ -1200,6 +1211,17 @@ if not _is_worker:
                 )
         except Exception as e:
             logger.debug(f"SemGrove cache not loaded at startup: {e}")
+
+        # Every load above streams a large directory blob out of Postgres and
+        # discards it once unpacked. Those frees land in the allocator's free
+        # lists, not back in the kernel, so without this the pod's RSS keeps the
+        # startup peak for the life of the process. One call, after all six.
+        try:
+            from tasks.memory_utils import release_memory_to_os
+
+            release_memory_to_os()
+        except Exception:
+            logger.exception("Startup index load: heap release to the OS failed")
 
         def _start_map_init_background():
             try:

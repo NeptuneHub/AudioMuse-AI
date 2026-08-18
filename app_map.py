@@ -19,6 +19,12 @@ Main Features:
   are labelled by their top mood parsed from the stored mood_vector string.
 * Multi-server: responses are filtered per request to the selected server's
   catalogue; the shared cache always holds the full union.
+* build_map_cache streams the catalogue through a named server-side cursor and
+  loads the stored projection first, so a row it already covers drops its
+  embedding on read instead of every vector staying resident until projection.
+* The build is the web process's largest short-lived allocation, so it ends by
+  handing the freed heap back to the kernel: gc alone only returns it to the
+  allocator's free lists and the pod would keep the peak RSS for good.
 """
 
 import gc
@@ -137,6 +143,16 @@ def _sample_items(items, fraction):
     return out
 
 
+def _release_map_build_memory():
+    gc.collect()
+    try:
+        from tasks.memory_utils import release_memory_to_os
+
+        release_memory_to_os()
+    except Exception:
+        logger.exception('Map cache build: heap release to the OS failed')
+
+
 def build_map_cache():
     """Load all tracks & embeddings from DB, compute 2D projection (prefer precomputed),
     and build cached JSON blobs for 100/75/50/25 percent samples. This should be called
@@ -146,62 +162,10 @@ def build_map_cache():
     logger = logging.getLogger(__name__)
     logger.info('Building map JSON cache (this reads the DB once).')
 
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT s.item_id, s.title, s.author, s.mood_vector, e.embedding
-            FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
-        """)
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-
-    items = []
-    for r in rows:
-        # r: item_id, title, author, mood_vector, embedding_blob
-        item_id = r[0]
-        title = r[1]
-        author = r[2]
-        mood_vector = r[3]
-        emb_blob = r[4]
-        if emb_blob is None:
-            continue
-        try:
-            emb = np.frombuffer(emb_blob, dtype=np.float32)
-        except Exception:
-            # fallback if already stored as list
-            try:
-                emb = np.array(r[4], dtype=np.float32)
-            except Exception:
-                continue
-        items.append(
-            {
-                'item_id': str(item_id),
-                'title': title,
-                'artist': author,
-                'mood_vector': mood_vector,
-                'embedding': emb,
-            }
-        )
-
-    # Set the canonical-id memo from the ids just loaded - NO extra DB probe. The
-    # fast path may stream these cached bytes verbatim only when NONE is a canonical
-    # fp_ id; a rebuild (e.g. after canonicalization) reflects the legacy->fp_ flip
-    # exactly here, instead of a reset that re-triggered a score seq-scan on every
-    # routine rebuild. Canonicalization is one-way, so this only ever flips to True.
-    from tasks.simhash import is_fingerprint_id
-    _HAS_CANONICAL_IDS = any(is_fingerprint_id(it['item_id']) for it in items)
-    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
-
-    if not items:
-        # empty cache
-        MAP_JSON_CACHE = {}
-        logger.warning('No items found to build map cache.')
-        return
-
-    # Try to use precomputed projection if available
+    # The precomputed projection is loaded BEFORE the catalogue scan: a row whose
+    # coordinates are already known can then drop its embedding the moment it is
+    # read, instead of every embedding staying resident until the projection step.
+    # On a projected library that keeps ZERO embeddings in RAM for the whole build.
     id_map, proj = None, None
     try:
         id_map, proj = load_map_projection('main_map', force_reload=True)
@@ -218,13 +182,78 @@ def build_map_cache():
             used_projection = 'precomputed'
         except Exception:
             coords_by_id = {}
+    id_map = None
+    proj = None
+
+    from tasks.simhash import is_fingerprint_id
+
+    full_light = []
+    missing_slots = []
+    has_canonical = False
+
+    conn = get_db()
+    # A NAMED server-side cursor streams the join in itersize chunks. An unnamed
+    # cursor buffers every row - embedding bytea included, and psycopg2 receives
+    # bytea as hex, so twice its binary size - inside libpq AND again as Python
+    # objects before the first row is visible, which is this process's peak RSS.
+    with conn.cursor(name='map_cache_scan') as cur:
+        cur.itersize = 20000
+        cur.execute("""
+            SELECT s.item_id, s.title, s.author, s.mood_vector, e.embedding
+            FROM score s
+            JOIN embedding e ON s.item_id = e.item_id
+        """)
+        for item_id, title, author, mood_vector, emb_blob in cur:
+            if emb_blob is None:
+                continue
+            iid = str(item_id)
+            if not has_canonical and is_fingerprint_id(iid):
+                has_canonical = True
+            coord = coords_by_id.get(iid)
+            if coord is None:
+                # Only an item the stored projection does not cover needs its
+                # vector kept. The copy is mandatory: np.frombuffer aliases the
+                # chunk buffer that the next itersize fetch overwrites.
+                try:
+                    emb = np.frombuffer(emb_blob, dtype=np.float32).copy()
+                except Exception:
+                    # fallback if already stored as list
+                    try:
+                        emb = np.array(emb_blob, dtype=np.float32)
+                    except Exception:
+                        continue
+                missing_slots.append((len(full_light), emb))
+                coord = (0.0, 0.0)
+            full_light.append(
+                {
+                    'artist': author or '',
+                    'embedding_2d': _round_coord(coord),
+                    'item_id': iid,
+                    'mood_vector': _pick_top_mood(mood_vector),
+                    'title': title or '',
+                }
+            )
+
+    # Set the canonical-id memo from the ids just streamed - NO extra DB probe. The
+    # fast path may stream these cached bytes verbatim only when NONE is a canonical
+    # fp_ id; a rebuild (e.g. after canonicalization) reflects the legacy->fp_ flip
+    # exactly here, instead of a reset that re-triggered a score seq-scan on every
+    # routine rebuild. Canonicalization is one-way, so this only ever flips to True.
+    _HAS_CANONICAL_IDS = has_canonical
+    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+
+    if not full_light:
+        # empty cache
+        MAP_JSON_CACHE = {}
+        logger.warning('No items found to build map cache.')
+        _release_map_build_memory()
+        return
 
     # For items still missing coordinates, compute projection on-the-fly using available helpers
-    missing_indices = [i for i, it in enumerate(items) if str(it['item_id']) not in coords_by_id]
-    if missing_indices:
+    if missing_slots:
         try:
             # Build matrix of missing emb
-            mat = np.vstack([items[i]['embedding'] for i in missing_indices])
+            mat = np.vstack([emb for _, emb in missing_slots])
             projections = None
             used = 'none'
             # prefer UMAP helper if present
@@ -248,34 +277,22 @@ def build_map_cache():
                 except Exception as e:
                     logger.debug('PCA helper failed during cache build: %s', e)
             if projections is None:
-                projections = [(0.0, 0.0) for _ in missing_indices]
+                projections = [(0.0, 0.0) for _ in missing_slots]
                 used = 'none'
 
             del mat
 
-            for idx, coord in zip(missing_indices, projections):
-                coords_by_id[str(items[idx]['item_id'])] = (float(coord[0]), float(coord[1]))
+            for (slot, _emb), coord in zip(missing_slots, projections):
+                full_light[slot]['embedding_2d'] = _round_coord(
+                    (float(coord[0]), float(coord[1]))
+                )
             if used_projection == 'none':
                 used_projection = used
         except Exception:
             logger.exception('Failed to compute missing projections')
 
-    for it in items:
-        it.pop('embedding', None)
-
-    full_light = []
-    for it in items:
-        iid = str(it['item_id'])
-        coord = coords_by_id.get(iid, (0.0, 0.0))
-        light = {
-            'artist': it.get('artist') or '',
-            'embedding_2d': _round_coord(coord),
-            'item_id': iid,
-            'mood_vector': _pick_top_mood(it.get('mood_vector')),
-            'title': it.get('title') or '',
-        }
-        full_light.append(light)
-    del items
+    coords_by_id = {}
+    missing_slots = []
     gc.collect()
 
     n = len(full_light)
@@ -302,6 +319,9 @@ def build_map_cache():
         n,
         {k: v['count'] for k, v in MAP_JSON_CACHE.items()},
     )
+    del full_light
+    del new_cache
+    _release_map_build_memory()
 
 
 def _translated_bucket(entry, server_id):
