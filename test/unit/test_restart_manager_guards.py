@@ -50,10 +50,16 @@ Main Features:
 * A legacy JSONB details column still identifies the recorded action
 * A details payload that is not an object falls back to a match instead of raising
 * One control-result poll opens exactly one database connection
+* The setup-wizard parameter catalog cannot drift: every bootstrap-excluded key
+  stays hidden or basic, and every static/setup.js section key exists in config,
+  reaches the advanced list (neither hidden nor basic) and is listed in exactly
+  one section
 """
 
 import ast
+import re
 import socket
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -357,6 +363,68 @@ class TestPerContainerPlumbingNeverBecomesADatabaseWideGlobal:
     def test_the_setup_wizard_neither_renders_nor_accepts_it(self, name):
         assert name in app_setup.HIDDEN_ADVANCED_FIELDS
         assert app_setup.should_show_advanced(name) is False
+
+
+def _setup_wizard_section_names():
+    setup_js = Path(__file__).resolve().parents[2] / 'static' / 'setup.js'
+    text = setup_js.read_text(encoding='utf-8')
+    start = text.index('var ADVANCED_SECTIONS')
+    end = text.index('var ADVANCED_OTHER_TITLE', start)
+    body = text[start:end]
+    names = []
+    for items_block in re.findall(r'items:\s*\[(.*?)\]', body, re.S):
+        names.extend(re.findall(r"'([A-Z][A-Z0-9_]{2,})'", items_block))
+    return names
+
+
+class TestSetupWizardParameterCatalogDoesNotDrift:
+    def test_every_bootstrap_excluded_key_is_hidden_or_a_basic_field(self):
+        excluded = set(config.SETUP_BOOTSTRAP_EXCLUDED_KEYS)
+        assert excluded, 'the bootstrap-excluded set must never be empty'
+        still_visible = sorted(
+            name for name in excluded
+            if name not in app_setup.BASIC_FIELDS
+            and app_setup.should_show_advanced(name)
+        )
+        assert still_visible == [], (
+            'these SETUP_BOOTSTRAP_EXCLUDED_KEYS are still rendered and accepted by '
+            'the wizard, so an operator can save a value that is never applied and '
+            'then pruned on the next boot: %s' % still_visible
+        )
+
+    def test_every_js_section_key_is_a_real_visible_config_field(self):
+        names = _setup_wizard_section_names()
+        assert names, 'static/setup.js ADVANCED_SECTIONS must not be empty'
+
+        missing = sorted(name for name in names if not hasattr(config, name))
+        assert missing == [], (
+            'static/setup.js ADVANCED_SECTIONS references config keys that do not '
+            'exist: %s' % missing
+        )
+
+        hidden = sorted(
+            name for name in names if not app_setup.should_show_advanced(name)
+        )
+        assert hidden == [], (
+            'static/setup.js ADVANCED_SECTIONS lists keys the wizard hides '
+            'server-side, so those rows silently render nothing: %s' % hidden
+        )
+
+        basic = sorted(name for name in names if name in app_setup.BASIC_FIELDS)
+        assert basic == [], (
+            'static/setup.js ADVANCED_SECTIONS claims basic fields. /api/setup '
+            'routes those to basic_fields, so the advanced section never receives '
+            'them and renders nothing, exactly like a hidden key: %s' % basic
+        )
+
+    def test_js_sections_list_each_field_only_once(self):
+        names = _setup_wizard_section_names()
+        assert names, 'static/setup.js ADVANCED_SECTIONS must not be empty'
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        assert duplicates == [], (
+            'static/setup.js ADVANCED_SECTIONS lists the same field in more than one '
+            'section: %s' % duplicates
+        )
 
 
 class TestTheRecordedActionIsDecodedFromEitherDetailsShape:
