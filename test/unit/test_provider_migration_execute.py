@@ -805,7 +805,8 @@ class TestRestartHandshakeStateMachine:
         mig._stage_restart_handshake(cur, 'mig-1', 7, 'restart-7')
 
         sql = [call.args[0] for call in cur.execute.call_args_list]
-        assert lock_conns and lock_conns[0] is cur.connection
+        assert len(lock_conns) == 1
+        assert lock_conns[0] is cur.connection
         assert 'FOR UPDATE' in sql[0]
         assert sql[1].startswith('UPDATE task_status')
         details = json.loads(cur.execute.call_args_list[1].args[1][1])

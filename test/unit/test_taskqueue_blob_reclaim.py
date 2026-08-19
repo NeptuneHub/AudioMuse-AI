@@ -302,10 +302,16 @@ class TestWhereItRuns:
             sweeps.append(c)
             raise SystemExit
 
+        def _connect(**_kw):
+            return conn
+
+        def _sleep(_seconds):
+            return None
+
+        app = _FakeApp()
         with pytest.raises(SystemExit):
             maintenance._blob_reclaim_loop(
-                _FakeApp(), connect_raw=lambda **kw: conn, sleep=lambda s: None,
-                reclaim=_reclaim,
+                app, connect_raw=_connect, sleep=_sleep, reclaim=_reclaim,
             )
         assert sweeps == [conn]
 
@@ -322,10 +328,13 @@ class TestWhereItRuns:
             if len(sleeps) > 1:
                 raise SystemExit
 
+        def _connect(**_kw):
+            return conn
+
+        app = _FakeApp()
         with pytest.raises(SystemExit):
             maintenance._blob_reclaim_loop(
-                _FakeApp(), connect_raw=lambda **kw: conn, sleep=_sleep,
-                reclaim=_reclaim,
+                app, connect_raw=_connect, sleep=_sleep, reclaim=_reclaim,
             )
         assert sleeps == [
             config.BLOB_RECLAIM_STARTUP_DELAY_SECONDS,
@@ -351,9 +360,10 @@ class TestWhereItRuns:
         def _sleep(seconds):
             sleeps.append(seconds)
 
+        app = _FakeApp()
         with pytest.raises(SystemExit):
             maintenance._blob_reclaim_loop(
-                _FakeApp(), connect_raw=_connect, sleep=_sleep, reclaim=_reclaim,
+                app, connect_raw=_connect, sleep=_sleep, reclaim=_reclaim,
             )
         assert sweeps == [first, second]
         assert first.closed is True

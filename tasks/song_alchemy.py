@@ -34,6 +34,8 @@ import threading
 from typing import List, Tuple
 import numpy as np
 
+from app_logging import sanitize_log_value
+
 from .ivf_manager import (
     multi_query_ids,
     find_nearest_neighbors_by_id,
@@ -598,9 +600,12 @@ def song_alchemy(
 
         for item in [i for i in items if i.get('type') == 'artist']:
             artist_id = item['id']
-            logger.info(f"Processing {label} artist: {artist_id}")
+            safe_artist_id = sanitize_log_value(artist_id)
+            logger.info("Processing %s artist: %s", label, safe_artist_id)
             gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(artist_id)
-            logger.info(f"Retrieved {len(gmm_vecs)} GMM components for artist {artist_id}")
+            logger.info(
+                "Retrieved %d GMM components for artist %s", len(gmm_vecs), safe_artist_id
+            )
             for comp_idx, (_vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
                 artist_name = artist_id
                 resolved = registry.artist_names_for_ids(

@@ -22,6 +22,7 @@ from psycopg2.extras import DictCursor
 import numpy as np
 import logging
 
+from app_logging import sanitize_log_value
 # Import ivf_manager functions for track lookups
 from tasks.ivf_manager import search_tracks_unified
 from error import error_manager
@@ -61,11 +62,15 @@ def _external_row_response(sql, label, decode=None):
     raw_id = request.args.get('id')
     if not raw_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
+    safe_raw_id = sanitize_log_value(raw_id)
     try:
         try:
             item_id = _resolve_external_id(raw_id)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+        except ValueError:
+            # The resolver's own text can carry internal detail, so it goes to
+            # the log and the caller gets the parameter that was wrong.
+            logger.warning("Could not resolve external id %s", safe_raw_id, exc_info=True)
+            return jsonify({"error": "Unknown or invalid 'server' parameter"}), 400
         row = None
         if item_id:
             db = get_db()
@@ -83,7 +88,7 @@ def _external_row_response(sql, label, decode=None):
             decode(payload)
         return jsonify(payload)
     except Exception as e:
-        logger.exception(f"Error fetching {label.lower()} for id {raw_id}")
+        logger.exception("Error fetching %s for id %s", label.lower(), safe_raw_id)
         err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
         return jsonify(err), status
 

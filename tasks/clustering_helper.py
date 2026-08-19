@@ -337,38 +337,56 @@ def _perform_single_clustering_iteration(
         raise
 
 
+def _fetch_track_rows(item_ids, use_embeddings):
+    return get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids)
+
+
+def _cached_track_rows(item_ids, use_embeddings, tracks_cache):
+    missing = [iid for iid in item_ids if iid not in tracks_cache]
+    for row_data in _fetch_track_rows(missing, use_embeddings) if missing else []:
+        if row_data and row_data.get('item_id') is not None:
+            tracks_cache[row_data['item_id']] = row_data
+    rows = [tracks_cache[iid] for iid in item_ids if iid in tracks_cache]
+    # Evict what this iteration did not ask for: consecutive iterations overlap
+    # heavily, so keeping only the live subset preserves nearly every cache hit
+    # while pinning the cache (embeddings included) at one subset instead of
+    # letting it grow towards the whole batch's union.
+    wanted = set(item_ids)
+    for stale_id in [iid for iid in tracks_cache if iid not in wanted]:
+        del tracks_cache[stale_id]
+    return rows
+
+
+def _iteration_vectors(row_data, active_mood_labels, use_embeddings):
+    feature_vec = score_vector(row_data, active_mood_labels, OTHER_FEATURE_LABELS)
+    if not use_embeddings:
+        return feature_vec, None
+    embedding_vec = row_data.get('embedding_vector')
+    if embedding_vec is None or embedding_vec.size == 0:
+        logger.warning(f"Skipping track {row_data.get('item_id')} due to missing embedding.")
+        return None, None
+    return feature_vec, embedding_vec
+
+
 def _prepare_iteration_data(
     item_ids, active_mood_labels, use_embeddings, log_prefix, run_idx, tracks_cache=None
 ):
     logger.info(
         f"{log_prefix} Iteration {run_idx}: Fetching data for {len(item_ids)} tracks. Use embeddings: {use_embeddings}"
     )
-    if tracks_cache is not None:
-        missing = [iid for iid in item_ids if iid not in tracks_cache]
-        if missing:
-            fetched = (
-                get_tracks_by_ids(missing) if use_embeddings else get_score_data_by_ids(missing)
-            )
-            for row_data in fetched:
-                if row_data and row_data.get('item_id') is not None:
-                    tracks_cache[row_data['item_id']] = row_data
-        rows = [tracks_cache[iid] for iid in item_ids if iid in tracks_cache]
-        wanted = set(item_ids)
-        for stale_id in [iid for iid in tracks_cache if iid not in wanted]:
-            del tracks_cache[stale_id]
+    if tracks_cache is None:
+        rows = _fetch_track_rows(item_ids, use_embeddings)
     else:
-        rows = get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids)
+        rows = _cached_track_rows(item_ids, use_embeddings, tracks_cache)
     valid_tracks, X_feat_orig_list, X_embed_raw_list = [], [], []
     for row_data in (dict(r) for r in rows if r):
         try:
-            feature_vec = score_vector(row_data, active_mood_labels, OTHER_FEATURE_LABELS)
+            feature_vec, embedding_vec = _iteration_vectors(
+                row_data, active_mood_labels, use_embeddings
+            )
+            if feature_vec is None:
+                continue
             if use_embeddings:
-                embedding_vec = row_data.get('embedding_vector')
-                if embedding_vec is None or embedding_vec.size == 0:
-                    logger.warning(
-                        f"Skipping track {row_data.get('item_id')} due to missing embedding."
-                    )
-                    continue
                 X_embed_raw_list.append(embedding_vec)
             X_feat_orig_list.append(feature_vec)
             valid_tracks.append(row_data)

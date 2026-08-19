@@ -105,12 +105,13 @@ PARENT_INDEX_SQL = """
       ON task_status (parent_task_id) WHERE parent_task_id IS NOT NULL
 """.format(PARENT_INDEX_NAME)
 
+def _index_name(prefix, seed):
+    return "{}_{:x}".format(prefix, zlib.crc32(seed.encode()))
+
+
 LIVE_INDEX_PREFIX = 'idx_task_status_live'
 
-LIVE_INDEX_NAME = "{}_{:x}".format(
-    LIVE_INDEX_PREFIX,
-    zlib.crc32(','.join(LIVE_STATUSES).encode()),
-)
+LIVE_INDEX_NAME = _index_name(LIVE_INDEX_PREFIX, ','.join(LIVE_STATUSES))
 
 _LIVE_INDEX = """
     CREATE INDEX IF NOT EXISTS {name}
@@ -124,9 +125,8 @@ MAIN_TASK_TYPES = (
 
 MAIN_INDEX_PREFIX = 'idx_task_status_one_live_main'
 
-MAIN_INDEX_NAME = "{}_{:x}".format(
-    MAIN_INDEX_PREFIX,
-    zlib.crc32('|'.join((','.join(MAIN_TASK_TYPES), ','.join(LIVE_STATUSES))).encode()),
+MAIN_INDEX_NAME = _index_name(
+    MAIN_INDEX_PREFIX, '|'.join((','.join(MAIN_TASK_TYPES), ','.join(LIVE_STATUSES)))
 )
 
 _DROP_STALE_INDEXES = """
@@ -194,9 +194,8 @@ SWEEP_TASK_TYPE = 'server_sweep'
 
 SWEEP_INDEX_PREFIX = 'idx_task_status_one_live_sweep'
 
-SWEEP_INDEX_NAME = "{}_{:x}".format(
-    SWEEP_INDEX_PREFIX,
-    zlib.crc32('|'.join((SWEEP_TASK_TYPE, ','.join(LIVE_STATUSES))).encode()),
+SWEEP_INDEX_NAME = _index_name(
+    SWEEP_INDEX_PREFIX, '|'.join((SWEEP_TASK_TYPE, ','.join(LIVE_STATUSES)))
 )
 
 _ONE_LIVE_SWEEP_INDEX = """
