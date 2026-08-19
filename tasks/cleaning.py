@@ -29,10 +29,7 @@ Main Features:
 
 import logging
 import time
-import uuid
 from collections import defaultdict
-
-import taskqueue
 
 from config import CLEANING_SAFETY_LIMIT, CLEANING_CATALOGUE, CHROMAPRINT_GATE_ENABLED
 
@@ -52,8 +49,12 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
     clean_catalogue = CLEANING_CATALOGUE if clean_catalogue is None else bool(clean_catalogue)
 
     from flask_app import app
-    from app_helper import get_db, get_task_info_from_db, save_task_status
-    from database import MAX_LOG_ENTRIES_STORED, delete_stale_analysis_exclusions
+    from database import (
+        get_db,
+        save_task_status,
+        MAX_LOG_ENTRIES_STORED,
+        delete_stale_analysis_exclusions,
+    )
     from config import (
         TASK_STATUS_RUNNING,
         TASK_STATUS_SUCCESS,
@@ -68,34 +69,17 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
         _store_server_track_count,
     )
 
-    claimed_task_id = taskqueue.current_task_id()
-    current_task_id = claimed_task_id or str(uuid.uuid4())
+    from .task_run import task_run_prologue, terminal_skip
 
     with app.app_context():
-        task_info = get_task_info_from_db(current_task_id)
-        if claimed_task_id and task_info is None:
-            logger.info(
-                "Cleaning task %s has no live DB claim; treating it as revoked.",
-                current_task_id,
-            )
-            return {
-                "status": TASK_STATUS_REVOKED,
-                "message": "Library cleanup was cancelled before execution.",
-            }
-        if task_info and task_info.get('status') in (
-            TASK_STATUS_SUCCESS,
-            TASK_STATUS_FAILURE,
-            TASK_STATUS_REVOKED,
-        ):
-            logger.info(
-                "Cleaning task %s is already terminal (%s); skipping.",
-                current_task_id,
-                task_info.get('status'),
-            )
-            return {
-                "status": task_info.get('status'),
-                "message": "Library cleanup is already terminal.",
-            }
+        claimed_task_id, current_task_id, task_info = task_run_prologue()
+        skip = terminal_skip(
+            current_task_id, claimed_task_id, task_info,
+            revoked_message="Library cleanup was cancelled before execution.",
+            terminal_message="Library cleanup is already terminal.",
+        )
+        if skip is not None:
+            return skip
         initial_details = {
             "message": STARTING_MESSAGE,
             "status_message": STARTING_MESSAGE,

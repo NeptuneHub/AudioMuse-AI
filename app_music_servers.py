@@ -33,11 +33,9 @@ from flask import Blueprint, g, jsonify, request
 import config
 import taskqueue
 from app_logging import sanitize_log_value
-from app_helper import (
-    coerce_db_details,
-)
 from database import (
     get_db,
+    coerce_db_details,
     missing_required_creds,
     get_active_main_task,
     main_task_start_lock,

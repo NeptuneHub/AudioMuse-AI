@@ -137,7 +137,6 @@ def _point_get_db_to_test(monkeypatch, hyper_db, pg_dsn):
     # conn.dsn REDACTS the password to 'xxx', so the streaming side
     # connection (_open_side_connection) would fail auth on any server that
     # actually checks passwords (CI's postgres service does).
-    monkeypatch.setattr("app_helper.get_db", lambda: hyper_db)
     monkeypatch.setattr("database.get_db", lambda: hyper_db)
     # tasks.mediaserver.registry binds get_db by value at import time, and the
     # tree build now imports the registry (per-server tree targets), so point

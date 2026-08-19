@@ -39,7 +39,7 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_har
 logger = logging.getLogger(__name__)
 
 try:
-    from .clustering_gpu import get_clustering_model, get_pca_model
+    from .clustering_gpu import get_clustering_model, get_pca_model, clustering_use_gpu
 
     GPU_CLUSTERING_AVAILABLE = True
 except ImportError:
@@ -65,7 +65,6 @@ from config import (
     LN_OTHER_FEATURES_DIVERSITY_STATS,
     LN_OTHER_FEATURES_PURITY_STATS,
     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-    USE_GPU_CLUSTERING,
     LYRICS_ENABLED,
 )
 from .commons import score_vector
@@ -251,6 +250,7 @@ def _perform_single_clustering_iteration(
     mutation_config,
     score_weights,
     enable_clustering_embeddings,
+    tracks_cache=None,
 ):
     try:
         from flask_app import app
@@ -268,6 +268,7 @@ def _perform_single_clustering_iteration(
                 enable_clustering_embeddings,
                 log_prefix,
                 run_idx,
+                tracks_cache=tracks_cache,
             )
         if valid_tracks is None:
             return {"fitness_score": -1.0}
@@ -298,7 +299,7 @@ def _perform_single_clustering_iteration(
 
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
-            if USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
+            if GPU_CLUSTERING_AVAILABLE and clustering_use_gpu():
                 pca_model = get_pca_model(
                     n_components=params['pca_config']['components'], use_gpu=True
                 )
@@ -336,11 +337,27 @@ def _perform_single_clustering_iteration(
         raise
 
 
-def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_prefix, run_idx):
+def _prepare_iteration_data(
+    item_ids, active_mood_labels, use_embeddings, log_prefix, run_idx, tracks_cache=None
+):
     logger.info(
         f"{log_prefix} Iteration {run_idx}: Fetching data for {len(item_ids)} tracks. Use embeddings: {use_embeddings}"
     )
-    rows = get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids)
+    if tracks_cache is not None:
+        missing = [iid for iid in item_ids if iid not in tracks_cache]
+        if missing:
+            fetched = (
+                get_tracks_by_ids(missing) if use_embeddings else get_score_data_by_ids(missing)
+            )
+            for row_data in fetched:
+                if row_data and row_data.get('item_id') is not None:
+                    tracks_cache[row_data['item_id']] = row_data
+        rows = [tracks_cache[iid] for iid in item_ids if iid in tracks_cache]
+        wanted = set(item_ids)
+        for stale_id in [iid for iid in tracks_cache if iid not in wanted]:
+            del tracks_cache[stale_id]
+    else:
+        rows = get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids)
     valid_tracks, X_feat_orig_list, X_embed_raw_list = [], [], []
     for row_data in (dict(r) for r in rows if r):
         try:
@@ -592,7 +609,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
             if params.get('n_clusters', 0) < 2 or params['n_clusters'] >= data.shape[0]:
                 return None, None, None
 
-        use_gpu = USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE
+        use_gpu = GPU_CLUSTERING_AVAILABLE and clustering_use_gpu()
 
         if use_gpu:
             try:

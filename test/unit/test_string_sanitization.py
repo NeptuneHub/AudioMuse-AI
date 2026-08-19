@@ -25,7 +25,7 @@ import numpy as np
 class TestSaveTrackStringSanitization:
     @patch('database.get_db')
     def test_sanitize_removes_nul_bytes(self, mock_get_db):
-        from app_helper import save_track_analysis_and_embedding
+        from database import save_track_analysis_and_embedding
 
         mock_conn = MagicMock()
         mock_cur = MagicMock()
@@ -72,7 +72,7 @@ class TestSaveTrackStringSanitization:
 
     @patch('database.get_db')
     def test_sanitize_removes_control_characters(self, mock_get_db):
-        from app_helper import save_track_analysis_and_embedding
+        from database import save_track_analysis_and_embedding
 
         mock_conn = MagicMock()
         mock_cur = MagicMock()
@@ -94,7 +94,7 @@ class TestSaveTrackStringSanitization:
 
     @patch('database.get_db')
     def test_sanitize_handles_none_values(self, mock_get_db):
-        from app_helper import save_track_analysis_and_embedding
+        from database import save_track_analysis_and_embedding
 
         mock_conn = MagicMock()
         mock_cur = MagicMock()
@@ -125,7 +125,7 @@ class TestSaveTrackStringSanitization:
 
     @patch('database.get_db')
     def test_sanitize_truncates_long_strings(self, mock_get_db):
-        from app_helper import save_track_analysis_and_embedding
+        from database import save_track_analysis_and_embedding
 
         mock_conn = MagicMock()
         mock_cur = MagicMock()
@@ -157,7 +157,7 @@ class TestSaveTrackStringSanitization:
 
     @patch('database.get_db')
     def test_sanitize_strips_whitespace(self, mock_get_db):
-        from app_helper import save_track_analysis_and_embedding
+        from database import save_track_analysis_and_embedding
 
         mock_conn = MagicMock()
         mock_cur = MagicMock()
@@ -185,7 +185,7 @@ class TestSaveTrackStringSanitization:
 
     @patch('database.get_db')
     def test_sanitize_preserves_unicode(self, mock_get_db):
-        from app_helper import save_track_analysis_and_embedding
+        from database import save_track_analysis_and_embedding
 
         mock_conn = MagicMock()
         mock_cur = MagicMock()

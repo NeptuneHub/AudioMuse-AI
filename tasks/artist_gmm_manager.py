@@ -364,7 +364,7 @@ def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
 
 def build_and_store_artist_index(db_conn=None):
     if db_conn is None:
-        from app_helper import get_db
+        from database import get_db
 
         db_conn = get_db()
 
@@ -492,7 +492,7 @@ def load_artist_index_for_querying(force_reload=False):
             logger.info("Artist index already loaded in memory")
             return
 
-        from app_helper import get_db
+        from database import get_db
 
         logger.info("Loading artist similarity index from database...")
 
@@ -558,7 +558,7 @@ def load_artist_index_for_querying(force_reload=False):
 def get_representative_songs_for_component(
     artist_name: str, component_index: int, top_k: int = 3
 ) -> List[Dict]:
-    from app_helper import get_db
+    from database import get_db
 
     if artist_gmm_params is None or artist_name not in artist_gmm_params:
         logger.warning(f"No GMM found for artist '{artist_name}'")
@@ -755,7 +755,7 @@ def search_artists_by_name(
     if not query:
         return []
 
-    from app_helper import get_db
+    from database import get_db
     from tasks.mediaserver import registry
 
     conn = get_db()
@@ -802,7 +802,7 @@ def search_artists_by_name(
 
 
 def get_artist_tracks(artist_identifier: str) -> List[Dict]:
-    from app_helper import get_db
+    from database import get_db
     from tasks.mediaserver import registry
 
     artist_name = artist_identifier

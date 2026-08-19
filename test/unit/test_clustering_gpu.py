@@ -134,8 +134,8 @@ class TestApplyClusteringModelRouting:
     def test_split_uses_cpu_when_gpu_wrapper_fell_back(self, monkeypatch):
         from tasks import clustering_helper
 
-        monkeypatch.setattr(clustering_helper, 'USE_GPU_CLUSTERING', True)
         monkeypatch.setattr(clustering_helper, 'GPU_CLUSTERING_AVAILABLE', True)
+        monkeypatch.setattr(clustering_helper, 'clustering_use_gpu', lambda: True)
 
         class FakeGPUDBSCAN:
             using_gpu = False
@@ -166,8 +166,8 @@ class TestApplyClusteringModelRouting:
     def test_split_uses_gpu_when_wrapper_used_gpu(self, monkeypatch):
         from tasks import clustering_helper
 
-        monkeypatch.setattr(clustering_helper, 'USE_GPU_CLUSTERING', True)
         monkeypatch.setattr(clustering_helper, 'GPU_CLUSTERING_AVAILABLE', True)
+        monkeypatch.setattr(clustering_helper, 'clustering_use_gpu', lambda: True)
 
         class FakeGPUDBSCAN:
             using_gpu = True

@@ -1615,7 +1615,7 @@ def load_paged_ivf_index(
         return None
 
     if conn_factory is None:
-        from app_helper import get_db
+        from database import get_db
 
         conn_factory = get_db
 

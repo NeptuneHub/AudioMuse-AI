@@ -146,16 +146,6 @@ def _harden_existing(data_dir, password, uri):
         logger.exception("Could not upgrade legacy PostgreSQL auth; leaving as-is")
 
 
-def _clear_stale_data_dir(data_dir):
-    if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
-        return
-    pg_data_dir.refuse_to_wipe_cluster(data_dir)
-    import shutil
-
-    logger.warning("Clearing incomplete PostgreSQL data dir %s before init", data_dir)
-    shutil.rmtree(data_dir, ignore_errors=True)
-
-
 def _patch_pgserver_pg_ctl():
     if os.name != "nt":
         return
@@ -193,7 +183,7 @@ def start_embedded(data_dir):
 
         fresh = not os.path.exists(os.path.join(data_dir, "PG_VERSION"))
         if fresh:
-            _clear_stale_data_dir(data_dir)
+            pg_data_dir.reset_data_dir(data_dir)
             _preinit_scram(data_dir, pw)
         with _embedded_lock:
             try:

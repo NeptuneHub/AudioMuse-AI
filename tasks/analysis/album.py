@@ -50,15 +50,15 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     CHROMAPRINT_COLLECTION_ENABLED,
-)
-
-from flask_app import app
-from app_helper import (
-    save_task_status,
-    get_task_statuses,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
+)
+
+from flask_app import app
+from database import (
+    save_task_status,
+    get_task_statuses,
 )
 from psycopg2 import InterfaceError, OperationalError
 

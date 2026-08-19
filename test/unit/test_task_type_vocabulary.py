@@ -109,6 +109,6 @@ class TestDatabaseKeepsTheSameVocabulary:
 
     def test_the_collapse_exemption_reads_the_constant_not_a_literal(self):
         source = (REPO_ROOT / 'database.py').read_text(encoding='utf-8')
-        body = source.split('def _collapse_finished_task', 1)[1].split('\ndef ', 1)[0]
+        body = source.split('def collapse_finished_task', 1)[1].split('\ndef ', 1)[0]
         assert 'CONTROL_TASK_TYPE' in body
         assert re.search(r"==\s*'worker_control'", body) is None

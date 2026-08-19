@@ -160,7 +160,7 @@ def test_dequeued_sonic_task_with_wiped_claim_does_no_work():
 
     with (
         patch.object(taskqueue, 'current_task_id', return_value='sonic-cancelled'),
-        patch('database.get_task_info_from_db', return_value=None),
+        patch('tasks.task_run.get_task_info_from_db', return_value=None),
         patch('database.save_task_status') as save,
         patch('tasks.mediaserver.registry.servers_for_scope') as servers,
     ):

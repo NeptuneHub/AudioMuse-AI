@@ -350,7 +350,7 @@ def reclaim_blob_space(conn):
 
 def _blob_reclaim_loop(application, connect_raw, sleep, reclaim):
     try:
-        sleep(120)
+        sleep(config.BLOB_RECLAIM_STARTUP_DELAY_SECONDS)
         conn = None
         while True:
             try:

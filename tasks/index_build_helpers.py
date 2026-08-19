@@ -449,6 +449,12 @@ def store_segmented_blob(
             )
 
 
+def _segment_parts_complete(total_expected, part_numbers):
+    return len(part_numbers) == total_expected and set(part_numbers) == set(
+        range(1, total_expected + 1)
+    )
+
+
 def load_segmented_blob(
     db_conn,
     target_table: str,
@@ -492,10 +498,11 @@ def load_segmented_blob(
             )
         ordered.append((part_no, row_name))
 
-    if total_expected is None or len(ordered) != total_expected:
+    part_numbers = [part_no for part_no, _ in ordered]
+    if total_expected is None or not _segment_parts_complete(total_expected, part_numbers):
         raise ValueError(
             f"Incomplete segmented blob for '{name}' in {target_table}: "
-            f"expected {total_expected}, found {len(ordered)}."
+            f"expected parts 1..{total_expected}, found {sorted(part_numbers)}."
         )
 
     ordered.sort(key=lambda p: p[0])
@@ -570,7 +577,7 @@ def segmented_blob_complete(
         seg_names = [r[0] for r in cur.fetchall()]
 
     total_expected: Optional[int] = None
-    seen: Dict[int, str] = {}
+    part_numbers: List[int] = []
     for row_name in seg_names:
         m = seg_pattern.match(row_name)
         if not m:
@@ -581,11 +588,11 @@ def segmented_blob_complete(
             total_expected = total
         elif total_expected != total:
             return False
-        seen[part_no] = row_name
+        part_numbers.append(part_no)
 
     if total_expected is None:
         return False
-    return len(seen) == total_expected
+    return _segment_parts_complete(total_expected, part_numbers)
 
 
 _ARTIST_META_MAGIC = b"ARMD"
@@ -731,7 +738,7 @@ def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]
 
 
 def load_index_into_cache(table, dimension, metric, label, cache):
-    from app_helper import get_db
+    from database import get_db
     from .paged_ivf import load_index_auto
 
     try:

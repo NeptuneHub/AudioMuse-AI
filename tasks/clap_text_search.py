@@ -22,7 +22,6 @@ Main Features:
 
 import logging
 import sys
-import threading
 import time
 
 import numpy as np
@@ -30,7 +29,8 @@ from psycopg2.extras import DictCursor
 from typing import List, Dict
 import config
 
-from .lyrics_manager import _build_capped_results
+from .idle_unload import IdleUnloadTimer
+from .search_shaping import build_capped_results as _build_capped_results
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +40,8 @@ _CLAP_INDEX_CACHE = {'index': None, 'id_map': None, 'reverse_id_map': None, 'loa
 
 _TOP_QUERIES_CACHE = {'queries': [], 'ready': False, 'computing': False}
 
-_WARM_CACHE_TIMER = {
-    'expiry_time': None,
-    'timer_thread': None,
-    'lock': threading.RLock(),
-    'duration_seconds': None,
-}
+_WARMUP_DURATION = None
+_TIMER = IdleUnloadTimer()
 
 
 def get_clap_cache_size() -> int:
@@ -73,7 +69,7 @@ def _load_clap_index_from_db() -> bool:
 
 
 def build_and_store_clap_index(db_conn=None):
-    from app_helper import get_db
+    from database import get_db
     from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
     from .index_build_helpers import build_and_store_index_streaming
 
@@ -92,60 +88,40 @@ def build_and_store_clap_index(db_conn=None):
     )
 
 
-def _unload_timer_worker():
-    while True:
-        with _WARM_CACHE_TIMER['lock']:
-            expiry = _WARM_CACHE_TIMER['expiry_time']
-            if expiry is None:
-                break
-            if expiry - time.time() <= 0:
-                from .clap_analyzer import unload_clap_model, is_clap_text_loaded
+def _unload_expired():
+    from .clap_analyzer import unload_clap_model, is_clap_text_loaded
 
-                if is_clap_text_loaded():
-                    logger.info("Warm cache timer expired - unloading CLAP text model")
-                    unload_clap_model()
-                _WARM_CACHE_TIMER['expiry_time'] = None
-                _WARM_CACHE_TIMER['timer_thread'] = None
-                break
-            time_remaining = expiry - time.time()
-
-        time.sleep(min(1.0, max(0.05, time_remaining)))
+    if is_clap_text_loaded():
+        logger.info("Warm cache timer expired - unloading CLAP text model")
+        unload_clap_model()
 
 
 def warmup_text_search_model():
     from .clap_analyzer import initialize_clap_text_model, is_clap_text_loaded
 
-    if _WARM_CACHE_TIMER['duration_seconds'] is None:
-        _WARM_CACHE_TIMER['duration_seconds'] = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
+    global _WARMUP_DURATION
+    with _TIMER.lock():
+        if _WARMUP_DURATION is None:
+            _WARMUP_DURATION = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
 
-    with _WARM_CACHE_TIMER['lock']:
         if not is_clap_text_loaded():
             logger.info("Warming up CLAP text model for text search (not loading audio model)...")
             success = initialize_clap_text_model()
             if not success:
                 return {'loaded': False, 'expiry_seconds': 0}
 
-        _WARM_CACHE_TIMER['expiry_time'] = time.time() + _WARM_CACHE_TIMER['duration_seconds']
-
-        if (
-            _WARM_CACHE_TIMER['timer_thread'] is None
-            or not _WARM_CACHE_TIMER['timer_thread'].is_alive()
-        ):
-            thread = threading.Thread(target=_unload_timer_worker, daemon=True)
-            thread.start()
-            _WARM_CACHE_TIMER['timer_thread'] = thread
-            logger.info(f"Started warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
+        if _TIMER.arm(_WARMUP_DURATION, _unload_expired):
+            logger.info(f"Started warm cache timer ({_WARMUP_DURATION}s)")
         else:
-            logger.debug(f"Reset warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
+            logger.debug(f"Reset warm cache timer ({_WARMUP_DURATION}s)")
 
-    return {'loaded': True, 'expiry_seconds': _WARM_CACHE_TIMER['duration_seconds']}
+    return {'loaded': True, 'expiry_seconds': _WARMUP_DURATION}
 
 
 def get_warm_cache_status() -> Dict:
     from .clap_analyzer import is_clap_model_loaded
 
-    with _WARM_CACHE_TIMER['lock']:
-        expiry = _WARM_CACHE_TIMER['expiry_time']
+    expiry = _TIMER.expiry()
 
     if expiry is None or not is_clap_model_loaded():
         return {'active': False, 'seconds_remaining': 0}
@@ -206,7 +182,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         return []
 
     try:
-        with _WARM_CACHE_TIMER['lock']:
+        with _TIMER.lock():
             warmup_text_search_model()
 
             text_embedding = get_text_embedding(query_text)
@@ -291,7 +267,7 @@ def get_cache_stats() -> Dict:
 
 
 def ensure_text_search_queries_table():
-    from app_helper import get_db
+    from database import get_db
 
     conn = None
     try:
@@ -331,7 +307,7 @@ def ensure_text_search_queries_table():
 
 
 def load_top_queries_from_db():
-    from app_helper import get_db
+    from database import get_db
 
     ensure_text_search_queries_table()
 

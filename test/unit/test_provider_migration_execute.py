@@ -792,17 +792,23 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
 
 
 class TestRestartHandshakeStateMachine:
-    def test_commit_marker_is_written_under_cancel_start_lock(self, mig):
+    def test_commit_marker_is_written_under_cancel_start_lock(self, mig, monkeypatch):
         cur = MagicMock()
         cur.fetchone.side_effect = [('RUNNING',), ('mig-1',)]
+
+        lock_conns = []
+        monkeypatch.setattr(
+            'taskqueue.take_start_lock',
+            lambda conn=None: lock_conns.append(conn),
+        )
 
         mig._stage_restart_handshake(cur, 'mig-1', 7, 'restart-7')
 
         sql = [call.args[0] for call in cur.execute.call_args_list]
-        assert 'pg_advisory_xact_lock' in sql[0]
-        assert 'FOR UPDATE' in sql[1]
-        assert sql[2].startswith('UPDATE task_status')
-        details = json.loads(cur.execute.call_args_list[2].args[1][1])
+        assert lock_conns and lock_conns[0] is cur.connection
+        assert 'FOR UPDATE' in sql[0]
+        assert sql[1].startswith('UPDATE task_status')
+        details = json.loads(cur.execute.call_args_list[1].args[1][1])
         assert details == {
             'message': 'Provider swap committed; waiting for worker restart acknowledgement.',
             'status_message': (
@@ -1165,7 +1171,7 @@ class TestMigrationSuccessFinalization:
             lambda *a, **k: recorded.update({'args': a, 'kwargs': k}),
         )
         monkeypatch.setattr(
-            database, '_collapse_finished_task',
+            database, 'collapse_finished_task',
             lambda *a: collapsed.update({'args': a}),
         )
         monkeypatch.setattr(

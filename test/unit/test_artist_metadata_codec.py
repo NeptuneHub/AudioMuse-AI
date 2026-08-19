@@ -387,6 +387,19 @@ class TestStoreLoadSegmentedBlob:
             mock_conn, "artist_metadata_data", "artist_metadata"
         ) is False
 
+    def test_completeness_probe_rejects_a_gap_with_a_stale_extra_part(self):
+        mock_conn, mock_cur, _ = self._captured_conn()
+        mock_cur.fetchone.return_value = None
+        mock_cur.fetchall.return_value = [
+            ("artist_metadata_1_4",),
+            ("artist_metadata_2_4",),
+            ("artist_metadata_4_4",),
+            ("artist_metadata_5_4",),
+        ]
+        assert _helpers.segmented_blob_complete(
+            mock_conn, "artist_metadata_data", "artist_metadata"
+        ) is False
+
     def test_completeness_probe_rejects_a_total_mismatch(self):
         mock_conn, mock_cur, _ = self._captured_conn()
         mock_cur.fetchone.return_value = None
@@ -421,6 +434,18 @@ class TestStoreLoadSegmentedBlob:
         mock_cur.fetchall.return_value = [
             ("artist_metadata_1_3", b"a"),
             ("artist_metadata_3_3", b"c"),
+        ]
+        with pytest.raises(ValueError, match="Incomplete"):
+            _helpers.load_segmented_blob(mock_conn, "artist_metadata_data", "artist_metadata")
+
+    def test_load_raises_when_a_middle_segment_is_missing_but_count_matches(self):
+        mock_conn, mock_cur, _ = self._captured_conn()
+        mock_cur.fetchone.return_value = None
+        mock_cur.fetchall.return_value = [
+            ("artist_metadata_1_4", b"a"),
+            ("artist_metadata_2_4", b"b"),
+            ("artist_metadata_4_4", b"d"),
+            ("artist_metadata_5_4", b"e"),
         ]
         with pytest.raises(ValueError, match="Incomplete"):
             _helpers.load_segmented_blob(mock_conn, "artist_metadata_data", "artist_metadata")

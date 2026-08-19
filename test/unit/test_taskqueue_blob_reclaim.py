@@ -327,10 +327,13 @@ class TestWhereItRuns:
                 _FakeApp(), connect_raw=lambda **kw: conn, sleep=_sleep,
                 reclaim=_reclaim,
             )
-        assert sleeps == [120, config.BLOB_RECLAIM_INTERVAL_SECONDS]
+        assert sleeps == [
+            config.BLOB_RECLAIM_STARTUP_DELAY_SECONDS,
+            config.BLOB_RECLAIM_INTERVAL_SECONDS,
+        ]
         assert sweeps == [conn]
 
-    def test_a_failed_pass_reconnects_for_the_next_one(self):
+    def test_an_exception_in_a_pass_reconnects_for_the_next_one(self):
         first, second = _BlobConn(), _BlobConn()
         conns = [first, second]
         sweeps = []

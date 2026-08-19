@@ -39,7 +39,7 @@ import lyrics
 import lyrics._asr_backend as asr_backend
 import plugin.api as api
 import plugin.manager as manager
-import tasks.analysis.song as song_module
+import tasks.onnx_utils as song_module
 import tasks.clap_analyzer as clap_module
 
 

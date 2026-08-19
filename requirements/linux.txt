@@ -16,8 +16,8 @@ onnxruntime==1.28.0
 pgserver==0.1.4; platform_machine == "x86_64"
 
 # Served by waitress (same WSGI server the macOS build uses); not in common.txt.
-waitress
+waitress==3.0.2
 
 # Build tooling.
-pyinstaller
-pyinstaller-hooks-contrib
+pyinstaller==6.22.2
+pyinstaller-hooks-contrib==2026.6

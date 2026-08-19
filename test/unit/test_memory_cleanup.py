@@ -140,7 +140,7 @@ class TestAnalyzeTrackMemoryCleanup:
 
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     @patch('tasks.analysis.song.librosa')
-    @patch('tasks.analysis.song.ort')
+    @patch('tasks.onnx_utils.ort')
     def test_no_cleanup_with_album_sessions(self, mock_ort, mock_librosa, mock_load_audio):
         from tasks.analysis import analyze_track
 
@@ -194,11 +194,11 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.album.download_track')
     @patch('tasks.analysis.album.analyze_track')
     @patch('tasks.analysis.helper.get_db')
-    @patch('tasks.analysis.song.ort')
+    @patch('tasks.onnx_utils.ort')
     @patch('tasks.analysis.song.cleanup_onnx_session')
     @patch('tasks.memory_utils.cleanup_cuda_memory')
-    @patch('app_helper.save_task_status')
-    @patch('app_helper.get_task_info_from_db')
+    @patch('database.save_task_status')
+    @patch('database.get_task_info_from_db')
     @patch('tasks.analysis.album.taskqueue.current_task_id')
     def test_cleanup_on_database_error(
         self,
@@ -233,10 +233,10 @@ class TestAnalyzeAlbumMemoryCleanup:
 
     @patch('tasks.analysis.album.get_tracks_from_album')
     @patch('tasks.analysis.album.comprehensive_memory_cleanup')
-    @patch('app_helper.save_task_status')
-    @patch('app_helper.get_task_info_from_db')
+    @patch('tasks.analysis.helper.save_task_status')
+    @patch('tasks.task_run.get_task_info_from_db')
     @patch('tasks.analysis.album.taskqueue.current_task_id')
-    @patch('app_helper.get_db')
+    @patch('tasks.analysis.helper.get_db')
     @patch('tasks.clap_analyzer.unload_clap_model')
     @patch('tasks.clap_analyzer.is_clap_model_loaded')
     def test_cleanup_all_models_in_finally(
@@ -266,14 +266,14 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.album.get_tracks_from_album')
     @patch('tasks.analysis.album.download_track')
     @patch('tasks.analysis.album.analyze_track')
-    @patch('app_helper.get_db')
+    @patch('tasks.analysis.helper.get_db')
     @patch('tasks.analysis.song.create_onnx_session')
     @patch('tasks.analysis.song.cleanup_onnx_session')
     @patch('tasks.analysis.album.cleanup_cuda_memory')
-    @patch('app_helper.save_task_status')
-    @patch('app_helper.get_task_info_from_db')
+    @patch('tasks.analysis.helper.save_task_status')
+    @patch('tasks.task_run.get_task_info_from_db')
     @patch('tasks.analysis.album.taskqueue.current_task_id')
-    @patch('app_helper.save_track_analysis_and_embedding')
+    @patch('tasks.analysis.song.save_track_analysis_and_embedding')
     @patch('tasks.analysis.album.os.remove')
     def test_cleanup_onnx_sessions_on_success(
         self,

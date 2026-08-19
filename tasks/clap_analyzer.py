@@ -132,7 +132,7 @@ def _load_audio_model():
 
     session = None
 
-    from tasks.analysis.song import resolve_providers
+    from tasks.onnx_utils import resolve_providers
 
     provider_options = resolve_providers(allow_coreml=True, label='clap')
 
@@ -217,7 +217,7 @@ def _load_text_model():
             "CLAP text model: CPU only (Flask process) - thread-safe across request threads"
         )
     else:
-        from tasks.analysis.song import resolve_providers
+        from tasks.onnx_utils import resolve_providers
 
         provider_options = resolve_providers(label='clap_text')
 

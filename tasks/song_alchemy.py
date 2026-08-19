@@ -508,7 +508,7 @@ def song_alchemy(
 
     candidate_ids = candidate_ids[: max(n_results * 3, n_results)]
 
-    from app_helper import get_db
+    from database import get_db
 
     candidate_ids = [
         r['item_id']

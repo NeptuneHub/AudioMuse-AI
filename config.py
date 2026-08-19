@@ -677,6 +677,7 @@ QUEUE_MAX_ERRORS_KEPT = max(1, int(os.getenv('QUEUE_MAX_ERRORS_KEPT', '5')))
 # so readers and writers are never blocked. MIN_BYTES is the floor below which a
 # non-bytea table is left to autovacuum; a table is swept however big it is.
 BLOB_RECLAIM_MIN_BYTES = int(os.getenv('BLOB_RECLAIM_MIN_BYTES', str(1024 * 1024)))
+BLOB_RECLAIM_STARTUP_DELAY_SECONDS = float(os.getenv('BLOB_RECLAIM_STARTUP_DELAY_SECONDS', '120'))
 BLOB_RECLAIM_INTERVAL_SECONDS = float(os.getenv('BLOB_RECLAIM_INTERVAL_SECONDS', '3600'))
 BLOB_RECLAIM_LOCK_TIMEOUT = os.getenv('BLOB_RECLAIM_LOCK_TIMEOUT', '2s')
 BLOB_RECLAIM_STATEMENT_TIMEOUT = os.getenv('BLOB_RECLAIM_STATEMENT_TIMEOUT', '10min')

@@ -56,7 +56,7 @@ def _decode_embedding_bytes(payload):
 
 def _external_row_response(sql, label, decode=None):
     # Local import to prevent circular dependency
-    from app_helper import get_db
+    from database import get_db
 
     raw_id = request.args.get('id')
     if not raw_id:

@@ -76,6 +76,8 @@ import numpy as np
 
 import config
 
+from .idle_unload import IdleUnloadTimer
+
 logger = logging.getLogger(__name__)
 
 # The tree cache is a gzipped JSON blob stored as segmented BYTEA rows
@@ -240,7 +242,7 @@ def backfill_hyperbolic_columns(scale=None):
 def _bulk_upsert_hyperbolic(item_ids, proj_vectors, radii):
     import psycopg2
     from psycopg2.extras import execute_values
-    from app_helper import get_db
+    from database import get_db
 
     db_conn = get_db()
     try:
@@ -281,7 +283,7 @@ def _is_finite_row(vec, radius):
 def _fetch_poincare_rows(item_ids):
     if not item_ids:
         return {}
-    from app_helper import get_db
+    from database import get_db
 
     out = {}
     db_conn = get_db()
@@ -304,7 +306,7 @@ def _fetch_poincare_rows(item_ids):
 
 
 def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
-    from app_helper import get_db
+    from database import get_db
 
     out = {}
     skipped = 0
@@ -366,7 +368,7 @@ def _fetch_poincare_rows_in_radius(bound_radius, below=True, limit=100):
     """
     if bound_radius is None or not np.isfinite(bound_radius):
         return {}
-    from app_helper import get_db
+    from database import get_db
 
     if below:
         clause = "hyperbolic_radius < %s ORDER BY hyperbolic_radius DESC"
@@ -485,13 +487,13 @@ def _deduplicate_and_cap_results(results):
     """
     if not results:
         return results
-    from app_helper import get_score_data_by_ids
-    from tasks.ivf_manager import _apply_artist_cap, _dedup_by_content
+    from database import get_score_data_by_ids
+    from tasks.search_shaping import apply_artist_cap, dedup_by_content
 
     ids = [r["item_id"] for r in results]
     details = {d["item_id"]: d for d in get_score_data_by_ids(ids)}
-    deduped = _dedup_by_content(results, details)
-    return _apply_artist_cap(
+    deduped = dedup_by_content(results, details)
+    return apply_artist_cap(
         deduped, lambda song: (details.get(song["item_id"]) or {}).get("author")
     )
 
@@ -618,7 +620,7 @@ def build_hyperbolic_tree_cache():
         if not rows:
             tree = {"n_bands": 0, "nodes": {}, "flat_ids": {}, "track_count": 0}
         else:
-            from app_helper import get_score_data_by_ids
+            from database import get_score_data_by_ids
 
             score_by_id = {d["item_id"]: d for d in get_score_data_by_ids(list(rows.keys()))}
             mood_centroids = _load_projected_mood_centroids()
@@ -657,7 +659,7 @@ def _scan_tree_cache_blob_names(base_name):
     per-server blobs (the base prefix plus "__") are returned, so Flask can
     warm every secondary server tree at startup without touching the registry.
     """
-    from app_helper import get_db
+    from database import get_db
 
     prefix = base_name + "__"
     # The trailing % must be an UNESCAPED wildcard: prefix's underscores are
@@ -761,7 +763,7 @@ def _set_empty_tree_cache():
 
 
 def _delete_tree_cache_blob():
-    from app_helper import get_db
+    from database import get_db
 
     db_conn = get_db()
     like_pattern = _TREE_CACHE_BLOB_NAME.replace("_", r"\_") + r"\_%"
@@ -782,7 +784,7 @@ def _persist_tree_cache_blob(payload, name=None):
     # step is non-fatal) rather than being swallowed into a log line nobody
     # reads while the caller still reports "built and persisted" as if it
     # worked.
-    from app_helper import get_db
+    from database import get_db
     from tasks.index_build_helpers import store_segmented_blob
 
     name = name or _TREE_CACHE_BLOB_NAME
@@ -801,7 +803,7 @@ def _persist_tree_cache_blob(payload, name=None):
 
 def _load_tree_cache_blob(name=None):
     try:
-        from app_helper import get_db
+        from database import get_db
         from tasks.index_build_helpers import load_segmented_blob
 
         name = name or _TREE_CACHE_BLOB_NAME
@@ -831,28 +833,13 @@ def is_hyperbolic_tree_cache_loaded() -> bool:
 # (or tree API call after an idle unload) and dropped again after
 # HYPERBOLIC_TREE_WARMUP_DURATION seconds with no further activity - the same
 # warm-cache-timer shape as tasks.gte_warm_cache and the CLAP text model.
-_TREE_WARM_CACHE = {
-    "expiry_time": None,
-    "timer_thread": None,
-    "lock": threading.RLock(),
-}
+_TREE_TIMER = IdleUnloadTimer()
 
 
-def _unload_tree_timer_worker():
-    while True:
-        with _TREE_WARM_CACHE["lock"]:
-            expiry = _TREE_WARM_CACHE["expiry_time"]
-            if expiry is None:
-                break
-            if expiry - time.time() <= 0:
-                if is_hyperbolic_tree_cache_loaded():
-                    logger.info("Hyperbolic tree warm cache expired - unloading tree cache")
-                    reset_hyperbolic_tree_cache()
-                _TREE_WARM_CACHE["expiry_time"] = None
-                _TREE_WARM_CACHE["timer_thread"] = None
-                break
-            time_remaining = expiry - time.time()
-        time.sleep(min(1.0, max(0.05, time_remaining)))
+def _unload_tree_expired():
+    if is_hyperbolic_tree_cache_loaded():
+        logger.info("Hyperbolic tree warm cache expired - unloading tree cache")
+        reset_hyperbolic_tree_cache()
 
 
 def _start_background_full_load():
@@ -883,7 +870,7 @@ def _ensure_full_tree_loaded():
 
 
 def warmup_hyperbolic_tree_cache():
-    with _TREE_WARM_CACHE["lock"]:
+    with _TREE_TIMER.lock():
         if not is_hyperbolic_tree_cache_loaded():
             logger.info("Warming up Hyperbolic Explorer tree cache...")
             if not load_hyperbolic_tree_skeleton():
@@ -892,15 +879,7 @@ def warmup_hyperbolic_tree_cache():
             _start_background_full_load()
 
         duration = config.HYPERBOLIC_TREE_WARMUP_DURATION
-        _TREE_WARM_CACHE["expiry_time"] = time.time() + duration
-
-        if (
-            _TREE_WARM_CACHE["timer_thread"] is None
-            or not _TREE_WARM_CACHE["timer_thread"].is_alive()
-        ):
-            thread = threading.Thread(target=_unload_tree_timer_worker, daemon=True)
-            thread.start()
-            _TREE_WARM_CACHE["timer_thread"] = thread
+        if _TREE_TIMER.arm(duration, _unload_tree_expired):
             logger.info("Started Hyperbolic tree warm cache timer (%ss)", duration)
         else:
             logger.debug("Reset Hyperbolic tree warm cache timer (%ss)", duration)
@@ -909,8 +888,7 @@ def warmup_hyperbolic_tree_cache():
 
 
 def get_hyperbolic_tree_warm_status():
-    with _TREE_WARM_CACHE["lock"]:
-        expiry = _TREE_WARM_CACHE["expiry_time"]
+    expiry = _TREE_TIMER.expiry()
 
     if expiry is None or not is_hyperbolic_tree_cache_loaded():
         return {"active": False, "seconds_remaining": 0}

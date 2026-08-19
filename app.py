@@ -51,15 +51,11 @@ from flask_app import app
 # Import helper functions
 import app_server_context
 from app_helper import (
-    get_db,
-    close_db,
-    get_task_info_from_db,
     revoke_inline_task_row,
     cancel_job_and_children_recursive,
-    coerce_db_details,
     sanitize_task_details,
 )
-from database import init_db
+from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details
 from taskqueue.sql import CONTROL_TASK_TYPE
 from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 from config import (
@@ -1137,7 +1133,7 @@ if not _is_worker:
             logger.warning(f"Failed to load artist similarity index at startup: {e}")
         # Also try to load precomputed map projection into memory if available
         try:
-            from app_helper import load_map_projection
+            from database import load_map_projection
 
             load_map_projection('main_map')
             logger.info("In-memory map projection loaded at startup.")

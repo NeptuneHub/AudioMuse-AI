@@ -264,7 +264,7 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
         return (
             self.paths.APP_NAME in cmdline
             or "--role=" in cmdline
-            or "postgres" in cmdline
+            or ("postgres" in cmdline and self.paths.pgdata_dir() in cmdline)
         )
 
     def _reap_orphans(self):

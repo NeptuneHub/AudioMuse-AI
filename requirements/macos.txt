@@ -10,8 +10,8 @@ onnxruntime==1.28.0
 # unaccent/pg_trgm in native-build/macos/vendor/pg-contrib/ are compiled against 16.2 and a
 # pgserver bump to a newer PG would break them at load time (see that README).
 pgserver==0.1.4
-rumps
-pyobjc-framework-Cocoa
-waitress
-pyinstaller
-pyinstaller-hooks-contrib
+rumps==0.4.0
+pyobjc-framework-Cocoa==12.2.2
+waitress==3.0.2
+pyinstaller==6.22.2
+pyinstaller-hooks-contrib==2026.6

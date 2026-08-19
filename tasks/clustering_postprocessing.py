@@ -333,7 +333,7 @@ def _restrict_result_metadata(new_result, best_result, kept_names):
 
 def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
     try:
-        from app_helper import get_db
+        from database import get_db
 
         if not best_result or not best_result.get("named_playlists"):
             logger.warning(

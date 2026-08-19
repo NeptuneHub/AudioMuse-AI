@@ -31,7 +31,7 @@ def fetch_track_metadata_map(item_ids):
     metadata_map = {}
     if not item_ids:
         return metadata_map
-    from app_helper import get_score_data_by_ids
+    from database import get_score_data_by_ids
 
     try:
         for row in get_score_data_by_ids(item_ids):

@@ -30,6 +30,8 @@ import numpy as np
 
 import config
 
+from .search_shaping import build_capped_results as _build_capped_results
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +65,7 @@ def _axis_columns_from_axes() -> List[tuple]:
 
 
 def build_and_store_lyrics_index(db_conn=None) -> bool:
-    from app_helper import get_db
+    from database import get_db
     from config import LYRICS_ENABLED, LYRICS_EMBEDDING_DIMENSION, IVF_METRIC
     from .index_build_helpers import build_and_store_index_streaming
 
@@ -88,7 +90,7 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
 
 
 def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
-    from app_helper import get_db
+    from database import get_db
     from config import LYRICS_ENABLED
     from .index_build_helpers import build_and_store_index_streaming
 
@@ -128,7 +130,7 @@ def _load_lyrics_index_from_db() -> bool:
 
 
 def _load_lyrics_axes_index_from_db() -> bool:
-    from app_helper import get_db
+    from database import get_db
     from .paged_ivf import load_index_auto
 
     columns = _axis_columns_from_axes()
@@ -321,42 +323,6 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
         f"Lyrics axis search ({len(selected_pairs)} selections): {len(results)} results "
         f"(artist cap: {artist_cap or 'disabled'})"
     )
-    return results
-
-
-def _build_capped_results(
-    ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
-) -> List[Dict]:
-    results: List[Dict] = []
-    artist_counts: Dict[str, int] = {}
-    seen: set = set()
-    for vid, dist in zip(neighbor_ids, distances):
-        if len(results) >= limit:
-            break
-        item_id = id_map.get(int(vid))
-        # Two slots can name the same track (a migration merges duplicate
-        # recordings into one row), and their vectors are near-identical, so the
-        # same song would otherwise come back twice.
-        if not item_id or item_id in seen:
-            continue
-        seen.add(item_id)
-        meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
-        author = meta.get('author', '') or ''
-        if artist_cap and author:
-            an = author.strip().lower()
-            if artist_counts.get(an, 0) >= artist_cap:
-                continue
-            artist_counts[an] = artist_counts.get(an, 0) + 1
-        similarity = ivf_index.distance_to_similarity(dist)
-        results.append(
-            {
-                'item_id': item_id,
-                'title': meta.get('title', ''),
-                'author': author,
-                'album': meta.get('album', ''),
-                'similarity': similarity,
-            }
-        )
     return results
 
 

@@ -135,10 +135,10 @@ def _score_count(conn):
 @pytest.mark.integration
 class TestScoreEndpointRealDb:
     def test_seeded_id_returns_row(self, endpoints_db, monkeypatch):
-        import app_helper
+        import database
 
         ext = _import_app_external()
-        monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
+        monkeypatch.setattr(database, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': 'track-1'})
         assert resp.status_code == 200
         body = resp.get_json()
@@ -147,18 +147,18 @@ class TestScoreEndpointRealDb:
         assert body['author'] == 'Adele'
 
     def test_missing_id_returns_404(self, endpoints_db, monkeypatch):
-        import app_helper
+        import database
 
         ext = _import_app_external()
-        monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
+        monkeypatch.setattr(database, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': 'does-not-exist'})
         assert resp.status_code == 404
 
     def test_injection_id_is_safe(self, endpoints_db, monkeypatch):
-        import app_helper
+        import database
 
         ext = _import_app_external()
-        monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
+        monkeypatch.setattr(database, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': _INJECTION_ID})
         assert resp.status_code == 404
         assert _table_exists(endpoints_db, 'score')
@@ -168,10 +168,10 @@ class TestScoreEndpointRealDb:
 @pytest.mark.integration
 class TestEmbeddingEndpointRealDb:
     def test_seeded_id_returns_embedding(self, endpoints_db, monkeypatch):
-        import app_helper
+        import database
 
         ext = _import_app_external()
-        monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
+        monkeypatch.setattr(database, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_embedding', query_string={'id': 'track-1'})
         assert resp.status_code == 200
         body = resp.get_json()
@@ -180,9 +180,9 @@ class TestEmbeddingEndpointRealDb:
         assert len(body['embedding']) == 3
 
     def test_missing_id_returns_404(self, endpoints_db, monkeypatch):
-        import app_helper
+        import database
 
         ext = _import_app_external()
-        monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
+        monkeypatch.setattr(database, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_embedding', query_string={'id': 'does-not-exist'})
         assert resp.status_code == 404

@@ -250,17 +250,17 @@ def test_usable_cpu_count_never_logs_above_info(monkeypatch, caplog):
 
 
 def test_analysis_session_options_pin_intra_op_to_the_usable_cpu_count(monkeypatch):
-    from tasks.analysis import song
+    from tasks import onnx_utils
 
-    monkeypatch.setattr(song, 'usable_cpu_count', lambda: 2)
-    assert song._default_sess_options().intra_op_num_threads == 2
+    monkeypatch.setattr(onnx_utils, 'usable_cpu_count', lambda: 2)
+    assert onnx_utils._default_sess_options().intra_op_num_threads == 2
 
 
 def test_analysis_session_options_leave_intra_op_alone_when_nothing_was_found(monkeypatch):
-    from tasks.analysis import song
+    from tasks import onnx_utils
 
-    monkeypatch.setattr(song, 'usable_cpu_count', lambda: None)
-    assert song._default_sess_options().intra_op_num_threads == 0
+    monkeypatch.setattr(onnx_utils, 'usable_cpu_count', lambda: None)
+    assert onnx_utils._default_sess_options().intra_op_num_threads == 0
 
 
 def test_clap_session_options_pin_intra_op_to_the_usable_cpu_count(monkeypatch):

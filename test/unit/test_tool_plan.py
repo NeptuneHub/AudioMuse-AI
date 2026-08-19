@@ -833,16 +833,16 @@ class TestRerankSimilarityBlend:
         return songs, feats
 
     def test_without_sim_pure_filter_order(self):
-        p = _plan()
+        from tasks.ai import rerank
         songs, feats = self._pool()
-        final, matched, _moved = p._rerank_pool(songs, {'moods': ['party']}, feats, [])
+        final, matched, _moved = rerank.rerank(songs, {'moods': ['party']}, feats, [])
         assert [s['item_id'] for s in final] == ['c', 'b', 'a']
         assert matched == 3
 
     def test_sim_rank_blended_into_order(self):
-        p = _plan()
+        from tasks.ai import rerank
         songs, feats = self._pool()
-        final, _matched, _moved = p._rerank_pool(
+        final, _matched, _moved = rerank.rerank(
             songs,
             {'moods': ['party']},
             feats,
@@ -852,7 +852,7 @@ class TestRerankSimilarityBlend:
         assert [s['item_id'] for s in final] == ['c', 'a', 'b']
 
     def test_skit_title_demoted_to_end(self):
-        p = _plan()
+        from tasks.ai import rerank
         songs = [
             {'item_id': 'a', 'title': 'Party Anthem'},
             {'item_id': 'b', 'title': 'Party Interlude'},
@@ -863,29 +863,29 @@ class TestRerankSimilarityBlend:
             'b': {'other_features': 'party:0.90'},
             'c': {'other_features': 'party:0.60'},
         }
-        final, _matched, _moved = p._rerank_pool(songs, {'moods': ['party']}, feats, [])
+        final, _matched, _moved = rerank.rerank(songs, {'moods': ['party']}, feats, [])
         assert [s['item_id'] for s in final] == ['c', 'a', 'b']
 
 
 class TestInstrumentalRerank:
     def test_dim_scores_instrumental_true(self):
-        p = _plan()
-        s = p._filter_dim_scores(
+        from tasks.ai import rerank
+        s = rerank._filter_dim_scores(
             {'instrumental': True}, {'mood_vector': 'instrumental:0.62,jazz:0.30'}
         )
         assert abs(s['instrumental'] - 0.62) < 1e-9
-        s = p._filter_dim_scores({'instrumental': True}, {'mood_vector': 'pop:0.50'})
+        s = rerank._filter_dim_scores({'instrumental': True}, {'mood_vector': 'pop:0.50'})
         assert abs(s['instrumental'] - 0.0) < 1e-9
 
     def test_dim_scores_instrumental_false(self):
-        p = _plan()
-        s = p._filter_dim_scores(
+        from tasks.ai import rerank
+        s = rerank._filter_dim_scores(
             {'instrumental': False}, {'mood_vector': 'instrumental:0.80'}
         )
         assert abs(s['instrumental'] - 0.2) < 1e-9
 
     def test_instrumental_tracks_rank_first(self):
-        p = _plan()
+        from tasks.ai import rerank
         songs = [
             {'item_id': 'v', 'title': 'Vocal Hit'},
             {'item_id': 'i', 'title': 'Guitar Study'},
@@ -894,7 +894,7 @@ class TestInstrumentalRerank:
             'v': {'mood_vector': 'pop:0.90'},
             'i': {'mood_vector': 'instrumental:0.60'},
         }
-        final, matched, _moved = p._rerank_pool(
+        final, matched, _moved = rerank.rerank(
             songs, {'instrumental': True}, feats, [], sim_by_id={'v': 1.0, 'i': 0.5}
         )
         assert [s['item_id'] for s in final] == ['i', 'v']

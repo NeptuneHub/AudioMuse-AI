@@ -223,7 +223,7 @@ def hyperbolic_similar_api():
 def _attach_title_author(results):
     if not results:
         return
-    from app_helper import get_score_data_by_ids
+    from database import get_score_data_by_ids
 
     ids = [r.get("item_id") for r in results if r.get("item_id")]
     details = {d["item_id"]: d for d in get_score_data_by_ids(ids)}
