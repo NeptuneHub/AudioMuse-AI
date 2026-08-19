@@ -22,6 +22,9 @@ stdlib spawn payloads, so loky's are handled here too.
 
 Main Features:
 * ``run_frozen_child`` runs the spawn payload named by argv and reports it.
+* ``dispatch_child_invocation`` is the one entry the three launchers share: a
+  spawn payload, a ``--run-restore`` runner or a ``--role=`` child, in that
+  order, so no platform can forget one of them.
 * Only ``multiprocessing`` and ``joblib.externals.loky`` targets are accepted.
 * The child sees the argv tail its parent passed, without the spawn switch.
 * ``-m`` payloads run with ``alter_sys=False`` so ``sys.modules["__main__"]``
@@ -34,6 +37,8 @@ import ast
 import importlib
 import runpy
 import sys
+
+import service_roles
 
 MULTIPROCESSING_FORK_FLAG = "--multiprocessing-fork"
 
@@ -143,5 +148,23 @@ def run_frozen_child(argv=None, frozen=None):
             sys.argv = ["-c"] + argv[index + 2:]
             importlib.import_module(module).main(*args, **kwargs)
             return True
+
+    return False
+
+
+def dispatch_child_invocation(run_role):
+    if run_frozen_child():
+        return True
+
+    if "--run-restore" in sys.argv:
+        index = sys.argv.index("--run-restore")
+        from app_backup import _run_restore_runner
+
+        sys.exit(_run_restore_runner(sys.argv[index + 1], sys.argv[index + 2]))
+
+    role = service_roles.role_from_argv()
+    if role:
+        run_role(role)
+        return True
 
     return False

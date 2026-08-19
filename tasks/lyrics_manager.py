@@ -119,32 +119,12 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
 
 
 def _load_lyrics_index_from_db() -> bool:
-    from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, IVF_METRIC
-    from .paged_ivf import load_index_auto
+    from .index_build_helpers import load_index_into_cache
 
-    try:
-        loaded = load_index_auto(
-            get_db(),
-            'lyrics_index',
-            LYRICS_EMBEDDING_DIMENSION,
-            IVF_METRIC,
-            label='lyrics',
-        )
-        if loaded is None:
-            return False
-        loaded_index, id_map, reverse_id_map = loaded
-
-        _LYRICS_INDEX_CACHE['index'] = loaded_index
-        _LYRICS_INDEX_CACHE['id_map'] = id_map
-        _LYRICS_INDEX_CACHE['reverse_id_map'] = reverse_id_map
-        _LYRICS_INDEX_CACHE['loaded'] = True
-
-        logger.info(f"Lyrics index loaded from database with {len(id_map)} items.")
-        return True
-    except Exception:
-        logger.exception("Failed to load lyrics index from DB")
-        return False
+    return load_index_into_cache(
+        'lyrics_index', LYRICS_EMBEDDING_DIMENSION, IVF_METRIC, 'lyrics', _LYRICS_INDEX_CACHE
+    )
 
 
 def _load_lyrics_axes_index_from_db() -> bool:
@@ -333,36 +313,9 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
         logger.exception("Lyrics axes ivf query failed")
         return []
 
-    results: List[Dict] = []
-    artist_counts: Dict[str, int] = {}
-    seen: set = set()
-    for vid, dist in zip(neighbor_ids, distances):
-        if len(results) >= limit:
-            break
-        item_id = id_map.get(int(vid))
-        # Two slots can name the same track (a migration merges duplicate
-        # recordings into one row), and their vectors are near-identical, so the
-        # same song would otherwise come back twice.
-        if not item_id or item_id in seen:
-            continue
-        seen.add(item_id)
-        meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
-        author = meta.get('author', '') or ''
-        if artist_cap and author:
-            an = author.strip().lower()
-            if artist_counts.get(an, 0) >= artist_cap:
-                continue
-            artist_counts[an] = artist_counts.get(an, 0) + 1
-        similarity = ivf_index.distance_to_similarity(dist)
-        results.append(
-            {
-                'item_id': item_id,
-                'title': meta.get('title', ''),
-                'author': author,
-                'album': meta.get('album', ''),
-                'similarity': similarity,
-            }
-        )
+    results = _build_capped_results(
+        ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+    )
 
     logger.info(
         f"Lyrics axis search ({len(selected_pairs)} selections): {len(results)} results "

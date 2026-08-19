@@ -79,46 +79,51 @@ def _walk_single_bucket(
                 return i
         return None
 
+    def _cap_skip_reason(i: int) -> Optional[str]:
+        if not cap_active:
+            return None
+        author = items[i].get("author")
+        if not author:
+            return None
+        if author in bucket_artist_set:
+            return "bucket-artist-limit"
+        if (
+            artist_bucket_counts.get(author, 0) >= 2
+            and artist_counts.get(author, 0) < max_songs_per_artist
+        ):
+            return "bucket-count-limit"
+        if artist_counts.get(author, 0) >= max_songs_per_artist:
+            return "artist-cap"
+        return None
+
     def _accept_at_index(i: int) -> bool:
+        return cand_ids[i] not in used_ids and _cap_skip_reason(i) is None
+
+    def _take_index(i: int) -> None:
+        remaining[i] = False
         cid = cand_ids[i]
-        if cid in used_ids:
-            return False
+        used_ids.add(cid)
+        if len(playlist_ids) < n:
+            playlist_ids.append(cid)
+        try:
+            v = np.asarray(items[i]["vector"], dtype=np.float32)
+        except Exception:
+            v = np.array(items[i]["vector"], dtype=np.float32)
+        selected_vectors[cid] = v
         if cap_active:
-            author = items[i].get("author")
-            if author and author in bucket_artist_set:
-                return False
-            if author:
-                if (
-                    artist_bucket_counts.get(author, 0) >= 2
-                    and artist_counts.get(author, 0) < max_songs_per_artist
-                ):
-                    return False
-                if artist_counts.get(author, 0) >= max_songs_per_artist:
-                    return False
-        return True
+            a = items[i].get("author")
+            if a:
+                artist_counts[a] = artist_counts.get(a, 0) + 1
+                if a not in bucket_artist_set:
+                    bucket_artist_set.add(a)
+                    artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
 
     cur_idx = _find_start_index()
     if cur_idx is None:
         return
 
     if _accept_at_index(cur_idx):
-        remaining[cur_idx] = False
-        cid = cand_ids[cur_idx]
-        used_ids.add(cid)
-        if len(playlist_ids) < n:
-            playlist_ids.append(cid)
-        try:
-            v = np.asarray(items[cur_idx]["vector"], dtype=np.float32)
-        except Exception:
-            v = np.array(items[cur_idx]["vector"], dtype=np.float32)
-        selected_vectors[cid] = v
-        if cap_active:
-            a = items[cur_idx].get("author")
-            if a:
-                artist_counts[a] = artist_counts.get(a, 0) + 1
-                if a not in bucket_artist_set:
-                    bucket_artist_set.add(a)
-                    artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
+        _take_index(cur_idx)
     else:
         remaining[cur_idx] = False
 
@@ -138,40 +143,14 @@ def _walk_single_bucket(
         best_score = float("inf")
 
         for i in avail_idxs:
-            cid = cand_ids[i]
-            if cid in used_ids:
+            if cand_ids[i] in used_ids:
                 continue
 
-            if cap_active:
-                auth = items[i].get("author")
-                if auth and auth in bucket_artist_set:
-                    if INSTRUMENT_BUCKET_SKIPS:
-                        logger.debug(
-                            "Bucket %d: skip idx=%d bucket-artist-limit",
-                            bucket_index,
-                            i,
-                        )
-                    continue
-                if auth:
-                    if (
-                        artist_bucket_counts.get(auth, 0) >= 2
-                        and artist_counts.get(auth, 0) < max_songs_per_artist
-                    ):
-                        if INSTRUMENT_BUCKET_SKIPS:
-                            logger.debug(
-                                "Bucket %d: skip idx=%d bucket-count-limit",
-                                bucket_index,
-                                i,
-                            )
-                        continue
-                    if artist_counts.get(auth, 0) >= max_songs_per_artist:
-                        if INSTRUMENT_BUCKET_SKIPS:
-                            logger.debug(
-                                "Bucket %d: skip idx=%d artist-cap",
-                                bucket_index,
-                                i,
-                            )
-                        continue
+            skip_reason = _cap_skip_reason(i)
+            if skip_reason is not None:
+                if INSTRUMENT_BUCKET_SKIPS:
+                    logger.debug("Bucket %d: skip idx=%d %s", bucket_index, i, skip_reason)
+                continue
 
             try:
                 dist_prev = get_distance_fn(cand_vecs[i], cur_vec)
@@ -186,23 +165,7 @@ def _walk_single_bucket(
         if best_i is None:
             break
 
-        remaining[best_i] = False
-        cid = cand_ids[best_i]
-        used_ids.add(cid)
-        if len(playlist_ids) < n:
-            playlist_ids.append(cid)
-        try:
-            v = np.asarray(items[best_i]["vector"], dtype=np.float32)
-        except Exception:
-            v = np.array(items[best_i]["vector"], dtype=np.float32)
-        selected_vectors[cid] = v
-        if cap_active:
-            a = items[best_i].get("author")
-            if a:
-                artist_counts[a] = artist_counts.get(a, 0) + 1
-                if a not in bucket_artist_set:
-                    bucket_artist_set.add(a)
-                    artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
+        _take_index(best_i)
 
         if INSTRUMENT_BUCKET_SKIPS:
             logger.debug(

@@ -61,34 +61,15 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
 
 
 def _load_clap_index_from_db() -> bool:
-    from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
-    from .paged_ivf import load_index_auto
+    from .index_build_helpers import load_index_into_cache
 
-    try:
-        loaded = load_index_auto(
-            get_db(),
-            'clap_index',
-            CLAP_EMBEDDING_DIMENSION,
-            IVF_METRIC,
-            label='CLAP',
-        )
-        if loaded is None:
-            return False
-        loaded_index, id_map, reverse_id_map = loaded
-
-        _CLAP_CACHE['loaded'] = True
-
-        _CLAP_INDEX_CACHE['index'] = loaded_index
-        _CLAP_INDEX_CACHE['id_map'] = id_map
-        _CLAP_INDEX_CACHE['reverse_id_map'] = reverse_id_map
-        _CLAP_INDEX_CACHE['loaded'] = True
-
-        logger.info(f"CLAP index loaded from database with {len(id_map)} items.")
-        return True
-    except Exception:
-        logger.exception("Failed to load CLAP index from DB")
+    if not load_index_into_cache(
+        'clap_index', CLAP_EMBEDDING_DIMENSION, IVF_METRIC, 'CLAP', _CLAP_INDEX_CACHE
+    ):
         return False
+    _CLAP_CACHE['loaded'] = True
+    return True
 
 
 def build_and_store_clap_index(db_conn=None):

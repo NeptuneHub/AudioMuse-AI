@@ -563,16 +563,18 @@ def _tree_build_targets():
     return targets
 
 
-def _blob_name_for(server_key):
+def _server_scoped_blob(base_name, server_key):
     if not server_key or server_key == _DEFAULT_SERVER_KEY:
-        return _TREE_CACHE_BLOB_NAME
-    return f"{_TREE_CACHE_BLOB_NAME}__{server_key}"
+        return base_name
+    return f"{base_name}__{server_key}"
+
+
+def _blob_name_for(server_key):
+    return _server_scoped_blob(_TREE_CACHE_BLOB_NAME, server_key)
 
 
 def _skeleton_blob_name_for(server_key):
-    if not server_key or server_key == _DEFAULT_SERVER_KEY:
-        return _TREE_SKELETON_BLOB_NAME
-    return f"{_TREE_SKELETON_BLOB_NAME}__{server_key}"
+    return _server_scoped_blob(_TREE_SKELETON_BLOB_NAME, server_key)
 
 
 def _skeleton_tree(tree):

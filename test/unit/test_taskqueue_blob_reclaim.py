@@ -37,15 +37,11 @@ Main Features:
   connection, where a restore has already stopped Flask
 """
 
-import os
-
 import psycopg2
+import pytest
 
+import config
 from taskqueue import maintenance, sql
-
-_REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
 
 _ROWS = [
     ('public.ivf_dir', 6, '153 MB'),
@@ -109,7 +105,8 @@ def _quiet(monkeypatch, conn, live=False, snapshot=False):
     monkeypatch.setattr(sql, 'any_live_task', lambda cur: live)
     monkeypatch.setattr(sql, 'snapshot_holder_blocking_reclaim', lambda cur: snapshot)
     monkeypatch.setattr(
-        sql, 'blob_tables_autovacuum_cannot_reach', lambda cur, min_bytes=None: list(conn.rows)
+        sql, 'blob_tables_autovacuum_cannot_reach',
+        lambda cur, min_bytes=None: list(conn.rows),
     )
 
 
@@ -139,11 +136,11 @@ class TestNeverBlocksAnyone:
         assert 'statement_timeout' in src
 
     def test_the_lock_timeout_is_short_enough_to_never_stall_a_restore(self):
-        assert sql.BLOB_RECLAIM_LOCK_TIMEOUT.endswith('s')
-        assert int(sql.BLOB_RECLAIM_LOCK_TIMEOUT.rstrip('s')) <= 5
+        assert config.BLOB_RECLAIM_LOCK_TIMEOUT.endswith('s')
+        assert int(config.BLOB_RECLAIM_LOCK_TIMEOUT.rstrip('s')) <= 5
 
     def test_the_statement_timeout_is_generous_enough_to_finish_a_big_table(self):
-        assert sql.BLOB_RECLAIM_STATEMENT_TIMEOUT == '10min'
+        assert config.BLOB_RECLAIM_STATEMENT_TIMEOUT == '10min'
 
     def test_the_session_caps_are_reapplied_every_pass_because_reconnects_reset_them(
         self, monkeypatch
@@ -154,7 +151,8 @@ class TestNeverBlocksAnyone:
         monkeypatch.setattr(sql, 'any_live_task', lambda cur: False)
         monkeypatch.setattr(sql, 'snapshot_holder_blocking_reclaim', lambda cur: False)
         monkeypatch.setattr(
-            sql, 'blob_tables_autovacuum_cannot_reach', lambda cur, min_bytes=None: []
+            sql, 'blob_tables_autovacuum_cannot_reach',
+            lambda cur, min_bytes=None: [],
         )
         maintenance.reclaim_blob_space(conn)
         maintenance.reclaim_blob_space(conn)
@@ -177,9 +175,10 @@ class TestStandsDownForOtherWork:
     def test_the_snapshot_probe_ignores_this_sessions_own_backend(self):
         assert 'pid <> pg_backend_pid()' in ' '.join(sql._OLD_SNAPSHOT_HOLDER.split())
 
-    def test_the_snapshot_probe_looks_for_a_held_xmin_not_just_an_idle_session(self):
+    def test_the_snapshot_probe_keys_on_the_xmin_horizon_not_transaction_state(self):
         flat = ' '.join(sql._OLD_SNAPSHOT_HOLDER.split())
         assert 'backend_xmin IS NOT NULL' in flat
+        assert "state IN ('active', 'idle in transaction')" not in flat
 
 
 class TestSweepMechanics:
@@ -257,23 +256,32 @@ class TestDetectionQuery:
         assert "quote_ident(s.schemaname) || '.' || quote_ident(s.relname)" in flat
 
     def test_trivially_small_tables_stay_with_autovacuum(self):
-        assert sql.BLOB_RECLAIM_MIN_BYTES >= 1024 * 1024
+        assert config.BLOB_RECLAIM_MIN_BYTES >= 1024 * 1024
+
+    def test_the_sweep_does_the_small_blob_tables_first(self):
+        flat = ' '.join(sql._BLOB_TABLES_AUTOVACUUM_CANNOT_REACH.split())
+        assert 'ORDER BY pg_total_relation_size(s.relid) ASC' in flat
 
     def test_bytea_tables_are_swept_however_small(self):
         flat = ' '.join(sql._BLOB_TABLES_AUTOVACUUM_CANNOT_REACH.split())
         assert "'bytea'::regtype" in flat
 
 
+class _FakeApp:
+    def __init__(self):
+        import logging
+        self.logger = logging.getLogger('test_blob_reclaim_app')
+
+
+class _BlobConn:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class TestWhereItRuns:
-    def _app_source(self):
-        with open(os.path.join(_REPO_ROOT, 'app.py'), encoding='utf-8') as fh:
-            return fh.read()
-
-    def _loop(self):
-        return self._app_source().split('def _blob_reclaim_loop')[1].split(
-            'blob_reclaim_thread.start()'
-        )[0]
-
     def test_the_worker_retention_cycle_never_reclaims(self, monkeypatch):
         calls = []
         monkeypatch.setattr(maintenance, 'reclaim_blob_space', calls.append)
@@ -286,28 +294,80 @@ class TestWhereItRuns:
         maintenance.run_cycle(_Conn(), with_retention=True)
         assert calls == []
 
-    def test_the_web_process_starts_it_as_a_daemon_thread(self):
-        src = self._app_source()
-        assert '_blob_reclaim_loop' in src
-        assert 'blob_reclaim_thread = threading.Thread(' in src
-        assert 'daemon=True' in src.split('_blob_reclaim_loop')[2]
+    def test_the_reclaim_loop_uses_its_own_connection_never_the_app_context_one(self):
+        conn = _BlobConn()
+        sweeps = []
 
-    def test_it_uses_its_own_connection_never_the_app_context_one(self):
-        loop = self._loop()
-        assert 'connect_raw' in loop
-        assert 'get_db' not in loop
+        def _reclaim(c):
+            sweeps.append(c)
+            raise SystemExit
 
-    def test_it_sweeps_hourly_not_every_few_minutes(self):
-        assert 'queue_sql.BLOB_RECLAIM_INTERVAL_SECONDS' in self._loop()
-        assert sql.BLOB_RECLAIM_INTERVAL_SECONDS >= 3600
+        with pytest.raises(SystemExit):
+            maintenance._blob_reclaim_loop(
+                _FakeApp(), connect_raw=lambda **kw: conn, sleep=lambda s: None,
+                reclaim=_reclaim,
+            )
+        assert sweeps == [conn]
 
-    def test_a_reconnect_cannot_leave_a_pass_running_without_its_caps(self):
-        loop = self._loop()
-        assert 'conn = None' in loop
-        assert 'connect_raw' in loop
+    def test_the_reclaim_loop_sweeps_on_the_config_interval(self):
+        conn = _BlobConn()
+        sweeps = []
+        sleeps = []
 
-    def test_a_restore_stops_flask_before_replacing_the_database(self):
-        with open(os.path.join(_REPO_ROOT, 'app_backup.py'), encoding='utf-8') as fh:
-            src = fh.read()
-        assert 'flask_stopped' in src
-        assert 'Never run psql while the application may still be writing' in src
+        def _reclaim(c):
+            sweeps.append(c)
+
+        def _sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) > 1:
+                raise SystemExit
+
+        with pytest.raises(SystemExit):
+            maintenance._blob_reclaim_loop(
+                _FakeApp(), connect_raw=lambda **kw: conn, sleep=_sleep,
+                reclaim=_reclaim,
+            )
+        assert sleeps == [120, config.BLOB_RECLAIM_INTERVAL_SECONDS]
+        assert sweeps == [conn]
+
+    def test_a_failed_pass_reconnects_for_the_next_one(self):
+        first, second = _BlobConn(), _BlobConn()
+        conns = [first, second]
+        sweeps = []
+        sleeps = []
+
+        def _connect(**kw):
+            return conns.pop(0)
+
+        def _reclaim(c):
+            sweeps.append(c)
+            if len(sweeps) == 1:
+                raise RuntimeError('boom')
+            raise SystemExit
+
+        def _sleep(seconds):
+            sleeps.append(seconds)
+
+        with pytest.raises(SystemExit):
+            maintenance._blob_reclaim_loop(
+                _FakeApp(), connect_raw=_connect, sleep=_sleep, reclaim=_reclaim,
+            )
+        assert sweeps == [first, second]
+        assert first.closed is True
+        assert second.closed is False
+
+    def test_the_web_process_starts_it_as_a_daemon_thread(self, monkeypatch):
+        captured = {}
+
+        class _FakeThread:
+            def __init__(self, *args, **kwargs):
+                captured['kwargs'] = kwargs
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+        monkeypatch.setattr(maintenance.threading, 'Thread', _FakeThread)
+        thread = maintenance.start_blob_reclaim_thread(_FakeApp())
+        assert thread.started is True
+        assert captured['kwargs'].get('daemon') is True

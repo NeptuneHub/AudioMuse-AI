@@ -49,6 +49,45 @@ def _resolve_external_id(raw_id):
     return resolve_input_item_id(raw_id)
 
 
+def _decode_embedding_bytes(payload):
+    if payload.get('embedding'):
+        payload['embedding'] = np.frombuffer(payload['embedding'], dtype=np.float32).tolist()
+
+
+def _external_row_response(sql, label, decode=None):
+    # Local import to prevent circular dependency
+    from app_helper import get_db
+
+    raw_id = request.args.get('id')
+    if not raw_id:
+        return jsonify({"error": "Missing 'id' parameter"}), 400
+    try:
+        try:
+            item_id = _resolve_external_id(raw_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        row = None
+        if item_id:
+            db = get_db()
+            with db.cursor(cursor_factory=DictCursor) as cur:
+                cur.execute(sql, (item_id,))
+                row = cur.fetchone()
+        if row is None:
+            return jsonify({"error": f"{label} not found for id: {raw_id}"}), 404
+        # Convert DictRow to a standard dictionary for consistent JSON output;
+        # echo the id the caller asked with so their key keeps matching.
+        from app_server_context import provider_echo_id
+        payload = dict(row)
+        payload['item_id'] = provider_echo_id(raw_id)
+        if decode is not None:
+            decode(payload)
+        return jsonify(payload)
+    except Exception as e:
+        logger.exception(f"Error fetching {label.lower()} for id {raw_id}")
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
+
+
 @external_bp.route('/get_score', methods=['GET'])
 def get_score_endpoint():
     """
@@ -77,38 +116,7 @@ def get_score_endpoint():
       500:
         description: Internal server error.
     """
-    # Local import to prevent circular dependency
-    from app_helper import get_db
-
-    raw_id = request.args.get('id')
-    if not raw_id:
-        return jsonify({"error": "Missing 'id' parameter"}), 400
-
-    try:
-        try:
-            item_id = _resolve_external_id(raw_id)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        if not item_id:
-            return jsonify({"error": f"Score not found for id: {raw_id}"}), 404
-        db = get_db()
-        with db.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT * FROM score WHERE item_id = %s", (item_id,))
-            score_data = cur.fetchone()
-
-        if score_data:
-            # Convert DictRow to a standard dictionary for consistent JSON output;
-            # echo the id the caller asked with so their key keeps matching.
-            from app_server_context import provider_echo_id
-            payload = dict(score_data)
-            payload['item_id'] = provider_echo_id(raw_id)
-            return jsonify(payload)
-        else:
-            return jsonify({"error": f"Score not found for id: {raw_id}"}), 404
-    except Exception as e:
-        logger.exception(f"Error fetching score for id {raw_id}")
-        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
-        return jsonify(err), status
+    return _external_row_response("SELECT * FROM score WHERE item_id = %s", 'Score')
 
 
 @external_bp.route('/get_embedding', methods=['GET'])
@@ -135,40 +143,9 @@ def get_embedding_endpoint():
       500:
         description: Internal server error.
     """
-    # Local import to prevent circular dependency
-    from app_helper import get_db
-
-    raw_id = request.args.get('id')
-    if not raw_id:
-        return jsonify({"error": "Missing 'id' parameter"}), 400
-
-    try:
-        try:
-            item_id = _resolve_external_id(raw_id)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        if not item_id:
-            return jsonify({"error": f"Embedding not found for id: {raw_id}"}), 404
-        db = get_db()
-        with db.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
-            embedding_data = cur.fetchone()
-
-        if embedding_data:
-            from app_server_context import provider_echo_id
-            embedding_dict = dict(embedding_data)
-            embedding_dict['item_id'] = provider_echo_id(raw_id)
-            if embedding_dict.get('embedding'):
-                # The embedding is stored as BYTEA, convert it back to a list of floats
-                embedding_vector = np.frombuffer(embedding_dict['embedding'], dtype=np.float32)
-                embedding_dict['embedding'] = embedding_vector.tolist()
-            return jsonify(embedding_dict)
-        else:
-            return jsonify({"error": f"Embedding not found for id: {raw_id}"}), 404
-    except Exception as e:
-        logger.exception(f"Error fetching embedding for id {raw_id}")
-        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
-        return jsonify(err), status
+    return _external_row_response(
+        "SELECT * FROM embedding WHERE item_id = %s", 'Embedding', _decode_embedding_bytes
+    )
 
 
 @external_bp.route('/search', methods=['GET'])

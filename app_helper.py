@@ -47,7 +47,6 @@ from database import (  # noqa: F401
     load_map_projection,
     get_task_info_from_db,
     get_task_statuses,
-    main_task_start_lock,
     get_tracks_by_ids,
     save_track_analysis_and_embedding,
     # Used internally by the build_and_store_* projection orchestration below.
@@ -59,8 +58,6 @@ from config import (  # noqa: F401
     OTHER_FEATURE_LABELS,
     TASK_STATUS_NEW,
     TASK_STATUS_RUNNING,
-    TASK_STATUS_PENDING,
-    TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAIL,
@@ -198,11 +195,11 @@ def sanitize_task_details(details, state, task_type=None):
     return details
 
 
-def top_stratified_genre(mood_vector):
-    if not mood_vector or not isinstance(mood_vector, str):
+def _top_scored_label(packed, allowed):
+    if not packed or not isinstance(packed, str):
         return None
     scores = {}
-    for part in mood_vector.split(','):
+    for part in packed.split(','):
         label, _, value = part.partition(':')
         label = label.strip()
         if not label:
@@ -211,33 +208,18 @@ def top_stratified_genre(mood_vector):
             scores[label] = float(value)
         except ValueError:
             continue
-    candidates = [g for g in STRATIFIED_GENRES if g in scores]
+    candidates = [name for name in allowed if name in scores]
     if not candidates:
         return None
     return max(candidates, key=scores.get)
+
+
+def top_stratified_genre(mood_vector):
+    return _top_scored_label(mood_vector, STRATIFIED_GENRES)
 
 
 def top_clap_mood(other_features):
-    # Dominant CLAP mood label from the stored other_features (danceable /
-    # aggressive / happy / party / relaxed / sad), mirroring how top genre is
-    # derived from mood_vector. Returns None when no mood is present so callers
-    # can skip the mood entirely instead of inventing one.
-    if not other_features or not isinstance(other_features, str):
-        return None
-    scores = {}
-    for part in other_features.split(','):
-        label, _, value = part.partition(':')
-        label = label.strip()
-        if not label:
-            continue
-        try:
-            scores[label] = float(value)
-        except ValueError:
-            continue
-    candidates = [m for m in OTHER_FEATURE_LABELS if m in scores]
-    if not candidates:
-        return None
-    return max(candidates, key=scores.get)
+    return _top_scored_label(other_features, OTHER_FEATURE_LABELS)
 
 
 def attach_song_features(rows, id_key='item_id'):

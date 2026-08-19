@@ -28,6 +28,7 @@ import threading
 from urllib.parse import urlparse
 
 from windows import paths
+from native_common import pg_data_dir
 
 logger = logging.getLogger("audiomuse.db_backend")
 
@@ -145,19 +146,10 @@ def _harden_existing(data_dir, password, uri):
         logger.exception("Could not upgrade legacy PostgreSQL auth; leaving as-is")
 
 
-def _has_cluster_data(data_dir):
-    return os.path.exists(os.path.join(data_dir, "global", "pg_control"))
-
-
 def _clear_stale_data_dir(data_dir):
     if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
         return
-    if _has_cluster_data(data_dir):
-        raise RuntimeError(
-            f"Refusing to wipe {data_dir}: it contains an existing PostgreSQL "
-            "cluster (global/pg_control present). Back it up or remove it "
-            "manually if you really want a fresh start."
-        )
+    pg_data_dir.refuse_to_wipe_cluster(data_dir)
     import shutil
 
     logger.warning("Clearing incomplete PostgreSQL data dir %s before init", data_dir)

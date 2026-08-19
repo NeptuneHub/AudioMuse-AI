@@ -11,45 +11,42 @@
 Boots and monitors the full local stack in dependency order: embedded
 PostgreSQL (via ``windows.db_backend``), the Flask/waitress server and the
 queue worker/maintenance/control-listener children (each re-spawned from
-``windows.launcher`` with a ``--role=``). It restarts crashed children, serves
-the loopback TCP control server, and tears everything down on shutdown. The
-Linux/macOS supervisors are the platform-specific siblings.
+``windows.launcher`` with a ``--role=``). Logging, the boot thread, control
+dispatch, the pid file and the Flask readiness wait come from
+``native_common.supervisor_common``; what stays here is what Windows genuinely
+does differently: console process groups instead of POSIX process groups, a
+restart driven by the log pump rather than the health loop, a loopback TCP
+control server, and an embedded database that reports a connection mapping
+instead of a URL.
 
 Main Features:
 * Ordered boot, health polling and automatic restart of Flask + queue children.
 * Runs the TCP control server and writes newest-first rotating logs.
 """
 
-import json
-import logging
 import os
 import signal
 import subprocess
 import sys
 import threading
-import time
-import urllib.error
-import urllib.request
-
 
 import service_roles
 from windows import db_backend
 from windows import env as env_builder
 from windows import paths
-from macos.reverse_log import NewestFirstFileHandler
+from native_common.supervisor_common import SupervisorCommonMixin
 from native_common.supervisor_health import HealthLoopMixin
 from windows.control_server import ControlServer
-
-logger = logging.getLogger("audiomuse.supervisor")
-
-FLASK_URL = "http://127.0.0.1:8000/"
 
 ROLE_OF = service_roles.ROLE_OF
 
 BOOT_ORDER = service_roles.BOOT_ORDER
 
 
-class ProcessSupervisor(HealthLoopMixin):
+class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
+    paths = paths
+    join_skips_main_thread = True
+
     def __init__(self):
         self._lock = threading.RLock()
         self._children = {}
@@ -67,37 +64,6 @@ class ProcessSupervisor(HealthLoopMixin):
         self._stop_requested = threading.Event()
         self._boot_thread = None
         self._log = self._setup_logging()
-
-    def _setup_logging(self):
-        log = logging.getLogger("audiomuse.app")
-        log.setLevel(logging.INFO)
-        if not log.handlers:
-            handler = NewestFirstFileHandler(paths.log_file())
-            handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-            log.addHandler(handler)
-        log.propagate = False
-        return log
-
-    def is_running(self):
-        return self._state == "running"
-
-    def state(self):
-        return self._state
-
-    def start_in_background(self, on_ready=None, on_error=None):
-        def _boot():
-            try:
-                self.start_all()
-            except Exception as exc:
-                if on_error is not None:
-                    on_error(exc)
-                return
-            if on_ready is not None and self.is_running():
-                on_ready()
-
-        self._boot_thread = threading.Thread(target=_boot, name="boot", daemon=True)
-        self._boot_thread.start()
-        return self._boot_thread
 
     def start_all(self):
         with self._lock:
@@ -120,7 +86,7 @@ class ProcessSupervisor(HealthLoopMixin):
                     return
                 self.start_child(name)
                 if name == service_roles.SERVICE_FLASK:
-                    self._wait_http(FLASK_URL, timeout=180)
+                    self._wait_http(self.flask_url, timeout=180)
             self._write_pidfile()
             with self._lock:
                 if self._stop_requested.is_set():
@@ -147,22 +113,10 @@ class ProcessSupervisor(HealthLoopMixin):
             self._stop_child(name)
         db_backend.stop_embedded()
         self._reap_orphans()
-        self._remove_pidfile()
+        self._clear_pidfile()
         with self._lock:
             self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
-
-    def _join_workers(self):
-        current = threading.current_thread()
-        main = threading.main_thread()
-        for thread in (self._boot_thread, self._health_thread):
-            if (
-                thread is not None
-                and thread is not current
-                and thread is not main
-                and thread.is_alive()
-            ):
-                thread.join(timeout=30)
 
     def start_child(self, name):
         role = ROLE_OF.get(name)
@@ -286,40 +240,6 @@ class ProcessSupervisor(HealthLoopMixin):
             except Exception:
                 self._log.exception("Failed to restart %s", name)
 
-    def dispatch_control(self, action, services):
-        if action not in ("restart", "stop", "start"):
-            return False
-        return self._apply_control(action, list(services))
-
-    def _apply_control(self, action, services):
-        operation = {
-            "stop": self.stop_child,
-            "start": self.start_child,
-            "restart": self.restart_child,
-        }[action]
-        results = []
-        for svc in services:
-            try:
-                results.append(bool(operation(svc)))
-            except Exception:
-                self._log.exception("Control %s failed for %s", action, svc)
-                results.append(False)
-        return all(results) if results else False
-
-    def _wait_http(self, url, timeout=180):
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._stop_requested.is_set():
-                return
-            try:
-                urllib.request.urlopen(url, timeout=2)
-                return
-            except urllib.error.HTTPError:
-                return
-            except Exception:
-                time.sleep(1)
-        raise RuntimeError(f"Timed out waiting for {url}")
-
     def _ensure_postgres_healthy(self):
         if not self._db_conn:
             return
@@ -357,8 +277,7 @@ class ProcessSupervisor(HealthLoopMixin):
                 cmd = " ".join(proc.info.get("cmdline") or []).lower()
                 if not cmd:
                     continue
-                stale_pg = ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd
-                if stale_pg:
+                if ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd:
                     self._log.info(
                         "Reaping orphan %s (pid=%d) referencing our data dir",
                         proc.info.get("name"),
@@ -369,15 +288,3 @@ class ProcessSupervisor(HealthLoopMixin):
                 continue
             except Exception:
                 continue
-
-    def _write_pidfile(self):
-        with self._lock:
-            pids = {name: proc.pid for name, proc in self._children.items() if proc.poll() is None}
-        with open(paths.pid_file(), "w") as fh:
-            json.dump(pids, fh)
-
-    def _remove_pidfile(self):
-        try:
-            os.unlink(paths.pid_file())
-        except OSError:
-            pass

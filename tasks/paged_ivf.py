@@ -1531,10 +1531,13 @@ def build_and_store_paged_ivf(
 
 
 def has_paged_ivf(db_conn, index_name: str) -> bool:
-    from .index_build_helpers import segmented_blob_length
+    from .index_build_helpers import segmented_blob_complete, segmented_blob_length
 
     try:
-        size = segmented_blob_length(db_conn, IVF_DIR_TABLE, f"{index_name}__ivf_dir")
+        name = f"{index_name}__ivf_dir"
+        if not segmented_blob_complete(db_conn, IVF_DIR_TABLE, name):
+            return False
+        size = segmented_blob_length(db_conn, IVF_DIR_TABLE, name)
         return size is not None and size >= _HEADER_SIZE
     except Exception:
         return False

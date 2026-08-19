@@ -36,13 +36,18 @@ Main Features:
 * reclaim_blob_space VACUUMs what autovacuum cannot reach, because its threshold
   counts ROWS and a table of a few huge blobs never gets near it. Plain VACUUM
   only, so readers and writers are never blocked; it stands down while a task is
-  live or another session holds an old snapshot (a backup's pg_dump), and a
-  lock_timeout means it never queues behind anyone. run_cycle does NOT call it -
-  the web process schedules it, where a restore has already stopped Flask
+  live or another session holds an old transaction (a backup's pg_dump), and a
+  lock_timeout means it never queues behind anyone. run_cycle does NOT call it
+* start_blob_reclaim_thread runs that hourly sweep in the web process as a
+  daemon thread on its own connection; a restore stops Flask before psql
+  replaces the database, so the thread is already dead before the restore takes
+  its ACCESS EXCLUSIVE locks, and a failed pass reconnects for the next one
 """
 
 import json
 import logging
+import os
+import threading
 import time
 
 import service_roles
@@ -290,10 +295,10 @@ def reclaim_blob_space(conn):
                 return []
             if sql.snapshot_holder_blocking_reclaim(cur):
                 logger.info(
-                    "Blob reclaim skipped: another session has held a snapshot for over "
-                    "%ss (a backup's pg_dump looks exactly like this). VACUUM could not "
-                    "remove anything newer than that snapshot anyway.",
-                    sql.BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS,
+                    "Blob reclaim skipped: another session has held a snapshot for "
+                    "over %ss (a backup's pg_dump looks exactly like this). VACUUM could "
+                    "not remove anything newer than that snapshot anyway.",
+                    config.BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS,
                 )
                 return []
             targets = sql.blob_tables_autovacuum_cannot_reach(cur)
@@ -341,6 +346,44 @@ def reclaim_blob_space(conn):
         except Exception:
             logger.exception("Restoring the connection autocommit mode failed")
     return reclaimed
+
+
+def _blob_reclaim_loop(application, connect_raw, sleep, reclaim):
+    try:
+        sleep(120)
+        conn = None
+        while True:
+            try:
+                if conn is None or conn.closed:
+                    conn = connect_raw(
+                        application_name=f"audiomuse-blob-reclaim-{os.getpid()}"
+                    )
+                reclaim(conn)
+            except Exception:
+                application.logger.exception('blob space reclaim cycle failed')
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        application.logger.exception(
+                            'closing the blob reclaim connection failed'
+                        )
+                conn = None
+            sleep(config.BLOB_RECLAIM_INTERVAL_SECONDS)
+    except Exception:
+        application.logger.exception('blob space reclaim main loop error')
+
+
+def start_blob_reclaim_thread(application):
+    def _loop():
+        from time import sleep
+        from database import connect_raw
+
+        _blob_reclaim_loop(application, connect_raw, sleep, reclaim_blob_space)
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread
 
 
 def run_cycle(conn, with_retention=True):

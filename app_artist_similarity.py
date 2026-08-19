@@ -32,6 +32,19 @@ logger = logging.getLogger(__name__)
 artist_similarity_bp = Blueprint('artist_similarity_bp', __name__, template_folder='templates')
 
 
+def artist_search_from_request():
+    query = request.args.get('query', '', type=str)
+    if not query or len(query) < 2:
+        return jsonify([])
+    start = request.args.get('start', 0, type=int)
+    end = request.args.get('end', None, type=int)
+    try:
+        return artist_search_response(query, start, end, 100)
+    except Exception:
+        logger.exception("Error during artist search")
+        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+
+
 def artist_search_response(query, start, end, cap):
     if start < 0:
         start = 0
@@ -103,19 +116,7 @@ def search_artists_endpoint():
                   track_count:
                     type: integer
     """
-    query = request.args.get('query', '', type=str)
-
-    if not query or len(query) < 2:
-        return jsonify([])
-
-    start = request.args.get('start', 0, type=int)
-    end = request.args.get('end', None, type=int)
-
-    try:
-        return artist_search_response(query, start, end, 100)
-    except Exception:
-        logger.exception("Error during artist search")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+    return artist_search_from_request()
 
 
 @artist_similarity_bp.route('/api/similar_artists', methods=['GET'])

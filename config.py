@@ -671,6 +671,16 @@ QUEUE_CONTROL_ACTION_WINDOW_SECONDS = (
 )
 # Errors kept on a failed root row. The user needs a sample, not a transcript.
 QUEUE_MAX_ERRORS_KEPT = max(1, int(os.getenv('QUEUE_MAX_ERRORS_KEPT', '5')))
+# The web process's hourly blob-table space sweep (see taskqueue.maintenance).
+# Autovacuum's threshold counts ROWS, so a table of a few huge blobs never
+# qualifies; this sweep VACUUMs what autovacuum cannot reach. Plain VACUUM only,
+# so readers and writers are never blocked. MIN_BYTES is the floor below which a
+# non-bytea table is left to autovacuum; a table is swept however big it is.
+BLOB_RECLAIM_MIN_BYTES = int(os.getenv('BLOB_RECLAIM_MIN_BYTES', str(1024 * 1024)))
+BLOB_RECLAIM_INTERVAL_SECONDS = float(os.getenv('BLOB_RECLAIM_INTERVAL_SECONDS', '3600'))
+BLOB_RECLAIM_LOCK_TIMEOUT = os.getenv('BLOB_RECLAIM_LOCK_TIMEOUT', '2s')
+BLOB_RECLAIM_STATEMENT_TIMEOUT = os.getenv('BLOB_RECLAIM_STATEMENT_TIMEOUT', '10min')
+BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS = float(os.getenv('BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS', '30'))
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")

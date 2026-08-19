@@ -105,6 +105,18 @@ PARENT_INDEX_SQL = """
       ON task_status (parent_task_id) WHERE parent_task_id IS NOT NULL
 """.format(PARENT_INDEX_NAME)
 
+LIVE_INDEX_PREFIX = 'idx_task_status_live'
+
+LIVE_INDEX_NAME = "{}_{:x}".format(
+    LIVE_INDEX_PREFIX,
+    zlib.crc32(','.join(LIVE_STATUSES).encode()),
+)
+
+_LIVE_INDEX = """
+    CREATE INDEX IF NOT EXISTS {name}
+      ON task_status (status) WHERE status IN ({live})
+""".format(name=LIVE_INDEX_NAME, live=_LIVE_STATUS_SQL)
+
 MAIN_TASK_TYPES = (
     'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
     'sonic_fingerprint',
@@ -300,6 +312,9 @@ def ensure_schema(cur):
     if _index_missing(cur, SWEEP_INDEX_NAME):
         cur.execute(_ONE_LIVE_SWEEP_INDEX)
         cur.execute(_DROP_STALE_INDEXES, (SWEEP_INDEX_PREFIX + '%', SWEEP_INDEX_NAME))
+    if _index_missing(cur, LIVE_INDEX_NAME):
+        cur.execute(_LIVE_INDEX)
+        cur.execute(_DROP_STALE_INDEXES, (LIVE_INDEX_PREFIX + '%', LIVE_INDEX_NAME))
     return first_time
 
 
@@ -468,18 +483,13 @@ def release_maintenance_lock(cur):
     )
 
 
-BLOB_RECLAIM_MIN_BYTES = 1024 * 1024
-BLOB_RECLAIM_INTERVAL_SECONDS = 3600
-BLOB_RECLAIM_LOCK_TIMEOUT = '2s'
-BLOB_RECLAIM_STATEMENT_TIMEOUT = '10min'
-BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS = 30
-
-
 def begin_reclaim_session(cur):
-    cur.execute("SELECT set_config('lock_timeout', %s, false)", (BLOB_RECLAIM_LOCK_TIMEOUT,))
+    cur.execute(
+        "SELECT set_config('lock_timeout', %s, false)", (config.BLOB_RECLAIM_LOCK_TIMEOUT,)
+    )
     cur.execute(
         "SELECT set_config('statement_timeout', %s, false)",
-        (BLOB_RECLAIM_STATEMENT_TIMEOUT,),
+        (config.BLOB_RECLAIM_STATEMENT_TIMEOUT,),
     )
 
 
@@ -503,7 +513,9 @@ _OLD_SNAPSHOT_HOLDER = """
 
 def snapshot_holder_blocking_reclaim(cur, grace_seconds=None):
     grace = (
-        BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS if grace_seconds is None else float(grace_seconds)
+        config.BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS
+        if grace_seconds is None
+        else float(grace_seconds)
     )
     cur.execute(_OLD_SNAPSHOT_HOLDER, (grace,))
     return cur.fetchone() is not None
@@ -526,12 +538,12 @@ _BLOB_TABLES_AUTOVACUUM_CANNOT_REACH = """
           )
           OR pg_total_relation_size(s.relid) >= %s
       )
-    ORDER BY pg_total_relation_size(s.relid) DESC
+    ORDER BY pg_total_relation_size(s.relid) ASC
 """
 
 
 def blob_tables_autovacuum_cannot_reach(cur, min_bytes=None):
-    floor_bytes = BLOB_RECLAIM_MIN_BYTES if min_bytes is None else int(min_bytes)
+    floor_bytes = config.BLOB_RECLAIM_MIN_BYTES if min_bytes is None else int(min_bytes)
     cur.execute(_BLOB_TABLES_AUTOVACUUM_CANNOT_REACH, (floor_bytes,))
     return [
         (quoted_relname, int(dead), str(total))

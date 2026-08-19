@@ -1063,32 +1063,26 @@ def _seed_identity(seed: Dict) -> tuple:
 _DEDUPE_LIST_KEYS = ('genres', 'voices', 'moods', 'exclude_artists', 'exclude_genres')
 
 
-def _dedupe_strings(values) -> tuple:
+def _dedupe_by_key(values, wanted_type, identity) -> tuple:
     out: List = []
     seen: set = set()
-    for v in values or []:
-        if not isinstance(v, str):
+    for value in values or []:
+        if not isinstance(value, wanted_type):
             continue
-        key = v.strip().lower()
+        key = identity(value)
         if not key or key in seen:
             continue
         seen.add(key)
-        out.append(v)
+        out.append(value)
     return out, len(out) != len(values or [])
+
+
+def _dedupe_strings(values) -> tuple:
+    return _dedupe_by_key(values, str, lambda v: v.strip().lower())
 
 
 def _dedupe_seed_list(values) -> tuple:
-    out: List = []
-    seen: set = set()
-    for s in values or []:
-        if not isinstance(s, dict):
-            continue
-        key = _seed_identity(s)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(s)
-    return out, len(out) != len(values or [])
+    return _dedupe_by_key(values, dict, _seed_identity)
 
 
 def _dedupe_call_lists(

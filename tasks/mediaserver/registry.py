@@ -41,10 +41,6 @@ from sanitization import sanitize_string_for_db, sanitize_string_for_db_loud
 
 logger = logging.getLogger(__name__)
 
-_COLUMNS = (
-    "server_id", "name", "server_type", "creds",
-    "music_libraries", "is_default",
-)
 _DEFAULT_CACHE_TTL = 10.0
 _default_cache = {'expires': 0.0, 'row': None, 'secondary_expires': 0.0, 'secondary': None}
 _default_cache_lock = threading.Lock()
