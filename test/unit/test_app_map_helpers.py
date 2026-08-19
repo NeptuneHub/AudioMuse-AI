@@ -17,11 +17,17 @@ Main Features:
 * _sample_items samples a deterministic fraction, returning a fresh list
 * _translated_bucket rewrites canonical ids to a server's provider ids, drops
   fp_/unmapped rows, and fails closed on a registry error (never leaks fp_)
+* build_map_cache reads the catalogue through a plain client-side cursor and
+  keeps a vector only for rows the stored projection does not already cover
 """
 
 import gzip
 import json
+from unittest.mock import MagicMock
 
+import numpy as np
+
+import app_map
 from app_map import (
     _pick_top_mood,
     _round_coord,
@@ -125,3 +131,70 @@ class TestTranslatedBucket:
 
     def test_empty_entry_returns_none(self):
         assert _translated_bucket({}, None) is None
+
+
+class TestBuildMapCacheStreaming:
+    def _run(self, monkeypatch, rows, id_map, proj):
+        cur = MagicMock()
+        cur.__enter__ = MagicMock(return_value=cur)
+        cur.__exit__ = MagicMock(return_value=False)
+        cur.fetchall = MagicMock(return_value=list(rows))
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+
+        monkeypatch.setattr(app_map, 'get_db', lambda: conn)
+        monkeypatch.setattr(app_map, 'load_map_projection', lambda *a, **k: (id_map, proj))
+        monkeypatch.setattr(app_map, '_warm_server_buckets', lambda: None)
+        monkeypatch.setattr(app_map, 'MAP_JSON_CACHE', {})
+        app_map.build_map_cache()
+        return conn, cur
+
+    def test_catalogue_scan_uses_a_plain_client_side_cursor(self, monkeypatch):
+        emb = np.array([0.1, 0.2], dtype=np.float32).tobytes()
+        conn, cur = self._run(
+            monkeypatch,
+            [('a', 'T', 'A', 'happy:1', emb)],
+            ['a'],
+            np.array([[1.0, 2.0]], dtype=np.float32),
+        )
+        assert conn.cursor.call_args.kwargs.get('name') is None
+        cur.fetchall.assert_called_once()
+
+    def test_row_already_in_the_projection_never_parses_its_embedding(self, monkeypatch):
+        self._run(
+            monkeypatch,
+            [('a', 'Title', 'Artist', 'happy:1', b'not-a-float32-buffer')],
+            ['a'],
+            np.array([[1.0, 2.0]], dtype=np.float32),
+        )
+        payload = _items_from_bucket(app_map.MAP_JSON_CACHE['100'])
+        assert [it['item_id'] for it in payload['items']] == ['a']
+        assert payload['items'][0]['embedding_2d'] == [1.0, 2.0]
+
+    def test_only_rows_missing_from_the_projection_reach_the_projector(self, monkeypatch):
+        emb = np.array([0.1, 0.2], dtype=np.float32).tobytes()
+        seen = {}
+
+        def fake_project(mat):
+            seen['rows'] = mat.shape[0]
+            return [(9.0, 9.0)] * mat.shape[0]
+
+        monkeypatch.setattr(app_map, '_project_with_umap', None)
+        monkeypatch.setattr(app_map, '_project_to_2d', fake_project)
+        self._run(
+            monkeypatch,
+            [
+                ('a', 'T', 'A', 'happy:1', emb),
+                ('b', 'T', 'A', 'happy:1', emb),
+            ],
+            ['a'],
+            np.array([[1.0, 2.0]], dtype=np.float32),
+        )
+        assert seen['rows'] == 1
+        payload = _items_from_bucket(app_map.MAP_JSON_CACHE['100'])
+        coords = {it['item_id']: it['embedding_2d'] for it in payload['items']}
+        assert coords == {'a': [1.0, 2.0], 'b': [9.0, 9.0]}
+
+    def test_empty_catalogue_leaves_an_empty_cache(self, monkeypatch):
+        self._run(monkeypatch, [], [], np.zeros((0, 2), dtype=np.float32))
+        assert app_map.MAP_JSON_CACHE == {}

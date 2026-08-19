@@ -24,6 +24,10 @@ Main Features:
 * insert_job / claim / finish_child / requeue_or_fail move a row through its life
 * hold / try_hold / release are the advisory-lock liveness primitives
 * reap_children deletes finished children; notify_* publish to workers/Flask
+* blob_tables_autovacuum_cannot_reach / vacuum_table sweep the tables whose dead
+  rows autovacuum will not collect, because its threshold counts ROWS and these
+  hold a few enormous TOASTed blobs; begin_reclaim_session caps that sweep with
+  a lock_timeout so it can never queue behind a reader, writer or restore
 """
 
 import hashlib
@@ -462,6 +466,81 @@ def release_maintenance_lock(cur):
     cur.execute(
         "SELECT pg_advisory_unlock(%s, %s)", (MAINTENANCE_LOCK_CLASS, MAINTENANCE_LOCK_KEY)
     )
+
+
+BLOB_RECLAIM_MIN_BYTES = 1024 * 1024
+BLOB_RECLAIM_INTERVAL_SECONDS = 3600
+BLOB_RECLAIM_LOCK_TIMEOUT = '2s'
+BLOB_RECLAIM_STATEMENT_TIMEOUT = '10min'
+BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS = 30
+
+
+def begin_reclaim_session(cur):
+    cur.execute("SELECT set_config('lock_timeout', %s, false)", (BLOB_RECLAIM_LOCK_TIMEOUT,))
+    cur.execute(
+        "SELECT set_config('statement_timeout', %s, false)",
+        (BLOB_RECLAIM_STATEMENT_TIMEOUT,),
+    )
+
+
+_ANY_LIVE_TASK = f"SELECT 1 FROM task_status WHERE status IN ({_LIVE_IN_LIST}) LIMIT 1"
+
+
+def any_live_task(cur):
+    cur.execute(_ANY_LIVE_TASK)
+    return cur.fetchone() is not None
+
+
+_OLD_SNAPSHOT_HOLDER = """
+    SELECT 1 FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND pid <> pg_backend_pid()
+      AND backend_xmin IS NOT NULL
+      AND xact_start < now() - make_interval(secs => %s)
+    LIMIT 1
+"""
+
+
+def snapshot_holder_blocking_reclaim(cur, grace_seconds=None):
+    grace = (
+        BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS if grace_seconds is None else float(grace_seconds)
+    )
+    cur.execute(_OLD_SNAPSHOT_HOLDER, (grace,))
+    return cur.fetchone() is not None
+
+
+_BLOB_TABLES_AUTOVACUUM_CANNOT_REACH = """
+    SELECT quote_ident(s.schemaname) || '.' || quote_ident(s.relname), s.n_dead_tup,
+           pg_size_pretty(pg_total_relation_size(s.relid))
+    FROM pg_stat_user_tables AS s
+    WHERE s.n_dead_tup > 0
+      AND s.n_dead_tup < current_setting('autovacuum_vacuum_threshold')::numeric
+                         + current_setting('autovacuum_vacuum_scale_factor')::numeric
+                           * greatest(s.n_live_tup, 0)
+      AND (
+          EXISTS (
+              SELECT 1 FROM pg_attribute AS a
+              WHERE a.attrelid = s.relid
+                AND a.attnum > 0 AND NOT a.attisdropped
+                AND a.atttypid = 'bytea'::regtype
+          )
+          OR pg_total_relation_size(s.relid) >= %s
+      )
+    ORDER BY pg_total_relation_size(s.relid) DESC
+"""
+
+
+def blob_tables_autovacuum_cannot_reach(cur, min_bytes=None):
+    floor_bytes = BLOB_RECLAIM_MIN_BYTES if min_bytes is None else int(min_bytes)
+    cur.execute(_BLOB_TABLES_AUTOVACUUM_CANNOT_REACH, (floor_bytes,))
+    return [
+        (quoted_relname, int(dead), str(total))
+        for quoted_relname, dead, total in (cur.fetchall() or ())
+    ]
+
+
+def vacuum_table(cur, quoted_relname):
+    cur.execute('VACUUM ' + quoted_relname)
 
 
 _RUNNING_TASKS = f"""

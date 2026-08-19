@@ -33,6 +33,12 @@ Main Features:
   that stopped, skipping any protected migration handshake task
 * run_cycle elects one maintenance winner per pass and runs reclaim plus the
   slower retention sweeps only when they are due
+* reclaim_blob_space VACUUMs what autovacuum cannot reach, because its threshold
+  counts ROWS and a table of a few huge blobs never gets near it. Plain VACUUM
+  only, so readers and writers are never blocked; it stands down while a task is
+  live or another session holds an old snapshot (a backup's pg_dump), and a
+  lock_timeout means it never queues behind anyone. run_cycle does NOT call it -
+  the web process schedules it, where a restore has already stopped Flask
 """
 
 import json
@@ -261,6 +267,80 @@ def clear_terminal_shared_payloads(conn):
             "Cleared the shared payload left on %d terminal task row(s).", cleared
         )
     return cleared
+
+
+def reclaim_blob_space(conn):
+    import psycopg2
+
+    previous = conn.autocommit
+    try:
+        conn.autocommit = True
+    except Exception:
+        logger.exception(
+            "Could not put the connection in autocommit; skipping this blob reclaim "
+            "(VACUUM cannot run inside a transaction block)"
+        )
+        return []
+    reclaimed = []
+    try:
+        with conn.cursor() as cur:
+            sql.begin_reclaim_session(cur)
+            if sql.any_live_task(cur):
+                logger.info("Blob reclaim skipped: a task is live")
+                return []
+            if sql.snapshot_holder_blocking_reclaim(cur):
+                logger.info(
+                    "Blob reclaim skipped: another session has held a snapshot for over "
+                    "%ss (a backup's pg_dump looks exactly like this). VACUUM could not "
+                    "remove anything newer than that snapshot anyway.",
+                    sql.BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS,
+                )
+                return []
+            targets = sql.blob_tables_autovacuum_cannot_reach(cur)
+            if not targets:
+                logger.info("Blob reclaim passed: found no tables with reclaimable dead rows.")
+                return []
+        for quoted_relname, dead, total in targets:
+            try:
+                with conn.cursor() as cur:
+                    sql.vacuum_table(cur, quoted_relname)
+            except (psycopg2.errors.LockNotAvailable, psycopg2.errors.QueryCanceled):
+                logger.info(
+                    "Blob reclaim left %s alone: it was busy, and this sweep never queues "
+                    "behind another lock. The next pass picks it up.",
+                    quoted_relname,
+                )
+                continue
+            except Exception:
+                logger.exception(
+                    "VACUUM %s failed; sweeping the remaining tables anyway", quoted_relname
+                )
+                continue
+            reclaimed.append(quoted_relname)
+            logger.info(
+                "VACUUM %s reclaimed %d dead row(s) in a %s table. Autovacuum fires on ROW "
+                "count, so a table of a few huge blobs needs ~50 rebuilds to qualify and "
+                "meanwhile every replaced blob stays on disk.",
+                quoted_relname, dead, total,
+            )
+        if reclaimed:
+            logger.info(
+                "Blob reclaim passed: vacuumed %d table(s): %s",
+                len(reclaimed), ", ".join(reclaimed),
+            )
+        else:
+            logger.info(
+                "Blob reclaim passed: %d candidate table(s) found but none were vacuumed.",
+                len(targets),
+            )
+    except Exception:
+        logger.exception("Blob-table space reclaim failed")
+    finally:
+        try:
+            conn.autocommit = previous
+        except Exception:
+            logger.exception("Restoring the connection autocommit mode failed")
+    return reclaimed
 
 
 def run_cycle(conn, with_retention=True):
