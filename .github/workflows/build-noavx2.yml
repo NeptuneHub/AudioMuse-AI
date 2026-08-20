@@ -1,7 +1,11 @@
 # This workflow builds a Docker image for CPUs WITHOUT AVX2 instruction support.
 # It uses Dockerfile-noavx2 (based on v0.8.6: Ubuntu 22.04 / Python 3.10) with
 # proven non-AVX2 dependency versions (numpy 1.23.5, torch 2.5.1 CPU, etc.).
-# ARM64 is included because the v0.8.6 Dockerfile already supported it natively.
+# amd64 ONLY: AVX2 is an x86-64 extension, so a "without AVX2" build is meaningless
+# on ARM (which has NEON/SVE and no AVX at all). ARM users take the regular image,
+# built natively on an arm64 runner by build-arm-intel.yml. Do not re-add
+# linux/arm64 here: it only ever built under QEMU emulation, where libc-bin's
+# ldconfig segfaults (exit 139).
 #
 # Tags:
 # - version tags (e.g., v1.2.3) -> '1.2.3-noavx2' + 'latest-noavx2'
@@ -56,9 +60,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -99,7 +100,7 @@ jobs:
         with:
           context: ${{ github.workspace }}
           file: Dockerfile-noavx2
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
