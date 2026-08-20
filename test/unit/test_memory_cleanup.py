@@ -21,8 +21,9 @@ Main Features:
   once the process goes quiet, and stays off when its config window is 0
 * The idle heap trim returns free heap to the OS without dropping a single loaded
   index: every startup cache is still populated and identical after it runs
-* The trim is a no-op on the Windows and macOS native builds, where glibc's
-  malloc_trim does not exist, and never reaches ctypes there
+* The heap release resolves its symbol once out of the running image - malloc_trim
+  on Linux, malloc_zone_pressure_relief on macOS - with no subprocess; Windows gets
+  no trim and never reaches ctypes, and an unresolvable symbol is logged and cached
 * The in-flight counter is paired on teardown_request, not teardown_appcontext:
   a background app context and a request rejected before our before_request ran
   both leave a live request's count alone, and wiring it either of the two wrong
@@ -471,31 +472,93 @@ class TestIdleHeapTrim:
         assert lyrics_mgr._LYRICS_INDEX_CACHE['loaded'] is True
         assert sem_grove._SEM_GROVE_CACHE['loaded'] is True
 
-    def test_the_trim_is_a_no_op_off_linux(self, monkeypatch):
-        import platform
-
-        memory_utils, fired = self._armed(monkeypatch, 60)
-        for system in ('Windows', 'Darwin'):
-            monkeypatch.setattr(platform, 'system', lambda s=system: s)
-
-            assert memory_utils.arm_idle_heap_trim() is False
-
-        assert fired == []
-
-    def test_release_memory_to_os_never_reaches_ctypes_off_linux(self, monkeypatch):
-        import ctypes.util
+    def test_windows_gets_no_trim_and_never_reaches_ctypes(self, monkeypatch):
+        import ctypes
         import platform
 
         from tasks import memory_utils
 
-        def _explode(_name):
-            raise AssertionError('ctypes must not be touched off Linux')
+        monkeypatch.setattr(memory_utils, '_HEAP_TRIM', None, raising=False)
+        monkeypatch.setattr(platform, 'system', lambda: 'Windows')
 
-        monkeypatch.setattr(ctypes.util, 'find_library', _explode)
-        for system in ('Windows', 'Darwin'):
+        def _explode(*args, **kwargs):
+            raise AssertionError('ctypes must not be touched on Windows')
+
+        monkeypatch.setattr(ctypes, 'CDLL', _explode)
+
+        assert memory_utils._resolve_heap_trim() is False
+        assert memory_utils.release_memory_to_os() is False
+        assert memory_utils.arm_idle_heap_trim() is False
+
+    def test_each_platform_asks_for_its_own_heap_release_symbol(self, monkeypatch):
+        import ctypes
+        import platform
+
+        from tasks import memory_utils
+
+        asked = []
+
+        class _Image:
+            def __getattr__(self, name):
+                asked.append(name)
+                return MagicMock()
+
+        monkeypatch.setattr(ctypes, 'CDLL', lambda *a, **k: _Image())
+        for system, symbol in (
+            ('Linux', 'malloc_trim'),
+            ('Darwin', 'malloc_zone_pressure_relief'),
+        ):
+            asked.clear()
+            monkeypatch.setattr(memory_utils, '_HEAP_TRIM', None, raising=False)
             monkeypatch.setattr(platform, 'system', lambda s=system: s)
 
-            assert memory_utils.release_memory_to_os() is False
+            assert memory_utils.release_memory_to_os() is True
+            assert asked == [symbol]
+
+    def test_the_symbol_is_resolved_once_and_needs_no_subprocess(self, monkeypatch):
+        import subprocess
+
+        from tasks import memory_utils
+
+        monkeypatch.setattr(memory_utils, '_HEAP_TRIM', None, raising=False)
+        spawned = []
+        real_popen = subprocess.Popen
+
+        class _Recorder(real_popen):
+            def __init__(self, *args, **kwargs):
+                spawned.append(args[0] if args else kwargs.get('args'))
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, 'Popen', _Recorder)
+        for _ in range(3):
+            memory_utils.release_memory_to_os()
+
+        assert spawned == []
+
+    def test_an_unresolvable_symbol_is_logged_and_cached_as_unavailable(self, monkeypatch):
+        import ctypes
+        import platform
+
+        from tasks import memory_utils
+
+        monkeypatch.setattr(memory_utils, '_HEAP_TRIM', None, raising=False)
+        monkeypatch.setattr(platform, 'system', lambda: 'Linux')
+        builds = []
+
+        class _Empty:
+            def __getattr__(self, name):
+                raise AttributeError(name)
+
+        def _build(*args, **kwargs):
+            builds.append(1)
+            return _Empty()
+
+        monkeypatch.setattr(ctypes, 'CDLL', _build)
+
+        assert memory_utils.release_memory_to_os() is False
+        assert memory_utils.release_memory_to_os() is False
+        assert builds == [1]
+
 
 
 class TestIdleTrimRequestWiring:
