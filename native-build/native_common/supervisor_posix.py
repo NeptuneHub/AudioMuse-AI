@@ -35,7 +35,7 @@ import sys
 import threading
 
 import service_roles
-from macos.control_ipc import ControlServer
+from native_common.control_ipc import ControlServer
 from native_common.supervisor_common import SupervisorCommonMixin
 from native_common.supervisor_health import HealthLoopMixin
 

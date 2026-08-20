@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.request
 
-from macos.reverse_log import NewestFirstFileHandler
+from native_common.reverse_log import NewestFirstFileHandler
 
 logger = logging.getLogger("audiomuse.supervisor")
 
