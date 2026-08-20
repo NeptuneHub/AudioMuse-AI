@@ -506,6 +506,9 @@ FLASK_BIND_PORT = 8000
 FLASK_LOCAL_URL = f"http://127.0.0.1:{FLASK_BIND_PORT}/"
 # How long that wait may take before giving up and continuing anyway.
 FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "180"))
+# Web process idle heap trim: seconds of quiet before freed heap returns to the
+# OS (glibc malloc_trim). 0 disables it.
+FLASK_IDLE_HEAP_TRIM_SECONDS = float(os.environ.get("FLASK_IDLE_HEAP_TRIM_SECONDS", "60"))
 
 # --- Postgres task queue (taskqueue/) ---
 # The two queue names ('high' carries the user-facing coordinators so a fan-out

@@ -17,6 +17,16 @@ Main Features:
 * analyze_album_task runs comprehensive cleanup and CLAP unload in finally
 * Database failure re-raises while still tearing down loaded models
 * Session recycle empties the old dict and frees old GPU sessions before allocating new ones
+* The web process's idle heap trim holds off while requests keep arriving, fires
+  once the process goes quiet, and stays off when its config window is 0
+* The idle heap trim returns free heap to the OS without dropping a single loaded
+  index: every startup cache is still populated and identical after it runs
+* The trim is a no-op on the Windows and macOS native builds, where glibc's
+  malloc_trim does not exist, and never reaches ctypes there
+* The in-flight counter is paired on teardown_request, not teardown_appcontext:
+  a background app context and a request rejected before our before_request ran
+  both leave a live request's count alone, and wiring it either of the two wrong
+  ways is shown to steal that live request's count
 """
 
 import gc
@@ -333,3 +343,250 @@ class TestAnalyzeAlbumMemoryCleanup:
         assert mock_session_cleanup.call_count >= 2
 
         assert mock_cuda_cleanup.called
+
+
+class TestIdleHeapTrim:
+    def _armed(self, monkeypatch, window):
+        import config
+        from tasks import memory_utils
+
+        monkeypatch.setattr(config, 'FLASK_IDLE_HEAP_TRIM_SECONDS', window, raising=False)
+        from tasks.idle_unload import IdleUnloadTimer
+
+        monkeypatch.setattr(
+            memory_utils, '_IDLE_TRIM_TIMER', IdleUnloadTimer(), raising=False
+        )
+        monkeypatch.setattr(memory_utils, '_ACTIVE_REQUESTS', 0, raising=False)
+        fired = []
+        monkeypatch.setattr(
+            memory_utils,
+            'release_memory_to_os',
+            lambda *args, **kwargs: fired.append(1) or True,
+        )
+        return memory_utils, fired
+
+    def test_a_zero_window_disables_the_trim(self, monkeypatch):
+        memory_utils, fired = self._armed(monkeypatch, 0)
+
+        assert memory_utils.arm_idle_heap_trim() is False
+        assert fired == []
+
+    def test_a_burst_of_requests_keeps_re_arming_without_trimming(self, monkeypatch):
+        memory_utils, fired = self._armed(monkeypatch, 2.0)
+
+        class FakeTimer:
+            def __init__(self):
+                self.arms = 0
+                self.on_expire = None
+
+            def arm(self, duration, on_expire):
+                self.arms += 1
+                self.on_expire = on_expire
+
+        monkeypatch.setattr(memory_utils, '_IDLE_TRIM_TIMER', FakeTimer(), raising=False)
+
+        assert memory_utils.arm_idle_heap_trim() is True
+        for _ in range(5):
+            memory_utils.arm_idle_heap_trim()
+
+        assert memory_utils._IDLE_TRIM_TIMER.arms == 6
+        assert memory_utils._IDLE_TRIM_TIMER.on_expire is memory_utils._idle_heap_trim
+        assert fired == []
+
+    def test_the_heap_is_trimmed_once_the_process_goes_idle(self, monkeypatch):
+        import time
+
+        memory_utils, fired = self._armed(monkeypatch, 0.3)
+
+        memory_utils.arm_idle_heap_trim()
+        deadline = time.time() + 5
+        while not fired and time.time() < deadline:
+            time.sleep(0.05)
+
+        assert fired == [1]
+
+    def test_the_trim_skips_while_a_request_is_in_flight(self, monkeypatch):
+        memory_utils, fired = self._armed(monkeypatch, 0.3)
+        monkeypatch.setattr(memory_utils, '_ACTIVE_REQUESTS', 1, raising=False)
+
+        memory_utils._idle_heap_trim()
+
+        assert fired == []
+
+    def test_request_bookkeeping_round_trips(self, monkeypatch):
+        memory_utils, _ = self._armed(monkeypatch, 0)
+        monkeypatch.setattr(memory_utils, '_ACTIVE_REQUESTS', 0, raising=False)
+
+        memory_utils.note_request_started()
+        assert memory_utils._ACTIVE_REQUESTS == 1
+
+        memory_utils.note_request_finished()
+        assert memory_utils._ACTIVE_REQUESTS == 0
+
+    def test_the_trim_never_unloads_a_loaded_index(self, monkeypatch):
+        import database
+        import tasks.artist_gmm_manager as artist_mgr
+        import tasks.clap_text_search as clap_search
+        import tasks.ivf_manager as ivf_mgr
+        import tasks.lyrics_manager as lyrics_mgr
+        import tasks.sem_grove_manager as sem_grove
+        from tasks import memory_utils
+
+        sentinel_index = object()
+        sentinel_ids = {0: 'song-1'}
+        monkeypatch.setattr(ivf_mgr, 'ivf_index', sentinel_index, raising=False)
+        monkeypatch.setattr(ivf_mgr, 'id_map', sentinel_ids, raising=False)
+        monkeypatch.setattr(artist_mgr, 'artist_map', {0: 'Artist'}, raising=False)
+        monkeypatch.setattr(
+            artist_mgr, 'artist_gmm_params', {'Artist': {'weights': [1.0]}}, raising=False
+        )
+        monkeypatch.setattr(database, 'MAP_PROJECTION_CACHE', {'id_map': ['a']}, raising=False)
+        clap_search._CLAP_INDEX_CACHE['index'] = sentinel_index
+        clap_search._CLAP_INDEX_CACHE['loaded'] = True
+        lyrics_mgr._LYRICS_INDEX_CACHE['index'] = sentinel_index
+        lyrics_mgr._LYRICS_INDEX_CACHE['loaded'] = True
+        sem_grove._SEM_GROVE_CACHE['loaded'] = True
+        monkeypatch.setattr(memory_utils, '_ACTIVE_REQUESTS', 0, raising=False)
+
+        released = []
+        real_release = memory_utils.release_memory_to_os
+        monkeypatch.setattr(
+            memory_utils,
+            'release_memory_to_os',
+            lambda *args, **kwargs: released.append(1) or real_release(*args, **kwargs),
+            raising=False,
+        )
+
+        memory_utils._idle_heap_trim()
+
+        assert released == [1]
+        assert ivf_mgr.ivf_index is sentinel_index
+        assert ivf_mgr.id_map == sentinel_ids
+        assert artist_mgr.artist_map == {0: 'Artist'}
+        assert artist_mgr.artist_gmm_params == {'Artist': {'weights': [1.0]}}
+        assert database.MAP_PROJECTION_CACHE == {'id_map': ['a']}
+        assert clap_search._CLAP_INDEX_CACHE['index'] is sentinel_index
+        assert clap_search._CLAP_INDEX_CACHE['loaded'] is True
+        assert lyrics_mgr._LYRICS_INDEX_CACHE['index'] is sentinel_index
+        assert lyrics_mgr._LYRICS_INDEX_CACHE['loaded'] is True
+        assert sem_grove._SEM_GROVE_CACHE['loaded'] is True
+
+    def test_the_trim_is_a_no_op_off_linux(self, monkeypatch):
+        import platform
+
+        memory_utils, fired = self._armed(monkeypatch, 60)
+        for system in ('Windows', 'Darwin'):
+            monkeypatch.setattr(platform, 'system', lambda s=system: s)
+
+            assert memory_utils.arm_idle_heap_trim() is False
+
+        assert fired == []
+
+    def test_release_memory_to_os_never_reaches_ctypes_off_linux(self, monkeypatch):
+        import ctypes.util
+        import platform
+
+        from tasks import memory_utils
+
+        def _explode(_name):
+            raise AssertionError('ctypes must not be touched off Linux')
+
+        monkeypatch.setattr(ctypes.util, 'find_library', _explode)
+        for system in ('Windows', 'Darwin'):
+            monkeypatch.setattr(platform, 'system', lambda s=system: s)
+
+            assert memory_utils.release_memory_to_os() is False
+
+
+class TestIdleTrimRequestWiring:
+    def _wired_app(self, monkeypatch, decrement_on='request', guarded=True):
+        from flask import Flask, g, jsonify, request
+
+        from tasks import memory_utils
+
+        monkeypatch.setattr(memory_utils, '_ACTIVE_REQUESTS', 0, raising=False)
+        monkeypatch.setattr(memory_utils, 'arm_idle_heap_trim', lambda: True)
+
+        app = Flask(__name__)
+
+        def barrier():
+            if request.path == '/blocked':
+                return jsonify({'error': 'Setup required'}), 403
+
+        app.before_request(barrier)
+
+        @app.before_request
+        def _start():
+            g._heap_trim_counted = True
+            memory_utils.note_request_started()
+
+        def _end(exc=None):
+            if guarded and not g.pop('_heap_trim_counted', False):
+                return
+            memory_utils.note_request_finished()
+
+        if decrement_on == 'app_context':
+            app.teardown_appcontext(_end)
+        else:
+            app.teardown_request(_end)
+
+        @app.route('/ok')
+        def _ok():
+            return 'ok'
+
+        @app.route('/blocked')
+        def _blocked():
+            return 'never reached'
+
+        return app, memory_utils
+
+    def test_a_served_request_returns_the_counter_to_zero(self, monkeypatch):
+        app, memory_utils = self._wired_app(monkeypatch)
+
+        assert app.test_client().get('/ok').status_code == 200
+        assert memory_utils._ACTIVE_REQUESTS == 0
+
+    def test_a_background_app_context_never_steals_an_in_flight_request(self, monkeypatch):
+        app, memory_utils = self._wired_app(monkeypatch)
+        memory_utils.note_request_started()
+
+        with app.app_context():
+            pass
+
+        assert memory_utils._ACTIVE_REQUESTS == 1
+
+    def test_a_request_rejected_before_our_hook_never_steals_an_in_flight_request(
+        self, monkeypatch
+    ):
+        app, memory_utils = self._wired_app(monkeypatch)
+        memory_utils.note_request_started()
+
+        assert app.test_client().get('/blocked').status_code == 403
+        assert memory_utils._ACTIVE_REQUESTS == 1
+
+    def test_decrementing_on_the_app_context_would_steal_a_live_request(self, monkeypatch):
+        app, memory_utils = self._wired_app(
+            monkeypatch, decrement_on='app_context', guarded=False
+        )
+        memory_utils.note_request_started()
+
+        with app.app_context():
+            pass
+
+        assert memory_utils._ACTIVE_REQUESTS == 0
+
+    def test_an_unguarded_decrement_would_steal_a_barrier_rejected_request(self, monkeypatch):
+        app, memory_utils = self._wired_app(monkeypatch, guarded=False)
+        memory_utils.note_request_started()
+
+        assert app.test_client().get('/blocked').status_code == 403
+        assert memory_utils._ACTIVE_REQUESTS == 0
+
+    def test_the_g_guard_alone_already_survives_a_background_app_context(self, monkeypatch):
+        app, memory_utils = self._wired_app(monkeypatch, decrement_on='app_context')
+        memory_utils.note_request_started()
+
+        with app.app_context():
+            pass
+
+        assert memory_utils._ACTIVE_REQUESTS == 1

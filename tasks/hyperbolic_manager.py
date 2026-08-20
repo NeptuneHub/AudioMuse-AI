@@ -837,9 +837,16 @@ _TREE_TIMER = IdleUnloadTimer()
 
 
 def _unload_tree_expired():
-    if is_hyperbolic_tree_cache_loaded():
-        logger.info("Hyperbolic tree warm cache expired - unloading tree cache")
-        reset_hyperbolic_tree_cache()
+    if not is_hyperbolic_tree_cache_loaded():
+        return
+    logger.info("Hyperbolic tree warm cache expired - unloading tree cache")
+    reset_hyperbolic_tree_cache()
+    try:
+        from tasks.memory_utils import release_memory_to_os
+
+        release_memory_to_os()
+    except Exception:
+        logger.exception("Hyperbolic tree unload: heap release to the OS failed")
 
 
 def _start_background_full_load():

@@ -18,12 +18,18 @@ Main Features:
   release + ONNX pool reset + Linux malloc_trim(0) to return freed heap to the OS.
 * handle_onnx_memory_error: detects ONNX/GPU OOM strings and drives cleanup,
   retry, or CPU-session fallback.
+* arm_idle_heap_trim: (re)arms the web process's idle heap trim, so the RSS a
+  burst of online searches leaves behind is handed back once it goes quiet.
+* note_request_started / note_request_finished: track in-flight requests so the
+  idle trim never runs while an endpoint is still being served. Arming the timer
+  is best-effort, so a failure there can never leave the count unbalanced.
 * SessionRecycler: interval counter that signals when to rebuild a long-lived
   ONNX session to bound its memory growth.
 """
 
 import gc
 import logging
+import threading
 from typing import Optional, Dict, Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -137,8 +143,11 @@ def reset_onnx_memory_pool() -> bool:
         return False
 
 
-def release_memory_to_os() -> bool:
-    gc.collect()
+def release_memory_to_os(full_gc: bool = True) -> bool:
+    if full_gc:
+        gc.collect()
+    else:
+        gc.collect(generation=1)
     import platform
 
     if platform.system() != "Linux":
@@ -154,6 +163,68 @@ def release_memory_to_os() -> bool:
         return True
     except (OSError, AttributeError):
         return False
+
+
+_IDLE_TRIM_TIMER = None
+_IDLE_TRIM_INIT_LOCK = threading.Lock()
+_ACTIVE_REQUESTS = 0
+_ACTIVE_REQUESTS_LOCK = threading.Lock()
+
+
+def _arm_quietly():
+    try:
+        arm_idle_heap_trim()
+    except Exception:
+        logger.exception("Could not arm the idle heap trim")
+
+
+def note_request_started():
+    global _ACTIVE_REQUESTS
+
+    with _ACTIVE_REQUESTS_LOCK:
+        _ACTIVE_REQUESTS += 1
+    _arm_quietly()
+
+
+def note_request_finished():
+    global _ACTIVE_REQUESTS
+
+    with _ACTIVE_REQUESTS_LOCK:
+        if _ACTIVE_REQUESTS > 0:
+            _ACTIVE_REQUESTS -= 1
+    _arm_quietly()
+
+
+def _idle_heap_trim():
+    with _ACTIVE_REQUESTS_LOCK:
+        if _ACTIVE_REQUESTS > 0:
+            return
+    if release_memory_to_os(full_gc=False):
+        logger.info("Idle heap trim: released the web process's free heap to the OS")
+
+
+def arm_idle_heap_trim():
+    global _IDLE_TRIM_TIMER
+
+    import config
+    import platform
+
+    if platform.system() != "Linux":
+        return False
+
+    duration = config.FLASK_IDLE_HEAP_TRIM_SECONDS
+    if not duration or duration <= 0:
+        return False
+    timer = _IDLE_TRIM_TIMER
+    if timer is None:
+        from tasks.idle_unload import IdleUnloadTimer
+
+        with _IDLE_TRIM_INIT_LOCK:
+            if _IDLE_TRIM_TIMER is None:
+                _IDLE_TRIM_TIMER = IdleUnloadTimer()
+            timer = _IDLE_TRIM_TIMER
+    timer.arm(duration, _idle_heap_trim)
+    return True
 
 
 def comprehensive_memory_cleanup(

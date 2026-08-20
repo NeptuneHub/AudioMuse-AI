@@ -196,6 +196,33 @@ def log_api_request():
         app.logger.info('API request: %s %s', request.method, request.path)
 
 
+@app.before_request
+def note_request_start():
+    if _is_worker:
+        return
+    try:
+        from tasks.memory_utils import note_request_started
+
+        g._heap_trim_counted = True
+        note_request_started()
+    except Exception:
+        app.logger.exception("Could not note the request start for the idle heap trim")
+
+
+@app.teardown_request
+def note_request_end(exc=None):
+    if _is_worker:
+        return
+    if not g.pop('_heap_trim_counted', False):
+        return
+    try:
+        from tasks.memory_utils import note_request_finished
+
+        note_request_finished()
+    except Exception:
+        app.logger.exception("Could not note the request finish for the idle heap trim")
+
+
 @app.route('/api/health')
 def health_check():
     """
@@ -237,6 +264,13 @@ def teardown_db(e=None):
         end_all_requests()
     except Exception:
         pass
+    if not _is_worker:
+        try:
+            from tasks.memory_utils import arm_idle_heap_trim
+
+            arm_idle_heap_trim()
+        except Exception:
+            logger.exception("Could not arm the idle heap trim")
 
 
 # Initialize the database schema when the application module is loaded.
@@ -1207,6 +1241,48 @@ if not _is_worker:
         except Exception:
             logger.exception("Startup index load: heap release to the OS failed")
 
+        def _log_startup_index_profile():
+            try:
+                import database as _db
+                import tasks.artist_gmm_manager as _artist_mgr
+                import tasks.ivf_manager as _ivf_mgr
+                from tasks.clap_text_search import get_clap_cache_size
+                from tasks.lyrics_manager import get_cache_stats as _lyrics_stats
+                from tasks.sem_grove_manager import get_sem_grove_stats as _sg_stats
+
+                audio = len(_ivf_mgr.id_map) if _ivf_mgr.id_map else 0
+                artist = len(_artist_mgr.artist_map) if _artist_mgr.artist_map else 0
+                map_proj = (
+                    len(_db.MAP_PROJECTION_CACHE.get('id_map') or ())
+                    if _db.MAP_PROJECTION_CACHE
+                    else 0
+                )
+                artist_proj = (
+                    len(_db.ARTIST_PROJECTION_CACHE.get('component_map') or ())
+                    if _db.ARTIST_PROJECTION_CACHE
+                    else 0
+                )
+                clap = get_clap_cache_size()
+                lyrics = _lyrics_stats()
+                sg = _sg_stats()
+                logger.info(
+                    "Startup index profile: audio=%d artist=%d map=%d artist_proj=%d clap=%d "
+                    "lyrics=%d (%.2f MB) semgrove=%d (%.2f MB)",
+                    audio,
+                    artist,
+                    map_proj,
+                    artist_proj,
+                    clap,
+                    lyrics.get('song_count', 0),
+                    lyrics.get('memory_mb', 0.0),
+                    sg.get('song_count', 0),
+                    sg.get('memory_mb', 0.0),
+                )
+            except Exception:
+                logger.exception("Startup index profile logging failed")
+
+        _log_startup_index_profile()
+
         def _start_map_init_background():
             try:
                 from app_map import init_map_cache
@@ -1214,6 +1290,9 @@ if not _is_worker:
                 logger.info('Starting background map JSON cache build.')
                 with app.app_context():
                     init_map_cache()
+                from tasks.memory_utils import release_memory_to_os
+
+                release_memory_to_os()
                 logger.info('Background map JSON cache build finished.')
             except Exception:
                 logger.exception('Background init_map_cache failed')
