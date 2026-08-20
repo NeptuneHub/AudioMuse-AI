@@ -290,9 +290,7 @@ def _dedupe_single_playlist(playlist_name, songs_list, db_conn, log_prefix):
         f"{log_prefix}SORTED ORDER - First 5 titles: {[song[1] for song in songs_sorted_by_title[:5]]}"
     )
 
-    song_results = [
-        {"item_id": item_id} for item_id, title, author in songs_sorted_by_title
-    ]
+    song_results = [{"item_id": song[0]} for song in songs_sorted_by_title]
 
     logger.debug(
         f"{log_prefix}Filtering playlist '{playlist_name}' with {len(song_results)} songs"
@@ -335,7 +333,7 @@ def _restrict_result_metadata(new_result, best_result, kept_names):
 
 def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
     try:
-        from app_helper import get_db
+        from database import get_db
 
         if not best_result or not best_result.get("named_playlists"):
             logger.warning(

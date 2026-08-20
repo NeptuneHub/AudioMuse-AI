@@ -28,12 +28,11 @@ import taskqueue
 
 from flask_app import app
 from app_helper import (
-    get_db,
     build_and_store_map_projection,
     build_and_store_artist_projection,
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
 )
+from database import get_db
+from config import TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
 
 from error import error_manager
 from error.error_dictionary import ERR_INDEX_BUILD
@@ -120,7 +119,7 @@ def rebuild_all_indexes_task(parent_task_id=None):
 
     with app.app_context():
         if claimed_task_id and parent_task_id:
-            from app_helper import get_task_statuses
+            from database import get_task_statuses
             from config import TASK_STATUS_REVOKED
 
             statuses = get_task_statuses([parent_task_id])

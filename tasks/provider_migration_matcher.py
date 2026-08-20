@@ -150,53 +150,27 @@ def _best_artist_new(row):
     return row.get('artist') or row.get('album_artist')
 
 
-def _old_exact_meta_key(old):
-    t = (old.get('title') or '').lower()
-    a = (_best_artist_old(old) or '').lower()
-    alb = (old.get('album') or '').lower()
+def _exact_meta_key(row, best_artist):
+    t = (row.get('title') or '').lower()
+    a = (best_artist(row) or '').lower()
+    alb = (row.get('album') or '').lower()
     if not (t and a and alb):
         return None
     return (t, a, alb)
 
 
-def _new_exact_meta_key(new):
-    t = (new.get('title') or '').lower()
-    a = (_best_artist_new(new) or '').lower()
-    alb = (new.get('album') or '').lower()
+def _norm_meta_key(row, best_artist):
+    t = normalize_meta(row.get('title'))
+    a = normalize_meta(best_artist(row))
+    alb = normalize_meta(row.get('album'))
     if not (t and a and alb):
         return None
     return (t, a, alb)
 
 
-def _old_norm_meta_key(old):
-    t = normalize_meta(old.get('title'))
-    a = normalize_meta(_best_artist_old(old))
-    alb = normalize_meta(old.get('album'))
-    if not (t and a and alb):
-        return None
-    return (t, a, alb)
-
-
-def _new_norm_meta_key(new):
-    t = normalize_meta(new.get('title'))
-    a = normalize_meta(_best_artist_new(new))
-    alb = normalize_meta(new.get('album'))
-    if not (t and a and alb):
-        return None
-    return (t, a, alb)
-
-
-def _old_title_artist_key(old):
-    t = normalize_meta(old.get('title'))
-    a = normalize_meta(_best_artist_old(old))
-    if not (t and a):
-        return None
-    return (t, a)
-
-
-def _new_title_artist_key(new):
-    t = normalize_meta(new.get('title'))
-    a = normalize_meta(_best_artist_new(new))
+def _title_artist_key(row, best_artist):
+    t = normalize_meta(row.get('title'))
+    a = normalize_meta(best_artist(row))
     if not (t and a):
         return None
     return (t, a)
@@ -273,14 +247,14 @@ class CandidateIndex:
         tk = path_tail_key(np)
         if tk and tk not in self.by_tail:
             self.by_tail[tk] = slim['id']
-        ek = _new_exact_meta_key(slim)
+        ek = _exact_meta_key(slim, _best_artist_new)
         if ek:
             self.by_exact_meta.setdefault(ek, []).append(slim)
-        nk = _new_norm_meta_key(slim)
+        nk = _norm_meta_key(slim, _best_artist_new)
         if nk:
             self.by_norm_meta.setdefault(nk, []).append(slim)
         if self._allow_title_artist_only:
-            tak = _new_title_artist_key(slim)
+            tak = _title_artist_key(slim, _best_artist_new)
             if tak:
                 self.by_title_artist.setdefault(tak, []).append(slim)
 
@@ -293,14 +267,14 @@ class CandidateIndex:
             tk = path_tail_key(np)
             if tk and tk in self.by_tail:
                 return ('tail', self.by_tail[tk])
-        ek = _old_exact_meta_key(old)
+        ek = _exact_meta_key(old, _best_artist_old)
         if ek and ek in self.by_exact_meta:
             return ('exact_meta', _pick_meta_candidate(old, self.by_exact_meta[ek])['id'])
-        nk = _old_norm_meta_key(old)
+        nk = _norm_meta_key(old, _best_artist_old)
         if nk and nk in self.by_norm_meta:
             return ('norm_meta', _pick_meta_candidate(old, self.by_norm_meta[nk])['id'])
         if self._allow_title_artist_only:
-            tak = _old_title_artist_key(old)
+            tak = _title_artist_key(old, _best_artist_old)
             if tak and tak in self.by_title_artist:
                 return (
                     _OPT_TIER_TITLE_ARTIST,

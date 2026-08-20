@@ -38,6 +38,10 @@ def _repo_root():
 
 def _ensure(path):
     os.makedirs(path, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
     return path
 
 

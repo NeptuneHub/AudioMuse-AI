@@ -680,7 +680,7 @@ class TestCanonicalInputIds:
 class TestSonicFingerprintProviderRecency:
     @staticmethod
     def _patch_fingerprint_sources(monkeypatch, top_songs, canonical_by_provider, tracks):
-        import app_helper
+        import database
         from tasks import sonic_fingerprint_manager as sfm
         from tasks.mediaserver import registry
 
@@ -692,7 +692,7 @@ class TestSonicFingerprintProviderRecency:
             registry, 'canonical_input_ids',
             lambda ids, server_id=None, conn=None: dict(canonical_by_provider),
         )
-        monkeypatch.setattr(app_helper, 'get_tracks_by_ids', lambda ids: list(tracks))
+        monkeypatch.setattr(database, 'get_tracks_by_ids', lambda ids: list(tracks))
         asked = []
 
         def fake_last_played(item_id, user_creds=None):
@@ -2037,13 +2037,13 @@ class TestSweepAlignment:
         monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
 
         saved = []
-        fake_app_helper = types.ModuleType('app_helper')
-        fake_app_helper.save_task_status = (
+        import database
+        monkeypatch.setattr(
+            database, 'save_task_status',
             lambda task_id, task_type, status, **kwargs: saved.append(
                 (task_id, status, kwargs)
-            )
+            ),
         )
-        monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
         monkeypatch.setattr(
             sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
         )
@@ -2086,11 +2086,11 @@ class TestSweepAlignment:
         monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
 
         saved = []
-        fake_app_helper = types.ModuleType('app_helper')
-        fake_app_helper.save_task_status = (
-            lambda task_id, task_type, status, **kwargs: saved.append(kwargs)
+        import database
+        monkeypatch.setattr(
+            database, 'save_task_status',
+            lambda task_id, task_type, status, **kwargs: saved.append(kwargs),
         )
-        monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
 
         report = sync._make_reporter('sweep-1', 'srv-1')
         report('Aligning...', 40)

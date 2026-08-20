@@ -34,7 +34,8 @@ from tasks.analysis import (
     robust_load_audio_with_fallback,
     analyze_track,
 )
-from tasks.analysis.song import run_inference, _find_onnx_name, _decode_audio_with_pyav
+from tasks.onnx_utils import run_inference, _find_onnx_name
+from tasks.analysis.song import _decode_audio_with_pyav
 
 
 def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
@@ -49,7 +50,7 @@ def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
     events = []
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
-    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr('tasks.task_run.get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(
         analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
     )
@@ -87,7 +88,7 @@ def _union_harness(monkeypatch, phase_results):
     saved = []
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
-    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr('tasks.task_run.get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(
         analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
     )
@@ -205,7 +206,7 @@ def test_dequeued_index_rebuild_with_wiped_parent_does_no_build(monkeypatch):
 
     job = Mock(id='index-cancelled')
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
-    monkeypatch.setattr('app_helper.get_task_statuses', lambda ids: {})
+    monkeypatch.setattr('database.get_task_statuses', lambda ids: {})
     build = Mock(side_effect=AssertionError('cancelled rebuild must not run'))
     monkeypatch.setattr(index, '_run_all_index_builds', build)
 
@@ -758,7 +759,7 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     def forbidden(task_id):
         raise AssertionError('the per-track loop must not query task info per track')
 
-    monkeypatch.setattr(analysis, 'get_task_info_from_db', forbidden, raising=False)
+    monkeypatch.setattr('tasks.task_run.get_task_info_from_db', forbidden, raising=False)
 
     result = _run_album_impl(
         monkeypatch, tmp_path, tracks[0], simhash.CatalogResolver(), [], [],
@@ -783,7 +784,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     registry = importlib.import_module('tasks.mediaserver.registry')
 
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
-    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr('tasks.task_run.get_task_info_from_db', lambda task_id: None)
     def _record_status(*args, **kwargs):
         if status_calls is not None:
             status_calls.append(kwargs.get('details') or {})
@@ -896,7 +897,7 @@ def test_union_run_counts_albums_across_every_server(monkeypatch):
     albums_by_server = {'a': [{'Id': 'a1'}, {'Id': 'a2'}], 'b': [{'Id': 'b1'}]}
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
-    monkeypatch.setattr(analysis, 'get_task_info_from_db', lambda task_id: None)
+    monkeypatch.setattr('tasks.task_run.get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(
         analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
     )
@@ -2436,7 +2437,7 @@ def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkey
 
     job = Mock(id='index-1')
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
-    monkeypatch.setattr('app_helper.get_task_statuses', lambda ids: {ids[0]: 'RUNNING'})
+    monkeypatch.setattr('database.get_task_statuses', lambda ids: {ids[0]: 'RUNNING'})
     monkeypatch.setattr(index, '_run_all_index_builds', lambda **kwargs: None)
 
     captured = {}

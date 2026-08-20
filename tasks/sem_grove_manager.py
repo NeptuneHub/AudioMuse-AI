@@ -106,7 +106,7 @@ def _fetch_metadata(item_ids: List[str]) -> Dict[str, Dict]:
 
 
 def build_and_store_sem_grove_index(db_conn=None) -> bool:
-    from app_helper import get_db
+    from database import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
     from .index_build_helpers import stream_embeddings_to_buffer
     from .paged_ivf import build_and_store_paged_ivf
@@ -247,7 +247,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
 
 
 def _load_sem_grove_index_from_db() -> bool:
-    from app_helper import get_db
+    from database import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
     from .paged_ivf import load_index_auto
 

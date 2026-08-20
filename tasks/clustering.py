@@ -78,12 +78,10 @@ from config import (
 from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED, ERR_DB_CONNECTION
 
-from app_helper import (
+from database import (
     save_task_status,
     get_task_info_from_db,
     get_db,
-)
-from database import (
     coerce_db_details,
     update_playlist_table,
     prune_playlist_rows_for_missing_servers,
@@ -251,6 +249,7 @@ def run_clustering_batch_task(
             best_score_in_batch = -1.0
             best_rank_in_batch = (-1, -1.0)
             iterations_completed = 0
+            tracks_cache = {}
 
             for i in range(num_iterations_in_batch):
                 current_run_global_idx = start_run_idx + i
@@ -315,6 +314,7 @@ def run_clustering_batch_task(
                     mutation_config=mutation_config,
                     score_weights=score_weights_dict,
                     enable_clustering_embeddings=enable_clustering_embeddings_param,
+                    tracks_cache=tracks_cache,
                 )
                 iterations_completed += 1
 
@@ -476,28 +476,17 @@ def run_clustering_task(
         initial_params["num_clusters_max"] = spectral_n_clusters_max
 
     with app.app_context():
+        from .task_run import terminal_skip
+
         task_info = get_task_info_from_db(current_task_id)
-        if claimed_task_id and task_info is None:
-            logger.info(
-                "Main clustering task %s has no task row; global Cancel removed "
-                "it before execution, so it will not restart.",
-                current_task_id,
-            )
-            return {
-                "status": TASK_STATUS_REVOKED,
-                "message": "Task was cancelled before execution.",
-            }
-        if task_info and task_info.get('status') in [
-            TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
-        ]:
-            logger.info(
-                f"Main clustering task {current_task_id} is already in a terminal state ('{task_info.get('status')}'). Skipping execution."
-            )
-            return {
-                "status": task_info.get('status'),
-                "message": f"Task already in terminal state '{task_info.get('status')}'.",
-                "details": json.loads(task_info.get('details', '{}')),
-            }
+        skip = terminal_skip(
+            current_task_id, claimed_task_id, task_info,
+            revoked_message="Task was cancelled before execution.",
+            terminal_message="Task already in terminal state.",
+            terminal_details=lambda info: json.loads(info.get('details', '{}')),
+        )
+        if skip is not None:
+            return skip
 
         _main_task_accumulated_details = {
             "total_runs": num_clustering_runs,
@@ -812,6 +801,7 @@ def _calibrate_cluster_params(
             genre_map, percentile, min_songs_per_genre
         )
         subset = _get_stratified_song_subset(genre_map, target)
+        tracks_cache = {}
         for attempt in range(1, CLUSTERING_CALIBRATION_MAX_TRIES + 1):
             if count_based:
                 k_floor = max(2, len(subset) // CLUSTERING_MAX_PLAYLIST_SONGS)
@@ -888,6 +878,7 @@ def _calibrate_cluster_params(
                     'other_feature_diversity': 0.0, 'other_feature_purity': 0.0,
                 },
                 enable_clustering_embeddings=enable_embeddings,
+                tracks_cache=tracks_cache,
             )
             sizes = [len(songs) for songs in (result or {}).get('named_playlists', {}).values()]
             keepers = sum(1 for s in sizes if s >= MIN_PLAYLIST_SIZE_FOR_TOP_N)

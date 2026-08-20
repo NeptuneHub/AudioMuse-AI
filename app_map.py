@@ -36,8 +36,8 @@ from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
-from database import get_db
-from app_helper import load_map_projection, probe_catalogue_canonical_ids
+from database import get_db, load_map_projection
+from app_helper import probe_catalogue_canonical_ids
 import app_server_context
 
 # Try to reuse the shared projection helpers

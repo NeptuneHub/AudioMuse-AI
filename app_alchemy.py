@@ -87,23 +87,9 @@ def search_artists():
               items:
                 type: object
     """
-    from app_artist_similarity import artist_search_response
-    from app_helper import index_error_body
-    from error.error_dictionary import UNKNOWN_ERROR_CODE
+    from app_artist_similarity import artist_search_from_request
 
-    query = request.args.get('query', '', type=str)
-
-    if not query or len(query) < 2:
-        return jsonify([])
-
-    start = request.args.get('start', 0, type=int)
-    end = request.args.get('end', None, type=int)
-
-    try:
-        return artist_search_response(query, start, end, 100)
-    except Exception:
-        logger.exception("Error during artist search")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+    return artist_search_from_request()
 
 
 def _cached_all_playlists(server_id):

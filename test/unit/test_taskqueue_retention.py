@@ -137,7 +137,7 @@ class TestAHandshakeIsNotTheRunItInterrupts:
         db = MagicMock()
         db.cursor.side_effect = lambda *a, **k: _Cursor(recorder)
 
-        database._collapse_finished_task(
+        database.collapse_finished_task(
             db, 'ctl-1', 'worker_control', None, config.TASK_STATUS_SUCCESS
         )
 
@@ -158,7 +158,7 @@ class TestTaskStatusHoldsOneRunAtATime:
         db = MagicMock()
         db.cursor.side_effect = lambda *a, **k: _Cursor(recorder)
 
-        database._collapse_finished_task(
+        database.collapse_finished_task(
             db, 'done-1', 'main_analysis', None, config.TASK_STATUS_SUCCESS
         )
 
@@ -200,7 +200,7 @@ class TestTaskStatusHoldsOneRunAtATime:
         db = MagicMock()
         db.cursor.side_effect = lambda *a, **k: _Cursor(recorder)
 
-        database._collapse_finished_task(
+        database.collapse_finished_task(
             db, 'child-1', 'clustering_batch', 'parent-1', config.TASK_STATUS_SUCCESS
         )
 

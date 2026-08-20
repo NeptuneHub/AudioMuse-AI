@@ -26,6 +26,8 @@ Main Features:
 import sys
 import types
 
+import taskqueue
+
 from unittest.mock import MagicMock
 
 from flask import Flask
@@ -98,17 +100,19 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     fake_dup_repair.split_chromaprint_false_merges = lambda conn=None: cp_result
     monkeypatch.setitem(sys.modules, 'tasks.duplicate_repair', fake_dup_repair)
 
-    fake_app_helper = types.ModuleType('app_helper')
-    fake_app_helper.get_db = lambda: get_db_cm
-    fake_app_helper.get_task_info_from_db = lambda _task_id: task_info
-    fake_app_helper.save_task_status = (
+    import database as db_module
+    from tasks import task_run as task_run_module
+    monkeypatch.setattr(db_module, 'get_db', lambda: get_db_cm)
+    monkeypatch.setattr(db_module, 'get_task_info_from_db', lambda _task_id: task_info)
+    monkeypatch.setattr(task_run_module, 'get_task_info_from_db', lambda _task_id: task_info)
+    monkeypatch.setattr(
+        db_module, 'save_task_status',
         lambda task_id, task_type, status, progress=None, details=None:
-        statuses.append((status, progress, details))
+        statuses.append((status, progress, details)),
     )
-    monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
 
     monkeypatch.setattr(
-        cleaning.taskqueue, 'current_task_id',
+        taskqueue, 'current_task_id',
         lambda: current_job.id if current_job is not None else None,
     )
     monkeypatch.setattr(

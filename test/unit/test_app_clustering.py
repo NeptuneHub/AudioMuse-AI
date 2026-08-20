@@ -26,6 +26,7 @@ import pytest
 from flask import Flask
 
 import config
+import database
 import app_clustering
 import taskqueue
 from app_clustering import clustering_bp
@@ -40,9 +41,9 @@ def queued(monkeypatch):
         return kwargs['task_id']
 
     monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _fake_enqueue)
-    monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
-    monkeypatch.setattr(app_clustering, 'get_queue_blocking_task', lambda **_kw: None)
-    monkeypatch.setattr(app_clustering, 'get_active_main_task', lambda **_kw: None)
+    monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
+    monkeypatch.setattr(database, 'get_active_main_task', lambda **_kw: None)
     return calls
 
 
@@ -70,9 +71,9 @@ def _lose_the_admission_race(monkeypatch, winner):
         attempted.append(func)
         raise taskqueue.TaskAlreadyRunning()
 
-    monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
-    monkeypatch.setattr(app_clustering, 'get_queue_blocking_task', lambda **_kw: None)
-    monkeypatch.setattr(app_clustering, 'get_active_main_task', _active)
+    monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
+    monkeypatch.setattr(database, 'get_active_main_task', _active)
     monkeypatch.setattr(app_clustering.taskqueue, 'enqueue', _reject)
     return attempted
 
@@ -123,9 +124,9 @@ class TestStartClustering:
     def test_a_live_main_task_the_gate_sees_answers_409_and_queues_nothing(
         self, client, monkeypatch
     ):
-        monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
         monkeypatch.setattr(
-            app_clustering, 'get_queue_blocking_task',
+            database, 'get_queue_blocking_task',
             lambda **_kw: {
                 'task_id': 'live-1', 'task_type': 'main_clustering',
                 'status': config.TASK_STATUS_RUNNING,
@@ -167,9 +168,9 @@ class TestStartClustering:
     def test_a_queue_failure_answers_500_without_leaking_the_exception(
         self, client, monkeypatch
     ):
-        monkeypatch.setattr(app_clustering, 'clean_up_previous_main_tasks', lambda: None)
-        monkeypatch.setattr(app_clustering, 'get_queue_blocking_task', lambda **_kw: None)
-        monkeypatch.setattr(app_clustering, 'get_active_main_task', lambda **_kw: None)
+        monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
+        monkeypatch.setattr(database, 'get_active_main_task', lambda **_kw: None)
 
         def _boom(func, **kwargs):
             raise RuntimeError('connection refused to 10.0.0.5')

@@ -100,7 +100,7 @@ def load_gte_model():
         sess_options.intra_op_num_threads = max(1, (usable_cpu_count() or os.cpu_count() or 2) // 2)
         sess_options.inter_op_num_threads = 1
         try:
-            from tasks.analysis.song import create_onnx_session, resolve_providers
+            from tasks.onnx_utils import create_onnx_session, resolve_providers
 
             session = create_onnx_session(
                 onnx_path,

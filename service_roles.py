@@ -26,6 +26,8 @@ Main Features:
   maintenance or worker child never runs Flask's schema bootstrap
 * run_role dispatches a role to Flask, a queue worker, maintenance, or the
   restart listener
+* role_from_argv/command_from_argv/serve_flask are what all three native
+  launchers used to keep as their own identical copies
 """
 
 import os
@@ -83,9 +85,43 @@ MAINTENANCE_MODULE = 'taskqueue.maintenance'
 
 ROLE_FLAG_PREFIX = '--role='
 
+FLASK_BIND_HOST = '0.0.0.0'
+FLASK_BIND_PORT = 8000
+FLASK_THREADS = 8
+FLASK_MAX_REQUEST_BODY_BYTES = 6 * 1024 * 1024 * 1024
+FLASK_CHANNEL_TIMEOUT_SECONDS = 300
+
 ROLE_ENV = 'AUDIOMUSE_ROLE'
 SERVICE_TYPE_ENV = 'SERVICE_TYPE'
 WORKER_ENV_VALUE = 'worker'
+
+
+def role_from_argv():
+    for arg in sys.argv[1:]:
+        if arg.startswith(ROLE_FLAG_PREFIX):
+            return arg.split('=', 1)[1]
+    return None
+
+
+def command_from_argv():
+    for arg in sys.argv[1:]:
+        if not arg.startswith('-'):
+            return arg
+    return None
+
+
+def serve_flask():
+    import waitress
+    import app as app_module
+
+    waitress.serve(
+        app_module.app,
+        host=FLASK_BIND_HOST,
+        port=FLASK_BIND_PORT,
+        threads=FLASK_THREADS,
+        max_request_body_size=FLASK_MAX_REQUEST_BODY_BYTES,
+        channel_timeout=FLASK_CHANNEL_TIMEOUT_SECONDS,
+    )
 
 
 def declare_worker_role(force=False):

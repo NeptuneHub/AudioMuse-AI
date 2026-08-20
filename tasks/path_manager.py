@@ -111,7 +111,7 @@ def interpolate_centroids(v1, v2, num, metric="euclidean"):
 
 
 def _create_path_from_ids(path_ids):
-    from app_helper import get_tracks_by_ids
+    from database import get_tracks_by_ids
 
     if not path_ids:
         return []
@@ -267,7 +267,7 @@ def _find_best_songs_for_job(
     metric=None,
     dup_threshold_cosine=None,
 ):
-    from app_helper import get_score_data_by_ids
+    from database import get_score_data_by_ids
 
     if metric is None:
         metric = PATH_DISTANCE_METRIC
@@ -632,7 +632,7 @@ def find_path_between_songs(
     metric=None,
     dup_threshold_cosine=None,
 ):
-    from app_helper import get_score_data_by_ids
+    from database import get_score_data_by_ids
 
     logger.info(
         f"Starting centroid path generation (with merge logic) from {start_item_id} to {end_item_id} with requested length {lreq}."

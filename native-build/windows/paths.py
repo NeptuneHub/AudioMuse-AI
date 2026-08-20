@@ -155,31 +155,24 @@ def _pgserver_pginstall():
         return None
 
 
-def pg_bin_dir():
+def _pg_subdir(name):
     pginstall = _pgserver_pginstall()
     if pginstall:
-        return os.path.join(pginstall, "bin")
+        return os.path.join(pginstall, name)
     if getattr(sys, "frozen", False):
-        return os.path.join(resource_root(), "pgsql", "bin")
+        return os.path.join(resource_root(), "pgsql", name)
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "vendor",
         "postgres",
         platform.machine().lower(),
-        "bin",
+        name,
     )
+
+
+def pg_bin_dir():
+    return _pg_subdir("bin")
 
 
 def pg_lib_dir():
-    pginstall = _pgserver_pginstall()
-    if pginstall:
-        return os.path.join(pginstall, "lib")
-    if getattr(sys, "frozen", False):
-        return os.path.join(resource_root(), "pgsql", "lib")
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "vendor",
-        "postgres",
-        platform.machine().lower(),
-        "lib",
-    )
+    return _pg_subdir("lib")

@@ -34,6 +34,8 @@ import threading
 from typing import List, Tuple
 import numpy as np
 
+from app_logging import sanitize_log_value
+
 from .ivf_manager import (
     multi_query_ids,
     find_nearest_neighbors_by_id,
@@ -380,6 +382,14 @@ def _multi_query_candidates(points: List[dict], n_results: int) -> List[str]:
     return multi_query_ids([pt['vector'] for pt in query_points], per_point_n)
 
 
+def _fill_album_defaults(row):
+    if 'album' not in row or not row['album']:
+        row['album'] = 'Unknown'
+    if 'album_artist' not in row or not row['album_artist']:
+        row['album_artist'] = 'Unknown'
+    return row
+
+
 def song_alchemy(
     add_items=None,
     subtract_items=None,
@@ -500,7 +510,7 @@ def song_alchemy(
 
     candidate_ids = candidate_ids[: max(n_results * 3, n_results)]
 
-    from app_helper import get_db
+    from database import get_db
 
     candidate_ids = [
         r['item_id']
@@ -510,99 +520,17 @@ def song_alchemy(
     proj_vectors = []
     proj_ids = []
     playlist_vec_by_marker = {}
-    add_meta = []
-    if add_items:
-        add_song_items = [item for item in add_items if item.get('type') == 'song']
-        if add_song_items:
-            add_song_ids = [item['id'] for item in add_song_items]
-            add_details = get_score_data_by_ids(add_song_ids)
-            add_map = {d['item_id']: d for d in add_details}
-            for item in add_song_items:
-                aid = item['id']
-                vec = get_vector_by_id(aid)
-                if vec is not None:
-                    proj_vectors.append(np.array(vec, dtype=float))
-                    proj_ids.append(f'__add_id__{aid}')
-                    add_meta.append(
-                        {
-                            'item_id': aid,
-                            'title': add_map.get(aid, {}).get('title'),
-                            'author': add_map.get(aid, {}).get('author'),
-                            'type': 'song',
-                        }
-                    )
 
-        add_anchor_items = [item for item in add_items if item.get('type') == 'anchor']
-        if add_anchor_items:
-            from database import get_alchemy_anchor_by_id
-
-            for item in add_anchor_items:
-                anchor_id = item['id']
-                anchor = get_alchemy_anchor_by_id(anchor_id)
-                if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
-                    vec = np.array(anchor['centroid'], dtype=float)
-                    proj_vectors.append(vec)
-                    proj_ids.append(f'__add_anchor__{anchor_id}')
-                    add_meta.append(
-                        {
-                            'item_id': anchor_id,
-                            'title': anchor.get('name', 'Anchor'),
-                            'author': '',
-                            'type': 'anchor',
-                        }
-                    )
-
-        add_mood_items = [item for item in add_items if item.get('type') == 'mood']
-        for item in add_mood_items:
-            mood_id = item['id']
-            vec = _get_mood_centroid_vector(mood_id)
-            if vec is not None:
-                proj_vectors.append(vec)
-                proj_ids.append(f'__add_mood__{mood_id}')
-                add_meta.append(
-                    {
-                        'item_id': mood_id,
-                        'title': _get_mood_label(mood_id),
-                        'author': '',
-                        'type': 'mood',
-                    }
-                )
-
-        add_artist_items = [item for item in add_items if item.get('type') == 'artist']
-        for item in add_artist_items:
-            artist_id = item['id']
-            logger.info(f"Processing ADD artist: {artist_id}")
-            gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(artist_id)
-            logger.info(f"Retrieved {len(gmm_vecs)} GMM components for artist {artist_id}")
-            for comp_idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
-                artist_name = artist_id
-                resolved = registry.artist_names_for_ids(
-                    [artist_id], ms_context.active_server_id()
-                ).get(str(artist_id))
-                if resolved:
-                    artist_name = resolved
-                logger.info(
-                    f"Added ADD artist component {comp_idx}: {artist_name} (weight={weight:.2f})"
-                )
-                add_meta.append(
-                    {
-                        'item_id': f'{artist_id}_comp{comp_idx}',
-                        'title': f'Component {comp_idx + 1} (w={weight:.2f})',
-                        'author': artist_name,
-                        'is_artist_component': True,
-                        'weight': weight,
-                    }
-                )
-
-        for p in add_anchor_points:
+    def _collect_playlist_components(anchor_points, marker_prefix, meta):
+        for p in anchor_points:
             if p['source_type'] != 'playlist':
                 continue
-            marker = f"__add_playlist__{p['source_id']}_c{p['comp_idx']}"
+            marker = f"{marker_prefix}{p['source_id']}_c{p['comp_idx']}"
             vec = np.array(p['vector'], dtype=float)
             proj_vectors.append(vec)
             proj_ids.append(marker)
             playlist_vec_by_marker[marker] = vec
-            add_meta.append(
+            meta.append(
                 {
                     'item_id': f"{p['source_id']}_c{p['comp_idx']}",
                     'title': p['label'],
@@ -612,40 +540,41 @@ def song_alchemy(
                 }
             )
 
-    sub_meta = []
-    if subtract_items:
-        subtract_song_items = [item for item in subtract_items if item.get('type') == 'song']
-        if subtract_song_items:
-            subtract_song_ids = [item['id'] for item in subtract_song_items]
-            sub_details = get_score_data_by_ids(subtract_song_ids)
-            sub_map = {d['item_id']: d for d in sub_details}
-            for item in subtract_song_items:
+    def _collect_side(items, anchor_points, marker, label, meta):
+        if not items:
+            return
+        song_items = [item for item in items if item.get('type') == 'song']
+        if song_items:
+            detail_map = {
+                d['item_id']: d
+                for d in get_score_data_by_ids([item['id'] for item in song_items])
+            }
+            for item in song_items:
                 sid = item['id']
                 vec = get_vector_by_id(sid)
                 if vec is not None:
                     proj_vectors.append(np.array(vec, dtype=float))
-                    proj_ids.append(f'__sub_id__{sid}')
-                    sub_meta.append(
+                    proj_ids.append(f'__{marker}_id__{sid}')
+                    meta.append(
                         {
                             'item_id': sid,
-                            'title': sub_map.get(sid, {}).get('title'),
-                            'author': sub_map.get(sid, {}).get('author'),
+                            'title': detail_map.get(sid, {}).get('title'),
+                            'author': detail_map.get(sid, {}).get('author'),
                             'type': 'song',
                         }
                     )
 
-        subtract_anchor_items = [item for item in subtract_items if item.get('type') == 'anchor']
-        if subtract_anchor_items:
+        anchor_items = [item for item in items if item.get('type') == 'anchor']
+        if anchor_items:
             from database import get_alchemy_anchor_by_id
 
-            for item in subtract_anchor_items:
+            for item in anchor_items:
                 anchor_id = item['id']
                 anchor = get_alchemy_anchor_by_id(anchor_id)
                 if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
-                    vec = np.array(anchor['centroid'], dtype=float)
-                    proj_vectors.append(vec)
-                    proj_ids.append(f'__sub_anchor__{anchor_id}')
-                    sub_meta.append(
+                    proj_vectors.append(np.array(anchor['centroid'], dtype=float))
+                    proj_ids.append(f'__{marker}_anchor__{anchor_id}')
+                    meta.append(
                         {
                             'item_id': anchor_id,
                             'title': anchor.get('name', 'Anchor'),
@@ -654,14 +583,13 @@ def song_alchemy(
                         }
                     )
 
-        subtract_mood_items = [item for item in subtract_items if item.get('type') == 'mood']
-        for item in subtract_mood_items:
+        for item in [i for i in items if i.get('type') == 'mood']:
             mood_id = item['id']
             vec = _get_mood_centroid_vector(mood_id)
             if vec is not None:
                 proj_vectors.append(vec)
-                proj_ids.append(f'__sub_mood__{mood_id}')
-                sub_meta.append(
+                proj_ids.append(f'__{marker}_mood__{mood_id}')
+                meta.append(
                     {
                         'item_id': mood_id,
                         'title': _get_mood_label(mood_id),
@@ -670,13 +598,15 @@ def song_alchemy(
                     }
                 )
 
-        subtract_artist_items = [item for item in subtract_items if item.get('type') == 'artist']
-        for item in subtract_artist_items:
+        for item in [i for i in items if i.get('type') == 'artist']:
             artist_id = item['id']
-            logger.info(f"Processing SUBTRACT artist: {artist_id}")
+            safe_artist_id = sanitize_log_value(artist_id)
+            logger.info("Processing %s artist: %s", label, safe_artist_id)
             gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(artist_id)
-            logger.info(f"Retrieved {len(gmm_vecs)} GMM components for artist {artist_id}")
-            for comp_idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
+            logger.info(
+                "Retrieved %d GMM components for artist %s", len(gmm_vecs), safe_artist_id
+            )
+            for comp_idx, (_vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
                 artist_name = artist_id
                 resolved = registry.artist_names_for_ids(
                     [artist_id], ms_context.active_server_id()
@@ -684,9 +614,9 @@ def song_alchemy(
                 if resolved:
                     artist_name = resolved
                 logger.info(
-                    f"Added SUBTRACT artist component {comp_idx}: {artist_name} (weight={weight:.2f})"
+                    f"Added {label} artist component {comp_idx}: {artist_name} (weight={weight:.2f})"
                 )
-                sub_meta.append(
+                meta.append(
                     {
                         'item_id': f'{artist_id}_comp{comp_idx}',
                         'title': f'Component {comp_idx + 1} (w={weight:.2f})',
@@ -696,23 +626,13 @@ def song_alchemy(
                     }
                 )
 
-        for p in sub_anchor_points:
-            if p['source_type'] != 'playlist':
-                continue
-            marker = f"__sub_playlist__{p['source_id']}_c{p['comp_idx']}"
-            vec = np.array(p['vector'], dtype=float)
-            proj_vectors.append(vec)
-            proj_ids.append(marker)
-            playlist_vec_by_marker[marker] = vec
-            sub_meta.append(
-                {
-                    'item_id': f"{p['source_id']}_c{p['comp_idx']}",
-                    'title': p['label'],
-                    'author': 'Playlist',
-                    'is_playlist_component': True,
-                    'weight': p['weight'],
-                }
-            )
+        _collect_playlist_components(anchor_points, f'__{marker}_playlist__', meta)
+
+    add_meta = []
+    _collect_side(add_items, add_anchor_points, 'add', 'ADD', add_meta)
+
+    sub_meta = []
+    _collect_side(subtract_items, sub_anchor_points, 'sub', 'SUBTRACT', sub_meta)
 
     if add_centroid is not None:
         proj_vectors.append(add_centroid)
@@ -858,7 +778,7 @@ def song_alchemy(
         for item in items:
             if item.get('type') == 'artist':
                 artist_id = item['id']
-                gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(artist_id)
+                _gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(artist_id)
                 for comp_idx, weight in enumerate(gmm_weights):
                     key = f"{artist_id}_{comp_idx}"
                     c = artist_comp_to_coord.get(key)
@@ -1007,10 +927,7 @@ def song_alchemy(
     details_map = {d['item_id']: d for d in details}
 
     for d in details_map.values():
-        if 'album' not in d or not d['album']:
-            d['album'] = 'Unknown'
-        if 'album_artist' not in d or not d['album_artist']:
-            d['album_artist'] = 'Unknown'
+        _fill_album_defaults(d)
 
     seed_song_ids = [sid for sid in (add_song_ids + subtract_song_ids) if sid]
     seen_signatures = set()
@@ -1057,19 +974,19 @@ def song_alchemy(
     raw_scores = [-float(c[1]) for c in scored_candidates]
 
     ordered = []
+
+    def _append_ordered(cid):
+        item = _fill_album_defaults(details_map.get(cid, {}))
+        item['distance'] = distances.get(cid)
+        item['embedding_2d'] = proj_map.get(cid)
+        ordered.append(item)
+
     if ids:
         try:
             if temperature is not None and math.isclose(float(temperature), 0.0):
                 ids_sorted = sorted(ids, key=lambda x: distances.get(x, float('inf')))
                 for cid in ids_sorted[:n_results]:
-                    item = details_map.get(cid, {})
-                    item['distance'] = distances.get(cid)
-                    item['embedding_2d'] = proj_map.get(cid)
-                    if 'album' not in item or not item['album']:
-                        item['album'] = 'Unknown'
-                    if 'album_artist' not in item or not item['album_artist']:
-                        item['album_artist'] = 'Unknown'
-                    ordered.append(item)
+                    _append_ordered(cid)
             else:
                 temps = [s / temperature for s in raw_scores]
                 max_t = max(temps) if temps else 0.0
@@ -1110,26 +1027,12 @@ def song_alchemy(
                     chosen.append(chosen_id)
 
                 for cid in chosen:
-                    item = details_map.get(cid, {})
-                    item['distance'] = distances.get(cid)
-                    item['embedding_2d'] = proj_map.get(cid)
-                    if 'album' not in item or not item['album']:
-                        item['album'] = 'Unknown'
-                    if 'album_artist' not in item or not item['album_artist']:
-                        item['album_artist'] = 'Unknown'
-                    ordered.append(item)
+                    _append_ordered(cid)
         except Exception as e:
             logger.warning(f"Sampling failed, falling back to deterministic selection: {e}")
             ids_sorted = sorted(ids, key=lambda x: distances.get(x, float('inf')))
             for i in ids_sorted[:n_results]:
-                item = details_map.get(i, {})
-                item['distance'] = distances.get(i)
-                item['embedding_2d'] = proj_map.get(i)
-                if 'album' not in item or not item['album']:
-                    item['album'] = 'Unknown'
-                if 'album_artist' not in item or not item['album_artist']:
-                    item['album_artist'] = 'Unknown'
-                ordered.append(item)
+                _append_ordered(i)
 
     filtered_details = []
     if filtered_out:
@@ -1139,10 +1042,7 @@ def song_alchemy(
             if fid in details_f_map:
                 fd = details_f_map[fid]
                 fd['embedding_2d'] = proj_map.get(fid)
-                if 'album' not in fd or not fd['album']:
-                    fd['album'] = 'Unknown'
-                if 'album_artist' not in fd or not fd['album_artist']:
-                    fd['album_artist'] = 'Unknown'
+                _fill_album_defaults(fd)
                 filtered_details.append(fd)
 
     centroid_2d = proj_map.get('__add_centroid__')

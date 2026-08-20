@@ -511,7 +511,7 @@ def _same_folder_conflicts(cur):
     return {server_id: list(ids) for server_id, ids in by_server.items()}
 
 
-def split_same_folder_merges(conn=None):
+def _split_false_merges(conn, advisory_lock, find_conflicts, done_message, failure_message):
     own_conn = conn is None
     db = conn or connect_raw()
     acquired = False
@@ -519,11 +519,11 @@ def split_same_folder_merges(conn=None):
     try:
         _force_no_autocommit(db)
         cur = db.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_SAME_FOLDER_ADVISORY_LOCK,))
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (advisory_lock,))
         acquired = bool(cur.fetchone()[0])
         if not acquired:
             return {'skipped': 'locked'}
-        by_server = _same_folder_conflicts(cur)
+        by_server = find_conflicts(cur)
         if not by_server:
             return {'split': 0, 'removed': 0}
         split = 0
@@ -536,19 +536,26 @@ def split_same_folder_merges(conn=None):
                 (server_id,),
             )
         db.commit()
-        logger.info(
-            "Same-folder cleanup: split %d merged group(s) that held two distinct "
-            "files from one folder (%d mapping(s) unmapped; each re-analyzes under "
-            "its own id).",
-            split, removed,
-        )
+        logger.info(done_message, split, removed)
         return {'split': split, 'removed': removed}
     except Exception:
         _rollback(db)
-        logger.exception("Same-folder cleanup failed; it retries on the next start")
+        logger.exception(failure_message)
         return {'error': 'failed'}
     finally:
-        _release(cur, db, acquired, own_conn, _SAME_FOLDER_ADVISORY_LOCK)
+        _release(cur, db, acquired, own_conn, advisory_lock)
+
+
+def split_same_folder_merges(conn=None):
+    return _split_false_merges(
+        conn,
+        _SAME_FOLDER_ADVISORY_LOCK,
+        _same_folder_conflicts,
+        "Same-folder cleanup: split %d merged group(s) that held two distinct "
+        "files from one folder (%d mapping(s) unmapped; each re-analyzes under "
+        "its own id).",
+        "Same-folder cleanup failed; it retries on the next start",
+    )
 
 
 def _group_chromaprints_disagree(fingerprints):
@@ -589,40 +596,12 @@ def _chromaprint_false_merges(cur):
 
 
 def split_chromaprint_false_merges(conn=None):
-    own_conn = conn is None
-    db = conn or connect_raw()
-    acquired = False
-    cur = None
-    try:
-        _force_no_autocommit(db)
-        cur = db.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_CHROMAPRINT_ADVISORY_LOCK,))
-        acquired = bool(cur.fetchone()[0])
-        if not acquired:
-            return {'skipped': 'locked'}
-        by_server = _chromaprint_false_merges(cur)
-        if not by_server:
-            return {'split': 0, 'removed': 0}
-        split = 0
-        removed = 0
-        for server_id, item_ids in by_server.items():
-            removed += _unmap_false_groups(cur, server_id, item_ids)
-            split += len(item_ids)
-            cur.execute(
-                "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
-                (server_id,),
-            )
-        db.commit()
-        logger.info(
-            "Chromaprint dedup: thanks to Chromaprint, %d false merge(s) were split - "
-            "merged groups whose files Chromaprint proved are different recordings "
-            "(%d mapping(s) unmapped; each re-analyzes under its own id).",
-            split, removed,
-        )
-        return {'split': split, 'removed': removed}
-    except Exception:
-        _rollback(db)
-        logger.exception("Chromaprint dedup failed; it retries on the next run")
-        return {'error': 'failed'}
-    finally:
-        _release(cur, db, acquired, own_conn, _CHROMAPRINT_ADVISORY_LOCK)
+    return _split_false_merges(
+        conn,
+        _CHROMAPRINT_ADVISORY_LOCK,
+        _chromaprint_false_merges,
+        "Chromaprint dedup: thanks to Chromaprint, %d false merge(s) were split - "
+        "merged groups whose files Chromaprint proved are different recordings "
+        "(%d mapping(s) unmapped; each re-analyzes under its own id).",
+        "Chromaprint dedup failed; it retries on the next run",
+    )

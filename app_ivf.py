@@ -626,7 +626,7 @@ def get_track_endpoint():
         return jsonify({"error": "Missing 'item_id' parameter."}), 400
 
     try:
-        from app_helper import get_score_data_by_ids
+        from database import get_score_data_by_ids
 
         # Accept either the server's provider id or a canonical id on input, and
         # never echo the internal fp_ id back: scope_results rewrites the response

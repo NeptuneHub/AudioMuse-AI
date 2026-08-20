@@ -24,9 +24,6 @@ Main Features:
 """
 
 import re
-import sys
-import types
-
 import numpy as np
 from unittest.mock import MagicMock, patch
 
@@ -439,11 +436,6 @@ class TestSemGroveRoundTrip:
             ok = build_and_store_sem_grove_index(db_conn=db)
         return ok, db, item_ids
 
-    def _app_helper_stub(self, db):
-        stub = types.ModuleType("app_helper")
-        stub.get_db = lambda: db
-        return stub
-
     def test_build_persists_one_ivf_directory_and_cells_covering_every_song(self):
         ok, db, item_ids = self._build_into_fake_db()
 
@@ -482,7 +474,7 @@ class TestSemGroveRoundTrip:
         assert ok is True
 
         with (
-            patch.dict(sys.modules, {"app_helper": self._app_helper_stub(db)}),
+            patch("database.get_db", return_value=db),
             patch.dict(sgm._SEM_GROVE_CACHE, {}, clear=False),
             patch("config.LYRICS_EMBEDDING_DIMENSION", self.LYRICS_DIM),
             patch("config.EMBEDDING_DIMENSION", self.AUDIO_DIM),
@@ -505,7 +497,7 @@ class TestSemGroveRoundTrip:
         db = _FakeIvfDb()
 
         with (
-            patch.dict(sys.modules, {"app_helper": self._app_helper_stub(db)}),
+            patch("database.get_db", return_value=db),
             patch.dict(sgm._SEM_GROVE_CACHE, {}, clear=False),
             patch("config.LYRICS_EMBEDDING_DIMENSION", self.LYRICS_DIM),
             patch("config.EMBEDDING_DIMENSION", self.AUDIO_DIM),
@@ -532,7 +524,7 @@ class TestSemGroveRoundTrip:
 
         seed = "song-0"
         with (
-            patch.dict(sys.modules, {"app_helper": self._app_helper_stub(db)}),
+            patch("database.get_db", return_value=db),
             patch.dict(sgm._SEM_GROVE_CACHE, {}, clear=False),
             patch("config.LYRICS_EMBEDDING_DIMENSION", self.LYRICS_DIM),
             patch("config.EMBEDDING_DIMENSION", self.AUDIO_DIM),

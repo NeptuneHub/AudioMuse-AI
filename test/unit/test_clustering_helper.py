@@ -179,7 +179,7 @@ class TestPrepareAndScaleData:
 
 
 class TestApplyClusteringModel:
-    @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
+    @patch('tasks.clustering_helper.clustering_use_gpu', lambda: False)
     def test_applies_kmeans_successfully(self):
         data = np.random.rand(50, 10)
         method_config = {'method': 'kmeans', 'params': {'n_clusters': 5}}
@@ -190,7 +190,7 @@ class TestApplyClusteringModel:
         assert len(labels) == 50
         assert len(set(labels)) <= 5
 
-    @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
+    @patch('tasks.clustering_helper.clustering_use_gpu', lambda: False)
     def test_applies_dbscan_successfully(self):
         data = np.random.rand(50, 10)
         method_config = {'method': 'dbscan', 'params': {'eps': 0.5, 'min_samples': 3}}
@@ -200,7 +200,7 @@ class TestApplyClusteringModel:
         assert labels is not None
         assert len(labels) == 50
 
-    @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
+    @patch('tasks.clustering_helper.clustering_use_gpu', lambda: False)
     def test_rejects_invalid_kmeans_params(self):
         data = np.random.rand(50, 10)
         method_config = {'method': 'kmeans', 'params': {'n_clusters': 1}}

@@ -15,15 +15,23 @@ glibc allocator defaults.
 
 Main Features:
 * comprehensive_memory_cleanup: one-shot gc + optional CUDA (PyTorch/CuPy) cache
-  release + ONNX pool reset + Linux malloc_trim(0) to return freed heap to the OS.
+  release + ONNX pool reset + a heap release to the OS: glibc malloc_trim(0) on
+  Linux, malloc_zone_pressure_relief on macOS, resolved once out of the running
+  image so no ldconfig lookup or subprocess is needed, and logged if unavailable.
 * handle_onnx_memory_error: detects ONNX/GPU OOM strings and drives cleanup,
   retry, or CPU-session fallback.
+* arm_idle_heap_trim: (re)arms the web process's idle heap trim, so the RSS a
+  burst of online searches leaves behind is handed back once it goes quiet.
+* note_request_started / note_request_finished: track in-flight requests so the
+  idle trim never runs while an endpoint is still being served. Arming the timer
+  is best-effort, so a failure there can never leave the count unbalanced.
 * SessionRecycler: interval counter that signals when to rebuild a long-lived
   ONNX session to bound its memory growth.
 """
 
 import gc
 import logging
+import threading
 from typing import Optional, Dict, Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -137,23 +145,122 @@ def reset_onnx_memory_pool() -> bool:
         return False
 
 
-def release_memory_to_os() -> bool:
-    gc.collect()
+_HEAP_TRIM = None
+
+
+def _resolve_heap_trim():
+    global _HEAP_TRIM
+
+    if _HEAP_TRIM is not None:
+        return _HEAP_TRIM
+    import ctypes
     import platform
 
-    if platform.system() != "Linux":
-        return False
+    system = platform.system()
+    if system not in ("Linux", "Darwin"):
+        _HEAP_TRIM = False
+        return _HEAP_TRIM
     try:
-        import ctypes
-        import ctypes.util
-
-        libc_name = ctypes.util.find_library("c")
-        if not libc_name:
-            return False
-        ctypes.CDLL(libc_name).malloc_trim(0)
-        return True
+        image = ctypes.CDLL(None)
+        if system == "Linux":
+            fn = image.malloc_trim
+            fn.argtypes = [ctypes.c_size_t]
+            fn.restype = ctypes.c_int
+        else:
+            fn = image.malloc_zone_pressure_relief
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            fn.restype = ctypes.c_size_t
     except (OSError, AttributeError):
+        logger.exception(
+            "No heap-release call could be resolved on %s: freed memory will stay "
+            "with the allocator instead of going back to the OS",
+            system,
+        )
+        _HEAP_TRIM = False
+        return _HEAP_TRIM
+    _HEAP_TRIM = (system, fn)
+    return _HEAP_TRIM
+
+
+def release_memory_to_os(full_gc: bool = True) -> bool:
+    if full_gc:
+        gc.collect()
+    else:
+        gc.collect(generation=1)
+    resolved = _resolve_heap_trim()
+    if not resolved:
         return False
+    system, fn = resolved
+    try:
+        if system == "Darwin":
+            fn(None, 0)
+        else:
+            fn(0)
+        return True
+    except OSError:
+        logger.exception("The %s heap-release call failed", system)
+        return False
+
+
+_IDLE_TRIM_TIMER = None
+_IDLE_TRIM_INIT_LOCK = threading.Lock()
+_ACTIVE_REQUESTS = 0
+_ACTIVE_REQUESTS_LOCK = threading.Lock()
+
+
+def _arm_quietly():
+    try:
+        arm_idle_heap_trim()
+    except Exception:
+        logger.exception("Could not arm the idle heap trim")
+
+
+def note_request_started():
+    global _ACTIVE_REQUESTS
+
+    with _ACTIVE_REQUESTS_LOCK:
+        _ACTIVE_REQUESTS += 1
+    _arm_quietly()
+
+
+def note_request_finished():
+    global _ACTIVE_REQUESTS
+
+    with _ACTIVE_REQUESTS_LOCK:
+        if _ACTIVE_REQUESTS > 0:
+            _ACTIVE_REQUESTS -= 1
+    _arm_quietly()
+
+
+def _idle_heap_trim():
+    with _ACTIVE_REQUESTS_LOCK:
+        if _ACTIVE_REQUESTS > 0:
+            return
+    if release_memory_to_os(full_gc=False):
+        logger.info("Idle heap trim: released the web process's free heap to the OS")
+
+
+def arm_idle_heap_trim():
+    global _IDLE_TRIM_TIMER
+
+    import config
+
+    if not _resolve_heap_trim():
+        return False
+
+    duration = config.FLASK_IDLE_HEAP_TRIM_SECONDS
+    if not duration or duration <= 0:
+        return False
+    timer = _IDLE_TRIM_TIMER
+    if timer is None:
+        from tasks.idle_unload import IdleUnloadTimer
+
+        with _IDLE_TRIM_INIT_LOCK:
+            if _IDLE_TRIM_TIMER is None:
+                _IDLE_TRIM_TIMER = IdleUnloadTimer()
+            timer = _IDLE_TRIM_TIMER
+    timer.arm(duration, _idle_heap_trim)
+    return True
 
 
 def comprehensive_memory_cleanup(

@@ -18,8 +18,6 @@ Main Features:
 * A non-fatal builder failure continues; a fatal IVF failure propagates and aborts
 """
 
-import sys
-import types
 from contextlib import ExitStack, contextmanager
 
 import pytest
@@ -53,12 +51,6 @@ def _seed_stale_globals():
     agm.artist_map = {0: "Stale Artist"}
     agm.reverse_artist_map = {"Stale Artist": 0}
     agm.artist_gmm_params = {"Stale Artist": {"means": [[0.9]], "weights": [1.0]}}
-
-
-def _fake_app_helper(conn):
-    mod = types.ModuleType("app_helper")
-    mod.get_db = MagicMock(return_value=conn)
-    return mod
 
 
 def _conn_returning(row):
@@ -98,7 +90,7 @@ class TestLoadArtistIndexForQuerying:
         fake_index = MagicMock()
         fake_index.__len__.return_value = len(fake_map)
         with (
-            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("database.get_db", return_value=conn),
             patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, fake_map, {})),
             patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"),
@@ -115,7 +107,7 @@ class TestLoadArtistIndexForQuerying:
         conn, cur = _conn_returning(None)
         _seed_stale_globals()
         with (
-            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("database.get_db", return_value=conn),
             patch("tasks.paged_ivf.has_paged_ivf", return_value=False) as has_ivf,
             patch("tasks.paged_ivf.load_paged_ivf_index") as load_ivf,
         ):
@@ -133,7 +125,7 @@ class TestLoadArtistIndexForQuerying:
         fake_index = MagicMock()
         _seed_stale_globals()
         with (
-            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("database.get_db", return_value=conn),
             patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, {0: "A"}, {})),
             patch.object(ibh, "load_segmented_blob", return_value=None) as load_blob,
@@ -156,7 +148,7 @@ class TestLoadArtistIndexForQuerying:
         parsed_gmm = {"Artist A": {"means": [[0.1]], "weights": [1.0]}}
         _seed_stale_globals()
         with (
-            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("database.get_db", return_value=conn),
             patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
             patch(
                 "tasks.paged_ivf.load_paged_ivf_index",

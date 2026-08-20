@@ -70,7 +70,7 @@ def _load_session(model_path: Optional[str] = None):
         opts.enable_cpu_mem_arena = False
         opts.enable_mem_pattern = False
         try:
-            from tasks.analysis.song import create_onnx_session, resolve_providers
+            from tasks.onnx_utils import create_onnx_session, resolve_providers
 
             _session = create_onnx_session(
                 path,

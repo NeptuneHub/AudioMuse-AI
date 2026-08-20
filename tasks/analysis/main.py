@@ -43,6 +43,10 @@ from config import (
     CHROMAPRINT_COLLECTION_ENABLED,
     CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN,
     CHROMAPRINT_BACKFILL_REPORT_SECONDS,
+    TASK_STATUS_PROGRESS,
+    TASK_STATUS_SUCCESS,
+    TASK_STATUS_FAILURE,
+    TASK_STATUS_REVOKED,
 )
 
 from ..mediaserver import (
@@ -55,18 +59,11 @@ from ..mediaserver import (
 from .. import chromaprint
 
 from flask_app import app
-from app_helper import (
-    save_task_status,
-    get_task_info_from_db,
-    get_task_statuses,
-    TASK_STATUS_PROGRESS,
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
-    TASK_STATUS_REVOKED,
-)
 from database import (
     persist_chromaprint,
     get_db,
+    save_task_status,
+    get_task_statuses,
 )
 from psycopg2 import InterfaceError, OperationalError
 
@@ -369,31 +366,21 @@ def _run_analysis_server_task_impl(
     albums_total=None,
 ):
     from ..clap_analyzer import is_clap_available
-
-    claimed_task_id = taskqueue.current_task_id()
-    current_task_id = task_id or claimed_task_id or str(uuid.uuid4())
+    from ..task_run import task_run_prologue, terminal_skip
 
     with app.app_context():
         if num_recent_albums < 0:
             logger.warning("num_recent_albums is negative, treating as 0 (all albums).")
             num_recent_albums = 0
 
-        task_info = get_task_info_from_db(current_task_id)
-        if claimed_task_id and task_info is None:
-            logger.info(
-                "Analysis task %s has no live DB claim; treating it as revoked.",
-                current_task_id,
-            )
-            return {
-                "status": TASK_STATUS_REVOKED,
-                "message": "Task was cancelled before execution.",
-            }
-        if task_info and task_info.get('status') in [
-            TASK_STATUS_SUCCESS,
-            TASK_STATUS_FAILURE,
-            TASK_STATUS_REVOKED,
-        ]:
-            return {"status": task_info.get('status'), "message": "Task already in terminal state."}
+        claimed_task_id, current_task_id, task_info = task_run_prologue(task_id)
+        skip = terminal_skip(
+            current_task_id, claimed_task_id, task_info,
+            revoked_message="Task was cancelled before execution.",
+            terminal_message="Task already in terminal state.",
+        )
+        if skip is not None:
+            return skip
 
         log_and_update_main = make_task_reporter(
             current_task_id, "main_analysis",

@@ -19,7 +19,7 @@ Main Features:
   guards against a second concurrent main task via `get_active_main_task`.
 """
 
-from flask import Blueprint, jsonify, request, render_template
+from flask import Blueprint, request, render_template
 import uuid
 import logging
 
@@ -27,7 +27,6 @@ import logging
 from config import (
     NUM_RECENT_ALBUMS,
     TOP_N_MOODS,
-    TASK_STATUS_NEW,
     CLEANING_CATALOGUE,
 )
 
@@ -35,15 +34,9 @@ from config import (
 import taskqueue
 
 # App helper functions
-from database import (
-    NON_BLOCKING_TASK_TYPES,
-    clean_up_previous_main_tasks,
-    get_active_main_task,
-    get_queue_blocking_task,
-    main_task_start_lock,
-)
+import database
 
-from app_helper import queue_busy_error_body, queue_race_error_body
+from app_helper import admit_and_enqueue_main_task
 
 logger = logging.getLogger(__name__)
 
@@ -135,40 +128,25 @@ def start_analysis_endpoint():
     # one live main task, so a double click or a cron tick landing on a manual
     # start loses the race in Postgres rather than in application code, and the
     # advisory lock that used to serialize check-then-act is gone with it.
-    # The gate MUST come before the archive. clean_up_previous_main_tasks
-    # REVOKES any live root, so archiving first cancelled the task that was
-    # running and then let this one straight through - the unique index could
-    # never fire because the row it would have collided with was just retired.
-    # Session-scoped and held across the archive's internal commit: the gate,
-    # clean_up_previous_main_tasks and the enqueue must be one critical section,
-    # or this start's archive can REVOKE a main task another caller (a cron
-    # tick, a second tab) enqueued between our gate read and our archive. The
-    # unique index only prevents two LIVE rows; it cannot stop an archive from
-    # retiring a row that was legitimately accepted first.
-    with main_task_start_lock():
-        active_task = get_queue_blocking_task()
-        if active_task:
-            return jsonify(queue_busy_error_body(active_task, 'analysis')), 409
-
-        clean_up_previous_main_tasks()
-        try:
-            taskqueue.enqueue(
-                'tasks.analysis.run_analysis_task',
-                args=(num_recent_albums, top_n_moods),
-                task_id=job_id,
-                task_type="main_analysis",
-                queue=taskqueue.QUEUE_HIGH,
-                details={"message": "Task queued."},
-            )
-        except taskqueue.TaskAlreadyRunning as exc:
-            active_task = get_active_main_task()
-            return jsonify(queue_race_error_body(exc.user_message, active_task)), exc.status_code
-        except Exception:
-            logger.exception("Could not queue the analysis task")
-            return jsonify({"error": "Could not queue the analysis. Check the logs."}), 500
-    return jsonify(
-        {"task_id": job_id, "task_type": "main_analysis", "status": TASK_STATUS_NEW}
-    ), 202
+    # Gate, archive and enqueue are one session-scoped critical section (see
+    # app_helper.admit_and_enqueue_main_task): the archive REVOKES every live
+    # root, so it must come after the gate, and the lock must span the archive's
+    # internal commit so this start cannot retire a task another caller enqueued
+    # between our gate read and our archive.
+    return admit_and_enqueue_main_task(
+        job_id=job_id,
+        task_type="main_analysis",
+        busy_label='analysis',
+        error_message="Could not queue the analysis. Check the logs.",
+        enqueue=lambda: taskqueue.enqueue(
+            'tasks.analysis.run_analysis_task',
+            args=(num_recent_albums, top_n_moods),
+            task_id=job_id,
+            task_type="main_analysis",
+            queue=taskqueue.QUEUE_HIGH,
+            details={"message": "Task queued."},
+        ),
+    )
 
 
 @analysis_bp.route('/api/cleaning/start', methods=['POST'])
@@ -216,34 +194,24 @@ def start_cleaning_endpoint():
     # Cleaning is the one start that also refuses while a SWEEP runs, because the
     # two write the same mappings; that stricter check stays a read, while the
     # unique index enforces the one-live-main-task rule itself.
-    # Same critical section as the analysis start: gate, archive and enqueue
-    # under the session start lock, so this start's archive cannot REVOKE a main
-    # task another caller enqueued between our gate read and our archive.
-    with main_task_start_lock():
-        active_task = get_queue_blocking_task() or get_active_main_task(task_type='server_sweep')
-        if active_task:
-            return jsonify(queue_busy_error_body(active_task, 'cleaning')), 409
-
-        clean_up_previous_main_tasks()
-        try:
-            taskqueue.enqueue(
-                'tasks.cleaning.identify_and_clean_orphaned_albums_task',
-                args=(clean_catalogue,),
-                task_id=job_id,
-                task_type="cleaning",
-                queue=taskqueue.QUEUE_HIGH,
-                details={"message": "Database cleaning task queued."},
-            )
-        except taskqueue.TaskAlreadyRunning as exc:
-            # The INSERT lost the admission race and its savepoint rolled back, so
-            # ``job_id`` names a row that was never written. Re-read the task that
-            # actually holds the gate - the same contract analysis and clustering use -
-            # so an API consumer polling the returned id does not get a 404.
-            active_task = get_active_main_task(exclude_task_types=NON_BLOCKING_TASK_TYPES)
-            return jsonify(queue_race_error_body(exc.user_message, active_task)), exc.status_code
-        except Exception:
-            logger.exception("Could not queue the cleaning task")
-            return jsonify({"error": "Could not queue the cleaning. Check the logs."}), 500
-    return jsonify(
-        {"task_id": job_id, "task_type": "cleaning", "status": TASK_STATUS_NEW}
-    ), 202
+    return admit_and_enqueue_main_task(
+        job_id=job_id,
+        task_type="cleaning",
+        busy_label='cleaning',
+        error_message="Could not queue the cleaning. Check the logs.",
+        blocking_gate=lambda: (
+            database.get_queue_blocking_task()
+            or database.get_active_main_task(task_type='server_sweep')
+        ),
+        race_read=lambda: database.get_active_main_task(
+            exclude_task_types=database.NON_BLOCKING_TASK_TYPES
+        ),
+        enqueue=lambda: taskqueue.enqueue(
+            'tasks.cleaning.identify_and_clean_orphaned_albums_task',
+            args=(clean_catalogue,),
+            task_id=job_id,
+            task_type="cleaning",
+            queue=taskqueue.QUEUE_HIGH,
+            details={"message": "Database cleaning task queued."},
+        ),
+    )

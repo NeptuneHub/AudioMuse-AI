@@ -127,7 +127,7 @@ def enqueue_server_alignment(server_id=None, message=None, task_id=None,
 def _make_reporter(task_id, label, parent_task_id=None):
     try:
         from flask_app import app
-        from app_helper import save_task_status
+        from database import save_task_status
         from config import TASK_STATUS_PROGRESS
     except Exception:
         app = None

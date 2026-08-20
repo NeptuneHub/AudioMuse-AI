@@ -30,8 +30,8 @@ from flask import Blueprint, request, jsonify
 from flasgger import swag_from
 
 import config
-from database import get_db
-from app_helper import load_map_projection, probe_catalogue_canonical_ids
+from database import get_db, load_map_projection
+from app_helper import probe_catalogue_canonical_ids
 from error import error_manager
 from error.error_dictionary import ERR_DB_QUERY
 

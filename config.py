@@ -506,6 +506,9 @@ FLASK_BIND_PORT = 8000
 FLASK_LOCAL_URL = f"http://127.0.0.1:{FLASK_BIND_PORT}/"
 # How long that wait may take before giving up and continuing anyway.
 FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "180"))
+# Web process idle heap trim: seconds of quiet before freed heap returns to the
+# OS (glibc malloc_trim). 0 disables it.
+FLASK_IDLE_HEAP_TRIM_SECONDS = float(os.environ.get("FLASK_IDLE_HEAP_TRIM_SECONDS", "60"))
 
 # --- Postgres task queue (taskqueue/) ---
 # The two queue names ('high' carries the user-facing coordinators so a fan-out
@@ -671,6 +674,17 @@ QUEUE_CONTROL_ACTION_WINDOW_SECONDS = (
 )
 # Errors kept on a failed root row. The user needs a sample, not a transcript.
 QUEUE_MAX_ERRORS_KEPT = max(1, int(os.getenv('QUEUE_MAX_ERRORS_KEPT', '5')))
+# The web process's hourly blob-table space sweep (see taskqueue.maintenance).
+# Autovacuum's threshold counts ROWS, so a table of a few huge blobs never
+# qualifies; this sweep VACUUMs what autovacuum cannot reach. Plain VACUUM only,
+# so readers and writers are never blocked. MIN_BYTES is the floor below which a
+# non-bytea table is left to autovacuum; a table is swept however big it is.
+BLOB_RECLAIM_MIN_BYTES = int(os.getenv('BLOB_RECLAIM_MIN_BYTES', str(1024 * 1024)))
+BLOB_RECLAIM_STARTUP_DELAY_SECONDS = float(os.getenv('BLOB_RECLAIM_STARTUP_DELAY_SECONDS', '120'))
+BLOB_RECLAIM_INTERVAL_SECONDS = float(os.getenv('BLOB_RECLAIM_INTERVAL_SECONDS', '3600'))
+BLOB_RECLAIM_LOCK_TIMEOUT = os.getenv('BLOB_RECLAIM_LOCK_TIMEOUT', '2s')
+BLOB_RECLAIM_STATEMENT_TIMEOUT = os.getenv('BLOB_RECLAIM_STATEMENT_TIMEOUT', '10min')
+BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS = float(os.getenv('BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS', '30'))
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")

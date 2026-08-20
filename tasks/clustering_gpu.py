@@ -17,6 +17,8 @@ without caring which backend is live.
 Main Features:
 * check_gpu_available / _check_cuda_driver_available: detect a real CUDA device
   once and cache the result, so a missing driver degrades silently to CPU.
+* clustering_use_gpu: the single backend decision (config flag) that callers
+  consult instead of re-deriving USE_GPU_CLUSTERING themselves.
 * GPU wrapper classes (GPUKMeans, GPUDBSCAN, GPUPCA, GPUGaussianMixture,
   GPUSpectralClustering) exposing the sklearn-style fit/predict surface.
 * KMeans, DBSCAN, PCA and SpectralClustering run on cuML; GaussianMixture has no
@@ -27,12 +29,16 @@ import logging
 
 import numpy as np
 
-from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS
+from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS, USE_GPU_CLUSTERING
 
 logger = logging.getLogger(__name__)
 
 _GPU_AVAILABLE = None
 _GPU_CHECK_DONE = False
+
+
+def clustering_use_gpu():
+    return bool(USE_GPU_CLUSTERING)
 
 
 def _check_cuda_driver_available():

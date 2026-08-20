@@ -27,7 +27,7 @@ from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 
 class TestGenerateSonicFingerprint:
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_generates_fingerprint_with_recent_songs(
@@ -63,7 +63,7 @@ class TestGenerateSonicFingerprint:
         assert result == []
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     def test_returns_empty_when_no_embeddings(self, mock_get_tracks, mock_top_songs):
         mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
         mock_get_tracks.return_value = []
@@ -73,7 +73,7 @@ class TestGenerateSonicFingerprint:
         assert result == []
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_weights_recent_songs_higher(
@@ -99,7 +99,7 @@ class TestGenerateSonicFingerprint:
         assert len(result) == 2
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_truncates_when_seed_songs_exceed_desired_size(
         self, mock_last_played, mock_get_tracks, mock_top_songs
@@ -115,7 +115,7 @@ class TestGenerateSonicFingerprint:
         assert len(result) == 5
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_deduplicates_ivf_results(
@@ -141,7 +141,7 @@ class TestGenerateSonicFingerprint:
         assert 's3' in item_ids
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_seed_songs_have_zero_distance(
@@ -160,7 +160,7 @@ class TestGenerateSonicFingerprint:
         assert result[1]['distance'] == 0.5
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_handles_invalid_last_played_date(
@@ -176,7 +176,7 @@ class TestGenerateSonicFingerprint:
         assert len(result) == 1
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_passes_user_credentials(
@@ -196,7 +196,7 @@ class TestGenerateSonicFingerprint:
         mock_last_played.assert_called_with('s1', user_creds=user_creds)
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_uses_config_default_for_num_neighbors(
@@ -216,7 +216,7 @@ class TestGenerateSonicFingerprint:
 
 class TestWeightedAverageCalculation:
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_calculates_weighted_average_correctly(
@@ -242,7 +242,7 @@ class TestWeightedAverageCalculation:
         assert query_vector[1] > 0
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_skips_songs_without_embeddings(
@@ -259,7 +259,7 @@ class TestWeightedAverageCalculation:
         assert result[0]['item_id'] == 's1'
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_returns_empty_when_all_embeddings_invalid(
         self, mock_last_played, mock_get_tracks, mock_top_songs
@@ -275,7 +275,7 @@ class TestWeightedAverageCalculation:
 
 class TestTimestampParsing:
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_over_six_microsecond_digits_yields_decay_weight_not_parse_fallback(
@@ -301,7 +301,7 @@ class TestTimestampParsing:
         )
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_future_last_played_date_is_clamped_to_a_weight_of_one(
@@ -326,7 +326,7 @@ class TestTimestampParsing:
 
 class TestIVFIntegration:
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_ivf_called_with_correct_parameters(
@@ -345,7 +345,7 @@ class TestIVFIntegration:
         assert call_kwargs['eliminate_duplicates'] is True
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_handles_ivf_exception(
@@ -361,7 +361,7 @@ class TestIVFIntegration:
         assert result == []
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_combines_seed_and_ivf_results_correctly(
@@ -390,7 +390,7 @@ class TestIVFIntegration:
 
 class TestEdgeCases:
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     def test_handles_tracks_with_partial_embeddings(
         self, mock_last_played, mock_get_tracks, mock_top_songs
@@ -410,7 +410,7 @@ class TestEdgeCases:
         assert item_ids == {'s1', 's3'}
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
-    @patch('app_helper.get_tracks_by_ids')
+    @patch('database.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
     @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
     def test_respects_total_desired_size_limit(

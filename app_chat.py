@@ -619,7 +619,7 @@ def _run_chat_pipeline(data, log_messages):
     # Prepare final results
     if all_songs:
         # NOTE: rating is NOT hard-filtered here. Like every other filter dim it
-        # is applied as a SOFT re-rank inside planner._rerank_pool (rating/5
+        # is applied as a SOFT re-rank inside tasks.ai.rerank (rating/5
         # gradient), so high-rated songs float up but nothing is removed.
 
         # --- Phase 1: Artist Diversity Cap on full collected pool ---

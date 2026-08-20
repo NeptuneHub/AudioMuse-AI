@@ -51,15 +51,11 @@ from flask_app import app
 # Import helper functions
 import app_server_context
 from app_helper import (
-    get_db,
-    close_db,
-    get_task_info_from_db,
     revoke_inline_task_row,
     cancel_job_and_children_recursive,
-    coerce_db_details,
     sanitize_task_details,
 )
-from database import init_db
+from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details
 from taskqueue.sql import CONTROL_TASK_TYPE
 from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 from config import (
@@ -200,6 +196,33 @@ def log_api_request():
         app.logger.info('API request: %s %s', request.method, request.path)
 
 
+@app.before_request
+def note_request_start():
+    if _is_worker:
+        return
+    try:
+        from tasks.memory_utils import note_request_started
+
+        g._heap_trim_counted = True
+        note_request_started()
+    except Exception:
+        app.logger.exception("Could not note the request start for the idle heap trim")
+
+
+@app.teardown_request
+def note_request_end(exc=None):
+    if _is_worker:
+        return
+    if not g.pop('_heap_trim_counted', False):
+        return
+    try:
+        from tasks.memory_utils import note_request_finished
+
+        note_request_finished()
+    except Exception:
+        app.logger.exception("Could not note the request finish for the idle heap trim")
+
+
 @app.route('/api/health')
 def health_check():
     """
@@ -241,6 +264,13 @@ def teardown_db(e=None):
         end_all_requests()
     except Exception:
         pass
+    if not _is_worker:
+        try:
+            from tasks.memory_utils import arm_idle_heap_trim
+
+            arm_idle_heap_trim()
+        except Exception:
+            logger.exception("Could not arm the idle heap trim")
 
 
 # Initialize the database schema when the application module is loaded.
@@ -1073,26 +1103,14 @@ def _register_blueprints(flask_app):
     from app_hyperbolic import hyperbolic_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
-    flask_app.register_blueprint(clustering_bp)
-    flask_app.register_blueprint(analysis_bp)
-    flask_app.register_blueprint(cron_bp)
-    flask_app.register_blueprint(ivf_bp)
-    flask_app.register_blueprint(sonic_fingerprint_bp)
-    flask_app.register_blueprint(path_bp)
     flask_app.register_blueprint(external_bp, url_prefix='/external')
-    flask_app.register_blueprint(alchemy_bp)
-    flask_app.register_blueprint(map_bp)
-    flask_app.register_blueprint(artist_similarity_bp)
-    flask_app.register_blueprint(clap_search_bp)
-    flask_app.register_blueprint(lyrics_search_bp)
-    flask_app.register_blueprint(sem_grove_bp)
-    flask_app.register_blueprint(backup_bp)
-    flask_app.register_blueprint(migration_bp)
-    flask_app.register_blueprint(dashboard_bp)
-    flask_app.register_blueprint(users_bp)
-    flask_app.register_blueprint(sync_bp)
-    flask_app.register_blueprint(music_servers_bp)
-    flask_app.register_blueprint(hyperbolic_bp)
+    for blueprint in (
+        clustering_bp, analysis_bp, cron_bp, ivf_bp, sonic_fingerprint_bp, path_bp,
+        alchemy_bp, map_bp, artist_similarity_bp, clap_search_bp, lyrics_search_bp,
+        sem_grove_bp, backup_bp, migration_bp, dashboard_bp, users_bp, sync_bp,
+        music_servers_bp, hyperbolic_bp,
+    ):
+        flask_app.register_blueprint(blueprint)
 
     try:
         from plugin.blueprint import plugins_bp
@@ -1149,7 +1167,7 @@ if not _is_worker:
             logger.warning(f"Failed to load artist similarity index at startup: {e}")
         # Also try to load precomputed map projection into memory if available
         try:
-            from app_helper import load_map_projection
+            from database import load_map_projection
 
             load_map_projection('main_map')
             logger.info("In-memory map projection loaded at startup.")
@@ -1223,6 +1241,48 @@ if not _is_worker:
         except Exception:
             logger.exception("Startup index load: heap release to the OS failed")
 
+        def _log_startup_index_profile():
+            try:
+                import database as _db
+                import tasks.artist_gmm_manager as _artist_mgr
+                import tasks.ivf_manager as _ivf_mgr
+                from tasks.clap_text_search import get_clap_cache_size
+                from tasks.lyrics_manager import get_cache_stats as _lyrics_stats
+                from tasks.sem_grove_manager import get_sem_grove_stats as _sg_stats
+
+                audio = len(_ivf_mgr.id_map) if _ivf_mgr.id_map else 0
+                artist = len(_artist_mgr.artist_map) if _artist_mgr.artist_map else 0
+                map_proj = (
+                    len(_db.MAP_PROJECTION_CACHE.get('id_map') or ())
+                    if _db.MAP_PROJECTION_CACHE
+                    else 0
+                )
+                artist_proj = (
+                    len(_db.ARTIST_PROJECTION_CACHE.get('component_map') or ())
+                    if _db.ARTIST_PROJECTION_CACHE
+                    else 0
+                )
+                clap = get_clap_cache_size()
+                lyrics = _lyrics_stats()
+                sg = _sg_stats()
+                logger.info(
+                    "Startup index profile: audio=%d artist=%d map=%d artist_proj=%d clap=%d "
+                    "lyrics=%d (%.2f MB) semgrove=%d (%.2f MB)",
+                    audio,
+                    artist,
+                    map_proj,
+                    artist_proj,
+                    clap,
+                    lyrics.get('song_count', 0),
+                    lyrics.get('memory_mb', 0.0),
+                    sg.get('song_count', 0),
+                    sg.get('memory_mb', 0.0),
+                )
+            except Exception:
+                logger.exception("Startup index profile logging failed")
+
+        _log_startup_index_profile()
+
         def _start_map_init_background():
             try:
                 from app_map import init_map_cache
@@ -1230,6 +1290,9 @@ if not _is_worker:
                 logger.info('Starting background map JSON cache build.')
                 with app.app_context():
                     init_map_cache()
+                from tasks.memory_utils import release_memory_to_os
+
+                release_memory_to_os()
                 logger.info('Background map JSON cache build finished.')
             except Exception:
                 logger.exception('Background init_map_cache failed')
@@ -1331,54 +1394,14 @@ if not _is_worker:
     dashboard_stats_thread = threading.Thread(target=_dashboard_stats_refresher_loop, daemon=True)
     dashboard_stats_thread.start()
 
-    # Reclaim the dead rows autovacuum will never get to. Its threshold counts ROWS
-    # (50 + 20% of the live count), so a table holding a handful of huge blobs needs
-    # ~50 rebuilds to qualify and sits at several times its useful size until then.
-    #
-    # Hourly, not minutes: dead rows only appear when an index rebuild or analysis
-    # replaces a blob, and a swept table drops to zero dead rows and leaves the set
-    # until it dirties again. Sweeping more often would only re-read those tables
-    # into the page cache for nothing.
-    #
-    # This deliberately lives in the WEB process, not the worker: a restore stops
-    # Flask before psql replaces the database (see app_backup), so this thread is
-    # already dead by the time a restore takes its ACCESS EXCLUSIVE locks. It is a
-    # daemon thread, so a setup-wizard restart kills it the same way; the connection
-    # drops and Postgres rolls the VACUUM back, which is crash-safe by design.
-    #
-    # A dedicated connection, because VACUUM cannot run inside a transaction and the
-    # app-context connections are mid-transaction by definition.
-    def _blob_reclaim_loop():
-        try:
-            from time import sleep
-            from database import connect_raw
-            from taskqueue import sql as queue_sql
-            from taskqueue.maintenance import reclaim_blob_space
+    # Reclaim the dead rows autovacuum will never get to (its threshold counts
+    # ROWS, so a table of a few huge blobs never qualifies). Runs in the WEB
+    # process, not the worker: a restore stops Flask before psql replaces the
+    # database, so this daemon thread is already dead by the time a restore takes
+    # its ACCESS EXCLUSIVE locks. Hourly, on its own connection.
+    from taskqueue.maintenance import start_blob_reclaim_thread
 
-            # Let the startup index loads finish before adding any VACUUM I/O.
-            sleep(120)
-            conn = None
-            while True:
-                try:
-                    if conn is None or conn.closed:
-                        conn = connect_raw(
-                            application_name=f"audiomuse-blob-reclaim-{os.getpid()}"
-                        )
-                    reclaim_blob_space(conn)
-                except Exception:
-                    app.logger.exception('blob space reclaim cycle failed')
-                    if conn is not None:
-                        try:
-                            conn.close()
-                        except Exception:
-                            app.logger.exception('closing the blob reclaim connection failed')
-                    conn = None
-                sleep(queue_sql.BLOB_RECLAIM_INTERVAL_SECONDS)
-        except Exception:
-            app.logger.exception('blob space reclaim main loop error')
-
-    blob_reclaim_thread = threading.Thread(target=_blob_reclaim_loop, daemon=True)
-    blob_reclaim_thread.start()
+    start_blob_reclaim_thread(app)
 else:
     logger.info('Running as a queue worker: skipping index loading, the event listener and the cron thread.')
 

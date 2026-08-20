@@ -34,41 +34,29 @@ def run_sonic_fingerprint_task(server_scope="all"):
     import time
 
     from flask_app import app
-    from database import get_task_info_from_db, save_task_status
+    from database import save_task_status
     from config import (
         SONIC_FINGERPRINT_CRON_PLAYLIST_NAME,
         TASK_STATUS_STARTED,
         TASK_STATUS_SUCCESS,
         TASK_STATUS_FAILURE,
-        TASK_STATUS_REVOKED,
     )
-    import taskqueue
 
     from .mediaserver import create_or_replace_playlist, registry
     from .ivf_manager import create_playlist_from_ids
 
-    task_id = taskqueue.current_task_id()
     with app.app_context():
-        if task_id:
-            task_info = get_task_info_from_db(task_id)
-            if task_info is None:
-                logger.info(
-                    "Sonic fingerprint task %s lost its DB claim; treating it as revoked.",
-                    task_id,
-                )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Sonic fingerprint was cancelled before execution.",
-                }
-            if task_info.get('status') in (
-                TASK_STATUS_SUCCESS,
-                TASK_STATUS_FAILURE,
-                TASK_STATUS_REVOKED,
-            ):
-                return {
-                    "status": task_info.get('status'),
-                    "message": "Sonic fingerprint task is already terminal.",
-                }
+        from .task_run import task_run_prologue, terminal_skip
+
+        claimed_task_id, task_id, task_info = task_run_prologue()
+        skip = terminal_skip(
+            task_id, claimed_task_id, task_info,
+            revoked_message="Sonic fingerprint was cancelled before execution.",
+            terminal_message="Sonic fingerprint task is already terminal.",
+        )
+        if skip is not None:
+            return skip
+        if claimed_task_id:
             save_task_status(
                 task_id, 'sonic_fingerprint', TASK_STATUS_STARTED, progress=0,
                 details={"message": "Building the sonic fingerprint playlist..."},
@@ -139,7 +127,7 @@ def run_sonic_fingerprint_task(server_scope="all"):
 
 
 def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
-    from app_helper import get_tracks_by_ids
+    from database import get_tracks_by_ids
 
     logger.info("Generating sonic fingerprint...")
 

@@ -265,7 +265,7 @@ class TestSearchResultStructure:
         query_embedding /= np.linalg.norm(query_embedding)
         mock_get_embedding.return_value = query_embedding
 
-        with patch('app_helper.get_score_data_by_ids') as mock_get_score_data:
+        with patch('database.get_score_data_by_ids') as mock_get_score_data:
             mock_get_score_data.return_value = [
                 {
                     'item_id': 'song1',
@@ -334,7 +334,7 @@ class TestSearchResultStructure:
         query_embedding /= np.linalg.norm(query_embedding)
         mock_get_embedding.return_value = query_embedding
 
-        with patch('app_helper.get_score_data_by_ids') as mock_get_score_data:
+        with patch('database.get_score_data_by_ids') as mock_get_score_data:
             mock_get_score_data.return_value = [
                 {'item_id': 'abc123', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
                 {'item_id': 'xyz789', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},

@@ -24,7 +24,7 @@ Main Features:
 * The pre-queue spellings survive only in the one-time migration
 * Renaming a status in config moves every statement, index DDL included
 * The shipped predicates keep their exact text
-* One parameterised statement drops the stale indexes of both families
+* One parameterised statement drops the stale indexes of every family
 """
 
 import importlib
@@ -151,7 +151,11 @@ class TestRenamingAStatusInConfigMovesEveryStatement:
             assert "IN ('DONE','BROKEN','DROPPED')" in statement
 
     def test_the_index_ddl_follows_the_rename_too(self, renamed):
-        for statement in (renamed._ONE_LIVE_MAIN_INDEX, renamed._ONE_LIVE_SWEEP_INDEX):
+        for statement in (
+            renamed._ONE_LIVE_MAIN_INDEX,
+            renamed._ONE_LIVE_SWEEP_INDEX,
+            renamed._LIVE_INDEX,
+        ):
             assert "IN ('QUEUED', 'BUSY')" in statement
         assert "WHERE status = 'QUEUED'" in renamed._CLAIM_INDEX
 
@@ -252,7 +256,7 @@ class TestTheShippedPredicatesKeepTheirExactText:
         assert "ON t.status = 'RUNNING'" in sql._WORKER_SNAPSHOT
 
 
-class TestOneParameterisedStatementDropsBothIndexFamilies:
+class TestOneParameterisedStatementDropsEveryIndexFamily:
     def test_the_like_pattern_is_a_parameter_not_a_literal(self):
         assert 'AND indexname LIKE %s' in sql._DROP_STALE_INDEXES
         assert 'idx_task_status_one_live' not in sql._DROP_STALE_INDEXES
@@ -263,8 +267,9 @@ class TestOneParameterisedStatementDropsBothIndexFamilies:
     def test_each_prefix_is_the_prefix_of_the_index_it_protects(self):
         assert sql.MAIN_INDEX_NAME.startswith(sql.MAIN_INDEX_PREFIX + '_')
         assert sql.SWEEP_INDEX_NAME.startswith(sql.SWEEP_INDEX_PREFIX + '_')
+        assert sql.LIVE_INDEX_NAME.startswith(sql.LIVE_INDEX_PREFIX + '_')
 
-    def test_both_families_run_the_same_statement_with_their_own_prefix(self):
+    def test_every_family_runs_the_same_statement_with_its_own_prefix(self):
         cur = _RecordingCursor()
 
         sql.ensure_schema(cur)
@@ -276,4 +281,5 @@ class TestOneParameterisedStatementDropsBothIndexFamilies:
         assert drops == [
             (sql.MAIN_INDEX_PREFIX + '%', sql.MAIN_INDEX_NAME),
             (sql.SWEEP_INDEX_PREFIX + '%', sql.SWEEP_INDEX_NAME),
+            (sql.LIVE_INDEX_PREFIX + '%', sql.LIVE_INDEX_NAME),
         ]

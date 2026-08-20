@@ -86,7 +86,7 @@ def _get_password_hasher():
 
 
 def _get_db():
-    from app_helper import get_db
+    from database import get_db
 
     return get_db()
 

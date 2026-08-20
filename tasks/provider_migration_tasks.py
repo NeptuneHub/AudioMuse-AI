@@ -253,13 +253,9 @@ def _finalize_restart_handshake(
         )
         return True
 
-    from database import MAIN_TASK_START_LOCK_KEY
-
+    taskqueue.take_start_lock(conn=conn)
     cur = conn.cursor()
     try:
-        cur.execute(
-            _XACT_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,)
-        )
         cur.execute(
             "SELECT status, state FROM migration_session WHERE id = %s FOR UPDATE",
             (session_id,),
@@ -315,7 +311,7 @@ def _finalize_restart_handshake(
         raise
 
     try:
-        from database import _collapse_finished_task, record_task_history
+        from database import collapse_finished_task, record_task_history
 
         duration = None
         try:
@@ -341,7 +337,7 @@ def _finalize_restart_handshake(
             details=payload,
             conn=conn,
         )
-        _collapse_finished_task(conn, task_id, MIGRATION_TASK_TYPE, None, TASK_STATUS_SUCCESS)
+        collapse_finished_task(conn, task_id, MIGRATION_TASK_TYPE, None, TASK_STATUS_SUCCESS)
     except Exception:
         logger.exception(
             "Provider migration %s committed SUCCESS but could not finalize its "
@@ -894,9 +890,8 @@ def _restart_handshake_details(session_id, restart_request_id):
 def _stage_restart_handshake(cur, task_id, session_id, restart_request_id):
     if not task_id:
         return
-    from database import MAIN_TASK_START_LOCK_KEY
+    taskqueue.take_start_lock(conn=cur.connection)
 
-    cur.execute(_XACT_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,))
     cur.execute(
         "SELECT status FROM task_status WHERE task_id = %s FOR UPDATE",
         (task_id,),
@@ -1204,8 +1199,6 @@ def _decoded_state(raw_state):
 
 
 def recover_provider_migration_restart_handshakes():
-    from database import MAIN_TASK_START_LOCK_KEY
-
     conn = _get_dedicated_conn()
     try:
         try:
@@ -1249,9 +1242,7 @@ def recover_provider_migration_restart_handshakes():
 
             recovery_id = str(uuid.uuid4())
             try:
-                cur.execute(
-                    _XACT_LOCK_SQL, (MAIN_TASK_START_LOCK_KEY,)
-                )
+                taskqueue.take_start_lock(conn=conn)
                 cur.execute(
                     "SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,)
                 )
@@ -1394,7 +1385,7 @@ def resume_provider_migration_restart(session_id, root_task_id):
 
 
 def dry_run_provider_migration(session_id, allow_title_artist_only=False):
-    from app import app
+    from flask_app import app
 
     with app.app_context():
         import app_provider_migration
@@ -1413,7 +1404,7 @@ def dry_run_provider_migration(session_id, allow_title_artist_only=False):
 
 
 def source_refresh_provider_migration(session_id):
-    from app import app
+    from flask_app import app
 
     with app.app_context():
         import app_provider_migration

@@ -9,9 +9,7 @@
 """App-layer helpers composing the data and queue layers for the web/task tiers.
 
 Orchestration and presentation glue on top of ``database`` and ``taskqueue``.
-This is NOT the database layer: all SQL lives in ``database.py``. It also
-re-exports the most-used ``database`` handles so the many modules doing
-``from app_helper import get_db, save_task_status, ...`` stay untouched.
+This is NOT the database layer: all SQL lives in ``database.py``.
 
 Main Features:
 * ``cancel_job_and_children_recursive`` tombstones every task row and notifies
@@ -29,42 +27,30 @@ import json
 import logging
 import time
 
+from flask import jsonify
 from psycopg2.extras import DictCursor
 import numpy as np
 
 import database
 import taskqueue
 from taskqueue.sql import CONTROL_TASK_TYPE
-from database import (  # noqa: F401
+from database import (
     get_db,
-    close_db,
     coerce_db_details,
     INLINE_FLASK_TASK_TYPES,
     save_task_status,
-    record_task_history,
-    _build_task_note,
     get_score_data_by_ids,
-    load_map_projection,
     get_task_info_from_db,
-    get_task_statuses,
-    main_task_start_lock,
-    get_tracks_by_ids,
-    save_track_analysis_and_embedding,
-    # Used internally by the build_and_store_* projection orchestration below.
     save_map_projection,
     save_artist_projection,
 )
-from config import (  # noqa: F401
+from config import (
     STRATIFIED_GENRES,
     OTHER_FEATURE_LABELS,
     TASK_STATUS_NEW,
     TASK_STATUS_RUNNING,
-    TASK_STATUS_PENDING,
-    TASK_STATUS_STARTED,
-    TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAIL,
-    TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
 
@@ -104,6 +90,43 @@ def queue_race_error_body(exc_message, active_task):
     payload["task_id"] = active_task["task_id"] if active_task else None
     payload["status"] = active_task["status"] if active_task else None
     return payload
+
+
+def admit_and_enqueue_main_task(
+    *,
+    job_id,
+    task_type,
+    busy_label,
+    error_message,
+    enqueue,
+    blocking_gate=None,
+    race_read=None,
+):
+    # Gate, archive and enqueue are one session-scoped critical section: the
+    # archive REVOKES every live root, so doing it before the gate would let a
+    # start cancel the task that was running and then win the unique index; and
+    # a session lock held across the archive's internal commit stops this start
+    # from retiring a main task another caller enqueued between our gate read
+    # and our archive.
+    with database.main_task_start_lock():
+        active_task = (
+            blocking_gate() if blocking_gate else database.get_queue_blocking_task()
+        )
+        if active_task:
+            return jsonify(queue_busy_error_body(active_task, busy_label)), 409
+
+        database.clean_up_previous_main_tasks()
+        try:
+            enqueue()
+        except taskqueue.TaskAlreadyRunning as exc:
+            active = race_read() if race_read else database.get_active_main_task()
+            return jsonify(queue_race_error_body(exc.user_message, active)), exc.status_code
+        except Exception:
+            logger.exception("Could not queue the %s task", task_type)
+            return jsonify({"error": error_message}), 500
+    return jsonify(
+        {"task_id": job_id, "task_type": task_type, "status": TASK_STATUS_NEW}
+    ), 202
 
 
 def probe_catalogue_canonical_ids():
@@ -198,11 +221,11 @@ def sanitize_task_details(details, state, task_type=None):
     return details
 
 
-def top_stratified_genre(mood_vector):
-    if not mood_vector or not isinstance(mood_vector, str):
+def _top_scored_label(packed, allowed):
+    if not packed or not isinstance(packed, str):
         return None
     scores = {}
-    for part in mood_vector.split(','):
+    for part in packed.split(','):
         label, _, value = part.partition(':')
         label = label.strip()
         if not label:
@@ -211,33 +234,18 @@ def top_stratified_genre(mood_vector):
             scores[label] = float(value)
         except ValueError:
             continue
-    candidates = [g for g in STRATIFIED_GENRES if g in scores]
+    candidates = [name for name in allowed if name in scores]
     if not candidates:
         return None
     return max(candidates, key=scores.get)
+
+
+def top_stratified_genre(mood_vector):
+    return _top_scored_label(mood_vector, STRATIFIED_GENRES)
 
 
 def top_clap_mood(other_features):
-    # Dominant CLAP mood label from the stored other_features (danceable /
-    # aggressive / happy / party / relaxed / sad), mirroring how top genre is
-    # derived from mood_vector. Returns None when no mood is present so callers
-    # can skip the mood entirely instead of inventing one.
-    if not other_features or not isinstance(other_features, str):
-        return None
-    scores = {}
-    for part in other_features.split(','):
-        label, _, value = part.partition(':')
-        label = label.strip()
-        if not label:
-            continue
-        try:
-            scores[label] = float(value)
-        except ValueError:
-            continue
-    candidates = [m for m in OTHER_FEATURE_LABELS if m in scores]
-    if not candidates:
-        return None
-    return max(candidates, key=scores.get)
+    return _top_scored_label(other_features, OTHER_FEATURE_LABELS)
 
 
 def attach_song_features(rows, id_key='item_id'):

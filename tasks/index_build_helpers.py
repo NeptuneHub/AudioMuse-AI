@@ -19,10 +19,14 @@ Main Features:
 * build_and_store_index_streaming and the segmented-blob helpers: split large
   id maps and index payloads into row-sized fragments (SQL identifiers are
   regex-validated before interpolation), plus artist-metadata pack/unpack.
+* load_index_into_cache: the one loader the CLAP and lyrics search caches share,
+  so a change to how a cache is populated cannot land on only one of them.
 * load_segmented_blob reads the part names first and then one part per round
   trip, so a multi-hundred-MB index never has every segment resident at once;
   segmented_blob_length answers an existence/size probe in SQL, leaving the
-  blob bytes on the server.
+  blob bytes on the server, and segmented_blob_complete checks that every
+  segment of a partitioned blob is present without selecting the bytes, so a
+  truncated index is caught by its probe instead of crashing the loader.
 """
 
 from __future__ import annotations
@@ -445,6 +449,12 @@ def store_segmented_blob(
             )
 
 
+def _segment_parts_complete(total_expected, part_numbers):
+    return len(part_numbers) == total_expected and set(part_numbers) == set(
+        range(1, total_expected + 1)
+    )
+
+
 def load_segmented_blob(
     db_conn,
     target_table: str,
@@ -488,10 +498,11 @@ def load_segmented_blob(
             )
         ordered.append((part_no, row_name))
 
-    if total_expected is None or len(ordered) != total_expected:
+    part_numbers = [part_no for part_no, _ in ordered]
+    if total_expected is None or not _segment_parts_complete(total_expected, part_numbers):
         raise ValueError(
             f"Incomplete segmented blob for '{name}' in {target_table}: "
-            f"expected {total_expected}, found {len(ordered)}."
+            f"expected parts 1..{total_expected}, found {sorted(part_numbers)}."
         )
 
     ordered.sort(key=lambda p: p[0])
@@ -541,6 +552,47 @@ def segmented_blob_length(
     if not row or not row[0]:
         return None
     return int(row[0])
+
+
+def segmented_blob_complete(
+    db_conn,
+    target_table: str,
+    name: str,
+) -> bool:
+    _validate_sql_identifier(target_table, "table")
+    _validate_sql_identifier(name, "name")
+
+    select_single_sql = (
+        f"SELECT 1 FROM {target_table} WHERE name = %s AND blob_data IS NOT NULL"
+    )
+    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE '\\'"
+    like_pattern = name.replace("_", r"\_") + r"\_%\_%"
+    seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
+
+    with db_conn.cursor() as cur:
+        cur.execute(select_single_sql, (name,))
+        if cur.fetchone():
+            return True
+        cur.execute(select_names_sql, (like_pattern,))
+        seg_names = [r[0] for r in cur.fetchall()]
+
+    total_expected: Optional[int] = None
+    part_numbers: List[int] = []
+    for row_name in seg_names:
+        m = seg_pattern.match(row_name)
+        if not m:
+            continue
+        part_no = int(m.group(1))
+        total = int(m.group(2))
+        if total_expected is None:
+            total_expected = total
+        elif total_expected != total:
+            return False
+        part_numbers.append(part_no)
+
+    if total_expected is None:
+        return False
+    return _segment_parts_complete(total_expected, part_numbers)
 
 
 _ARTIST_META_MAGIC = b"ARMD"
@@ -683,3 +735,23 @@ def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]
         }
 
     return artist_map, artist_gmms
+
+
+def load_index_into_cache(table, dimension, metric, label, cache):
+    from database import get_db
+    from .paged_ivf import load_index_auto
+
+    try:
+        loaded = load_index_auto(get_db(), table, dimension, metric, label=label)
+        if loaded is None:
+            return False
+        index, id_map, reverse_id_map = loaded
+        cache['index'] = index
+        cache['id_map'] = id_map
+        cache['reverse_id_map'] = reverse_id_map
+        cache['loaded'] = True
+        logger.info("%s index loaded from database with %d items.", label, len(id_map))
+        return True
+    except Exception:
+        logger.exception("Failed to load %s index from DB", label)
+        return False

@@ -312,7 +312,7 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
     record_task_history(task_id, task_type, status, duration_s, details=details)
 
 
-def _collapse_finished_task(db, task_id, task_type, parent_task_id, status):
+def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
     if parent_task_id is not None or not task_type:
         return 0
     if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
@@ -469,7 +469,7 @@ def save_task_status(
     except Exception as e_hist:
         logger.debug(f"history record skipped for {task_id}: {e_hist}")
 
-    _collapse_finished_task(db, task_id, task_type, stored_parent_task_id, status)
+    collapse_finished_task(db, task_id, task_type, stored_parent_task_id, status)
     return True
 
 

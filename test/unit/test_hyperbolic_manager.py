@@ -274,7 +274,7 @@ def test_deduplicate_and_cap_results_matches_similar_song_rules(monkeypatch):
         {"item_id": "d7", "title": "No Author", "author": ""},
     ]
     monkeypatch.setattr(
-        "app_helper.get_score_data_by_ids",
+        "database.get_score_data_by_ids",
         lambda ids: [d for d in fake_details if d["item_id"] in ids],
     )
     results = [
@@ -439,7 +439,7 @@ def _rebuild_tree_cache(mapping, score_rows=None, mood_centroids=None,
     with patch.object(hm, "_tree_build_targets",
                       return_value=[(hm._DEFAULT_SERVER_KEY, None, True)]), \
          patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
-         patch("app_helper.get_score_data_by_ids", return_value=score_rows or []), \
+         patch("database.get_score_data_by_ids", return_value=score_rows or []), \
          patch.object(hm, "_load_projected_mood_centroids",
                       return_value=mood_centroids if mood_centroids is not None else []), \
          patch.object(hm, "_load_projected_genre_subgenres",
@@ -502,7 +502,7 @@ def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
                 hm, "_tree_build_targets",
                 return_value=[(hm._DEFAULT_SERVER_KEY, None, True), ("sec", "sec", False)]), \
              patch.object(hm, "_fetch_all_poincare_rows", side_effect=_fake_fetch), \
-             patch("app_helper.get_score_data_by_ids", return_value=[]), \
+             patch("database.get_score_data_by_ids", return_value=[]), \
              patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
              patch.object(hm, "_load_projected_genre_subgenres", return_value={}), \
              patch.object(hm, "_persist_tree_cache_blob", side_effect=_fake_persist):
@@ -554,7 +554,7 @@ def test_tree_for_server_resolves_default_by_its_real_server_id(monkeypatch):
                 hm, "_tree_build_targets",
                 return_value=[(hm._DEFAULT_SERVER_KEY, "def-real", True)]), \
              patch.object(hm, "_fetch_all_poincare_rows", return_value=default_mapping), \
-             patch("app_helper.get_score_data_by_ids", return_value=[]), \
+             patch("database.get_score_data_by_ids", return_value=[]), \
              patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
              patch.object(hm, "_load_projected_genre_subgenres", return_value={}), \
              patch.object(hm, "_persist_tree_cache_blob"):
@@ -989,7 +989,7 @@ def test_build_tree_cache_raises_when_persist_fails(monkeypatch):
     hm.reset_hyperbolic_tree_cache()
     try:
         with patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
-             patch("app_helper.get_score_data_by_ids", return_value=[]), \
+             patch("database.get_score_data_by_ids", return_value=[]), \
              patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
              patch.object(hm, "_persist_tree_cache_blob", side_effect=RuntimeError("db exploded")):
             with pytest.raises(RuntimeError, match="db exploded"):
@@ -1004,8 +1004,10 @@ def test_build_tree_cache_persists_a_loadable_blob(monkeypatch):
     hm.reset_hyperbolic_tree_cache()
     try:
         with patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
-             patch("app_helper.get_score_data_by_ids", return_value=[]), \
-             patch("app_helper.get_db", return_value=MagicMock()), \
+             patch("database.get_score_data_by_ids", return_value=[]), \
+             patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
+             patch.object(hm, "_load_projected_genre_subgenres", return_value={}), \
+             patch("database.get_db", return_value=MagicMock()), \
              patch("tasks.index_build_helpers.store_segmented_blob", side_effect=fake_store):
             hm.build_hyperbolic_tree_cache()
         built_node_ids = set(hm._TREE_CACHE["nodes"].keys())
@@ -1013,7 +1015,7 @@ def test_build_tree_cache_persists_a_loadable_blob(monkeypatch):
         assert store.get(hm._TREE_CACHE_BLOB_NAME)
 
         hm.reset_hyperbolic_tree_cache()
-        with patch("app_helper.get_db", return_value=MagicMock()), \
+        with patch("database.get_db", return_value=MagicMock()), \
              patch("tasks.index_build_helpers.load_segmented_blob", side_effect=fake_load):
             track_count = hm.load_hyperbolic_tree_cache()
         assert track_count == len(mapping)
@@ -1028,8 +1030,10 @@ def test_load_tree_cache_never_scans_the_embedding_table_or_reclusters(monkeypat
     store, fake_store, fake_load = _fake_segmented_store()
     hm.reset_hyperbolic_tree_cache()
     with patch.object(hm, "_fetch_all_poincare_rows", return_value=mapping), \
-         patch("app_helper.get_score_data_by_ids", return_value=[]), \
-         patch("app_helper.get_db", return_value=MagicMock()), \
+         patch("database.get_score_data_by_ids", return_value=[]), \
+         patch.object(hm, "_load_projected_mood_centroids", return_value=[]), \
+         patch.object(hm, "_load_projected_genre_subgenres", return_value={}), \
+         patch("database.get_db", return_value=MagicMock()), \
          patch("tasks.index_build_helpers.store_segmented_blob", side_effect=fake_store):
         hm.build_hyperbolic_tree_cache()
 
@@ -1037,7 +1041,7 @@ def test_load_tree_cache_never_scans_the_embedding_table_or_reclusters(monkeypat
     try:
         with patch.object(hm, "_fetch_all_poincare_rows") as fetch_rows, \
              patch.object(hm, "_fit_clusters") as fit_clusters, \
-             patch("app_helper.get_db", return_value=MagicMock()), \
+             patch("database.get_db", return_value=MagicMock()), \
              patch("tasks.index_build_helpers.load_segmented_blob", side_effect=fake_load):
             track_count = hm.load_hyperbolic_tree_cache()
     finally:
@@ -1050,7 +1054,7 @@ def test_load_tree_cache_never_scans_the_embedding_table_or_reclusters(monkeypat
 def test_load_tree_cache_empty_when_nothing_persisted(monkeypatch):
     hm.reset_hyperbolic_tree_cache()
     try:
-        with patch("app_helper.get_db", return_value=MagicMock()), \
+        with patch("database.get_db", return_value=MagicMock()), \
              patch("tasks.index_build_helpers.load_segmented_blob", return_value=None):
             track_count = hm.load_hyperbolic_tree_cache()
         node, flat = hm.build_hyperbolic_tree(None)
@@ -1079,7 +1083,7 @@ def test_load_tree_cache_discards_an_old_schema_blob(monkeypatch):
 
     hm.reset_hyperbolic_tree_cache()
     try:
-        with patch("app_helper.get_db", return_value=MagicMock()), \
+        with patch("database.get_db", return_value=MagicMock()), \
              patch("tasks.index_build_helpers.load_segmented_blob", return_value=stale), \
              patch.object(hm, "_delete_tree_cache_blob", side_effect=_fake_delete):
             track_count = hm.load_hyperbolic_tree_cache()

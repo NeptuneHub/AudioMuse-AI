@@ -17,7 +17,7 @@ Main Features:
   as a `main_clustering` task).
 """
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, request
 import uuid
 import logging
 
@@ -65,18 +65,10 @@ from config import (
 
 # Task queue
 import taskqueue
-from config import TASK_STATUS_NEW
 
 
 # App helper functions
-from database import (
-    clean_up_previous_main_tasks,
-    get_active_main_task,
-    get_queue_blocking_task,
-    main_task_start_lock,
-)
-
-from app_helper import queue_busy_error_body, queue_race_error_body
+from app_helper import admit_and_enqueue_main_task
 
 
 logger = logging.getLogger(__name__)
@@ -374,35 +366,22 @@ def start_clustering_endpoint():
 
     # The gate and the claim are one INSERT: the partial unique index allows a
     # single live main task, so two starts cannot both see "nothing running".
-    # The gate MUST come before the archive. clean_up_previous_main_tasks
-    # REVOKES any live root, so archiving first cancelled the task that was
-    # running and then let this one straight through - the unique index could
-    # never fire because the row it would have collided with was just retired.
-    # Session-scoped and held across the archive's internal commit: the gate,
-    # clean_up_previous_main_tasks and the enqueue must be one critical section,
-    # or this start's archive can REVOKE a main task another caller enqueued
+    # Gate, archive and enqueue are one session-scoped critical section (see
+    # app_helper.admit_and_enqueue_main_task): the archive REVOKES every live
+    # root, so it must come after the gate, and the lock must span the archive's
+    # internal commit so this start cannot retire a task another caller enqueued
     # between our gate read and our archive.
-    with main_task_start_lock():
-        active_task = get_queue_blocking_task()
-        if active_task:
-            return jsonify(queue_busy_error_body(active_task, 'clustering')), 409
-
-        clean_up_previous_main_tasks()
-        try:
-            taskqueue.enqueue(
-                'tasks.clustering.run_clustering_task',
-                kwargs=clustering_kwargs,
-                task_id=job_id,
-                task_type="main_clustering",
-                queue=taskqueue.QUEUE_HIGH,
-                details={"message": "Task queued."},
-            )
-        except taskqueue.TaskAlreadyRunning as exc:
-            active_task = get_active_main_task()
-            return jsonify(queue_race_error_body(exc.user_message, active_task)), exc.status_code
-        except Exception:
-            logger.exception("Could not queue the clustering task")
-            return jsonify({"error": "Could not queue the clustering. Check the logs."}), 500
-    return jsonify(
-        {"task_id": job_id, "task_type": "main_clustering", "status": TASK_STATUS_NEW}
-    ), 202
+    return admit_and_enqueue_main_task(
+        job_id=job_id,
+        task_type="main_clustering",
+        busy_label='clustering',
+        error_message="Could not queue the clustering. Check the logs.",
+        enqueue=lambda: taskqueue.enqueue(
+            'tasks.clustering.run_clustering_task',
+            kwargs=clustering_kwargs,
+            task_id=job_id,
+            task_type="main_clustering",
+            queue=taskqueue.QUEUE_HIGH,
+            details={"message": "Task queued."},
+        ),
+    )

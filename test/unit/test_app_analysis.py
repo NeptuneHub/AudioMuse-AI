@@ -28,6 +28,7 @@ from unittest.mock import patch
 from flask import Flask
 
 import config
+import database
 import app_analysis
 import taskqueue
 from app_analysis import analysis_bp
@@ -42,9 +43,9 @@ def queued(monkeypatch):
         return kwargs['task_id']
 
     monkeypatch.setattr(app_analysis.taskqueue, 'enqueue', _fake_enqueue)
-    monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
-    monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
-    monkeypatch.setattr(app_analysis, 'get_active_main_task', lambda **_kw: None)
+    monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
+    monkeypatch.setattr(database, 'get_active_main_task', lambda **_kw: None)
     return calls
 
 
@@ -70,9 +71,9 @@ def _lose_the_admission_race(monkeypatch, winner):
         attempted.append(func)
         raise taskqueue.TaskAlreadyRunning()
 
-    monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
-    monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
-    monkeypatch.setattr(app_analysis, 'get_active_main_task', _active)
+    monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
+    monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
+    monkeypatch.setattr(database, 'get_active_main_task', _active)
     monkeypatch.setattr(app_analysis.taskqueue, 'enqueue', _reject)
     return attempted
 
@@ -113,10 +114,10 @@ class TestStartAnalysis:
     def test_previous_main_tasks_are_archived_before_the_claim(self, client, monkeypatch):
         order = []
         monkeypatch.setattr(
-            app_analysis, 'clean_up_previous_main_tasks', lambda: order.append('cleanup')
+            database, 'clean_up_previous_main_tasks', lambda: order.append('cleanup')
         )
-        monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
-        monkeypatch.setattr(app_analysis, 'get_active_main_task', lambda **_kw: None)
+        monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
+        monkeypatch.setattr(database, 'get_active_main_task', lambda **_kw: None)
         monkeypatch.setattr(
             app_analysis.taskqueue, 'enqueue',
             lambda func, **kwargs: order.append('enqueue') or kwargs['task_id'],
@@ -129,9 +130,9 @@ class TestStartAnalysis:
     def test_a_live_main_task_the_gate_sees_answers_409_and_queues_nothing(
         self, client, monkeypatch
     ):
-        monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
         monkeypatch.setattr(
-            app_analysis, 'get_queue_blocking_task',
+            database, 'get_queue_blocking_task',
             lambda **_kw: {
                 'task_id': 'live-1', 'task_type': 'main_analysis',
                 'status': config.TASK_STATUS_RUNNING,
@@ -185,9 +186,9 @@ class TestStartAnalysis:
         assert response.get_json()['task_id'] is None
 
     def test_a_queue_failure_answers_500(self, client, monkeypatch):
-        monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
-        monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
-        monkeypatch.setattr(app_analysis, 'get_active_main_task', lambda **_kw: None)
+        monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
+        monkeypatch.setattr(database, 'get_active_main_task', lambda **_kw: None)
 
         def _boom(func, **kwargs):
             raise RuntimeError('database is gone')
@@ -225,15 +226,15 @@ class TestStartCleaning:
     def test_cleaning_refuses_while_a_sweep_runs_which_analysis_does_not(
         self, client, monkeypatch
     ):
-        monkeypatch.setattr(app_analysis, 'get_queue_blocking_task', lambda **_kw: None)
+        monkeypatch.setattr(database, 'get_queue_blocking_task', lambda **_kw: None)
         monkeypatch.setattr(
-            app_analysis, 'get_active_main_task',
+            database, 'get_active_main_task',
             lambda **_kw: {
                 'task_id': 'sweep-1', 'task_type': 'server_sweep',
                 'status': config.TASK_STATUS_RUNNING,
             },
         )
-        monkeypatch.setattr(app_analysis, 'clean_up_previous_main_tasks', lambda: None)
+        monkeypatch.setattr(database, 'clean_up_previous_main_tasks', lambda: None)
 
         response = client.post('/api/cleaning/start', json={})
 

@@ -330,7 +330,7 @@ class TestARefusedStatusWriteDoesNotCommitTheCallersWork:
         conn = _Conn()
         monkeypatch.setattr(database, 'get_db', lambda: conn)
         monkeypatch.setattr(database, '_maybe_record_task_history', lambda *a, **k: None)
-        monkeypatch.setattr(database, '_collapse_finished_task', lambda *a, **k: 0)
+        monkeypatch.setattr(database, 'collapse_finished_task', lambda *a, **k: 0)
         written = database.save_task_status('task-4', 'main_clustering')
         return written, conn
 
