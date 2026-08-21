@@ -92,7 +92,7 @@ provider_probe = _LazyProbe()
 # Supported target providers (what the tool knows how to talk to)
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex'})
+_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex', 'ampache'})
 
 # A planner id in session state is a durable reservation, not just a cache of the
 # job's current status. The claim and the queue row are one transaction, so a
@@ -569,33 +569,15 @@ def _current_provider_creds():
     import config as cfg
 
     t = (getattr(cfg, 'MEDIASERVER_TYPE', '') or '').lower()
-    if t == 'jellyfin':
-        return t, {
-            'url': getattr(cfg, 'JELLYFIN_URL', ''),
-            'user_id': getattr(cfg, 'JELLYFIN_USER_ID', ''),
-            'token': getattr(cfg, 'JELLYFIN_TOKEN', ''),
-        }
-    if t == 'emby':
-        return t, {
-            'url': getattr(cfg, 'EMBY_URL', ''),
-            'user_id': getattr(cfg, 'EMBY_USER_ID', ''),
-            'token': getattr(cfg, 'EMBY_TOKEN', ''),
-        }
-    if t == 'navidrome':
-        return t, {
-            'url': getattr(cfg, 'NAVIDROME_URL', ''),
-            'user': getattr(cfg, 'NAVIDROME_USER', ''),
-            'password': getattr(cfg, 'NAVIDROME_PASSWORD', ''),
-            'api_key': getattr(cfg, 'NAVIDROME_API_KEY', ''),
-        }
-    if t == 'lyrion':
-        return t, {'url': getattr(cfg, 'LYRION_URL', '')}
-    if t == 'plex':
-        return t, {
-            'url': getattr(cfg, 'PLEX_URL', ''),
-            'token': getattr(cfg, 'PLEX_TOKEN', ''),
-        }
-    return None, {}
+    fields = cfg.MEDIASERVER_FIELDS_BY_TYPE.get(t)
+    if not fields:
+        return None, {}
+    creds = {}
+    for field in fields:
+        key = cfg.MEDIASERVER_CRED_KEY_BY_FIELD.get(field)
+        if key:
+            creds[key] = getattr(cfg, field, '')
+    return t, creds
 
 
 def _overrides_by_catalogue_id(by_provider_id):
@@ -693,7 +675,7 @@ def session_start():
             properties:
               target_type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion, plex]
+                enum: [jellyfin, emby, navidrome, lyrion, plex, ampache]
               target_creds:
                 type: object
                 additionalProperties: true
@@ -1019,7 +1001,7 @@ def probe_test():
             properties:
               type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion, plex]
+                enum: [jellyfin, emby, navidrome, lyrion, plex, ampache]
               creds:
                 type: object
                 additionalProperties: true

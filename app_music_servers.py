@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 music_servers_bp = Blueprint('music_servers_bp', __name__)
 
-_SUPPORTED_TYPES = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex')
+_SUPPORTED_TYPES = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex', 'ampache')
 
 _SUPERSEDED_SWEEP_MESSAGE = 'Superseded by a new alignment covering all servers.'
 

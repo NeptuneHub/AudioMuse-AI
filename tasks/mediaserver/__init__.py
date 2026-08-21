@@ -14,7 +14,8 @@ by config.MEDIASERVER_TYPE.
 
 Main Features:
 * Lazily imports and dispatches to the active provider backend (jellyfin, emby,
-  navidrome, lyrion, plex), so importing this package does not load inactive backends.
+  navidrome, lyrion, plex, ampache), so importing this package does not load
+  inactive backends.
 * Centralizes the provider-agnostic public API; shared HTTP and metadata parsing
   live in http.py and helper.py.
 """
@@ -30,7 +31,7 @@ from .context import use_server
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby', 'plex')
+_PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby', 'plex', 'ampache')
 _warned_unsupported = set()
 
 _PLAYLIST_NAME_REQUIRED = "Playlist name is required."
@@ -38,7 +39,8 @@ _TRACK_IDS_REQUIRED = "Track IDs are required."
 
 _PUBLIC_SERVER_API = (
     'resolve_emby_jellyfin_user', 'delete_playlists_by_suffix', 'delete_automatic_playlists',
-    'get_recent_albums', 'get_tracks_from_album', 'download_track', 'get_all_songs',
+    'get_recent_albums', 'get_tracks_from_album', 'get_album_track_ids', 'download_track',
+    'get_all_songs',
     'list_libraries', 'search_albums', 'test_connection', 'get_playlist_by_name',
     'get_all_playlists', 'get_playlist_track_ids', 'create_playlist', 'create_instant_playlist',
     'create_or_replace_playlist', 'get_top_played_songs', 'get_last_played_time', 'get_lyrics',
@@ -119,6 +121,32 @@ def get_tracks_from_album(album_id, user_creds=None, provider_type=None):
     if provider is None:
         return []
     return provider.get_tracks_from_album(album_id, user_creds=user_creds)
+
+
+def get_album_track_ids(album_id, user_creds=None, provider_type=None):
+    """Provider ids for one album's tracks, for callers that need no track metadata.
+
+    An OPTIONAL provider capability: a backend that can answer this with a lighter
+    call than a full track fetch implements ``get_album_track_ids``, and every other
+    backend falls back to ``get_tracks_from_album`` right here. Nothing has to be
+    added to a provider for this to work, which is why it is resolved with getattr
+    rather than pinned as a dispatcher call site.
+
+    The analysis dispatcher needs ids and a count to decide what to enqueue and
+    nothing else, so on a provider that can skip the metadata it should not pay for
+    it.
+    """
+    user_creds = context.active_creds(user_creds)
+    provider = _provider(provider_type)
+    if provider is None:
+        return []
+    lightweight = getattr(provider, 'get_album_track_ids', None)
+    if lightweight is not None:
+        return lightweight(album_id, user_creds=user_creds)
+    return [
+        str(track.get('Id') or track.get('id'))
+        for track in (provider.get_tracks_from_album(album_id, user_creds=user_creds) or [])
+    ]
 
 
 def download_track(temp_dir, item):

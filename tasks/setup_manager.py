@@ -269,6 +269,12 @@ class SetupManager:
 
         return config.MEDIASERVER_FIELDS_BY_TYPE
 
+    @property
+    def server_optional_fields(self):
+        import config
+
+        return config.MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE
+
     def _is_valid_navidrome_config(self, config_module):
         if not self._is_valid_string(getattr(config_module, 'NAVIDROME_URL', '')):
             return False
@@ -284,9 +290,11 @@ class SetupManager:
             return False
         if media_type == 'navidrome':
             return self._is_valid_navidrome_config(config_module)
+        optional = set(self.server_optional_fields.get(media_type, []))
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
             for field in self.server_required_fields[media_type]
+            if field not in optional
         )
 
     def _is_valid_auth_config(self, config_module):

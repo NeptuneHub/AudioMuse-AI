@@ -53,7 +53,7 @@ matcher = _load_module('tasks.provider_migration_matcher', 'tasks', 'provider_mi
 mig = _load_module('tasks.provider_migration_tasks', 'tasks', 'provider_migration_tasks.py')
 
 
-PROVIDERS = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex')
+PROVIDERS = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex', 'ampache')
 
 _ID_BASE = {
     'jellyfin': 0x10000,
@@ -61,6 +61,7 @@ _ID_BASE = {
     'navidrome': 0xABCD00,
     'lyrion': 90000,
     'plex': 70000,
+    'ampache': 120000,
 }
 
 _CROSS_TARGET_SHIFT = 1_000_000
@@ -73,6 +74,7 @@ _EXPECTED_CONFIG_KEYS = {
     'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
     'lyrion': ['LYRION_URL'],
     'plex': ['PLEX_URL', 'PLEX_TOKEN'],
+    'ampache': ['AMPACHE_URL', 'AMPACHE_USER', 'AMPACHE_PASSWORD'],
 }
 
 _TARGET_CREDS = {
@@ -81,6 +83,7 @@ _TARGET_CREDS = {
     'navidrome': {'url': 'http://nav.test:4533', 'user': 'navuser', 'password': 'navpass'},
     'lyrion': {'url': 'http://lms.test:9000'},
     'plex': {'url': 'http://plex.test:32400', 'token': 'plextoken'},
+    'ampache': {'url': 'http://ampache.test', 'user': 'ampuser', 'password': 'amppass'},
 }
 
 
@@ -149,6 +152,9 @@ def _provider_path(provider, rel):
         return 'file:///media/music/MyTunes/' + quote(rel)
     if provider == 'plex':
         return '/data/music/MyTunes/' + rel
+    if provider == 'ampache':
+        # Ampache reports the file's absolute path on disk, not a library-relative one.
+        return '/var/lib/ampache/music/MyTunes/' + rel
     return rel
 
 
