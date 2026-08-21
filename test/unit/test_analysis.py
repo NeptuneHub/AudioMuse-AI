@@ -2583,18 +2583,18 @@ class TestEstimateKeyScale:
 
 class TestEstimateEnergy:
     def test_digital_silence_maps_to_zero(self):
-        assert _estimate_energy(np.zeros(32000, dtype=np.float32), 16000) == 0.0
+        assert _estimate_energy(np.zeros(32000, dtype=np.float32)) == 0.0
 
     def test_near_full_scale_signal_maps_close_to_one(self):
         rng = np.random.default_rng(0)
         signal = (rng.standard_normal(32000) * 0.9).astype(np.float32)
-        assert _estimate_energy(signal, 16000) > 0.95
+        assert _estimate_energy(signal) > 0.95
 
     def test_energy_increases_monotonically_with_level(self):
         rng = np.random.default_rng(0)
         values = [
             _estimate_energy(
-                (rng.standard_normal(32000) * 10 ** (db / 20.0)).astype(np.float32), 16000
+                (rng.standard_normal(32000) * 10 ** (db / 20.0)).astype(np.float32)
             )
             for db in (-40, -30, -20, -10)
         ]
@@ -2606,18 +2606,18 @@ class TestEstimateEnergy:
             (rng.standard_normal(16000) * 10.0).astype(np.float32),
             np.zeros(16000, dtype=np.float32),
         ])
-        assert _estimate_energy(loud_then_silent, 16000) < 0.6
+        assert _estimate_energy(loud_then_silent) < 0.6
 
     def test_typical_music_levels_land_inside_the_configured_range(self):
         rng = np.random.default_rng(0)
         for db in (-30, -20, -12, -8):
             value = _estimate_energy(
-                (rng.standard_normal(32000) * 10 ** (db / 20.0)).astype(np.float32), 16000
+                (rng.standard_normal(32000) * 10 ** (db / 20.0)).astype(np.float32)
             )
             assert config.ENERGY_MIN <= value <= config.ENERGY_MAX
 
     def test_empty_audio_maps_to_zero(self):
-        assert _estimate_energy(np.array([], dtype=np.float32), 16000) == 0.0
+        assert _estimate_energy(np.array([], dtype=np.float32)) == 0.0
 
 
 def _patched_raw_tempo(raw):

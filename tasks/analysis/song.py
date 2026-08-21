@@ -199,7 +199,7 @@ def _estimate_tempo(audio, sr):
     return tempo
 
 
-def _estimate_energy(audio, sr):
+def _estimate_energy(audio):
     if audio is None or audio.size == 0:
         return 0.0
     rms = librosa.feature.rms(y=audio)
@@ -232,7 +232,7 @@ def _estimate_key_scale(audio, sr):
 
 def extract_basic_features(audio, sr):
     tempo = _estimate_tempo(audio, sr)
-    energy = _estimate_energy(audio, sr)
+    energy = _estimate_energy(audio)
     musical_key, scale = _estimate_key_scale(audio, sr)
     return tempo, energy, musical_key, scale
 
