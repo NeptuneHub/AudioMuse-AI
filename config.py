@@ -1120,8 +1120,13 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 # Mood-specific models (danceability, mood_aggressive, etc.) have been removed.
 
 # --- Energy Normalization Range ---
-ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
-ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
+# The stored energy value is a mean per-frame loudness on a dBFS-linear 0..1 scale
+# (a -60 dBFS frame is 0.0, a full-scale frame is 1.0), so these bounds are the
+# music-like band of that scale, not raw RMS amplitude. Measured over quiet
+# ambient through modern loud masters, real material lands in roughly 0.32..0.93;
+# the bounds below cover that band unclipped so consumers get the full 0..1 spread.
+ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.30"))
+ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.95"))
 
 # --- Mood/Feature Score Matching ---
 # A 0-1 mood/other-feature score at or above this counts as the tag applying.

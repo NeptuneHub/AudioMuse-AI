@@ -103,7 +103,10 @@ class TestMusicnnSessionRecycleFreesGpuBeforeAlloc:
 
 class TestAnalyzeTrackMemoryCleanup:
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.song.librosa')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
+    @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.create_onnx_session')
     @patch('tasks.analysis.song.cleanup_onnx_session')
     @patch('tasks.analysis.song.cleanup_cuda_memory')
@@ -112,16 +115,19 @@ class TestAnalyzeTrackMemoryCleanup:
         mock_cuda_cleanup,
         mock_session_cleanup,
         mock_create_sess,
-        mock_librosa,
+        mock_mel,
+        mock_tempo,
+        mock_energy,
+        mock_key_scale,
         mock_load_audio,
     ):
         from tasks.analysis import analyze_track
 
         mock_load_audio.return_value = (np.random.randn(16000), 16000)
-        mock_librosa.beat.beat_track.return_value = (120.0, None)
-        mock_librosa.feature.rms.return_value = np.array([[0.5]])
-        mock_librosa.feature.chroma_stft.return_value = np.random.randn(12, 100)
-        mock_librosa.feature.melspectrogram.return_value = np.random.randn(96, 500)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
+        mock_mel.return_value = np.random.randn(96, 500)
 
         mock_embedding_sess = MagicMock()
         mock_prediction_sess = MagicMock()
@@ -150,16 +156,21 @@ class TestAnalyzeTrackMemoryCleanup:
         assert mock_cuda_cleanup.called
 
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.song.librosa')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
+    @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.onnx_utils.ort')
-    def test_no_cleanup_with_album_sessions(self, mock_ort, mock_librosa, mock_load_audio):
+    def test_no_cleanup_with_album_sessions(
+        self, mock_ort, mock_mel, mock_tempo, mock_energy, mock_key_scale, mock_load_audio
+    ):
         from tasks.analysis import analyze_track
 
         mock_load_audio.return_value = (np.random.randn(16000), 16000)
-        mock_librosa.beat.beat_track.return_value = (120.0, None)
-        mock_librosa.feature.rms.return_value = np.array([[0.5]])
-        mock_librosa.feature.chroma_stft.return_value = np.random.randn(12, 100)
-        mock_librosa.feature.melspectrogram.return_value = np.random.randn(96, 500)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
+        mock_mel.return_value = np.random.randn(96, 500)
 
         mock_embedding_sess = MagicMock()
         mock_prediction_sess = MagicMock()
