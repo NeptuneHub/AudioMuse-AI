@@ -35,7 +35,12 @@ from tasks.analysis import (
     analyze_track,
 )
 from tasks.onnx_utils import run_inference, _find_onnx_name
-from tasks.analysis.song import _decode_audio_with_pyav
+from tasks.analysis.song import (
+    _decode_audio_with_pyav,
+    _estimate_energy,
+    _estimate_key_scale,
+    _estimate_tempo,
+)
 
 
 def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
@@ -371,6 +376,7 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
             else set()
         ),
     )
+    monkeypatch.setattr(helper, 'get_missing_base_ids', lambda ids: set())
     monkeypatch.setattr(helper, 'load_fingerprint_index', lambda: known_index)
     monkeypatch.setattr(
         helper, 'upsert_artist_mappings_for_tracks', lambda tracks, album_name=None: None
@@ -808,7 +814,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
         raise AssertionError('the album loop must not query the DB per album')
 
     for name in ('get_existing_track_ids', 'get_missing_ids_in_table',
-                 'attach_catalog_item_ids'):
+                 'get_missing_base_ids', 'attach_catalog_item_ids'):
         monkeypatch.setattr(helper, name, forbidden)
 
     enqueued = []
@@ -932,7 +938,8 @@ def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatc
         for i in range(3)
     }
     work_map = {
-        f'p{i}-{t}': helper.WORK_MUSICNN for i in range(3) for t in range(2)
+        f'p{i}-{t}': helper.WORK_MUSICNN | helper.WORK_BASE
+        for i in range(3) for t in range(2)
     }
 
     result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map)
@@ -951,9 +958,9 @@ def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
         'al1': [{'Id': 'done-3', 'Name': 't'}, {'Id': 'missing', 'Name': 't'}],
     }
     work_map = {
-        'done-1': helper.WORK_MUSICNN,
-        'done-2': helper.WORK_MUSICNN,
-        'done-3': helper.WORK_MUSICNN,
+        'done-1': helper.WORK_MUSICNN | helper.WORK_BASE,
+        'done-2': helper.WORK_MUSICNN | helper.WORK_BASE,
+        'done-3': helper.WORK_MUSICNN | helper.WORK_BASE,
     }
 
     result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map)
@@ -1071,8 +1078,9 @@ def test_unknown_catalogue_track_requires_real_musicnn_analysis():
         existing_ids={'fp_existing'},
         missing_clap_ids={'provider-new'},
         missing_lyrics_ids={'provider-new'},
+        missing_base_ids=set(),
         lyrics_enabled=True,
-    ) == (True, True, True)
+    ) == (True, True, True, False)
 
 
 class TestFindOnnxName:
@@ -1523,20 +1531,20 @@ class TestPyAVDecodeDownmix:
 
 class TestAnalyzeTrack:
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     def test_successful_track_analysis(
-        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+        self, mock_audio_load, mock_mel, mock_tempo, mock_energy, mock_key_scale, mock_onnx_session
     ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100, 200]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         mock_session = Mock()
@@ -1610,19 +1618,19 @@ class TestAnalyzeTrack:
         assert embeddings is None
 
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     def test_returns_none_on_short_audio(
-        self, mock_audio_load, mock_beat, mock_rms, mock_chroma, mock_mel
+        self, mock_audio_load, mock_tempo, mock_energy, mock_key_scale, mock_mel
     ):
         mock_audio = np.random.rand(100)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 10)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 10)
 
         mood_labels = ['happy']
@@ -1634,20 +1642,20 @@ class TestAnalyzeTrack:
         assert embeddings is None
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     def test_spectrogram_dtype_conversion(
-        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+        self, mock_audio_load, mock_mel, mock_tempo, mock_energy, mock_key_scale, mock_onnx_session
     ):
         mock_audio = np.random.rand(16000).astype(np.float64)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000).astype(np.float64)
 
         captured_input = None
@@ -1689,21 +1697,21 @@ class TestAnalyzeTrack:
         assert captured_input.dtype == np.dtype('float32')
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     def test_key_detection_logic(
-        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+        self, mock_audio_load, mock_mel, mock_tempo, mock_energy, mock_key_scale, mock_onnx_session
     ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
 
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         mock_session = Mock()
@@ -1737,20 +1745,20 @@ class TestAnalyzeTrack:
         assert result['scale'] in ['major', 'minor']
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     def test_model_inference_failure_handling(
-        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+        self, mock_audio_load, mock_mel, mock_tempo, mock_energy, mock_key_scale, mock_onnx_session
     ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         mock_onnx_session.side_effect = Exception("Model loading failed")
@@ -1764,21 +1772,21 @@ class TestAnalyzeTrack:
         assert embeddings is None
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     def test_tempo_extraction(
-        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+        self, mock_audio_load, mock_mel, mock_tempo, mock_energy, mock_key_scale, mock_onnx_session
     ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
         expected_tempo = 128.5
-        mock_beat.return_value = (expected_tempo, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = expected_tempo
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         mock_session = Mock()
@@ -1810,23 +1818,22 @@ class TestAnalyzeTrack:
         assert isinstance(result['tempo'], float)
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     def test_energy_calculation(
-        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+        self, mock_audio_load, mock_mel, mock_tempo, mock_energy, mock_key_scale, mock_onnx_session
     ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
+        mock_tempo.return_value = 120.0
 
-        rms_values = np.array([[0.1, 0.2, 0.3, 0.4]])
-        expected_energy = np.mean(rms_values)
-        mock_rms.return_value = rms_values
-        mock_chroma.return_value = np.random.rand(12, 100)
+        expected_energy = 0.75
+        mock_energy.return_value = expected_energy
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         mock_session = Mock()
@@ -1860,9 +1867,9 @@ class TestAnalyzeTrack:
 
 class TestOOMFallback:
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     @patch('tasks.analysis.song.ort.get_available_providers')
@@ -1871,9 +1878,9 @@ class TestOOMFallback:
         mock_providers,
         mock_audio_load,
         mock_mel,
-        mock_beat,
-        mock_rms,
-        mock_chroma,
+        mock_tempo,
+        mock_energy,
+        mock_key_scale,
         mock_onnx_session,
     ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
@@ -1881,9 +1888,9 @@ class TestOOMFallback:
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         gpu_session_call_count = [0]
@@ -1949,9 +1956,9 @@ class TestOOMFallback:
         assert cpu_session_call_count[0] > 0
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     @patch('tasks.analysis.song.ort.get_available_providers')
@@ -1960,9 +1967,9 @@ class TestOOMFallback:
         mock_providers,
         mock_audio_load,
         mock_mel,
-        mock_beat,
-        mock_rms,
-        mock_chroma,
+        mock_tempo,
+        mock_energy,
+        mock_key_scale,
         mock_onnx_session,
     ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
@@ -1970,9 +1977,9 @@ class TestOOMFallback:
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         gpu_session_call_count = [0]
@@ -2038,9 +2045,9 @@ class TestOOMFallback:
         assert cpu_session_call_count[0] > 0
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     @patch('tasks.analysis.song.ort.get_available_providers')
@@ -2049,9 +2056,9 @@ class TestOOMFallback:
         mock_providers,
         mock_audio_load,
         mock_mel,
-        mock_beat,
-        mock_rms,
-        mock_chroma,
+        mock_tempo,
+        mock_energy,
+        mock_key_scale,
         mock_onnx_session,
     ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
@@ -2059,9 +2066,9 @@ class TestOOMFallback:
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         def gpu_run(output_names, feed_dict):
@@ -2099,9 +2106,9 @@ class TestOOMFallback:
         assert embeddings is None
 
     @patch('tasks.analysis.song.ort.InferenceSession')
-    @patch('tasks.analysis.song.librosa.feature.chroma_stft')
-    @patch('tasks.analysis.song.librosa.feature.rms')
-    @patch('tasks.analysis.song.librosa.beat.beat_track')
+    @patch('tasks.analysis.song._estimate_key_scale')
+    @patch('tasks.analysis.song._estimate_energy')
+    @patch('tasks.analysis.song._estimate_tempo')
     @patch('tasks.analysis.song.librosa.feature.melspectrogram')
     @patch('tasks.analysis.song.robust_load_audio_with_fallback')
     @patch('tasks.analysis.song.ort.get_available_providers')
@@ -2110,9 +2117,9 @@ class TestOOMFallback:
         mock_providers,
         mock_audio_load,
         mock_mel,
-        mock_beat,
-        mock_rms,
-        mock_chroma,
+        mock_tempo,
+        mock_energy,
+        mock_key_scale,
         mock_onnx_session,
     ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
@@ -2120,9 +2127,9 @@ class TestOOMFallback:
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
-        mock_beat.return_value = (120.0, np.array([0, 100]))
-        mock_rms.return_value = np.array([[0.5]])
-        mock_chroma.return_value = np.random.rand(12, 100)
+        mock_tempo.return_value = 120.0
+        mock_energy.return_value = 0.5
+        mock_key_scale.return_value = ('C', 'major')
         mock_mel.return_value = np.random.rand(96, 1000)
 
         cpu_fallback_used = [False]
@@ -2517,3 +2524,381 @@ class TestARetryKeepsTheSongsItAlreadyAnalysed:
         assert analysis_main._carried_over_tracks('parent-1') == 0, (
             'an index rebuild is a child of the same parent but is not an album'
         )
+
+
+CHROMA_C_MAJOR = [1.0, 0.05, 0.5, 0.05, 0.8, 0.5, 0.05, 0.9, 0.05, 0.5, 0.05, 0.4]
+CHROMA_A_MINOR = [0.8, 0.05, 0.4, 0.05, 0.9, 0.4, 0.05, 0.5, 0.05, 1.0, 0.05, 0.5]
+
+
+def _chroma_frames(weights):
+    return np.tile(np.array(weights, dtype=float).reshape(12, 1), (1, 50))
+
+
+def _patched_chroma(weights):
+    return patch(
+        'tasks.analysis.song.librosa.feature.chroma_cqt',
+        return_value=_chroma_frames(weights),
+    )
+
+
+class TestEstimateKeyScale:
+    def test_tonic_weighted_white_key_chroma_returns_c_major(self):
+        with _patched_chroma(CHROMA_C_MAJOR):
+            assert _estimate_key_scale(np.ones(1000, dtype=np.float32), 16000) == ('C', 'major')
+
+    def test_tonic_weighted_white_key_chroma_returns_a_minor(self):
+        with _patched_chroma(CHROMA_A_MINOR):
+            assert _estimate_key_scale(np.ones(1000, dtype=np.float32), 16000) == ('A', 'minor')
+
+    def test_relative_major_and_minor_share_pitch_classes_but_are_distinguished(self):
+        major_classes = sorted(np.nonzero(np.array(CHROMA_C_MAJOR) > 0.1)[0].tolist())
+        minor_classes = sorted(np.nonzero(np.array(CHROMA_A_MINOR) > 0.1)[0].tolist())
+        assert major_classes == minor_classes
+        audio = np.ones(1000, dtype=np.float32)
+        with _patched_chroma(CHROMA_C_MAJOR):
+            major = _estimate_key_scale(audio, 16000)
+        with _patched_chroma(CHROMA_A_MINOR):
+            minor = _estimate_key_scale(audio, 16000)
+        assert major == ('C', 'major')
+        assert minor == ('A', 'minor')
+
+    def test_major_scale_is_reachable_at_all(self):
+        with _patched_chroma(CHROMA_C_MAJOR):
+            _, scale = _estimate_key_scale(np.ones(1000, dtype=np.float32), 16000)
+        assert scale == 'major'
+
+    @pytest.mark.parametrize('shift,expected', [(0, 'C'), (3, 'D#'), (5, 'F'), (7, 'G')])
+    def test_transposing_the_chroma_transposes_the_detected_key(self, shift, expected):
+        with _patched_chroma(np.roll(CHROMA_C_MAJOR, shift)):
+            key, scale = _estimate_key_scale(np.ones(1000, dtype=np.float32), 16000)
+        assert (key, scale) == (expected, 'major')
+
+    def test_all_zero_chroma_falls_back_to_c_major(self):
+        with patch(
+            'tasks.analysis.song.librosa.feature.chroma_cqt',
+            return_value=np.zeros((12, 50)),
+        ):
+            assert _estimate_key_scale(np.ones(1000, dtype=np.float32), 16000) == ('C', 'major')
+
+    def test_empty_audio_falls_back_to_c_major(self):
+        assert _estimate_key_scale(np.array([], dtype=np.float32), 16000) == ('C', 'major')
+
+
+class TestEstimateEnergy:
+    def test_digital_silence_maps_to_zero(self):
+        assert _estimate_energy(np.zeros(32000, dtype=np.float32)) == 0.0
+
+    def test_near_full_scale_signal_maps_close_to_one(self):
+        rng = np.random.default_rng(0)
+        signal = (rng.standard_normal(32000) * 0.9).astype(np.float32)
+        assert _estimate_energy(signal) > 0.95
+
+    def test_energy_increases_monotonically_with_level(self):
+        rng = np.random.default_rng(0)
+        values = [
+            _estimate_energy(
+                (rng.standard_normal(32000) * 10 ** (db / 20.0)).astype(np.float32)
+            )
+            for db in (-40, -30, -20, -10)
+        ]
+        assert values == sorted(values)
+
+    def test_silent_frames_are_not_lifted_by_a_loud_peak(self):
+        rng = np.random.default_rng(0)
+        loud_then_silent = np.concatenate([
+            (rng.standard_normal(16000) * 10.0).astype(np.float32),
+            np.zeros(16000, dtype=np.float32),
+        ])
+        assert _estimate_energy(loud_then_silent) < 0.6
+
+    def test_typical_music_levels_land_inside_the_configured_range(self):
+        rng = np.random.default_rng(0)
+        for db in (-30, -20, -12, -8):
+            value = _estimate_energy(
+                (rng.standard_normal(32000) * 10 ** (db / 20.0)).astype(np.float32)
+            )
+            assert config.ENERGY_MIN <= value <= config.ENERGY_MAX
+
+    def test_empty_audio_maps_to_zero(self):
+        assert _estimate_energy(np.array([], dtype=np.float32)) == 0.0
+
+
+def _patched_raw_tempo(raw):
+    return patch(
+        'tasks.analysis.song.librosa.beat.beat_track',
+        return_value=(np.array([raw]), None),
+    )
+
+
+class TestEstimateTempo:
+    @pytest.mark.parametrize('raw', [60.0, 110.0, 174.0, 180.0])
+    def test_in_range_tempo_is_returned_unchanged(self, raw):
+        with _patched_raw_tempo(raw):
+            assert _estimate_tempo(np.ones(1000, dtype=np.float32), 16000) == raw
+
+    @pytest.mark.parametrize('raw', [40.0, 200.0])
+    def test_tempo_exactly_on_a_configured_bound_is_returned_unchanged(self, raw):
+        with _patched_raw_tempo(raw):
+            assert _estimate_tempo(np.ones(1000, dtype=np.float32), 16000) == raw
+
+    @pytest.mark.parametrize('raw,expected', [(35.0, 70.0), (20.0, 40.0)])
+    def test_tempo_below_the_configured_minimum_is_doubled_into_range(self, raw, expected):
+        with _patched_raw_tempo(raw):
+            assert _estimate_tempo(np.ones(1000, dtype=np.float32), 16000) == expected
+
+    @pytest.mark.parametrize('raw,expected', [(260.0, 130.0), (410.0, 102.5)])
+    def test_tempo_above_the_configured_maximum_is_halved_into_range(self, raw, expected):
+        with _patched_raw_tempo(raw):
+            assert _estimate_tempo(np.ones(1000, dtype=np.float32), 16000) == expected
+
+    @pytest.mark.parametrize('raw', [12.0, 33.0, 95.0, 210.0, 333.0, 640.0])
+    def test_folding_never_leaves_the_configured_range(self, raw):
+        with _patched_raw_tempo(raw):
+            value = _estimate_tempo(np.ones(1000, dtype=np.float32), 16000)
+        assert config.TEMPO_MIN_BPM <= value <= config.TEMPO_MAX_BPM
+
+    def test_non_positive_tempo_maps_to_zero(self):
+        with _patched_raw_tempo(0.0):
+            assert _estimate_tempo(np.ones(1000, dtype=np.float32), 16000) == 0.0
+
+    def test_empty_audio_maps_to_zero(self):
+        assert _estimate_tempo(np.array([], dtype=np.float32), 16000) == 0.0
+
+
+class _StageCalls:
+    def __init__(self):
+        self.downloads = 0
+        self.decodes = 0
+        self.native_seen = {}
+
+    def download(self, temp_dir, item):
+        self.downloads += 1
+        return f'/nonexistent/track-{self.downloads}.mp3'
+
+    def decode(self, path):
+        self.decodes += 1
+        return ('NATIVE_AUDIO', 44100)
+
+
+def _run_single_track(plan, calls, monkeypatch):
+    from tasks.analysis import album as album_mod
+    from tasks.analysis.helper import TrackPlan
+
+    monkeypatch.setattr(album_mod, 'download_track', calls.download)
+    monkeypatch.setattr(album_mod, 'decode_audio_once', calls.decode)
+    monkeypatch.setattr(album_mod._ah, 'catalog_item_id', lambda item: 'track-1')
+    monkeypatch.setattr(album_mod._ah, 'run_song_analyzed_hook', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod._ah, 'top_moods_from', lambda *a, **k: {'rock': 0.5})
+    monkeypatch.setattr(album_mod, '_stage_collect_chromaprint', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod, '_stage_persist_musicnn', lambda *a, **k: None)
+
+    def fake_musicnn(path, name, plan_, *a, native_audio=None, native_sr=None, **k):
+        calls.native_seen['musicnn'] = (native_audio, native_sr)
+        return (None, {'duration_seconds': 1.0}, 'EMB', None, None)
+
+    def fake_identity(item, plan_, name, emb, index, pending, track_duration=None):
+        return index, plan_, 'track-1', True
+
+    def fake_base(path, tid, name, native_audio=None, native_sr=None, precomputed=None):
+        calls.native_seen['base'] = (native_audio, native_sr)
+        return True
+
+    def fake_clap(path, tid, name, labels, native_audio=None, native_sr=None):
+        calls.native_seen['clap'] = (native_audio, native_sr)
+        return 'CLAP_EMB', True
+
+    def fake_lyrics(item, path, audio, sr, name, moods, ensure_download):
+        calls.native_seen['lyrics_path'] = ensure_download()
+        return True
+
+    monkeypatch.setattr(album_mod, '_stage_musicnn', fake_musicnn)
+    monkeypatch.setattr(album_mod, '_stage_identity', fake_identity)
+    monkeypatch.setattr(album_mod, '_stage_base', fake_base)
+    monkeypatch.setattr(album_mod, '_stage_clap', fake_clap)
+    monkeypatch.setattr(album_mod, '_stage_lyrics', fake_lyrics)
+
+    assert isinstance(plan, TrackPlan)
+    album_mod._analyze_single_track(
+        {'Id': 'x', 'Name': 'x'}, plan, 'Artist - Track', 'album-1', 'Album',
+        'parent-1', 3, {}, Mock(), None, None, None, {}, {},
+    )
+    return calls
+
+
+class TestAudioIsFetchedOncePerTrack:
+    def test_a_brand_new_song_downloads_once_and_decodes_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=True, clap=True, lyrics=True, base=False),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_a_base_only_reanalysis_downloads_once_and_decodes_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_base_plus_clap_reanalysis_downloads_once_and_decodes_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=False, clap=True, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_every_stage_receives_the_same_decoded_audio(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=True, clap=True, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.decodes == 1
+        assert calls.native_seen['musicnn'] == ('NATIVE_AUDIO', 44100)
+        assert calls.native_seen['clap'] == ('NATIVE_AUDIO', 44100)
+        assert calls.native_seen['base'] == ('NATIVE_AUDIO', 44100)
+
+    def test_a_lyrics_only_plan_still_downloads_exactly_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=True, base=False),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 0
+
+    def test_base_stage_is_counted_as_needing_audio(self):
+        from tasks.analysis.helper import TrackPlan
+
+        assert TrackPlan(musicnn=False, clap=False, lyrics=False, base=True).needs_audio
+        assert TrackPlan(musicnn=False, clap=False, lyrics=True, base=False).needs_audio is False
+
+
+class _BaseCalls:
+    def __init__(self):
+        self.downloads = 0
+        self.decodes = 0
+        self.musicnn_runs = 0
+        self.feature_computations = 0
+        self.written = []
+
+    def download(self, temp_dir, item):
+        self.downloads += 1
+        return f'/nonexistent/track-{self.downloads}.mp3'
+
+    def decode(self, path):
+        self.decodes += 1
+        return ('NATIVE_AUDIO', 44100)
+
+
+def _run_track(plan, calls, monkeypatch, catalogued_elsewhere=False):
+    from tasks.analysis import album as album_mod
+
+    monkeypatch.setattr(album_mod, 'download_track', calls.download)
+    monkeypatch.setattr(album_mod, 'decode_audio_once', calls.decode)
+    monkeypatch.setattr(album_mod._ah, 'catalog_item_id', lambda item: 'track-1')
+    monkeypatch.setattr(album_mod._ah, 'run_song_analyzed_hook', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod._ah, 'top_moods_from', lambda *a, **k: {'rock': 0.5})
+    monkeypatch.setattr(album_mod, '_stage_collect_chromaprint', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod, '_stage_persist_musicnn', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod, '_stage_clap', lambda *a, **k: (None, True))
+    monkeypatch.setattr(album_mod, '_stage_lyrics', lambda *a, **k: True)
+
+    analysis = {
+        'tempo': 128.0, 'energy': 0.75, 'key': 'C', 'scale': 'major',
+        'duration_seconds': 200.0,
+    }
+
+    def fake_musicnn(path, name, plan_, *a, native_audio=None, native_sr=None, **k):
+        calls.musicnn_runs += 1
+        calls.feature_computations += 1
+        return (None, dict(analysis), 'EMB', None, None)
+
+    def fake_identity(item, plan_, name, emb, index, pending, track_duration=None):
+        if catalogued_elsewhere:
+            return index, plan_._replace(musicnn=False, base=True), 'canonical-9', False
+        return index, plan_, 'track-1', True
+
+    def fake_extract(audio, sr):
+        calls.feature_computations += 1
+        return (128.0, 0.75, 'C', 'major')
+
+    def fake_refresh(tid, tempo, energy, key, scale):
+        calls.written.append((tid, tempo, energy, key, scale))
+        return True
+
+    monkeypatch.setattr(album_mod, '_stage_musicnn', fake_musicnn)
+    monkeypatch.setattr(album_mod, '_stage_identity', fake_identity)
+    monkeypatch.setattr(album_mod, 'extract_basic_features', fake_extract)
+    monkeypatch.setattr(album_mod, 'resample_audio', lambda a, o, t: np.ones(16000, dtype=np.float32))
+    monkeypatch.setattr(album_mod._ah, 'refresh_base_features', fake_refresh)
+
+    album_mod._analyze_single_track(
+        {'Id': 'x', 'Name': 'x'}, plan, 'Artist - Track', 'album-1', 'Album',
+        'parent-1', 3, {}, Mock(), None, None, None, {}, {},
+    )
+    return calls
+
+
+class TestBaseFeaturesAreComputedExactlyOnce:
+    def test_an_already_analyzed_track_never_runs_musicnn_for_a_base_refresh(
+        self, monkeypatch
+    ):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _BaseCalls(), monkeypatch,
+        )
+        assert calls.musicnn_runs == 0
+        assert calls.feature_computations == 1
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+        assert calls.written == [('track-1', 128.0, 0.75, 'C', 'major')]
+
+    def test_a_brand_new_track_computes_base_features_only_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_track(
+            TrackPlan(musicnn=True, clap=True, lyrics=True, base=False),
+            _BaseCalls(), monkeypatch,
+        )
+        assert calls.musicnn_runs == 1
+        assert calls.feature_computations == 1
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_a_duplicate_resolved_to_a_catalogue_row_reuses_the_features_already_computed(
+        self, monkeypatch
+    ):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_track(
+            TrackPlan(musicnn=True, clap=False, lyrics=False, base=False),
+            _BaseCalls(), monkeypatch, catalogued_elsewhere=True,
+        )
+        assert calls.musicnn_runs == 1
+        assert calls.feature_computations == 1
+        assert calls.decodes == 1
+        assert calls.written == [('canonical-9', 128.0, 0.75, 'C', 'major')]
+
+    def test_a_base_refresh_falls_back_to_computing_when_nothing_was_precomputed(self):
+        from tasks.analysis.album import _base_features_from
+
+        assert _base_features_from(None) is None
+        assert _base_features_from({}) is None
+        assert _base_features_from({'tempo': 1.0, 'energy': 0.5, 'key': 'C'}) is None
+        assert _base_features_from(
+            {'tempo': 1.0, 'energy': 0.5, 'key': 'C', 'scale': 'major'}
+        ) == (1.0, 0.5, 'C', 'major')

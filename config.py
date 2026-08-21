@@ -256,7 +256,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.3.1"
+APP_VERSION = "v3.4.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1120,8 +1120,13 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 # Mood-specific models (danceability, mood_aggressive, etc.) have been removed.
 
 # --- Energy Normalization Range ---
-ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
-ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
+# The stored energy value is a mean per-frame loudness on a dBFS-linear 0..1 scale
+# (a -60 dBFS frame is 0.0, a full-scale frame is 1.0), so these bounds are the
+# music-like band of that scale, not raw RMS amplitude. Measured over quiet
+# ambient through modern loud masters, real material lands in roughly 0.32..0.93;
+# the bounds below cover that band unclipped so consumers get the full 0..1 spread.
+ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.30"))
+ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.95"))
 
 # --- Mood/Feature Score Matching ---
 # A 0-1 mood/other-feature score at or above this counts as the tag applying.

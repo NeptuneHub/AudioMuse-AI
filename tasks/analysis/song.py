@@ -44,6 +44,8 @@ from config import (
     MUSICNN_BATCH_SIZE,
     OTHER_FEATURE_LABELS,
     PER_SONG_MODEL_RELOAD,
+    TEMPO_MAX_BPM,
+    TEMPO_MIN_BPM,
 )
 from database import (
     get_db,
@@ -177,24 +179,62 @@ def cleanup_optional_models(context=""):
 
 _KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
+_KS_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_KS_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 
-_MAJOR = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+
+def _estimate_tempo(audio, sr):
+    if audio is None or audio.size == 0:
+        return 0.0
+    tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
+    tempo = float(np.ravel(tempo)[0])
+    if tempo <= 0:
+        return 0.0
+    if TEMPO_MIN_BPM <= 0 or TEMPO_MAX_BPM < TEMPO_MIN_BPM:
+        return tempo
+    while tempo < TEMPO_MIN_BPM:
+        tempo *= 2.0
+    while tempo > TEMPO_MAX_BPM:
+        tempo /= 2.0
+    return tempo
 
 
-_MINOR = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+def _estimate_energy(audio):
+    if audio is None or audio.size == 0:
+        return 0.0
+    rms = librosa.feature.rms(y=audio)
+    if rms is None or rms.size == 0:
+        return 0.0
+    rms_db = librosa.amplitude_to_db(rms, ref=1.0, top_db=None)
+    energy = np.clip((rms_db + 60.0) / 60.0, 0.0, 1.0)
+    return float(np.mean(energy))
+
+
+def _estimate_key_scale(audio, sr):
+    if audio is None or audio.size == 0:
+        return 'C', 'major'
+    chroma = librosa.feature.chroma_cqt(y=audio, sr=sr)
+    if chroma is None or chroma.size == 0:
+        return 'C', 'major'
+    chroma_mean = np.mean(chroma, axis=1)
+    if chroma_mean.sum() <= 0:
+        return 'C', 'major'
+    c = chroma_mean / (np.linalg.norm(chroma_mean) + 1e-9)
+    maj = np.array([np.dot(c, np.roll(_KS_MAJOR, i)) for i in range(12)])
+    mnr = np.array([np.dot(c, np.roll(_KS_MINOR, i)) for i in range(12)])
+    maj = (maj - maj.mean()) / (maj.std() + 1e-9)
+    mnr = (mnr - mnr.mean()) / (mnr.std() + 1e-9)
+    mi, ni = int(np.argmax(maj)), int(np.argmax(mnr))
+    if maj[mi] > mnr[ni]:
+        return _KEYS[mi], 'major'
+    return _KEYS[ni], 'minor'
 
 
 def extract_basic_features(audio, sr):
-    tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
-    tempo = float(np.ravel(tempo)[0])
-    energy = float(np.mean(librosa.feature.rms(y=audio)))
-    chroma_mean = np.mean(librosa.feature.chroma_stft(y=audio, sr=sr), axis=1)
-    maj = np.array([np.corrcoef(chroma_mean, np.roll(_MAJOR, i))[0, 1] for i in range(12)])
-    mnr = np.array([np.corrcoef(chroma_mean, np.roll(_MINOR, i))[0, 1] for i in range(12)])
-    mi, ni = int(np.argmax(maj)), int(np.argmax(mnr))
-    if maj[mi] > mnr[ni]:
-        return float(tempo), energy, _KEYS[mi], 'major'
-    return float(tempo), energy, _KEYS[ni], 'minor'
+    tempo = _estimate_tempo(audio, sr)
+    energy = _estimate_energy(audio)
+    musical_key, scale = _estimate_key_scale(audio, sr)
+    return tempo, energy, musical_key, scale
 
 
 def prepare_spectrogram_patches(audio, sr):
@@ -563,6 +603,27 @@ def refresh_other_features(item_id, other_features_str):
     except Exception as e:
         error_manager.record(
             ERR_DB_QUERY, f"Could not refresh other_features for {item_id}: {e}",
+            exc=e, logger=logger, level=logging.WARNING,
+        )
+        return False
+
+
+def refresh_base_features(item_id, tempo, energy, musical_key, scale):
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE score SET tempo = %s, energy = %s, key = %s, scale = %s "
+                "WHERE item_id = %s",
+                (tempo, energy, musical_key, scale, str(item_id)),
+            )
+            updated = cur.rowcount
+            conn.commit()
+        return bool(updated)
+    except OperationalError:
+        raise
+    except Exception as e:
+        error_manager.record(
+            ERR_DB_QUERY, f"Could not refresh base features for {item_id}: {e}",
             exc=e, logger=logger, level=logging.WARNING,
         )
         return False

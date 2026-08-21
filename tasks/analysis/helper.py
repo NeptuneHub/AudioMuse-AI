@@ -57,8 +57,9 @@ _SONG_EXPORTS = frozenset((
     'analysis_server_identity', 'catalog_item_id', 'provider_item_id',
     'compute_other_features_str', 'ensure_musicnn_sessions',
     'load_musicnn_sessions', 'persist_clap_embedding', 'persist_musicnn_results',
-    'refresh_other_features', 'run_clap_for_track', 'run_lyrics_for_track',
-    'run_song_analyzed_hook', 'zero_other_features', 'ZERO_OTHER_FEATURES',
+    'refresh_base_features', 'refresh_other_features', 'run_clap_for_track',
+    'run_lyrics_for_track', 'run_song_analyzed_hook', 'zero_other_features',
+    'ZERO_OTHER_FEATURES',
 ))
 
 
@@ -211,8 +212,20 @@ def get_existing_track_ids(track_ids):
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id "
-            f"WHERE s.item_id IN %s AND {_WORK_ANALYZED}",
+            f"WHERE s.item_id IN %s AND {_MUSICNN_ANALYZED}",
             (tuple(_str_ids(track_ids)),),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
+def get_missing_base_ids(track_ids):
+    if not track_ids:
+        return set()
+    ids = _str_ids(track_ids)
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT s.item_id FROM score s WHERE s.item_id IN %s AND NOT ({_BASE_ANALYZED})",
+            (tuple(ids),),
         )
         return {row[0] for row in cur.fetchall()}
 
@@ -289,30 +302,38 @@ class TrackPlan(NamedTuple):
     musicnn: bool
     clap: bool
     lyrics: bool
+    base: bool = False
 
     @property
     def any_stage(self):
-        return self.musicnn or self.clap or self.lyrics
+        return self.musicnn or self.clap or self.lyrics or self.base
 
     @property
     def needs_audio(self):
-        return self.musicnn or self.clap
+        return self.musicnn or self.clap or self.base
 
     def describe(self):
         wanted = [
             name
-            for name, on in (('MusiCNN', self.musicnn), ('CLAP', self.clap), ('Lyrics', self.lyrics))
+            for name, on in (
+                ('MusiCNN', self.musicnn),
+                ('CLAP', self.clap),
+                ('Lyrics', self.lyrics),
+                ('Base', self.base),
+            )
             if on
         ]
         return ' + '.join(wanted) if wanted else 'nothing'
 
 
 def plan_track_stages(track_id, existing_ids, missing_clap_ids, missing_lyrics_ids,
-                      lyrics_enabled):
+                      missing_base_ids, lyrics_enabled):
+    musicnn = track_id not in existing_ids
     return TrackPlan(
-        track_id not in existing_ids,
+        musicnn,
         track_id in missing_clap_ids,
         bool(lyrics_enabled) and track_id in missing_lyrics_ids,
+        bool(not musicnn and track_id in missing_base_ids),
     )
 
 
@@ -321,6 +342,7 @@ def replan_for_catalogue_row(plan, item_id):
         False,
         plan.clap and bool(get_missing_ids_in_table('clap_embedding', [item_id])),
         plan.lyrics and bool(get_missing_ids_in_table('lyrics_embedding', [item_id])),
+        bool(get_missing_base_ids([item_id])),
     )
 
 
@@ -401,6 +423,7 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
 
     track_ids = [catalog_item_id(t) for t in tracks]
     existing_ids = get_existing_track_ids(track_ids)
+    missing_base_ids = get_missing_base_ids(track_ids)
     missing_clap_ids = (
         get_missing_ids_in_table('clap_embedding', track_ids)
         if clap_analyzer.is_clap_available()
@@ -410,8 +433,9 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
         get_missing_ids_in_table('lyrics_embedding', track_ids) if lyrics_enabled else set()
     )
     logger.info(
-        "Feature plan for album '%s': MusiCNN=%d, DCLAP=%d, Lyrics=%d of %d tracks.",
+        "Feature plan for album '%s': Base=%d, MusiCNN=%d, DCLAP=%d, Lyrics=%d of %d tracks.",
         album_name,
+        len(missing_base_ids),
         len(tracks) - len(existing_ids),
         len(missing_clap_ids),
         len(missing_lyrics_ids),
@@ -423,7 +447,10 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
     prior_moods = _prior_moods_for_lyrics(
         track_ids, existing_ids, missing_lyrics_ids, top_n_moods, lyrics_enabled, album_name
     )
-    return existing_ids, missing_clap_ids, missing_lyrics_ids, clap_label_embeddings, prior_moods
+    return (
+        existing_ids, missing_clap_ids, missing_lyrics_ids, missing_base_ids,
+        clap_label_embeddings, prior_moods,
+    )
 
 
 def load_album_analysis_exclusions(tracks):
@@ -484,7 +511,8 @@ def album_feature_needs(masks, done_bits, clap_available, lyrics_enabled):
     needs_musicnn = any(not m & WORK_MUSICNN for m in masks)
     needs_clap = clap_available and any(not m & WORK_CLAP for m in masks)
     needs_lyrics = lyrics_enabled and any(not m & WORK_LYRICS for m in masks)
-    return album_done, needs_musicnn, needs_clap, needs_lyrics
+    needs_base = any(not m & WORK_BASE for m in masks)
+    return album_done, needs_musicnn, needs_clap, needs_lyrics, needs_base
 
 
 WORK_MUSICNN = 1
@@ -496,17 +524,26 @@ WORK_CLAP = 2
 WORK_LYRICS = 4
 
 
+WORK_BASE = 8
+
+
 def work_done_bits(clap_available, lyrics_enabled):
     return (
         WORK_MUSICNN
+        | WORK_BASE
         | (WORK_CLAP if clap_available else 0)
         | (WORK_LYRICS if lyrics_enabled else 0)
     )
 
 
-_WORK_ANALYZED = (
-    "s.other_features IS NOT NULL AND s.energy IS NOT NULL "
-    "AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL"
+_BASE_ANALYZED = (
+    "s.tempo IS NOT NULL AND s.energy IS NOT NULL "
+    "AND s.key IS NOT NULL AND s.scale IS NOT NULL"
+)
+
+
+_MUSICNN_ANALYZED = (
+    "s.mood_vector IS NOT NULL AND s.other_features IS NOT NULL"
 )
 
 
@@ -524,13 +561,15 @@ def _work_feature_parts(clap_available, lyrics_enabled, key_column):
     return selects, " ".join(joins)
 
 
-def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics):
+def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_base):
     key = str(provider_id)
     mask = WORK_MUSICNN if has_musicnn else 0
     if has_clap:
         mask |= WORK_CLAP
     if has_lyrics:
         mask |= WORK_LYRICS
+    if has_base:
+        mask |= WORK_BASE
     work_map[key] = work_map.get(key, 0) | mask
 
 
@@ -541,8 +580,10 @@ def _work_map_scan(cur, sql, params, work_map, chunk_size):
         rows = cur.fetchall()
         if not rows:
             return
-        for provider_id, has_musicnn, has_clap, has_lyrics in rows:
-            _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics)
+        for provider_id, has_musicnn, has_clap, has_lyrics, has_base in rows:
+            _apply_work_bits(
+                work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_base
+            )
         last = str(rows[-1][0])
 
 
@@ -550,7 +591,8 @@ def _work_sql(clap_available, lyrics_enabled):
     mapped_selects, mapped_joins = _work_feature_parts(clap_available, lyrics_enabled, 'm.item_id')
     mapped_sql = (
         "SELECT m.provider_track_id, "
-        f"(e.item_id IS NOT NULL AND {_WORK_ANALYZED}), {', '.join(mapped_selects)} "
+        f"(e.item_id IS NOT NULL AND {_MUSICNN_ANALYZED}), "
+        f"{', '.join(mapped_selects)}, ({_BASE_ANALYZED}) "
         "FROM track_server_map m "
         "JOIN score s ON s.item_id = m.item_id "
         "LEFT JOIN embedding e ON e.item_id = m.item_id "
@@ -559,11 +601,11 @@ def _work_sql(clap_available, lyrics_enabled):
     )
     legacy_selects, legacy_joins = _work_feature_parts(clap_available, lyrics_enabled, 's.item_id')
     legacy_sql = (
-        f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)} "
+        f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)}, ({_BASE_ANALYZED}) "
         "FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         f"{legacy_joins} "
-        f"WHERE s.item_id NOT LIKE 'fp\\_%%' AND {_WORK_ANALYZED}"
+        f"WHERE s.item_id NOT LIKE 'fp\\_%%' AND {_MUSICNN_ANALYZED}"
     )
     return mapped_sql, legacy_sql
 
@@ -811,7 +853,7 @@ def claim_new_canonical_id(resolver, minted_id, embedding, duration=None, finger
 
 
 def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
-    parts = ["MusiCNN"]
+    parts = ["Base", "MusiCNN"]
     if clap_available:
         parts.append("CLAP")
     if lyrics_enabled:
