@@ -12,12 +12,11 @@ Run as python -m taskqueue.worker --queue high or --queue default. The
 claim is a single UPDATE whose subquery takes FOR UPDATE SKIP LOCKED, so N
 workers racing need no coordination.
 
-Where the OS can fork (Linux, macOS, every container - detected by os.fork
-existing) the job runs in a FORKED CHILD that reports its outcome over a pipe
-and exits,
-so all the memory the job allocated - ONNX models, the transformers stack,
-numpy buffers - is returned to the OS the moment the job ends, exactly like
-the old RQ fork-per-job worker. The child inherits the claim by copy but only
+In the container (a non-frozen Linux process) the job runs in a FORKED CHILD
+that reports its outcome over a pipe and exits, so all the memory the job
+allocated - ONNX models, the transformers stack, numpy buffers - is returned
+to the OS the moment the job ends, exactly like the old RQ fork-per-job
+worker. The child inherits the claim by copy but only
 the parent ever touches the claim connection and the advisory lock; the child
 opens its own database connections through the task's app context and leaves
 through os._exit, so the parent's sockets are never written or closed by the
@@ -30,13 +29,15 @@ advisory lock died with the parent and reclaim handed the row to another
 worker. Config is hydrated in the parent before forking so a first-success
 refresh latches in the worker instead of being thrown away with the child.
 
-Windows cannot fork, so there the job runs in the worker process itself (the
-shape the old SimpleWorker had) and any heavy analysis models the job loaded
-are unloaded again when it finishes (_unload_job_models): the sessions are
-dropped and the heap trimmed, keeping an idle worker at the library floor
-instead of the loaded-model footprint. Either way cancelling means ending the
-worker's process tree, which includes the job child, and the worker recycles
-after QUEUE_MAX_JOBS.
+Frozen native builds (Windows, macOS, Linux) run the job in the worker
+process itself (the shape the old SimpleWorker had) instead of forking:
+macOS cannot fork and keep its CoreML/Metal sessions alive, and Windows
+cannot fork at all. Any heavy analysis models the job loaded are unloaded
+again when it finishes (_unload_job_models): the sessions are dropped and
+the heap trimmed, keeping an idle worker at the library floor instead of the
+loaded-model footprint. Either way cancelling means ending the worker's
+process tree, which includes the job child, and the worker recycles after
+QUEUE_MAX_JOBS.
 
 Liveness is the advisory lock held on the task's own connection; if the process
 dies the lock dies with it, so no heartbeat is needed. ensure_hold retakes
@@ -50,8 +51,9 @@ ordering reason.
 
 Main Features:
 * Claim/drain loop that blocks on LISTEN when no work exists
-* Fork-per-job on POSIX gives every byte of job memory back to the OS;
-  Windows runs the job in-process and unloads the models after each job
+* Fork-per-job in the container gives every byte of job memory back to the
+  OS; frozen native builds run the job in-process and unload the models
+  after each job
 * A cancel notification ends the process tree in about 50ms
 * Boot reclaims orphaned tasks bounded by QUEUE_MAX_ATTEMPTS
 * A lost connection (SQLSTATE class 08, 57Pxx, InterfaceError) requeues the row
@@ -166,7 +168,7 @@ class Worker:
         self._abandoned = []
         self._uncharged = {}
         self._claim_txn = threading.Lock()
-        self._fork_jobs = hasattr(os, 'fork')
+        self._fork_jobs = hasattr(os, 'fork') and not getattr(sys, 'frozen', False)
 
     def reconnect(self):
         try:
