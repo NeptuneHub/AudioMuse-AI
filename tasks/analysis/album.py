@@ -89,6 +89,8 @@ from .song import (
     cleanup_musicnn_sessions,
     cleanup_optional_models,
     decode_audio_once,
+    extract_basic_features,
+    resample_audio,
     robust_load_audio_with_fallback,
 )
 
@@ -215,6 +217,41 @@ def _stage_persist_musicnn(item, track_name_full, track_id_str, musicnn_analysis
     )
 
 
+def _base_features_from(analysis):
+    if not analysis:
+        return None
+    values = (
+        analysis.get('tempo'), analysis.get('energy'),
+        analysis.get('key'), analysis.get('scale'),
+    )
+    return None if any(v is None for v in values) else values
+
+
+def _stage_base(path, track_id_str, track_name_full, native_audio=None, native_sr=None,
+                precomputed=None):
+    if precomputed is not None:
+        tempo, energy, musical_key, scale = precomputed
+    else:
+        if native_audio is not None and native_sr is not None:
+            audio, sr = resample_audio(native_audio, native_sr, 16000), 16000
+        else:
+            audio, sr = robust_load_audio_with_fallback(path, target_sr=16000)
+        if audio is None or audio.size == 0:
+            logger.warning(
+                "  - Could not decode audio to recompute base features for '%s'",
+                track_name_full,
+            )
+            return False
+        tempo, energy, musical_key, scale = extract_basic_features(audio, sr)
+    if _ah.refresh_base_features(track_id_str, tempo, energy, musical_key, scale):
+        logger.info(
+            "  - Base features stored for '%s': tempo %.2f, energy %.4f, key %s %s",
+            track_name_full, tempo, energy, musical_key, scale,
+        )
+        return True
+    return False
+
+
 def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings,
                 native_audio=None, native_sr=None):
     embedding = _ah.run_clap_for_track(
@@ -260,6 +297,7 @@ def _analyze_single_track(
     track_audio = track_sr = None
     native_audio = native_sr = None
     musicnn_analysis = musicnn_embedding = None
+    base_features = None
     clap_embedding = None
     top_moods = None
     produced = False
@@ -270,7 +308,7 @@ def _analyze_single_track(
         if plan.musicnn:
             _stage_collect_chromaprint(item, path, track_name_full)
 
-        if path and (plan.musicnn or plan.clap):
+        if path and plan.needs_audio:
             native_audio, native_sr = decode_audio_once(path)
 
         def ensure_download():
@@ -295,6 +333,7 @@ def _analyze_single_track(
                 pending_track_maps,
                 track_duration=musicnn_analysis.get('duration_seconds'),
             )
+            base_features = _base_features_from(musicnn_analysis)
             if not keep_analysis:
                 musicnn_analysis = musicnn_embedding = None
             if not plan.any_stage:
@@ -311,6 +350,13 @@ def _analyze_single_track(
                 item, track_name_full, track_id_str, musicnn_analysis,
                 top_moods, musicnn_embedding,
             )
+
+        if plan.base:
+            produced = _stage_base(
+                path, track_id_str, track_name_full,
+                native_audio=native_audio, native_sr=native_sr,
+                precomputed=base_features,
+            ) or produced
 
         if plan.clap:
             clap_embedding, clap_saved = _stage_clap(
@@ -455,6 +501,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 existing_track_ids_set,
                 missing_clap_ids_set,
                 missing_lyrics_ids_set,
+                missing_base_ids_set,
                 clap_label_embeddings,
                 existing_top_moods_by_id,
             ) = _ah.build_album_plan(album_name, tracks, top_n_moods, LYRICS_ENABLED)
@@ -515,6 +562,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     existing_track_ids_set,
                     missing_clap_ids_set,
                     missing_lyrics_ids_set,
+                    missing_base_ids_set,
                     LYRICS_ENABLED,
                 )
 

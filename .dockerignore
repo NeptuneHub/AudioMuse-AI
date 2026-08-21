@@ -51,6 +51,7 @@ env
 README.md
 docs/
 query/
+metadata/
 screenshot/
 .pytest_cache/
 htmlcov/

@@ -608,6 +608,27 @@ def refresh_other_features(item_id, other_features_str):
         return False
 
 
+def refresh_base_features(item_id, tempo, energy, musical_key, scale):
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE score SET tempo = %s, energy = %s, key = %s, scale = %s "
+                "WHERE item_id = %s",
+                (tempo, energy, musical_key, scale, str(item_id)),
+            )
+            updated = cur.rowcount
+            conn.commit()
+        return bool(updated)
+    except OperationalError:
+        raise
+    except Exception as e:
+        error_manager.record(
+            ERR_DB_QUERY, f"Could not refresh base features for {item_id}: {e}",
+            exc=e, logger=logger, level=logging.WARNING,
+        )
+        return False
+
+
 def persist_clap_embedding(item_id, embedding):
     if embedding is None:
         return False

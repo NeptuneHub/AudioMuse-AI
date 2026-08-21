@@ -452,6 +452,7 @@ def _run_analysis_server_task_impl(
             albums_needing_musicnn = 0
             albums_needing_clap = 0
             albums_needing_lyrics = 0
+            albums_needing_base = 0
             songs_seen = 0
             songs_done = 0
             last_monitor_db_check = float('-inf')
@@ -595,6 +596,7 @@ def _run_analysis_server_task_impl(
                     needs_musicnn_analysis,
                     needs_clap_analysis,
                     needs_lyrics_analysis,
+                    needs_base_analysis,
                 ) = _ah.album_feature_needs(masks, done_bits, clap_available, LYRICS_ENABLED)
                 songs_seen += len(tracks)
                 songs_done += album_done
@@ -625,6 +627,7 @@ def _run_analysis_server_task_impl(
                 albums_needing_musicnn += int(needs_musicnn_analysis)
                 albums_needing_clap += int(needs_clap_analysis)
                 albums_needing_lyrics += int(needs_lyrics_analysis)
+                albums_needing_base += int(needs_base_analysis)
                 report_progress()
 
             if (
@@ -676,10 +679,11 @@ def _run_analysis_server_task_impl(
             logger.info(
                 "Phase complete. Albums: %d launched, %d skipped of %d, %d failed. "
                 "Songs: %d sent for analysis, %d already analyzed of %d. "
-                "Feature albums: MusiCNN %d, DCLAP %d, Lyrics %d.",
+                "Feature albums: Base %d, MusiCNN %d, DCLAP %d, Lyrics %d.",
                 albums_launched, albums_skipped, total_albums_to_check, failed_count,
                 songs_seen - songs_done, songs_done, songs_seen,
-                albums_needing_musicnn, albums_needing_clap, albums_needing_lyrics,
+                albums_needing_base, albums_needing_musicnn,
+                albums_needing_clap, albums_needing_lyrics,
             )
             final_message, phase_status, final_kwargs = _phase_outcome(
                 albums_offset + albums_skipped + albums_completed + albums_work_check_failed,

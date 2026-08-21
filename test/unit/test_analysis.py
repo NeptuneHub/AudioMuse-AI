@@ -376,6 +376,7 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
             else set()
         ),
     )
+    monkeypatch.setattr(helper, 'get_missing_base_ids', lambda ids: set())
     monkeypatch.setattr(helper, 'load_fingerprint_index', lambda: known_index)
     monkeypatch.setattr(
         helper, 'upsert_artist_mappings_for_tracks', lambda tracks, album_name=None: None
@@ -813,7 +814,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
         raise AssertionError('the album loop must not query the DB per album')
 
     for name in ('get_existing_track_ids', 'get_missing_ids_in_table',
-                 'attach_catalog_item_ids'):
+                 'get_missing_base_ids', 'attach_catalog_item_ids'):
         monkeypatch.setattr(helper, name, forbidden)
 
     enqueued = []
@@ -937,7 +938,8 @@ def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatc
         for i in range(3)
     }
     work_map = {
-        f'p{i}-{t}': helper.WORK_MUSICNN for i in range(3) for t in range(2)
+        f'p{i}-{t}': helper.WORK_MUSICNN | helper.WORK_BASE
+        for i in range(3) for t in range(2)
     }
 
     result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map)
@@ -956,9 +958,9 @@ def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
         'al1': [{'Id': 'done-3', 'Name': 't'}, {'Id': 'missing', 'Name': 't'}],
     }
     work_map = {
-        'done-1': helper.WORK_MUSICNN,
-        'done-2': helper.WORK_MUSICNN,
-        'done-3': helper.WORK_MUSICNN,
+        'done-1': helper.WORK_MUSICNN | helper.WORK_BASE,
+        'done-2': helper.WORK_MUSICNN | helper.WORK_BASE,
+        'done-3': helper.WORK_MUSICNN | helper.WORK_BASE,
     }
 
     result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map)
@@ -1076,8 +1078,9 @@ def test_unknown_catalogue_track_requires_real_musicnn_analysis():
         existing_ids={'fp_existing'},
         missing_clap_ids={'provider-new'},
         missing_lyrics_ids={'provider-new'},
+        missing_base_ids=set(),
         lyrics_enabled=True,
-    ) == (True, True, True)
+    ) == (True, True, True, False)
 
 
 class TestFindOnnxName:
@@ -2660,3 +2663,242 @@ class TestEstimateTempo:
 
     def test_empty_audio_maps_to_zero(self):
         assert _estimate_tempo(np.array([], dtype=np.float32), 16000) == 0.0
+
+
+class _StageCalls:
+    def __init__(self):
+        self.downloads = 0
+        self.decodes = 0
+        self.native_seen = {}
+
+    def download(self, temp_dir, item):
+        self.downloads += 1
+        return f'/nonexistent/track-{self.downloads}.mp3'
+
+    def decode(self, path):
+        self.decodes += 1
+        return ('NATIVE_AUDIO', 44100)
+
+
+def _run_single_track(plan, calls, monkeypatch):
+    from tasks.analysis import album as album_mod
+    from tasks.analysis.helper import TrackPlan
+
+    monkeypatch.setattr(album_mod, 'download_track', calls.download)
+    monkeypatch.setattr(album_mod, 'decode_audio_once', calls.decode)
+    monkeypatch.setattr(album_mod._ah, 'catalog_item_id', lambda item: 'track-1')
+    monkeypatch.setattr(album_mod._ah, 'run_song_analyzed_hook', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod._ah, 'top_moods_from', lambda *a, **k: {'rock': 0.5})
+    monkeypatch.setattr(album_mod, '_stage_collect_chromaprint', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod, '_stage_persist_musicnn', lambda *a, **k: None)
+
+    def fake_musicnn(path, name, plan_, *a, native_audio=None, native_sr=None, **k):
+        calls.native_seen['musicnn'] = (native_audio, native_sr)
+        return (None, {'duration_seconds': 1.0}, 'EMB', None, None)
+
+    def fake_identity(item, plan_, name, emb, index, pending, track_duration=None):
+        return index, plan_, 'track-1', True
+
+    def fake_base(path, tid, name, native_audio=None, native_sr=None, precomputed=None):
+        calls.native_seen['base'] = (native_audio, native_sr)
+        return True
+
+    def fake_clap(path, tid, name, labels, native_audio=None, native_sr=None):
+        calls.native_seen['clap'] = (native_audio, native_sr)
+        return 'CLAP_EMB', True
+
+    def fake_lyrics(item, path, audio, sr, name, moods, ensure_download):
+        calls.native_seen['lyrics_path'] = ensure_download()
+        return True
+
+    monkeypatch.setattr(album_mod, '_stage_musicnn', fake_musicnn)
+    monkeypatch.setattr(album_mod, '_stage_identity', fake_identity)
+    monkeypatch.setattr(album_mod, '_stage_base', fake_base)
+    monkeypatch.setattr(album_mod, '_stage_clap', fake_clap)
+    monkeypatch.setattr(album_mod, '_stage_lyrics', fake_lyrics)
+
+    assert isinstance(plan, TrackPlan)
+    album_mod._analyze_single_track(
+        {'Id': 'x', 'Name': 'x'}, plan, 'Artist - Track', 'album-1', 'Album',
+        'parent-1', 3, {}, Mock(), None, None, None, {}, {},
+    )
+    return calls
+
+
+class TestAudioIsFetchedOncePerTrack:
+    def test_a_brand_new_song_downloads_once_and_decodes_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=True, clap=True, lyrics=True, base=False),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_a_base_only_reanalysis_downloads_once_and_decodes_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_base_plus_clap_reanalysis_downloads_once_and_decodes_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=False, clap=True, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_every_stage_receives_the_same_decoded_audio(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=True, clap=True, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.decodes == 1
+        assert calls.native_seen['musicnn'] == ('NATIVE_AUDIO', 44100)
+        assert calls.native_seen['clap'] == ('NATIVE_AUDIO', 44100)
+        assert calls.native_seen['base'] == ('NATIVE_AUDIO', 44100)
+
+    def test_a_lyrics_only_plan_still_downloads_exactly_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=True, base=False),
+            _StageCalls(), monkeypatch,
+        )
+        assert calls.downloads == 1
+        assert calls.decodes == 0
+
+    def test_base_stage_is_counted_as_needing_audio(self):
+        from tasks.analysis.helper import TrackPlan
+
+        assert TrackPlan(musicnn=False, clap=False, lyrics=False, base=True).needs_audio
+        assert TrackPlan(musicnn=False, clap=False, lyrics=True, base=False).needs_audio is False
+
+
+class _BaseCalls:
+    def __init__(self):
+        self.downloads = 0
+        self.decodes = 0
+        self.musicnn_runs = 0
+        self.feature_computations = 0
+        self.written = []
+
+    def download(self, temp_dir, item):
+        self.downloads += 1
+        return f'/nonexistent/track-{self.downloads}.mp3'
+
+    def decode(self, path):
+        self.decodes += 1
+        return ('NATIVE_AUDIO', 44100)
+
+
+def _run_track(plan, calls, monkeypatch, catalogued_elsewhere=False):
+    from tasks.analysis import album as album_mod
+
+    monkeypatch.setattr(album_mod, 'download_track', calls.download)
+    monkeypatch.setattr(album_mod, 'decode_audio_once', calls.decode)
+    monkeypatch.setattr(album_mod._ah, 'catalog_item_id', lambda item: 'track-1')
+    monkeypatch.setattr(album_mod._ah, 'run_song_analyzed_hook', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod._ah, 'top_moods_from', lambda *a, **k: {'rock': 0.5})
+    monkeypatch.setattr(album_mod, '_stage_collect_chromaprint', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod, '_stage_persist_musicnn', lambda *a, **k: None)
+    monkeypatch.setattr(album_mod, '_stage_clap', lambda *a, **k: (None, True))
+    monkeypatch.setattr(album_mod, '_stage_lyrics', lambda *a, **k: True)
+
+    analysis = {
+        'tempo': 128.0, 'energy': 0.75, 'key': 'C', 'scale': 'major',
+        'duration_seconds': 200.0,
+    }
+
+    def fake_musicnn(path, name, plan_, *a, native_audio=None, native_sr=None, **k):
+        calls.musicnn_runs += 1
+        calls.feature_computations += 1
+        return (None, dict(analysis), 'EMB', None, None)
+
+    def fake_identity(item, plan_, name, emb, index, pending, track_duration=None):
+        if catalogued_elsewhere:
+            return index, plan_._replace(musicnn=False, base=True), 'canonical-9', False
+        return index, plan_, 'track-1', True
+
+    def fake_extract(audio, sr):
+        calls.feature_computations += 1
+        return (128.0, 0.75, 'C', 'major')
+
+    def fake_refresh(tid, tempo, energy, key, scale):
+        calls.written.append((tid, tempo, energy, key, scale))
+        return True
+
+    monkeypatch.setattr(album_mod, '_stage_musicnn', fake_musicnn)
+    monkeypatch.setattr(album_mod, '_stage_identity', fake_identity)
+    monkeypatch.setattr(album_mod, 'extract_basic_features', fake_extract)
+    monkeypatch.setattr(album_mod, 'resample_audio', lambda a, o, t: np.ones(16000, dtype=np.float32))
+    monkeypatch.setattr(album_mod._ah, 'refresh_base_features', fake_refresh)
+
+    album_mod._analyze_single_track(
+        {'Id': 'x', 'Name': 'x'}, plan, 'Artist - Track', 'album-1', 'Album',
+        'parent-1', 3, {}, Mock(), None, None, None, {}, {},
+    )
+    return calls
+
+
+class TestBaseFeaturesAreComputedExactlyOnce:
+    def test_an_already_analyzed_track_never_runs_musicnn_for_a_base_refresh(
+        self, monkeypatch
+    ):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _BaseCalls(), monkeypatch,
+        )
+        assert calls.musicnn_runs == 0
+        assert calls.feature_computations == 1
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+        assert calls.written == [('track-1', 128.0, 0.75, 'C', 'major')]
+
+    def test_a_brand_new_track_computes_base_features_only_once(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_track(
+            TrackPlan(musicnn=True, clap=True, lyrics=True, base=False),
+            _BaseCalls(), monkeypatch,
+        )
+        assert calls.musicnn_runs == 1
+        assert calls.feature_computations == 1
+        assert calls.downloads == 1
+        assert calls.decodes == 1
+
+    def test_a_duplicate_resolved_to_a_catalogue_row_reuses_the_features_already_computed(
+        self, monkeypatch
+    ):
+        from tasks.analysis.helper import TrackPlan
+
+        calls = _run_track(
+            TrackPlan(musicnn=True, clap=False, lyrics=False, base=False),
+            _BaseCalls(), monkeypatch, catalogued_elsewhere=True,
+        )
+        assert calls.musicnn_runs == 1
+        assert calls.feature_computations == 1
+        assert calls.decodes == 1
+        assert calls.written == [('canonical-9', 128.0, 0.75, 'C', 'major')]
+
+    def test_a_base_refresh_falls_back_to_computing_when_nothing_was_precomputed(self):
+        from tasks.analysis.album import _base_features_from
+
+        assert _base_features_from(None) is None
+        assert _base_features_from({}) is None
+        assert _base_features_from({'tempo': 1.0, 'energy': 0.5, 'key': 'C'}) is None
+        assert _base_features_from(
+            {'tempo': 1.0, 'energy': 0.5, 'key': 'C', 'scale': 'major'}
+        ) == (1.0, 0.5, 'C', 'major')

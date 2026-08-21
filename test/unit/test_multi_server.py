@@ -788,10 +788,11 @@ class TestServerWorkMap:
         import tasks.analysis.helper as helper
 
         cur, _ = self._cursor({'mapped': [[
-            ('p-done', True, True, True),
-            ('p-no-embedding', False, True, True),
-            ('p-no-clap', True, False, True),
-            ('p-no-lyrics', True, True, False),
+            ('p-done', True, True, True, True),
+            ('p-no-embedding', False, True, True, True),
+            ('p-no-clap', True, False, True, True),
+            ('p-no-lyrics', True, True, False, True),
+            ('p-no-base', True, True, True, False),
         ]]})
         self._patch_db(monkeypatch, cur)
 
@@ -803,19 +804,21 @@ class TestServerWorkMap:
         assert not work_map['p-no-embedding'] & helper.WORK_MUSICNN
         assert not work_map['p-no-clap'] & helper.WORK_CLAP
         assert not work_map['p-no-lyrics'] & helper.WORK_LYRICS
+        assert not work_map['p-no-base'] & helper.WORK_BASE
         assert work_map['p-no-clap'] & done != done
+        assert work_map['p-no-base'] & done != done
 
     def test_disabled_features_are_not_required(self, monkeypatch):
         import tasks.analysis.helper as helper
 
-        cur, executed = self._cursor({'mapped': [[('p1', True, True, True)]]})
+        cur, executed = self._cursor({'mapped': [[('p1', True, True, True, True)]]})
         self._patch_db(monkeypatch, cur)
 
         monkeypatch.setattr(helper, '_is_default_server', lambda sid: False)
         work_map = helper.load_server_work_map('srv', False, False)
         done = helper.work_done_bits(False, False)
 
-        assert done == helper.WORK_MUSICNN
+        assert done == (helper.WORK_MUSICNN | helper.WORK_BASE)
         assert work_map['p1'] & done == done
         sql = executed[0][0]
         assert 'clap_embedding' not in sql
@@ -825,8 +828,8 @@ class TestServerWorkMap:
         import tasks.analysis.helper as helper
 
         cur, executed = self._cursor({'mapped': [[
-            ('p-done', True, True, True),
-            ('p-no-clap', True, False, True),
+            ('p-done', True, True, True, True),
+            ('p-no-clap', True, False, True, True),
         ]]})
         self._patch_db(monkeypatch, cur)
 
@@ -844,8 +847,8 @@ class TestServerWorkMap:
         import tasks.analysis.helper as helper
 
         cur, _ = self._cursor({
-            'mapped': [[('p1', True, True, True)]],
-            'legacy': [[('legacy-id', True, True, True)]],
+            'mapped': [[('p1', True, True, True, True)]],
+            'legacy': [[('legacy-id', True, True, True, True)]],
         })
         self._patch_db(monkeypatch, cur)
         monkeypatch.setattr(helper, '_is_default_server', lambda sid: True)
@@ -858,16 +861,16 @@ class TestServerWorkMap:
         import tasks.analysis.helper as helper
 
         cur, _ = self._cursor({
-            'mapped': [[('p1', True, True, True)]],
-            'legacy': [[('legacy-id', True, True, True)]],
+            'mapped': [[('p1', True, True, True, True)]],
+            'legacy': [[('legacy-id', True, True, True, True)]],
         })
         self._patch_db(monkeypatch, cur)
         monkeypatch.setattr(helper, '_is_default_server', lambda sid: sid == 'srv-def')
         default_map = helper.load_server_work_map('srv-def', True, True)
 
         cur2, _ = self._cursor({
-            'mapped': [[('p1', True, True, True)]],
-            'legacy': [[('legacy-id', True, True, True)]],
+            'mapped': [[('p1', True, True, True, True)]],
+            'legacy': [[('legacy-id', True, True, True, True)]],
         })
         self._patch_db(monkeypatch, cur2)
         secondary_map = helper.load_server_work_map('srv-b', True, True)
@@ -880,8 +883,8 @@ class TestServerWorkMap:
         import tasks.analysis.helper as helper
 
         cur, executed = self._cursor({'mapped': [
-            [('p1', True, True, True), ('p2', True, True, True)],
-            [('p3', True, True, True)],
+            [('p1', True, True, True, True), ('p2', True, True, True, True)],
+            [('p3', True, True, True, True)],
             [],
         ]})
         self._patch_db(monkeypatch, cur)
