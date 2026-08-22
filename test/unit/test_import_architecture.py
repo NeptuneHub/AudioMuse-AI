@@ -111,6 +111,7 @@ INDEPENDENT_GROUPS = [
         "app_dashboard",
         "app_users",
         "app_sync",
+        "app_vibe_sketch",
     },
 ]
 

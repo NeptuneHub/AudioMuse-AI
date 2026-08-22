@@ -1,0 +1,389 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<script src="{{ url_for('static', filename='plotly-2.29.1.min.js') }}"></script>
+<style>
+    .sketch-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .sketch-controls .spacer { flex: 1 1 auto; }
+    .sketch-slider-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
+    .sketch-slider-col { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
+    .sketch-slider-col input[type="range"] { width: 180px; }
+    .sketch-slider-col input[type="number"] { width: 90px; padding: 4px; border-radius: 4px; border: 1px solid var(--border-color-darker); background-color: var(--bg-input); color: var(--text-main); }
+    #sketch-plot { width: 100%; height: 560px; }
+    #sketch-status { margin-left: 12px; color: var(--text-muted); }
+    .sketch-results { margin-top: 12px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; }
+    .sketch-results h2 { display: flex; align-items: center; gap: 0.6rem; margin: 0 0 0.75rem; }
+    .sketch-results h2::before { content: ""; width: 0.35rem; height: 1.4rem; border-radius: 1rem; background: var(--color-primary); }
+    .sketch-track { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-bottom: 1px solid var(--border-color); font-size: 14px; }
+    .sketch-track:last-child { border-bottom: none; }
+    .sketch-track .pos { width: 2.2em; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+    .sketch-track .swatch { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
+    .sketch-track .meta { min-width: 0; flex: 1 1 auto; }
+    .sketch-track .meta .title { font-weight: 600; }
+    .sketch-track .meta .artist { color: var(--text-muted); }
+    .sketch-export { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+    .sketch-export input { width: 280px; padding: 6px; border-radius: 4px; border: 1px solid var(--border-color-darker); background-color: var(--bg-input); color: var(--text-main); }
+    @media (max-width: 600px) {
+        .sketch-controls { gap: 6px; }
+        .sketch-export input { width: 100%; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Vibe Sketch</h1>
+        <p>Draw a curve across your music map and AudioMuse-AI turns the shape of that line into a playlist that follows it.</p>
+    </header>
+
+    <div class="sketch-controls">
+        <label for="sketch-size" class="label-with-tooltip">
+            Map size:
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon"></span>
+                <span class="tooltip-text">How much of your library to draw on screen. The backend still snaps each point to the nearest song across your full library.</span>
+            </span>
+        </label>
+        <div id="sketch-size" style="display:flex; gap:6px; align-items:center;">
+            <button id="btn-pct-25" type="button" class="btn btn-primary">25%</button>
+            <button id="btn-pct-50" type="button" class="btn btn-ghost">50%</button>
+            <button id="btn-pct-75" type="button" class="btn btn-ghost">75%</button>
+            <button id="btn-pct-100" type="button" class="btn btn-ghost">100%</button>
+        </div>
+        <button id="btn-draw" type="button" class="btn btn-primary">Draw</button>
+        <button id="btn-pan" type="button" class="btn btn-ghost">Pan</button>
+        <button id="btn-clear" type="button" class="btn btn-ghost">Clear</button>
+        <span id="sketch-status"></span>
+    </div>
+
+    <div class="sketch-slider-row">
+        <div class="sketch-slider-col">
+            <label for="sketch-length" class="label-with-tooltip">
+                Playlist length
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">How many songs to place along your curve, evenly spaced from start to finish.</span>
+                </span>
+            </label>
+            <input id="sketch-length" type="number" min="1" max="500" value="20">
+        </div>
+        <div class="sketch-slider-col">
+            <label for="sketch-variety" class="label-with-tooltip">
+                Variety
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">0 snaps every point to the nearest song. Higher values pick from nearby candidates, so the same line surprises you differently each time.</span>
+                </span>
+            </label>
+            <input id="sketch-variety" type="range" min="0" max="1" step="0.05" value="0">
+        </div>
+        <button id="btn-generate" type="button" class="btn btn-primary">Generate playlist</button>
+    </div>
+
+    <div id="sketch-plot"></div>
+
+    <div id="sketch-results" class="sketch-results" style="display:none;">
+        <h2>Your drawn playlist</h2>
+        <div id="sketch-results-list"></div>
+        <div class="sketch-export">
+            <input id="sketch-export-name" type="text" placeholder="Playlist name">
+            <button id="btn-export" type="button" class="btn btn-primary">Export to media server</button>
+            <span id="sketch-export-status" style="color:var(--text-muted);"></span>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script>
+(function () {
+    var currentPercent = '25';
+    var lastResults = [];
+    var plotReady = false;
+
+    function setStatus(text) {
+        document.getElementById('sketch-status').textContent = text || '';
+    }
+
+    function setPctButtons() {
+        ['25', '50', '75', '100'].forEach(function (p) {
+            var btn = document.getElementById('btn-pct-' + p);
+            if (!btn) return;
+            btn.classList.toggle('btn-primary', p === currentPercent);
+            btn.classList.toggle('btn-ghost', p !== currentPercent);
+        });
+    }
+
+    function topGenre(moodVector) {
+        if (!moodVector) return 'unknown';
+        var best = null;
+        var parts = String(moodVector).split(',');
+        for (var i = 0; i < parts.length; i++) {
+            var p = parts[i];
+            if (!p.includes(':')) continue;
+            var kv = p.split(':', 2);
+            var sc = parseFloat(kv[1]) || 0;
+            if (!best || sc > best[1]) best = [kv[0].trim(), sc];
+        }
+        return best ? best[0] : 'unknown';
+    }
+
+    function palette() {
+        var isDark = document.body.classList.contains('dark-mode') ||
+                     document.documentElement.classList.contains('dark-mode');
+        return isDark
+            ? ['#ff6b6b', '#5eead4', '#fde047', '#86efac', '#fda4af', '#a78bfa', '#6ee7b7', '#f9a8d4', '#60a5fa', '#f472b6']
+            : ['#ff6b6b', '#4ecdc4', '#ffe66d', '#a8e6cf', '#ff8b94', '#6c5ce7', '#88d8b0', '#e84393', '#0984e3', '#fdcb6e'];
+    }
+
+    function genreColors(genres) {
+        var base = palette();
+        var map = {};
+        genres.forEach(function (g, i) { map[g] = base[i % base.length]; });
+        map['unknown'] = '#888888';
+        return map;
+    }
+
+    async function fetchMap(percent) {
+        var resp = await fetch('/api/map?percent=' + encodeURIComponent(percent), {
+            cache: 'no-store',
+            headers: { 'Pragma': 'no-cache' }
+        });
+        if (!resp.ok) throw new Error('Failed to fetch map: ' + resp.status);
+        return await resp.json();
+    }
+
+    async function plotMap(percent) {
+        setStatus('Loading map...');
+        try {
+            var data = await fetchMap(percent);
+            var items = data.items || [];
+            var genres = new Set();
+            var pts = items.map(function (it) {
+                var g = topGenre(it.mood_vector);
+                genres.add(g);
+                return { x: it.embedding_2d[0], y: it.embedding_2d[1], title: it.title, artist: it.artist || it.author || '', genre: g };
+            });
+            var colorMap = genreColors(Array.from(genres));
+            var trace = {
+                x: pts.map(function (p) { return p.x; }),
+                y: pts.map(function (p) { return p.y; }),
+                mode: 'markers',
+                type: 'scattergl',
+                marker: { size: 3, opacity: 0.85, line: { width: 0 }, color: pts.map(function (p) { return colorMap[p.genre] || '#888'; }) },
+                text: pts.map(function (p) { return p.genre + ' - ' + p.title + ' - ' + p.artist; }),
+                hovertemplate: '%{text}<extra></extra>',
+                name: 'tracks'
+            };
+            var layout = {
+                hovermode: 'closest',
+                dragmode: 'pan',
+                showlegend: false,
+                margin: { t: 8 },
+                newshape: { line: { color: '#8b5cf6', width: 3 } }
+            };
+            try { Plotly.purge('sketch-plot'); } catch (e) {}
+            await Plotly.newPlot('sketch-plot', [trace], layout, { responsive: true });
+            plotReady = true;
+            setStatus('Showing ' + items.length + ' songs. Press Draw and sketch a line across the map.');
+        } catch (e) {
+            console.error(e);
+            plotReady = false;
+            setStatus('Failed to load map');
+        }
+    }
+
+    function setDragMode(mode) {
+        var gd = document.getElementById('sketch-plot');
+        if (!gd) return;
+        Plotly.relayout(gd, { dragmode: mode }).catch(function () {});
+    }
+
+    function clearShapesAndOverlay() {
+        var gd = document.getElementById('sketch-plot');
+        if (!gd || !gd.data) return;
+        var remove = [];
+        gd.data.forEach(function (t, i) {
+            if (t.name === 'sketch-arc') remove.push(i);
+        });
+        if (remove.length) Plotly.deleteTraces(gd, remove);
+        Plotly.relayout(gd, { shapes: [] }).catch(function () {});
+        lastResults = [];
+        var results = document.getElementById('sketch-results');
+        results.style.display = 'none';
+        document.getElementById('sketch-results-list').innerHTML = '';
+        document.getElementById('sketch-export-status').textContent = '';
+    }
+
+    function pathPointsFromShape(shape) {
+        if (!shape || !shape.path) return null;
+        var tokens = String(shape.path).match(/[MLZ]|-?\d+\.?\d*(?:[eE][+-]?\d+)?/g);
+        if (!tokens) return null;
+        var pts = [];
+        var pending = null;
+        for (var i = 0; i < tokens.length; i++) {
+            var t = tokens[i];
+            if (t === 'M' || t === 'L') { pending = []; continue; }
+            if (t === 'Z') { pending = null; continue; }
+            if (pending === null) continue;
+            pending.push(parseFloat(t));
+            if (pending.length === 2) { pts.push(pending); pending = null; }
+        }
+        return pts.length >= 2 ? pts : null;
+    }
+
+    function currentDrawnPoints() {
+        var gd = document.getElementById('sketch-plot');
+        if (!gd || !gd.layout || !gd.layout.shapes) return null;
+        var shapes = gd.layout.shapes || [];
+        for (var i = shapes.length - 1; i >= 0; i--) {
+            var pts = pathPointsFromShape(shapes[i]);
+            if (pts) return pts;
+        }
+        return null;
+    }
+
+    function gradientColor(i, n) {
+        var hue = Math.round(270 - (250 * i / Math.max(1, n - 1)));
+        return 'hsl(' + hue + ', 75%, 62%)';
+    }
+
+    function renderResults(results) {
+        var box = document.getElementById('sketch-results');
+        var list = document.getElementById('sketch-results-list');
+        box.style.display = 'block';
+        list.innerHTML = '';
+        results.forEach(function (r, i) {
+            var row = document.createElement('div');
+            row.className = 'sketch-track';
+            var pos = document.createElement('span');
+            pos.className = 'pos';
+            pos.textContent = String(i + 1);
+            var swatch = document.createElement('span');
+            swatch.className = 'swatch';
+            swatch.style.background = gradientColor(i, results.length);
+            var meta = document.createElement('span');
+            meta.className = 'meta';
+            var title = document.createElement('div');
+            title.className = 'title';
+            title.textContent = r.title || r.item_id;
+            var artist = document.createElement('div');
+            artist.className = 'artist';
+            artist.textContent = (r.author || '') + (r.top_genre ? '  ·  ' + r.top_genre : '');
+            meta.appendChild(title);
+            meta.appendChild(artist);
+            row.appendChild(pos);
+            row.appendChild(swatch);
+            row.appendChild(meta);
+            list.appendChild(row);
+        });
+        var gd = document.getElementById('sketch-plot');
+        if (gd && gd.data && results.length) {
+            var trace = {
+                x: results.map(function (r) { return r.x; }),
+                y: results.map(function (r) { return r.y; }),
+                mode: 'markers+lines',
+                type: 'scatter',
+                name: 'sketch-arc',
+                line: { color: '#8b5cf6', width: 3 },
+                marker: {
+                    size: 9,
+                    color: results.map(function (r, i) { return gradientColor(i, results.length); }),
+                    symbol: 'circle',
+                    line: { width: 1, color: '#ffffff' }
+                },
+                text: results.map(function (r) { return (r.top_mood || '') + ' - ' + (r.title || '') + ' - ' + (r.author || ''); }),
+                hovertemplate: '%{text}<extra></extra>'
+            };
+            Plotly.addTraces(gd, trace);
+        }
+    }
+
+    async function generate() {
+        if (!plotReady) { setStatus('Map not ready yet'); return; }
+        var pts = currentDrawnPoints();
+        if (!pts) { setStatus('Draw a line first: press Draw and drag across the map.'); return; }
+        var length = parseInt(document.getElementById('sketch-length').value, 10) || 20;
+        var variety = parseFloat(document.getElementById('sketch-variety').value) || 0;
+        setStatus('Generating...');
+        try {
+            var resp = await fetch('/api/vibe_sketch/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ points: pts, length: length, variety: variety })
+            });
+            var payload = await resp.json();
+            if (!resp.ok) {
+                setStatus((payload && (payload.error || payload.error_message)) || 'Generation failed');
+                return;
+            }
+            lastResults = payload.results || [];
+            if (!lastResults.length) {
+                setStatus('No songs found along that line on the selected server.');
+                return;
+            }
+            renderResults(lastResults);
+            setStatus('Playlist ready: ' + lastResults.length + ' songs.');
+        } catch (e) {
+            console.error(e);
+            setStatus('Generation failed');
+        }
+    }
+
+    async function exportPlaylist() {
+        if (!lastResults.length) { setStatus('Nothing to export yet.'); return; }
+        var name = document.getElementById('sketch-export-name').value.trim();
+        if (!name) { setStatus('Give the playlist a name first.'); return; }
+        var ids = lastResults.map(function (r) { return r.item_id; });
+        var status = document.getElementById('sketch-export-status');
+        status.textContent = 'Exporting...';
+        try {
+            var resp = await fetch('/api/vibe_sketch/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ playlist_name: name, item_ids: ids })
+            });
+            var payload = await resp.json();
+            if (!resp.ok) {
+                status.textContent = (payload && (payload.message || payload.error)) || 'Export failed';
+                return;
+            }
+            status.textContent = payload.message || 'Exported.';
+        } catch (e) {
+            console.error(e);
+            status.textContent = 'Export failed';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        ['25', '50', '75', '100'].forEach(function (p) {
+            var btn = document.getElementById('btn-pct-' + p);
+            if (btn) btn.addEventListener('click', function () {
+                currentPercent = p;
+                setPctButtons();
+                plotMap(p);
+            });
+        });
+        document.getElementById('btn-draw').addEventListener('click', function () {
+            var gd = document.getElementById('sketch-plot');
+            if (!gd) return;
+            var remove = [];
+            gd.data.forEach(function (t, i) { if (t.name === 'sketch-arc') remove.push(i); });
+            if (remove.length) Plotly.deleteTraces(gd, remove);
+            setDragMode('drawline');
+            setStatus('Drag across the map to sketch your listening arc.');
+        });
+        document.getElementById('btn-pan').addEventListener('click', function () {
+            setDragMode('pan');
+            setStatus('Pan and zoom the map.');
+        });
+        document.getElementById('btn-clear').addEventListener('click', clearShapesAndOverlay);
+        document.getElementById('btn-generate').addEventListener('click', generate);
+        document.getElementById('btn-export').addEventListener('click', exportPlaylist);
+        setPctButtons();
+        plotMap(currentPercent);
+    });
+})();
+</script>
+{% endblock %}

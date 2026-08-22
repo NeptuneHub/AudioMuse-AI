@@ -11,6 +11,7 @@
 {% if clap_enabled %}<li><a href="{{ url_for('clap_search_bp.clap_search_page') }}" {% if active == 'clap_search' %}class="active"{% endif %}>Text Search (DCLAP)</a></li>{% endif %}
 {% if lyrics_enabled %}<li><a href="{{ url_for('lyrics_search_bp.lyrics_search_page') }}" {% if active == 'lyrics_search' %}class="active"{% endif %}>Lyrics Search</a></li>{% endif %}
 <li><a href="{{ url_for('map_bp.map_ui') }}" {% if active == 'map' %}class="active"{% endif %}>Music Map</a></li>
+<li><a href="{{ url_for('vibe_sketch_bp.vibe_sketch_page') }}" {% if active == 'vibe_sketch' %}class="active"{% endif %}>Vibe Sketch</a></li>
 <li><a href="{{ url_for('sonic_fingerprint_bp.sonic_fingerprint_page') }}" {% if active == 'sonic_fingerprint' %}class="active"{% endif %}>Sonic Fingerprint</a></li>
 <li><a href="{{ url_for('hyperbolic_bp.hyperbolic_page') }}" {% if active == 'hyperbolic' %}class="active"{% endif %}>Hyperbolic Explorer</a></li>
 {% if is_admin or auth_enabled %}
