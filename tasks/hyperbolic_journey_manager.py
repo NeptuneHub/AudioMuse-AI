@@ -20,9 +20,9 @@ songs, which is what the page reports as the shared root.
 
 Scale: the snapping reads the top HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP
 nearest tracks per waypoint from the disk-paged Poincare index, then ranks the
-pooled candidates by exact Poincare distance. With no index built it falls
-back to reading the whole projected catalogue once, so the walk is always
-exact and never depends on a cosine/angular shortcut.
+pooled candidates by exact Poincare distance. With no index built the request
+is rejected with a "run analysis to build it" error, matching the other
+indexes.
 
 Main Features:
 * build_hyperbolic_journey resolves both endpoints, samples the geodesic,
@@ -139,20 +139,14 @@ def _endpoint_rows(start_item_id, end_item_id):
 
 def _gather_journey_candidates(interior_points, excluded, server_id=None):
     from tasks.hyperbolic_index import hyperbolic_nearest_multi
-    from tasks.hyperbolic_manager import fetch_all_poincare_rows, fetch_poincare_rows
+    from tasks.hyperbolic_manager import fetch_poincare_rows
 
     per_step = int(config.HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP)
     candidate_ids = hyperbolic_nearest_multi(
         interior_points, per_step, server_id=server_id, exclude=excluded
     )
     if candidate_ids is None:
-        rows = fetch_all_poincare_rows()
-        candidate_ids = [i for i in rows if i not in excluded]
-        if not candidate_ids:
-            return [], None, None
-        vectors = np.stack([rows[i][0] for i in candidate_ids]).astype(np.float64)
-        radii = np.array([rows[i][1] for i in candidate_ids], dtype=np.float64)
-        return candidate_ids, vectors, radii
+        raise ValueError("Poincare index not built yet - run analysis to build it.")
     if not candidate_ids:
         return [], None, None
     rows = fetch_poincare_rows(candidate_ids)

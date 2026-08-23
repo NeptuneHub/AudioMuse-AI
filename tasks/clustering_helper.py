@@ -9,7 +9,7 @@
 """Per-iteration clustering worker: parameter generation, fitting and scoring.
 
 The inner loop of the clustering search run by tasks.clustering. Given a method
-and parameter set it prepares and scales the feature/embedding data, fits a model
+and parameter set it L2-normalizes the feature/embedding data, fits a model
 (via clustering_gpu), and scores the resulting playlists. Also generates the
 random and evolutionary parameter mutations that the elitist search explores.
 
@@ -273,7 +273,7 @@ def _perform_single_clustering_iteration(
         if valid_tracks is None:
             return {"fitness_score": -1.0}
 
-        data_to_cluster, _ = _prepare_and_scale_data(
+        data_to_cluster = _prepare_and_normalize_data(
             X_feat_orig, X_embed_raw, enable_clustering_embeddings
         )
         if data_to_cluster is None:
@@ -401,13 +401,11 @@ def _prepare_iteration_data(
     )
 
 
-def _prepare_and_scale_data(X_feat, X_embed, use_embeddings):
+def _prepare_and_normalize_data(X_feat, X_embed, use_embeddings):
     data_source = X_embed if use_embeddings else X_feat
     if data_source is None or data_source.shape[0] == 0:
-        return None, None
-    normalizer = Normalizer(norm='l2')
-    normalized_data = normalizer.fit_transform(data_source)
-    return normalized_data, None
+        return None
+    return Normalizer(norm='l2').fit_transform(data_source)
 
 
 def _mutate_param(value, min_val, max_val, delta, is_float=False):
@@ -1011,7 +1009,6 @@ def _format_and_score_iteration_result(
         "playlist_to_centroid_vector_map": playlist_to_centroid_vector_map,
         "playlist_primary_genres": playlist_primary_genres,
         "parameters": {**params, "max_songs_per_cluster": max_songs_per_cluster, "run_id": run_idx},
-        "scaler_details": None,
         "pca_model_details": {
             "components": pca.components_.tolist(),
             "variance": pca.explained_variance_ratio_.tolist(),

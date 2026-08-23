@@ -24,8 +24,8 @@ Main Features:
   bound reaches the current k-th distance, so top-k results are exact without
   scanning every band.
 * hyperbolic_nearest / hyperbolic_nearest_multi return item ids ranked by exact
-  Poincare distance, or None when no index is built yet so callers can fall
-  back to a full catalogue scan.
+  Poincare distance, or None when no index is built yet; callers surface that
+  as a "run analysis to build it" error instead of scanning the catalogue.
 * Build targets mirror the Hyperbolic Explorer tree: one index per configured
   server plus the default server, keyed the same way so a request scoped to a
   server reads only that server's index.
@@ -139,7 +139,6 @@ def build_and_store_hyperbolic_index(db_conn=None):
             if not rows:
                 continue
             item_ids = list(rows.keys())
-            vectors = np.stack([rows[i][0] for i in item_ids]).astype(np.float32)
             radii = np.array([rows[i][1] for i in item_ids], dtype=np.float64)
             edges = _band_edges(radii, int(config.HYPERBOLIC_INDEX_BANDS))
             n_bands = edges.size - 1
@@ -149,16 +148,16 @@ def build_and_store_hyperbolic_index(db_conn=None):
 
             band_item_ids = [[] for _ in range(n_bands)]
             band_vectors = [[] for _ in range(n_bands)]
-            for item_id, vector, band in zip(item_ids, vectors, assigned):
+            for item_id, band in zip(item_ids, assigned):
                 band_item_ids[int(band)].append(item_id)
-                band_vectors[int(band)].append(vector)
+                band_vectors[int(band)].append(rows[item_id][0])
 
             bands = []
             for band in range(n_bands):
                 members = band_item_ids[band]
                 blob = _band_name(server_key, band)
                 if members:
-                    matrix = np.stack(band_vectors[band]).astype(np.float32)
+                    matrix = np.stack(band_vectors[band])
                     store_segmented_blob(db_conn, _TABLE, blob, matrix.tobytes())
                 bands.append(
                     {"blob": blob, "count": len(members), "item_ids": members}

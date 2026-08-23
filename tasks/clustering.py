@@ -106,7 +106,7 @@ from .clustering_helper import (
     _get_track_primary_genre,
     _perform_single_clustering_iteration,
     _prepare_iteration_data,
-    _prepare_and_scale_data,
+    _prepare_and_normalize_data,
     _shuffle_playlist_songs,
     _assign_playlist_chunks,
     _try_ai_name_playlist,
@@ -128,7 +128,7 @@ def _derive_dbscan_eps(item_ids, min_samples, active_moods, enable_embeddings):
     )
     if valid_tracks is None:
         return None
-    data, _scaler = _prepare_and_scale_data(x_feat, x_embed, enable_embeddings)
+    data = _prepare_and_normalize_data(x_feat, x_embed, enable_embeddings)
     if data is None or data.shape[0] <= min_samples:
         return None
     if len(data) > 1000:
@@ -1482,12 +1482,11 @@ _RESUMABLE_KEYS = (
     "failed_batches", "stale_batches", "batches_launched", "server_idx",
 )
 
-# Produced by every iteration but read by NOBODY once the run is over, and the
-# two largest numeric blobs in the result: the PCA component matrix is
-# n_components x EMBEDDING_DIMENSION floats and the scaler is two more rows of
-# it. Dropping them is what makes the winning result cheap enough to keep on the
-# parent row. The centroid maps below them ARE read, by clustering_postprocessing.
-_UNUSED_BEST_RESULT_KEYS = ("scaler_details", "pca_model_details")
+# The PCA component matrix (n_components x EMBEDDING_DIMENSION floats) is
+# produced by every iteration but read by NOBODY once the run is over. Dropping
+# it is what makes the winning result cheap enough to keep on the parent row.
+# The centroid maps below it ARE read, by clustering_postprocessing.
+_UNUSED_BEST_RESULT_KEYS = ("pca_model_details",)
 
 
 def _persistable_best_result(best_result):

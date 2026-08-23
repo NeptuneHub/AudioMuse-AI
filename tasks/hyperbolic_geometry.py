@@ -26,6 +26,13 @@ Main Features:
 * mobius_add / mobius_scalar_mul are the gyrovector operations of the Poincare
   ball, from which poincare_geodesic builds the exact constant-speed geodesic
   gamma(t) = x (+) (t (x) (-x (+) y)) with gamma(0) = x and gamma(1) = y
+* einstein_midpoint is the closed-form Lorentz-weighted average taken in the
+  Klein model, and karcher_mean refines it into the true Frechet mean with
+  Riemannian gradient steps. The step is divided by the mean of d*coth(d) over
+  the members because the Hessian of d^2 grows with d in negative curvature: an
+  undamped unit step overshoots as soon as the members span more than a couple
+  of units of hyperbolic distance, and the iteration then walks OUTWARD to the
+  boundary with the Frechet cost rising on every pass instead of converging
 * geodesic_apex returns the point of the geodesic closest to the origin: the
   continuous analogue of the lowest common ancestor of the two endpoints,
   because a geodesic between two points bows inward toward the more general
@@ -91,7 +98,7 @@ def hyperbolic_distances_to(target, candidates):
     return np.arccosh(np.clip(arg, 1.0, None))
 
 
-def hyperbolic_distance_matrix(targets, candidates):
+def hyperbolic_distance_matrix(targets, candidates, target_norms2=None, candidate_norms2=None):
     """Pairwise Poincare distances between two sets of points.
 
     Returns an (n, k) matrix where row i / column j is d_H(targets[i],
@@ -105,8 +112,14 @@ def hyperbolic_distance_matrix(targets, candidates):
         t = t.reshape(1, -1)
     if c.ndim == 1:
         c = c.reshape(1, -1)
-    t_norm2 = np.sum(t * t, axis=1)
-    c_norm2 = np.sum(c * c, axis=1)
+    t_norm2 = (
+        np.sum(t * t, axis=1) if target_norms2 is None
+        else np.asarray(target_norms2, dtype=np.float64).reshape(-1)
+    )
+    c_norm2 = (
+        np.sum(c * c, axis=1) if candidate_norms2 is None
+        else np.asarray(candidate_norms2, dtype=np.float64).reshape(-1)
+    )
     diff2 = t_norm2[:, None] + c_norm2[None, :] - 2.0 * (t @ c.T)
     denom = np.maximum((1.0 - t_norm2[:, None]) * (1.0 - c_norm2[None, :]), 1e-12)
     arg = 1.0 + 2.0 * diff2 / denom
@@ -176,26 +189,47 @@ def mobius_scalar_mul(t, x):
     return clip_into_ball(radii * (xx / safe))
 
 
+def einstein_midpoint(points):
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+    if pts.shape[0] == 0:
+        return None
+    norms2 = np.sum(pts * pts, axis=-1, keepdims=True)
+    klein = 2.0 * pts / (1.0 + norms2)
+    klein2 = np.minimum(np.sum(klein * klein, axis=-1, keepdims=True), _BALL_LIMIT ** 2)
+    gamma = 1.0 / np.sqrt(1.0 - klein2)
+    total = float(np.sum(gamma))
+    if not np.isfinite(total) or total <= 1e-12:
+        return clip_into_ball(pts.mean(axis=0))
+    centre = clip_into_ball(np.sum(gamma * klein, axis=0) / total)
+    centre2 = float(np.sum(centre * centre))
+    return clip_into_ball(centre / (1.0 + np.sqrt(max(1.0 - centre2, 0.0))))
+
+
 def karcher_mean(points, iterations=10):
     pts = np.asarray(points, dtype=np.float64)
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     if pts.shape[0] == 0:
         return None
-    mean = clip_into_ball(pts.mean(axis=0, keepdims=True))[0]
+    mean = einstein_midpoint(pts)
     for _ in range(max(0, int(iterations))):
         diff = mobius_add(-mean, pts)
         norms = np.linalg.norm(diff, axis=-1, keepdims=True)
         safe = np.where(norms <= 1e-12, 1.0, norms)
         theta = np.arctanh(np.minimum(norms, _BALL_LIMIT))
         lam = 1.0 - float(np.sum(mean * mean))
-        tangent = (2.0 / max(lam, 1e-12)) * theta * (diff / safe)
-        step = tangent.mean(axis=0)
+        step = ((2.0 / max(lam, 1e-12)) * theta * (diff / safe)).mean(axis=0)
         step_norm = float(np.linalg.norm(step))
         if step_norm <= 1e-12:
             break
-        mean = mobius_add(mean, np.tanh(lam * step_norm / 2.0) * (step / step_norm))
-        mean = clip_into_ball(mean)
+        spread = 2.0 * theta
+        stiffness = float(np.mean(spread / np.tanh(np.maximum(spread, 1e-9))))
+        travel = lam * step_norm / max(stiffness, 1.0)
+        if travel <= 1e-12:
+            break
+        mean = clip_into_ball(mobius_add(mean, np.tanh(0.5 * travel) * (step / step_norm)))
     return mean
 
 

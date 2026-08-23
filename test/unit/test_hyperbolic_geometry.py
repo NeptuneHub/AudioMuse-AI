@@ -20,6 +20,13 @@ Main Features:
 * Vectorized distances match the scalar distance per pair
 * calibrate_scale returns the requested norm percentile and a sane fallback
 * split_radial_bands/assign_radial_bands cover [min, max] with no empty band
+* karcher_mean is a real Frechet minimiser: its cost never rises when it is
+  given more iterations and no nudge off it lowers the cost, which is what an
+  undamped unit Riemannian step fails once the members span more than a couple
+  of units of hyperbolic distance
+* einstein_midpoint agrees with the geodesic midpoint for a pair of points
+* hyperbolic_distance_matrix returns the same matrix whether or not the caller
+  hands it precomputed squared norms
 """
 
 import numpy as np
@@ -28,8 +35,12 @@ import pytest
 from tasks.hyperbolic_geometry import (
     assign_radial_bands,
     calibrate_scale,
+    einstein_midpoint,
     hyperbolic_distance,
+    hyperbolic_distance_matrix,
     hyperbolic_distances_to,
+    karcher_mean,
+    poincare_geodesic,
     poincare_radius,
     project_to_poincare,
     split_radial_bands,
@@ -153,3 +164,84 @@ def test_radial_bands_with_ties_have_no_empty_bands():
 
 def test_radial_bands_empty_input():
     assert split_radial_bands(np.array([]), n_bands=3) == []
+
+
+def test_karcher_mean_is_the_geodesic_midpoint_not_the_euclidean_mean():
+    u = np.array([0.9, 0.0], dtype=np.float64)
+    v = np.array([-0.5, 0.0], dtype=np.float64)
+    mean = karcher_mean(np.stack([u, v]))
+    assert mean is not None
+    assert abs(mean[1]) < 1e-6
+    assert mean[0] == pytest.approx(0.4313, abs=1e-2)
+
+
+def _cloud_spanning_the_ball(seed=5, count=60, dim=8, rmax=0.95):
+    rng = np.random.default_rng(seed)
+    directions = rng.standard_normal((count, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    radii = rmax * rng.random((count, 1)) ** (1.0 / dim)
+    return directions * radii
+
+
+def _frechet_cost(centre, points):
+    return float(np.sum(hyperbolic_distances_to(centre, points) ** 2))
+
+
+def test_karcher_mean_cost_never_rises_when_given_more_iterations():
+    points = _cloud_spanning_the_ball()
+    costs = [
+        _frechet_cost(karcher_mean(points, iterations=n), points)
+        for n in (0, 1, 2, 4, 8, 16, 32)
+    ]
+    for earlier, later in zip(costs, costs[1:]):
+        assert later <= earlier + 1e-9
+
+
+def test_karcher_mean_is_not_beaten_by_a_nudge_off_it():
+    points = _cloud_spanning_the_ball()
+    mean = karcher_mean(points, iterations=32)
+    base = _frechet_cost(mean, points)
+    rng = np.random.default_rng(9)
+    for _ in range(200):
+        nudged = mean + rng.standard_normal(mean.shape) * 0.01
+        if float(np.linalg.norm(nudged)) >= 1.0:
+            continue
+        assert _frechet_cost(nudged, points) >= base - 1e-6
+
+
+def test_karcher_mean_stays_inside_the_hull_of_a_widely_spread_cloud():
+    points = _cloud_spanning_the_ball()
+    mean = karcher_mean(points, iterations=32)
+    assert float(np.linalg.norm(mean)) < float(np.linalg.norm(points, axis=1).min())
+
+
+def test_einstein_midpoint_of_two_points_is_the_geodesic_midpoint():
+    u = np.array([0.9, 0.0, 0.0], dtype=np.float64)
+    v = np.array([-0.1, 0.6, 0.0], dtype=np.float64)
+    midpoint = poincare_geodesic(u, v, [0.5])[0]
+    np.testing.assert_allclose(einstein_midpoint(np.stack([u, v])), midpoint, atol=1e-9)
+
+
+def test_einstein_midpoint_of_one_point_is_that_point():
+    point = np.array([0.3, -0.4, 0.1], dtype=np.float64)
+    np.testing.assert_allclose(einstein_midpoint(point), point, atol=1e-12)
+
+
+def test_einstein_midpoint_of_nothing_is_none():
+    assert einstein_midpoint(np.zeros((0, 4))) is None
+
+
+def test_distance_matrix_with_cached_norms_matches_the_uncached_matrix():
+    rng = np.random.default_rng(17)
+    targets = rng.uniform(-0.6, 0.6, (25, 6))
+    candidates = rng.uniform(-0.6, 0.6, (7, 6))
+    np.testing.assert_allclose(
+        hyperbolic_distance_matrix(
+            targets,
+            candidates,
+            target_norms2=np.sum(targets * targets, axis=1),
+            candidate_norms2=np.sum(candidates * candidates, axis=1),
+        ),
+        hyperbolic_distance_matrix(targets, candidates),
+        rtol=1e-12,
+    )

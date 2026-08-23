@@ -14,7 +14,7 @@ scaling, and the model-application path that runs the chosen algorithm.
 Main Features:
 * _mutate_param clamps to min/max for ints and floats
 * Random and mutated parameters for kmeans, dbscan, gmm, and spectral stay in range
-* _prepare_and_scale_data honors the embeddings flag; _apply_clustering_model runs
+* _prepare_and_normalize_data honors the embeddings flag; _apply_clustering_model runs
   kmeans/dbscan and rejects invalid params; stratified subset excludes prior ids
 """
 
@@ -25,7 +25,7 @@ from tasks.clustering_helper import (
     _mutate_param,
     _generate_random_parameters,
     _mutate_parameters,
-    _prepare_and_scale_data,
+    _prepare_and_normalize_data,
     _apply_clustering_model,
     _get_stratified_song_subset,
     _get_track_primary_genre,
@@ -157,24 +157,24 @@ class TestPrepareAndScaleData:
         X_feat = np.random.rand(50, 20)
         X_embed = np.random.rand(50, 128)
 
-        scaled_data, scaler = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=True)
+        normalized_data = _prepare_and_normalize_data(X_feat, X_embed, use_embeddings=True)
 
-        assert scaled_data.shape == (50, 128)
+        assert normalized_data.shape == (50, 128)
 
     def test_uses_features_when_embeddings_disabled(self):
         X_feat = np.random.rand(50, 20)
         X_embed = np.random.rand(50, 128)
 
-        scaled_data, scaler = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=False)
+        normalized_data = _prepare_and_normalize_data(X_feat, X_embed, use_embeddings=False)
 
-        assert scaled_data.shape == (50, 20)
+        assert normalized_data.shape == (50, 20)
 
     def test_scales_data_correctly(self):
         X_feat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
-        scaled_data, _ = _prepare_and_scale_data(X_feat, None, use_embeddings=False)
+        normalized_data = _prepare_and_normalize_data(X_feat, None, use_embeddings=False)
 
-        row_norms = np.linalg.norm(scaled_data, axis=1)
+        row_norms = np.linalg.norm(normalized_data, axis=1)
         assert np.allclose(row_norms, 1.0, atol=1e-6)
 
 

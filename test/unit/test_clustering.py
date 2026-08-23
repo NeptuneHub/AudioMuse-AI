@@ -565,50 +565,50 @@ class TestDbscanOversizeSplit:
 
 
 class TestDataPreparationAndScaling:
-    def test_prepare_and_scale_data_with_features(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_with_features(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         x_embed = None
 
-        scaled_data, _ = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
+        normalized_data = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=False)
 
-        assert scaled_data is not None
-        assert scaled_data.shape == x_feat.shape
+        assert normalized_data is not None
+        assert normalized_data.shape == x_feat.shape
 
-        assert np.allclose(np.linalg.norm(scaled_data, axis=1), 1.0, atol=1e-6)
+        assert np.allclose(np.linalg.norm(normalized_data, axis=1), 1.0, atol=1e-6)
 
-    def test_prepare_and_scale_data_with_embeddings(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_with_embeddings(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.array([[1.0, 2.0], [3.0, 4.0]])
         x_embed = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]])
 
-        scaled_data, _ = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=True)
+        normalized_data = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=True)
 
-        assert scaled_data is not None
-        assert scaled_data.shape == x_embed.shape
-        assert scaled_data.shape[1] == 4
+        assert normalized_data is not None
+        assert normalized_data.shape == x_embed.shape
+        assert normalized_data.shape[1] == 4
 
-    def test_prepare_and_scale_data_returns_none_for_empty(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_returns_none_for_empty(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.array([])
         x_embed = None
 
-        result = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
+        result = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=False)
 
-        assert result == (None, None)
+        assert result is None
 
-    def test_prepare_and_scale_data_returns_none_for_zero_rows(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_returns_none_for_zero_rows(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.empty((0, 5))
         x_embed = None
 
-        result = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
+        result = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=False)
 
-        assert result == (None, None)
+        assert result is None
 
 
 class TestFeatureCentroidCalculation:
@@ -1489,11 +1489,9 @@ def test_the_persisted_result_drops_the_blobs_nothing_reads():
         'playlist_primary_genres': {'P1': 'rock'},
         'parameters': {'method': 'kmeans'},
         'fitness_score': 9.1,
-        'scaler_details': {'mean': [0.0] * 200, 'scale': [1.0] * 200},
         'pca_model_details': {'components': [[0.0] * 200] * 4},
     })
 
-    assert 'scaler_details' not in kept
     assert 'pca_model_details' not in kept, (
         'the PCA matrix is n_components x EMBEDDING_DIMENSION floats and nothing '
         'reads it once the run is over'

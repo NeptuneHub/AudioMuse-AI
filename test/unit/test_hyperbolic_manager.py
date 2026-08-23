@@ -25,6 +25,10 @@ Main Features:
 * build_hyperbolic_tree_cache persists the built tree; load_hyperbolic_tree_cache
   restores it from that persisted blob without touching the embedding table
   or refitting any k-means, and init_hyperbolic_cache always loads, never builds
+* _fit_clusters is a Poincare k-means: it separates antipodal points, recovers
+  well-separated blobs, and its k-means++ seeding only ever measures against
+  the centre it just added, so seeding stays linear in the catalogue instead
+  of rebuilding the whole points-by-centres matrix on every pick
 """
 
 import numpy as np
@@ -147,23 +151,34 @@ def test_similar_mode_returns_sorted_by_distance(monkeypatch):
         "fp_c": (_vec(0.4, -0.2), 0.35),
     }
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(mapping))
-    monkeypatch.setattr(hm, "_fetch_all_poincare_rows", lambda: dict(mapping))
     monkeypatch.setattr(
-        "tasks.hyperbolic_index.hyperbolic_nearest", lambda *a, **kw: None
+        "tasks.hyperbolic_index.hyperbolic_nearest",
+        lambda *a, **kw: [("fp_a", 0.11), ("fp_b", 0.2), ("fp_c", 0.3)],
     )
     monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
     results = hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
-    assert len(results) == 2
+    assert [r["item_id"] for r in results] == ["fp_a", "fp_b"]
     distances = [r["distance"] for r in results]
     assert distances == sorted(distances)
     assert all("distance" in r and "hyperbolic_radius" in r for r in results)
     assert all(r["item_id"] != "fp_t" for r in results)
 
 
+def test_similar_mode_raises_when_index_is_missing(monkeypatch):
+    monkeypatch.setattr(
+        hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.3, 0.1), 0.4)})
+    )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest", lambda *a, **kw: None
+    )
+    with pytest.raises(ValueError):
+        hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
+
+
 def test_roots_mode_filters_radius_below_target(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         captured["below"] = below
         captured["limit"] = limit
@@ -183,7 +198,7 @@ def test_roots_mode_filters_radius_below_target(monkeypatch):
 def test_niche_mode_filters_radius_above_target(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         captured["below"] = below
         captured["limit"] = limit
@@ -202,7 +217,11 @@ def test_niche_mode_filters_radius_above_target(monkeypatch):
 
 def test_roots_empty_window_returns_empty(monkeypatch):
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", lambda bound, below=True, limit=100: {})
+    monkeypatch.setattr(
+        hm,
+        "_fetch_poincare_rows_in_radius",
+        lambda bound, below=True, limit=100, server_id=None, include_legacy_default=True: {},
+    )
     results = hm.hyperbolic_similar("fp_t", mode="roots", limit=5)
     assert results == []
 
@@ -212,7 +231,7 @@ def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
     # closest inward candidate is the one just below the seed's radius.
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -226,7 +245,7 @@ def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
 def test_roots_mode_caller_spread_overrides_config(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -241,7 +260,7 @@ def test_roots_mode_caller_spread_overrides_config(monkeypatch):
 def test_niche_mode_caller_spread_overrides_config(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -255,7 +274,7 @@ def test_niche_mode_caller_spread_overrides_config(monkeypatch):
 def test_roots_mode_clamps_out_of_range_caller_spread(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -862,6 +881,51 @@ def test_fit_clusters_splits_antipodal_points():
     assert labels[0] == labels[1]
     assert labels[2] == labels[3]
     assert labels[0] != labels[2]
+
+
+def test_seed_cluster_centres_returns_k_distinct_points():
+    rng = np.random.default_rng(2)
+    pts = rng.uniform(-0.5, 0.5, (200, 6))
+    chosen = hm._seed_cluster_centres(pts, np.sum(pts * pts, axis=1), 12, np.random.RandomState(0))
+    assert len(chosen) == 12
+    assert len(set(chosen)) == 12
+
+
+def test_seed_cluster_centres_still_fills_k_when_every_point_coincides():
+    pts = np.tile(np.array([0.3, -0.2, 0.1]), (40, 1))
+    chosen = hm._seed_cluster_centres(pts, np.sum(pts * pts, axis=1), 9, np.random.RandomState(0))
+    assert len(chosen) == 9
+    assert len(set(chosen)) == 9
+
+
+def test_seeding_only_measures_against_the_centre_it_just_added(monkeypatch):
+    import tasks.hyperbolic_geometry as geometry
+
+    widths = []
+    real = geometry.hyperbolic_distance_matrix
+
+    def counting(targets, candidates, **kwargs):
+        widths.append(np.atleast_2d(np.asarray(candidates)).shape[0])
+        return real(targets, candidates, **kwargs)
+
+    monkeypatch.setattr(geometry, "hyperbolic_distance_matrix", counting)
+    rng = np.random.default_rng(4)
+    pts = rng.uniform(-0.5, 0.5, (300, 5))
+    hm._seed_cluster_centres(pts, np.sum(pts * pts, axis=1), 20, np.random.RandomState(0))
+    assert widths == [1] * 20
+
+
+def test_fit_clusters_recovers_well_separated_blobs():
+    rng = np.random.default_rng(6)
+    centres = rng.standard_normal((5, 12))
+    centres /= np.linalg.norm(centres, axis=1, keepdims=True)
+    centres *= 0.6
+    truth = np.repeat(np.arange(5), 40)
+    pts = centres[truth] + rng.standard_normal((200, 12)) * 0.005
+    labels = hm._fit_clusters(pts, 5)
+    for blob in range(5):
+        assert len(set(labels[truth == blob])) == 1
+    assert len(set(labels)) == 5
 
 
 def test_genre_path_prefix_builds_ancestor_chain():

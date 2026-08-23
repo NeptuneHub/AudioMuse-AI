@@ -155,12 +155,10 @@ def _install_journey_stubs(monkeypatch, rows, details):
         lambda ids: {i: rows[i] for i in ids if i in rows},
     )
     monkeypatch.setattr(
-        "tasks.hyperbolic_manager.fetch_all_poincare_rows",
-        lambda: dict(rows),
-    )
-    monkeypatch.setattr(
         "tasks.hyperbolic_index.hyperbolic_nearest_multi",
-        lambda vectors, k, server_id=None, exclude=frozenset(): None,
+        lambda vectors, k, server_id=None, exclude=frozenset(): [
+            i for i in rows if i not in exclude
+        ],
     )
     monkeypatch.setattr("database.get_score_data_by_ids", lambda ids: _details(
         [details[i] for i in ids if i in details]
@@ -283,6 +281,21 @@ def test_journey_rejects_identical_endpoints(journey_world):
 def test_journey_rejects_a_track_without_a_projection(journey_world):
     with pytest.raises(ValueError):
         hjm.build_hyperbolic_journey("start", "not_projected")
+
+
+def test_journey_raises_when_the_poincare_index_is_missing(monkeypatch):
+    rows = {"start": _row(0.80, 0.00), "end": _row(-0.75, 0.10)}
+    details = {
+        "start": {"item_id": "start", "title": "Alpha", "author": "A"},
+        "end": {"item_id": "end", "title": "Omega", "author": "Z"},
+    }
+    _install_journey_stubs(monkeypatch, rows, details)
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest_multi",
+        lambda vectors, k, server_id=None, exclude=frozenset(): None,
+    )
+    with pytest.raises(ValueError):
+        hjm.build_hyperbolic_journey("start", "end", length=4)
 
 
 def test_journey_rejects_an_out_of_range_ancestry_dive(journey_world):
