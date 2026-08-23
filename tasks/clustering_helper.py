@@ -401,8 +401,8 @@ def _prepare_iteration_data(
     )
 
 
-def _prepare_and_normalize_data(X_feat, X_embed, use_embeddings):
-    data_source = X_embed if use_embeddings else X_feat
+def _prepare_and_normalize_data(x_feat, x_embed, use_embeddings):
+    data_source = x_embed if use_embeddings else x_feat
     if data_source is None or data_source.shape[0] == 0:
         return None
     return Normalizer(norm='l2').fit_transform(data_source)

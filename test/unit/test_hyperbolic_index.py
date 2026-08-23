@@ -33,6 +33,9 @@ Main Features:
 * hyperbolic_nearest_multi batches its waypoints: the candidate pool is a
   superset of what a per-waypoint loop returns, the exclude set is honoured,
   and each probed cell is read once for ALL waypoints rather than once each
+* The multi scan width is wider than the single-query one and does not shrink
+  for unquantized storage, because the journey needs candidate BREADTH along a
+  geodesic rather than precision at rank k
 """
 
 import gzip
@@ -444,3 +447,51 @@ def test_nearest_multi_reads_each_probed_cell_once_for_all_waypoints(monkeypatch
     probed = [name for name in bulk_reads if name in cell_blobs]
     assert len(probed) == len(set(probed))
     assert not [name for name in single_reads if name in cell_blobs]
+
+
+def test_multi_scan_width_is_wider_than_the_single_query_one():
+    for k in (20, 60, 200):
+        assert hji._multi_scan_width(k) > hji._scan_width(k, quant.DTYPE_I8)
+        assert hji._multi_scan_width(k) >= k
+
+
+def test_multi_scan_width_does_not_shrink_for_unquantized_storage():
+    for k in (20, 60, 200):
+        assert hji._multi_scan_width(k) == hji._multi_scan_width(k)
+        assert hji._multi_scan_width(k) > k
+    assert hji._scan_width(60, quant.DTYPE_F32) == 60
+
+
+def test_nearest_multi_pool_is_wider_than_a_single_query_top_k(monkeypatch):
+    rng = np.random.default_rng(12)
+    dim = 16
+    directions = rng.standard_normal((600, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    vectors = (directions * (0.9 * rng.random((600, 1)) ** (1.0 / dim))).astype(np.float32)
+    rows = {
+        f"t{i}": (vectors[i], float(np.linalg.norm(vectors[i].astype(np.float64))))
+        for i in range(len(vectors))
+    }
+
+    monkeypatch.setattr(config, "EMBEDDING_DIMENSION", dim)
+    monkeypatch.setattr(config, "IVF_NPROBE", 8)
+    stored, _directory = _build_into(monkeypatch, rows, "i8")
+    monkeypatch.setattr(
+        "tasks.index_build_helpers.load_segmented_blob",
+        lambda conn, table, name: stored.get(name),
+    )
+    monkeypatch.setattr("database.get_db", lambda: _FakeConn(stored))
+    hji.reset_hyperbolic_index()
+    assert hji.load_hyperbolic_index() == 1
+
+    index = hji._index_for(None)
+    waypoints = np.stack([rows[f"t{i}"][0] for i in (5, 6, 7, 8, 9)]).astype(np.float64)
+
+    narrow = {}
+    for point in waypoints:
+        for item_id, _d in hji._nearest(point, hji._scan_width(10, index["code"]), index, frozenset()):
+            narrow.setdefault(item_id, None)
+
+    wide = hji.hyperbolic_nearest_multi(waypoints, 10)
+    assert set(narrow) <= set(wide)
+    assert len(wide) > len(narrow)

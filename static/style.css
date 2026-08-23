@@ -1009,7 +1009,7 @@ tbody tr:hover {
 }
 
 /* Status messages */
-#status, #playlist-status, #jellyfinResponseArea {
+#status, #playlist-status, #journey-status, #journey-playlist-status, #jellyfinResponseArea {
     margin-top: 1rem;
     padding: 0.5rem;
     font-size: 0.875rem;

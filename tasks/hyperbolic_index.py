@@ -68,6 +68,16 @@ Main Features:
   hyperbolic_nearest_multi skips the re-rank on purpose: it is a candidate
   generator whose caller (the geodesic journey) already re-ranks on the exact
   vectors itself.
+* Those two callers want OPPOSITE things from the scan width, so they size it
+  separately. hyperbolic_nearest wants PRECISION at rank k, and 8x delivers it.
+  hyperbolic_nearest_multi wants BREADTH: waypoints along one geodesic are
+  near-duplicates of each other, so their top-k lists overlap almost entirely
+  and the union collapses to a narrow tube of songs. Sizing it on top-k recall
+  starves it - on a 198-step journey 8x yielded 903 distinct candidates where
+  64x (_MULTI_OVERFETCH) yields 3776, and a journey that has to fill 198 steps
+  from 903 songs runs dry against content-dedup and MAX_SONGS_PER_ARTIST and
+  returns a truncated walk. _multi_scan_width is also deliberately independent
+  of the storage dtype: breadth is a property of the geodesic, not of i8.
 * hyperbolic_nearest_multi is BATCHED over its waypoints rather than looping
   the single-vector search. Waypoints along one geodesic are neighbours, so
   their probe sets overlap almost completely, and looping meant decoding the
@@ -109,6 +119,7 @@ _VERSION = 3
 _DEFAULT_SERVER_KEY = "default"
 _METRIC = "poincare"
 _RERANK_OVERFETCH = 8
+_MULTI_OVERFETCH = 64
 _RERANK_SCAN_CAP = 4096
 _SCAN_CHUNK = 4096
 _TRAIN_ITERATIONS = 10
@@ -156,7 +167,7 @@ def _partition_into_cells(vectors):
     if sample_n >= n:
         centroids, _labels = poincare_kmeans(vectors, n_cells, iterations=_TRAIN_ITERATIONS)
         return centroids, nearest_centroid(vectors, centroids)
-    picks = np.random.RandomState(0).choice(n, sample_n, replace=False)
+    picks = np.random.default_rng(0).choice(n, sample_n, replace=False)
     centroids, _labels = poincare_kmeans(
         vectors[picks], n_cells, iterations=_TRAIN_ITERATIONS
     )
@@ -580,6 +591,10 @@ def _scan_width(k, code):
     return min(max(k * _RERANK_OVERFETCH, k), max(k, _RERANK_SCAN_CAP))
 
 
+def _multi_scan_width(k):
+    return min(max(k * _MULTI_OVERFETCH, k), max(k, _RERANK_SCAN_CAP))
+
+
 def _rerank_exact(vector, candidates, k, code):
     if code == quant.DTYPE_F32 or not candidates:
         return candidates[:k]
@@ -619,10 +634,10 @@ def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):
     points = np.atleast_2d(np.asarray(vectors, dtype=np.float64))
     if points.shape[0] == 0:
         return []
-    keep = _scan_width(max(1, int(k)), index["code"]) + len(exclude)
+    keep = _multi_scan_width(max(1, int(k))) + len(exclude)
 
     probed = _probe_matrix(points, index)
-    cells = np.where(probed.any(axis=0))[0]
+    cells = np.nonzero(probed.any(axis=0))[0]
     if cells.size == 0:
         return []
     try:
@@ -637,7 +652,7 @@ def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):
         stored, item_ids = prefetched.get(cell) or _load_cell(cell, index)
         if stored.shape[0] == 0:
             continue
-        rows = np.where(probed[:, cell])[0]
+        rows = np.nonzero(probed[:, cell])[0]
         decoded = _decode_cell(stored, index["code"])
         distances = hyperbolic_distance_matrix(points[rows], decoded)
         ids = np.asarray(item_ids, dtype=object)

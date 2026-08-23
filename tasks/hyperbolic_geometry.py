@@ -267,7 +267,7 @@ def poincare_kmeans(points, k, iterations=10, seed=0, chunk=None):
         return np.zeros((0, pts.shape[1]), dtype=np.float64), np.zeros(0, dtype=np.int64)
     k = max(1, min(int(k), n))
     norms2 = np.sum(pts * pts, axis=1)
-    rng = np.random.RandomState(int(seed))
+    rng = np.random.default_rng(int(seed))
     centroids = clip_into_ball(pts[_kmeans_plus_plus(pts, norms2, k, rng)])
     labels = np.full(n, -1, dtype=np.int64)
     for _ in range(max(1, int(iterations))):
@@ -298,7 +298,7 @@ def _kmeans_plus_plus(pts, norms2, k, rng):
             target_norms2=norms2, candidate_norms2=norms2[idx:idx + 1],
         )[:, 0]
 
-    first = int(rng.randint(n))
+    first = int(rng.choice(n))
     chosen = [first]
     taken = {first}
     best = spread_from(first)
