@@ -1042,13 +1042,24 @@ def listen_for_index_reloads():
                     logger.exception("Hyperbolic Explorer cache reload failed")
                     hyper_success = False
 
+                try:
+                    from tasks.hyperbolic_index import load_hyperbolic_index
+
+                    load_hyperbolic_index(force_reload=True)
+                    logger.info("Reloading Hyperbolic Poincare index...")
+                    hyper_index_success = True
+                except Exception:
+                    logger.exception("Hyperbolic Poincare index reload failed")
+                    hyper_index_success = False
+
                 logger.info(
                     "In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP %s, "
-                    "Lyrics %s, SemGrove %s, Hyperbolic %s",
+                    "Lyrics %s, SemGrove %s, Hyperbolic %s, Poincare %s",
                     'OK' if clap_success else 'X',
                     'OK' if lyrics_success else 'X',
                     'OK' if sg_success else 'X',
                     'OK' if hyper_success else 'X',
+                    'OK' if hyper_index_success else 'X',
                 )
             except Exception:
                 logger.exception("Error reloading indexes/maps from background listener")
@@ -1229,6 +1240,20 @@ if not _is_worker:
                 )
         except Exception as e:
             logger.debug(f"SemGrove cache not loaded at startup: {e}")
+        # Load the Hyperbolic Explorer Poincare index directory (band vectors
+        # stay on disk and are decoded on demand under a memory cap).
+        try:
+            from tasks.hyperbolic_index import load_hyperbolic_index
+
+            hyper_index_servers = load_hyperbolic_index()
+            if hyper_index_servers:
+                logger.info("Hyperbolic Poincare index loaded at startup.")
+            else:
+                logger.info(
+                    "Hyperbolic Poincare index not found at startup (run analysis to build it)."
+                )
+        except Exception as e:
+            logger.debug(f"Hyperbolic Poincare index not loaded at startup: {e}")
 
         # Every load above streams a large directory blob out of Postgres and
         # discards it once unpacked. Those frees land in the allocator's free

@@ -18,12 +18,11 @@ contain both, then climbs back out to the destination. The deepest point of
 that bow is the continuous analogue of the lowest common ancestor of the two
 songs, which is what the page reports as the shared root.
 
-Scale: the snapping reads the whole projected catalogue once (every row with
-a finite Poincare projection) and ranks it by exact Poincare distance, so
-there is no IVF probe and no cosine/angular shortcut anywhere in the walk.
-The cost scales with the library size by design - the walk must be able to
-follow its own geodesic inward, where songs are rare, without a directional
-index quietly dropping them.
+Scale: the snapping reads the top HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP
+nearest tracks per waypoint from the disk-paged Poincare index, then ranks the
+pooled candidates by exact Poincare distance. With no index built it falls
+back to reading the whole projected catalogue once, so the walk is always
+exact and never depends on a cosine/angular shortcut.
 
 Main Features:
 * build_hyperbolic_journey resolves both endpoints, samples the geodesic,
@@ -31,9 +30,9 @@ Main Features:
   each interior waypoint to the nearest unused real song by exact Poincare
   distance, and returns the ordered walk with the endpoints pinned at both
   ends
-* Candidate generation reads tasks.hyperbolic_manager.fetch_all_poincare_rows
-  once for the whole walk and picks against the full projected catalogue by
-  exact Poincare distance
+* Candidate generation pulls the exact top-k nearest tracks per waypoint from
+  tasks.hyperbolic_index and re-ranks the pooled candidates by exact Poincare
+  distance
 * Content de-duplication and the MAX_SONGS_PER_ARTIST cap are enforced while
   picking rather than afterwards, so enforcing them shortens the walk instead
   of tearing holes in the middle of it
@@ -138,16 +137,31 @@ def _endpoint_rows(start_item_id, end_item_id):
     return rows[start_item_id], rows[end_item_id]
 
 
-def _gather_journey_candidates(interior_points, excluded):
-    from tasks.hyperbolic_manager import fetch_all_poincare_rows
+def _gather_journey_candidates(interior_points, excluded, server_id=None):
+    from tasks.hyperbolic_index import hyperbolic_nearest_multi
+    from tasks.hyperbolic_manager import fetch_all_poincare_rows, fetch_poincare_rows
 
-    rows = fetch_all_poincare_rows()
-    candidate_ids = [i for i in rows if i not in excluded]
+    per_step = int(config.HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP)
+    candidate_ids = hyperbolic_nearest_multi(
+        interior_points, per_step, server_id=server_id, exclude=excluded
+    )
+    if candidate_ids is None:
+        rows = fetch_all_poincare_rows()
+        candidate_ids = [i for i in rows if i not in excluded]
+        if not candidate_ids:
+            return [], None, None
+        vectors = np.stack([rows[i][0] for i in candidate_ids]).astype(np.float64)
+        radii = np.array([rows[i][1] for i in candidate_ids], dtype=np.float64)
+        return candidate_ids, vectors, radii
     if not candidate_ids:
         return [], None, None
-    vectors = np.stack([rows[i][0] for i in candidate_ids]).astype(np.float64)
-    radii = np.array([rows[i][1] for i in candidate_ids], dtype=np.float64)
-    return candidate_ids, vectors, radii
+    rows = fetch_poincare_rows(candidate_ids)
+    kept = [i for i in candidate_ids if i in rows]
+    if not kept:
+        return [], None, None
+    vectors = np.stack([rows[i][0] for i in kept]).astype(np.float64)
+    radii = np.array([rows[i][1] for i in kept], dtype=np.float64)
+    return kept, vectors, radii
 
 
 def _pick_steps(interior_points, candidate_ids, candidate_vecs, details, seed_details):
@@ -254,13 +268,13 @@ def _apex_payload(start_vec, end_vec, dive, e1, e2):
     }
 
 
-def _snap_interior(interior, start_item_id, end_item_id, seed_details):
+def _snap_interior(interior, start_item_id, end_item_id, seed_details, server_id=None):
     from database import get_score_data_by_ids
 
     if not interior.shape[0]:
         return [], None, None
     candidate_ids, candidate_vecs, candidate_radii = _gather_journey_candidates(
-        interior, {start_item_id, end_item_id}
+        interior, {start_item_id, end_item_id}, server_id
     )
     if not candidate_ids:
         return [], None, None
@@ -269,7 +283,7 @@ def _snap_interior(interior, start_item_id, end_item_id, seed_details):
     return picks, candidate_vecs, candidate_radii
 
 
-def build_hyperbolic_journey(start_item_id, end_item_id, length=None, ancestry_dive=None):
+def build_hyperbolic_journey(start_item_id, end_item_id, length=None, ancestry_dive=None, server_id=None):
     from database import get_score_data_by_ids
     from tasks.hyperbolic_geometry import (
         apply_radial_dive,
@@ -296,6 +310,7 @@ def build_hyperbolic_journey(start_item_id, end_item_id, length=None, ancestry_d
     picks, candidate_vecs, candidate_radii = _snap_interior(
         interior, start_item_id, end_item_id,
         [seed_details.get(start_item_id) or {}, seed_details.get(end_item_id) or {}],
+        server_id,
     )
 
     rows = [_journey_row(

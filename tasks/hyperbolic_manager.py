@@ -25,9 +25,10 @@ Main Features:
   (tasks.hyperbolic_journey_manager builds the geodesic journey on top of
   them), so nothing outside this module has to reach into a private helper
   the unit suite monkeypatches by name
-* hyperbolic_similar ranks the whole catalogue by exact Poincare distance
-  directly against the projected embedding rows - no IVF index and no cosine
-  shortcut; roots / niche instead draw their candidate pool from the embedding
+* hyperbolic_similar ranks candidates by exact Poincare distance through the
+  disk-paged Poincare index (exact top-k, no IVF index and no cosine
+  shortcut), falling back to a full catalogue scan when the index is not
+  built; roots / niche instead draw their candidate pool from the embedding
   table by radius (at least radial_spread of the radial range away from the
   seed, caller-supplied and defaulting to HYPERBOLIC_RADIAL_SPREAD) so the two
   modes visibly leave the seed's radius band, then rank by exact distance. All
@@ -462,7 +463,7 @@ def _rank_mode_results(ids, distances, cand_radii, mode, target_radius):
     return results
 
 
-def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None):
+def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None, server_id=None):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
     mode = (mode or "similar").strip().lower()
@@ -480,6 +481,32 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
     overfetch = max(
         int(limit) * int(config.HYPERBOLIC_CANDIDATE_OVERFETCH), int(limit) + 50
     )
+
+    if mode == "similar":
+        from tasks.hyperbolic_index import hyperbolic_nearest
+
+        nearest = hyperbolic_nearest(
+            target_vec, overfetch, server_id=server_id, exclude={target_item_id}
+        )
+        if nearest is not None:
+            if not nearest:
+                return []
+            ids = [item_id for item_id, _distance in nearest]
+            rows = _fetch_poincare_rows(ids)
+            results = []
+            for item_id, distance in nearest:
+                row = rows.get(item_id)
+                if row is None:
+                    continue
+                results.append(
+                    {
+                        "item_id": item_id,
+                        "distance": float(distance),
+                        "hyperbolic_radius": float(row[1]),
+                    }
+                )
+            return _deduplicate_and_cap_results(results)[:limit]
+
     rows = _gather_mode_candidates(target_item_id, target_radius, mode, radial_spread, overfetch)
     if not rows:
         return []

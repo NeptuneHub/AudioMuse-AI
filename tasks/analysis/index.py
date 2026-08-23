@@ -51,10 +51,12 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
     from ..sem_grove_manager import build_and_store_sem_grove_index
     from ..artist_gmm_manager import build_and_store_artist_index
     from ..hyperbolic_manager import backfill_hyperbolic_columns, build_hyperbolic_tree_cache
+    from ..hyperbolic_index import build_and_store_hyperbolic_index
 
     def _build_hyperbolic():
         backfill_hyperbolic_columns()
         build_hyperbolic_tree_cache()
+        build_and_store_hyperbolic_index(get_db())
 
     steps = (
         ("IVF index rebuilt", "Building IVF audio index...",

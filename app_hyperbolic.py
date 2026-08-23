@@ -209,7 +209,11 @@ def hyperbolic_similar_api():
                 return jsonify({"error": '"radial_spread" must be between 0 and 0.99.'}), 400
 
         canonical_id = app_server_context.resolve_input_item_id(item_id, data)
-        results = hyperbolic_similar(canonical_id, mode=mode, limit=limit, radial_spread=radial_spread)
+        server_id = app_server_context.resolve_request_server_id(data)
+        results = hyperbolic_similar(
+            canonical_id, mode=mode, limit=limit, radial_spread=radial_spread,
+            server_id=server_id,
+        )
         _attach_title_author(results)
         attach_song_features(results)
         results = app_server_context.scope_results(results, id_key="item_id")
@@ -391,11 +395,13 @@ def hyperbolic_journey_api():
 
         canonical_start = app_server_context.resolve_input_item_id(start_item_id, data)
         canonical_end = app_server_context.resolve_input_item_id(end_item_id, data)
+        server_id = app_server_context.resolve_request_server_id(data)
         journey = build_hyperbolic_journey(
             canonical_start,
             canonical_end,
             length=data.get("length"),
             ancestry_dive=data.get("ancestry_dive"),
+            server_id=server_id,
         )
         _attach_title_author(journey["results"])
         attach_song_features(journey["results"])

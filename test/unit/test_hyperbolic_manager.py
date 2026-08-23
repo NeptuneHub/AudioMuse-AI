@@ -148,6 +148,9 @@ def test_similar_mode_returns_sorted_by_distance(monkeypatch):
     }
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(mapping))
     monkeypatch.setattr(hm, "_fetch_all_poincare_rows", lambda: dict(mapping))
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest", lambda *a, **kw: None
+    )
     monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
     results = hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
     assert len(results) == 2

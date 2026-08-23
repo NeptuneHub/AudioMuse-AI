@@ -832,6 +832,14 @@ HYPERBOLIC_JOURNEY_ANCESTRY_DIVE = float(os.environ.get("HYPERBOLIC_JOURNEY_ANCE
 # whole geodesic lies in the 2-plane spanned by its endpoints, so these are an
 # exact picture of it, not an approximation of a higher-dimensional curve.
 HYPERBOLIC_JOURNEY_PATH_SAMPLES = int(os.environ.get("HYPERBOLIC_JOURNEY_PATH_SAMPLES", "96"))
+# Disk-paged Poincare index for the Hyperbolic Explorer: radial bands over the
+# projected catalogue. The band directory (edges + id->band map) lives in
+# memory; the band vectors stay in ivf_dir and are decoded on demand, bounded
+# by HYPERBOLIC_INDEX_CACHE_MB so the full projected set never sits in RAM.
+HYPERBOLIC_INDEX_BANDS = int(os.environ.get("HYPERBOLIC_INDEX_BANDS", "24"))
+HYPERBOLIC_INDEX_CACHE_MB = int(os.environ.get("HYPERBOLIC_INDEX_CACHE_MB", "256"))
+# Exact nearest candidates per journey waypoint pulled from the Poincare index.
+HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP = int(os.environ.get("HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP", "60"))
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"

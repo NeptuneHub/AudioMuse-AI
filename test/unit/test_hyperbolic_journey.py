@@ -158,6 +158,10 @@ def _install_journey_stubs(monkeypatch, rows, details):
         "tasks.hyperbolic_manager.fetch_all_poincare_rows",
         lambda: dict(rows),
     )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest_multi",
+        lambda vectors, k, server_id=None, exclude=frozenset(): None,
+    )
     monkeypatch.setattr("database.get_score_data_by_ids", lambda ids: _details(
         [details[i] for i in ids if i in details]
     ))
