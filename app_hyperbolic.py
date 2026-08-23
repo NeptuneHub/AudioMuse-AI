@@ -26,8 +26,15 @@ Main Features:
   other indexes), so it is not loaded at Flask startup. The page calls
   warmup on load so the tree is ready for the first browse, and it
   auto-unloads after HYPERBOLIC_TREE_WARMUP_DURATION idle seconds.
+* POST /api/hyperbolic/journey: the Geodesic Journey. Walks the exact Poincare
+  geodesic between two songs, snapping every waypoint to a real track, and
+  returns the ordered walk plus the apex (the continuous lowest common
+  ancestor of the two endpoints) and an exact 2-plane drawing of the path.
+  Delegates to ``tasks.hyperbolic_journey_manager``; the engine probes the IVF
+  index once per waypoint and reads the database twice for the whole walk, so
+  its cost tracks the step count, not the catalogue size.
 * GET /api/hyperbolic/cache_status: read-only diagnostic for that cache.
-* GET /hyperbolic: the two-tab explorer page.
+* GET /hyperbolic: the three-tab explorer page.
 """
 
 import logging
@@ -66,6 +73,11 @@ def hyperbolic_page():
             active="hyperbolic",
             app_version=APP_VERSION,
             hyperbolic_radial_spread_default=min(max(config.HYPERBOLIC_RADIAL_SPREAD, 0.0), 0.99),
+            hyperbolic_journey_length_default=config.HYPERBOLIC_JOURNEY_DEFAULT_LENGTH,
+            hyperbolic_journey_max_length=config.HYPERBOLIC_JOURNEY_MAX_LENGTH,
+            hyperbolic_journey_dive_default=min(
+                max(config.HYPERBOLIC_JOURNEY_ANCESTRY_DIVE, 0.0), 0.95
+            ),
         )
     except Exception:
         logger.exception("Error rendering hyperbolic.html")
@@ -231,6 +243,181 @@ def _attach_title_author(results):
         info = details.get(r.get("item_id"))
         r["title"] = info.get("title") if info else None
         r["author"] = info.get("author") if info else None
+
+
+@hyperbolic_bp.route("/api/hyperbolic/journey", methods=["POST"])
+def hyperbolic_journey_api():
+    """
+    Geodesic Journey between two songs.
+    ---
+    tags:
+      - Hyperbolic Explorer
+    summary: Walk the exact Poincare geodesic from one track to another and snap
+      every waypoint to a real song.
+    description: >-
+      A geodesic in negatively curved space bows toward the origin, so the walk
+      descends through the region general enough to contain both endpoints - the
+      continuous analogue of their lowest common ancestor - and climbs back out
+      toward the destination, instead of blending them the way a straight line
+      through raw space does. Steps are evenly spaced in hyperbolic arc length,
+      so each one covers the same musical distance. Candidate generation is a
+      single batched IVF lookup over the un-projected waypoints, so the
+      probe count tracks the step count, not the catalogue size.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [start_item_id, end_item_id]
+            properties:
+              start_item_id:
+                type: string
+                description: Media server item id the journey starts from.
+              end_item_id:
+                type: string
+                description: Media server item id the journey ends at.
+              length:
+                type: integer
+                minimum: 3
+                description: >-
+                  Tracks in the walk INCLUDING both endpoints. Defaults to
+                  HYPERBOLIC_JOURNEY_DEFAULT_LENGTH and is capped at
+                  HYPERBOLIC_JOURNEY_MAX_LENGTH.
+              ancestry_dive:
+                type: number
+                format: float
+                minimum: 0
+                maximum: 0.95
+                description: >-
+                  How much deeper than the true geodesic the walk dips toward
+                  the origin, through a bump that is zero at both endpoints. 0
+                  is the exact shortest geodesic; higher values take a longer
+                  detour through more general territory. Defaults to
+                  HYPERBOLIC_JOURNEY_ANCESTRY_DIVE.
+    responses:
+      200:
+        description: The ordered walk, its shared root, and the drawable path.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                      title:
+                        type: string
+                      author:
+                        type: string
+                      album:
+                        type: string
+                      step:
+                        type: integer
+                      t:
+                        type: number
+                        format: float
+                      distance:
+                        type: number
+                        format: float
+                        description: Poincare distance from the ideal waypoint of that step.
+                      hyperbolic_radius:
+                        type: number
+                        format: float
+                      waypoint_radius:
+                        type: number
+                        format: float
+                      plane_angle:
+                        type: number
+                        format: float
+                        description: Angle in the 2-plane the geodesic lives in, for the disk drawing.
+                      is_endpoint:
+                        type: boolean
+                      region:
+                        type: object
+                        nullable: true
+                        description: Nearest genre/subgenre centroid to the track.
+                count:
+                  type: integer
+                requested_length:
+                  type: integer
+                ancestry_dive:
+                  type: number
+                  format: float
+                geodesic_length:
+                  type: number
+                  format: float
+                  description: Exact Poincare distance between the two endpoints.
+                start_radius:
+                  type: number
+                  format: float
+                end_radius:
+                  type: number
+                  format: float
+                apex:
+                  type: object
+                  description: >-
+                    The point of the geodesic closest to the origin - the
+                    continuous lowest common ancestor of the two tracks - with
+                    its radius, its angle in the drawing plane, and the
+                    genre/subgenre region it falls in.
+                path:
+                  type: array
+                  description: Samples of the ideal geodesic as {t, radius, angle}.
+                  items:
+                    type: object
+                start_item_id:
+                  type: string
+                end_item_id:
+                  type: string
+      400:
+        description: Missing or identical endpoints, a track without a projection, or a bad parameter.
+      500:
+        description: Internal error.
+    """
+    import app_server_context
+    from app_helper import attach_song_features
+    from tasks.hyperbolic_journey_manager import build_hyperbolic_journey
+
+    try:
+        data = request.get_json() or {}
+        start_item_id = (data.get("start_item_id") or "").strip()
+        end_item_id = (data.get("end_item_id") or "").strip()
+        if not start_item_id or not end_item_id:
+            return jsonify({"error": 'Both "start_item_id" and "end_item_id" are required.'}), 400
+
+        canonical_start = app_server_context.resolve_input_item_id(start_item_id, data)
+        canonical_end = app_server_context.resolve_input_item_id(end_item_id, data)
+        journey = build_hyperbolic_journey(
+            canonical_start,
+            canonical_end,
+            length=data.get("length"),
+            ancestry_dive=data.get("ancestry_dive"),
+        )
+        _attach_title_author(journey["results"])
+        attach_song_features(journey["results"])
+        # Scoping can drop an interior step whose track is not on the selected
+        # server; the walk simply gets shorter, it never leaks a canonical id.
+        journey["results"] = app_server_context.scope_results(
+            journey["results"], id_key="item_id"
+        )
+        journey["count"] = len(journey["results"])
+        endpoints = app_server_context.translate_ids_for_request(
+            [canonical_start, canonical_end]
+        )
+        journey["start_item_id"] = endpoints.get(canonical_start) or canonical_start
+        journey["end_item_id"] = endpoints.get(canonical_end) or canonical_end
+        return jsonify(journey)
+
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        logger.exception("Hyperbolic geodesic journey failed")
+        return jsonify({"error": _INTERNAL_ERROR_MSG}), 500
 
 
 @hyperbolic_bp.route("/api/hyperbolic/tree", methods=["GET"])

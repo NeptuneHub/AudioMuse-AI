@@ -158,6 +158,95 @@
         border-radius: 0.4rem;
         padding: 0.5rem 0.6rem;
     }
+
+    /* Geodesic Journey. Two data series (the ideal geodesic and the real
+       tracks snapped to it) plus one accent for the shared root. Each mode's
+       three values were validated against that mode's card surface for the
+       OKLCH lightness band, the chroma floor, WCAG contrast, and pairwise
+       OKLab separation under simulated protanopia / deuteranopia. */
+    :root {
+        --journey-geodesic: #4f46e5;
+        --journey-track: #0d9488;
+        --journey-root: #b45309;
+    }
+    body.dark-mode,
+    html.dark-mode body {
+        --journey-geodesic: #7c83f5;
+        --journey-track: #12a594;
+        --journey-root: #d97706;
+    }
+
+    .journey-endpoints { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .journey-endpoints > .autocomplete-container { flex: 1 1 16rem; min-width: 0; }
+
+    .journey-root-banner {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.35rem 1.25rem;
+        margin: 1rem 0;
+        padding: 0.9rem 1.1rem;
+        border: 1px solid var(--border-color);
+        border-left: 4px solid var(--journey-root);
+        border-radius: 0.6rem;
+        background: var(--bg-card);
+    }
+    .journey-root-eyebrow {
+        flex-basis: 100%;
+        font-size: 0.72rem;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+    }
+    .journey-root-name {
+        font-size: 1.45rem;
+        font-weight: 600;
+        color: var(--text-title);
+        overflow-wrap: anywhere;
+    }
+    .journey-root-stat { font-size: 0.85rem; color: var(--text-muted); }
+    .journey-root-stat strong { color: var(--text-main); font-weight: 600; }
+
+    #hyper-journey-disk { width: 360px; height: 360px; max-width: 100%; flex: 0 0 auto; }
+    #hyper-journey-disk .ball-shell { fill: var(--bg-input, #f8fafc); stroke: var(--border-color); stroke-width: 2; }
+    /* border-color-darker, not border-color: in dark mode --bg-input and
+       --border-color are the same grey, so the rings would vanish. */
+    #hyper-journey-disk .journey-guide { fill: none; stroke: var(--border-color-darker); stroke-width: 1; stroke-dasharray: 3 5; }
+    #hyper-journey-disk .journey-arc { fill: none; stroke: var(--journey-geodesic); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    #hyper-journey-disk .journey-dot { cursor: pointer; stroke: var(--bg-card); stroke-width: 2; }
+    #hyper-journey-disk .journey-dot:hover { stroke: var(--text-main); }
+    #hyper-journey-disk .journey-label { fill: var(--text-muted); font-size: 10px; }
+    #hyper-journey-disk .journey-label-strong { fill: var(--text-main); font-size: 11px; font-weight: 600; }
+
+    .journey-profile-panel { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border-color); border-radius: 0.6rem; background: var(--bg-card); }
+    .journey-profile-panel h2 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+    .journey-profile-hint { margin: 0 0 0.75rem; color: var(--text-muted); font-size: 0.85rem; }
+    .journey-profile-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    #hyper-journey-profile { width: 100%; min-width: 30rem; height: 240px; display: block; }
+    #hyper-journey-profile .profile-grid { stroke: var(--border-color); stroke-width: 1; }
+    #hyper-journey-profile .profile-axis-text { fill: var(--text-muted); font-size: 11px; }
+    #hyper-journey-profile .profile-line { fill: none; stroke: var(--journey-geodesic); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    #hyper-journey-profile .profile-dot { fill: var(--journey-track); stroke: var(--bg-card); stroke-width: 2; }
+    #hyper-journey-profile .profile-root { stroke: var(--journey-root); stroke-width: 2; stroke-dasharray: 4 4; }
+    #hyper-journey-profile .profile-root-text { fill: var(--journey-root); font-size: 11px; font-weight: 600; }
+    #hyper-journey-profile .profile-crosshair { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+
+    .journey-legend { display: flex; flex-wrap: wrap; gap: 0.25rem 1.1rem; margin-top: 0.6rem; font-size: 0.85rem; color: var(--text-muted); }
+    .journey-legend-item { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .journey-legend-swatch { display: inline-block; width: 0.9rem; height: 0.9rem; border-radius: 0.25rem; flex: 0 0 auto; }
+    .journey-legend-swatch.is-line { height: 0.2rem; border-radius: 0.1rem; }
+
+    .journey-readout {
+        margin-top: 0.6rem;
+        min-height: 2.6rem;
+        padding: 0.5rem 0.6rem;
+        font-size: 0.85rem;
+        color: var(--text-main);
+        background: var(--bg-input, rgba(0, 0, 0, 0.03));
+        border: 1px solid var(--border-color);
+        border-radius: 0.4rem;
+    }
+    .journey-readout .journey-readout-region { color: var(--text-muted); }
 </style>
 {% endblock %}
 
@@ -171,6 +260,7 @@
     <div class="tabs">
         <button type="button" class="tab-btn active" data-tab="similar">Hyperbolic Similarity</button>
         <button type="button" class="tab-btn" data-tab="tree">Hierarchy Directory</button>
+        <button type="button" class="tab-btn" data-tab="journey">Geodesic Journey</button>
     </div>
 
     <!-- Tab 1: Hyperbolic Similarity -->
@@ -278,6 +368,136 @@
     <div class="tab-pane" id="tab-tree">
         <p>Browse the library as a virtual directory tree. The root splits by main genre, then by subgenre, then into named k-means clusters; leaf folders list the actual tracks. Without genre data the tree falls back to a mood partition followed by the main-genre and named-cluster levels.</p>
         <div id="hyper-tree" class="tree-root"></div>
+    </div>
+
+    <!-- Tab 3: Geodesic Journey -->
+    <div class="tab-pane" id="tab-journey">
+        <p>
+            Pick two songs and travel the exact geodesic between them. In hyperbolic space the
+            shortest path between two points bows toward the centre, so the walk does not blend the
+            two songs: it <strong>descends through the region general enough to contain both</strong>,
+            touches that shared root, then climbs back out to the destination. Every step covers the
+            same hyperbolic distance, and each waypoint is snapped to a real track from your library.
+        </p>
+
+        <form id="hyper-journey-form">
+            <fieldset>
+                <legend>Endpoints</legend>
+                <div class="journey-endpoints">
+                    <div class="autocomplete-container">
+                        <label for="journey-start-input">From:</label>
+                        <input type="text"
+                               id="journey-start-input"
+                               name="start_query"
+                               placeholder="Start typing a title or artist..."
+                               autocomplete="off">
+                        <div id="journey-start-results" class="autocomplete-results hidden"></div>
+                    </div>
+                    <div class="autocomplete-container">
+                        <label for="journey-end-input">To:</label>
+                        <input type="text"
+                               id="journey-end-input"
+                               name="end_query"
+                               placeholder="Start typing a title or artist..."
+                               autocomplete="off">
+                        <div id="journey-end-results" class="autocomplete-results hidden"></div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Walk</legend>
+                <div class="param-group">
+                    <div>
+                        <label for="journey-length">Tracks in the journey (endpoints included):</label>
+                        <input type="number" id="journey-length" name="length"
+                               value="{{ hyperbolic_journey_length_default }}"
+                               min="3" max="{{ hyperbolic_journey_max_length }}">
+                    </div>
+                    <div>
+                        <label for="journey-dive-slider" class="label-with-tooltip">
+                            Ancestry dive:
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">0 walks the exact shortest geodesic, which already bows toward the shared root. Higher values deepen that bow so the journey detours through even more general territory, without moving where it starts or ends.</span>
+                            </span>
+                        </label>
+                        <div class="param-row">
+                            <input type="range" id="journey-dive-slider" min="0" max="0.95" step="0.05"
+                                   value="{{ hyperbolic_journey_dive_default }}">
+                            <span id="journey-dive-label" style="font-weight: 500;">{{ '%.2f'|format(hyperbolic_journey_dive_default) }}</span>
+                            <input type="number" id="journey-dive-input" min="0" max="0.95" step="0.05"
+                                   value="{{ '%.2f'|format(hyperbolic_journey_dive_default) }}"
+                                   aria-label="Ancestry dive">
+                        </div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <button type="submit" class="btn btn-primary btn-block">
+                Travel the Geodesic
+            </button>
+        </form>
+
+        <div id="journey-status" role="status" aria-live="polite"></div>
+
+        <section id="journey-results" class="hidden">
+            <div id="journey-root-banner" class="journey-root-banner"></div>
+
+            <section class="hyper-ball-panel" aria-label="Poincare disk view of the journey">
+                <h2>The Path Through the Ball</h2>
+                <p class="hyper-ball-hint">
+                    The whole geodesic lives in the single 2-plane spanned by its two endpoints, so
+                    this disk is an exact picture of it rather than a sketch. Distance from the centre
+                    is how specific a track is: the centre is general, the rim is niche.
+                </p>
+                <div class="hyper-ball-layout">
+                    <svg id="hyper-journey-disk" viewBox="0 0 360 360" role="img"
+                         aria-label="Poincare disk showing the geodesic between the two songs, the shared root at its deepest point, and the tracks picked along the way"></svg>
+                    <div class="hyper-ball-side">
+                        <div class="journey-legend" id="journey-disk-legend"></div>
+                        <div id="journey-disk-readout" class="journey-readout"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="journey-profile-panel" aria-label="Abstraction profile of the journey">
+                <h2>Abstraction Profile</h2>
+                <p class="journey-profile-hint">
+                    How general each step is, from the first track to the last. The vertical axis is
+                    the Poincare radius: <strong>0 is the centre of the ball</strong> (the most general
+                    music your library has) and the top of the axis is the niche rim. The valley is
+                    the descent into the shared root; the climb back out is the journey specialising
+                    again toward the destination.
+                </p>
+                <div class="journey-profile-scroll">
+                    <svg id="hyper-journey-profile" viewBox="0 0 640 240" preserveAspectRatio="xMidYMid meet"
+                         role="img"
+                         aria-label="Line chart of hyperbolic radius against journey progress, with the picked tracks marked"></svg>
+                </div>
+                <div class="journey-legend" id="journey-profile-legend"></div>
+                <div id="journey-profile-readout" class="journey-readout"></div>
+            </section>
+
+            <h2>Journey</h2>
+            <div id="journey-list"></div>
+
+            <section id="journey-playlist-creator">
+                <h3>Create a Playlist from this Journey</h3>
+                <form id="journey-playlist-form">
+                    <div class="param-group">
+                        <div>
+                            <label for="journey-playlist-name">Playlist Name:</label>
+                            <input type="text" id="journey-playlist-name" name="playlist_name" required placeholder="e.g., Metal to Bossa Nova">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success btn-block">
+                        Create Playlist on Media Server
+                    </button>
+                </form>
+                <div id="journey-playlist-status" role="status" aria-live="polite"></div>
+            </section>
+        </section>
     </div>
 </section>
 {% endblock %}
@@ -837,6 +1057,438 @@
                     loadTreeRoot();
                 }
             });
+
+            // ----- Tab 3: Geodesic Journey -----
+            const bindAutocomplete = (inputId, resultsId, onPick) => {
+                const input = document.getElementById(inputId);
+                const box = document.getElementById(resultsId);
+                let timer = null;
+                const hide = () => box.classList.add('hidden');
+                document.addEventListener('click', (e) => {
+                    if (!e.target.closest('.autocomplete-container')) hide();
+                });
+                input.addEventListener('input', () => {
+                    clearTimeout(timer);
+                    const query = input.value.trim();
+                    if (!query) {
+                        onPick(null);
+                        hide();
+                        return;
+                    }
+                    timer = setTimeout(async () => {
+                        try {
+                            const params = new URLSearchParams({ search_query: query });
+                            const response = await fetch('{{ url_for("ivf_bp.search_tracks_endpoint") }}?' + params.toString());
+                            const tracks = await response.json();
+                            box.innerHTML = '';
+                            if (!tracks.length) {
+                                box.innerHTML = '<div class="autocomplete-item"><em>No songs found</em></div>';
+                            } else {
+                                tracks.forEach(t => {
+                                    const item = document.createElement('div');
+                                    item.className = 'autocomplete-item';
+                                    item.innerHTML = '<div class="title">' + esc(t.title || 'Unknown') + '</div>' +
+                                        '<div class="artist">' + esc(t.author || 'Unknown') + '</div>' +
+                                        '<div class="album">Album: ' + esc(t.album || 'Unknown') + '</div>';
+                                    item.addEventListener('click', () => {
+                                        input.value = (t.title || '') + ' - ' + (t.author || '');
+                                        onPick(t);
+                                        hide();
+                                    });
+                                    box.appendChild(item);
+                                });
+                            }
+                            box.classList.remove('hidden');
+                        } catch (err) {
+                            console.error('Journey autocomplete error:', err);
+                            hide();
+                        }
+                    }, 250);
+                });
+                input.addEventListener('focus', () => {
+                    if (box.children.length) box.classList.remove('hidden');
+                });
+            };
+
+            const journeyState = { start: null, end: null, data: null, dive: {{ hyperbolic_journey_dive_default }} };
+            bindAutocomplete('journey-start-input', 'journey-start-results', (t) => { journeyState.start = t; });
+            bindAutocomplete('journey-end-input', 'journey-end-results', (t) => { journeyState.end = t; });
+
+            const diveSlider = document.getElementById('journey-dive-slider');
+            const diveInput = document.getElementById('journey-dive-input');
+            const diveLabel = document.getElementById('journey-dive-label');
+            const clampDive = (v) => Number.isFinite(v) ? Math.min(0.95, Math.max(0, v)) : journeyState.dive;
+            const applyDive = (v) => {
+                journeyState.dive = clampDive(v);
+                diveSlider.value = journeyState.dive;
+                diveInput.value = journeyState.dive.toFixed(2);
+                diveLabel.textContent = journeyState.dive.toFixed(2);
+            };
+            diveSlider.addEventListener('input', () => applyDive(Number.parseFloat(diveSlider.value)));
+            diveInput.addEventListener('input', () => {
+                const v = Number.parseFloat(diveInput.value);
+                if (!Number.isNaN(v)) applyDive(v);
+            });
+            diveInput.addEventListener('change', () => applyDive(Number.parseFloat(diveInput.value)));
+
+            const DISK_CX = 180, DISK_CY = 180, DISK_R = 158;
+            const diskPoint = (r, angle) => [
+                DISK_CX + r * DISK_R * Math.cos(angle),
+                DISK_CY + r * DISK_R * Math.sin(angle)
+            ];
+            const cssColor = (name) => getComputedStyle(document.documentElement)
+                .getPropertyValue(name).trim() || '#4f46e5';
+
+            const journeyDisk = document.getElementById('hyper-journey-disk');
+            const journeyDiskLegend = document.getElementById('journey-disk-legend');
+            const journeyDiskReadout = document.getElementById('journey-disk-readout');
+            const journeyProfile = document.getElementById('hyper-journey-profile');
+            const journeyProfileLegend = document.getElementById('journey-profile-legend');
+            const journeyProfileReadout = document.getElementById('journey-profile-readout');
+
+            const legendMarkup = (entries) => entries.map((e) =>
+                `<span class="journey-legend-item"><span class="journey-legend-swatch${e.line ? ' is-line' : ''}" ` +
+                `style="background:${e.color}"></span>${esc(e.label)}</span>`).join('');
+
+            const trackLabel = (row) => [row.title, row.author].filter(Boolean).join(' - ')
+                || (row.item_id || 'Track');
+
+            const regionLabel = (region) => (region && region.label) ? region.label : '';
+
+            const anchorFor = (angle) => Math.cos(angle) >= 0 ? 'start' : 'end';
+
+            // The plane basis puts the start at angle 0, which leaves each journey
+            // drawn in whatever wedge its endpoints happen to span. Rotating the
+            // whole picture (an isometry of the disk about its centre, so the
+            // drawing stays exact) so the two endpoints sit symmetrically at the
+            // top makes every journey read the same way: down into the shared
+            // root, then back up.
+            const journeyRotation = (data) => {
+                const path = data.path || [];
+                if (!path.length) return 0;
+                const end = Number(path[path.length - 1].angle);
+                return Number.isFinite(end) ? -(end / 2) - Math.PI / 2 : 0;
+            };
+
+            const diskDirectLabel = (radius, angle, text, strong) => {
+                const [x, y] = diskPoint(Math.min(radius + 0.09, 1.06), angle);
+                return `<text class="journey-label${strong ? '-strong' : ''}" x="${x.toFixed(1)}" ` +
+                       `y="${y.toFixed(1)}" text-anchor="${anchorFor(angle)}">${esc(text)}</text>`;
+            };
+
+            const renderJourneyDisk = () => {
+                const data = journeyState.data;
+                if (!data) { journeyDisk.innerHTML = ''; return; }
+                const rot = journeyRotation(data);
+                const geodesicColor = cssColor('--journey-geodesic');
+                const trackColor = cssColor('--journey-track');
+                const rootColor = cssColor('--journey-root');
+                const parts = [`<circle class="ball-shell" cx="${DISK_CX}" cy="${DISK_CY}" r="${DISK_R}"/>`];
+                [0.25, 0.5, 0.75].forEach((r) => {
+                    parts.push(`<circle class="journey-guide" cx="${DISK_CX}" cy="${DISK_CY}" r="${(r * DISK_R).toFixed(1)}"/>`);
+                });
+
+                const arc = (data.path || []).map((p) => {
+                    const [x, y] = diskPoint(Math.min(p.radius, 0.995), p.angle + rot);
+                    return `${x.toFixed(2)},${y.toFixed(2)}`;
+                }).join(' ');
+                if (arc) parts.push(`<polyline class="journey-arc" points="${arc}"/>`);
+
+                const apex = data.apex;
+                if (apex) {
+                    const [ax, ay] = diskPoint(Math.min(apex.radius, 0.995), apex.angle + rot);
+                    parts.push(
+                        `<circle cx="${ax.toFixed(2)}" cy="${ay.toFixed(2)}" r="11" fill="none" ` +
+                        `stroke="${rootColor}" stroke-width="2"/>` +
+                        `<circle cx="${ax.toFixed(2)}" cy="${ay.toFixed(2)}" r="4" fill="${rootColor}"/>`
+                    );
+                    // Straight below the marker rather than radially outward: the
+                    // apex sits on the arc, so a radial offset would drop the
+                    // label on top of the path it is annotating.
+                    const label = regionLabel(apex.region) || 'Shared root';
+                    parts.push(`<text class="journey-label-strong" x="${ax.toFixed(1)}" ` +
+                               `y="${(ay + 26).toFixed(1)}" text-anchor="middle">${esc(label)}</text>`);
+                }
+
+                (data.results || []).forEach((row, idx) => {
+                    const radius = Number(row.hyperbolic_radius);
+                    const angle = Number(row.plane_angle);
+                    if (!Number.isFinite(radius) || !Number.isFinite(angle)) return;
+                    const [x, y] = diskPoint(Math.min(radius, 0.99), angle + rot);
+                    const isEnd = !!row.is_endpoint;
+                    const region = regionLabel(row.region);
+                    parts.push(
+                        `<circle class="journey-dot" data-idx="${idx}" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" ` +
+                        `r="${isEnd ? 7 : 5}" fill="${isEnd ? geodesicColor : trackColor}">` +
+                        `<title>${esc((idx + 1) + '. ' + trackLabel(row))}` +
+                        (region ? '\n' + esc(region) : '') +
+                        `\nR ${radius.toFixed(3)}</title></circle>`
+                    );
+                });
+
+                const first = (data.results || [])[0];
+                const last = (data.results || [])[(data.results || []).length - 1];
+                if (first) parts.push(diskDirectLabel(Number(first.hyperbolic_radius), Number(first.plane_angle) + rot, "Start", false));
+                if (last && last !== first) parts.push(diskDirectLabel(Number(last.hyperbolic_radius), Number(last.plane_angle) + rot, "End", false));
+
+                journeyDisk.innerHTML = parts.join('');
+                journeyDiskLegend.innerHTML = legendMarkup([
+                    { color: geodesicColor, label: 'Geodesic path and endpoints', line: false },
+                    { color: trackColor, label: 'Track picked at a waypoint', line: false },
+                    { color: rootColor, label: 'Shared root (deepest point)', line: false }
+                ]);
+                journeyDiskReadout.innerHTML = 'Hover or tap a dot to see which track sits there. ' +
+                    'The dashed rings mark a quarter, half and three quarters of the way to the rim.';
+            };
+
+            journeyDisk.addEventListener('click', (e) => {
+                const dot = e.target.closest('.journey-dot');
+                if (!dot || !journeyState.data) return;
+                const row = journeyState.data.results[Number(dot.dataset.idx)];
+                if (!row) return;
+                const region = regionLabel(row.region);
+                journeyDiskReadout.innerHTML = '<strong>' + esc(trackLabel(row)) + '</strong>' +
+                    (region ? '<br><span class="journey-readout-region">' + esc(region) + '</span>' : '') +
+                    '<br>Step ' + row.step + ' 00b7 R ' + Number(row.hyperbolic_radius).toFixed(3) +
+                    (row.is_endpoint ? ' 00b7 endpoint' : ' 00b7 ' + Number(row.distance).toFixed(3) + ' from the ideal waypoint');
+            });
+
+            const PROFILE = { left: 46, right: 18, top: 20, bottom: 36, width: 640, height: 240 };
+            PROFILE.plotW = PROFILE.width - PROFILE.left - PROFILE.right;
+            PROFILE.plotH = PROFILE.height - PROFILE.top - PROFILE.bottom;
+
+            const renderJourneyProfile = () => {
+                const data = journeyState.data;
+                if (!data) { journeyProfile.innerHTML = ''; return; }
+                const geodesicColor = cssColor('--journey-geodesic');
+                const trackColor = cssColor('--journey-track');
+                const path = data.path || [];
+                const rows = data.results || [];
+                const radii = path.map((p) => p.radius).concat(rows.map((r) => Number(r.hyperbolic_radius)))
+                    .filter((v) => Number.isFinite(v));
+                const domain = Math.min(1, Math.max(0.2, Math.ceil(Math.max.apply(null, radii.concat([0.1])) * 10) / 10));
+                const xOf = (t) => PROFILE.left + Math.min(Math.max(t, 0), 1) * PROFILE.plotW;
+                const yOf = (r) => PROFILE.top + (1 - Math.min(Math.max(r, 0), domain) / domain) * PROFILE.plotH;
+
+                const parts = [];
+                for (let i = 0; i <= 4; i++) {
+                    const value = domain * i / 4;
+                    const y = yOf(value);
+                    parts.push(`<line class="profile-grid" x1="${PROFILE.left}" y1="${y.toFixed(1)}" ` +
+                               `x2="${(PROFILE.left + PROFILE.plotW).toFixed(1)}" y2="${y.toFixed(1)}"/>`);
+                    parts.push(`<text class="profile-axis-text" x="${PROFILE.left - 8}" y="${(y + 4).toFixed(1)}" ` +
+                               `text-anchor="end">${value.toFixed(2)}</text>`);
+                }
+                parts.push(`<text class="profile-axis-text" x="${PROFILE.left - 8}" y="${PROFILE.top - 8}" text-anchor="end">R</text>`);
+                [[0, 'start'], [0.5, 'halfway'], [1, 'end']].forEach(([t, label]) => {
+                    parts.push(`<text class="profile-axis-text" x="${xOf(t).toFixed(1)}" ` +
+                               `y="${(PROFILE.top + PROFILE.plotH + 20).toFixed(1)}" ` +
+                               `text-anchor="${t === 0 ? 'start' : (t === 1 ? 'end' : 'middle')}">${label}</text>`);
+                });
+
+                const line = path.map((p) => `${xOf(p.t).toFixed(2)},${yOf(p.radius).toFixed(2)}`).join(' ');
+                if (line) parts.push(`<polyline class="profile-line" points="${line}"/>`);
+
+                const apex = data.apex;
+                if (apex) {
+                    const ax = xOf(apex.t);
+                    parts.push(`<line class="profile-root" x1="${ax.toFixed(1)}" y1="${PROFILE.top}" ` +
+                               `x2="${ax.toFixed(1)}" y2="${(PROFILE.top + PROFILE.plotH).toFixed(1)}"/>`);
+                    const label = regionLabel(apex.region) || 'shared root';
+                    const anchor = apex.t > 0.6 ? 'end' : 'start';
+                    parts.push(`<text class="profile-root-text" x="${(ax + (anchor === 'end' ? -6 : 6)).toFixed(1)}" ` +
+                               `y="${(PROFILE.top + 12).toFixed(1)}" text-anchor="${anchor}">${esc(label)}</text>`);
+                }
+
+                rows.forEach((row, idx) => {
+                    const r = Number(row.hyperbolic_radius);
+                    if (!Number.isFinite(r)) return;
+                    parts.push(`<circle class="profile-dot" data-idx="${idx}" cx="${xOf(Number(row.t)).toFixed(2)}" ` +
+                               `cy="${yOf(r).toFixed(2)}" r="${row.is_endpoint ? 6 : 4.5}">` +
+                               `<title>${esc((idx + 1) + '. ' + trackLabel(row))}\nR ${r.toFixed(3)}</title></circle>`);
+                });
+
+                parts.push(`<line class="profile-crosshair" id="journey-crosshair" x1="0" y1="${PROFILE.top}" ` +
+                           `x2="0" y2="${(PROFILE.top + PROFILE.plotH).toFixed(1)}" style="display:none"/>`);
+                parts.push(`<rect id="journey-profile-hit" x="${PROFILE.left}" y="${PROFILE.top}" ` +
+                           `width="${PROFILE.plotW}" height="${PROFILE.plotH}" fill="transparent"/>`);
+
+                journeyProfile.innerHTML = parts.join('');
+                journeyProfileLegend.innerHTML = legendMarkup([
+                    { color: geodesicColor, label: 'Ideal geodesic', line: true },
+                    { color: trackColor, label: 'Track picked at that step', line: false }
+                ]);
+                journeyProfileReadout.textContent = 'Move across the chart to read each step.';
+                bindProfileHover(xOf);
+            };
+
+            const bindProfileHover = (xOf) => {
+                const hit = document.getElementById('journey-profile-hit');
+                const crosshair = document.getElementById('journey-crosshair');
+                if (!hit || !crosshair) return;
+                const move = (event) => {
+                    const rows = (journeyState.data || {}).results || [];
+                    if (!rows.length) return;
+                    const box = journeyProfile.getBoundingClientRect();
+                    const point = event.touches ? event.touches[0] : event;
+                    const svgX = (point.clientX - box.left) / box.width * PROFILE.width;
+                    let best = rows[0];
+                    let bestDist = Infinity;
+                    rows.forEach((row) => {
+                        const d = Math.abs(xOf(Number(row.t)) - svgX);
+                        if (d < bestDist) { bestDist = d; best = row; }
+                    });
+                    const x = xOf(Number(best.t));
+                    crosshair.setAttribute('x1', x.toFixed(1));
+                    crosshair.setAttribute('x2', x.toFixed(1));
+                    crosshair.style.display = '';
+                    const region = regionLabel(best.region);
+                    journeyProfileReadout.innerHTML = '<strong>' + esc(trackLabel(best)) + '</strong>' +
+                        (region ? '<br><span class="journey-readout-region">' + esc(region) + '</span>' : '') +
+                        '<br>Step ' + best.step + ' 00b7 R ' + Number(best.hyperbolic_radius).toFixed(3);
+                };
+                hit.addEventListener('mousemove', move);
+                hit.addEventListener('touchmove', move, { passive: true });
+                hit.addEventListener('mouseleave', () => {
+                    crosshair.style.display = 'none';
+                    journeyProfileReadout.textContent = 'Move across the chart to read each step.';
+                });
+            };
+
+            const renderJourneyBanner = () => {
+                const data = journeyState.data;
+                const banner = document.getElementById('journey-root-banner');
+                if (!data) { banner.innerHTML = ''; return; }
+                const apex = data.apex || {};
+                const name = regionLabel(apex.region) || 'A region with no genre centroid nearby';
+                const pct = Math.round((Number(apex.t) || 0) * 100);
+                banner.innerHTML =
+                    '<div class="journey-root-eyebrow">Shared root of these two songs</div>' +
+                    '<div class="journey-root-name">' + esc(name) + '</div>' +
+                    '<div class="journey-root-stat">reached <strong>' + pct + '%</strong> of the way in</div>' +
+                    '<div class="journey-root-stat">depth <strong>R ' + (Number(apex.radius) || 0).toFixed(3) + '</strong></div>' +
+                    '<div class="journey-root-stat">geodesic length <strong>' +
+                    (Number(data.geodesic_length) || 0).toFixed(2) + '</strong></div>' +
+                    '<div class="journey-root-stat"><strong>' + data.count + '</strong> track(s)</div>';
+            };
+
+            const renderJourneyList = () => {
+                const rows = (journeyState.data || {}).results || [];
+                const container = document.getElementById('journey-list');
+                if (!rows.length) { container.innerHTML = ''; return; }
+                const tags = window.renderTrackTags || (() => '');
+                container.innerHTML = '<div class="song-result-list">' + rows.map((row, idx) => {
+                    const region = regionLabel(row.region);
+                    const role = row.is_endpoint ? (idx === 0 ? 'start' : 'destination') : '';
+                    const radius = Number(row.hyperbolic_radius);
+                    return '<div class="result-item">' +
+                        '<div class="result-main">' +
+                        '<div class="result-title">' + (idx + 1) + '. ' + esc(row.title || 'Unknown') +
+                        (role ? ' <span class="tree-summary">(' + role + ')</span>' : '') + '</div>' +
+                        '<div class="result-artist">' + esc(row.author || '') + '</div>' +
+                        (row.album ? '<div class="result-album">Album: ' + esc(row.album) + '</div>' : '') +
+                        (region ? '<div class="result-album">Region: ' + esc(region) + '</div>' : '') +
+                        '</div>' +
+                        tags(row) +
+                        (Number.isFinite(radius)
+                            ? '<div class="similarity-badge badge-neutral">R ' + radius.toFixed(2) + '</div>'
+                            : '') +
+                        '</div>';
+                }).join('') + '</div>';
+            };
+
+            const journeyForm = document.getElementById('hyper-journey-form');
+            const journeyStatus = document.getElementById('journey-status');
+            const journeySection = document.getElementById('journey-results');
+
+            journeyForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                journeyStatus.className = '';
+                if (!journeyState.start || !journeyState.end) {
+                    journeyStatus.textContent = 'Pick both a start and a destination song from the suggestions.';
+                    journeyStatus.className = 'status-error';
+                    return;
+                }
+                if (journeyState.start.item_id === journeyState.end.item_id) {
+                    journeyStatus.textContent = 'The start and the destination must be different songs.';
+                    journeyStatus.className = 'status-error';
+                    return;
+                }
+                journeyStatus.textContent = 'Travelling the geodesic...';
+                try {
+                    const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_journey_api") }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            start_item_id: journeyState.start.item_id,
+                            end_item_id: journeyState.end.item_id,
+                            length: Number.parseInt(document.getElementById('journey-length').value, 10)
+                                || {{ hyperbolic_journey_length_default }},
+                            ancestry_dive: clampDive(Number.parseFloat(diveInput.value))
+                        })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        journeyStatus.textContent = data.error || 'The journey could not be built.';
+                        journeyStatus.className = 'status-error';
+                        journeySection.classList.add('hidden');
+                        return;
+                    }
+                    journeyState.data = data;
+                    const asked = data.requested_length;
+                    journeyStatus.textContent = data.count < asked
+                        ? `${data.count} of the ${asked} requested tracks - the candidate pool ran out after de-duplication and the per-artist cap.`
+                        : `${data.count} track(s) along the geodesic.`;
+                    renderJourneyBanner();
+                    renderJourneyDisk();
+                    renderJourneyProfile();
+                    renderJourneyList();
+                    journeySection.classList.remove('hidden');
+                } catch (err) {
+                    journeyStatus.textContent = 'An unexpected error occurred.';
+                    journeyStatus.className = 'status-error';
+                    console.error('Geodesic journey error:', err);
+                }
+            });
+
+            const journeyPlaylistForm = document.getElementById('journey-playlist-form');
+            const journeyPlaylistStatus = document.getElementById('journey-playlist-status');
+            journeyPlaylistForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                journeyPlaylistStatus.className = '';
+                const name = document.getElementById('journey-playlist-name').value.trim();
+                const trackIds = ((journeyState.data || {}).results || [])
+                    .map((row) => row.item_id).filter(Boolean);
+                if (!name) return;
+                if (!trackIds.length) {
+                    journeyPlaylistStatus.textContent = 'No tracks to add.';
+                    journeyPlaylistStatus.className = 'status-error';
+                    return;
+                }
+                try {
+                    const response = await fetch('{{ url_for("ivf_bp.create_media_server_playlist") }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ playlist_name: name, track_ids: trackIds })
+                    });
+                    const data = await response.json();
+                    journeyPlaylistStatus.className = response.ok ? 'status-success' : 'status-error';
+                    journeyPlaylistStatus.textContent = data.message || data.error || 'Playlist request finished.';
+                } catch (err) {
+                    journeyPlaylistStatus.className = 'status-error';
+                    journeyPlaylistStatus.textContent = 'Could not reach the playlist endpoint.';
+                    console.error('Journey playlist creation error:', err);
+                }
+            });
+
+            // The two SVGs read their series colors from CSS custom properties, so a
+            // theme switch has to redraw them rather than just recolor the page.
+            const themeObserver = new MutationObserver(() => {
+                if (!journeyState.data) return;
+                renderJourneyDisk();
+                renderJourneyProfile();
+            });
+            themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
             // Poincare ball: re-render the mode region whenever the mode changes
             // (before any search), and draw the initial preview. The radial

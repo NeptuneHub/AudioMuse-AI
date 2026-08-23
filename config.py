@@ -809,6 +809,46 @@ HYPERBOLIC_MIN_CLUSTER_SIZE = int(os.environ.get("HYPERBOLIC_MIN_CLUSTER_SIZE", 
 # and auto-unloads after this idle period to free RAM.
 HYPERBOLIC_TREE_WARMUP_DURATION = int(os.environ.get("HYPERBOLIC_TREE_WARMUP_DURATION", "300"))
 
+# Geodesic Journey: the walk along the exact Poincare geodesic between two
+# songs. A geodesic in negatively curved space bows toward the origin, so the
+# walk descends through the region general enough to contain both endpoints
+# (the continuous analogue of their lowest common ancestor) and climbs back
+# out - which is what makes it different from the Sonic Path page's straight
+# line through raw space.
+# Number of tracks in the walk INCLUDING both endpoints. Evenly spaced t on a
+# Poincare geodesic is evenly spaced hyperbolic arc length, so every step
+# covers the same musical distance.
+HYPERBOLIC_JOURNEY_DEFAULT_LENGTH = int(os.environ.get("HYPERBOLIC_JOURNEY_DEFAULT_LENGTH", "14"))
+HYPERBOLIC_JOURNEY_MAX_LENGTH = int(os.environ.get("HYPERBOLIC_JOURNEY_MAX_LENGTH", "50"))
+# IVF neighbors fetched per waypoint before the exact Poincare re-ranking picks
+# one real track per step. The whole walk is ONE batched multi-probe, so this
+# bounds the candidate pool at length * this value regardless of catalogue size.
+HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP = int(os.environ.get("HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP", "60"))
+# The IVF index ranks by DIRECTION only (IVF_METRIC is angular), so a probe
+# returns the nearest directions at any radius and the exact Poincare re-rank
+# picks from whatever came back. Tracks near the centre of the ball are rare -
+# a small radius means a small embedding norm, i.e. a track that activates many
+# tags weakly instead of a few strongly - so a uniform k returns almost nothing
+# deep enough for the middle of a journey, and the walk cannot follow its own
+# geodesic inward. Waypoints are therefore bucketed into DEPTH_TIERS by how far
+# below the endpoints they sit, and the deepest tier probes
+# per-step * (1 + DEPTH_BOOST) neighbors instead of per-step. The probe COUNT is
+# unchanged (still one per waypoint) - only k grows where the data is thin.
+HYPERBOLIC_JOURNEY_DEPTH_BOOST = float(os.environ.get("HYPERBOLIC_JOURNEY_DEPTH_BOOST", "3"))
+HYPERBOLIC_JOURNEY_DEPTH_TIERS = int(os.environ.get("HYPERBOLIC_JOURNEY_DEPTH_TIERS", "3"))
+# Hard ceiling on the whole walk's candidate pool, so the depth boost can never
+# turn one request into an unbounded primary-key fetch on a large catalogue.
+HYPERBOLIC_JOURNEY_MAX_CANDIDATES = int(os.environ.get("HYPERBOLIC_JOURNEY_MAX_CANDIDATES", "4000"))
+# How much deeper than the true geodesic the walk should dip toward the origin,
+# as a fraction of each waypoint's radius applied through a bump that is zero at
+# both endpoints. 0 is the exact (shortest) geodesic; higher values buy a longer
+# detour through more general territory without moving where the walk starts or ends.
+HYPERBOLIC_JOURNEY_ANCESTRY_DIVE = float(os.environ.get("HYPERBOLIC_JOURNEY_ANCESTRY_DIVE", "0"))
+# Samples of the ideal geodesic returned for the Poincare disk drawing. The
+# whole geodesic lies in the 2-plane spanned by its endpoints, so these are an
+# exact picture of it, not an approximation of a higher-dimensional curve.
+HYPERBOLIC_JOURNEY_PATH_SAMPLES = int(os.environ.get("HYPERBOLIC_JOURNEY_PATH_SAMPLES", "96"))
+
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.

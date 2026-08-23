@@ -23,6 +23,21 @@ Main Features:
   so tanh stays in its active region instead of saturating
 * split_radial_bands / assign_radial_bands derive quantile band boundaries
   from the actual radius distribution
+* mobius_add / mobius_scalar_mul are the gyrovector operations of the Poincare
+  ball, from which poincare_geodesic builds the exact constant-speed geodesic
+  gamma(t) = x (+) (t (x) (-x (+) y)) with gamma(0) = x and gamma(1) = y
+* geodesic_apex returns the point of the geodesic closest to the origin: the
+  continuous analogue of the lowest common ancestor of the two endpoints,
+  because a geodesic between two points bows inward toward the more general
+  region that contains both
+* apply_radial_dive deepens that inward bow by a bump that is zero at both
+  endpoints, so a caller can ask the walk to travel further back toward the
+  shared root without moving where it starts or ends
+* unproject_from_poincare inverts the projection exactly (the map is radial, so
+  direction is preserved), which is what lets a synthetic ball point be looked
+  up in the raw-space IVF index
+* geodesic_plane_basis / plane_angles give the 2-plane the whole geodesic lives
+  in, so a Poincare disk drawing of it is an exact picture and not a sketch
 """
 
 import numpy as np
@@ -129,3 +144,115 @@ def assign_radial_bands(radii, boundaries):
     edges = np.array([b[0] for b in boundaries] + [boundaries[-1][1]], dtype=np.float64)
     idx = np.searchsorted(edges, radii, side="right") - 1
     return np.clip(idx, 0, len(boundaries) - 1)
+
+
+_BALL_LIMIT = 1.0 - 1e-7
+
+
+def clip_into_ball(vectors):
+    v = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(v, axis=-1, keepdims=True)
+    factor = np.where(norms > _BALL_LIMIT, _BALL_LIMIT / np.maximum(norms, 1e-12), 1.0)
+    return v * factor
+
+
+def mobius_add(x, y):
+    xx = np.asarray(x, dtype=np.float64)
+    yy = np.asarray(y, dtype=np.float64)
+    x2 = np.sum(xx * xx, axis=-1, keepdims=True)
+    y2 = np.sum(yy * yy, axis=-1, keepdims=True)
+    xy = np.sum(xx * yy, axis=-1, keepdims=True)
+    num = (1.0 + 2.0 * xy + y2) * xx + (1.0 - x2) * yy
+    den = 1.0 + 2.0 * xy + x2 * y2
+    return clip_into_ball(num / np.where(np.abs(den) < 1e-15, 1e-15, den))
+
+
+def mobius_scalar_mul(t, x):
+    xx = np.atleast_2d(np.asarray(x, dtype=np.float64))
+    tt = np.asarray(t, dtype=np.float64).reshape(-1, 1)
+    norms = np.linalg.norm(xx, axis=-1, keepdims=True)
+    safe = np.where(norms <= 1e-12, 1.0, norms)
+    radii = np.tanh(tt * np.arctanh(np.minimum(norms, _BALL_LIMIT)))
+    return clip_into_ball(radii * (xx / safe))
+
+
+def poincare_geodesic(start, end, ts):
+    u = np.asarray(start, dtype=np.float64).reshape(1, -1)
+    v = np.asarray(end, dtype=np.float64).reshape(1, -1)
+    direction = mobius_add(-u, v)
+    steps = mobius_scalar_mul(np.asarray(ts, dtype=np.float64).reshape(-1), direction)
+    return mobius_add(u, steps)
+
+
+def geodesic_apex(start, end, samples=129, refinements=30):
+    ts = np.linspace(0.0, 1.0, max(3, int(samples)))
+    points = poincare_geodesic(start, end, ts)
+    norms = np.linalg.norm(points, axis=1)
+    best = int(np.argmin(norms))
+    lo = float(ts[max(best - 1, 0)])
+    hi = float(ts[min(best + 1, ts.size - 1)])
+    for _ in range(max(0, int(refinements))):
+        third = (hi - lo) / 3.0
+        probe = poincare_geodesic(start, end, [lo + third, hi - third])
+        if np.linalg.norm(probe[0]) <= np.linalg.norm(probe[1]):
+            hi -= third
+        else:
+            lo += third
+    t = 0.5 * (lo + hi)
+    return float(t), poincare_geodesic(start, end, [t])[0]
+
+
+def apply_radial_dive(points, ts, dive):
+    depth = min(max(float(dive or 0.0), 0.0), 0.95)
+    pts = np.asarray(points, dtype=np.float64)
+    if depth <= 0.0:
+        return pts
+    t = np.asarray(ts, dtype=np.float64).reshape(-1, 1)
+    bump = 4.0 * t * (1.0 - t)
+    return clip_into_ball(pts * (1.0 - depth * bump))
+
+
+def unproject_from_poincare(points, scale):
+    scale = float(scale) if scale else 1.0
+    pts = np.asarray(points, dtype=np.float64)
+    single = pts.ndim == 1
+    if single:
+        pts = pts.reshape(1, -1)
+    norms = np.linalg.norm(pts, axis=-1, keepdims=True)
+    safe = np.where(norms <= 1e-12, 1.0, norms)
+    raw_norms = scale * np.arctanh(np.minimum(norms, _BALL_LIMIT))
+    out = (pts / safe) * raw_norms
+    if single:
+        return out.reshape(-1).astype(np.float32)
+    return out.astype(np.float32)
+
+
+def geodesic_plane_basis(start, end):
+    u = np.asarray(start, dtype=np.float64).reshape(-1)
+    v = np.asarray(end, dtype=np.float64).reshape(-1)
+    first_norm = float(np.linalg.norm(u))
+    if first_norm > 1e-12:
+        e1 = u / first_norm
+    else:
+        second_norm = float(np.linalg.norm(v))
+        if second_norm <= 1e-12:
+            return None, None
+        return v / second_norm, None
+    residual = v - float(np.dot(v, e1)) * e1
+    residual_norm = float(np.linalg.norm(residual))
+    if residual_norm <= 1e-9:
+        return e1, None
+    return e1, residual / residual_norm
+
+
+def plane_angles(points, e1, e2):
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+    if e1 is None:
+        return np.zeros(pts.shape[0], dtype=np.float64)
+    along = pts @ np.asarray(e1, dtype=np.float64)
+    if e2 is None:
+        return np.where(along >= 0.0, 0.0, np.pi)
+    across = pts @ np.asarray(e2, dtype=np.float64)
+    return np.arctan2(across, along)

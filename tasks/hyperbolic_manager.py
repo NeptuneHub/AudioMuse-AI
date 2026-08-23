@@ -20,6 +20,10 @@ Main Features:
   reuse by analysis workers, the web app, and the backfill job
 * save_hyperbolic_projection / backfill_hyperbolic_columns keep the hyperbolic
   columns in sync with the raw embedding, skipping rows with NULL embeddings
+* fetch_poincare_rows and get_projected_genre_subgenres are the two public
+  reads other managers need (tasks.hyperbolic_journey_manager builds the
+  geodesic journey on top of them), so nothing outside this module has to
+  reach into a private helper the unit suite monkeypatches by name
 * hyperbolic_similar: similar over-fetches raw-space IVF candidates with the
   shared similar-song defaults (radius walk, content dedup, per-artist cap) and
   re-ranks them by exact Poincare distance; roots / niche instead draw their
@@ -92,6 +96,7 @@ _TREE_SKELETON_BLOB_NAME = "hyperbolic_tree_skeleton"
 
 _FALLBACK_SCALE = 1.0
 _SCALE_CACHE = {"value": None}
+_GENRE_CENTROID_CACHE = {"value": None}
 
 
 def resolve_hyperbolic_scale(force_recalibrate=False, auto_calibrate=True):
@@ -113,6 +118,7 @@ def resolve_hyperbolic_scale(force_recalibrate=False, auto_calibrate=True):
 
 def reset_hyperbolic_scale_cache():
     _SCALE_CACHE["value"] = None
+    _GENRE_CENTROID_CACHE["value"] = None
 
 
 def _load_persisted_scale():
@@ -303,6 +309,16 @@ def _fetch_poincare_rows(item_ids):
     except Exception:
         logger.exception("Could not fetch hyperbolic rows")
     return out
+
+
+def fetch_poincare_rows(item_ids):
+    """Public entry point for ``{item_id: (poincare_vector, radius)}`` lookups.
+
+    Other managers (the geodesic journey) need the same projected rows this
+    module reads for its own search modes; they call this instead of reaching
+    into the private helper, which the unit suite monkeypatches by name.
+    """
+    return _fetch_poincare_rows(item_ids)
 
 
 def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
@@ -1397,6 +1413,20 @@ def _load_projected_mood_centroids():
             vec = project_to_poincare(np.asarray(raw, dtype=np.float32), scale)
             out.append({"vec": vec.astype(np.float64), "tags": ranked_tags, "mood": mood})
     return out
+
+
+def get_projected_genre_subgenres():
+    """The projected genre/subgenre centroids, parsed and projected once.
+
+    17 genres and ~200 subgenres of EMBEDDING_DIMENSION floats is a fixed
+    ~300 KB that does not grow with the catalogue, so unlike the tree cache it
+    is held for the process lifetime rather than idle-unloaded; it is dropped
+    only by reset_hyperbolic_scale_cache, because the projection depends on the
+    scale it was built with.
+    """
+    if _GENRE_CENTROID_CACHE["value"] is None:
+        _GENRE_CENTROID_CACHE["value"] = _load_projected_genre_subgenres()
+    return _GENRE_CENTROID_CACHE["value"]
 
 
 def _load_projected_genre_subgenres():
