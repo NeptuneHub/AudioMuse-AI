@@ -457,7 +457,7 @@ def test_multi_scan_width_is_wider_than_the_single_query_one():
 
 def test_multi_scan_width_does_not_shrink_for_unquantized_storage():
     for k in (20, 60, 200):
-        assert hji._multi_scan_width(k) == hji._multi_scan_width(k)
+        assert hji._multi_scan_width(k) > hji._scan_width(k, quant.DTYPE_F32)
         assert hji._multi_scan_width(k) > k
     assert hji._scan_width(60, quant.DTYPE_F32) == 60
 
