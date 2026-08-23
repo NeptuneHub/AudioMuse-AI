@@ -27,10 +27,12 @@ Main Features:
   the unit suite monkeypatches by name
 * hyperbolic_similar ranks candidates by exact Poincare distance through the
   disk-paged Poincare index (exact top-k, no IVF index and no cosine
-  shortcut), falling back to a full catalogue scan when the index is not
-  built; roots / niche instead draw their candidate pool from the embedding
-  table by radius (at least radial_spread of the radial range away from the
-  seed, caller-supplied and defaulting to HYPERBOLIC_RADIAL_SPREAD) so the two
+  shortcut), and raises a "run analysis to build it" ValueError when that
+  index is not built rather than scanning the whole catalogue - the Flask
+  layer turns that into a 400 with the message, the same way the geodesic
+  journey does; roots / niche instead draw their candidate pool from the
+  embedding table by radius (at least radial_spread of the radial range away
+  from the seed, caller-supplied and defaulting to HYPERBOLIC_RADIAL_SPREAD) so the two
   modes visibly leave the seed's radius band, then rank by exact distance. All
   modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
   similar-song page

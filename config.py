@@ -1066,8 +1066,12 @@ IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosi
 # query reads only the nearest IVF_NPROBE cells, so the Flask container's resident
 # index memory is bounded by IVF_QUERY_CACHE_MB per index instead of growing with
 # the library size. Cell vectors are quantized per IVF_STORAGE_DTYPE (coarse
-# centroids stay float32, so cell selection / recall is unaffected).
-IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored cell-vector precision: 'i8' (int8; angular only, euclidean/dot auto-fall to f16), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
+# centroids stay float32, so cell selection / recall is unaffected). The same
+# setting also sizes the Hyperbolic Explorer's disk-paged Poincare index bands,
+# which take it literally (i8 stays i8 there, no f16 downgrade) and absorb the
+# coarser grid by overfetching the band scan and re-ranking those candidates on
+# the exact float32 poincare_embedding rows before returning.
+IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored vector precision for EVERY index: 'i8' (int8; the IVF indexes fall back to f16 for euclidean/dot, the Poincare index keeps i8), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this

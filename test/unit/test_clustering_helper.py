@@ -8,8 +8,9 @@
 
 """Parameter generation and model fitting in clustering_helper.
 
-Covers the random/mutated parameter builders for each clustering method, data
-scaling, and the model-application path that runs the chosen algorithm.
+Covers the random/mutated parameter builders for each clustering method, the
+L2 row normalization that puts the model on cosine, and the model-application
+path that runs the chosen algorithm.
 
 Main Features:
 * _mutate_param clamps to min/max for ints and floats
@@ -152,7 +153,7 @@ class TestMutateParameters:
         assert 2 <= dbscan_params['min_samples'] <= 10
 
 
-class TestPrepareAndScaleData:
+class TestPrepareAndNormalizeData:
     def test_uses_embeddings_when_enabled(self):
         X_feat = np.random.rand(50, 20)
         X_embed = np.random.rand(50, 128)
@@ -169,7 +170,7 @@ class TestPrepareAndScaleData:
 
         assert normalized_data.shape == (50, 20)
 
-    def test_scales_data_correctly(self):
+    def test_gives_every_row_unit_length_so_the_model_sees_cosine(self):
         X_feat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
         normalized_data = _prepare_and_normalize_data(X_feat, None, use_embeddings=False)

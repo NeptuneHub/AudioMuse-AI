@@ -12,15 +12,32 @@ Covers the radial band edges, the exact radial lower bound used to order band
 probes, the branch-and-bound nearest search against a brute-force baseline,
 the not-built fallback signal, and a build/store/load round trip with mocked
 storage helpers.
+
+Main Features:
+* _band_edges covers [0, 1] monotonically and the radial lower bound is zero
+  for a point inside its own band
+* hyperbolic_nearest matches a brute-force exact Poincare ranking
+* An unbuilt index reports None so the caller can raise instead of scanning
+* build/store/load round trips through mocked segmented-blob helpers
+* Band matrices are written in the configured IVF_STORAGE_DTYPE through the
+  shared ivf_quant codec, and the blob byte length matches that element size
+  whatever dtype the projected rows arrive in
+* IVF_STORAGE_DTYPE=i8 is taken literally here and is NOT downgraded to f16
+  the way ivf_quant.effective_code would for a non-angular metric
+* An i8 scan is overfetched and re-ranked against the exact float32 rows, so
+  hyperbolic_nearest still returns the exact ordering and exact distances
 """
 
 import gzip
 import json
 
 import numpy as np
+import pytest
 
+import config
 import tasks.hyperbolic_index as hji
-from tasks.hyperbolic_geometry import hyperbolic_distance
+from tasks import ivf_quant as quant
+from tasks.hyperbolic_geometry import hyperbolic_distance, hyperbolic_distances_to
 
 
 def _ball(*values):
@@ -42,7 +59,13 @@ def _index_from_rows(rows, n_bands=3):
     for b in range(n):
         members = [i for i, a in zip(ids, assigned) if int(a) == b]
         bands.append({"blob": f"band_{b}", "count": len(members), "item_ids": members})
-    return {"server_key": "s", "dim": vectors.shape[1], "band_edges": edges, "bands": bands}
+    return {
+        "server_key": "s",
+        "dim": vectors.shape[1],
+        "code": quant.DTYPE_F32,
+        "band_edges": edges,
+        "bands": bands,
+    }
 
 
 def test_band_edges_cover_the_ball_and_stay_monotonic():
@@ -175,7 +198,7 @@ def test_build_and_load_roundtrip(monkeypatch):
     dir_name = hji._dir_name(hji._DEFAULT_SERVER_KEY)
     assert dir_name in stored
     directory = json.loads(gzip.decompress(stored[dir_name]).decode("utf-8"))
-    assert directory["version"] == 1
+    assert directory["version"] == hji._VERSION
     assert sum(band["count"] for band in directory["bands"]) == len(rows)
 
     monkeypatch.setattr("database.get_db", lambda: conn)
@@ -184,3 +207,97 @@ def test_build_and_load_roundtrip(monkeypatch):
     index = hji._index_for(None)
     assert index is not None
     assert len(index["bands"]) == len(directory["bands"])
+
+
+def _build_into(monkeypatch, rows, dtype_name):
+    stored = {}
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", dtype_name)
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.fetch_all_poincare_rows",
+        lambda server_id=None, include_legacy_default=True: dict(rows),
+    )
+    monkeypatch.setattr(
+        "tasks.index_build_helpers.store_segmented_blob",
+        lambda conn, table, name, blob, max_part_size_mb=None: stored.__setitem__(name, blob),
+    )
+    monkeypatch.setattr(hji, "_scan_index_names", lambda: [hji._DEFAULT_SERVER_KEY])
+    monkeypatch.setattr(hji, "_resolve_default_server_id", lambda: None)
+    hji.build_and_store_hyperbolic_index(_FakeConn())
+    directory = json.loads(
+        gzip.decompress(stored[hji._dir_name(hji._DEFAULT_SERVER_KEY)]).decode("utf-8")
+    )
+    return stored, directory
+
+
+_FLOAT64_ROWS = {
+    "a": (np.array([0.90, 0.00, 0.00], dtype=np.float64), 0.90),
+    "b": (np.array([0.40, 0.40, 0.00], dtype=np.float64), 0.5657),
+    "c": (np.array([0.05, 0.02, 0.01], dtype=np.float64), 0.0548),
+}
+
+
+@pytest.mark.parametrize(
+    "configured, expected_name, expected_elem",
+    [("f32", "f32", 4), ("f16", "f16", 2), ("i8", "i8", 1)],
+)
+def test_bands_are_written_in_the_configured_storage_dtype(
+    monkeypatch, configured, expected_name, expected_elem
+):
+    dim = 3
+    stored, directory = _build_into(monkeypatch, _FLOAT64_ROWS, configured)
+
+    assert directory["dtype"] == expected_name
+    written = 0
+    for band in directory["bands"]:
+        blob = stored.get(band["blob"])
+        if band["count"] == 0:
+            assert blob is None
+            continue
+        assert len(blob) == band["count"] * dim * expected_elem
+        written += band["count"]
+    assert written == len(_FLOAT64_ROWS)
+
+
+def test_int8_is_taken_literally_and_not_downgraded_to_f16(monkeypatch):
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "i8")
+    assert hji._storage_code() == quant.DTYPE_I8
+
+
+def test_a_quantized_scan_is_reranked_to_the_exact_ordering(monkeypatch):
+    rng = np.random.default_rng(0)
+    dim = 24
+    directions = rng.standard_normal((300, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    vectors = (directions * (0.95 * rng.random((300, 1)) ** (1.0 / dim))).astype(np.float32)
+    rows = {
+        f"t{i}": (vectors[i], float(np.linalg.norm(vectors[i].astype(np.float64))))
+        for i in range(len(vectors))
+    }
+
+    monkeypatch.setattr(config, "EMBEDDING_DIMENSION", dim)
+    stored, _directory = _build_into(monkeypatch, rows, "i8")
+
+    monkeypatch.setattr(
+        "tasks.index_build_helpers.load_segmented_blob",
+        lambda conn, table, name: stored.get(name),
+    )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.fetch_poincare_rows",
+        lambda ids: {i: rows[i] for i in ids if i in rows},
+    )
+    monkeypatch.setattr("database.get_db", lambda: _FakeConn())
+    hji.reset_hyperbolic_index()
+    assert hji.load_hyperbolic_index() == 1
+
+    query = "t7"
+    target = rows[query][0].astype(np.float64)
+    ids = [i for i in rows if i != query]
+    exact = hyperbolic_distances_to(
+        target, np.stack([rows[i][0] for i in ids]).astype(np.float64)
+    )
+    truth = [ids[i] for i in np.argsort(exact)[:10]]
+
+    got = hji.hyperbolic_nearest(target, 10, exclude={query})
+    assert [item_id for item_id, _d in got] == truth
+    for (item_id, distance), expected in zip(got, np.sort(exact)[:10]):
+        assert distance == pytest.approx(float(expected), rel=1e-12)
