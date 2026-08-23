@@ -25,10 +25,9 @@ Main Features:
 * build_hyperbolic_tree_cache persists the built tree; load_hyperbolic_tree_cache
   restores it from that persisted blob without touching the embedding table
   or refitting any k-means, and init_hyperbolic_cache always loads, never builds
-* _fit_clusters is a Poincare k-means: it separates antipodal points, recovers
-  well-separated blobs, and its k-means++ seeding only ever measures against
-  the centre it just added, so seeding stays linear in the catalogue instead
-  of rebuilding the whole points-by-centres matrix on every pick
+* _fit_clusters delegates to hyperbolic_geometry.poincare_kmeans: it separates
+  antipodal points and recovers well-separated blobs (the seeding and centroid
+  behaviour itself is pinned in test_hyperbolic_geometry.py)
 """
 
 import numpy as np
@@ -881,38 +880,6 @@ def test_fit_clusters_splits_antipodal_points():
     assert labels[0] == labels[1]
     assert labels[2] == labels[3]
     assert labels[0] != labels[2]
-
-
-def test_seed_cluster_centres_returns_k_distinct_points():
-    rng = np.random.default_rng(2)
-    pts = rng.uniform(-0.5, 0.5, (200, 6))
-    chosen = hm._seed_cluster_centres(pts, np.sum(pts * pts, axis=1), 12, np.random.RandomState(0))
-    assert len(chosen) == 12
-    assert len(set(chosen)) == 12
-
-
-def test_seed_cluster_centres_still_fills_k_when_every_point_coincides():
-    pts = np.tile(np.array([0.3, -0.2, 0.1]), (40, 1))
-    chosen = hm._seed_cluster_centres(pts, np.sum(pts * pts, axis=1), 9, np.random.RandomState(0))
-    assert len(chosen) == 9
-    assert len(set(chosen)) == 9
-
-
-def test_seeding_only_measures_against_the_centre_it_just_added(monkeypatch):
-    import tasks.hyperbolic_geometry as geometry
-
-    widths = []
-    real = geometry.hyperbolic_distance_matrix
-
-    def counting(targets, candidates, **kwargs):
-        widths.append(np.atleast_2d(np.asarray(candidates)).shape[0])
-        return real(targets, candidates, **kwargs)
-
-    monkeypatch.setattr(geometry, "hyperbolic_distance_matrix", counting)
-    rng = np.random.default_rng(4)
-    pts = rng.uniform(-0.5, 0.5, (300, 5))
-    hm._seed_cluster_centres(pts, np.sum(pts * pts, axis=1), 20, np.random.RandomState(0))
-    assert widths == [1] * 20
 
 
 def test_fit_clusters_recovers_well_separated_blobs():

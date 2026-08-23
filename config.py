@@ -256,7 +256,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.4.0"
+APP_VERSION = "v3.4.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -832,11 +832,13 @@ HYPERBOLIC_JOURNEY_ANCESTRY_DIVE = float(os.environ.get("HYPERBOLIC_JOURNEY_ANCE
 # whole geodesic lies in the 2-plane spanned by its endpoints, so these are an
 # exact picture of it, not an approximation of a higher-dimensional curve.
 HYPERBOLIC_JOURNEY_PATH_SAMPLES = int(os.environ.get("HYPERBOLIC_JOURNEY_PATH_SAMPLES", "96"))
-# Disk-paged Poincare index for the Hyperbolic Explorer: radial bands over the
-# projected catalogue. The band directory (edges + id->band map) lives in
-# memory; the band vectors stay in ivf_dir and are decoded on demand, bounded
-# by HYPERBOLIC_INDEX_CACHE_MB so the full projected set never sits in RAM.
-HYPERBOLIC_INDEX_BANDS = int(os.environ.get("HYPERBOLIC_INDEX_BANDS", "24"))
+# Disk-paged Poincare IVF index for the Hyperbolic Explorer: the projected
+# catalogue is partitioned by hyperbolic k-means into 8*sqrt(n) cells (the same
+# rule and the same IVF_NLIST_MAX / IVF_TRAIN_POINTS_PER_CELL / IVF_NPROBE knobs
+# as the other IVF indexes above), so the cell count grows with the library.
+# The cell directory and the coarse centroids live in memory; the cell vectors
+# stay in ivf_dir and are decoded on demand, bounded by HYPERBOLIC_INDEX_CACHE_MB
+# so the full projected set never sits in RAM.
 HYPERBOLIC_INDEX_CACHE_MB = int(os.environ.get("HYPERBOLIC_INDEX_CACHE_MB", "256"))
 # Exact nearest candidates per journey waypoint pulled from the Poincare index.
 HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP = int(os.environ.get("HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP", "60"))

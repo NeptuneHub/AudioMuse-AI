@@ -1419,62 +1419,8 @@ def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood
     return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids)
 
 
-def _seed_cluster_centres(pts, norms2, k, rng):
-    from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
-
-    n = pts.shape[0]
-
-    def spread_from(idx):
-        return hyperbolic_distance_matrix(
-            pts, pts[idx:idx + 1],
-            target_norms2=norms2, candidate_norms2=norms2[idx:idx + 1],
-        )[:, 0]
-
-    first = int(rng.randint(n))
-    chosen = [first]
-    taken = {first}
-    best_dists = spread_from(first)
-    while len(chosen) < k:
-        total = float(best_dists.sum())
-        if not np.isfinite(total) or total <= 1e-12:
-            for idx in range(n):
-                if len(chosen) >= k:
-                    break
-                if idx not in taken:
-                    chosen.append(idx)
-                    taken.add(idx)
-            break
-        pick = int(rng.choice(n, p=best_dists / total))
-        if pick in taken:
-            pick = int(np.argmax(best_dists))
-        chosen.append(pick)
-        taken.add(pick)
-        best_dists = np.minimum(best_dists, spread_from(pick))
-    return chosen
-
-
-def _assign_to_centres(pts, norms2, centroids):
-    from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
-
-    n = pts.shape[0]
-    k = centroids.shape[0]
-    centroid_norms2 = np.sum(centroids * centroids, axis=1)
-    block = max(256, min(4096, 2_000_000 // max(k, 1)))
-    labels = np.empty(n, dtype=np.int64)
-    for start in range(0, n, block):
-        stop = start + block
-        labels[start:stop] = np.argmin(
-            hyperbolic_distance_matrix(
-                pts[start:stop], centroids,
-                target_norms2=norms2[start:stop], candidate_norms2=centroid_norms2,
-            ),
-            axis=1,
-        )
-    return labels
-
-
 def _fit_clusters(vecs, k):
-    from tasks.hyperbolic_geometry import clip_into_ball, karcher_mean
+    from tasks.hyperbolic_geometry import poincare_kmeans
 
     pts = np.asarray(vecs, dtype=np.float64)
     n = pts.shape[0]
@@ -1483,28 +1429,7 @@ def _fit_clusters(vecs, k):
     k = max(1, min(int(k), n))
     if k == n:
         return np.arange(n, dtype=np.int64)
-
-    rng = np.random.RandomState(0)
-    norms2 = np.sum(pts * pts, axis=1)
-    centroids = clip_into_ball(pts[_seed_cluster_centres(pts, norms2, k, rng)])
-    labels = np.zeros(n, dtype=np.int64)
-    for _ in range(5):
-        new_labels = _assign_to_centres(pts, norms2, centroids)
-        if np.array_equal(new_labels, labels):
-            break
-        labels = new_labels
-        order = np.argsort(labels, kind="stable")
-        bounds = np.concatenate(([0], np.cumsum(np.bincount(labels, minlength=k))))
-        new_centroids = np.empty_like(centroids)
-        for j in range(k):
-            lo, hi = int(bounds[j]), int(bounds[j + 1])
-            if hi <= lo:
-                new_centroids[j] = centroids[j]
-                continue
-            mean = karcher_mean(pts[order[lo:hi]])
-            new_centroids[j] = mean if mean is not None else centroids[j]
-        centroids = clip_into_ball(new_centroids)
-
+    _centroids, labels = poincare_kmeans(pts, k, iterations=5, seed=0)
     return labels
 
 

@@ -27,20 +27,31 @@ Main Features:
 * einstein_midpoint agrees with the geodesic midpoint for a pair of points
 * hyperbolic_distance_matrix returns the same matrix whether or not the caller
   hands it precomputed squared norms
+* poincare_kmeans seeds k distinct centres, still fills k when every point
+  coincides, and its k-means++ only ever measures against the centre it just
+  added, so seeding stays linear in the catalogue instead of rebuilding the
+  whole points-by-centres matrix on every pick
+* nearest_centroid agrees with a full hyperbolic_distance_matrix argmin while
+  skipping the arccosh, which is what keeps a full-catalogue assignment pass
+  affordable
 """
 
 import numpy as np
 import pytest
 
 from tasks.hyperbolic_geometry import (
+    _kmeans_plus_plus,
     assign_radial_bands,
+    clip_into_ball,
     calibrate_scale,
     einstein_midpoint,
     hyperbolic_distance,
     hyperbolic_distance_matrix,
     hyperbolic_distances_to,
     karcher_mean,
+    nearest_centroid,
     poincare_geodesic,
+    poincare_kmeans,
     poincare_radius,
     project_to_poincare,
     split_radial_bands,
@@ -245,3 +256,57 @@ def test_distance_matrix_with_cached_norms_matches_the_uncached_matrix():
         hyperbolic_distance_matrix(targets, candidates),
         rtol=1e-12,
     )
+
+
+def test_kmeans_plus_plus_seeds_k_distinct_points():
+    rng = np.random.default_rng(2)
+    pts = rng.uniform(-0.5, 0.5, (200, 6))
+    chosen = _kmeans_plus_plus(pts, np.sum(pts * pts, axis=1), 12, np.random.RandomState(0))
+    assert len(chosen) == 12
+    assert len(set(chosen)) == 12
+
+
+def test_kmeans_plus_plus_still_fills_k_when_every_point_coincides():
+    pts = np.tile(np.array([0.3, -0.2, 0.1]), (40, 1))
+    chosen = _kmeans_plus_plus(pts, np.sum(pts * pts, axis=1), 9, np.random.RandomState(0))
+    assert len(chosen) == 9
+    assert len(set(chosen)) == 9
+
+
+def test_kmeans_plus_plus_only_measures_against_the_centre_it_just_added(monkeypatch):
+    import tasks.hyperbolic_geometry as geometry
+
+    widths = []
+    real = geometry.hyperbolic_distance_matrix
+
+    def counting(targets, candidates, **kwargs):
+        widths.append(np.atleast_2d(np.asarray(candidates)).shape[0])
+        return real(targets, candidates, **kwargs)
+
+    monkeypatch.setattr(geometry, "hyperbolic_distance_matrix", counting)
+    rng = np.random.default_rng(4)
+    pts = rng.uniform(-0.5, 0.5, (300, 5))
+    geometry._kmeans_plus_plus(pts, np.sum(pts * pts, axis=1), 20, np.random.RandomState(0))
+    assert widths == [1] * 20
+
+
+def test_nearest_centroid_matches_a_full_distance_matrix_argmin():
+    rng = np.random.default_rng(11)
+    pts = clip_into_ball(rng.uniform(-0.3, 0.3, (400, 12)))
+    centroids = clip_into_ball(rng.uniform(-0.3, 0.3, (17, 12)))
+    expected = np.argmin(hyperbolic_distance_matrix(pts, centroids), axis=1)
+    np.testing.assert_array_equal(nearest_centroid(pts, centroids), expected)
+
+
+def test_poincare_kmeans_recovers_separated_blobs():
+    rng = np.random.default_rng(6)
+    centres = rng.standard_normal((5, 12))
+    centres /= np.linalg.norm(centres, axis=1, keepdims=True)
+    centres *= 0.6
+    truth = np.repeat(np.arange(5), 40)
+    pts = centres[truth] + rng.standard_normal((200, 12)) * 0.005
+    centroids, labels = poincare_kmeans(pts, 5, iterations=10)
+    assert centroids.shape == (5, 12)
+    for blob in range(5):
+        assert len(set(labels[truth == blob])) == 1
+    assert len(set(labels)) == 5

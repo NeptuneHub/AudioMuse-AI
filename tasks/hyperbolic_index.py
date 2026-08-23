@@ -6,41 +6,61 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Disk-paged exact Poincare index for the Hyperbolic Explorer.
+"""Disk-paged Poincare IVF index for the Hyperbolic Explorer.
 
-An exact nearest-neighbour index over the Poincare-projected embeddings, built
-per music server and persisted as segmented blobs in ivf_dir (the same storage
-pattern the tree cache and the other indexes use). Only the band directory is
-held in memory; the projected vectors live on disk and are decoded band by band
-on demand under a process-wide byte cap, so the full projected catalogue never
-stays resident.
+A nearest-neighbour index over the Poincare-projected embeddings, built per
+music server and persisted as segmented blobs in ivf_dir (the same storage
+pattern the tree cache and the other indexes use). Only the cell directory and
+the coarse centroids are held in memory; the projected vectors live on disk and
+are decoded cell by cell on demand under a process-wide byte cap, so the full
+projected catalogue never stays resident.
 
 Main Features:
-* The catalogue is split into radial bands from the observed radius
-  distribution. The directory stores the band edges, the per-band item ids and
-  the blob names; the vectors for each band are stored separately.
-* Querying ranks bands by an exact radial lower bound of the Poincare distance
-  and probes them in that order, stopping as soon as the next band's lower
-  bound reaches the current k-th distance, so top-k results are exact without
-  scanning every band.
-* Band vectors are quantized through tasks.ivf_quant on config.IVF_STORAGE_DTYPE
+* The catalogue is partitioned by HYPERBOLIC k-means (tasks.hyperbolic_geometry
+  .poincare_kmeans): k-means++ seeding, assignment and the Frechet-mean centroid
+  update all run in the exact Poincare metric, so no Euclidean or cosine step
+  enters the partition. Cell count follows the same rule as the other IVF
+  indexes, 8*sqrt(n) capped at IVF_NLIST_MAX, and training runs on an
+  IVF_TRAIN_POINTS_PER_CELL sample before every track is assigned to its
+  nearest centroid.
+* This REPLACED a radial-band split, which measured out as useless: radius
+  alone cannot separate points in 200 dimensions, because almost all of the
+  distance between two tracks comes from direction. On a 200k catalogue the
+  band layout still scanned 63-95% of the library per query and adding bands
+  barely moved it (8 bands 97.2%, 384 bands 93.8%). A centroid encodes
+  direction as well as radius, which is what makes IVF_NPROBE cells out of
+  8*sqrt(n) an actual reduction rather than a full scan with extra steps.
+* Querying takes the exact Poincare distance to every coarse centroid, probes
+  the nearest IVF_NPROBE cells, and heaps the top-k over their members. Like
+  every IVF this is approximate: a neighbour parked in an unprobed cell is
+  missed, and IVF_NPROBE is the recall/latency knob. Probing N cells would be N
+  Postgres round trips, so _prefetch_cells pulls every uncached probed cell in
+  ONE ANY() read and hands the arrays straight to the scan. It returns them
+  rather than relying on the cell cache to still hold them, because a probe set
+  larger than HYPERBOLIC_INDEX_CACHE_MB would otherwise evict its own earlier
+  cells during the prefetch and the scan would re-read them one at a time,
+  which is the exact round-trip storm the bulk read exists to prevent.
+* IVF_NPROBE and _RERANK_OVERFETCH are NOT redundant: IVF_NPROBE decides which
+  cells are looked at at all, while the overfetch decides how many of the
+  scanned candidates survive i8 ranking error into the exact re-rank. Neither
+  covers the other's failure mode.
+* Cell vectors are quantized through tasks.ivf_quant on config.IVF_STORAGE_DTYPE
   (default i8), the same knob and the same codec every other index uses, so the
   projected catalogue on disk costs 1 byte per dimension instead of 4. This
   path deliberately does NOT go through ivf_quant.effective_code: that helper
   downgrades i8 to f16 for any non-angular metric, and the Poincare metric is
   non-angular, but the storage dtype here is taken literally so i8 means i8.
-* i8 makes the band scan genuinely approximate here, more so than it does for
-  an angular index, because the Poincare metric divides by (1 - ||u||^2), which
-  for a track near the ball boundary is ~1e-6 while the i8 grid of 1/127 moves
-  a radius by ~1e-2. Two things absorb that. Decoded bands are pushed back
-  inside the ball with clip_into_ball, so a quantized point can never land on
-  or past the boundary and blow the denominator up. And the scan overfetches
+  The coarse centroids stay float32, exactly as they do for the paged IVF.
+* i8 makes the cell scan coarser here than it would for an angular index,
+  because the Poincare metric divides by (1 - ||u||^2), which for a track near
+  the ball boundary is ~1e-6 while the i8 grid of 1/127 moves a radius by
+  ~1e-2. Two things absorb that. Decoded cells are pushed back inside the ball
+  with clip_into_ball, so a quantized point can never land on or past the
+  boundary and blow the denominator up. And the scan overfetches
   _RERANK_OVERFETCH-fold (capped at _RERANK_SCAN_CAP) before hyperbolic_nearest
   re-ranks those candidates against the exact float32 poincare_embedding rows,
-  so the distances and ordering it returns are exact for everything the widened
-  scan reached. Measured on a 30k catalogue at 32x: 100% exact top-20 recall on
-  an ordinary radius distribution, 99.97% when the radius tail runs right up to
-  the boundary. hyperbolic_nearest_multi skips the re-rank on purpose: it is a
+  so the distances and ordering it returns are exact for everything the probed
+  cells reached. hyperbolic_nearest_multi skips the re-rank on purpose: it is a
   candidate generator whose caller (the geodesic journey) already re-ranks on
   the exact vectors itself.
 * hyperbolic_nearest / hyperbolic_nearest_multi return item ids ranked by exact
@@ -48,7 +68,8 @@ Main Features:
   as a "run analysis to build it" error instead of scanning the catalogue.
 * Build targets mirror the Hyperbolic Explorer tree: one index per configured
   server plus the default server, keyed the same way so a request scoped to a
-  server reads only that server's index.
+  server reads only that server's index. A rebuild also sweeps the blobs of the
+  retired radial-band layout, which nothing names any more.
 """
 
 import gzip
@@ -68,20 +89,23 @@ logger = logging.getLogger(__name__)
 
 _TABLE = "ivf_dir"
 _DIR_PREFIX = "hyperbolic_index_dir"
-_BAND_PREFIX = "hyperbolic_index_band"
-_VERSION = 2
+_CELL_PREFIX = "hyperbolic_index_cell"
+_CENTROID_PREFIX = "hyperbolic_index_centroids"
+_LEGACY_BAND_PREFIX = "hyperbolic_index_band"
+_VERSION = 3
 _DEFAULT_SERVER_KEY = "default"
 _METRIC = "poincare"
 _RERANK_OVERFETCH = 32
 _RERANK_SCAN_CAP = 4096
 _SCAN_CHUNK = 4096
+_TRAIN_ITERATIONS = 10
 
 _INDEX_CACHE = {"loaded": False, "servers": {}}
 _INDEX_CACHE_LOCK = threading.RLock()
 
-_BAND_CACHE = OrderedDict()
-_BAND_CACHE_BYTES = 0
-_BAND_CACHE_LOCK = threading.Lock()
+_CELL_CACHE = OrderedDict()
+_CELL_CACHE_BYTES = 0
+_CELL_CACHE_LOCK = threading.Lock()
 
 
 def _storage_code():
@@ -97,8 +121,33 @@ def _dir_name(server_key):
     return _scoped_name(_DIR_PREFIX, server_key)
 
 
-def _band_name(server_key, band):
-    return _scoped_name(_BAND_PREFIX, server_key) + f"__{band}"
+def _cell_name(server_key, cell):
+    return _scoped_name(_CELL_PREFIX, server_key) + f"__{cell}"
+
+
+def _centroids_name(server_key):
+    return _scoped_name(_CENTROID_PREFIX, server_key)
+
+
+def _cell_count(n_items):
+    base = int(round(8.0 * np.sqrt(max(1, int(n_items)))))
+    return max(1, min(int(config.IVF_NLIST_MAX), base, int(n_items)))
+
+
+def _partition_into_cells(vectors):
+    from tasks.hyperbolic_geometry import nearest_centroid, poincare_kmeans
+
+    n = vectors.shape[0]
+    n_cells = _cell_count(n)
+    sample_n = min(n, int(config.IVF_TRAIN_POINTS_PER_CELL) * n_cells)
+    if sample_n >= n:
+        centroids, labels = poincare_kmeans(vectors, n_cells, iterations=_TRAIN_ITERATIONS)
+        return centroids, nearest_centroid(vectors, centroids)
+    picks = np.random.RandomState(0).choice(n, sample_n, replace=False)
+    centroids, _labels = poincare_kmeans(
+        vectors[picks], n_cells, iterations=_TRAIN_ITERATIONS
+    )
+    return centroids, nearest_centroid(vectors, centroids)
 
 
 def _resolve_default_server_id():
@@ -127,29 +176,16 @@ def _build_targets():
     return targets
 
 
-def _band_edges(radii, n_bands):
-    n = max(1, int(n_bands))
-    quantiles = np.quantile(radii, np.linspace(0.0, 1.0, n + 1))
-    edges = np.unique(quantiles).astype(np.float64)
-    if edges.size < 2:
-        return np.array([0.0, 1.0], dtype=np.float64)
-    edges[0] = 0.0
-    edges[-1] = 1.0
-    return edges
-
-
 def _delete_index(db_conn, server_key):
     key = server_key or _DEFAULT_SERVER_KEY
     dir_name = _scoped_name(_DIR_PREFIX, key)
-    band_prefix = _scoped_name(_BAND_PREFIX, key)
-    dir_like = dir_name.replace("_", r"\_") + r"\_%\_%"
-    band_like = band_prefix.replace("_", r"\_") + r"\_\_%"
+    exact = [dir_name, _centroids_name(key)]
+    patterns = [dir_name.replace("_", r"\_") + r"\_%\_%"]
+    for prefix in (_CELL_PREFIX, _CENTROID_PREFIX, _LEGACY_BAND_PREFIX):
+        patterns.append(_scoped_name(prefix, key).replace("_", r"\_") + r"%")
+    clause = " OR ".join(["name = %s"] * len(exact) + ["name LIKE %s ESCAPE '\\'"] * len(patterns))
     with db_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE '\\' "
-            "OR name LIKE %s ESCAPE '\\'",
-            (dir_name, dir_like, band_like),
-        )
+        cur.execute(f"DELETE FROM ivf_dir WHERE {clause}", tuple(exact + patterns))
 
 
 def build_and_store_hyperbolic_index(db_conn=None):
@@ -169,38 +205,46 @@ def build_and_store_hyperbolic_index(db_conn=None):
             if not rows:
                 continue
             item_ids = list(rows.keys())
-            radii = np.array([rows[i][1] for i in item_ids], dtype=np.float64)
-            edges = _band_edges(radii, int(config.HYPERBOLIC_INDEX_BANDS))
-            n_bands = edges.size - 1
-            assigned = np.clip(
-                np.searchsorted(edges, radii, side="right") - 1, 0, n_bands - 1
-            )
+            vectors = np.stack([rows[i][0] for i in item_ids]).astype(np.float64)
+            centroids, assigned = _partition_into_cells(vectors)
+            n_cells = centroids.shape[0]
 
-            band_item_ids = [[] for _ in range(n_bands)]
-            band_vectors = [[] for _ in range(n_bands)]
-            for item_id, band in zip(item_ids, assigned):
-                band_item_ids[int(band)].append(item_id)
-                band_vectors[int(band)].append(rows[item_id][0])
+            cell_item_ids = [[] for _ in range(n_cells)]
+            cell_rows = [[] for _ in range(n_cells)]
+            for position, (item_id, cell) in enumerate(zip(item_ids, assigned)):
+                cell_item_ids[int(cell)].append(item_id)
+                cell_rows[int(cell)].append(position)
 
-            bands = []
-            for band in range(n_bands):
-                members = band_item_ids[band]
-                blob = _band_name(server_key, band)
+            cells = []
+            for cell in range(n_cells):
+                members = cell_item_ids[cell]
+                blob = _cell_name(server_key, cell)
                 if members:
-                    matrix = np.stack(band_vectors[band]).astype(np.float32, copy=False)
+                    matrix = vectors[cell_rows[cell]].astype(np.float32, copy=False)
                     store_segmented_blob(
                         db_conn, _TABLE, blob, quant.encode_vectors(matrix, code).tobytes()
                     )
-                bands.append(
+                cells.append(
                     {"blob": blob, "count": len(members), "item_ids": members}
                 )
 
+            store_segmented_blob(
+                db_conn, _TABLE, _centroids_name(server_key),
+                centroids.astype(np.float32).tobytes(),
+            )
+            logger.info(
+                "Hyperbolic Poincare index '%s': %d tracks into %d hyperbolic k-means cells "
+                "(%d tracks/cell), stored as %s.",
+                server_key, len(item_ids), n_cells,
+                len(item_ids) // max(n_cells, 1), quant.dtype_name(code),
+            )
+
             directory = {
                 "version": _VERSION,
-                "dim": int(config.EMBEDDING_DIMENSION),
+                "dim": int(vectors.shape[1]),
                 "dtype": quant.dtype_name(code),
-                "band_edges": [float(e) for e in edges],
-                "bands": bands,
+                "centroids_blob": _centroids_name(server_key),
+                "cells": cells,
             }
             raw = gzip.compress(
                 json.dumps(directory, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -257,11 +301,30 @@ def _scan_index_names():
     return sorted(out)
 
 
-def _clear_band_cache():
-    global _BAND_CACHE_BYTES
-    with _BAND_CACHE_LOCK:
-        _BAND_CACHE.clear()
-        _BAND_CACHE_BYTES = 0
+def _clear_cell_cache():
+    global _CELL_CACHE_BYTES
+    with _CELL_CACHE_LOCK:
+        _CELL_CACHE.clear()
+        _CELL_CACHE_BYTES = 0
+
+
+def _load_centroids(db_conn, blob_name, dim):
+    from tasks.hyperbolic_geometry import clip_into_ball
+    from tasks.index_build_helpers import load_segmented_blob
+
+    if not blob_name:
+        return None
+    try:
+        raw = load_segmented_blob(db_conn, _TABLE, blob_name)
+    except Exception:
+        logger.exception("Hyperbolic Poincare index centroid load failed")
+        return None
+    if raw is None:
+        return None
+    matrix = np.frombuffer(raw, dtype=np.float32).reshape(-1, dim)
+    if matrix.shape[0] == 0:
+        return None
+    return clip_into_ball(matrix.astype(np.float64))
 
 
 def load_hyperbolic_index(force_reload=False):
@@ -270,7 +333,7 @@ def load_hyperbolic_index(force_reload=False):
     if not force_reload and _INDEX_CACHE["loaded"]:
         return len(_INDEX_CACHE["servers"])
     with _INDEX_CACHE_LOCK:
-        _clear_band_cache()
+        _clear_cell_cache()
         db_conn = get_db()
         servers = {}
         default_id = _resolve_default_server_id()
@@ -278,12 +341,20 @@ def load_hyperbolic_index(force_reload=False):
             directory = _load_directory(db_conn, _DIR_PREFIX + "__" + name)
             if directory is None:
                 continue
+            dim = int(directory["dim"])
+            centroids = _load_centroids(db_conn, directory.get("centroids_blob"), dim)
+            if centroids is None:
+                logger.warning(
+                    "Hyperbolic Poincare index '%s' has no centroid blob; skipping it.", name
+                )
+                continue
             servers[name] = {
                 "server_key": name,
-                "dim": int(directory["dim"]),
+                "dim": dim,
                 "code": quant.dtype_code(directory.get("dtype")),
-                "band_edges": np.asarray(directory["band_edges"], dtype=np.float64),
-                "bands": directory["bands"],
+                "centroids": centroids,
+                "centroid_norms2": np.sum(centroids * centroids, axis=1),
+                "cells": directory["cells"],
             }
         default_entry = servers.get(_DEFAULT_SERVER_KEY)
         if default_entry is not None and default_id:
@@ -297,16 +368,21 @@ def get_hyperbolic_index_stats():
     servers = _INDEX_CACHE.get("servers", {})
     unique = {entry["server_key"]: entry for entry in servers.values()}
     song_count = sum(
-        sum(int(band["count"]) for band in entry["bands"]) for entry in unique.values()
+        sum(int(cell["count"]) for cell in entry["cells"]) for entry in unique.values()
     )
-    return {"server_count": len(unique), "song_count": song_count}
+    cell_count = sum(len(entry["cells"]) for entry in unique.values())
+    return {
+        "server_count": len(unique),
+        "song_count": song_count,
+        "cell_count": cell_count,
+    }
 
 
 def reset_hyperbolic_index():
     with _INDEX_CACHE_LOCK:
         _INDEX_CACHE["loaded"] = False
         _INDEX_CACHE["servers"] = {}
-    _clear_band_cache()
+    _clear_cell_cache()
 
 
 def ensure_hyperbolic_index_loaded():
@@ -324,41 +400,76 @@ def _index_for(server_id):
     return _INDEX_CACHE.get("servers", {}).get(key)
 
 
-def _radial_lower_bound(rp, lo, hi):
-    if lo <= rp <= hi:
-        return 0.0
-    r_star = lo if rp < lo else hi
-    diff2 = (rp - r_star) * (rp - r_star)
-    denom = max((1.0 - rp * rp) * (1.0 - r_star * r_star), 1e-12)
-    return float(np.arccosh(max(1.0 + 2.0 * diff2 / denom, 1.0)))
-
-
-def _cache_band(key, vectors, item_ids):
-    global _BAND_CACHE_BYTES
+def _cache_cell(key, vectors, item_ids):
+    global _CELL_CACHE_BYTES
     nbytes = int(vectors.nbytes) + sum(len(i) for i in item_ids)
     cap = int(config.HYPERBOLIC_INDEX_CACHE_MB) * 1024 * 1024
     if nbytes > cap:
         return
-    with _BAND_CACHE_LOCK:
-        while _BAND_CACHE and _BAND_CACHE_BYTES + nbytes > cap:
-            _, (old_vecs, old_ids) = _BAND_CACHE.popitem(last=False)
-            _BAND_CACHE_BYTES -= int(old_vecs.nbytes) + sum(len(i) for i in old_ids)
-        _BAND_CACHE[key] = (vectors, item_ids)
-        _BAND_CACHE_BYTES += nbytes
+    with _CELL_CACHE_LOCK:
+        while _CELL_CACHE and _CELL_CACHE_BYTES + nbytes > cap:
+            _, (old_vecs, old_ids) = _CELL_CACHE.popitem(last=False)
+            _CELL_CACHE_BYTES -= int(old_vecs.nbytes) + sum(len(i) for i in old_ids)
+        _CELL_CACHE[key] = (vectors, item_ids)
+        _CELL_CACHE_BYTES += nbytes
 
 
-def _load_band(band, index):
-    key = (index["server_key"], band)
-    with _BAND_CACHE_LOCK:
-        entry = _BAND_CACHE.get(key)
+def _prefetch_cells(cells, index):
+    from database import get_db
+    from tasks.index_build_helpers import load_segmented_blob
+
+    server_key = index["server_key"]
+    wanted = []
+    seen = set()
+    with _CELL_CACHE_LOCK:
+        for cell in cells:
+            cell = int(cell)
+            if cell in seen:
+                continue
+            seen.add(cell)
+            if (server_key, cell) not in _CELL_CACHE:
+                wanted.append(cell)
+    if not wanted:
+        return {}
+    names = {index["cells"][c]["blob"]: c for c in wanted}
+    db_conn = get_db()
+    found = {}
+    with db_conn.cursor() as cur:
+        cur.execute(
+            f"SELECT name, blob_data FROM {_TABLE} WHERE name = ANY(%s)",
+            (list(names),),
+        )
+        for name, data in cur.fetchall():
+            if data is not None:
+                found[name] = bytes(data)
+    stored_dtype = quant.np_dtype(index["code"])
+    loaded = {}
+    for name, cell in names.items():
+        data = found.get(name)
+        if data is None:
+            data = load_segmented_blob(db_conn, _TABLE, name)
+        meta = index["cells"][cell]
+        if data is None:
+            vectors = np.empty((0, index["dim"]), dtype=stored_dtype)
+        else:
+            vectors = np.frombuffer(data, dtype=stored_dtype).reshape(-1, index["dim"])
+        _cache_cell((server_key, cell), vectors, meta["item_ids"])
+        loaded[cell] = (vectors, meta["item_ids"])
+    return loaded
+
+
+def _load_cell(cell, index):
+    key = (index["server_key"], cell)
+    with _CELL_CACHE_LOCK:
+        entry = _CELL_CACHE.get(key)
         if entry is not None:
-            _BAND_CACHE.move_to_end(key)
+            _CELL_CACHE.move_to_end(key)
             return entry
 
     from database import get_db
     from tasks.index_build_helpers import load_segmented_blob
 
-    meta = index["bands"][band]
+    meta = index["cells"][cell]
     data = load_segmented_blob(get_db(), _TABLE, meta["blob"])
     stored_dtype = quant.np_dtype(index["code"])
     if data is None:
@@ -366,11 +477,11 @@ def _load_band(band, index):
     else:
         vectors = np.frombuffer(data, dtype=stored_dtype).reshape(-1, index["dim"])
     item_ids = meta["item_ids"]
-    _cache_band(key, vectors, item_ids)
+    _cache_cell(key, vectors, item_ids)
     return vectors, item_ids
 
 
-def _decode_band(vectors, code):
+def _decode_cell(vectors, code):
     from tasks.hyperbolic_geometry import clip_into_ball
 
     if code == quant.DTYPE_F32:
@@ -378,7 +489,7 @@ def _decode_band(vectors, code):
     return clip_into_ball(quant.decode_row(vectors, code).astype(np.float64))
 
 
-def _band_distances(vec, vectors, code):
+def _cell_distances(vec, vectors, code):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
     n = vectors.shape[0]
@@ -386,32 +497,39 @@ def _band_distances(vec, vectors, code):
     for start in range(0, n, _SCAN_CHUNK):
         stop = start + _SCAN_CHUNK
         out[start:stop] = hyperbolic_distances_to(
-            vec, _decode_band(vectors[start:stop], code)
+            vec, _decode_cell(vectors[start:stop], code)
         )
     return out
+
+
+def _probe_order(vec, index):
+    from tasks.hyperbolic_geometry import hyperbolic_distances_to
+
+    centroids = index["centroids"]
+    distances = hyperbolic_distances_to(vec, centroids)
+    nprobe = max(1, min(int(config.IVF_NPROBE), centroids.shape[0]))
+    if nprobe >= centroids.shape[0]:
+        return np.argsort(distances)
+    picked = np.argpartition(distances, nprobe - 1)[:nprobe]
+    return picked[np.argsort(distances[picked])]
 
 
 def _nearest(vector, k, index, exclude):
     k = max(1, int(k))
     vec = np.asarray(vector, dtype=np.float64).reshape(-1)
-    rp = float(np.linalg.norm(vec))
-    edges = index["band_edges"]
-    bands = index["bands"]
-    n_bands = len(bands)
-    lower = [
-        _radial_lower_bound(rp, float(edges[b]), float(edges[b + 1]))
-        for b in range(n_bands)
-    ]
-    order = sorted(range(n_bands), key=lambda b: lower[b])
+    probe = _probe_order(vec, index)
+    try:
+        prefetched = _prefetch_cells(probe, index)
+    except Exception:
+        logger.exception("Hyperbolic Poincare cell prefetch failed; falling back to per-cell reads")
+        prefetched = {}
     heap = []
-    threshold = float("inf")
-    for b in order:
-        if len(heap) >= k and lower[b] >= threshold:
-            break
-        vectors, item_ids = _load_band(b, index)
+    for cell in probe:
+        cell = int(cell)
+        vectors, item_ids = prefetched.get(cell) or _load_cell(cell, index)
         if vectors.shape[0] == 0:
             continue
-        distances = _band_distances(vec, vectors, index["code"])
+        distances = _cell_distances(vec, vectors, index["code"])
         for item_id, distance in zip(item_ids, distances):
             if item_id in exclude:
                 continue
@@ -420,8 +538,6 @@ def _nearest(vector, k, index, exclude):
                 heapq.heappush(heap, (-dist, item_id))
             elif dist < -heap[0][0]:
                 heapq.heapreplace(heap, (-dist, item_id))
-        if heap:
-            threshold = -heap[0][0]
     ranked = sorted(((-neg, item_id) for neg, item_id in heap), key=lambda pair: pair[0])
     return [(item_id, dist) for dist, item_id in ranked]
 

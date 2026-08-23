@@ -33,6 +33,13 @@ Main Features:
   undamped unit step overshoots as soon as the members span more than a couple
   of units of hyperbolic distance, and the iteration then walks OUTWARD to the
   boundary with the Frechet cost rising on every pass instead of converging
+* poincare_kmeans is k-means done entirely in the Poincare metric: k-means++
+  seeding on hyperbolic distance, assignment through nearest_centroid, and the
+  Frechet mean above as the centroid update. nearest_centroid skips the arccosh
+  because argmin over centroids of arccosh(1 + 2*d2/((1-|t|^2)(1-|c|^2))) is the
+  argmin of d2/(1-|c|^2) once the target-only factor is dropped, which turns a
+  full-catalogue assignment pass into one BLAS matmul per chunk. Both the tree
+  builder and the disk-paged Poincare IVF index partition through this
 * geodesic_apex returns the point of the geodesic closest to the origin: the
   continuous analogue of the lowest common ancestor of the two endpoints,
   because a geodesic between two points bows inward toward the more general
@@ -231,6 +238,87 @@ def karcher_mean(points, iterations=10):
             break
         mean = clip_into_ball(mobius_add(mean, np.tanh(0.5 * travel) * (step / step_norm)))
     return mean
+
+
+def nearest_centroid(points, centroids, chunk=None):
+    pts = clip_into_ball(np.asarray(points, dtype=np.float64))
+    cent = clip_into_ball(np.asarray(centroids, dtype=np.float64))
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+    if cent.ndim == 1:
+        cent = cent.reshape(1, -1)
+    n, k = pts.shape[0], cent.shape[0]
+    p_norm2 = np.sum(pts * pts, axis=1)
+    c_norm2 = np.sum(cent * cent, axis=1)
+    inv = 1.0 / np.maximum(1.0 - c_norm2, 1e-12)
+    block = int(chunk) if chunk else max(64, min(4096, 2_000_000 // max(k, 1)))
+    labels = np.empty(n, dtype=np.int64)
+    for start in range(0, n, block):
+        stop = start + block
+        diff2 = p_norm2[start:stop, None] + c_norm2[None, :] - 2.0 * (pts[start:stop] @ cent.T)
+        labels[start:stop] = np.argmin(np.maximum(diff2, 0.0) * inv[None, :], axis=1)
+    return labels
+
+
+def poincare_kmeans(points, k, iterations=10, seed=0, chunk=None):
+    pts = clip_into_ball(np.asarray(points, dtype=np.float64))
+    n = pts.shape[0]
+    if n == 0:
+        return np.zeros((0, pts.shape[1]), dtype=np.float64), np.zeros(0, dtype=np.int64)
+    k = max(1, min(int(k), n))
+    norms2 = np.sum(pts * pts, axis=1)
+    rng = np.random.RandomState(int(seed))
+    centroids = clip_into_ball(pts[_kmeans_plus_plus(pts, norms2, k, rng)])
+    labels = np.full(n, -1, dtype=np.int64)
+    for _ in range(max(1, int(iterations))):
+        new_labels = nearest_centroid(pts, centroids, chunk=chunk)
+        if np.array_equal(new_labels, labels):
+            break
+        labels = new_labels
+        order = np.argsort(labels, kind="stable")
+        bounds = np.concatenate(([0], np.cumsum(np.bincount(labels, minlength=k))))
+        moved = np.empty_like(centroids)
+        for j in range(k):
+            lo, hi = int(bounds[j]), int(bounds[j + 1])
+            if hi <= lo:
+                moved[j] = centroids[j]
+                continue
+            centre = karcher_mean(pts[order[lo:hi]])
+            moved[j] = centroids[j] if centre is None else centre
+        centroids = clip_into_ball(moved)
+    return centroids, labels
+
+
+def _kmeans_plus_plus(pts, norms2, k, rng):
+    n = pts.shape[0]
+
+    def spread_from(idx):
+        return hyperbolic_distance_matrix(
+            pts, pts[idx:idx + 1],
+            target_norms2=norms2, candidate_norms2=norms2[idx:idx + 1],
+        )[:, 0]
+
+    first = int(rng.randint(n))
+    chosen = [first]
+    taken = {first}
+    best = spread_from(first)
+    while len(chosen) < k:
+        total = float(best.sum())
+        if not np.isfinite(total) or total <= 1e-12:
+            for idx in range(n):
+                if len(chosen) >= k:
+                    break
+                if idx not in taken:
+                    chosen.append(idx)
+                    taken.add(idx)
+            break
+        pick = int(rng.choice(n, p=best / total))
+        if pick in taken:
+            pick = int(np.argmax(best))
+        chosen.append(pick)
+        taken.add(pick)
+        best = np.minimum(best, spread_from(pick))
+    return chosen
 
 
 def poincare_geodesic(start, end, ts):
