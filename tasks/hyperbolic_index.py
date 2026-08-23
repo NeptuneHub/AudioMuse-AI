@@ -74,6 +74,7 @@ _DEFAULT_SERVER_KEY = "default"
 _METRIC = "poincare"
 _RERANK_OVERFETCH = 32
 _RERANK_SCAN_CAP = 4096
+_SCAN_CHUNK = 4096
 
 _INDEX_CACHE = {"loaded": False, "servers": {}}
 _INDEX_CACHE_LOCK = threading.RLock()
@@ -292,6 +293,15 @@ def load_hyperbolic_index(force_reload=False):
         return len(servers)
 
 
+def get_hyperbolic_index_stats():
+    servers = _INDEX_CACHE.get("servers", {})
+    unique = {entry["server_key"]: entry for entry in servers.values()}
+    song_count = sum(
+        sum(int(band["count"]) for band in entry["bands"]) for entry in unique.values()
+    )
+    return {"server_count": len(unique), "song_count": song_count}
+
+
 def reset_hyperbolic_index():
     with _INDEX_CACHE_LOCK:
         _INDEX_CACHE["loaded"] = False
@@ -368,9 +378,20 @@ def _decode_band(vectors, code):
     return clip_into_ball(quant.decode_row(vectors, code).astype(np.float64))
 
 
-def _nearest(vector, k, index, exclude):
+def _band_distances(vec, vectors, code):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
+    n = vectors.shape[0]
+    out = np.empty(n, dtype=np.float64)
+    for start in range(0, n, _SCAN_CHUNK):
+        stop = start + _SCAN_CHUNK
+        out[start:stop] = hyperbolic_distances_to(
+            vec, _decode_band(vectors[start:stop], code)
+        )
+    return out
+
+
+def _nearest(vector, k, index, exclude):
     k = max(1, int(k))
     vec = np.asarray(vector, dtype=np.float64).reshape(-1)
     rp = float(np.linalg.norm(vec))
@@ -390,7 +411,7 @@ def _nearest(vector, k, index, exclude):
         vectors, item_ids = _load_band(b, index)
         if vectors.shape[0] == 0:
             continue
-        distances = hyperbolic_distances_to(vec, _decode_band(vectors, index["code"]))
+        distances = _band_distances(vec, vectors, index["code"])
         for item_id, distance in zip(item_ids, distances):
             if item_id in exclude:
                 continue

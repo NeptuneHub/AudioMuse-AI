@@ -1274,6 +1274,7 @@ if not _is_worker:
                 from tasks.clap_text_search import get_clap_cache_size
                 from tasks.lyrics_manager import get_cache_stats as _lyrics_stats
                 from tasks.sem_grove_manager import get_sem_grove_stats as _sg_stats
+                from tasks.hyperbolic_index import get_hyperbolic_index_stats
 
                 audio = len(_ivf_mgr.id_map) if _ivf_mgr.id_map else 0
                 artist = len(_artist_mgr.artist_map) if _artist_mgr.artist_map else 0
@@ -1290,18 +1291,18 @@ if not _is_worker:
                 clap = get_clap_cache_size()
                 lyrics = _lyrics_stats()
                 sg = _sg_stats()
+                hyper = get_hyperbolic_index_stats()
                 logger.info(
                     "Startup index profile: audio=%d artist=%d map=%d artist_proj=%d clap=%d "
-                    "lyrics=%d (%.2f MB) semgrove=%d (%.2f MB)",
+                    "lyrics=%d semgrove=%d hyper=%d",
                     audio,
                     artist,
                     map_proj,
                     artist_proj,
                     clap,
                     lyrics.get('song_count', 0),
-                    lyrics.get('memory_mb', 0.0),
                     sg.get('song_count', 0),
-                    sg.get('memory_mb', 0.0),
+                    hyper.get('song_count', 0),
                 )
             except Exception:
                 logger.exception("Startup index profile logging failed")
