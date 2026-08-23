@@ -160,7 +160,7 @@
         padding: 0.5rem 0.6rem;
     }
 
-    /* Geodesic Journey. Two data series (the ideal geodesic and the real
+    /* Hyperbolic Path. Two data series (the ideal path and the real
        tracks snapped to it) plus one accent for the shared root. Each mode's
        three values were validated against that mode's card surface for the
        OKLCH lightness band, the chroma floor, WCAG contrast, and pairwise
@@ -280,7 +280,7 @@
     <div class="tabs">
         <button type="button" class="tab-btn active" data-tab="similar">Hyperbolic Similarity</button>
         <button type="button" class="tab-btn" data-tab="tree">Hierarchy Directory</button>
-        <button type="button" class="tab-btn" data-tab="journey">Geodesic Journey</button>
+        <button type="button" class="tab-btn" data-tab="journey">Hyperbolic Path</button>
     </div>
 
     <!-- Tab 1: Hyperbolic Similarity -->
@@ -390,19 +390,16 @@
         <div id="hyper-tree" class="tree-root"></div>
     </div>
 
-    <!-- Tab 3: Geodesic Journey -->
+    <!-- Tab 3: Hyperbolic Path -->
     <div class="tab-pane" id="tab-journey">
         <p>
-            Pick two songs and travel the exact geodesic between them. In hyperbolic space the
-            shortest path between two points bows toward the centre, so the walk does not blend the
-            two songs: it <strong>descends through the region general enough to contain both</strong>,
-            touches that shared root, then climbs back out to the destination. Every step covers the
-            same hyperbolic distance, and each waypoint is snapped to a real song from your library.
+            Pick any two songs and walk the path between them. It starts at the first, digs down to
+            the <strong>root they both grew from</strong>, then climbs back up to the second.
         </p>
 
         <form id="hyper-journey-form">
             <fieldset>
-                <legend>Endpoints</legend>
+                <legend>The two songs</legend>
                 <div class="journey-endpoints">
                     <div class="autocomplete-container">
                         <label for="journey-start-input">From:</label>
@@ -426,20 +423,20 @@
             </fieldset>
 
             <fieldset>
-                <legend>Walk</legend>
+                <legend>The path</legend>
                 <div class="param-group">
                     <div>
-                        <label for="journey-length">Songs in the journey (endpoints included):</label>
+                        <label for="journey-length">How many songs on the path (start and end included):</label>
                         <input type="number" id="journey-length" name="length"
                                value="{{ hyperbolic_journey_length_default }}"
                                min="3">
                     </div>
                     <div>
                         <label for="journey-dive-slider" class="label-with-tooltip">
-                            Ancestry dive:
+                            How deep to dig for the shared root:
                             <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
-                                <span class="tooltip-text">0 walks the exact shortest geodesic, which already bows toward the shared root. Higher values deepen that bow so the journey detours through even more general territory, without moving where it starts or ends.</span>
+                                <span class="tooltip-text">How far the path digs down into the music your two songs share. Leave it at 0 for the most direct route. Turn it up and the middle of the path passes through the songs that connect your two picks - the root they both grew from. Your two songs never change.</span>
                             </span>
                         </label>
                         <div class="param-row">
@@ -448,14 +445,14 @@
                             <span id="journey-dive-label" style="font-weight: 500;">{{ '%.2f'|format(hyperbolic_journey_dive_default) }}</span>
                             <input type="number" id="journey-dive-input" min="0" max="0.95" step="0.05"
                                    value="{{ '%.2f'|format(hyperbolic_journey_dive_default) }}"
-                                   aria-label="Ancestry dive">
+                                   aria-label="How deep to dig for the shared root">
                         </div>
                     </div>
                 </div>
             </fieldset>
 
             <button type="submit" class="btn btn-primary btn-block">
-                Travel the Geodesic
+                Build the Path
             </button>
         </form>
 
@@ -464,16 +461,16 @@
         <section id="journey-results" class="hidden">
             <div id="journey-root-banner" class="journey-root-banner"></div>
 
-            <section class="hyper-ball-panel" aria-label="Poincare disk view of the journey">
-                <h2>The Path Through the Ball</h2>
+            <section class="hyper-ball-panel" aria-label="Map of the path between your two songs">
+                <h2>Your Path</h2>
                 <p class="hyper-ball-hint">
-                    The whole geodesic lives in the single 2-plane spanned by its two endpoints, so
-                    this disk is an exact picture of it rather than a sketch. Distance from the centre
-                    is how specific a song is: the centre is general, the rim is niche.
+                    Your two picks sit on the outer edge; the music they share sits toward the middle.
+                    The closer a song sits to the middle, the more it belongs to both of your picks.
+                    Out at the edge is where the more distinctive, niche songs live.
                 </p>
                 <div class="hyper-ball-layout">
                     <svg id="hyper-journey-disk" viewBox="0 0 360 360" role="img"
-                         aria-label="Poincare disk showing the geodesic between the two songs, the shared root at its deepest point, and the songs picked along the way"></svg>
+                         aria-label="Map of the path between your two songs, the shared root at its middle, and the songs picked along the way"></svg>
                     <div class="hyper-ball-side">
                         <div class="journey-legend" id="journey-disk-legend"></div>
                         <div id="journey-disk-readout" class="journey-readout"></div>
@@ -481,29 +478,27 @@
                 </div>
             </section>
 
-            <section class="journey-profile-panel" aria-label="Abstraction profile of the journey">
-                <h2>Abstraction Profile</h2>
+            <section class="journey-profile-panel" aria-label="How distinctive each song on the path is">
+                <h2>From General to Niche</h2>
                 <p class="journey-profile-hint">
-                    How general each step is, from the first song to the last. The vertical axis is
-                    the Poincare radius: <strong>0 is the centre of the ball</strong> (the most general
-                    music your library has) and the top of the axis is the niche rim. The valley is
-                    the descent into the shared root; the climb back out is the journey specialising
-                    again toward the destination.
+                    Low means broadly appealing, high means niche. The dip in the middle is the
+                    root your two picks grow from; the climb back out is the path homing in
+                    on your second pick.
                 </p>
                 <div class="journey-profile-scroll">
                     <svg id="hyper-journey-profile" viewBox="0 0 640 240" preserveAspectRatio="xMidYMid meet"
                          role="img"
-                         aria-label="Line chart of hyperbolic radius against journey progress, with the picked songs marked"></svg>
+                         aria-label="Chart of how niche each song is across the path, with the picked songs marked"></svg>
                 </div>
                 <div class="journey-legend" id="journey-profile-legend"></div>
                 <div id="journey-profile-readout" class="journey-readout"></div>
             </section>
 
-            <h2>Journey</h2>
+            <h2>The Playlist</h2>
             <div id="journey-list"></div>
 
             <section id="journey-playlist-creator">
-                <h3>Create a Playlist from this Journey</h3>
+                <h3>Save this to your Media Server</h3>
                 <form id="journey-playlist-form">
                     <div class="param-group">
                         <div>
@@ -1078,7 +1073,7 @@
                 }
             });
 
-            // ----- Tab 3: Geodesic Journey -----
+            // ----- Tab 3: Hyperbolic Path -----
             const bindAutocomplete = (inputId, resultsId, onPick) => {
                 const input = document.getElementById(inputId);
                 const box = document.getElementById(resultsId);
@@ -1225,7 +1220,7 @@
                     // Straight below the marker rather than radially outward: the
                     // apex sits on the arc, so a radial offset would drop the
                     // label on top of the path it is annotating.
-                    const label = regionLabel(apex.region) || 'Shared root';
+                    const label = regionLabel(apex.region) || 'The shared root';
                     parts.push(`<text class="journey-label-strong" x="${ax.toFixed(1)}" ` +
                                `y="${(ay + 26).toFixed(1)}" text-anchor="middle">${esc(label)}</text>`);
                 }
@@ -1253,12 +1248,12 @@
 
                 journeyDisk.innerHTML = parts.join('');
                 journeyDiskLegend.innerHTML = legendMarkup([
-                    { color: geodesicColor, label: 'Geodesic path and endpoints', line: false },
-                    { color: trackColor, label: 'Song picked at a waypoint', line: false },
-                    { color: rootColor, label: 'Shared root (deepest point)', line: false }
+                    { color: geodesicColor, label: 'The path and your two picks', line: false },
+                    { color: trackColor, label: 'A song on the path', line: false },
+                    { color: rootColor, label: 'The shared root (middle of the path)', line: false }
                 ]);
                 journeyDiskReadout.innerHTML = 'Hover or tap a dot to see which song sits there. ' +
-                    'The dashed rings mark a quarter, half and three quarters of the way to the rim.';
+                    'The dashed rings mark a quarter, half and three quarters of the way to the edge.';
             };
 
             journeyDisk.addEventListener('click', (e) => {
@@ -1270,7 +1265,7 @@
                 journeyDiskReadout.innerHTML = '<strong>' + esc(trackLabel(row)) + '</strong>' +
                     (region ? '<br><span class="journey-readout-region">' + esc(region) + '</span>' : '') +
                     '<br>Step ' + row.step + ' 00b7 R ' + Number(row.hyperbolic_radius).toFixed(3) +
-                    (row.is_endpoint ? ' 00b7 endpoint' : ' 00b7 ' + Number(row.distance).toFixed(3) + ' from the ideal waypoint');
+                    (row.is_endpoint ? ' 00b7 your pick' : ' 00b7 ' + Number(row.distance).toFixed(3) + ' from the ideal path');
             });
 
             const PROFILE = { left: 46, right: 18, top: 20, bottom: 36, width: 640, height: 240 };
@@ -1314,7 +1309,7 @@
                     const ax = xOf(apex.t);
                     parts.push(`<line class="profile-root" x1="${ax.toFixed(1)}" y1="${PROFILE.top}" ` +
                                `x2="${ax.toFixed(1)}" y2="${(PROFILE.top + PROFILE.plotH).toFixed(1)}"/>`);
-                    const label = regionLabel(apex.region) || 'shared root';
+                    const label = regionLabel(apex.region) || 'the shared root';
                     const anchor = apex.t > 0.6 ? 'end' : 'start';
                     parts.push(`<text class="profile-root-text" x="${(ax + (anchor === 'end' ? -6 : 6)).toFixed(1)}" ` +
                                `y="${(PROFILE.top + 12).toFixed(1)}" text-anchor="${anchor}">${esc(label)}</text>`);
@@ -1335,8 +1330,8 @@
 
                 journeyProfile.innerHTML = parts.join('');
                 journeyProfileLegend.innerHTML = legendMarkup([
-                    { color: geodesicColor, label: 'Ideal geodesic', line: true },
-                    { color: trackColor, label: 'Song picked at that step', line: false }
+                    { color: geodesicColor, label: 'The path', line: true },
+                    { color: trackColor, label: 'A song on the path', line: false }
                 ]);
                 journeyProfileReadout.textContent = 'Move across the chart to read each step.';
                 bindProfileHover(xOf);
@@ -1380,14 +1375,14 @@
                 const banner = document.getElementById('journey-root-banner');
                 if (!data) { banner.innerHTML = ''; return; }
                 const apex = data.apex || {};
-                const name = regionLabel(apex.region) || 'A region with no genre centroid nearby';
+                const name = regionLabel(apex.region) || 'The shared root';
                 const pct = Math.round((Number(apex.t) || 0) * 100);
                 banner.innerHTML =
-                    '<div class="journey-root-eyebrow">Shared root of these two songs</div>' +
+                    '<div class="journey-root-eyebrow">The root your two songs share</div>' +
                     '<div class="journey-root-name">' + esc(name) + '</div>' +
                     '<div class="journey-root-stat">reached <strong>' + pct + '%</strong> of the way in</div>' +
-                    '<div class="journey-root-stat">depth <strong>R ' + (Number(apex.radius) || 0).toFixed(3) + '</strong></div>' +
-                    '<div class="journey-root-stat">geodesic length <strong>' +
+                    '<div class="journey-root-stat">how deep it sits <strong>R ' + (Number(apex.radius) || 0).toFixed(3) + '</strong></div>' +
+                    '<div class="journey-root-stat">how far apart your two songs are <strong>' +
                     (Number(data.geodesic_length) || 0).toFixed(2) + '</strong></div>' +
                     '<div class="journey-root-stat"><strong>' + data.count + '</strong> song(s)</div>';
             };
@@ -1399,7 +1394,7 @@
                 const tags = window.renderTrackTags || (() => '');
                 container.innerHTML = '<div class="song-result-list">' + rows.map((row, idx) => {
                     const region = regionLabel(row.region);
-                    const role = row.is_endpoint ? (idx === 0 ? 'start' : 'destination') : '';
+                    const role = row.is_endpoint ? (idx === 0 ? 'start' : 'end') : '';
                     const radius = Number(row.hyperbolic_radius);
                     return '<div class="result-item">' +
                         '<div class="result-main">' +
@@ -1425,16 +1420,16 @@
                 e.preventDefault();
                 journeyStatus.className = '';
                 if (!journeyState.start || !journeyState.end) {
-                    journeyStatus.textContent = 'Pick both a start and a destination song from the suggestions.';
+                    journeyStatus.textContent = 'Pick a start and an end song from the suggestions.';
                     journeyStatus.className = 'status-error';
                     return;
                 }
                 if (journeyState.start.item_id === journeyState.end.item_id) {
-                    journeyStatus.textContent = 'The start and the destination must be different songs.';
+                    journeyStatus.textContent = 'Your start and end songs must be different.';
                     journeyStatus.className = 'status-error';
                     return;
                 }
-                journeyStatus.textContent = 'Travelling the geodesic...';
+                journeyStatus.textContent = 'Building the path...';
                 try {
                     const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_journey_api") }}', {
                         method: 'POST',
@@ -1449,7 +1444,7 @@
                     });
                     const data = await response.json();
                     if (!response.ok) {
-                        journeyStatus.textContent = data.error || 'The journey could not be built.';
+                        journeyStatus.textContent = data.error || 'The path could not be built.';
                         journeyStatus.className = 'status-error';
                         journeySection.classList.add('hidden');
                         return;
@@ -1457,8 +1452,8 @@
                     journeyState.data = data;
                     const asked = data.requested_length;
                     journeyStatus.textContent = data.count < asked
-                        ? `${data.count} of the ${asked} requested songs - the candidate pool ran out after de-duplication and the per-artist cap.`
-                        : `${data.count} song(s) along the geodesic.`;
+                        ? `${data.count} of the ${asked} requested songs - the path ran out of distinct songs to fill every step.`
+                        : `${data.count} song(s) on the path.`;
                     renderJourneyBanner();
                     renderJourneyDisk();
                     renderJourneyProfile();
@@ -1467,7 +1462,7 @@
                 } catch (err) {
                     journeyStatus.textContent = 'An unexpected error occurred.';
                     journeyStatus.className = 'status-error';
-                    console.error('Geodesic journey error:', err);
+                    console.error('Hyperbolic path error:', err);
                 }
             });
 
