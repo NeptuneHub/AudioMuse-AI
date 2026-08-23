@@ -176,6 +176,29 @@ def mobius_scalar_mul(t, x):
     return clip_into_ball(radii * (xx / safe))
 
 
+def karcher_mean(points, iterations=10):
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+    if pts.shape[0] == 0:
+        return None
+    mean = clip_into_ball(pts.mean(axis=0, keepdims=True))[0]
+    for _ in range(max(0, int(iterations))):
+        diff = mobius_add(-mean, pts)
+        norms = np.linalg.norm(diff, axis=-1, keepdims=True)
+        safe = np.where(norms <= 1e-12, 1.0, norms)
+        theta = np.arctanh(np.minimum(norms, _BALL_LIMIT))
+        lam = 1.0 - float(np.sum(mean * mean))
+        tangent = (2.0 / max(lam, 1e-12)) * theta * (diff / safe)
+        step = tangent.mean(axis=0)
+        step_norm = float(np.linalg.norm(step))
+        if step_norm <= 1e-12:
+            break
+        mean = mobius_add(mean, np.tanh(lam * step_norm / 2.0) * (step / step_norm))
+        mean = clip_into_ball(mean)
+    return mean
+
+
 def poincare_geodesic(start, end, ts):
     u = np.asarray(start, dtype=np.float64).reshape(1, -1)
     v = np.asarray(end, dtype=np.float64).reshape(1, -1)

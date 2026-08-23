@@ -1399,17 +1399,57 @@ def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood
 
 
 def _fit_clusters(vecs, k):
-    if vecs.shape[0] > 5000:
-        from sklearn.cluster import MiniBatchKMeans
+    from tasks.hyperbolic_geometry import (
+        clip_into_ball,
+        hyperbolic_distance_matrix,
+        karcher_mean,
+    )
 
-        km = MiniBatchKMeans(
-            n_clusters=k, batch_size=1000, n_init=3, max_iter=100, random_state=0
-        )
-    else:
-        from sklearn.cluster import KMeans
+    pts = np.asarray(vecs, dtype=np.float64)
+    n = pts.shape[0]
+    k = max(1, min(int(k), n))
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    if k == n:
+        return np.arange(n, dtype=np.int64)
 
-        km = KMeans(n_clusters=k, n_init=10, random_state=0)
-    return km.fit_predict(vecs)
+    rng = np.random.RandomState(0)
+    chosen = [int(rng.randint(n))]
+    best_dists = np.full(n, np.inf)
+    while len(chosen) < k:
+        dists = hyperbolic_distance_matrix(pts, pts[chosen])
+        best_dists = np.minimum(best_dists, np.min(dists, axis=1))
+        total = float(best_dists.sum())
+        if total <= 1e-12:
+            for idx in range(n):
+                if idx not in chosen and len(chosen) < k:
+                    chosen.append(idx)
+            break
+        probs = best_dists / total
+        chosen.append(int(rng.choice(n, p=probs)))
+
+    centroids = clip_into_ball(pts[chosen])
+    labels = np.zeros(n, dtype=np.int64)
+    for _ in range(5):
+        new_labels = np.empty(n, dtype=np.int64)
+        for start in range(0, n, 4096):
+            chunk = pts[start:start + 4096]
+            dists = hyperbolic_distance_matrix(chunk, centroids)
+            new_labels[start:start + 4096] = np.argmin(dists, axis=1)
+        if np.array_equal(new_labels, labels):
+            break
+        labels = new_labels
+        new_centroids = np.empty_like(centroids)
+        for j in range(k):
+            members = pts[labels == j]
+            if members.shape[0] == 0:
+                new_centroids[j] = centroids[j]
+                continue
+            mean = karcher_mean(members)
+            new_centroids[j] = mean if mean is not None else centroids[j]
+        centroids = clip_into_ball(new_centroids)
+
+    return labels
 
 
 def _load_projected_mood_centroids():

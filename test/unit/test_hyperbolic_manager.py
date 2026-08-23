@@ -855,6 +855,15 @@ def test_materialize_children_bails_out_on_degenerate_clustering(monkeypatch):
     assert result is None
 
 
+def test_fit_clusters_splits_antipodal_points():
+    vecs = np.array([[0.5, 0.0], [0.55, 0.0], [-0.5, 0.0], [-0.55, 0.0]])
+    labels = hm._fit_clusters(vecs, 2)
+    assert set(labels) == {0, 1}
+    assert labels[0] == labels[1]
+    assert labels[2] == labels[3]
+    assert labels[0] != labels[2]
+
+
 def test_genre_path_prefix_builds_ancestor_chain():
     assert hm._genre_path_prefix("root.grock.gprogressive-rock.c0") == "ROCK_PROGRESSIVE_ROCK"
     assert hm._genre_path_prefix("root.gpop") == "POP"

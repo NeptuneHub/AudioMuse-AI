@@ -172,10 +172,10 @@ class TestPrepareAndScaleData:
     def test_scales_data_correctly(self):
         X_feat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
-        scaled_data, scaler = _prepare_and_scale_data(X_feat, None, use_embeddings=False)
+        scaled_data, _ = _prepare_and_scale_data(X_feat, None, use_embeddings=False)
 
-        mean = np.mean(scaled_data, axis=0)
-        assert np.allclose(mean, 0, atol=1e-10)
+        row_norms = np.linalg.norm(scaled_data, axis=1)
+        assert np.allclose(row_norms, 1.0, atol=1e-6)
 
 
 class TestApplyClusteringModel:

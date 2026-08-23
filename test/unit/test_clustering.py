@@ -571,14 +571,12 @@ class TestDataPreparationAndScaling:
         x_feat = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         x_embed = None
 
-        scaled_data, scaler = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
+        scaled_data, _ = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
 
         assert scaled_data is not None
-        assert scaler is not None
         assert scaled_data.shape == x_feat.shape
 
-        assert np.abs(scaled_data.mean(axis=0)).max() < 0.1
-        assert np.abs(scaled_data.std(axis=0) - 1.0).max() < 0.1
+        assert np.allclose(np.linalg.norm(scaled_data, axis=1), 1.0, atol=1e-6)
 
     def test_prepare_and_scale_data_with_embeddings(self):
         from tasks.clustering_helper import _prepare_and_scale_data
@@ -1367,9 +1365,7 @@ class TestClusterNaming:
         centroid = np.array([0.8, 0.6, 0.9, 0.1, 0.2])
         mood_labels = ['rock', 'pop', 'jazz']
 
-        name, details = _name_cluster(
-            centroid, pca_model=None, pca_enabled=False, mood_labels=mood_labels, scaler=None
-        )
+        name, details = _name_cluster(centroid, mood_labels)
 
         assert isinstance(name, str)
         assert 'Fast' in name
@@ -1382,7 +1378,7 @@ class TestClusterNaming:
         centroid = np.array([0.2, 0.4, 0.5, 0.3, 0.2])
         mood_labels = ['chill', 'relaxed', 'ambient']
 
-        name, _ = _name_cluster(centroid, None, False, mood_labels, None)
+        name, _ = _name_cluster(centroid, mood_labels)
 
         assert 'Slow' in name
 
@@ -1392,7 +1388,7 @@ class TestClusterNaming:
         centroid = np.array([0.5, 0.5, 0.4, 0.4, 0.2])
         mood_labels = ['pop', 'dance', 'electronic']
 
-        name, _ = _name_cluster(centroid, None, False, mood_labels, None)
+        name, _ = _name_cluster(centroid, mood_labels)
 
         assert 'Medium' in name
 
@@ -1402,7 +1398,7 @@ class TestClusterNaming:
         centroid = np.array([0.6, 0.5, 0.9, 0.8, 0.1])
         mood_labels = ['rock', 'pop', 'jazz']
 
-        name, details = _name_cluster(centroid, None, False, mood_labels, None)
+        name, details = _name_cluster(centroid, mood_labels)
 
         assert 'Rock' in name or 'Pop' in name
 

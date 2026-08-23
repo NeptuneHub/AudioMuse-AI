@@ -120,6 +120,14 @@ class TestFitArtistGMM:
         assert few_params['is_few_songs'] is True
         assert many_params['is_few_songs'] is False
 
+    def test_few_song_means_are_unit_normed_for_cosine(self):
+        embeddings = [np.random.rand(128) for _ in range(3)]
+
+        gmm_params = fit_artist_gmm("Cosine Artist", embeddings)
+
+        means = np.array(gmm_params['means'])
+        assert np.allclose(np.linalg.norm(means, axis=1), 1.0, atol=1e-5)
+
     def test_different_artists_different_gmms(self):
         np.random.seed(42)
         embeddings1 = [np.random.rand(128) for _ in range(10)]

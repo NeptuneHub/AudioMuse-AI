@@ -118,6 +118,7 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
 
     try:
         all_embeddings = np.vstack(track_embeddings)
+        all_embeddings = _l2_normalize_rows(all_embeddings)
         n_samples, n_features = all_embeddings.shape
 
         if n_samples < 5:
