@@ -30,6 +30,9 @@ Main Features:
 * Every probed cell is read exactly once per query, from the one bulk read,
   even when the cell cache is too small to retain anything between the
   prefetch and the scan
+* hyperbolic_nearest_multi batches its waypoints: the candidate pool is a
+  superset of what a per-waypoint loop returns, the exclude set is honoured,
+  and each probed cell is read once for ALL waypoints rather than once each
 """
 
 import gzip
@@ -362,6 +365,82 @@ def test_a_probed_cell_is_read_once_per_query_even_when_the_cache_evicts(monkeyp
 
     assert got
     cell_blobs = [cell["blob"] for cell in directory["cells"] if cell["count"]]
+    probed = [name for name in bulk_reads if name in cell_blobs]
+    assert len(probed) == len(set(probed))
+    assert not [name for name in single_reads if name in cell_blobs]
+
+
+def test_nearest_multi_batches_waypoints_without_losing_candidates(monkeypatch):
+    rng = np.random.default_rng(5)
+    dim = 16
+    directions = rng.standard_normal((400, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    vectors = (directions * (0.9 * rng.random((400, 1)) ** (1.0 / dim))).astype(np.float32)
+    rows = {
+        f"t{i}": (vectors[i], float(np.linalg.norm(vectors[i].astype(np.float64))))
+        for i in range(len(vectors))
+    }
+
+    monkeypatch.setattr(config, "EMBEDDING_DIMENSION", dim)
+    monkeypatch.setattr(config, "IVF_NPROBE", 6)
+    stored, _directory = _build_into(monkeypatch, rows, "i8")
+    monkeypatch.setattr(
+        "tasks.index_build_helpers.load_segmented_blob",
+        lambda conn, table, name: stored.get(name),
+    )
+    monkeypatch.setattr("database.get_db", lambda: _FakeConn(stored))
+    hji.reset_hyperbolic_index()
+    assert hji.load_hyperbolic_index() == 1
+
+    index = hji._index_for(None)
+    waypoints = np.stack([rows[f"t{i}"][0] for i in (3, 40, 111, 250, 399)]).astype(np.float64)
+    exclude = frozenset({"t3", "t399"})
+
+    keep = hji._scan_width(7, index["code"])
+    reference = {}
+    for point in waypoints:
+        for item_id, _d in hji._nearest(point, keep, index, exclude):
+            reference.setdefault(item_id, None)
+
+    batched = hji.hyperbolic_nearest_multi(waypoints, 7, exclude=exclude)
+
+    assert set(reference) <= set(batched)
+    assert not set(batched) & exclude
+    assert len(batched) == len(set(batched))
+
+
+def test_nearest_multi_reads_each_probed_cell_once_for_all_waypoints(monkeypatch):
+    rng = np.random.default_rng(8)
+    dim = 12
+    directions = rng.standard_normal((300, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    vectors = (directions * (0.85 * rng.random((300, 1)) ** (1.0 / dim))).astype(np.float32)
+    rows = {
+        f"t{i}": (vectors[i], float(np.linalg.norm(vectors[i].astype(np.float64))))
+        for i in range(len(vectors))
+    }
+
+    monkeypatch.setattr(config, "EMBEDDING_DIMENSION", dim)
+    monkeypatch.setattr(config, "IVF_NPROBE", 4)
+    stored, directory = _build_into(monkeypatch, rows, "i8")
+
+    single_reads = []
+    monkeypatch.setattr(
+        "tasks.index_build_helpers.load_segmented_blob",
+        lambda conn, table, name: (single_reads.append(name), stored.get(name))[1],
+    )
+    bulk_reads = []
+    monkeypatch.setattr("database.get_db", lambda: _FakeConn(stored, bulk_reads))
+    monkeypatch.setattr(config, "HYPERBOLIC_INDEX_CACHE_MB", 0)
+    hji.reset_hyperbolic_index()
+    assert hji.load_hyperbolic_index() == 1
+
+    single_reads.clear()
+    bulk_reads.clear()
+    waypoints = np.stack([rows[f"t{i}"][0] for i in range(0, 300, 10)]).astype(np.float64)
+    assert hji.hyperbolic_nearest_multi(waypoints, 5)
+
+    cell_blobs = {cell["blob"] for cell in directory["cells"] if cell["count"]}
     probed = [name for name in bulk_reads if name in cell_blobs]
     assert len(probed) == len(set(probed))
     assert not [name for name in single_reads if name in cell_blobs]
