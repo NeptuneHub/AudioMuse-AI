@@ -27,12 +27,12 @@ Main Features:
   warmup on load so the tree is ready for the first browse, and it
   auto-unloads after HYPERBOLIC_TREE_WARMUP_DURATION idle seconds.
 * POST /api/hyperbolic/journey: the Geodesic Journey. Walks the exact Poincare
-  geodesic between two songs, snapping every waypoint to a real track, and
+  geodesic between two songs, snapping every waypoint to a real song, and
   returns the ordered walk plus the apex (the continuous lowest common
   ancestor of the two endpoints) and an exact 2-plane drawing of the path.
-  Delegates to ``tasks.hyperbolic_journey_manager``; the engine probes the IVF
-  index once per waypoint and reads the database twice for the whole walk, so
-  its cost tracks the step count, not the catalogue size.
+  Delegates to ``tasks.hyperbolic_journey_manager``; the engine reads the
+  projected catalogue directly and ranks it by exact Poincare distance, with
+  no IVF index and no cosine shortcut.
 * GET /api/hyperbolic/cache_status: read-only diagnostic for that cache.
 * GET /hyperbolic: the three-tab explorer page.
 """
@@ -74,7 +74,6 @@ def hyperbolic_page():
             app_version=APP_VERSION,
             hyperbolic_radial_spread_default=min(max(config.HYPERBOLIC_RADIAL_SPREAD, 0.0), 0.99),
             hyperbolic_journey_length_default=config.HYPERBOLIC_JOURNEY_DEFAULT_LENGTH,
-            hyperbolic_journey_max_length=config.HYPERBOLIC_JOURNEY_MAX_LENGTH,
             hyperbolic_journey_dive_default=min(
                 max(config.HYPERBOLIC_JOURNEY_ANCESTRY_DIVE, 0.0), 0.95
             ),
@@ -91,9 +90,10 @@ def hyperbolic_similar_api():
     ---
     tags:
       - Hyperbolic Explorer
-    summary: Re-rank candidates by exact Poincare distance. similar re-ranks
-      raw-space IVF neighbors; roots / niche draw their pool by radius (at
-      least radial_spread, default HYPERBOLIC_RADIAL_SPREAD and
+    summary: Rank the projected catalogue by exact Poincare distance. similar
+      ranks every projected row directly (no IVF index and no cosine
+      shortcut); roots / niche draw their pool by radius (at least
+      radial_spread, default HYPERBOLIC_RADIAL_SPREAD and
       caller-overridable, of the radial range away from the seed) so they
       visibly move inward / outward instead of hugging the seed's radius
       band.
@@ -252,7 +252,7 @@ def hyperbolic_journey_api():
     ---
     tags:
       - Hyperbolic Explorer
-    summary: Walk the exact Poincare geodesic from one track to another and snap
+    summary: Walk the exact Poincare geodesic from one song to another and snap
       every waypoint to a real song.
     description: >-
       A geodesic in negatively curved space bows toward the origin, so the walk
@@ -260,9 +260,9 @@ def hyperbolic_journey_api():
       continuous analogue of their lowest common ancestor - and climbs back out
       toward the destination, instead of blending them the way a straight line
       through raw space does. Steps are evenly spaced in hyperbolic arc length,
-      so each one covers the same musical distance. Candidate generation is a
-      single batched IVF lookup over the un-projected waypoints, so the
-      probe count tracks the step count, not the catalogue size.
+      so each one covers the same musical distance. Candidate generation reads
+      the projected catalogue directly and ranks it by exact Poincare distance,
+      with no IVF index and no cosine shortcut.
     requestBody:
       required: true
       content:
@@ -281,9 +281,8 @@ def hyperbolic_journey_api():
                 type: integer
                 minimum: 3
                 description: >-
-                  Tracks in the walk INCLUDING both endpoints. Defaults to
-                  HYPERBOLIC_JOURNEY_DEFAULT_LENGTH and is capped at
-                  HYPERBOLIC_JOURNEY_MAX_LENGTH.
+                  Songs in the walk INCLUDING both endpoints. Defaults to
+                  HYPERBOLIC_JOURNEY_DEFAULT_LENGTH.
               ancestry_dive:
                 type: number
                 format: float
@@ -340,7 +339,7 @@ def hyperbolic_journey_api():
                       region:
                         type: object
                         nullable: true
-                        description: Nearest genre/subgenre centroid to the track.
+                        description: Nearest genre/subgenre centroid to the song.
                 count:
                   type: integer
                 requested_length:
@@ -362,7 +361,7 @@ def hyperbolic_journey_api():
                   type: object
                   description: >-
                     The point of the geodesic closest to the origin - the
-                    continuous lowest common ancestor of the two tracks - with
+                    continuous lowest common ancestor of the two songs - with
                     its radius, its angle in the drawing plane, and the
                     genre/subgenre region it falls in.
                 path:
@@ -375,7 +374,7 @@ def hyperbolic_journey_api():
                 end_item_id:
                   type: string
       400:
-        description: Missing or identical endpoints, a track without a projection, or a bad parameter.
+        description: Missing or identical endpoints, a song without a projection, or a bad parameter.
       500:
         description: Internal error.
     """

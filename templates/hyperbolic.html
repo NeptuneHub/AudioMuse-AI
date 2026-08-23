@@ -4,6 +4,7 @@
 <style>
     .tabs {
         display: flex;
+        flex-wrap: wrap;
         gap: 0.5rem;
         margin-bottom: 1.5rem;
         border-bottom: 2px solid var(--border-color);
@@ -247,6 +248,25 @@
         border-radius: 0.4rem;
     }
     .journey-readout .journey-readout-region { color: var(--text-muted); }
+
+    /* Small screens: let the three tabs wrap and shrink, and size the two
+       Poincare drawings to the viewport instead of their desktop pixels. */
+    @media (max-width: 640px) {
+        .tabs { gap: 0.35rem; }
+        .tab-btn {
+            padding: 0.5rem 0.75rem;
+            font-size: 0.9rem;
+            flex: 1 1 auto;
+            white-space: nowrap;
+        }
+        #hyper-ball,
+        #hyper-journey-disk {
+            width: 100%;
+            height: auto;
+            aspect-ratio: 1 / 1;
+        }
+        .hyper-ball-side { min-width: 0; }
+    }
 </style>
 {% endblock %}
 
@@ -377,7 +397,7 @@
             shortest path between two points bows toward the centre, so the walk does not blend the
             two songs: it <strong>descends through the region general enough to contain both</strong>,
             touches that shared root, then climbs back out to the destination. Every step covers the
-            same hyperbolic distance, and each waypoint is snapped to a real track from your library.
+            same hyperbolic distance, and each waypoint is snapped to a real song from your library.
         </p>
 
         <form id="hyper-journey-form">
@@ -409,10 +429,10 @@
                 <legend>Walk</legend>
                 <div class="param-group">
                     <div>
-                        <label for="journey-length">Tracks in the journey (endpoints included):</label>
+                        <label for="journey-length">Songs in the journey (endpoints included):</label>
                         <input type="number" id="journey-length" name="length"
                                value="{{ hyperbolic_journey_length_default }}"
-                               min="3" max="{{ hyperbolic_journey_max_length }}">
+                               min="3">
                     </div>
                     <div>
                         <label for="journey-dive-slider" class="label-with-tooltip">
@@ -449,11 +469,11 @@
                 <p class="hyper-ball-hint">
                     The whole geodesic lives in the single 2-plane spanned by its two endpoints, so
                     this disk is an exact picture of it rather than a sketch. Distance from the centre
-                    is how specific a track is: the centre is general, the rim is niche.
+                    is how specific a song is: the centre is general, the rim is niche.
                 </p>
                 <div class="hyper-ball-layout">
                     <svg id="hyper-journey-disk" viewBox="0 0 360 360" role="img"
-                         aria-label="Poincare disk showing the geodesic between the two songs, the shared root at its deepest point, and the tracks picked along the way"></svg>
+                         aria-label="Poincare disk showing the geodesic between the two songs, the shared root at its deepest point, and the songs picked along the way"></svg>
                     <div class="hyper-ball-side">
                         <div class="journey-legend" id="journey-disk-legend"></div>
                         <div id="journey-disk-readout" class="journey-readout"></div>
@@ -464,7 +484,7 @@
             <section class="journey-profile-panel" aria-label="Abstraction profile of the journey">
                 <h2>Abstraction Profile</h2>
                 <p class="journey-profile-hint">
-                    How general each step is, from the first track to the last. The vertical axis is
+                    How general each step is, from the first song to the last. The vertical axis is
                     the Poincare radius: <strong>0 is the centre of the ball</strong> (the most general
                     music your library has) and the top of the axis is the niche rim. The valley is
                     the descent into the shared root; the climb back out is the journey specialising
@@ -473,7 +493,7 @@
                 <div class="journey-profile-scroll">
                     <svg id="hyper-journey-profile" viewBox="0 0 640 240" preserveAspectRatio="xMidYMid meet"
                          role="img"
-                         aria-label="Line chart of hyperbolic radius against journey progress, with the picked tracks marked"></svg>
+                         aria-label="Line chart of hyperbolic radius against journey progress, with the picked songs marked"></svg>
                 </div>
                 <div class="journey-legend" id="journey-profile-legend"></div>
                 <div id="journey-profile-readout" class="journey-readout"></div>
@@ -1151,7 +1171,7 @@
                 `style="background:${e.color}"></span>${esc(e.label)}</span>`).join('');
 
             const trackLabel = (row) => [row.title, row.author].filter(Boolean).join(' - ')
-                || (row.item_id || 'Track');
+                || (row.item_id || 'Song');
 
             const regionLabel = (region) => (region && region.label) ? region.label : '';
 
@@ -1234,10 +1254,10 @@
                 journeyDisk.innerHTML = parts.join('');
                 journeyDiskLegend.innerHTML = legendMarkup([
                     { color: geodesicColor, label: 'Geodesic path and endpoints', line: false },
-                    { color: trackColor, label: 'Track picked at a waypoint', line: false },
+                    { color: trackColor, label: 'Song picked at a waypoint', line: false },
                     { color: rootColor, label: 'Shared root (deepest point)', line: false }
                 ]);
-                journeyDiskReadout.innerHTML = 'Hover or tap a dot to see which track sits there. ' +
+                journeyDiskReadout.innerHTML = 'Hover or tap a dot to see which song sits there. ' +
                     'The dashed rings mark a quarter, half and three quarters of the way to the rim.';
             };
 
@@ -1316,7 +1336,7 @@
                 journeyProfile.innerHTML = parts.join('');
                 journeyProfileLegend.innerHTML = legendMarkup([
                     { color: geodesicColor, label: 'Ideal geodesic', line: true },
-                    { color: trackColor, label: 'Track picked at that step', line: false }
+                    { color: trackColor, label: 'Song picked at that step', line: false }
                 ]);
                 journeyProfileReadout.textContent = 'Move across the chart to read each step.';
                 bindProfileHover(xOf);
@@ -1369,7 +1389,7 @@
                     '<div class="journey-root-stat">depth <strong>R ' + (Number(apex.radius) || 0).toFixed(3) + '</strong></div>' +
                     '<div class="journey-root-stat">geodesic length <strong>' +
                     (Number(data.geodesic_length) || 0).toFixed(2) + '</strong></div>' +
-                    '<div class="journey-root-stat"><strong>' + data.count + '</strong> track(s)</div>';
+                    '<div class="journey-root-stat"><strong>' + data.count + '</strong> song(s)</div>';
             };
 
             const renderJourneyList = () => {
@@ -1437,8 +1457,8 @@
                     journeyState.data = data;
                     const asked = data.requested_length;
                     journeyStatus.textContent = data.count < asked
-                        ? `${data.count} of the ${asked} requested tracks - the candidate pool ran out after de-duplication and the per-artist cap.`
-                        : `${data.count} track(s) along the geodesic.`;
+                        ? `${data.count} of the ${asked} requested songs - the candidate pool ran out after de-duplication and the per-artist cap.`
+                        : `${data.count} song(s) along the geodesic.`;
                     renderJourneyBanner();
                     renderJourneyDisk();
                     renderJourneyProfile();
@@ -1461,7 +1481,7 @@
                     .map((row) => row.item_id).filter(Boolean);
                 if (!name) return;
                 if (!trackIds.length) {
-                    journeyPlaylistStatus.textContent = 'No tracks to add.';
+                    journeyPlaylistStatus.textContent = 'No songs to add.';
                     journeyPlaylistStatus.className = 'status-error';
                     return;
                 }

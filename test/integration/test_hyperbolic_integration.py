@@ -245,10 +245,8 @@ class TestSimilarityEngine:
         _seed_poincare(conn)
         hm = _load_hyperbolic_manager()
         target = "item-010"
-        candidates = [{"item_id": f"item-{i:03d}"} for i in range(20) if f"item-{i:03d}" != target]
 
-        with patch("tasks.ivf_manager.find_nearest_neighbors_by_id", return_value=candidates):
-            results = hm.hyperbolic_similar(target, mode="similar", limit=5)
+        results = hm.hyperbolic_similar(target, mode="similar", limit=5)
 
         assert len(results) == 5
         distances = [r["distance"] for r in results]

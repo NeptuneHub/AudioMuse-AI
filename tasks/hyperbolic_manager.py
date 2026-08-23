@@ -20,18 +20,19 @@ Main Features:
   reuse by analysis workers, the web app, and the backfill job
 * save_hyperbolic_projection / backfill_hyperbolic_columns keep the hyperbolic
   columns in sync with the raw embedding, skipping rows with NULL embeddings
-* fetch_poincare_rows and get_projected_genre_subgenres are the two public
-  reads other managers need (tasks.hyperbolic_journey_manager builds the
-  geodesic journey on top of them), so nothing outside this module has to
-  reach into a private helper the unit suite monkeypatches by name
-* hyperbolic_similar: similar over-fetches raw-space IVF candidates with the
-  shared similar-song defaults (radius walk, content dedup, per-artist cap) and
-  re-ranks them by exact Poincare distance; roots / niche instead draw their
-  candidate pool from the embedding table by radius (at least radial_spread of
-  the radial range away from the seed, caller-supplied and defaulting to
-  HYPERBOLIC_RADIAL_SPREAD) so the two modes visibly leave the seed's radius
-  band, then rank by exact distance. All modes end with the same content-dedup
-  + MAX_SONGS_PER_ARTIST pass as the similar-song page
+* fetch_poincare_rows, fetch_all_poincare_rows and
+  get_projected_genre_subgenres are the public reads other managers need
+  (tasks.hyperbolic_journey_manager builds the geodesic journey on top of
+  them), so nothing outside this module has to reach into a private helper
+  the unit suite monkeypatches by name
+* hyperbolic_similar ranks the whole catalogue by exact Poincare distance
+  directly against the projected embedding rows - no IVF index and no cosine
+  shortcut; roots / niche instead draw their candidate pool from the embedding
+  table by radius (at least radial_spread of the radial range away from the
+  seed, caller-supplied and defaulting to HYPERBOLIC_RADIAL_SPREAD) so the two
+  modes visibly leave the seed's radius band, then rank by exact distance. All
+  modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
+  similar-song page
 * build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
   partition, the mood fallback, and the named k-means clusters - PER SERVER,
   and persists one tree per configured server as gzipped JSON blobs chunked
@@ -321,6 +322,12 @@ def fetch_poincare_rows(item_ids):
     return _fetch_poincare_rows(item_ids)
 
 
+def fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
+    return _fetch_all_poincare_rows(
+        server_id=server_id, include_legacy_default=include_legacy_default
+    )
+
+
 def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
     from database import get_db
 
@@ -422,17 +429,9 @@ def get_poincare_radius(item_id):
 
 def _gather_mode_candidates(target_item_id, target_radius, mode, radial_spread, overfetch):
     if mode == "similar":
-        from tasks.ivf_manager import find_nearest_neighbors_by_id
-
-        candidates = find_nearest_neighbors_by_id(
-            target_item_id,
-            n=overfetch,
-            eliminate_duplicates=None,
-            mood_similarity=None,
-            radius_similarity=None,
-        )
-        cand_ids = [c["item_id"] for c in candidates if c.get("item_id")]
-        return _fetch_poincare_rows(cand_ids)
+        rows = _fetch_all_poincare_rows()
+        rows.pop(target_item_id, None)
+        return rows
     spread = min(max(float(radial_spread), 0.0), 0.99)
     if mode == "roots":
         bound = target_radius * (1.0 - spread)
@@ -489,6 +488,7 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
     cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float64)
     distances = hyperbolic_distances_to(target_vec, cand_vecs)
     results = _rank_mode_results(ids, distances, cand_radii, mode, target_radius)
+    results = results[:overfetch]
     return _deduplicate_and_cap_results(results)[:limit]
 
 

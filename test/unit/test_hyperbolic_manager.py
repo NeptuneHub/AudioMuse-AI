@@ -147,15 +147,14 @@ def test_similar_mode_returns_sorted_by_distance(monkeypatch):
         "fp_c": (_vec(0.4, -0.2), 0.35),
     }
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(mapping))
+    monkeypatch.setattr(hm, "_fetch_all_poincare_rows", lambda: dict(mapping))
     monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
-    with patch("tasks.ivf_manager.find_nearest_neighbors_by_id",
-               return_value=[{"item_id": "fp_c"}, {"item_id": "fp_a"},
-                             {"item_id": "fp_b"}, {"item_id": "fp_x"}]):
-        results = hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
+    results = hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
     assert len(results) == 2
     distances = [r["distance"] for r in results]
     assert distances == sorted(distances)
     assert all("distance" in r and "hyperbolic_radius" in r for r in results)
+    assert all(r["item_id"] != "fp_t" for r in results)
 
 
 def test_roots_mode_filters_radius_below_target(monkeypatch):

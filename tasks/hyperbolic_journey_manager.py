@@ -8,39 +8,32 @@
 
 """Geodesic Journey engine: walk the Poincare geodesic between two songs.
 
-Given a start and an end track this builds the exact hyperbolic geodesic
+Given a start and an end song this builds the exact hyperbolic geodesic
 between their Poincare projections, samples it at constant hyperbolic speed,
-and snaps every waypoint to a real track. Because a geodesic in negatively
+and snaps every waypoint to a real song. Because a geodesic in negatively
 curved space bows toward the origin, the resulting playlist does not blend the
 two songs the way a straight line in raw space does (that is what the Sonic
 Path page already offers): it descends through the region general enough to
 contain both, then climbs back out to the destination. The deepest point of
 that bow is the continuous analogue of the lowest common ancestor of the two
-tracks, which is what the page reports as the shared root.
+songs, which is what the page reports as the shared root.
 
-Scale: the snapping never scans the catalogue. The Poincare projection is
-purely radial, so a synthetic ball point inverts back to a raw vector exactly
-and can be looked up in the disk-paged angular IVF index. That still costs one
-index probe per waypoint (multi_query_ids loops over the query vectors), the
-same probe count the Sonic Path pays; what the batch buys is a single shared
-begin_request page scope and TWO database round trips for the whole walk
-instead of one per step, plus no k-escalation retry passes. The candidate pool
-is bounded by steps * candidates-per-step either way, so neither the probe
-count nor the pool grows with how many songs the library holds.
+Scale: the snapping reads the whole projected catalogue once (every row with
+a finite Poincare projection) and ranks it by exact Poincare distance, so
+there is no IVF probe and no cosine/angular shortcut anywhere in the walk.
+The cost scales with the library size by design - the walk must be able to
+follow its own geodesic inward, where songs are rare, without a directional
+index quietly dropping them.
 
 Main Features:
 * build_hyperbolic_journey resolves both endpoints, samples the geodesic,
-  optionally deepens its inward bow by ancestry_dive, snaps each interior
-  waypoint to the nearest unused real track by exact Poincare distance, and
-  returns the ordered walk with the endpoints pinned at both ends
-* Candidate generation probes tasks.ivf_manager.multi_query_ids once per
-  waypoint, batched into at most HYPERBOLIC_JOURNEY_DEPTH_TIERS calls so the
-  whole walk still costs two database round trips. The probe k is scaled by
-  waypoint DEPTH: the index ranks by direction alone, and tracks near the
-  centre of the ball are rare, so a uniform k returns almost nothing deep
-  enough for the middle of a journey and the walk cannot follow its own
-  geodesic inward. The pool stays bounded by
-  HYPERBOLIC_JOURNEY_MAX_CANDIDATES regardless of the boost
+  optionally deepens its inward bow by ancestry_dive (default 0.20), snaps
+  each interior waypoint to the nearest unused real song by exact Poincare
+  distance, and returns the ordered walk with the endpoints pinned at both
+  ends
+* Candidate generation reads tasks.hyperbolic_manager.fetch_all_poincare_rows
+  once for the whole walk and picks against the full projected catalogue by
+  exact Poincare distance
 * Content de-duplication and the MAX_SONGS_PER_ARTIST cap are enforced while
   picking rather than afterwards, so enforcing them shortens the walk instead
   of tearing holes in the middle of it
@@ -70,7 +63,7 @@ def _clamp_length(length):
         length = int(length)
     except (TypeError, ValueError):
         raise ValueError('Invalid "length" value.') from None
-    return max(3, min(length, int(config.HYPERBOLIC_JOURNEY_MAX_LENGTH)))
+    return max(3, length)
 
 
 def _clamp_dive(dive):
@@ -133,67 +126,28 @@ def _endpoint_rows(start_item_id, end_item_id):
     from tasks.hyperbolic_manager import fetch_poincare_rows
 
     if not start_item_id or not end_item_id:
-        raise ValueError("Both a start and an end track are required.")
+        raise ValueError("Both a start and an end song are required.")
     if start_item_id == end_item_id:
-        raise ValueError("The start and end track must be different.")
+        raise ValueError("The start and end song must be different.")
     rows = fetch_poincare_rows([start_item_id, end_item_id])
     if start_item_id not in rows or end_item_id not in rows:
         raise ValueError(
-            "One of the chosen tracks has no hyperbolic projection; run the "
+            "One of the chosen songs has no hyperbolic projection; run the "
             "hyperbolic backfill job first"
         )
     return rows[start_item_id], rows[end_item_id]
 
 
-def _depth_tier_indices(radii, reference_radius, tiers):
-    ref = max(float(reference_radius), 1e-6)
-    depth = np.clip(1.0 - np.asarray(radii, dtype=np.float64) / ref, 0.0, 1.0)
-    return np.minimum((depth * tiers).astype(int), max(0, tiers - 1))
+def _gather_journey_candidates(interior_points, excluded):
+    from tasks.hyperbolic_manager import fetch_all_poincare_rows
 
-
-def _tier_candidate_count(tier, tiers, per_step, ceiling):
-    boost = float(config.HYPERBOLIC_JOURNEY_DEPTH_BOOST)
-    fraction = tier / max(1, tiers - 1)
-    return int(min(ceiling, max(per_step, round(per_step * (1.0 + boost * fraction)))))
-
-
-def _probe_ids_by_depth(raw_waypoints, radii, per_step, reference_radius):
-    from tasks.ivf_manager import multi_query_ids
-
-    tiers = max(1, int(config.HYPERBOLIC_JOURNEY_DEPTH_TIERS))
-    count = max(1, len(raw_waypoints))
-    ceiling = max(per_step, int(config.HYPERBOLIC_JOURNEY_MAX_CANDIDATES) // count)
-    tier_of = _depth_tier_indices(radii, reference_radius, tiers)
-    buckets = {}
-    for vector, tier in zip(raw_waypoints, tier_of):
-        buckets.setdefault(int(tier), []).append(vector)
-    seen = {}
-    for tier, vectors in sorted(buckets.items()):
-        k = _tier_candidate_count(tier, tiers, per_step, ceiling)
-        for item_id in multi_query_ids(vectors, k):
-            seen.setdefault(item_id, None)
-    return list(seen)
-
-
-def _gather_journey_candidates(interior_points, scale, per_step, excluded, reference_radius):
-    from tasks.hyperbolic_geometry import unproject_from_poincare
-    from tasks.hyperbolic_manager import fetch_poincare_rows
-
-    raw_waypoints = unproject_from_poincare(interior_points, scale)
-    waypoint_radii = np.linalg.norm(np.asarray(interior_points, dtype=np.float64), axis=1)
-    candidate_ids = _probe_ids_by_depth(
-        list(raw_waypoints), waypoint_radii, per_step, reference_radius
-    )
-    candidate_ids = [i for i in candidate_ids if i not in excluded]
+    rows = fetch_all_poincare_rows()
+    candidate_ids = [i for i in rows if i not in excluded]
     if not candidate_ids:
         return [], None, None
-    rows = fetch_poincare_rows(candidate_ids)
-    kept = [i for i in candidate_ids if i in rows]
-    if not kept:
-        return [], None, None
-    vectors = np.stack([rows[i][0] for i in kept]).astype(np.float64)
-    radii = np.array([rows[i][1] for i in kept], dtype=np.float64)
-    return kept, vectors, radii
+    vectors = np.stack([rows[i][0] for i in candidate_ids]).astype(np.float64)
+    radii = np.array([rows[i][1] for i in candidate_ids], dtype=np.float64)
+    return candidate_ids, vectors, radii
 
 
 def _pick_steps(interior_points, candidate_ids, candidate_vecs, details, seed_details):
@@ -300,28 +254,13 @@ def _apex_payload(start_vec, end_vec, dive, e1, e2):
     }
 
 
-def _resolved_scale():
-    from tasks.hyperbolic_manager import resolve_hyperbolic_scale
-
-    scale = resolve_hyperbolic_scale()
-    if not scale:
-        raise ValueError(
-            "The hyperbolic projection scale is not calibrated yet; run analysis first"
-        )
-    return scale
-
-
-def _snap_interior(interior, scale, start_item_id, end_item_id, seed_details, reference_radius):
+def _snap_interior(interior, start_item_id, end_item_id, seed_details):
     from database import get_score_data_by_ids
 
     if not interior.shape[0]:
         return [], None, None
     candidate_ids, candidate_vecs, candidate_radii = _gather_journey_candidates(
-        interior,
-        scale,
-        int(config.HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP),
-        {start_item_id, end_item_id},
-        reference_radius,
+        interior, {start_item_id, end_item_id}
     )
     if not candidate_ids:
         return [], None, None
@@ -344,7 +283,6 @@ def build_hyperbolic_journey(start_item_id, end_item_id, length=None, ancestry_d
     (start_vec, start_radius), (end_vec, end_radius) = _endpoint_rows(
         start_item_id, end_item_id
     )
-    scale = _resolved_scale()
 
     start_vec = np.asarray(start_vec, dtype=np.float64)
     end_vec = np.asarray(end_vec, dtype=np.float64)
@@ -356,9 +294,8 @@ def build_hyperbolic_journey(start_item_id, end_item_id, length=None, ancestry_d
     seed_rows = get_score_data_by_ids([start_item_id, end_item_id])
     seed_details = {d["item_id"]: d for d in seed_rows}
     picks, candidate_vecs, candidate_radii = _snap_interior(
-        interior, scale, start_item_id, end_item_id,
+        interior, start_item_id, end_item_id,
         [seed_details.get(start_item_id) or {}, seed_details.get(end_item_id) or {}],
-        max(float(start_radius), float(end_radius)),
     )
 
     rows = [_journey_row(
