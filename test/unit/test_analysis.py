@@ -2946,6 +2946,7 @@ def test_index_builds_recycle_the_db_connection_between_steps(monkeypatch):
 
     monkeypatch.setattr(index, "get_db", lambda: object())
     monkeypatch.setattr(index, "close_db", lambda: order.append("close_db"))
+    monkeypatch.setattr(index, "_checkpoint_postgres", lambda: None)
     monkeypatch.setattr(index.taskqueue, "publish_event", lambda *a, **k: None)
     monkeypatch.setattr(index, "release_memory_to_os", lambda: None)
 
@@ -2986,3 +2987,93 @@ def test_connection_recycle_never_propagates_a_close_failure(monkeypatch):
     monkeypatch.setattr(index, "close_db", boom)
 
     index._recycle_db_connection()
+
+
+def test_checkpoint_postgres_runs_checkpoint_commit_and_close(monkeypatch):
+    """The post-build CHECKPOINT runs on its own connection and closes it."""
+    import tasks.analysis.index as index
+
+    seen = []
+
+    class FakeCursor:
+        def execute(self, sql):
+            seen.append(sql)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            seen.append("commit")
+
+    monkeypatch.setattr(index, "get_db", lambda: FakeConn())
+    monkeypatch.setattr(index, "close_db", lambda: seen.append("close"))
+
+    index._checkpoint_postgres()
+
+    assert seen == ["CHECKPOINT", "commit", "close"]
+
+
+def test_checkpoint_postgres_swallows_a_database_failure(monkeypatch):
+    import tasks.analysis.index as index
+
+    def boom():
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(index, "get_db", boom)
+
+    index._checkpoint_postgres()
+
+
+def test_index_builds_end_with_a_database_checkpoint(monkeypatch):
+    """The full rebuild issues CHECKPOINT after the last step's recycle."""
+    import tasks.analysis.index as index
+
+    order = []
+
+    def stub(label):
+        def _build(*args, **kwargs):
+            order.append(f"build:{label}")
+        return _build
+
+    monkeypatch.setattr("tasks.ivf_manager.build_and_store_ivf_index", stub("ivf"))
+    monkeypatch.setattr("tasks.clap_text_search.build_and_store_clap_index", stub("clap"))
+    monkeypatch.setattr("tasks.lyrics_manager.build_and_store_lyrics_index", stub("lyrics"))
+    monkeypatch.setattr(
+        "tasks.lyrics_manager.build_and_store_lyrics_axes_index", stub("lyrics_axes")
+    )
+    monkeypatch.setattr(
+        "tasks.sem_grove_manager.build_and_store_sem_grove_index", stub("semgrove")
+    )
+    monkeypatch.setattr(
+        "tasks.artist_gmm_manager.build_and_store_artist_index", stub("artist")
+    )
+    monkeypatch.setattr(index, "build_and_store_map_projection", stub("map"))
+    monkeypatch.setattr(index, "build_and_store_artist_projection", stub("artist_map"))
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.backfill_hyperbolic_columns", stub("hyper_backfill")
+    )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.build_hyperbolic_tree_cache", stub("hyper_tree")
+    )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.build_and_store_hyperbolic_index", stub("hyper_index")
+    )
+    monkeypatch.setattr(index, "get_db", lambda: object())
+    monkeypatch.setattr(index, "close_db", lambda: order.append("close_db"))
+    monkeypatch.setattr(index, "_checkpoint_postgres", lambda: order.append("checkpoint"))
+    monkeypatch.setattr(index.taskqueue, "publish_event", lambda *a, **k: None)
+    monkeypatch.setattr(index, "release_memory_to_os", lambda: None)
+
+    index._run_all_index_builds()
+
+    assert order[-1] == "checkpoint"
+    # 8 single builds + the hyperbolic step's three internal builds
+    assert sum(1 for e in order if e.startswith("build:")) == 11
+    assert order.count("close_db") == 9

@@ -25,6 +25,12 @@ Main Features:
   index blobs climbed to 145MB RSS and stayed there, while a fresh connection
   per build peaked at 69MB and released it on close. Recycling costs one cheap
   reconnect per step and keeps Postgres' idle footprint flat after an analysis.
+* After the nine builds finish, the worker issues a CHECKPOINT on its own
+  connection and closes it. Postgres only releases WAL segments and flushed
+  dirty buffers at a checkpoint, so without it the hundreds of MB written as
+  index blobs keep the WAL and buffer cache inflated after the run; forcing the
+  checkpoint (plus the per-step recycle) leaves Postgres back at its idle floor
+  once the worker's child process exits.
 """
 
 import gc
@@ -56,6 +62,19 @@ def _recycle_db_connection():
         close_db()
     except Exception:
         logger.debug("Index-build connection recycle failed", exc_info=True)
+
+
+def _checkpoint_postgres():
+    try:
+        db = get_db()
+        try:
+            with db.cursor() as cur:
+                cur.execute("CHECKPOINT")
+            db.commit()
+        finally:
+            close_db()
+    except Exception:
+        logger.debug("Post-analysis Postgres CHECKPOINT failed", exc_info=True)
 
 
 def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
@@ -126,6 +145,7 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
     except Exception as e:
         logger.warning(f'Could not publish reload message: {e}')
 
+    _checkpoint_postgres()
     release_memory_to_os()
 
 
