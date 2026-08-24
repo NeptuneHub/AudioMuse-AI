@@ -99,6 +99,13 @@ Main Features:
   filtering the already-selected top candidates could throw away every
   visible one in favour of ids from another server that merely outrank them
   on raw distance, starving the geodesic journey's candidate pool.
+* invalidate_availability_cache clears that mask cache on demand.
+  tasks.multiserver_sync calls it (alongside the paged-IVF one) whenever a
+  sweep actually removes track_server_map rows, so a server's availability
+  view corrects itself immediately instead of waiting out the TTL - it was
+  missing that hook until it was found only replaying the 30s poll forever,
+  never the event a real membership change already fires for every other
+  index.
 """
 
 import gzip
@@ -414,6 +421,10 @@ _AVAILABILITY_CACHE_TTL = 30.0
 def _invalidate_availability():
     with _AVAILABILITY_CACHE_LOCK:
         _AVAILABILITY_CACHE.clear()
+
+
+def invalidate_availability_cache(server_id=None):
+    _invalidate_availability()
 
 
 def _any_fingerprint_id(item_ids):

@@ -346,7 +346,7 @@ def _stream_poincare_rows(where_sql, params, cursor_name):
     skipped = 0
     select_sql = (
         "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius "
-        f"FROM embedding e WHERE {where_sql} ORDER BY e.item_id"
+        f"FROM embedding e WHERE {where_sql}"
     )
     side_conn = _open_side_connection()
     try:

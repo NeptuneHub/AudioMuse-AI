@@ -2902,3 +2902,87 @@ class TestBaseFeaturesAreComputedExactlyOnce:
         assert _base_features_from(
             {'tempo': 1.0, 'energy': 0.5, 'key': 'C', 'scale': 'major'}
         ) == (1.0, 0.5, 'C', 'major')
+
+
+def test_index_builds_recycle_the_db_connection_between_steps(monkeypatch):
+    """The REAL _run_all_index_builds must close g.db after every step.
+
+    A Postgres backend never hands memory back to the OS while its session
+    lives, so one connection shared across all nine builds accumulates the
+    union of their peaks.
+    """
+    import tasks.analysis.index as index
+
+    order = []
+
+    def stub(label):
+        def _build(*args, **kwargs):
+            order.append(f"build:{label}")
+        return _build
+
+    monkeypatch.setattr("tasks.ivf_manager.build_and_store_ivf_index", stub("ivf"))
+    monkeypatch.setattr("tasks.clap_text_search.build_and_store_clap_index", stub("clap"))
+    monkeypatch.setattr("tasks.lyrics_manager.build_and_store_lyrics_index", stub("lyrics"))
+    monkeypatch.setattr(
+        "tasks.lyrics_manager.build_and_store_lyrics_axes_index", stub("lyrics_axes")
+    )
+    monkeypatch.setattr(
+        "tasks.sem_grove_manager.build_and_store_sem_grove_index", stub("semgrove")
+    )
+    monkeypatch.setattr(
+        "tasks.artist_gmm_manager.build_and_store_artist_index", stub("artist")
+    )
+    monkeypatch.setattr(index, "build_and_store_map_projection", stub("map"))
+    monkeypatch.setattr(index, "build_and_store_artist_projection", stub("artist_map"))
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.backfill_hyperbolic_columns", stub("hyper_backfill")
+    )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.build_hyperbolic_tree_cache", stub("hyper_tree")
+    )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.build_and_store_hyperbolic_index", stub("hyper_index")
+    )
+
+    monkeypatch.setattr(index, "get_db", lambda: object())
+    monkeypatch.setattr(index, "close_db", lambda: order.append("close_db"))
+    monkeypatch.setattr(index.taskqueue, "publish_event", lambda *a, **k: None)
+    monkeypatch.setattr(index, "release_memory_to_os", lambda: None)
+
+    index._run_all_index_builds()
+
+    builds = [entry for entry in order if entry.startswith("build:")]
+    closes = [entry for entry in order if entry == "close_db"]
+    assert builds, "no build step ran"
+    # one recycle per STEP (the hyperbolic step runs three builds itself)
+    assert len(closes) == 9
+    # and every step is followed by a recycle, never two builds back to back
+    assert order[-1] == "close_db"
+
+
+def test_a_failing_index_build_still_recycles_the_connection(monkeypatch):
+    import tasks.analysis.index as index
+
+    closed = []
+    monkeypatch.setattr(index, "close_db", lambda: closed.append(1))
+
+    try:
+        try:
+            raise RuntimeError("build blew up")
+        finally:
+            index._recycle_db_connection()
+    except RuntimeError:
+        pass
+
+    assert closed == [1]
+
+
+def test_connection_recycle_never_propagates_a_close_failure(monkeypatch):
+    import tasks.analysis.index as index
+
+    def boom():
+        raise RuntimeError("connection already gone")
+
+    monkeypatch.setattr(index, "close_db", boom)
+
+    index._recycle_db_connection()
