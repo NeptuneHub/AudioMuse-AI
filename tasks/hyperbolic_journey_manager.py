@@ -93,7 +93,7 @@ def _region_centroids():
             vectors.append(sub["vec"])
     if not vectors:
         return None, None
-    matrix = np.stack(vectors).astype(np.float64)
+    matrix = np.stack(vectors).astype(np.float32)
     _REGION_CACHE["source"] = tree
     _REGION_CACHE["labels"] = labels
     _REGION_CACHE["matrix"] = matrix
@@ -103,7 +103,7 @@ def _region_centroids():
 def _region_for_points(points):
     from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
 
-    pts = np.asarray(points, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float32)
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     labels, matrix = _region_centroids()
@@ -153,8 +153,8 @@ def _gather_journey_candidates(interior_points, excluded, server_id=None):
     kept = [i for i in candidate_ids if i in rows]
     if not kept:
         return [], None, None
-    vectors = np.stack([rows[i][0] for i in kept]).astype(np.float64)
-    radii = np.array([rows[i][1] for i in kept], dtype=np.float64)
+    vectors = np.stack([rows[i][0] for i in kept]).astype(np.float32)
+    radii = np.array([rows[i][1] for i in kept], dtype=np.float32)
     return kept, vectors, radii
 
 
@@ -242,7 +242,7 @@ def _path_samples(start_vec, end_vec, dive, e1, e2, samples):
 def geodesic_plane_coordinates(vectors, e1, e2):
     from tasks.hyperbolic_geometry import plane_angles
 
-    pts = np.asarray(vectors, dtype=np.float64)
+    pts = np.asarray(vectors, dtype=np.float32)
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     return np.linalg.norm(pts, axis=1), plane_angles(pts, e1, e2)
@@ -292,8 +292,8 @@ def build_hyperbolic_journey(start_item_id, end_item_id, length=None, ancestry_d
         start_item_id, end_item_id
     )
 
-    start_vec = np.asarray(start_vec, dtype=np.float64)
-    end_vec = np.asarray(end_vec, dtype=np.float64)
+    start_vec = np.asarray(start_vec, dtype=np.float32)
+    end_vec = np.asarray(end_vec, dtype=np.float32)
     ts = np.linspace(0.0, 1.0, length)
     waypoints = apply_radial_dive(poincare_geodesic(start_vec, end_vec, ts), ts, dive)
     interior = waypoints[1:-1]

@@ -39,7 +39,11 @@ Main Features:
   because argmin over centroids of arccosh(1 + 2*d2/((1-|t|^2)(1-|c|^2))) is the
   argmin of d2/(1-|c|^2) once the target-only factor is dropped, which turns a
   full-catalogue assignment pass into one BLAS matmul per chunk. Both the tree
-  builder and the disk-paged Poincare IVF index partition through this
+  builder and the disk-paged Poincare IVF index partition through this.
+  nearest_centroid clips and upcasts one CHUNK at a time rather than the whole
+  input, so callers can hand it the catalogue in float32 and its working set
+  stays flat: clipping and upcasting up front cost two extra full-size float32
+  copies, which at 1M x 200 was ~3.2GB of the index build's peak on its own
 * geodesic_apex returns the point of the geodesic closest to the origin: the
   continuous analogue of the lowest common ancestor of the two endpoints,
   because a geodesic between two points bows inward toward the more general
@@ -59,7 +63,7 @@ import numpy as np
 
 def project_to_poincare(vectors, scale):
     scale = float(scale) if scale else 1.0
-    vecs = np.asarray(vectors, dtype=np.float64)
+    vecs = np.asarray(vectors, dtype=np.float32)
     norms = np.linalg.norm(vecs, axis=-1, keepdims=True)
     safe = np.where(norms <= 1e-12, 1.0, norms)
     unit = vecs / safe
@@ -76,14 +80,14 @@ def project_to_poincare(vectors, scale):
 
 def poincare_radius(vectors, scale):
     scale = float(scale) if scale else 1.0
-    vecs = np.asarray(vectors, dtype=np.float64)
+    vecs = np.asarray(vectors, dtype=np.float32)
     norms = np.linalg.norm(vecs, axis=-1)
     return np.minimum(np.tanh(norms / scale), 1.0 - 1e-7)
 
 
 def hyperbolic_distance(u, v):
-    uu = np.asarray(u, dtype=np.float64).reshape(-1)
-    vv = np.asarray(v, dtype=np.float64).reshape(-1)
+    uu = np.asarray(u, dtype=np.float32).reshape(-1)
+    vv = np.asarray(v, dtype=np.float32).reshape(-1)
     u_norm2 = float(np.sum(uu * uu))
     v_norm2 = float(np.sum(vv * vv))
     diff2 = float(np.sum((uu - vv) ** 2))
@@ -93,8 +97,8 @@ def hyperbolic_distance(u, v):
 
 
 def hyperbolic_distances_to(target, candidates):
-    t = np.asarray(target, dtype=np.float64).reshape(-1)
-    c = np.asarray(candidates, dtype=np.float64)
+    t = np.asarray(target, dtype=np.float32).reshape(-1)
+    c = np.asarray(candidates, dtype=np.float32)
     if c.ndim == 1:
         c = c.reshape(1, -1)
     u_norm2 = float(np.sum(t * t))
@@ -113,19 +117,19 @@ def hyperbolic_distance_matrix(targets, candidates, target_norms2=None, candidat
     handful of centroids (mood, genre, subgenre) is one NumPy pass instead of
     a Python loop of scalar distance calls, which dominated tree build time.
     """
-    t = np.asarray(targets, dtype=np.float64)
-    c = np.asarray(candidates, dtype=np.float64)
+    t = np.asarray(targets, dtype=np.float32)
+    c = np.asarray(candidates, dtype=np.float32)
     if t.ndim == 1:
         t = t.reshape(1, -1)
     if c.ndim == 1:
         c = c.reshape(1, -1)
     t_norm2 = (
         np.sum(t * t, axis=1) if target_norms2 is None
-        else np.asarray(target_norms2, dtype=np.float64).reshape(-1)
+        else np.asarray(target_norms2, dtype=np.float32).reshape(-1)
     )
     c_norm2 = (
         np.sum(c * c, axis=1) if candidate_norms2 is None
-        else np.asarray(candidate_norms2, dtype=np.float64).reshape(-1)
+        else np.asarray(candidate_norms2, dtype=np.float32).reshape(-1)
     )
     diff2 = t_norm2[:, None] + c_norm2[None, :] - 2.0 * (t @ c.T)
     denom = np.maximum((1.0 - t_norm2[:, None]) * (1.0 - c_norm2[None, :]), 1e-12)
@@ -134,7 +138,7 @@ def hyperbolic_distance_matrix(targets, candidates, target_norms2=None, candidat
 
 
 def calibrate_scale(norms, percentile=95.0):
-    norms = np.asarray(norms, dtype=np.float64)
+    norms = np.asarray(norms, dtype=np.float32)
     if norms.size == 0:
         return 1.0
     pct = float(np.percentile(norms, float(percentile)))
@@ -144,7 +148,7 @@ def calibrate_scale(norms, percentile=95.0):
 
 
 def split_radial_bands(radii, n_bands):
-    radii = np.asarray(radii, dtype=np.float64)
+    radii = np.asarray(radii, dtype=np.float32)
     n_bands = max(1, int(n_bands))
     if radii.size == 0:
         return []
@@ -158,10 +162,10 @@ def split_radial_bands(radii, n_bands):
 
 
 def assign_radial_bands(radii, boundaries):
-    radii = np.asarray(radii, dtype=np.float64)
+    radii = np.asarray(radii, dtype=np.float32)
     if not boundaries or radii.size == 0:
-        return np.zeros(radii.shape[0], dtype=np.int64)
-    edges = np.array([b[0] for b in boundaries] + [boundaries[-1][1]], dtype=np.float64)
+        return np.zeros(radii.shape[0], dtype=np.int32)
+    edges = np.array([b[0] for b in boundaries] + [boundaries[-1][1]], dtype=np.float32)
     idx = np.searchsorted(edges, radii, side="right") - 1
     return np.clip(idx, 0, len(boundaries) - 1)
 
@@ -170,15 +174,15 @@ _BALL_LIMIT = 1.0 - 1e-7
 
 
 def clip_into_ball(vectors):
-    v = np.asarray(vectors, dtype=np.float64)
+    v = np.asarray(vectors, dtype=np.float32)
     norms = np.linalg.norm(v, axis=-1, keepdims=True)
     factor = np.where(norms > _BALL_LIMIT, _BALL_LIMIT / np.maximum(norms, 1e-12), 1.0)
     return v * factor
 
 
 def mobius_add(x, y):
-    xx = np.asarray(x, dtype=np.float64)
-    yy = np.asarray(y, dtype=np.float64)
+    xx = np.asarray(x, dtype=np.float32)
+    yy = np.asarray(y, dtype=np.float32)
     x2 = np.sum(xx * xx, axis=-1, keepdims=True)
     y2 = np.sum(yy * yy, axis=-1, keepdims=True)
     xy = np.sum(xx * yy, axis=-1, keepdims=True)
@@ -188,8 +192,8 @@ def mobius_add(x, y):
 
 
 def mobius_scalar_mul(t, x):
-    xx = np.atleast_2d(np.asarray(x, dtype=np.float64))
-    tt = np.asarray(t, dtype=np.float64).reshape(-1, 1)
+    xx = np.atleast_2d(np.asarray(x, dtype=np.float32))
+    tt = np.asarray(t, dtype=np.float32).reshape(-1, 1)
     norms = np.linalg.norm(xx, axis=-1, keepdims=True)
     safe = np.where(norms <= 1e-12, 1.0, norms)
     radii = np.tanh(tt * np.arctanh(np.minimum(norms, _BALL_LIMIT)))
@@ -197,7 +201,7 @@ def mobius_scalar_mul(t, x):
 
 
 def einstein_midpoint(points):
-    pts = np.asarray(points, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float32)
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     if pts.shape[0] == 0:
@@ -215,7 +219,7 @@ def einstein_midpoint(points):
 
 
 def karcher_mean(points, iterations=10):
-    pts = np.asarray(points, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float32)
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     if pts.shape[0] == 0:
@@ -241,35 +245,36 @@ def karcher_mean(points, iterations=10):
 
 
 def nearest_centroid(points, centroids, chunk=None):
-    pts = clip_into_ball(np.asarray(points, dtype=np.float64))
-    cent = clip_into_ball(np.asarray(centroids, dtype=np.float64))
+    pts = np.asarray(points)
+    cent = clip_into_ball(np.asarray(centroids, dtype=np.float32))
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     if cent.ndim == 1:
         cent = cent.reshape(1, -1)
     n, k = pts.shape[0], cent.shape[0]
-    p_norm2 = np.sum(pts * pts, axis=1)
     c_norm2 = np.sum(cent * cent, axis=1)
     inv = 1.0 / np.maximum(1.0 - c_norm2, 1e-12)
     block = int(chunk) if chunk else max(64, min(4096, 2_000_000 // max(k, 1)))
-    labels = np.empty(n, dtype=np.int64)
+    labels = np.empty(n, dtype=np.int32)
     for start in range(0, n, block):
         stop = start + block
-        diff2 = p_norm2[start:stop, None] + c_norm2[None, :] - 2.0 * (pts[start:stop] @ cent.T)
+        rows = clip_into_ball(np.asarray(pts[start:stop], dtype=np.float32))
+        p_norm2 = np.sum(rows * rows, axis=1)
+        diff2 = p_norm2[:, None] + c_norm2[None, :] - 2.0 * (rows @ cent.T)
         labels[start:stop] = np.argmin(np.maximum(diff2, 0.0) * inv[None, :], axis=1)
     return labels
 
 
 def poincare_kmeans(points, k, iterations=10, seed=0, chunk=None):
-    pts = clip_into_ball(np.asarray(points, dtype=np.float64))
+    pts = clip_into_ball(np.asarray(points, dtype=np.float32))
     n = pts.shape[0]
     if n == 0:
-        return np.zeros((0, pts.shape[1]), dtype=np.float64), np.zeros(0, dtype=np.int64)
+        return np.zeros((0, pts.shape[1]), dtype=np.float32), np.zeros(0, dtype=np.int32)
     k = max(1, min(int(k), n))
     norms2 = np.sum(pts * pts, axis=1)
     rng = np.random.default_rng(int(seed))
     centroids = clip_into_ball(pts[_kmeans_plus_plus(pts, norms2, k, rng)])
-    labels = np.full(n, -1, dtype=np.int64)
+    labels = np.full(n, -1, dtype=np.int32)
     for _ in range(max(1, int(iterations))):
         new_labels = nearest_centroid(pts, centroids, chunk=chunk)
         if np.array_equal(new_labels, labels):
@@ -322,10 +327,10 @@ def _kmeans_plus_plus(pts, norms2, k, rng):
 
 
 def poincare_geodesic(start, end, ts):
-    u = np.asarray(start, dtype=np.float64).reshape(1, -1)
-    v = np.asarray(end, dtype=np.float64).reshape(1, -1)
+    u = np.asarray(start, dtype=np.float32).reshape(1, -1)
+    v = np.asarray(end, dtype=np.float32).reshape(1, -1)
     direction = mobius_add(-u, v)
-    steps = mobius_scalar_mul(np.asarray(ts, dtype=np.float64).reshape(-1), direction)
+    steps = mobius_scalar_mul(np.asarray(ts, dtype=np.float32).reshape(-1), direction)
     return mobius_add(u, steps)
 
 
@@ -349,17 +354,17 @@ def geodesic_apex(start, end, samples=129, refinements=30):
 
 def apply_radial_dive(points, ts, dive):
     depth = min(max(float(dive or 0.0), 0.0), 0.95)
-    pts = np.asarray(points, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float32)
     if depth <= 0.0:
         return pts
-    t = np.asarray(ts, dtype=np.float64).reshape(-1, 1)
+    t = np.asarray(ts, dtype=np.float32).reshape(-1, 1)
     bump = 4.0 * t * (1.0 - t)
     return clip_into_ball(pts * (1.0 - depth * bump))
 
 
 def unproject_from_poincare(points, scale):
     scale = float(scale) if scale else 1.0
-    pts = np.asarray(points, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float32)
     single = pts.ndim == 1
     if single:
         pts = pts.reshape(1, -1)
@@ -373,8 +378,8 @@ def unproject_from_poincare(points, scale):
 
 
 def geodesic_plane_basis(start, end):
-    u = np.asarray(start, dtype=np.float64).reshape(-1)
-    v = np.asarray(end, dtype=np.float64).reshape(-1)
+    u = np.asarray(start, dtype=np.float32).reshape(-1)
+    v = np.asarray(end, dtype=np.float32).reshape(-1)
     first_norm = float(np.linalg.norm(u))
     if first_norm > 1e-12:
         e1 = u / first_norm
@@ -391,13 +396,13 @@ def geodesic_plane_basis(start, end):
 
 
 def plane_angles(points, e1, e2):
-    pts = np.asarray(points, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float32)
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     if e1 is None:
-        return np.zeros(pts.shape[0], dtype=np.float64)
-    along = pts @ np.asarray(e1, dtype=np.float64)
+        return np.zeros(pts.shape[0], dtype=np.float32)
+    along = pts @ np.asarray(e1, dtype=np.float32)
     if e2 is None:
         return np.where(along >= 0.0, 0.0, np.pi)
-    across = pts @ np.asarray(e2, dtype=np.float64)
+    across = pts @ np.asarray(e2, dtype=np.float32)
     return np.arctan2(across, along)

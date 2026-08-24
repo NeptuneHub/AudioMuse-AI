@@ -229,7 +229,7 @@ def build_and_store_hyperbolic_index(db_conn=None):
             if not rows:
                 continue
             item_ids = list(rows.keys())
-            vectors = np.stack([rows[i][0] for i in item_ids]).astype(np.float64)
+            vectors = np.stack([rows[i][0] for i in item_ids]).astype(np.float32, copy=False)
             centroids, assigned = _partition_into_cells(vectors)
             n_cells = centroids.shape[0]
 
@@ -348,7 +348,7 @@ def _load_centroids(db_conn, blob_name, dim):
     matrix = np.frombuffer(raw, dtype=np.float32).reshape(-1, dim)
     if matrix.shape[0] == 0:
         return None
-    return clip_into_ball(matrix.astype(np.float64))
+    return clip_into_ball(matrix.astype(np.float32))
 
 
 def load_hyperbolic_index(force_reload=False):
@@ -509,15 +509,15 @@ def _decode_cell(vectors, code):
     from tasks.hyperbolic_geometry import clip_into_ball
 
     if code == quant.DTYPE_F32:
-        return np.asarray(vectors, dtype=np.float64)
-    return clip_into_ball(quant.decode_row(vectors, code).astype(np.float64))
+        return np.asarray(vectors, dtype=np.float32)
+    return clip_into_ball(quant.decode_row(vectors, code).astype(np.float32))
 
 
 def _cell_distances(vec, vectors, code):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
     n = vectors.shape[0]
-    out = np.empty(n, dtype=np.float64)
+    out = np.empty(n, dtype=np.float32)
     for start in range(0, n, _SCAN_CHUNK):
         stop = start + _SCAN_CHUNK
         out[start:stop] = hyperbolic_distances_to(
@@ -559,7 +559,7 @@ def _probe_matrix(points, index):
 
 def _nearest(vector, k, index, exclude):
     k = max(1, int(k))
-    vec = np.asarray(vector, dtype=np.float64).reshape(-1)
+    vec = np.asarray(vector, dtype=np.float32).reshape(-1)
     probe = _probe_order(vec, index)
     try:
         prefetched = _prefetch_cells(probe, index)
@@ -606,8 +606,8 @@ def _rerank_exact(vector, candidates, k, code):
     exact_ids = [item_id for item_id in ids if item_id in rows]
     if not exact_ids:
         return candidates[:k]
-    vectors = np.stack([rows[item_id][0] for item_id in exact_ids]).astype(np.float64)
-    distances = hyperbolic_distances_to(np.asarray(vector, dtype=np.float64), vectors)
+    vectors = np.stack([rows[item_id][0] for item_id in exact_ids]).astype(np.float32)
+    distances = hyperbolic_distances_to(np.asarray(vector, dtype=np.float32), vectors)
     order = np.argsort(distances)
     return [(exact_ids[i], float(distances[i])) for i in order[:k]]
 
@@ -631,7 +631,7 @@ def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):
     index = _index_for(server_id)
     if index is None:
         return None
-    points = np.atleast_2d(np.asarray(vectors, dtype=np.float64))
+    points = np.atleast_2d(np.asarray(vectors, dtype=np.float32))
     if points.shape[0] == 0:
         return []
     keep = _multi_scan_width(max(1, int(k))) + len(exclude)

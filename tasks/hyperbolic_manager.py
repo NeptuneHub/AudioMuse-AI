@@ -166,7 +166,7 @@ def _calibrate_scale_from_catalog():
             int(config.EMBEDDING_DIMENSION),
             where_clause="embedding IS NOT NULL",
         ):
-            norm_batches.append(np.linalg.norm(batch.astype(np.float64), axis=1))
+            norm_batches.append(np.linalg.norm(batch.astype(np.float32), axis=1))
     except Exception:
         logger.exception("Could not sample catalogue norms for scale calibration")
         return _FALLBACK_SCALE
@@ -532,8 +532,8 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
     if not rows:
         return []
     ids = list(rows.keys())
-    cand_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float64)
-    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float64)
+    cand_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float32)
+    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float32)
     distances = hyperbolic_distances_to(target_vec, cand_vecs)
     results = _rank_mode_results(ids, distances, cand_radii, mode, target_radius)
     results = results[:overfetch]
@@ -1135,8 +1135,8 @@ def _partition_by_mood(item_ids, vec_map, mood_centroids, score_by_id):
     if mood_centroids:
         from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
 
-        vecs = np.stack([vec_map[i] for i in item_ids]).astype(np.float64)
-        cent = np.stack([c["vec"] for c in mood_centroids]).astype(np.float64)
+        vecs = np.stack([vec_map[i] for i in item_ids]).astype(np.float32)
+        cent = np.stack([c["vec"] for c in mood_centroids]).astype(np.float32)
         dists = hyperbolic_distance_matrix(vecs, cent)
         best = np.argmin(dists, axis=1)
         for iid, idx in zip(item_ids, best):
@@ -1198,8 +1198,8 @@ def _partition_by_genre_centroids(members, vec_map, genre_subgenres, level, pare
         return None
     if len(centroids) < 2 or centroids[0]["vec"].shape[0] != ref.shape[0]:
         return None
-    vecs = np.stack([vec_map[i] for i in members]).astype(np.float64)
-    cent = np.stack([c["vec"] for c in centroids]).astype(np.float64)
+    vecs = np.stack([vec_map[i] for i in members]).astype(np.float32)
+    cent = np.stack([c["vec"] for c in centroids]).astype(np.float32)
     best = np.argmin(hyperbolic_distance_matrix(vecs, cent), axis=1)
     groups = {}
     for iid, idx in zip(members, best):
@@ -1216,7 +1216,7 @@ _GENRE_KINDS = ("main_genre", "subgenre")
 def _materialize_mood(mood_label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):
     node_id = f"m{_slugify(mood_label)}"
     name = mood_label.title()
-    radii = np.array([radii_map[i] for i in members], dtype=np.float64)
+    radii = np.array([radii_map[i] for i in members], dtype=np.float32)
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
@@ -1260,7 +1260,7 @@ def _materialize_genre_level(parent_id, members, vec_map, radii_map, score_by_id
 
 
 def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level):
-    radii = np.array([radii_map[i] for i in members], dtype=np.float64)
+    radii = np.array([radii_map[i] for i in members], dtype=np.float32)
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
@@ -1369,7 +1369,7 @@ def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, m
         return None
     k = max(1, round(n / target_leaf))
     k = min(k, n)
-    vecs = np.stack([vec_map[i] for i in members]).astype(np.float64)
+    vecs = np.stack([vec_map[i] for i in members]).astype(np.float32)
     labels = _fit_clusters(vecs, k)
     clusters = {}
     for label, iid in zip(labels, members):
@@ -1408,7 +1408,7 @@ def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood
     # Clusters are always the terminal level of the tree (GENRE -> SUBGENRE ->
     # NAMED CLUSTER): every track below them is listed directly, so a cluster
     # never recurses into further folders.
-    radii = np.array([radii_map[i] for i in members], dtype=np.float64)
+    radii = np.array([radii_map[i] for i in members], dtype=np.float32)
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
@@ -1422,13 +1422,13 @@ def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood
 def _fit_clusters(vecs, k):
     from tasks.hyperbolic_geometry import poincare_kmeans
 
-    pts = np.asarray(vecs, dtype=np.float64)
+    pts = np.asarray(vecs, dtype=np.float32)
     n = pts.shape[0]
     if n == 0:
-        return np.zeros(0, dtype=np.int64)
+        return np.zeros(0, dtype=np.int32)
     k = max(1, min(int(k), n))
     if k == n:
-        return np.arange(n, dtype=np.int64)
+        return np.arange(n, dtype=np.int32)
     _centroids, labels = poincare_kmeans(pts, k, iterations=5, seed=0)
     return labels
 
@@ -1459,7 +1459,7 @@ def _load_projected_mood_centroids():
                 continue
             ranked_tags = [t for t, _ in sorted(tags_by_score.items(), key=lambda kv: -kv[1])]
             vec = project_to_poincare(np.asarray(raw, dtype=np.float32), scale)
-            out.append({"vec": vec.astype(np.float64), "tags": ranked_tags, "mood": mood})
+            out.append({"vec": vec.astype(np.float32), "tags": ranked_tags, "mood": mood})
     return out
 
 
@@ -1498,14 +1498,14 @@ def _load_projected_genre_subgenres():
                 continue
             arr = np.asarray(raw, dtype=np.float32)
             vec = project_to_poincare(arr, scale)
-            raw_vecs.append(arr.astype(np.float64))
-            projected.append({"name": name, "vec": vec.astype(np.float64)})
+            raw_vecs.append(arr.astype(np.float32))
+            projected.append({"name": name, "vec": vec.astype(np.float32)})
         if not projected:
             continue
         genre_raw = np.mean(np.stack(raw_vecs), axis=0)
         genre_vec = project_to_poincare(
             genre_raw.astype(np.float32), scale
-        ).astype(np.float64)
+        ).astype(np.float32)
         out[genre] = {"vec": genre_vec, "subgenres": projected}
     return out
 
@@ -1516,7 +1516,7 @@ def _cluster_name(members, vec_map, mood_centroids):
 
     from tasks.hyperbolic_geometry import hyperbolic_distance
 
-    mean_vec = np.mean(np.stack([vec_map[i] for i in members]).astype(np.float64), axis=0)
+    mean_vec = np.mean(np.stack([vec_map[i] for i in members]).astype(np.float32), axis=0)
     ranked = sorted(mood_centroids, key=lambda c: hyperbolic_distance(mean_vec, c["vec"]))
 
     # One representative tag per nearest centroid, walking outward only to

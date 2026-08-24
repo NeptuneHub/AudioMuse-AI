@@ -121,7 +121,7 @@ def test_nearest_matches_a_bruteforce_scan(monkeypatch):
     assert [item_id for item_id, _distance in got] == expected
     for item_id, distance in got:
         exact = hyperbolic_distance(target, rows[item_id][0].astype(np.float64))
-        assert abs(distance - exact) < 1e-9
+        assert abs(distance - exact) < 1e-5
 
 
 def test_nearest_respects_the_exclude_set(monkeypatch):
@@ -327,7 +327,7 @@ def test_a_quantized_scan_is_reranked_to_the_exact_ordering(monkeypatch):
     got = hji.hyperbolic_nearest(target, 10, exclude={query})
     assert [item_id for item_id, _d in got] == truth
     for (item_id, distance), expected in zip(got, np.sort(exact)[:10]):
-        assert distance == pytest.approx(float(expected), rel=1e-12)
+        assert distance == pytest.approx(float(expected), rel=1e-5, abs=1e-6)
 
 
 def test_a_probed_cell_is_read_once_per_query_even_when_the_cache_evicts(monkeypatch):
