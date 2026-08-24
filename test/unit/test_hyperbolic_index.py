@@ -47,7 +47,7 @@ import pytest
 import config
 import tasks.hyperbolic_index as hji
 from tasks import ivf_quant as quant
-from tasks.hyperbolic_geometry import hyperbolic_distance, hyperbolic_distances_to
+from tasks.hyperbolic_geometry import clip_into_ball, hyperbolic_distance, hyperbolic_distances_to
 
 
 def _ball(*values):
@@ -215,7 +215,6 @@ def test_build_and_load_roundtrip(monkeypatch):
     monkeypatch.setattr("tasks.index_build_helpers.store_segmented_blob", fake_store)
     monkeypatch.setattr("tasks.index_build_helpers.load_segmented_blob", fake_load)
     monkeypatch.setattr(hji, "_scan_index_names", lambda: [hji._DEFAULT_SERVER_KEY])
-    monkeypatch.setattr(hji, "_resolve_default_server_id", lambda: None)
 
     conn = _FakeConn()
     hji.build_and_store_hyperbolic_index(conn)
@@ -248,7 +247,6 @@ def _build_into(monkeypatch, rows, dtype_name):
         lambda conn, table, name, blob, max_part_size_mb=None: stored.__setitem__(name, blob),
     )
     monkeypatch.setattr(hji, "_scan_index_names", lambda: [hji._DEFAULT_SERVER_KEY])
-    monkeypatch.setattr(hji, "_resolve_default_server_id", lambda: None)
     hji.build_and_store_hyperbolic_index(_FakeConn())
     directory = json.loads(
         gzip.decompress(stored[hji._dir_name(hji._DEFAULT_SERVER_KEY)]).decode("utf-8")
@@ -495,3 +493,122 @@ def test_nearest_multi_pool_is_wider_than_a_single_query_top_k(monkeypatch):
     wide = hji.hyperbolic_nearest_multi(waypoints, 10)
     assert set(narrow) <= set(wide)
     assert len(wide) > len(narrow)
+
+
+def _install_minimal_index(monkeypatch, cells, dim=8):
+    """Wires _INDEX_CACHE directly with hand-built cells, bypassing storage.
+
+    Used for tests that need precise control over which item lands in which
+    cell (availability starvation, index_for fallback) rather than letting
+    poincare_kmeans decide the partition.
+    """
+    from tasks.hyperbolic_geometry import clip_into_ball
+
+    all_ids = [iid for _vecs, ids in cells for iid in ids]
+    centroids = clip_into_ball(np.zeros((len(cells), dim), dtype=np.float32))
+    cell_meta = []
+    cache = {}
+    for i, (vecs, ids) in enumerate(cells):
+        stored = quant.encode_vectors(np.asarray(vecs, dtype=np.float32), quant.DTYPE_I8)
+        cell_meta.append({"blob": f"cell_{i}", "count": len(ids), "item_ids": list(ids)})
+        cache[i] = (stored, list(ids))
+    index = {
+        "server_key": hji._DEFAULT_SERVER_KEY,
+        "dim": dim,
+        "code": quant.DTYPE_I8,
+        "centroids": centroids.astype(np.float32),
+        "centroid_norms2": np.sum(centroids * centroids, axis=1),
+        "cells": cell_meta,
+        "item_ids": all_ids,
+        "has_canonical": False,
+    }
+    monkeypatch.setattr(hji, "_load_cell", lambda cell, idx: cache[int(cell)])
+    monkeypatch.setattr(hji, "_prefetch_cells", lambda probe, idx: {})
+    hji._INDEX_CACHE["servers"] = {hji._DEFAULT_SERVER_KEY: index}
+    hji._INDEX_CACHE["loaded"] = True
+    return index
+
+
+def test_nearest_multi_does_not_starve_when_the_nearest_candidates_are_unavailable(monkeypatch):
+    rng = np.random.default_rng(30)
+    dim = 8
+    near = clip_into_ball(rng.standard_normal((400, dim)) * 0.02)
+    far_but_available = clip_into_ball(
+        np.tile(np.full(dim, 0.3), (5, 1)) + rng.standard_normal((5, dim)) * 0.01
+    )
+    other_ids = [f"other_{i}" for i in range(400)]
+    avail_ids = [f"avail_{i}" for i in range(5)]
+    _install_minimal_index(
+        monkeypatch, [(np.concatenate([near, far_but_available]), other_ids + avail_ids)], dim=dim
+    )
+    monkeypatch.setattr(config, "IVF_NPROBE", 10)
+    monkeypatch.setattr(hji, "_server_available", lambda idx, server_id: frozenset(avail_ids))
+
+    query = clip_into_ball(np.zeros((1, dim), dtype=np.float32))
+    got = hji.hyperbolic_nearest_multi(query, 5, server_id="scoped")
+
+    assert set(got) == set(avail_ids)
+
+
+def test_nearest_multi_still_honours_exclude_after_the_availability_filter(monkeypatch):
+    rng = np.random.default_rng(31)
+    dim = 8
+    vecs = clip_into_ball(rng.standard_normal((20, dim)) * 0.05)
+    ids = [f"t{i}" for i in range(20)]
+    _install_minimal_index(monkeypatch, [(vecs, ids)], dim=dim)
+    monkeypatch.setattr(config, "IVF_NPROBE", 10)
+    monkeypatch.setattr(hji, "_server_available", lambda idx, server_id: None)
+
+    query = vecs[0:1]
+    got = hji.hyperbolic_nearest_multi(query, 5, exclude={"t0"})
+
+    assert "t0" not in got
+
+
+def test_index_for_falls_back_to_the_union_index_for_an_unknown_server():
+    hji._INDEX_CACHE["servers"] = {hji._DEFAULT_SERVER_KEY: {"marker": "union"}}
+    assert hji._index_for("some-secondary-server-id") == {"marker": "union"}
+    assert hji._index_for(None) == {"marker": "union"}
+
+
+def test_mask_unneeded_skips_the_query_for_a_single_default_server_with_no_canonical_ids(monkeypatch):
+    from tasks.mediaserver import registry
+
+    monkeypatch.setattr(registry, "get_default_server_id", lambda: "srv1")
+    monkeypatch.setattr(registry, "has_secondary_servers", lambda: False)
+    index = {"has_canonical": False}
+    assert hji._mask_unneeded(index, "srv1") is True
+
+
+def test_mask_needed_once_the_catalogue_has_canonical_ids_or_a_second_server(monkeypatch):
+    from tasks.mediaserver import registry
+
+    monkeypatch.setattr(registry, "get_default_server_id", lambda: "srv1")
+    monkeypatch.setattr(registry, "has_secondary_servers", lambda: False)
+    assert hji._mask_unneeded({"has_canonical": True}, "srv1") is False
+
+    monkeypatch.setattr(registry, "has_secondary_servers", lambda: True)
+    assert hji._mask_unneeded({"has_canonical": False}, "srv1") is False
+
+
+def test_build_and_store_writes_one_union_index_and_sweeps_legacy_names(monkeypatch):
+    rows = {
+        "a": _ball(0.90, 0.00),
+        "b": _ball(0.40, 0.40),
+        "c": _ball(0.05, 0.02),
+    }
+    deleted = []
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.fetch_all_poincare_rows",
+        lambda server_id=None, include_legacy_default=True: dict(rows),
+    )
+    monkeypatch.setattr(
+        "tasks.index_build_helpers.store_segmented_blob",
+        lambda conn, table, name, blob, max_part_size_mb=None: None,
+    )
+    monkeypatch.setattr(hji, "_scan_index_names", lambda: [hji._DEFAULT_SERVER_KEY, "srv1", "srv2"])
+    monkeypatch.setattr(hji, "_delete_index", lambda conn, key: deleted.append(key))
+
+    hji.build_and_store_hyperbolic_index(_FakeConn())
+
+    assert set(deleted) == {hji._DEFAULT_SERVER_KEY, "srv1", "srv2"}

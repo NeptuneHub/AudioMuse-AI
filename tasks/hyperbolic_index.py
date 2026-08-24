@@ -89,10 +89,16 @@ Main Features:
 * hyperbolic_nearest / hyperbolic_nearest_multi return item ids ranked by exact
   Poincare distance, or None when no index is built yet; callers surface that
   as a "run analysis to build it" error instead of scanning the catalogue.
-* Build targets mirror the Hyperbolic Explorer tree: one index per configured
-  server plus the default server, keyed the same way so a request scoped to a
-  server reads only that server's index. A rebuild also sweeps the blobs of the
-  retired radial-band layout, which nothing names any more.
+* The index stores ONE union of every server's projected tracks. A request
+  scoped to a server filters candidates through the shared availability mask
+  from tasks.index_availability, so no per-server copy of the index is built.
+  A rebuild also sweeps the blobs of the retired radial-band layout and any
+  legacy per-server index, which nothing names any more.
+* hyperbolic_nearest_multi applies that mask (and the exclude set) to each
+  probed cell's members BEFORE the per-waypoint top-k selection, not after:
+  filtering the already-selected top candidates could throw away every
+  visible one in favour of ids from another server that merely outrank them
+  on raw distance, starving the geodesic journey's candidate pool.
 """
 
 import gzip
@@ -101,6 +107,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections import OrderedDict
 
 import numpy as np
@@ -174,32 +181,6 @@ def _partition_into_cells(vectors):
     return centroids, nearest_centroid(vectors, centroids)
 
 
-def _resolve_default_server_id():
-    from tasks.mediaserver import registry
-
-    try:
-        return registry.get_default_server_id()
-    except Exception:
-        return None
-
-
-def _build_targets():
-    from tasks.mediaserver import registry
-
-    try:
-        servers = registry.list_servers()
-    except Exception:
-        servers = []
-    if not servers:
-        return [(_DEFAULT_SERVER_KEY, None, True)]
-    default_id = _resolve_default_server_id()
-    targets = [(_DEFAULT_SERVER_KEY, default_id, True)]
-    for server in servers:
-        if server["server_id"] != default_id:
-            targets.append((server["server_id"], server["server_id"], False))
-    return targets
-
-
 def _delete_index(db_conn, server_key):
     key = server_key or _DEFAULT_SERVER_KEY
     dir_name = _scoped_name(_DIR_PREFIX, key)
@@ -221,59 +202,59 @@ def build_and_store_hyperbolic_index(db_conn=None):
         db_conn = get_db()
     code = _storage_code()
     try:
-        for server_key, server_id, is_default in _build_targets():
-            _delete_index(db_conn, server_key)
-            rows = fetch_all_poincare_rows(
-                server_id=server_id, include_legacy_default=is_default
-            )
-            if not rows:
-                continue
-            item_ids = list(rows.keys())
-            vectors = np.stack([rows[i][0] for i in item_ids]).astype(np.float32, copy=False)
-            centroids, assigned = _partition_into_cells(vectors)
-            n_cells = centroids.shape[0]
+        server_key = _DEFAULT_SERVER_KEY
+        for name in _scan_index_names():
+            _delete_index(db_conn, name)
+        rows = fetch_all_poincare_rows(server_id=None, include_legacy_default=True)
+        if not rows:
+            db_conn.commit()
+            return
+        item_ids = list(rows.keys())
+        vectors = np.stack([rows[i][0] for i in item_ids]).astype(np.float32, copy=False)
+        centroids, assigned = _partition_into_cells(vectors)
+        n_cells = centroids.shape[0]
 
-            cell_item_ids = [[] for _ in range(n_cells)]
-            cell_rows = [[] for _ in range(n_cells)]
-            for position, (item_id, cell) in enumerate(zip(item_ids, assigned)):
-                cell_item_ids[int(cell)].append(item_id)
-                cell_rows[int(cell)].append(position)
+        cell_item_ids = [[] for _ in range(n_cells)]
+        cell_rows = [[] for _ in range(n_cells)]
+        for position, (item_id, cell) in enumerate(zip(item_ids, assigned)):
+            cell_item_ids[int(cell)].append(item_id)
+            cell_rows[int(cell)].append(position)
 
-            cells = []
-            for cell in range(n_cells):
-                members = cell_item_ids[cell]
-                blob = _cell_name(server_key, cell)
-                if members:
-                    matrix = vectors[cell_rows[cell]].astype(np.float32, copy=False)
-                    store_segmented_blob(
-                        db_conn, _TABLE, blob, quant.encode_vectors(matrix, code).tobytes()
-                    )
-                cells.append(
-                    {"blob": blob, "count": len(members), "item_ids": members}
+        cells = []
+        for cell in range(n_cells):
+            members = cell_item_ids[cell]
+            blob = _cell_name(server_key, cell)
+            if members:
+                matrix = vectors[cell_rows[cell]].astype(np.float32, copy=False)
+                store_segmented_blob(
+                    db_conn, _TABLE, blob, quant.encode_vectors(matrix, code).tobytes()
                 )
-
-            store_segmented_blob(
-                db_conn, _TABLE, _centroids_name(server_key),
-                centroids.astype(np.float32).tobytes(),
-            )
-            logger.info(
-                "Hyperbolic Poincare index '%s': %d tracks into %d hyperbolic k-means cells "
-                "(%d tracks/cell), stored as %s.",
-                server_key, len(item_ids), n_cells,
-                len(item_ids) // max(n_cells, 1), quant.dtype_name(code),
+            cells.append(
+                {"blob": blob, "count": len(members), "item_ids": members}
             )
 
-            directory = {
-                "version": _VERSION,
-                "dim": int(vectors.shape[1]),
-                "dtype": quant.dtype_name(code),
-                "centroids_blob": _centroids_name(server_key),
-                "cells": cells,
-            }
-            raw = gzip.compress(
-                json.dumps(directory, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            )
-            store_segmented_blob(db_conn, _TABLE, _dir_name(server_key), raw)
+        store_segmented_blob(
+            db_conn, _TABLE, _centroids_name(server_key),
+            centroids.astype(np.float32).tobytes(),
+        )
+        logger.info(
+            "Hyperbolic Poincare index: %d tracks into %d hyperbolic k-means cells "
+            "(%d tracks/cell), stored as %s.",
+            len(item_ids), n_cells,
+            len(item_ids) // max(n_cells, 1), quant.dtype_name(code),
+        )
+
+        directory = {
+            "version": _VERSION,
+            "dim": int(vectors.shape[1]),
+            "dtype": quant.dtype_name(code),
+            "centroids_blob": _centroids_name(server_key),
+            "cells": cells,
+        }
+        raw = gzip.compress(
+            json.dumps(directory, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        store_segmented_blob(db_conn, _TABLE, _dir_name(server_key), raw)
         db_conn.commit()
     except Exception:
         logger.exception("Hyperbolic Poincare index build failed")
@@ -358,9 +339,9 @@ def load_hyperbolic_index(force_reload=False):
         return len(_INDEX_CACHE["servers"])
     with _INDEX_CACHE_LOCK:
         _clear_cell_cache()
+        _invalidate_availability()
         db_conn = get_db()
         servers = {}
-        default_id = _resolve_default_server_id()
         for name in _scan_index_names():
             directory = _load_directory(db_conn, _DIR_PREFIX + "__" + name)
             if directory is None:
@@ -372,6 +353,7 @@ def load_hyperbolic_index(force_reload=False):
                     "Hyperbolic Poincare index '%s' has no centroid blob; skipping it.", name
                 )
                 continue
+            item_ids = [iid for cell in directory["cells"] for iid in cell["item_ids"]]
             servers[name] = {
                 "server_key": name,
                 "dim": dim,
@@ -379,10 +361,9 @@ def load_hyperbolic_index(force_reload=False):
                 "centroids": centroids,
                 "centroid_norms2": np.sum(centroids * centroids, axis=1),
                 "cells": directory["cells"],
+                "item_ids": item_ids,
+                "has_canonical": _any_fingerprint_id(item_ids),
             }
-        default_entry = servers.get(_DEFAULT_SERVER_KEY)
-        if default_entry is not None and default_id:
-            servers[default_id] = default_entry
         _INDEX_CACHE["servers"] = servers
         _INDEX_CACHE["loaded"] = True
         return len(servers)
@@ -407,6 +388,7 @@ def reset_hyperbolic_index():
         _INDEX_CACHE["loaded"] = False
         _INDEX_CACHE["servers"] = {}
     _clear_cell_cache()
+    _invalidate_availability()
 
 
 def ensure_hyperbolic_index_loaded():
@@ -420,8 +402,61 @@ def ensure_hyperbolic_index_loaded():
 
 
 def _index_for(server_id):
-    key = server_id or _DEFAULT_SERVER_KEY
-    return _INDEX_CACHE.get("servers", {}).get(key)
+    servers = _INDEX_CACHE.get("servers", {})
+    return servers.get(server_id) or servers.get(_DEFAULT_SERVER_KEY)
+
+
+_AVAILABILITY_CACHE = {}
+_AVAILABILITY_CACHE_LOCK = threading.Lock()
+_AVAILABILITY_CACHE_TTL = 30.0
+
+
+def _invalidate_availability():
+    with _AVAILABILITY_CACHE_LOCK:
+        _AVAILABILITY_CACHE.clear()
+
+
+def _any_fingerprint_id(item_ids):
+    from tasks.simhash import is_fingerprint_id
+
+    return any(is_fingerprint_id(i) for i in item_ids)
+
+
+def _mask_unneeded(index, server):
+    try:
+        from tasks.mediaserver import registry
+
+        if (
+            server == str(registry.get_default_server_id() or '')
+            and not registry.has_secondary_servers()
+            and not index.get("has_canonical", False)
+        ):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _server_available(index, server_id):
+    from tasks.index_availability import active_availability_scope, available_item_ids
+
+    server = server_id or active_availability_scope()
+    if not server:
+        return None
+    if _mask_unneeded(index, server):
+        return None
+    from database import get_db
+
+    key = (id(index), server)
+    now = time.monotonic()
+    with _AVAILABILITY_CACHE_LOCK:
+        cached = _AVAILABILITY_CACHE.get(key)
+        if cached is not None and now - cached[0] < _AVAILABILITY_CACHE_TTL:
+            return cached[1]
+    available = available_item_ids(server, index["item_ids"], get_db)
+    with _AVAILABILITY_CACHE_LOCK:
+        _AVAILABILITY_CACHE[key] = (now, available)
+    return available
 
 
 def _cache_cell(key, vectors, item_ids):
@@ -557,7 +592,7 @@ def _probe_matrix(points, index):
     return probed
 
 
-def _nearest(vector, k, index, exclude):
+def _nearest(vector, k, index, exclude, available=None):
     k = max(1, int(k))
     vec = np.asarray(vector, dtype=np.float32).reshape(-1)
     probe = _probe_order(vec, index)
@@ -575,6 +610,8 @@ def _nearest(vector, k, index, exclude):
         distances = _cell_distances(vec, vectors, index["code"])
         for item_id, distance in zip(item_ids, distances):
             if item_id in exclude:
+                continue
+            if available is not None and item_id not in available:
                 continue
             dist = float(distance)
             if len(heap) < k:
@@ -620,7 +657,10 @@ def hyperbolic_nearest(vector, k, server_id=None, exclude=frozenset()):
         return None
     k = max(1, int(k))
     code = index["code"]
-    return _rerank_exact(vector, _nearest(vector, _scan_width(k, code), index, exclude), k, code)
+    available = _server_available(index, server_id)
+    return _rerank_exact(
+        vector, _nearest(vector, _scan_width(k, code), index, exclude, available), k, code
+    )
 
 
 def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):
@@ -634,7 +674,8 @@ def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):
     points = np.atleast_2d(np.asarray(vectors, dtype=np.float32))
     if points.shape[0] == 0:
         return []
-    keep = _multi_scan_width(max(1, int(k))) + len(exclude)
+    available = _server_available(index, server_id)
+    keep = _multi_scan_width(max(1, int(k)))
 
     probed = _probe_matrix(points, index)
     cells = np.nonzero(probed.any(axis=0))[0]
@@ -652,6 +693,15 @@ def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):
         stored, item_ids = prefetched.get(cell) or _load_cell(cell, index)
         if stored.shape[0] == 0:
             continue
+        if exclude or available is not None:
+            keep_mask = np.fromiter(
+                (i not in exclude and (available is None or i in available) for i in item_ids),
+                dtype=bool, count=len(item_ids),
+            )
+            if not keep_mask.any():
+                continue
+            stored = stored[keep_mask]
+            item_ids = [iid for iid, ok in zip(item_ids, keep_mask) if ok]
         rows = np.nonzero(probed[:, cell])[0]
         decoded = _decode_cell(stored, index["code"])
         distances = hyperbolic_distance_matrix(points[rows], decoded)
@@ -668,6 +718,5 @@ def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):
         take = min(keep, pooled.shape[0])
         best = np.argpartition(pooled, take - 1)[:take]
         for item_id in pooled_ids[best[np.argsort(pooled[best])]]:
-            if item_id not in exclude:
-                seen.setdefault(item_id, None)
+            seen.setdefault(item_id, None)
     return list(seen)
