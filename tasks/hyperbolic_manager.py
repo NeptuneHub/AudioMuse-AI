@@ -25,6 +25,16 @@ Main Features:
   (tasks.hyperbolic_journey_manager builds the geodesic journey on top of
   them), so nothing outside this module has to reach into a private helper
   the unit suite monkeypatches by name
+* fetch_all_poincare_rows streams every row through a NAMED server-side
+  cursor on its own side connection (the same _open_side_connection /
+  itersize convention tasks.index_build_helpers uses for every other
+  full-catalogue read), never the shared request/worker connection from
+  database.get_db(). This matters because it is the one read that always
+  covers the whole catalogue - the union Poincare IVF index rebuild
+  (tasks.hyperbolic_index) calls it unconditionally with no server scope on
+  every rebuild, and an unstreamed SELECT ... ORDER BY item_id ... fetchall()
+  there forces Postgres to sort and buffer the entire embedding table inside
+  one backend, whose RSS then does not shrink back down afterward
 * hyperbolic_similar ranks candidates by exact Poincare distance through the
   disk-paged Poincare index (exact top-k, no IVF index and no cosine
   shortcut), and raises a "run analysis to build it" ValueError when that
@@ -329,48 +339,31 @@ def fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
     )
 
 
-def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
-    from database import get_db
+def _stream_poincare_rows(where_sql, params, cursor_name):
+    from tasks.index_build_helpers import _open_side_connection, _STREAM_ITERSIZE
 
     out = {}
     skipped = 0
-    db_conn = get_db()
+    select_sql = (
+        "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius "
+        f"FROM embedding e WHERE {where_sql} ORDER BY e.item_id"
+    )
+    side_conn = _open_side_connection()
     try:
-        with db_conn.cursor() as cur:
-            if server_id is None:
-                cur.execute(
-                    "SELECT item_id, poincare_embedding, hyperbolic_radius "
-                    "FROM embedding WHERE poincare_embedding IS NOT NULL "
-                    "AND hyperbolic_radius IS NOT NULL "
-                    "ORDER BY item_id"
-                )
-            else:
-                from tasks.mediaserver.registry import availability_sql
-
-                where = availability_sql("e")
-                cur.execute(
-                    "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius "
-                    "FROM embedding e WHERE e.poincare_embedding IS NOT NULL "
-                    f"AND e.hyperbolic_radius IS NOT NULL AND {where} ORDER BY e.item_id",
-                    (server_id, bool(include_legacy_default)),
-                )
-            rows = cur.fetchall()
-            if not rows and server_id is not None and include_legacy_default:
-                cur.execute(
-                    "SELECT item_id, poincare_embedding, hyperbolic_radius "
-                    "FROM embedding WHERE poincare_embedding IS NOT NULL "
-                    "AND hyperbolic_radius IS NOT NULL "
-                    "ORDER BY item_id"
-                )
-                rows = cur.fetchall()
-            for item_id, blob, radius in rows:
+        with side_conn.cursor(name=cursor_name) as sc:
+            sc.itersize = _STREAM_ITERSIZE
+            sc.execute(select_sql, params)
+            for item_id, blob, radius in sc:
                 vec = np.frombuffer(bytes(blob), dtype=np.float32)
                 if _is_finite_row(vec, radius):
                     out[item_id] = (vec, float(radius))
                 else:
                     skipped += 1
-    except Exception:
-        logger.exception("Could not fetch hyperbolic rows")
+    finally:
+        try:
+            side_conn.close()
+        except Exception:
+            pass
     if skipped:
         logger.warning(
             "Skipped %d hyperbolic row(s) with a non-finite radius or vector while "
@@ -378,6 +371,31 @@ def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
             skipped,
         )
     return out
+
+
+def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
+    try:
+        if server_id is None:
+            return _stream_poincare_rows(
+                "e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL",
+                (), "hyperbolic_poincare_rows",
+            )
+        from tasks.mediaserver.registry import availability_sql
+
+        where = availability_sql("e")
+        out = _stream_poincare_rows(
+            f"e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL AND {where}",
+            (server_id, bool(include_legacy_default)), "hyperbolic_poincare_rows_scoped",
+        )
+        if not out and include_legacy_default:
+            out = _stream_poincare_rows(
+                "e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL",
+                (), "hyperbolic_poincare_rows_fallback",
+            )
+        return out
+    except Exception:
+        logger.exception("Could not fetch hyperbolic rows")
+        return {}
 
 
 def _fetch_poincare_rows_in_radius(

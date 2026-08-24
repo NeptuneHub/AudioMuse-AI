@@ -28,6 +28,9 @@ Main Features:
 * _fit_clusters delegates to hyperbolic_geometry.poincare_kmeans: it separates
   antipodal points and recovers well-separated blobs (the seeding and centroid
   behaviour itself is pinned in test_hyperbolic_geometry.py)
+* _fetch_all_poincare_rows streams the whole catalogue through a NAMED
+  server-side cursor on its own side connection, never database.get_db(), and
+  falls back to the full catalogue when a server scope comes back empty
 """
 
 import numpy as np
@@ -1143,3 +1146,79 @@ def test_init_hyperbolic_cache_loads_not_builds():
         hm.init_hyperbolic_cache()
     load_fn.assert_called_once()
     build_fn.assert_not_called()
+
+
+def _fake_streaming_conn(rows):
+    stream_cur = MagicMock()
+    stream_cur.__enter__ = MagicMock(return_value=stream_cur)
+    stream_cur.__exit__ = MagicMock(return_value=False)
+    stream_cur.itersize = 0
+    stream_cur.execute = MagicMock()
+    stream_cur.__iter__ = MagicMock(return_value=iter(rows))
+
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=stream_cur)
+    conn.close = MagicMock()
+    return conn, stream_cur
+
+
+def test_fetch_all_poincare_rows_streams_via_a_named_serverside_cursor(monkeypatch):
+    rows = [
+        ("a", np.array([0.1, 0.2], dtype=np.float32).tobytes(), 0.223),
+        ("b", np.array([0.3, 0.4], dtype=np.float32).tobytes(), 0.5),
+    ]
+    conn, stream_cur = _fake_streaming_conn(rows)
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", lambda: conn)
+    get_db_calls = []
+    monkeypatch.setattr("database.get_db", lambda: get_db_calls.append(1) or conn)
+
+    out = hm._fetch_all_poincare_rows(server_id=None)
+
+    assert set(out.keys()) == {"a", "b"}
+    np.testing.assert_allclose(out["a"][0], [0.1, 0.2])
+    assert out["a"][1] == pytest.approx(0.223)
+    assert conn.cursor.call_args.kwargs.get("name")
+    assert stream_cur.itersize > 0
+    assert not get_db_calls
+
+
+def test_fetch_all_poincare_rows_skips_non_finite_rows(monkeypatch):
+    rows = [
+        ("a", np.array([0.1, 0.2], dtype=np.float32).tobytes(), 0.5),
+        ("bad", np.array([float("nan"), 0.2], dtype=np.float32).tobytes(), 0.5),
+        ("also_bad", np.array([0.1, 0.2], dtype=np.float32).tobytes(), float("inf")),
+    ]
+    conn, _stream_cur = _fake_streaming_conn(rows)
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", lambda: conn)
+
+    out = hm._fetch_all_poincare_rows(server_id=None)
+
+    assert set(out.keys()) == {"a"}
+
+
+def test_fetch_all_poincare_rows_falls_back_to_the_full_catalogue_when_a_server_scope_is_empty(monkeypatch):
+    calls = []
+
+    def fake_open():
+        calls.append(len(calls))
+        rows = [] if len(calls) == 1 else [
+            ("z", np.array([0.9, 0.0], dtype=np.float32).tobytes(), 0.9),
+        ]
+        conn, _cur = _fake_streaming_conn(rows)
+        return conn
+
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", fake_open)
+
+    out = hm._fetch_all_poincare_rows(server_id="srv1", include_legacy_default=True)
+
+    assert len(calls) == 2
+    assert set(out.keys()) == {"z"}
+
+
+def test_fetch_all_poincare_rows_returns_empty_and_logs_on_query_failure(monkeypatch):
+    def boom():
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", boom)
+
+    assert hm._fetch_all_poincare_rows(server_id=None) == {}
