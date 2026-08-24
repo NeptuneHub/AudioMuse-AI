@@ -424,7 +424,14 @@ def _invalidate_availability():
 
 
 def invalidate_availability_cache(server_id=None):
-    _invalidate_availability()
+    """Invalidate cached per-server availability masks after mapping changes."""
+    with _AVAILABILITY_CACHE_LOCK:
+        if server_id is None:
+            _AVAILABILITY_CACHE.clear()
+            return
+        sid = str(server_id)
+        for key in [key for key in _AVAILABILITY_CACHE if key[1] == sid]:
+            _AVAILABILITY_CACHE.pop(key, None)
 
 
 def _any_fingerprint_id(item_ids):

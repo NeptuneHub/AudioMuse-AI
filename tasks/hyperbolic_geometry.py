@@ -61,6 +61,17 @@ Main Features:
 import numpy as np
 
 
+# Every projected point must stay STRICTLY inside the open ball, because the
+# Poincare metric divides by (1 - ||u||^2). The old 1 - 1e-7 was chosen under
+# float64 and is finer than float32 can hold: at 200 dimensions, re-measuring
+# the norm of a vector scaled to that limit rounds back to exactly 1.0, so
+# 1 - ||u||^2 became 0 and every distance to that point collapsed onto the
+# 1e-12 denominator guard. 1e-5 survives a float32 norm round trip at 200 and
+# 768 dimensions with 1 - ||u||^2 >= 1.9e-5 to spare, and costs nothing real:
+# no catalogue ever projects past ~0.99 anyway.
+_BALL_LIMIT = 1.0 - 1e-5
+
+
 def project_to_poincare(vectors, scale):
     scale = float(scale) if scale else 1.0
     vecs = np.asarray(vectors, dtype=np.float32)
@@ -71,7 +82,7 @@ def project_to_poincare(vectors, scale):
     # division can reintroduce enough float error that the product's norm
     # lands fractionally over 1.0 - clip so callers always get a point
     # strictly inside the open ball, never exactly on or past the boundary.
-    radii = np.minimum(np.tanh(norms / scale), 1.0 - 1e-7)
+    radii = np.minimum(np.tanh(norms / scale), _BALL_LIMIT)
     out = unit * radii
     if np.ndim(vectors) == 1:
         return out.reshape(-1).astype(np.float32)
@@ -82,7 +93,7 @@ def poincare_radius(vectors, scale):
     scale = float(scale) if scale else 1.0
     vecs = np.asarray(vectors, dtype=np.float32)
     norms = np.linalg.norm(vecs, axis=-1)
-    return np.minimum(np.tanh(norms / scale), 1.0 - 1e-7)
+    return np.minimum(np.tanh(norms / scale), _BALL_LIMIT)
 
 
 def hyperbolic_distance(u, v):
@@ -168,9 +179,6 @@ def assign_radial_bands(radii, boundaries):
     edges = np.array([b[0] for b in boundaries] + [boundaries[-1][1]], dtype=np.float32)
     idx = np.searchsorted(edges, radii, side="right") - 1
     return np.clip(idx, 0, len(boundaries) - 1)
-
-
-_BALL_LIMIT = 1.0 - 1e-7
 
 
 def clip_into_ball(vectors):

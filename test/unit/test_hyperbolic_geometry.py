@@ -41,6 +41,7 @@ import numpy as np
 import pytest
 
 from tasks.hyperbolic_geometry import (
+    _BALL_LIMIT,
     _kmeans_plus_plus,
     assign_radial_bands,
     clip_into_ball,
@@ -86,12 +87,20 @@ def test_projected_direction_matches_unit_vector():
     assert np.allclose(proj / np.linalg.norm(proj), unit, atol=1e-6)
 
 
-def test_large_norm_saturates_but_stays_in_ball():
+def test_large_norm_saturates_at_the_ball_limit_not_at_raw_tanh():
+    """A saturating norm is capped at _BALL_LIMIT, not at tanh's own value.
+
+    tanh(10) is 0.999999996, which is finer than float32 can represent once a
+    200-dim norm is re-measured: 1 - ||u||^2 rounds to 0 and the Poincare
+    denominator collapses. The clip is what prevents that, so the radius must
+    land on the limit rather than on the mathematical tanh.
+    """
     x = np.array([10.0, 0.0, 0.0], dtype=np.float32)
     radius = float(poincare_radius(x, scale=1.0))
-    assert radius == pytest.approx(np.tanh(10.0), abs=1e-6)
+    assert radius == pytest.approx(_BALL_LIMIT, abs=1e-7)
     assert radius < 1.0
     assert radius > 0.999
+    assert 1.0 - radius ** 2 > 1e-6
 
 
 def test_zero_vector_projects_to_zero():
