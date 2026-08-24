@@ -25,6 +25,12 @@ Main Features:
 * build_hyperbolic_tree_cache persists the built tree; load_hyperbolic_tree_cache
   restores it from that persisted blob without touching the embedding table
   or refitting any k-means, and init_hyperbolic_cache always loads, never builds
+* _fit_clusters delegates to hyperbolic_geometry.poincare_kmeans: it separates
+  antipodal points and recovers well-separated blobs (the seeding and centroid
+  behaviour itself is pinned in test_hyperbolic_geometry.py)
+* _fetch_all_poincare_rows streams the whole catalogue through a NAMED
+  server-side cursor on its own side connection, never database.get_db(), and
+  falls back to the full catalogue when a server scope comes back empty
 """
 
 import numpy as np
@@ -147,21 +153,34 @@ def test_similar_mode_returns_sorted_by_distance(monkeypatch):
         "fp_c": (_vec(0.4, -0.2), 0.35),
     }
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(mapping))
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest",
+        lambda *a, **kw: [("fp_a", 0.11), ("fp_b", 0.2), ("fp_c", 0.3)],
+    )
     monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
-    with patch("tasks.ivf_manager.find_nearest_neighbors_by_id",
-               return_value=[{"item_id": "fp_c"}, {"item_id": "fp_a"},
-                             {"item_id": "fp_b"}, {"item_id": "fp_x"}]):
-        results = hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
-    assert len(results) == 2
+    results = hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
+    assert [r["item_id"] for r in results] == ["fp_a", "fp_b"]
     distances = [r["distance"] for r in results]
     assert distances == sorted(distances)
     assert all("distance" in r and "hyperbolic_radius" in r for r in results)
+    assert all(r["item_id"] != "fp_t" for r in results)
+
+
+def test_similar_mode_raises_when_index_is_missing(monkeypatch):
+    monkeypatch.setattr(
+        hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.3, 0.1), 0.4)})
+    )
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest", lambda *a, **kw: None
+    )
+    with pytest.raises(ValueError):
+        hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
 
 
 def test_roots_mode_filters_radius_below_target(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         captured["below"] = below
         captured["limit"] = limit
@@ -181,7 +200,7 @@ def test_roots_mode_filters_radius_below_target(monkeypatch):
 def test_niche_mode_filters_radius_above_target(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         captured["below"] = below
         captured["limit"] = limit
@@ -200,7 +219,11 @@ def test_niche_mode_filters_radius_above_target(monkeypatch):
 
 def test_roots_empty_window_returns_empty(monkeypatch):
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", lambda bound, below=True, limit=100: {})
+    monkeypatch.setattr(
+        hm,
+        "_fetch_poincare_rows_in_radius",
+        lambda bound, below=True, limit=100, server_id=None, include_legacy_default=True: {},
+    )
     results = hm.hyperbolic_similar("fp_t", mode="roots", limit=5)
     assert results == []
 
@@ -210,7 +233,7 @@ def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
     # closest inward candidate is the one just below the seed's radius.
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -224,7 +247,7 @@ def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
 def test_roots_mode_caller_spread_overrides_config(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -239,7 +262,7 @@ def test_roots_mode_caller_spread_overrides_config(monkeypatch):
 def test_niche_mode_caller_spread_overrides_config(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -253,7 +276,7 @@ def test_niche_mode_caller_spread_overrides_config(monkeypatch):
 def test_roots_mode_clamps_out_of_range_caller_spread(monkeypatch):
     captured = {}
 
-    def _fake_window(bound, below=True, limit=100):
+    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
         captured["bound"] = bound
         return {}
 
@@ -853,6 +876,28 @@ def test_materialize_children_bails_out_on_degenerate_clustering(monkeypatch):
     assert result is None
 
 
+def test_fit_clusters_splits_antipodal_points():
+    vecs = np.array([[0.5, 0.0], [0.55, 0.0], [-0.5, 0.0], [-0.55, 0.0]])
+    labels = hm._fit_clusters(vecs, 2)
+    assert set(labels) == {0, 1}
+    assert labels[0] == labels[1]
+    assert labels[2] == labels[3]
+    assert labels[0] != labels[2]
+
+
+def test_fit_clusters_recovers_well_separated_blobs():
+    rng = np.random.default_rng(6)
+    centres = rng.standard_normal((5, 12))
+    centres /= np.linalg.norm(centres, axis=1, keepdims=True)
+    centres *= 0.6
+    truth = np.repeat(np.arange(5), 40)
+    pts = centres[truth] + rng.standard_normal((200, 12)) * 0.005
+    labels = hm._fit_clusters(pts, 5)
+    for blob in range(5):
+        assert len(set(labels[truth == blob])) == 1
+    assert len(set(labels)) == 5
+
+
 def test_genre_path_prefix_builds_ancestor_chain():
     assert hm._genre_path_prefix("root.grock.gprogressive-rock.c0") == "ROCK_PROGRESSIVE_ROCK"
     assert hm._genre_path_prefix("root.gpop") == "POP"
@@ -1101,3 +1146,79 @@ def test_init_hyperbolic_cache_loads_not_builds():
         hm.init_hyperbolic_cache()
     load_fn.assert_called_once()
     build_fn.assert_not_called()
+
+
+def _fake_streaming_conn(rows):
+    stream_cur = MagicMock()
+    stream_cur.__enter__ = MagicMock(return_value=stream_cur)
+    stream_cur.__exit__ = MagicMock(return_value=False)
+    stream_cur.itersize = 0
+    stream_cur.execute = MagicMock()
+    stream_cur.__iter__ = MagicMock(return_value=iter(rows))
+
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=stream_cur)
+    conn.close = MagicMock()
+    return conn, stream_cur
+
+
+def test_fetch_all_poincare_rows_streams_via_a_named_serverside_cursor(monkeypatch):
+    rows = [
+        ("a", np.array([0.1, 0.2], dtype=np.float32).tobytes(), 0.223),
+        ("b", np.array([0.3, 0.4], dtype=np.float32).tobytes(), 0.5),
+    ]
+    conn, stream_cur = _fake_streaming_conn(rows)
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", lambda: conn)
+    get_db_calls = []
+    monkeypatch.setattr("database.get_db", lambda: get_db_calls.append(1) or conn)
+
+    out = hm._fetch_all_poincare_rows(server_id=None)
+
+    assert set(out.keys()) == {"a", "b"}
+    np.testing.assert_allclose(out["a"][0], [0.1, 0.2])
+    assert out["a"][1] == pytest.approx(0.223)
+    assert conn.cursor.call_args.kwargs.get("name")
+    assert stream_cur.itersize > 0
+    assert not get_db_calls
+
+
+def test_fetch_all_poincare_rows_skips_non_finite_rows(monkeypatch):
+    rows = [
+        ("a", np.array([0.1, 0.2], dtype=np.float32).tobytes(), 0.5),
+        ("bad", np.array([float("nan"), 0.2], dtype=np.float32).tobytes(), 0.5),
+        ("also_bad", np.array([0.1, 0.2], dtype=np.float32).tobytes(), float("inf")),
+    ]
+    conn, _stream_cur = _fake_streaming_conn(rows)
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", lambda: conn)
+
+    out = hm._fetch_all_poincare_rows(server_id=None)
+
+    assert set(out.keys()) == {"a"}
+
+
+def test_fetch_all_poincare_rows_falls_back_to_the_full_catalogue_when_a_server_scope_is_empty(monkeypatch):
+    calls = []
+
+    def fake_open():
+        calls.append(len(calls))
+        rows = [] if len(calls) == 1 else [
+            ("z", np.array([0.9, 0.0], dtype=np.float32).tobytes(), 0.9),
+        ]
+        conn, _cur = _fake_streaming_conn(rows)
+        return conn
+
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", fake_open)
+
+    out = hm._fetch_all_poincare_rows(server_id="srv1", include_legacy_default=True)
+
+    assert len(calls) == 2
+    assert set(out.keys()) == {"z"}
+
+
+def test_fetch_all_poincare_rows_returns_empty_and_logs_on_query_failure(monkeypatch):
+    def boom():
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("tasks.index_build_helpers._open_side_connection", boom)
+
+    assert hm._fetch_all_poincare_rows(server_id=None) == {}

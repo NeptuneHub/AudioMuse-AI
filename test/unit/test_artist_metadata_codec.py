@@ -48,6 +48,7 @@ def _load_helpers():
         mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
+        sys.modules['tasks'].index_build_helpers = mod
     return sys.modules[mod_name]
 
 

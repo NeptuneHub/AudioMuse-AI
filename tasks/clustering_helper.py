@@ -9,7 +9,7 @@
 """Per-iteration clustering worker: parameter generation, fitting and scoring.
 
 The inner loop of the clustering search run by tasks.clustering. Given a method
-and parameter set it prepares and scales the feature/embedding data, fits a model
+and parameter set it L2-normalizes the feature/embedding data, fits a model
 (via clustering_gpu), and scores the resulting playlists. Also generates the
 random and evolutionary parameter mutations that the elitist search explores.
 
@@ -32,7 +32,7 @@ import time
 import numpy as np
 from collections import Counter, defaultdict
 
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import Normalizer
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 
@@ -273,7 +273,7 @@ def _perform_single_clustering_iteration(
         if valid_tracks is None:
             return {"fitness_score": -1.0}
 
-        data_to_cluster, scaler = _prepare_and_scale_data(
+        data_to_cluster = _prepare_and_normalize_data(
             X_feat_orig, X_embed_raw, enable_clustering_embeddings
         )
         if data_to_cluster is None:
@@ -322,7 +322,6 @@ def _perform_single_clustering_iteration(
             data_after_pca,
             cluster_centers_map,
             pca_model,
-            scaler,
             active_mood_labels,
             params,
             max_songs_per_cluster,
@@ -402,13 +401,11 @@ def _prepare_iteration_data(
     )
 
 
-def _prepare_and_scale_data(X_feat, X_embed, use_embeddings):
-    data_source = X_embed if use_embeddings else X_feat
+def _prepare_and_normalize_data(x_feat, x_embed, use_embeddings):
+    data_source = x_embed if use_embeddings else x_feat
     if data_source is None or data_source.shape[0] == 0:
-        return None, None
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(data_source)
-    return scaled_data, scaler
+        return None
+    return Normalizer(norm='l2').fit_transform(data_source)
 
 
 def _mutate_param(value, min_val, max_val, delta, is_float=False):
@@ -693,7 +690,6 @@ def _format_and_score_iteration_result(
     data_for_metrics,
     centers,
     pca,
-    scaler,
     active_moods,
     params,
     max_songs_per_cluster,
@@ -787,19 +783,12 @@ def _format_and_score_iteration_result(
     for label_id, songs_list in filtered_clusters.items():
         if songs_list and label_id in centers:
             center_vec = centers[label_id]
-            if use_embeddings:
-                feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(
-                    label_id, labels, x_feat_orig
-                )
-                if feature_centroid_vec is None:
-                    continue
-                name, centroid_details = _name_cluster(
-                    feature_centroid_vec, None, False, active_moods, None
-                )
-            else:
-                name, centroid_details = _name_cluster(
-                    center_vec, pca, params['pca_config']['enabled'], active_moods, scaler
-                )
+            feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(
+                label_id, labels, x_feat_orig
+            )
+            if feature_centroid_vec is None:
+                continue
+            name, centroid_details = _name_cluster(feature_centroid_vec, active_moods)
 
             temp_name, suffix = name, 1
             while temp_name in named_playlists:
@@ -1020,9 +1009,6 @@ def _format_and_score_iteration_result(
         "playlist_to_centroid_vector_map": playlist_to_centroid_vector_map,
         "playlist_primary_genres": playlist_primary_genres,
         "parameters": {**params, "max_songs_per_cluster": max_songs_per_cluster, "run_id": run_idx},
-        "scaler_details": {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()}
-        if scaler
-        else None,
         "pca_model_details": {
             "components": pca.components_.tolist(),
             "variance": pca.explained_variance_ratio_.tolist(),
@@ -1032,18 +1018,12 @@ def _format_and_score_iteration_result(
     }
 
 
-def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
+def _name_cluster(centroid_vector, mood_labels):
     TOP_MOODS_IN_NAME = 3
     OTHER_FEATURE_THRESHOLD_FOR_NAME = MOOD_SCORE_MATCH_THRESHOLD
     MAX_OTHER_FEATURES_IN_NAME = 2
 
-    if scaler:
-        vec = centroid_vector.reshape(1, -1)
-        if pca_enabled and pca_model:
-            vec = pca_model.inverse_transform(vec)
-        interpreted_vector = scaler.inverse_transform(vec)[0]
-    else:
-        interpreted_vector = centroid_vector
+    interpreted_vector = centroid_vector
 
     tempo_val = interpreted_vector[0]
     mood_values = interpreted_vector[2 : 2 + len(mood_labels)]

@@ -830,6 +830,8 @@ def parse_worker_identity(application_name):
 
 
 def worker_snapshot(cur):
+    from tz_helper import to_local_str
+
     cur.execute(
         _WORKER_SNAPSHOT,
         (WORKER_IDENTITY_PREFIX + '%', '%' + WORKER_LISTEN_SUFFIX),
@@ -847,7 +849,7 @@ def worker_snapshot(cur):
             'state': 'busy' if task_id else 'idle',
             'current_job_id': task_id,
             'current_task_type': task_type,
-            'started_at': backend_start.isoformat() if backend_start else None,
+            'started_at': to_local_str(backend_start) if backend_start else None,
         })
     return workers
 

@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 from tasks.artist_gmm_manager import (
     fit_artist_gmm,
+    get_representative_songs_for_component,
     GMM_N_COMPONENTS_MAX,
     gmm_soft_chamfer_distance,
     _cosine_distance_matrix,
@@ -119,6 +120,14 @@ class TestFitArtistGMM:
 
         assert few_params['is_few_songs'] is True
         assert many_params['is_few_songs'] is False
+
+    def test_few_song_means_are_unit_normed_for_cosine(self):
+        embeddings = [np.random.rand(128) for _ in range(3)]
+
+        gmm_params = fit_artist_gmm("Cosine Artist", embeddings)
+
+        means = np.array(gmm_params['means'])
+        assert np.allclose(np.linalg.norm(means, axis=1), 1.0, atol=1e-5)
 
     def test_different_artists_different_gmms(self):
         np.random.seed(42)
@@ -277,6 +286,43 @@ class TestEdgeCases:
         gmm_params = fit_artist_gmm("Popular Artist", embeddings)
 
         assert gmm_params['n_components'] <= GMM_N_COMPONENTS_MAX
+
+
+class TestRepresentativeSongs:
+    def test_ranks_by_direction_not_norm(self, monkeypatch):
+        import tasks.artist_gmm_manager as agm
+
+        monkeypatch.setattr(
+            agm, "artist_gmm_params", {"Artist": {"means": [[1.0, 0.0]], "weights": [1.0]}}
+        )
+        rows = [
+            ("same_small", "S small", np.array([0.01, 0.0], dtype=np.float32).tobytes()),
+            ("wrong", "W", np.array([0.0, 5.0], dtype=np.float32).tobytes()),
+            ("same_big", "S big", np.array([100.0, 0.0], dtype=np.float32).tobytes()),
+        ]
+
+        class _FakeCursor:
+            def __init__(self, data):
+                self._data = data
+
+            def execute(self, *args, **kwargs):
+                pass
+
+            def fetchall(self):
+                return self._data
+
+            def close(self):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCursor(rows)
+
+        monkeypatch.setattr("database.get_db", lambda: _FakeConn())
+        songs = get_representative_songs_for_component("Artist", 0, top_k=3)
+        ids = [song["item_id"] for song in songs]
+        assert set(ids[:2]) == {"same_small", "same_big"}
+        assert ids[2] == "wrong"
 
 
 class TestPoolFallback:

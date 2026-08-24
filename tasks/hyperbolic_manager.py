@@ -20,16 +20,34 @@ Main Features:
   reuse by analysis workers, the web app, and the backfill job
 * save_hyperbolic_projection / backfill_hyperbolic_columns keep the hyperbolic
   columns in sync with the raw embedding, skipping rows with NULL embeddings
-* hyperbolic_similar: similar over-fetches raw-space IVF candidates with the
-  shared similar-song defaults (radius walk, content dedup, per-artist cap) and
-  re-ranks them by exact Poincare distance; roots / niche instead draw their
-  candidate pool from the embedding table by radius (at least radial_spread of
-  the radial range away from the seed, caller-supplied and defaulting to
-  HYPERBOLIC_RADIAL_SPREAD) so the two modes visibly leave the seed's radius
-  band, then rank by exact distance. All modes end with the same content-dedup
-  + MAX_SONGS_PER_ARTIST pass as the similar-song page
+* fetch_poincare_rows, fetch_all_poincare_rows and
+  get_projected_genre_subgenres are the public reads other managers need
+  (tasks.hyperbolic_journey_manager builds the geodesic journey on top of
+  them), so nothing outside this module has to reach into a private helper
+  the unit suite monkeypatches by name
+* fetch_all_poincare_rows streams every row through a NAMED server-side
+  cursor on its own side connection (the same _open_side_connection /
+  itersize convention tasks.index_build_helpers uses for every other
+  full-catalogue read), never the shared request/worker connection from
+  database.get_db(). This matters because it is the one read that always
+  covers the whole catalogue - the union Poincare IVF index rebuild
+  (tasks.hyperbolic_index) calls it unconditionally with no server scope on
+  every rebuild, and an unstreamed SELECT ... ORDER BY item_id ... fetchall()
+  there forces Postgres to sort and buffer the entire embedding table inside
+  one backend, whose RSS then does not shrink back down afterward
+* hyperbolic_similar ranks candidates by exact Poincare distance through the
+  disk-paged Poincare index (exact top-k, no IVF index and no cosine
+  shortcut), and raises a "run analysis to build it" ValueError when that
+  index is not built rather than scanning the whole catalogue - the Flask
+  layer turns that into a 400 with the message, the same way the geodesic
+  journey does; roots / niche instead draw their candidate pool from the
+  embedding table by radius (at least radial_spread of the radial range away
+  from the seed, caller-supplied and defaulting to HYPERBOLIC_RADIAL_SPREAD) so the two
+  modes visibly leave the seed's radius band, then rank by exact distance. All
+  modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
+  similar-song page
 * build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
-  partition, the mood fallback, and the named k-means clusters - PER SERVER,
+  partition, the mood fallback, and the named Poincare k-means clusters - PER SERVER,
   and persists one tree per configured server as gzipped JSON blobs chunked
   into 50 MB segmented BYTEA rows in ivf_dir (the same pattern the music map
   and IVF directory use), worker-side only (analysis end).
@@ -55,8 +73,12 @@ Main Features:
   embedding space: GENRE -> SUBGENRE -> NAMED CLUSTER. The root splits by
   MAIN GENRE taken from the data-driven genre_subgenre.json centroids
   (nearest main genre at level 0), then by SUBGENRE (nearest of that genre's
-  subgenres at level 1), then into named k-means clusters for any subgenre
-  still above HYPERBOLIC_TARGET_LEAF_SIZE - nothing deeper. When the file is
+  subgenres at level 1), then into named clusters for any subgenre
+  still above HYPERBOLIC_TARGET_LEAF_SIZE - nothing deeper. That cluster level
+  is a Poincare k-means (_fit_clusters): k-means++ seeding, assignment and
+  centroid update all run in the exact hyperbolic metric, with the centroid
+  being the Frechet mean from tasks.hyperbolic_geometry.karcher_mean, so no
+  Euclidean or cosine step survives anywhere in the hyperbolic path. When the file is
   absent or dimensionally incompatible the tree falls back to a legacy MOOD
   partition (nearest of the precomputed mood centroids in
   mood_centroids_real_080_clap.json) followed by a main-genre partition and
@@ -92,6 +114,7 @@ _TREE_SKELETON_BLOB_NAME = "hyperbolic_tree_skeleton"
 
 _FALLBACK_SCALE = 1.0
 _SCALE_CACHE = {"value": None}
+_GENRE_CENTROID_CACHE = {"value": None}
 
 
 def resolve_hyperbolic_scale(force_recalibrate=False, auto_calibrate=True):
@@ -113,6 +136,7 @@ def resolve_hyperbolic_scale(force_recalibrate=False, auto_calibrate=True):
 
 def reset_hyperbolic_scale_cache():
     _SCALE_CACHE["value"] = None
+    _GENRE_CENTROID_CACHE["value"] = None
 
 
 def _load_persisted_scale():
@@ -152,7 +176,7 @@ def _calibrate_scale_from_catalog():
             int(config.EMBEDDING_DIMENSION),
             where_clause="embedding IS NOT NULL",
         ):
-            norm_batches.append(np.linalg.norm(batch.astype(np.float64), axis=1))
+            norm_batches.append(np.linalg.norm(batch.astype(np.float32), axis=1))
     except Exception:
         logger.exception("Could not sample catalogue norms for scale calibration")
         return _FALLBACK_SCALE
@@ -305,48 +329,41 @@ def _fetch_poincare_rows(item_ids):
     return out
 
 
-def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
-    from database import get_db
+def fetch_poincare_rows(item_ids):
+    return _fetch_poincare_rows(item_ids)
+
+
+def fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
+    return _fetch_all_poincare_rows(
+        server_id=server_id, include_legacy_default=include_legacy_default
+    )
+
+
+def _stream_poincare_rows(where_sql, params, cursor_name):
+    from tasks.index_build_helpers import _open_side_connection, _STREAM_ITERSIZE
 
     out = {}
     skipped = 0
-    db_conn = get_db()
+    select_sql = (
+        "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius "
+        f"FROM embedding e WHERE {where_sql}"
+    )
+    side_conn = _open_side_connection()
     try:
-        with db_conn.cursor() as cur:
-            if server_id is None:
-                cur.execute(
-                    "SELECT item_id, poincare_embedding, hyperbolic_radius "
-                    "FROM embedding WHERE poincare_embedding IS NOT NULL "
-                    "AND hyperbolic_radius IS NOT NULL "
-                    "ORDER BY item_id"
-                )
-            else:
-                from tasks.mediaserver.registry import availability_sql
-
-                where = availability_sql("e")
-                cur.execute(
-                    "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius "
-                    "FROM embedding e WHERE e.poincare_embedding IS NOT NULL "
-                    f"AND e.hyperbolic_radius IS NOT NULL AND {where} ORDER BY e.item_id",
-                    (server_id, bool(include_legacy_default)),
-                )
-            rows = cur.fetchall()
-            if not rows and server_id is not None and include_legacy_default:
-                cur.execute(
-                    "SELECT item_id, poincare_embedding, hyperbolic_radius "
-                    "FROM embedding WHERE poincare_embedding IS NOT NULL "
-                    "AND hyperbolic_radius IS NOT NULL "
-                    "ORDER BY item_id"
-                )
-                rows = cur.fetchall()
-            for item_id, blob, radius in rows:
+        with side_conn.cursor(name=cursor_name) as sc:
+            sc.itersize = _STREAM_ITERSIZE
+            sc.execute(select_sql, params)
+            for item_id, blob, radius in sc:
                 vec = np.frombuffer(bytes(blob), dtype=np.float32)
                 if _is_finite_row(vec, radius):
                     out[item_id] = (vec, float(radius))
                 else:
                     skipped += 1
-    except Exception:
-        logger.exception("Could not fetch hyperbolic rows")
+    finally:
+        try:
+            side_conn.close()
+        except Exception:
+            pass
     if skipped:
         logger.warning(
             "Skipped %d hyperbolic row(s) with a non-finite radius or vector while "
@@ -356,7 +373,34 @@ def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
     return out
 
 
-def _fetch_poincare_rows_in_radius(bound_radius, below=True, limit=100):
+def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
+    try:
+        if server_id is None:
+            return _stream_poincare_rows(
+                "e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL",
+                (), "hyperbolic_poincare_rows",
+            )
+        from tasks.mediaserver.registry import availability_sql
+
+        where = availability_sql("e")
+        out = _stream_poincare_rows(
+            f"e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL AND {where}",
+            (server_id, bool(include_legacy_default)), "hyperbolic_poincare_rows_scoped",
+        )
+        if not out and include_legacy_default:
+            out = _stream_poincare_rows(
+                "e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL",
+                (), "hyperbolic_poincare_rows_fallback",
+            )
+        return out
+    except Exception:
+        logger.exception("Could not fetch hyperbolic rows")
+        return {}
+
+
+def _fetch_poincare_rows_in_radius(
+    bound_radius, below=True, limit=100, server_id=None, include_legacy_default=True
+):
     """Fetch up to ``limit`` projected tracks on one side of a radius bound.
 
     Used by the roots/niche modes so their candidate pool spans the radius
@@ -370,19 +414,33 @@ def _fetch_poincare_rows_in_radius(bound_radius, below=True, limit=100):
         return {}
     from database import get_db
 
-    if below:
-        clause = "hyperbolic_radius < %s ORDER BY hyperbolic_radius DESC"
-    else:
-        clause = "hyperbolic_radius > %s ORDER BY hyperbolic_radius ASC"
-    sql = (
-        "SELECT item_id, poincare_embedding, hyperbolic_radius FROM embedding "
-        f"WHERE poincare_embedding IS NOT NULL AND hyperbolic_radius IS NOT NULL AND {clause} LIMIT %s"
-    )
+    operator = "<" if below else ">"
+    order = "DESC" if below else "ASC"
     out = {}
     db_conn = get_db()
     try:
         with db_conn.cursor() as cur:
-            cur.execute(sql, (float(bound_radius), int(limit)))
+            if server_id is None:
+                sql = (
+                    "SELECT item_id, poincare_embedding, hyperbolic_radius FROM embedding "
+                    "WHERE poincare_embedding IS NOT NULL AND hyperbolic_radius IS NOT NULL "
+                    f"AND hyperbolic_radius {operator} %s ORDER BY hyperbolic_radius {order} LIMIT %s"
+                )
+                cur.execute(sql, (float(bound_radius), int(limit)))
+            else:
+                from tasks.mediaserver.registry import availability_sql
+
+                where = availability_sql("e")
+                sql = (
+                    "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius FROM embedding e "
+                    "WHERE e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL "
+                    f"AND e.hyperbolic_radius {operator} %s AND {where} "
+                    f"ORDER BY e.hyperbolic_radius {order} LIMIT %s"
+                )
+                cur.execute(
+                    sql,
+                    (float(bound_radius), server_id, bool(include_legacy_default), int(limit)),
+                )
             for item_id, blob, radius in cur.fetchall():
                 vec = np.frombuffer(bytes(blob), dtype=np.float32)
                 if _is_finite_row(vec, radius):
@@ -404,25 +462,17 @@ def get_poincare_radius(item_id):
     return row[1] if row is not None else None
 
 
-def _gather_mode_candidates(target_item_id, target_radius, mode, radial_spread, overfetch):
-    if mode == "similar":
-        from tasks.ivf_manager import find_nearest_neighbors_by_id
-
-        candidates = find_nearest_neighbors_by_id(
-            target_item_id,
-            n=overfetch,
-            eliminate_duplicates=None,
-            mood_similarity=None,
-            radius_similarity=None,
-        )
-        cand_ids = [c["item_id"] for c in candidates if c.get("item_id")]
-        return _fetch_poincare_rows(cand_ids)
+def _gather_mode_candidates(target_radius, mode, radial_spread, overfetch, server_id=None):
     spread = min(max(float(radial_spread), 0.0), 0.99)
     if mode == "roots":
         bound = target_radius * (1.0 - spread)
-        return _fetch_poincare_rows_in_radius(bound, below=True, limit=overfetch)
+        return _fetch_poincare_rows_in_radius(
+            bound, below=True, limit=overfetch, server_id=server_id
+        )
     bound = target_radius + (1.0 - target_radius) * spread
-    return _fetch_poincare_rows_in_radius(bound, below=False, limit=overfetch)
+    return _fetch_poincare_rows_in_radius(
+        bound, below=False, limit=overfetch, server_id=server_id
+    )
 
 
 def _rank_mode_results(ids, distances, cand_radii, mode, target_radius):
@@ -447,7 +497,7 @@ def _rank_mode_results(ids, distances, cand_radii, mode, target_radius):
     return results
 
 
-def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None):
+def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None, server_id=None):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
     mode = (mode or "similar").strip().lower()
@@ -465,14 +515,46 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
     overfetch = max(
         int(limit) * int(config.HYPERBOLIC_CANDIDATE_OVERFETCH), int(limit) + 50
     )
-    rows = _gather_mode_candidates(target_item_id, target_radius, mode, radial_spread, overfetch)
+
+    if mode == "similar":
+        from tasks.hyperbolic_index import hyperbolic_nearest
+
+        nearest = hyperbolic_nearest(
+            target_vec, overfetch, server_id=server_id, exclude={target_item_id}
+        )
+        if nearest is None:
+            raise ValueError(
+                "Poincare index not built yet - run analysis to build it."
+            )
+        if not nearest:
+            return []
+        ids = [item_id for item_id, _distance in nearest]
+        rows = _fetch_poincare_rows(ids)
+        results = []
+        for item_id, distance in nearest:
+            row = rows.get(item_id)
+            if row is None:
+                continue
+            results.append(
+                {
+                    "item_id": item_id,
+                    "distance": float(distance),
+                    "hyperbolic_radius": float(row[1]),
+                }
+            )
+        return _deduplicate_and_cap_results(results)[:limit]
+
+    rows = _gather_mode_candidates(
+        target_radius, mode, radial_spread, overfetch, server_id=server_id
+    )
     if not rows:
         return []
     ids = list(rows.keys())
-    cand_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float64)
-    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float64)
+    cand_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float32)
+    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float32)
     distances = hyperbolic_distances_to(target_vec, cand_vecs)
     results = _rank_mode_results(ids, distances, cand_radii, mode, target_radius)
+    results = results[:overfetch]
     return _deduplicate_and_cap_results(results)[:limit]
 
 
@@ -1071,8 +1153,8 @@ def _partition_by_mood(item_ids, vec_map, mood_centroids, score_by_id):
     if mood_centroids:
         from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
 
-        vecs = np.stack([vec_map[i] for i in item_ids]).astype(np.float64)
-        cent = np.stack([c["vec"] for c in mood_centroids]).astype(np.float64)
+        vecs = np.stack([vec_map[i] for i in item_ids]).astype(np.float32)
+        cent = np.stack([c["vec"] for c in mood_centroids]).astype(np.float32)
         dists = hyperbolic_distance_matrix(vecs, cent)
         best = np.argmin(dists, axis=1)
         for iid, idx in zip(item_ids, best):
@@ -1134,8 +1216,8 @@ def _partition_by_genre_centroids(members, vec_map, genre_subgenres, level, pare
         return None
     if len(centroids) < 2 or centroids[0]["vec"].shape[0] != ref.shape[0]:
         return None
-    vecs = np.stack([vec_map[i] for i in members]).astype(np.float64)
-    cent = np.stack([c["vec"] for c in centroids]).astype(np.float64)
+    vecs = np.stack([vec_map[i] for i in members]).astype(np.float32)
+    cent = np.stack([c["vec"] for c in centroids]).astype(np.float32)
     best = np.argmin(hyperbolic_distance_matrix(vecs, cent), axis=1)
     groups = {}
     for iid, idx in zip(members, best):
@@ -1152,7 +1234,7 @@ _GENRE_KINDS = ("main_genre", "subgenre")
 def _materialize_mood(mood_label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids):
     node_id = f"m{_slugify(mood_label)}"
     name = mood_label.title()
-    radii = np.array([radii_map[i] for i in members], dtype=np.float64)
+    radii = np.array([radii_map[i] for i in members], dtype=np.float32)
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
@@ -1196,7 +1278,7 @@ def _materialize_genre_level(parent_id, members, vec_map, radii_map, score_by_id
 
 
 def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score_by_id, mood_centroids, genre_subgenres, nodes, flat_ids, level):
-    radii = np.array([radii_map[i] for i in members], dtype=np.float64)
+    radii = np.array([radii_map[i] for i in members], dtype=np.float32)
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
@@ -1305,7 +1387,7 @@ def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, m
         return None
     k = max(1, round(n / target_leaf))
     k = min(k, n)
-    vecs = np.stack([vec_map[i] for i in members]).astype(np.float64)
+    vecs = np.stack([vec_map[i] for i in members]).astype(np.float32)
     labels = _fit_clusters(vecs, k)
     clusters = {}
     for label, iid in zip(labels, members):
@@ -1344,7 +1426,7 @@ def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood
     # Clusters are always the terminal level of the tree (GENRE -> SUBGENRE ->
     # NAMED CLUSTER): every track below them is listed directly, so a cluster
     # never recurses into further folders.
-    radii = np.array([radii_map[i] for i in members], dtype=np.float64)
+    radii = np.array([radii_map[i] for i in members], dtype=np.float32)
     summary = {
         "radius_min": float(radii.min()),
         "radius_max": float(radii.max()),
@@ -1356,17 +1438,17 @@ def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood
 
 
 def _fit_clusters(vecs, k):
-    if vecs.shape[0] > 5000:
-        from sklearn.cluster import MiniBatchKMeans
+    from tasks.hyperbolic_geometry import poincare_kmeans
 
-        km = MiniBatchKMeans(
-            n_clusters=k, batch_size=1000, n_init=3, max_iter=100, random_state=0
-        )
-    else:
-        from sklearn.cluster import KMeans
-
-        km = KMeans(n_clusters=k, n_init=10, random_state=0)
-    return km.fit_predict(vecs)
+    pts = np.asarray(vecs, dtype=np.float32)
+    n = pts.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=np.int32)
+    k = max(1, min(int(k), n))
+    if k == n:
+        return np.arange(n, dtype=np.int32)
+    _centroids, labels = poincare_kmeans(pts, k, iterations=5, seed=0)
+    return labels
 
 
 def _load_projected_mood_centroids():
@@ -1395,8 +1477,14 @@ def _load_projected_mood_centroids():
                 continue
             ranked_tags = [t for t, _ in sorted(tags_by_score.items(), key=lambda kv: -kv[1])]
             vec = project_to_poincare(np.asarray(raw, dtype=np.float32), scale)
-            out.append({"vec": vec.astype(np.float64), "tags": ranked_tags, "mood": mood})
+            out.append({"vec": vec.astype(np.float32), "tags": ranked_tags, "mood": mood})
     return out
+
+
+def get_projected_genre_subgenres():
+    if _GENRE_CENTROID_CACHE["value"] is None:
+        _GENRE_CENTROID_CACHE["value"] = _load_projected_genre_subgenres()
+    return _GENRE_CENTROID_CACHE["value"]
 
 
 def _load_projected_genre_subgenres():
@@ -1428,14 +1516,14 @@ def _load_projected_genre_subgenres():
                 continue
             arr = np.asarray(raw, dtype=np.float32)
             vec = project_to_poincare(arr, scale)
-            raw_vecs.append(arr.astype(np.float64))
-            projected.append({"name": name, "vec": vec.astype(np.float64)})
+            raw_vecs.append(arr.astype(np.float32))
+            projected.append({"name": name, "vec": vec.astype(np.float32)})
         if not projected:
             continue
         genre_raw = np.mean(np.stack(raw_vecs), axis=0)
         genre_vec = project_to_poincare(
             genre_raw.astype(np.float32), scale
-        ).astype(np.float64)
+        ).astype(np.float32)
         out[genre] = {"vec": genre_vec, "subgenres": projected}
     return out
 
@@ -1446,7 +1534,7 @@ def _cluster_name(members, vec_map, mood_centroids):
 
     from tasks.hyperbolic_geometry import hyperbolic_distance
 
-    mean_vec = np.mean(np.stack([vec_map[i] for i in members]).astype(np.float64), axis=0)
+    mean_vec = np.mean(np.stack([vec_map[i] for i in members]).astype(np.float32), axis=0)
     ranked = sorted(mood_centroids, key=lambda c: hyperbolic_distance(mean_vec, c["vec"]))
 
     # One representative tag per nearest centroid, walking outward only to

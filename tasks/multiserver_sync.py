@@ -29,6 +29,11 @@ Main Features:
   local side streams through it in keyset-paginated chunks.
 * A sweep whose worker died is restarted by the queue's own reclaim; an
   empty-catalogue guard makes first-install sweeps instant no-ops.
+* prune_stale_mappings invalidates BOTH the paged-IVF and the hyperbolic
+  availability-mask caches whenever it actually removes track_server_map
+  rows, so every index's per-server view corrects itself the moment a
+  server's catalogue changes instead of relying solely on the masks' own
+  30s TTL.
 """
 
 import logging
@@ -342,6 +347,11 @@ def prune_stale_mappings(db, server_id, present_ids, refused=None):
                 invalidate_availability_cache(server_id)
             except Exception:
                 logger.debug("Availability-cache invalidation failed", exc_info=True)
+            try:
+                from tasks.hyperbolic_index import invalidate_availability_cache as invalidate_hyperbolic_availability
+                invalidate_hyperbolic_availability(server_id)
+            except Exception:
+                logger.debug("Hyperbolic availability-cache invalidation failed", exc_info=True)
         return removed
     finally:
         cur.close()

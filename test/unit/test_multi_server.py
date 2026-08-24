@@ -2211,6 +2211,60 @@ class TestSweepAlignment:
         ) == 0
         assert refused == [(10, 100)]
 
+    def test_a_real_prune_invalidates_both_the_paged_ivf_and_hyperbolic_masks(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (2,)
+        cursor.rowcount = 1
+        db = MagicMock()
+        db.cursor.return_value = cursor
+        monkeypatch.setattr(sync, "execute_values", lambda cur, sql, rows, **kw: None)
+
+        paged_calls = []
+        hyperbolic_calls = []
+        monkeypatch.setattr(
+            "tasks.paged_ivf.invalidate_availability_cache",
+            lambda server_id=None: paged_calls.append(server_id),
+        )
+        monkeypatch.setattr(
+            "tasks.hyperbolic_index.invalidate_availability_cache",
+            lambda server_id=None: hyperbolic_calls.append(server_id),
+        )
+
+        removed = sync.prune_stale_mappings(db, 's1', {'a', 'b'})
+
+        assert removed == 1
+        assert paged_calls == ['s1']
+        assert hyperbolic_calls == ['s1']
+
+    def test_a_noop_prune_invalidates_neither_mask(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (2,)
+        cursor.rowcount = 0
+        db = MagicMock()
+        db.cursor.return_value = cursor
+        monkeypatch.setattr(sync, "execute_values", lambda cur, sql, rows, **kw: None)
+
+        paged_calls = []
+        hyperbolic_calls = []
+        monkeypatch.setattr(
+            "tasks.paged_ivf.invalidate_availability_cache",
+            lambda server_id=None: paged_calls.append(server_id),
+        )
+        monkeypatch.setattr(
+            "tasks.hyperbolic_index.invalidate_availability_cache",
+            lambda server_id=None: hyperbolic_calls.append(server_id),
+        )
+
+        removed = sync.prune_stale_mappings(db, 's1', {'a', 'b'})
+
+        assert removed == 0
+        assert paged_calls == []
+        assert hyperbolic_calls == []
+
 
 class TestFirstRunSetupWizardServerApi:
 

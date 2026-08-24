@@ -1008,8 +1008,12 @@ tbody tr:hover {
     background-color: var(--bg-body);
 }
 
-/* Status messages */
-#status, #playlist-status, #jellyfinResponseArea {
+/* Status messages.
+   display:block is load-bearing, not cosmetic: <output> is inline by default,
+   and vertical margins do not apply to inline boxes, so margin-top silently
+   did nothing and the message overlapped the button above it. */
+#status, #playlist-status, #journey-status, #journey-playlist-status, #jellyfinResponseArea {
+    display: block;
     margin-top: 1rem;
     padding: 0.5rem;
     font-size: 0.875rem;

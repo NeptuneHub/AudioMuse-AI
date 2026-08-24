@@ -51,6 +51,7 @@ import config
 from cpu_budget import usable_cpu_count
 
 from . import ivf_quant as quant
+from .index_availability import active_availability_scope, build_availability_mask
 
 logger = logging.getLogger(__name__)
 
@@ -553,37 +554,6 @@ def invalidate_availability_cache(server_id=None):
             _AVAILABILITY_CACHE.pop(key, None)
 
 
-def active_availability_scope():
-    """Return the current request/job server, or None for union/background scope.
-
-    An unknown or disabled requested server maps to a fail-closed sentinel scope;
-    any other resolution error fails open to None (union scope).
-    """
-    try:
-        from tasks.mediaserver import context
-
-        active = context.active_server_id()
-        if active:
-            return str(active)
-    except Exception:
-        pass
-    try:
-        from flask import has_request_context
-
-        if not has_request_context():
-            return None
-        from app_server_context import resolve_request_server_id
-        from tasks.mediaserver import registry
-
-        requested = resolve_request_server_id()
-        return str(requested or registry.get_default_server_id() or '') or None
-    except ValueError:
-        return '__invalid_server__'
-    except Exception:
-        logger.exception("Could not resolve request availability scope")
-        return None
-
-
 def end_all_requests() -> None:
     for idx in list(_LIVE_INDEXES):
         try:
@@ -864,36 +834,7 @@ class PagedIvfIndex:
             cached = _AVAILABILITY_CACHE.get(key)
             if cached is not None and now - cached[0] < _AVAILABILITY_CACHE_TTL:
                 return cached[1]
-        conn = self._conn_factory()
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT is_default, updated_at FROM music_servers WHERE server_id = %s",
-                (server_id,),
-            )
-            row = cur.fetchone()
-            is_default = bool(row[0]) if row else False
-            token = str(row[1]) if row else None
-            if cached is not None and token is not None and token == cached[2]:
-                with _AVAILABILITY_CACHE_LOCK:
-                    _AVAILABILITY_CACHE[key] = (now, cached[1], token)
-                return cached[1]
-            cur.execute(
-                "SELECT item_id FROM track_server_map WHERE server_id = %s",
-                (server_id,),
-            )
-            available = {str(row[0]) for row in cur.fetchall()}
-        if is_default:
-            from tasks.simhash import is_fingerprint_id
-
-            available.update(
-                item_id for item_id in self._item_ids
-                if not is_fingerprint_id(item_id)
-            )
-        mask = np.fromiter(
-            (item_id in available for item_id in self._item_ids),
-            dtype=np.bool_,
-            count=self._n_items,
-        )
+        mask = build_availability_mask(server_id, self._item_ids, self._conn_factory)
         with _AVAILABILITY_CACHE_LOCK:
             stale_keys = [
                 cached_key for cached_key, cached_value in _AVAILABILITY_CACHE.items()
@@ -902,7 +843,7 @@ class PagedIvfIndex:
             ]
             for stale_key in stale_keys:
                 _AVAILABILITY_CACHE.pop(stale_key, None)
-            _AVAILABILITY_CACHE[key] = (now, mask, token)
+            _AVAILABILITY_CACHE[key] = (now, mask)
         return mask
 
     def __len__(self) -> int:

@@ -118,6 +118,7 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
 
     try:
         all_embeddings = np.vstack(track_embeddings)
+        all_embeddings = _l2_normalize_rows(all_embeddings)
         n_samples, n_features = all_embeddings.shape
 
         if n_samples < 5:
@@ -571,7 +572,7 @@ def get_representative_songs_for_component(
         logger.warning(f"Component index {component_index} out of range for artist '{artist_name}'")
         return []
 
-    component_mean = means[component_index]
+    component_mean = _l2_normalize_rows(means[component_index])
 
     conn = get_db()
     cur = conn.cursor()
@@ -595,10 +596,10 @@ def get_representative_songs_for_component(
 
         song_distances = []
         for item_id, title, embedding_bytes in rows:
-            embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
-            distance = np.linalg.norm(embedding - component_mean)
+            embedding = _l2_normalize_rows(np.frombuffer(embedding_bytes, dtype=np.float32))
+            distance = float(np.linalg.norm(embedding - component_mean))
             song_distances.append(
-                {'item_id': item_id, 'title': title, 'distance_to_component': float(distance)}
+                {'item_id': item_id, 'title': title, 'distance_to_component': distance}
             )
 
         song_distances.sort(key=lambda x: x['distance_to_component'])

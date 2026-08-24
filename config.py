@@ -256,7 +256,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.4.0"
+APP_VERSION = "v3.5.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -770,7 +770,9 @@ EMBEDDING_DIMENSION = 200
 # None means auto-calibrate once and persist the result in app_config.
 HYPERBOLIC_RADIUS_SCALE = float(os.environ.get("HYPERBOLIC_RADIUS_SCALE") or "0") or None
 HYPERBOLIC_RADIUS_PERCENTILE = float(os.environ.get("HYPERBOLIC_RADIUS_PERCENTILE", "95"))
-# Raw-space IVF candidate over-fetch multiplier before hyperbolic re-ranking.
+# Candidate over-fetch multiplier applied before the hyperbolic re-ranking and
+# de-duplication pass (roots / niche radius windows and the similar mode's
+# pre-dedup slice over the projected catalogue).
 HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFETCH", "4"))
 # Fraction of the radial range that roots/niche modes must move before a
 # candidate qualifies, so the two modes visibly differ from plain similar.
@@ -808,6 +810,38 @@ HYPERBOLIC_MIN_CLUSTER_SIZE = int(os.environ.get("HYPERBOLIC_MIN_CLUSTER_SIZE", 
 # tree (not disk-paged), so it is lazy-loaded when the /hyperbolic page opens
 # and auto-unloads after this idle period to free RAM.
 HYPERBOLIC_TREE_WARMUP_DURATION = int(os.environ.get("HYPERBOLIC_TREE_WARMUP_DURATION", "300"))
+
+# Geodesic Journey: the walk along the exact Poincare geodesic between two
+# songs. A geodesic in negatively curved space bows toward the origin, so the
+# walk descends through the region general enough to contain both endpoints
+# (the continuous analogue of their lowest common ancestor) and climbs back
+# out - which is what makes it different from the Sonic Path page's straight
+# line through raw space.
+# Number of songs in the walk INCLUDING both endpoints. Evenly spaced t on a
+# Poincare geodesic is evenly spaced hyperbolic arc length, so every step
+# covers the same musical distance.
+HYPERBOLIC_JOURNEY_DEFAULT_LENGTH = int(os.environ.get("HYPERBOLIC_JOURNEY_DEFAULT_LENGTH", "25"))
+# The walk ranks the whole projected catalogue by exact Poincare distance
+# directly against the embedding table - no IVF index and no cosine shortcut.
+# How much deeper than the true geodesic the walk dips toward the origin,
+# through a bump that is zero at both endpoints. 0 is the exact (shortest)
+# geodesic; higher values buy a longer detour through more general territory
+# without moving where the walk starts or ends.
+HYPERBOLIC_JOURNEY_ANCESTRY_DIVE = float(os.environ.get("HYPERBOLIC_JOURNEY_ANCESTRY_DIVE", "0.20"))
+# Samples of the ideal geodesic returned for the Poincare disk drawing. The
+# whole geodesic lies in the 2-plane spanned by its endpoints, so these are an
+# exact picture of it, not an approximation of a higher-dimensional curve.
+HYPERBOLIC_JOURNEY_PATH_SAMPLES = int(os.environ.get("HYPERBOLIC_JOURNEY_PATH_SAMPLES", "96"))
+# Disk-paged Poincare IVF index for the Hyperbolic Explorer: the projected
+# catalogue is partitioned by hyperbolic k-means into 8*sqrt(n) cells (the same
+# rule and the same IVF_NLIST_MAX / IVF_TRAIN_POINTS_PER_CELL / IVF_NPROBE knobs
+# as the other IVF indexes above), so the cell count grows with the library.
+# The cell directory and the coarse centroids live in memory; the cell vectors
+# stay in ivf_dir and are decoded on demand, bounded by HYPERBOLIC_INDEX_CACHE_MB
+# so the full projected set never sits in RAM.
+HYPERBOLIC_INDEX_CACHE_MB = int(os.environ.get("HYPERBOLIC_INDEX_CACHE_MB", "256"))
+# Exact nearest candidates per journey waypoint pulled from the Poincare index.
+HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP = int(os.environ.get("HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP", "60"))
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
@@ -1034,8 +1068,12 @@ IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosi
 # query reads only the nearest IVF_NPROBE cells, so the Flask container's resident
 # index memory is bounded by IVF_QUERY_CACHE_MB per index instead of growing with
 # the library size. Cell vectors are quantized per IVF_STORAGE_DTYPE (coarse
-# centroids stay float32, so cell selection / recall is unaffected).
-IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored cell-vector precision: 'i8' (int8; angular only, euclidean/dot auto-fall to f16), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
+# centroids stay float32, so cell selection / recall is unaffected). The same
+# setting also sizes the Hyperbolic Explorer's disk-paged Poincare index bands,
+# which take it literally (i8 stays i8 there, no f16 downgrade) and absorb the
+# coarser grid by overfetching the band scan and re-ranking those candidates on
+# the exact float32 poincare_embedding rows before returning.
+IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored vector precision for EVERY index: 'i8' (int8; the IVF indexes fall back to f16 for euclidean/dot, the Poincare index keeps i8), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this

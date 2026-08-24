@@ -20,6 +20,12 @@ Main Features:
 * select_diverse_playlists_with_genre_coverage: select a strict Top-N: two
   maximally separated playlists for each of the three most represented genres,
   then four mutually different non-top genres by max-min centroid distance.
+  That centroid distance stays EUCLIDEAN on purpose even though every song
+  level measure is cosine: the rows fed to the clustering model are already
+  L2-normalized, so between unit vectors ||a - b||^2 = 2 - 2*cos(a, b) and the
+  Euclidean spacing IS the cosine spacing; and once PCA has run the space is
+  mean-centred, which preserves Euclidean distance but leaves the origin
+  meaningless, so an angle measured from it would not be a cosine at all.
 """
 
 import logging

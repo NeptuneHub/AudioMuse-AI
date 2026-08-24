@@ -18,6 +18,19 @@ Main Features:
   run continues.
 * rebuild_all_indexes_task: the queue entry point, reporting into task_status and
   re-raising on failure so its enqueue-time Retry policy actually fires.
+* The shared g.db connection is CLOSED between build steps. A Postgres backend
+  never returns memory to the OS while its session lives, so running all nine
+  builds on one connection made that single backend accumulate the union of
+  every step's peak: measured on a real server, one connection writing 200MB of
+  index blobs climbed to 145MB RSS and stayed there, while a fresh connection
+  per build peaked at 69MB and released it on close. Recycling costs one cheap
+  reconnect per step and keeps Postgres' idle footprint flat after an analysis.
+* After the nine builds finish, the worker issues a CHECKPOINT on its own
+  connection and closes it. Postgres only releases WAL segments and flushed
+  dirty buffers at a checkpoint, so without it the hundreds of MB written as
+  index blobs keep the WAL and buffer cache inflated after the run; forcing the
+  checkpoint (plus the per-step recycle) leaves Postgres back at its idle floor
+  once the worker's child process exits.
 """
 
 import gc
@@ -31,7 +44,7 @@ from app_helper import (
     build_and_store_map_projection,
     build_and_store_artist_projection,
 )
-from database import get_db
+from database import close_db, get_db
 from config import TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
 
 from error import error_manager
@@ -44,6 +57,26 @@ from .helper import make_task_reporter
 logger = logging.getLogger(__name__)
 
 
+def _recycle_db_connection():
+    try:
+        close_db()
+    except Exception:
+        logger.debug("Index-build connection recycle failed", exc_info=True)
+
+
+def _checkpoint_postgres():
+    try:
+        db = get_db()
+        try:
+            with db.cursor() as cur:
+                cur.execute("CHECKPOINT")
+            db.commit()
+        finally:
+            close_db()
+    except Exception:
+        logger.debug("Post-analysis Postgres CHECKPOINT failed", exc_info=True)
+
+
 def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
     from ..ivf_manager import build_and_store_ivf_index
     from ..clap_text_search import build_and_store_clap_index
@@ -51,10 +84,12 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
     from ..sem_grove_manager import build_and_store_sem_grove_index
     from ..artist_gmm_manager import build_and_store_artist_index
     from ..hyperbolic_manager import backfill_hyperbolic_columns, build_hyperbolic_tree_cache
+    from ..hyperbolic_index import build_and_store_hyperbolic_index
 
     def _build_hyperbolic():
         backfill_hyperbolic_columns()
         build_hyperbolic_tree_cache()
+        build_and_store_hyperbolic_index(get_db())
 
     steps = (
         ("IVF index rebuilt", "Building IVF audio index...",
@@ -103,12 +138,14 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
             if fatal:
                 raise
         finally:
+            _recycle_db_connection()
             gc.collect()
     try:
         taskqueue.publish_event('index-reload')
     except Exception as e:
         logger.warning(f'Could not publish reload message: {e}')
 
+    _checkpoint_postgres()
     release_memory_to_os()
 
 
