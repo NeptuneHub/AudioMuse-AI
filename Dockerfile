@@ -553,10 +553,21 @@ ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
 # Point numba to /tmp so it always has write access (issue: NeptuneHub/AudioMuse-AI#479).
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 
+ENV PYTHONPYCACHEPREFIX=/tmp/pycache \
+    XDG_CACHE_HOME=/tmp/.cache \
+    CUPY_CACHE_DIR=/tmp/cupy_cache
+
 ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
+
+RUN getent passwd 1000 && getent group 1000 || { echo "ERROR: base image has no uid/gid 1000"; exit 1; }
+
+RUN mkdir -p /app/temp_audio /app/ivf_cache /app/backup /app/plugin/installed /workspace && \
+    chown -R 1000:1000 /app/temp_audio /app/ivf_cache /app/backup /app/plugin/installed /workspace && \
+    chown 1000:1000 /app/model
 
 EXPOSE 8000
 
 WORKDIR /workspace
+USER 1000:1000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD []
