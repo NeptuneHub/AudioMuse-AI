@@ -82,6 +82,13 @@ def clap_search_api():
                 minimum: 1
                 maximum: 500
                 default: 100
+              explain:
+                type: boolean
+                default: false
+                description: >
+                  Optional. When true and steering is present, the response also
+                  carries steering_explain: the query's strongest latents and the
+                  edit each concept applies, for showing where concepts overlap.
               steering:
                 type: array
                 description: >
@@ -137,7 +144,7 @@ def clap_search_api():
         description: CLAP cache not loaded yet (run analysis first).
     """
     from config import CLAP_ENABLED
-    from tasks.clap_steering import normalize_terms
+    from tasks.clap_steering import explain_steering, normalize_terms
     from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
     from app_helper import attach_song_features
 
@@ -195,6 +202,12 @@ def clap_search_api():
         payload = {'query': query, 'results': results, 'count': len(results)}
         if steering:
             payload['steering'] = steering
+            if data.get('explain'):
+                from tasks.clap_analyzer import get_text_embedding
+
+                explain = explain_steering(get_text_embedding(query), steering)
+                if explain:
+                    payload['steering_explain'] = explain
         if steering_warnings:
             payload['steering_warnings'] = steering_warnings
         return jsonify(payload)

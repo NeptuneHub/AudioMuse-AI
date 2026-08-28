@@ -321,3 +321,63 @@ def apply_steering(embedding, terms):
     if norm <= 1e-8 or not np.isfinite(steered).all():
         return embedding, []
     return (steered / norm * magnitude).astype(np.float32), applied
+
+
+def explain_steering(embedding, terms, top_n=14):
+    if embedding is None or not terms:
+        return None
+
+    with _LOCK:
+        if not _warmup_locked():
+            return None
+        _STATE['last_used'] = time.time()
+        encoder, encoder_input = _STATE['encoder'], _STATE['encoder_input']
+        d_sae = _STATE['d_sae']
+        entries = [(t, _STATE['concepts'].get(t['term'])) for t in terms]
+
+    query = np.asarray(embedding, dtype=np.float32).reshape(1, -1)
+    try:
+        code = encoder.run(None, {encoder_input: query})[0].astype(np.float32).reshape(-1)
+    except Exception:
+        logger.exception("CLAP steering explain failed")
+        return None
+
+    contributions = {}
+    concepts = []
+    for term, entry in entries:
+        if entry is None:
+            continue
+        sign = 1.0 if term['direction'] == 'more' else -1.0
+        support = np.asarray(entry['support'], dtype=np.int64)
+        values = sign * term['weight'] * np.asarray(entry['mask'], dtype=np.float32)
+        concepts.append({'term': term['term'], 'direction': term['direction'],
+                         'weight': term['weight']})
+        for latent, value in zip(support.tolist(), values.tolist()):
+            contributions.setdefault(int(latent), {})[term['term']] = round(float(value), 4)
+
+    if not concepts:
+        return None
+
+    active = np.nonzero(code > 0)[0]
+    ranked = active[np.argsort(-code[active])][:top_n].tolist()
+    touched = sorted(contributions, key=lambda i: -max(abs(v) for v in contributions[i].values()))
+    latents = list(dict.fromkeys(ranked + touched[:top_n]))
+
+    rows = []
+    for latent in latents:
+        edits = contributions.get(latent, {})
+        rows.append({
+            'latent': int(latent),
+            'query': round(float(code[latent]), 4),
+            'edits': edits,
+            'shared': len(edits) > 1,
+        })
+    rows.sort(key=lambda r: -(r['query'] + sum(abs(v) for v in r['edits'].values())))
+
+    return {
+        'd_sae': int(d_sae),
+        'query_active': int(active.size),
+        'concepts': concepts,
+        'latents': rows,
+        'overlap': sorted(i for i, e in contributions.items() if len(e) > 1),
+    }
