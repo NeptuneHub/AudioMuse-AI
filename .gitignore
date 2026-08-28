@@ -80,8 +80,12 @@ lyrics_model_gte_vnni.tar.gz
 metadata/
 
 # SAE sparse-autoencoder workspace: training code, the 4 GB venv, the embedding
-# corpus, checkpoints and exported models. None of it belongs in the repo. The
-# three runtime artifacts (encoder/decoder .onnx and the concept catalogue) are
-# read from the project root at runtime and will move to a release download,
-# like the other models, rather than being committed here.
+# corpus and checkpoints. None of it belongs in the repo; the training code lives
+# in the AudioMuse-AI-SAE repository instead.
 /SAE/
+
+# The SAE concept-steering graphs are downloaded into model/ from the
+# AudioMuse-AI-SAE release, like the other models. Only the small concept
+# catalogue is committed.
+/dclap_sae_k20_d1024_best_encoder.onnx
+/dclap_sae_k20_d1024_best_decoder.onnx

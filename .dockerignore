@@ -66,10 +66,8 @@ htmlcov/
 # Large model files and caches (these are downloaded inside the container)
 model/
 *.onnx
-# The SAE concept-steering graphs live at the project root and are small enough
-# to ride along in the image until they get a GitHub release download.
-!dclap_sae_k20_d1024_best_decoder.onnx
-!dclap_sae_k20_d1024_best_encoder.onnx
+# The SAE concept catalogue is small and ships in the repository; the two ONNX
+# graphs it refers to are downloaded into model/ by the Dockerfile.
 !dclap_sae_concepts.json
 *.pt
 *.pth

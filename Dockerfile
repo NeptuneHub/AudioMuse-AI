@@ -217,6 +217,37 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
+# Download the SAE concept-steering graphs (~2 MB each)
+# The encoder maps a DCLAP embedding to 1024 concept latents, the decoder maps
+# them back. The concept catalogue that names those latents is small and ships
+# inside the repository, so only the two graphs are fetched here.
+RUN set -eux; \
+    sae_url="https://github.com/NeptuneHub/AudioMuse-AI-SAE/releases/download/v1"; \
+    for sae_model in dclap_sae_k20_d1024_best_encoder.onnx dclap_sae_k20_d1024_best_decoder.onnx; do \
+        n=0; \
+        until [ "$n" -ge 5 ]; do \
+            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                -O "/app/model/$sae_model" "$sae_url/$sae_model"; then \
+                echo "SAE model $sae_model downloaded"; \
+                break; \
+            fi; \
+            n=$((n+1)); \
+            echo "Download attempt $n for $sae_model failed - retrying in $((n*n))s"; \
+            sleep $((n*n)); \
+        done; \
+        if [ "$n" -ge 5 ]; then \
+            echo "ERROR: Failed to download $sae_model after 5 attempts"; \
+            exit 1; \
+        fi; \
+        if [ ! -f "/app/model/$sae_model" ]; then \
+            echo "ERROR: $sae_model not created"; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "SAE models downloaded successfully"; \
+    ls -lh /app/model/dclap_sae_k20_d1024_best_encoder.onnx /app/model/dclap_sae_k20_d1024_best_decoder.onnx
+
 # Download Whisper-small ONNX bundle (~570 MB) - HuggingFace optimum export
 # of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
 # tokenizer files + preprocessor config). Re-hosted on the project's GitHub

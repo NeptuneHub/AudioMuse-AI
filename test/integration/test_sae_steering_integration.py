@@ -64,8 +64,9 @@ def _probe_embeddings():
 
 
 def _artifacts():
-    encoder = _REPO_ROOT / 'dclap_sae_k20_d1024_best_encoder.onnx'
-    decoder = _REPO_ROOT / 'dclap_sae_k20_d1024_best_decoder.onnx'
+    models = Path(os.environ.get('SAE_MODEL_DIR') or _REPO_ROOT / 'model')
+    encoder = models / 'dclap_sae_k20_d1024_best_encoder.onnx'
+    decoder = models / 'dclap_sae_k20_d1024_best_decoder.onnx'
     concepts = _REPO_ROOT / 'dclap_sae_concepts.json'
     return encoder, decoder, concepts
 
@@ -78,9 +79,9 @@ def test_real_sae_steering_matches_expected_vectors(monkeypatch):
     missing = [p.name for p in (encoder_path, decoder_path, concepts_path) if not p.exists()]
     if missing:
         pytest.skip(
-            f'SAE artifacts missing from the project root: {", ".join(missing)}. '
-            'They are produced by SAE/export_onnx.py and SAE/build_concept_bundle.py '
-            'and are committed alongside the application.'
+            f'SAE artifacts missing: {", ".join(missing)}. The two ONNX graphs are '
+            'downloaded into model/ from the AudioMuse-AI-SAE release, the way the '
+            'Dockerfile does it; the concept catalogue ships in the repository.'
         )
 
     monkeypatch.setenv('CLAP_SAE_STEERING_ENABLED', 'true')
@@ -189,7 +190,7 @@ def test_real_sae_ranking_holds_its_invariants(monkeypatch):
 
     encoder_path, decoder_path, concepts_path = _artifacts()
     if not all(p.exists() for p in (encoder_path, decoder_path, concepts_path)):
-        pytest.skip('SAE artifacts missing from the project root')
+        pytest.skip('SAE artifacts missing; see the other test for where they come from')
 
     import config
 

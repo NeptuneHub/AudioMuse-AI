@@ -1021,15 +1021,15 @@ CLAP_EMBEDDING_DIMENSION = 512
 # Re-ranking scores every candidate on each requested concept and orders by the
 # WEAKEST of them, which is a real conjunction: a track missing one concept
 # cannot be rescued by being strong on another. The index is never touched.
-# The three artifacts are produced by SAE/validate_concepts.py and sit at the
-# project root, which is /app inside the container; they will be fetched from a
-# GitHub release like the other models once the feature ships.
+# The two ONNX graphs are downloaded into model/ by the Dockerfile from the
+# AudioMuse-AI-SAE release, like the other models. The concept catalogue is small
+# and ships in the repository at the project root, which is /app in the container.
 CLAP_SAE_STEERING_ENABLED = os.environ.get("CLAP_SAE_STEERING_ENABLED", "true").lower() == "true"
 CLAP_SAE_MODEL_PATH = os.environ.get(
-    "CLAP_SAE_MODEL_PATH", "/app/dclap_sae_k20_d1024_best_decoder.onnx"
+    "CLAP_SAE_MODEL_PATH", "/app/model/dclap_sae_k20_d1024_best_decoder.onnx"
 )
 CLAP_SAE_ENCODER_PATH = os.environ.get(
-    "CLAP_SAE_ENCODER_PATH", "/app/dclap_sae_k20_d1024_best_encoder.onnx"
+    "CLAP_SAE_ENCODER_PATH", "/app/model/dclap_sae_k20_d1024_best_encoder.onnx"
 )
 CLAP_SAE_CONCEPTS_PATH = os.environ.get(
     "CLAP_SAE_CONCEPTS_PATH", "/app/dclap_sae_concepts.json"

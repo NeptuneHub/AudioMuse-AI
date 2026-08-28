@@ -87,9 +87,28 @@
         margin-top: 1rem;
     }
 
+    .refine-fieldset {
+        border: none;
+        padding: 0;
+        margin: 0 0 1.5rem;
+    }
+
     .refine-heading {
         display: block;
         margin-bottom: 0.5rem;
+        padding: 0;
+        font-size: inherit;
+        font-weight: inherit;
+        color: inherit;
+    }
+
+    .info-tooltip-button {
+        background: none;
+        border: none;
+        padding: 0;
+        font: inherit;
+        color: inherit;
+        cursor: help;
     }
 
     .refine-box {
@@ -284,22 +303,22 @@
                 <input type="number" id="limit" name="limit" value="50" min="1" max="500">
             </div>
 
-            <div class="param-group hidden" id="refine-group">
-                <div class="refine-heading label-with-tooltip" id="refine-heading">
+            <fieldset class="param-group refine-fieldset hidden" id="refine-group">
+                <legend class="refine-heading label-with-tooltip">
                     Refine the sound (optional):
-                    <span class="info-tooltip" role="button" tabindex="0" aria-label="About refinement">
+                    <button type="button" class="info-tooltip info-tooltip-button" aria-label="About refinement">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Push the search toward or away from a concept. Only concepts verified to work on your library are listed. Add up to <span id="refine-max">10</span>, then search again.</span>
-                    </span>
-                </div>
+                    </button>
+                </legend>
                 <div class="refine-box">
                     <p class="refine-empty" id="refine-empty">No refinement. The search runs on your text alone.</p>
-                    <div id="refine-list" role="group" aria-labelledby="refine-heading"></div>
+                    <div id="refine-list"></div>
                     <button type="button" class="btn btn-primary" id="refine-add">+ Add concept</button>
                     <div class="refine-picker hidden" id="refine-picker"></div>
                     <p class="refine-note" id="refine-note"></p>
                 </div>
-            </div>
+            </fieldset>
 
             <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.loaded %}disabled{% endif %}>
                 🔍 Search
