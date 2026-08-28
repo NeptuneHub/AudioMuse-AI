@@ -205,8 +205,43 @@ def get_catalogue():
         }
 
 
+def _snap_weight(value):
+    from config import CLAP_SAE_ALPHA_STEPS
+
+    target = abs(value)
+    return min(CLAP_SAE_ALPHA_STEPS, key=lambda step, t=target: abs(step - t))
+
+
+def _clean_term(item, known, seen):
+    from config import CLAP_SAE_DEFAULT_ALPHA
+
+    if isinstance(item, str):
+        item = {'term': item}
+    if not isinstance(item, dict):
+        return None, 'each steering entry must be a string or an object'
+
+    term = (item.get('term') or '').strip()
+    if not term:
+        return None, 'a steering entry has no term'
+    if term not in known:
+        return None, f'"{term}" is not a validated concept for this library'
+    if term in seen:
+        return None, f'"{term}" was passed more than once'
+
+    try:
+        weight = float(item.get('weight', CLAP_SAE_DEFAULT_ALPHA))
+    except (TypeError, ValueError):
+        return None, f'"{term}" has a non numeric weight'
+
+    direction = str(item.get('direction') or 'more').lower()
+    if direction not in ('more', 'less'):
+        return None, f'"{term}" has direction "{direction}", expected more or less'
+
+    return {'term': term, 'weight': _snap_weight(weight), 'direction': direction}, None
+
+
 def normalize_terms(raw_terms):
-    from config import CLAP_SAE_ALPHA_STEPS, CLAP_SAE_DEFAULT_ALPHA, CLAP_SAE_MAX_TERMS
+    from config import CLAP_SAE_MAX_TERMS
 
     if not raw_terms:
         return [], []
@@ -225,36 +260,12 @@ def normalize_terms(raw_terms):
         if len(cleaned) >= CLAP_SAE_MAX_TERMS:
             problems.append(f'at most {CLAP_SAE_MAX_TERMS} concepts can be combined')
             break
-        if isinstance(item, str):
-            item = {'term': item}
-        if not isinstance(item, dict):
-            problems.append('each steering entry must be a string or an object')
+        entry, problem = _clean_term(item, known, seen)
+        if problem:
+            problems.append(problem)
             continue
-        term = (item.get('term') or '').strip()
-        if not term:
-            problems.append('a steering entry has no term')
-            continue
-        if term not in known:
-            problems.append(f'"{term}" is not a validated concept for this library')
-            continue
-        if term in seen:
-            problems.append(f'"{term}" was passed more than once')
-            continue
-
-        try:
-            weight = float(item.get('weight', CLAP_SAE_DEFAULT_ALPHA))
-        except (TypeError, ValueError):
-            problems.append(f'"{term}" has a non numeric weight')
-            continue
-        weight = min(CLAP_SAE_ALPHA_STEPS, key=lambda step: abs(step - abs(weight)))
-
-        direction = str(item.get('direction') or 'more').lower()
-        if direction not in ('more', 'less'):
-            problems.append(f'"{term}" has direction "{direction}", expected more or less')
-            continue
-
-        seen.add(term)
-        cleaned.append({'term': term, 'weight': weight, 'direction': direction})
+        seen.add(entry['term'])
+        cleaned.append(entry)
     return cleaned, problems
 
 
