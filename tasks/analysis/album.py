@@ -301,6 +301,7 @@ def _analyze_single_track(
     clap_embedding = None
     top_moods = None
     produced = False
+    audio_undecodable = False
     try:
         if plan.needs_audio:
             path = _stage_download(item, track_name_full)
@@ -310,6 +311,7 @@ def _analyze_single_track(
 
         if path and plan.needs_audio:
             native_audio, native_sr = decode_audio_once(path)
+            audio_undecodable = native_audio is None
 
         def ensure_download():
             nonlocal path
@@ -372,7 +374,10 @@ def _analyze_single_track(
             ) or produced
 
         if not produced:
-            raise TrackNotAnalyzable(f"no stage produced anything for {track_name_full}")
+            raise TrackNotAnalyzable(
+                f"no stage produced anything for {track_name_full}",
+                cacheable=audio_undecodable,
+            )
 
         _ah.run_song_analyzed_hook(
             item, path, musicnn_analysis, musicnn_embedding, clap_embedding,

@@ -2680,7 +2680,7 @@ class _StageCalls:
         return ('NATIVE_AUDIO', 44100)
 
 
-def _run_single_track(plan, calls, monkeypatch):
+def _run_single_track(plan, calls, monkeypatch, overrides=None):
     from tasks.analysis import album as album_mod
     from tasks.analysis.helper import TrackPlan
 
@@ -2716,6 +2716,9 @@ def _run_single_track(plan, calls, monkeypatch):
     monkeypatch.setattr(album_mod, '_stage_base', fake_base)
     monkeypatch.setattr(album_mod, '_stage_clap', fake_clap)
     monkeypatch.setattr(album_mod, '_stage_lyrics', fake_lyrics)
+
+    for _name, _fake in (overrides or {}).items():
+        monkeypatch.setattr(album_mod, _name, _fake)
 
     assert isinstance(plan, TrackPlan)
     album_mod._analyze_single_track(
@@ -2778,11 +2781,62 @@ class TestAudioIsFetchedOncePerTrack:
         assert calls.downloads == 1
         assert calls.decodes == 0
 
-    def test_base_stage_is_counted_as_needing_audio(self):
+
+class _UndecodableCalls(_StageCalls):
+    def decode(self, path):
+        self.decodes += 1
+        return (None, None)
+
+
+class TestUndecodableAudioOnAReanalysisIsMarkedNotAnalyzable:
+    _BARREN = {
+        '_stage_base': lambda *a, **k: False,
+        '_stage_clap': lambda *a, **k: (None, False),
+        '_stage_lyrics': lambda *a, **k: False,
+    }
+
+    def _run(self, plan, calls, monkeypatch, overrides=None):
+        from tasks.analysis import album as album_mod
+
+        with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
+            _run_single_track(plan, calls, monkeypatch, overrides or self._BARREN)
+        return excinfo.value
+
+    def test_a_base_only_reanalysis_that_cannot_decode_is_cacheable(self, monkeypatch):
         from tasks.analysis.helper import TrackPlan
 
-        assert TrackPlan(musicnn=False, clap=False, lyrics=False, base=True).needs_audio
-        assert TrackPlan(musicnn=False, clap=False, lyrics=True, base=False).needs_audio is False
+        error = self._run(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _UndecodableCalls(), monkeypatch,
+        )
+        assert error.cacheable is True
+
+    def test_a_clap_only_reanalysis_that_cannot_decode_is_cacheable(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        error = self._run(
+            TrackPlan(musicnn=False, clap=True, lyrics=False, base=False),
+            _UndecodableCalls(), monkeypatch,
+        )
+        assert error.cacheable is True
+
+    def test_a_barren_stage_on_decodable_audio_stays_uncacheable(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        error = self._run(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert error.cacheable is False
+
+    def test_a_lyrics_stage_that_succeeds_despite_a_bad_decode_raises_nothing(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        _run_single_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=True, base=True),
+            _UndecodableCalls(), monkeypatch,
+            {'_stage_base': lambda *a, **k: False},
+        )
 
 
 class _BaseCalls:
