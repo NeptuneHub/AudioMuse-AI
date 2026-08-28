@@ -86,6 +86,136 @@
         border-radius: 8px;
         margin-top: 1rem;
     }
+
+    .refine-box {
+        background: var(--bg-code);
+        border-radius: 8px;
+        padding: 1rem;
+    }
+
+    .refine-empty {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        margin: 0 0 0.75rem;
+    }
+
+    .refine-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 0.6rem 0.75rem;
+        margin-bottom: 0.6rem;
+    }
+
+    .refine-term {
+        font-weight: 600;
+        flex: 1 1 9rem;
+        min-width: 9rem;
+    }
+
+    .refine-toggle {
+        display: inline-flex;
+        border: 1px solid var(--border-color);
+        border-radius: 20px;
+        overflow: hidden;
+    }
+
+    .refine-toggle button {
+        border: none;
+        background: var(--bg-card);
+        color: var(--text-muted);
+        padding: 0.3rem 0.9rem;
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+
+    .refine-toggle button.active {
+        background: var(--color-primary);
+        color: white;
+    }
+
+    .refine-strength {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex: 1 1 12rem;
+    }
+
+    .refine-strength input[type="range"] {
+        flex: 1;
+        min-width: 7rem;
+    }
+
+    .refine-alpha {
+        font-variant-numeric: tabular-nums;
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        min-width: 2.2rem;
+        text-align: right;
+    }
+
+    .refine-remove {
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 1.1rem;
+        line-height: 1;
+        padding: 0.2rem 0.4rem;
+    }
+
+    .refine-remove:hover {
+        color: var(--status-failure-text);
+    }
+
+    .refine-picker {
+        border-top: 1px solid var(--border-color);
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        max-height: 19rem;
+        overflow-y: auto;
+    }
+
+    .refine-category h4 {
+        margin: 0.6rem 0 0.35rem;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-muted);
+    }
+
+    .refine-chip {
+        display: inline-block;
+        padding: 0.3rem 0.7rem;
+        margin: 0.2rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 20px;
+        cursor: pointer;
+        font-size: 0.85rem;
+        transition: all 0.2s;
+    }
+
+    .refine-chip:hover:not(:disabled) {
+        background: var(--color-primary);
+        color: white;
+        border-color: var(--color-primary);
+    }
+
+    .refine-chip:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    .refine-note {
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        margin-top: 0.5rem;
+    }
 </style>
 {% endblock %}
 
@@ -148,7 +278,24 @@
                 </label>
                 <input type="number" id="limit" name="limit" value="50" min="1" max="500">
             </div>
-            
+
+            <div class="param-group hidden" id="refine-group">
+                <label class="label-with-tooltip">
+                    Refine the sound (optional):
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Push the search toward or away from a concept. Only concepts verified to work on your library are listed. Add up to <span id="refine-max">10</span>, then search again.</span>
+                    </span>
+                </label>
+                <div class="refine-box">
+                    <p class="refine-empty" id="refine-empty">No refinement. The search runs on your text alone.</p>
+                    <div id="refine-list"></div>
+                    <button type="button" class="btn btn-primary" id="refine-add">+ Add concept</button>
+                    <div class="refine-picker hidden" id="refine-picker"></div>
+                    <p class="refine-note" id="refine-note"></p>
+                </div>
+            </div>
+
             <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.loaded %}disabled{% endif %}>
                 🔍 Search
             </button>
@@ -260,12 +407,169 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
     
+    // Concept refinement (SAE steering). The vocabulary is fetched from the
+    // backend so only concepts verified against this library are offered.
+    const refineGroup = document.getElementById('refine-group');
+    const refineList = document.getElementById('refine-list');
+    const refineEmpty = document.getElementById('refine-empty');
+    const refineAdd = document.getElementById('refine-add');
+    const refinePicker = document.getElementById('refine-picker');
+    const refineNote = document.getElementById('refine-note');
+
+    let alphaSteps = [0.1, 0.2, 0.5, 1.0, 2.0];
+    let defaultAlpha = 1.0;
+    let maxTerms = 10;
+    let selectedTerms = [];
+
+    function nearestAlphaIndex(value) {
+        let best = 0;
+        alphaSteps.forEach((step, i) => {
+            if (Math.abs(step - value) < Math.abs(alphaSteps[best] - value)) best = i;
+        });
+        return best;
+    }
+
+    function renderSelected() {
+        refineEmpty.classList.toggle('hidden', selectedTerms.length > 0);
+        refineAdd.disabled = selectedTerms.length >= maxTerms;
+        refineAdd.textContent = selectedTerms.length >= maxTerms
+            ? `Maximum ${maxTerms} concepts`
+            : '+ Add concept';
+        refineList.innerHTML = '';
+
+        selectedTerms.forEach((entry, index) => {
+            const row = document.createElement('div');
+            row.className = 'refine-row';
+
+            const name = document.createElement('span');
+            name.className = 'refine-term';
+            name.textContent = entry.term;
+            row.appendChild(name);
+
+            const toggle = document.createElement('div');
+            toggle.className = 'refine-toggle';
+            ['more', 'less'].forEach(direction => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = direction === 'more' ? 'More' : 'Less';
+                button.className = entry.direction === direction ? 'active' : '';
+                button.addEventListener('click', () => {
+                    selectedTerms[index].direction = direction;
+                    renderSelected();
+                });
+                toggle.appendChild(button);
+            });
+            row.appendChild(toggle);
+
+            const strength = document.createElement('div');
+            strength.className = 'refine-strength';
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = '0';
+            slider.max = String(alphaSteps.length - 1);
+            slider.step = '1';
+            slider.value = String(nearestAlphaIndex(entry.weight));
+            const readout = document.createElement('span');
+            readout.className = 'refine-alpha';
+            readout.textContent = entry.weight.toFixed(1);
+            slider.addEventListener('input', () => {
+                const alpha = alphaSteps[parseInt(slider.value, 10)];
+                selectedTerms[index].weight = alpha;
+                readout.textContent = alpha.toFixed(1);
+            });
+            strength.appendChild(slider);
+            strength.appendChild(readout);
+            row.appendChild(strength);
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'refine-remove';
+            remove.setAttribute('aria-label', `Remove ${entry.term}`);
+            remove.textContent = 'x';
+            remove.addEventListener('click', () => {
+                selectedTerms.splice(index, 1);
+                renderSelected();
+                renderPicker();
+            });
+            row.appendChild(remove);
+
+            refineList.appendChild(row);
+        });
+    }
+
+    function renderPicker() {
+        const chosen = new Set(selectedTerms.map(t => t.term));
+        refinePicker.querySelectorAll('.refine-chip').forEach(chip => {
+            chip.disabled = chosen.has(chip.dataset.term) || selectedTerms.length >= maxTerms;
+        });
+    }
+
+    function buildPicker(categories) {
+        refinePicker.innerHTML = '';
+        categories.forEach(category => {
+            const block = document.createElement('div');
+            block.className = 'refine-category';
+            const heading = document.createElement('h4');
+            heading.textContent = category.label;
+            block.appendChild(heading);
+            category.terms.forEach(item => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'refine-chip';
+                chip.dataset.term = item.term;
+                chip.textContent = item.term;
+                if (typeof item.grounding === 'number') {
+                    chip.title = `evidence score ${item.grounding.toFixed(2)}`;
+                }
+                chip.addEventListener('click', () => {
+                    if (selectedTerms.length >= maxTerms) return;
+                    if (selectedTerms.some(t => t.term === item.term)) return;
+                    selectedTerms.push({ term: item.term, direction: 'more', weight: defaultAlpha });
+                    refinePicker.classList.add('hidden');
+                    renderSelected();
+                    renderPicker();
+                });
+                block.appendChild(chip);
+            });
+            refinePicker.appendChild(block);
+        });
+    }
+
+    refineAdd.addEventListener('click', () => {
+        refinePicker.classList.toggle('hidden');
+        renderPicker();
+    });
+
+    async function loadConcepts() {
+        try {
+            const response = await fetch("{{ url_for('clap_search_bp.clap_concepts_api') }}");
+            const data = await response.json();
+            if (!data.available || !data.categories || !data.categories.length) return;
+
+            alphaSteps = data.alpha_steps || alphaSteps;
+            defaultAlpha = data.default_alpha || defaultAlpha;
+            maxTerms = data.max_terms || maxTerms;
+            document.getElementById('refine-max').textContent = String(maxTerms);
+            buildPicker(data.categories);
+            refineGroup.classList.remove('hidden');
+            renderSelected();
+        } catch (error) {
+            // Steering is optional: leave the plain search untouched if it is unavailable.
+        }
+    }
+    loadConcepts();
+
     // Search form submission
     searchForm.addEventListener('submit', async function(e) {
         e.preventDefault();
         
         const query = searchQuery.value.trim();
         const limit = parseInt(document.getElementById('limit').value);
+        const steering = selectedTerms.map(t => ({
+            term: t.term,
+            weight: t.weight,
+            direction: t.direction,
+        }));
         
         if (!query || query.length < 1) {
             alert('Please enter at least 1 character');
@@ -281,7 +585,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const response = await fetch("{{ url_for('clap_search_bp.clap_search_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query, limit })
+                body: JSON.stringify(steering.length ? { query, limit, steering } : { query, limit })
             });
             
             const data = await response.json();
@@ -291,21 +595,29 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
             currentResults = data.results || [];
-            displayResults(currentResults, query);
+            displayResults(currentResults, query, data.steering);
+            if (data.steering_warnings && data.steering_warnings.length) {
+                refineNote.textContent = data.steering_warnings.join(' ');
+            }
             
         } catch (error) {
             resultsList.innerHTML = `<div class="error-message">❌ ${error.message}</div>`;
         }
     });
     
-    function displayResults(results, query) {
+    function displayResults(results, query, steering) {
         if (results.length === 0) {
             resultsList.innerHTML = '<p>No results found. Try a different query.</p>';
             resultCount.textContent = '';
             return;
         }
-        
-        resultCount.textContent = `Found ${results.length} matches for "${query}"`;
+
+        const refinement = (steering || [])
+            .map(t => `${t.direction === 'less' ? '-' : '+'}${t.term} x${t.weight}`)
+            .join(', ');
+        resultCount.textContent = refinement
+            ? `Found ${results.length} matches for "${query}" refined by ${refinement}`
+            : `Found ${results.length} matches for "${query}"`;
 
         resultsList.innerHTML = renderSongList(results, { metric: songSimilarityBadge });
 

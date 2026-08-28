@@ -78,3 +78,10 @@ analysis.md
 lyrics_model_gte_vnni.tar.gz
 .reasonix/
 metadata/
+
+# SAE sparse-autoencoder workspace: training code, the 4 GB venv, the embedding
+# corpus, checkpoints and exported models. None of it belongs in the repo. The
+# three runtime artifacts (encoder/decoder .onnx and the concept catalogue) are
+# read from the project root at runtime and will move to a release download,
+# like the other models, rather than being committed here.
+/SAE/

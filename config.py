@@ -256,7 +256,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.5.0"
+APP_VERSION = "v3.5.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1012,6 +1012,42 @@ CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").l
 
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
+
+# Sparse-autoencoder concept steering over the DCLAP space (arXiv:2608.08757).
+# Concepts re-rank the retrieved candidates instead of editing the query vector.
+# Editing the query (the paper's equations 6 and 7) was measured to either do
+# nothing at 0.5 or overwrite the query at 2.0, because a query vector moved
+# toward two concepts lands between their clusters rather than in the overlap.
+# Re-ranking scores every candidate on each requested concept and orders by the
+# WEAKEST of them, which is a real conjunction: a track missing one concept
+# cannot be rescued by being strong on another. The index is never touched.
+# The three artifacts are produced by SAE/validate_concepts.py and sit at the
+# project root, which is /app inside the container; they will be fetched from a
+# GitHub release like the other models once the feature ships.
+CLAP_SAE_STEERING_ENABLED = os.environ.get("CLAP_SAE_STEERING_ENABLED", "true").lower() == "true"
+CLAP_SAE_MODEL_PATH = os.environ.get(
+    "CLAP_SAE_MODEL_PATH", "/app/dclap_sae_k20_d1024_best_decoder.onnx"
+)
+CLAP_SAE_ENCODER_PATH = os.environ.get(
+    "CLAP_SAE_ENCODER_PATH", "/app/dclap_sae_k20_d1024_best_encoder.onnx"
+)
+CLAP_SAE_CONCEPTS_PATH = os.environ.get(
+    "CLAP_SAE_CONCEPTS_PATH", "/app/dclap_sae_concepts.json"
+)
+# A refinement may stack at most this many concepts; the paper steers one at a
+# time, so beyond a handful the edits start fighting each other.
+CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
+# Strength grid from the paper (alpha). The UI exposes exactly these steps.
+# A low default is deliberate: a strong setting displaces the query itself rather
+# than refining it, so 0.5 nudges the ranking while leaving the search intact.
+CLAP_SAE_ALPHA_STEPS = [0.1, 0.2, 0.5, 1.0, 2.0]
+CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "0.5"))
+# How many neighbours the text search fetches before the concept re-rank runs.
+# The re-rank can only reorder what retrieval returned, so this is the real reach
+# of a refinement; 1000 candidates cost about 6 ms to encode.
+CLAP_SAE_RERANK_CANDIDATES = int(os.environ.get("CLAP_SAE_RERANK_CANDIDATES", "1000"))
+# Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
+CLAP_SAE_IDLE_UNLOAD_SECONDS = int(os.environ.get("CLAP_SAE_IDLE_UNLOAD_SECONDS", "300"))
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)

@@ -82,6 +82,27 @@ def clap_search_api():
                 minimum: 1
                 maximum: 500
                 default: 100
+              steering:
+                type: array
+                description: >
+                  Optional SAE concept steering. Omit it for the plain search.
+                  Only terms returned by /api/clap/concepts are accepted.
+                maxItems: 10
+                items:
+                  type: object
+                  required: [term]
+                  properties:
+                    term:
+                      type: string
+                      example: piano
+                    weight:
+                      type: number
+                      enum: [0.1, 0.2, 0.5, 1.0, 2.0]
+                      default: 1.0
+                    direction:
+                      type: string
+                      enum: [more, less]
+                      default: more
     responses:
       200:
         description: Search results sorted by descending similarity.
@@ -116,6 +137,7 @@ def clap_search_api():
         description: CLAP cache not loaded yet (run analysis first).
     """
     from config import CLAP_ENABLED
+    from tasks.clap_steering import normalize_terms
     from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
     from app_helper import attach_song_features
 
@@ -159,13 +181,23 @@ def clap_search_api():
                 {'error': 'CLAP cache not loaded. Please run song analysis first.', 'results': []}
             ), 503
 
+        # Optional concept steering. Absent or empty means the legacy search path.
+        steering, steering_warnings = normalize_terms(data.get('steering'))
+        if data.get('steering') and not steering and steering_warnings:
+            return jsonify({'error': steering_warnings[0], 'results': []}), 400
+
         # Perform search
-        results = search_by_text(query, limit=limit)
+        results = search_by_text(query, limit=limit, steering=steering)
         attach_song_features(results)
 
         results = app_server_context.scope_results(results, limit, id_key='item_id')
 
-        return jsonify({'query': query, 'results': results, 'count': len(results)})
+        payload = {'query': query, 'results': results, 'count': len(results)}
+        if steering:
+            payload['steering'] = steering
+        if steering_warnings:
+            payload['steering_warnings'] = steering_warnings
+        return jsonify(payload)
 
     except ValueError as e:
         logger.warning(f"ValueError in DCLAP search API: {e}")
@@ -302,6 +334,69 @@ def refresh_cache_api():
         return jsonify(
             {'success': False, 'error': 'An internal error occurred. Please try again later.'}
         ), 500
+
+
+@clap_search_bp.route('/api/clap/concepts', methods=['GET'])
+def clap_concepts_api():
+    """
+    List the concept terms available for steering a DCLAP search.
+    ---
+    tags:
+      - CLAP Search
+    summary: Return the validated steering vocabulary, grouped by category.
+    description: >
+      Only terms whose SAE latents agree with CLAP's own ranking on this library
+      are listed, so a term returned here is known to work. Feed any of them back
+      to /api/clap/search in the optional "steering" array.
+    responses:
+      200:
+        description: The steering vocabulary, or availability:false with a reason.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                available:
+                  type: boolean
+                reason:
+                  type: string
+                  nullable: true
+                max_terms:
+                  type: integer
+                default_alpha:
+                  type: number
+                alpha_steps:
+                  type: array
+                  items:
+                    type: number
+                categories:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      category:
+                        type: string
+                      label:
+                        type: string
+                      terms:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            term:
+                              type: string
+                            grounding:
+                              type: number
+      500:
+        description: Internal error while reading the concept catalogue.
+    """
+    from tasks.clap_steering import get_catalogue
+
+    try:
+        return jsonify(get_catalogue())
+    except Exception:
+        logger.exception("DCLAP concepts API error")
+        return jsonify({'error': 'An internal server error occurred reading the concepts.'}), 500
 
 
 @clap_search_bp.route('/api/clap/stats', methods=['GET'])

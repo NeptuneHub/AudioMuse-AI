@@ -36,6 +36,7 @@ EXCLUDED_DIRS = {
     "dist",
     "pginstall",
     "native-build",
+    "SAE",
     "test",
     "scripts",
     "screenshot",
