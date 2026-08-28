@@ -71,6 +71,10 @@ jobs:
         curl -L "${base_url}/musicnn_embedding.onnx" -o "test/models/musicnn_embedding.onnx"
         echo "Downloading MusiCNN prediction model..."
         curl -L "${base_url}/musicnn_prediction.onnx" -o "test/models/musicnn_prediction.onnx"
+        sae_url="https://github.com/NeptuneHub/AudioMuse-AI-SAE/releases/download/v1"
+        echo "Downloading SAE concept steering graphs..."
+        curl -L "${sae_url}/dclap_sae_k20_d1024_best_encoder.onnx" -o "test/models/dclap_sae_k20_d1024_best_encoder.onnx"
+        curl -L "${sae_url}/dclap_sae_k20_d1024_best_decoder.onnx" -o "test/models/dclap_sae_k20_d1024_best_decoder.onnx"
         echo "Models downloaded successfully"
         ls -lh test/models/
 
@@ -141,6 +145,7 @@ jobs:
     - name: Run all integration tests
       env:
         AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_migration_test
+        SAE_MODEL_DIR: test/models
       run: |
         # Run the WHOLE integration dir so any new test/integration/test_*.py is
         # picked up automatically (no per-file list to keep in sync). DB-backed

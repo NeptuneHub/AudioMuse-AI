@@ -1013,6 +1013,14 @@ CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").l
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 
+# Root of the files that ship inside the application: the source directory in a
+# normal checkout, and the unpacked bundle when running as a frozen build.
+def _bundle_data_root():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 # Sparse-autoencoder concept steering over the DCLAP space (arXiv:2608.08757).
 # Equations 6 and 7: the query embedding is encoded into sparse concept latents,
 # the chosen concept's coordinates are moved by alpha times a unit norm mask, and
@@ -1030,8 +1038,11 @@ CLAP_SAE_MODEL_PATH = os.environ.get(
 CLAP_SAE_ENCODER_PATH = os.environ.get(
     "CLAP_SAE_ENCODER_PATH", "/app/model/dclap_sae_k20_d1024_best_encoder.onnx"
 )
+# The concept catalogue ships inside the repository, so it resolves from the
+# bundle root the same way the other shipped JSON files do. Only the two ONNX
+# graphs are fetched from the AudioMuse-AI-SAE release.
 CLAP_SAE_CONCEPTS_PATH = os.environ.get(
-    "CLAP_SAE_CONCEPTS_PATH", "/app/dclap_sae_concepts.json"
+    "CLAP_SAE_CONCEPTS_PATH", os.path.join(_bundle_data_root(), "dclap_sae_concepts.json")
 )
 # A refinement may stack at most this many concepts; the paper steers one at a
 # time, so beyond a handful the edits start fighting each other.
@@ -1154,10 +1165,6 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 # in potentially shorter paths). Can be overridden via env var PATH_FIX_SIZE.
 PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
-def _bundle_data_root():
-    if getattr(sys, "frozen", False):
-        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.dirname(os.path.abspath(__file__))
 
 
 # Path to the JSON file containing mood centroids for the path-to-mood feature.
