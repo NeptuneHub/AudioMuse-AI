@@ -1014,13 +1014,12 @@ CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_t
 CLAP_EMBEDDING_DIMENSION = 512
 
 # Sparse-autoencoder concept steering over the DCLAP space (arXiv:2608.08757).
-# Concepts re-rank the retrieved candidates instead of editing the query vector.
-# Editing the query (the paper's equations 6 and 7) was measured to either do
-# nothing at 0.5 or overwrite the query at 2.0, because a query vector moved
-# toward two concepts lands between their clusters rather than in the overlap.
-# Re-ranking scores every candidate on each requested concept and orders by the
-# WEAKEST of them, which is a real conjunction: a track missing one concept
-# cannot be rescued by being strong on another. The index is never touched.
+# Equations 6 and 7: the query embedding is encoded into sparse concept latents,
+# the chosen concept's coordinates are moved by alpha times a unit norm mask, and
+# the edited code is decoded back. Only the difference between the edited and the
+# unedited reconstruction is applied, because the autoencoder does not round trip
+# a text embedding exactly. The index is never touched: only the query moves, so
+# storage dtype and paging are unaffected.
 # The two ONNX graphs are downloaded into model/ by the Dockerfile from the
 # AudioMuse-AI-SAE release, like the other models. The concept catalogue is small
 # and ships in the repository at the project root, which is /app in the container.
@@ -1037,15 +1036,12 @@ CLAP_SAE_CONCEPTS_PATH = os.environ.get(
 # A refinement may stack at most this many concepts; the paper steers one at a
 # time, so beyond a handful the edits start fighting each other.
 CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
-# Strength grid from the paper (alpha). The UI exposes exactly these steps.
-# A low default is deliberate: a strong setting displaces the query itself rather
-# than refining it, so 0.5 nudges the ranking while leaving the search intact.
-CLAP_SAE_ALPHA_STEPS = [0.1, 0.2, 0.5, 1.0, 2.0]
-CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "0.5"))
-# How many neighbours the text search fetches before the concept re-rank runs.
-# The re-rank can only reorder what retrieval returned, so this is the real reach
-# of a refinement; 1000 candidates cost about 6 ms to encode.
-CLAP_SAE_RERANK_CANDIDATES = int(os.environ.get("CLAP_SAE_RERANK_CANDIDATES", "1000"))
+# Strength grid (alpha). Each concept mask is L2 normalised, so alpha is a fixed
+# length step in latent space and means the same for every concept. The paper's
+# own grid stops at 2.0, which on this dictionary's activation scale is close to
+# a no-op, so the usable range sits an order of magnitude higher.
+CLAP_SAE_ALPHA_STEPS = [1.0, 3.0, 5.0, 10.0]
+CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "5.0"))
 # Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
 CLAP_SAE_IDLE_UNLOAD_SECONDS = int(os.environ.get("CLAP_SAE_IDLE_UNLOAD_SECONDS", "300"))
 # CPU threading for CLAP analysis:

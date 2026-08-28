@@ -34,11 +34,14 @@ the reason a term absent from the library cannot silently return noise.
 Main Features:
 * Lazy warmup and idle unload of the decoder session, matching how the CLAP and
   GTE models are handled, so an unused feature costs no resident memory.
-* rank_candidates scores retrieved tracks on every requested concept and
-  returns the WEAKEST score per track, so a refinement is a conjunction rather
-  than a nudge: missing one concept cannot be offset by excelling at another.
-* Scores are percentiles of the concept's share of a track's total activation,
-  which stops globally loud tracks from winning every concept at once.
+* Each concept is a unit norm mask over its latents, so one strength setting
+  means the same step for every concept in the catalogue.
+* Only the difference between the edited and the unedited reconstruction is
+  applied to the query. The autoencoder does not round trip a text embedding
+  exactly, and returning the raw reconstruction would change most of the results
+  before any concept was touched.
+* Suppression clamps the code at zero, amplification does not: clamping a
+  positive edit could only distort it.
 * The shipped catalogue carries no track names: a concept is a latent support
   and a grounding score, never an example out of somebody's library.
 * rank_candidates returns None when no concept is requested, so a search with no
@@ -269,42 +272,52 @@ def normalize_terms(raw_terms):
     return cleaned, problems
 
 
-def rank_candidates(vectors, terms):
-    if vectors is None or not terms or len(vectors) == 0:
-        return None, []
+def apply_steering(embedding, terms):
+    if embedding is None or not terms:
+        return embedding, []
 
     with _LOCK:
         if not _warmup_locked():
-            return None, []
+            return embedding, []
         _STATE['last_used'] = time.time()
         encoder, encoder_input = _STATE['encoder'], _STATE['encoder_input']
+        decoder, decoder_input = _STATE['decoder'], _STATE['decoder_input']
+        d_sae = _STATE['d_sae']
         entries = [(t, _STATE['concepts'].get(t['term'])) for t in terms]
 
-    rows = np.asarray(vectors, dtype=np.float32)
-    if rows.ndim != 2 or rows.shape[0] == 0:
-        return None, []
+    query = np.asarray(embedding, dtype=np.float32).reshape(1, -1)
+    magnitude = float(np.linalg.norm(query))
+    if magnitude <= 1e-8:
+        return embedding, []
 
-    try:
-        acts = encoder.run(None, {encoder_input: rows})[0].astype(np.float32)
-    except Exception:
-        logger.exception("CLAP concept encoder failed, leaving the ranking untouched")
-        return None, []
-
-    total = np.maximum(acts.sum(axis=1), 1e-6)
-    n = acts.shape[0]
+    edit = np.zeros((1, d_sae), dtype=np.float32)
     applied = []
-    scores = []
+    suppressing = False
     for term, entry in entries:
         if entry is None:
             continue
-        share = acts[:, np.asarray(entry['support'], dtype=np.int64)].sum(axis=1) / total
-        percentile = share.argsort().argsort().astype(np.float32) / max(1, n - 1)
-        if term['direction'] == 'less':
-            percentile = 1.0 - percentile
-        strength = min(1.0, float(term['weight']))
-        scores.append(1.0 - strength * (1.0 - percentile))
+        alpha = term['weight'] if term['direction'] == 'more' else -term['weight']
+        suppressing = suppressing or alpha < 0
+        edit[0, np.asarray(entry['support'], dtype=np.int64)] += (
+            alpha * np.asarray(entry['mask'], dtype=np.float32)
+        )
         applied.append(term)
+    if not applied:
+        return embedding, []
 
-    if not scores:
-        return None, []
-    return np.min(np.stack(scores), axis=0), applied
+    try:
+        original = encoder.run(None, {encoder_input: query})[0].astype(np.float32)
+        edited = original + edit
+        if suppressing:
+            edited = np.maximum(edited, 0.0)
+        pair = np.concatenate([original, edited], axis=0)
+        decoded = decoder.run(None, {decoder_input: pair})[0].astype(np.float32)
+    except Exception:
+        logger.exception("CLAP steering failed, returning the unsteered query")
+        return embedding, []
+
+    steered = query.reshape(-1) + (decoded[1] - decoded[0])
+    norm = float(np.linalg.norm(steered))
+    if norm <= 1e-8 or not np.isfinite(steered).all():
+        return embedding, []
+    return (steered / norm * magnitude).astype(np.float32), applied

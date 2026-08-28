@@ -168,41 +168,7 @@ def is_clap_cache_loaded() -> bool:
     return _CLAP_CACHE['loaded']
 
 
-def _apply_concept_rerank(ivf_index, neighbor_ids, distances, steering):
-    from .clap_steering import rank_candidates
-
-    try:
-        int_ids = [int(v) for v in neighbor_ids]
-        vector_map = ivf_index.get_vectors(int_ids)
-        rows = np.stack([vector_map[i] for i in int_ids if i in vector_map])
-        kept = [i for i in int_ids if i in vector_map]
-        if rows.shape[0] != len(int_ids):
-            logger.warning(
-                "Concept re-rank got %d of %d candidate vectors", rows.shape[0], len(int_ids)
-            )
-        if rows.shape[0] == 0:
-            return neighbor_ids, distances
-
-        scores, applied = rank_candidates(rows, steering)
-        if scores is None or not applied:
-            return neighbor_ids, distances
-
-        position = {vec_id: n for n, vec_id in enumerate(int_ids)}
-        order = np.argsort(-scores, kind='stable')
-        ranked_ids = [kept[i] for i in order]
-        ranked_distances = [distances[position[i]] for i in ranked_ids]
-        logger.info(
-            "Concept re-rank over %d candidates by %s",
-            rows.shape[0],
-            ", ".join(f"{t['direction']} {t['term']} x{t['weight']}" for t in applied),
-        )
-        return np.asarray(ranked_ids), np.asarray(ranked_distances)
-    except Exception:
-        logger.exception("Concept re-rank failed, keeping the plain text ranking")
-        return neighbor_ids, distances
-
-
-def _query_clap_index(text_embedding, fetch_size, limit, artist_cap, steering):
+def _query_clap_index(text_embedding, fetch_size, limit, artist_cap):
     from .paged_ivf import begin_query
 
     ivf_index = _CLAP_INDEX_CACHE['index']
@@ -215,11 +181,6 @@ def _query_clap_index(text_embedding, fetch_size, limit, artist_cap, steering):
         return []
 
     neighbor_ids, distances = ivf_index.query(text_embedding, k=num_to_query)
-    if steering:
-        neighbor_ids, distances = _apply_concept_rerank(
-            ivf_index, neighbor_ids, distances, steering
-        )
-
     candidate_item_ids = [id_map.get(int(vec_id)) for vec_id in neighbor_ids]
     candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
     metadata_map = _fetch_clap_metadata(candidate_item_ids)
@@ -250,6 +211,16 @@ def search_by_text(query_text: str, limit: int = 100, steering: Optional[List[Di
             logger.error(f"Failed to generate text embedding for: {query_text}")
             return []
 
+        if steering:
+            from .clap_steering import apply_steering
+
+            text_embedding, applied = apply_steering(text_embedding, steering)
+            if applied:
+                logger.info(
+                    "Query steered by %s",
+                    ", ".join(f"{t['direction']} {t['term']} x{t['weight']}" for t in applied),
+                )
+
         from config import MAX_SONGS_PER_ARTIST
 
         artist_cap = (
@@ -258,13 +229,9 @@ def search_by_text(query_text: str, limit: int = 100, steering: Optional[List[Di
         if limit >= 1000:
             artist_cap = 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
-        if steering:
-            from config import CLAP_SAE_RERANK_CANDIDATES
-
-            fetch_size = max(fetch_size, CLAP_SAE_RERANK_CANDIDATES)
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
-            results = _query_clap_index(text_embedding, fetch_size, limit, artist_cap, steering)
+            results = _query_clap_index(text_embedding, fetch_size, limit, artist_cap)
             logger.info(
                 f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})"
             )

@@ -113,13 +113,13 @@ def test_real_sae_steering_matches_expected_vectors(monkeypatch):
     input_name = clap_steering._STATE['encoder_input']
     activations = session.run(None, {input_name: rows})[0].astype(np.float32)
 
-    scores = {}
+    steered = {}
     for term in probes:
-        terms, warnings = clap_steering.normalize_terms([{'term': term, 'weight': 1.0}])
+        terms, warnings = clap_steering.normalize_terms([{'term': term, 'weight': 3.0}])
         assert warnings == [], warnings
-        ranked, applied = clap_steering.rank_candidates(rows, terms)
+        vector, applied = clap_steering.apply_steering(rows[0], terms)
         assert len(applied) == 1
-        scores[term] = ranked
+        steered[term] = np.asarray(vector, dtype=np.float32)
 
     encoder_sha = _sha256(encoder_path)
     expected_path = _REPO_ROOT / 'test' / 'sae_steering_expected.json'
@@ -142,7 +142,7 @@ def test_real_sae_steering_matches_expected_vectors(monkeypatch):
             '_meta': current_meta,
             'activation_checksum': [float(v) for v in activations.sum(axis=1)],
             'active_counts': [int(v) for v in (activations > 0).sum(axis=1)],
-            'scores': {term: [float(v) for v in scores[term]] for term in probes},
+            'steered': {term: [float(v) for v in steered[term]] for term in probes},
         }
         with open(expected_path, 'w', newline='\n') as handle:
             json.dump(payload, handle, indent=2)
@@ -174,17 +174,17 @@ def test_real_sae_steering_matches_expected_vectors(monkeypatch):
     assert [int(v) for v in (activations > 0).sum(axis=1)] == expected['active_counts']
 
     for term in probes:
-        assert term in expected['scores'], f'{term} is not in the baseline; re-record it'
+        assert term in expected['steered'], f'{term} is not in the baseline; re-record it'
         np.testing.assert_allclose(
-            scores[term],
-            np.asarray(expected['scores'][term], dtype=np.float64),
+            steered[term],
+            np.asarray(expected['steered'][term], dtype=np.float64),
             rtol=0,
             atol=SCORE_TOLERANCE,
-            err_msg=f'concept ranking for "{term}" drifted from the recorded baseline',
+            err_msg=f'the steered query for "{term}" drifted from the recorded baseline',
         )
 
 
-def test_real_sae_ranking_holds_its_invariants(monkeypatch):
+def test_real_sae_steering_holds_its_invariants(monkeypatch):
     if importlib.util.find_spec('onnxruntime') is None:
         pytest.skip('onnxruntime is not installed')
 
@@ -205,35 +205,38 @@ def test_real_sae_ranking_holds_its_invariants(monkeypatch):
         clap_steering._STATE[key] = None
     assert clap_steering.warmup(), clap_steering._STATE['unavailable_reason']
 
-    rows = _probe_embeddings()
+    query = _probe_embeddings()[0]
     catalogue = clap_steering.get_catalogue()
     offered = {t['term'] for group in catalogue['categories'] for t in group['terms']}
     pair = [term for term in ('saxophone', 'female vocals') if term in offered]
     if len(pair) < 2:
         pytest.skip('the catalogue does not offer both probe concepts')
 
-    assert clap_steering.rank_candidates(rows, []) == (None, [])
+    assert clap_steering.apply_steering(query, []) == (query, [])
 
-    single_a, _ = clap_steering.normalize_terms([{'term': pair[0], 'weight': 1.0}])
-    single_b, _ = clap_steering.normalize_terms([{'term': pair[1], 'weight': 1.0}])
-    both, _ = clap_steering.normalize_terms(
-        [{'term': pair[0], 'weight': 1.0}, {'term': pair[1], 'weight': 1.0}]
+    for concept in catalogue['categories']:
+        for term in concept['terms']:
+            entry = clap_steering._STATE['concepts'][term['term']]
+            norm = float(np.linalg.norm(np.asarray(entry['mask'], dtype=np.float64)))
+            assert abs(norm - 1.0) < 1e-4, f'{term["term"]} mask is not unit norm'
+
+    gentle, _ = clap_steering.normalize_terms([{'term': pair[0], 'weight': 1.0}])
+    strong, _ = clap_steering.normalize_terms([{'term': pair[0], 'weight': 10.0}])
+    near, _ = clap_steering.apply_steering(query, gentle)
+    far, _ = clap_steering.apply_steering(query, strong)
+    assert float(far @ query) < float(near @ query) < 1.0
+
+    assert abs(float(np.linalg.norm(near)) - float(np.linalg.norm(query))) < 1e-4
+
+    both, applied = clap_steering.normalize_terms(
+        [{'term': pair[0], 'weight': 3.0}, {'term': pair[1], 'weight': 3.0}]
     )
-    score_a, _ = clap_steering.rank_candidates(rows, single_a)
-    score_b, _ = clap_steering.rank_candidates(rows, single_b)
-    score_both, _ = clap_steering.rank_candidates(rows, both)
-
-    assert np.all(score_both <= np.minimum(score_a, score_b) + 1e-6)
-
-    less, _ = clap_steering.normalize_terms(
-        [{'term': pair[0], 'weight': 1.0, 'direction': 'less'}]
+    combined, used = clap_steering.apply_steering(query, both)
+    assert len(used) == 2
+    single, _ = clap_steering.apply_steering(
+        query, clap_steering.normalize_terms([{'term': pair[0], 'weight': 3.0}])[0]
     )
-    score_less, _ = clap_steering.rank_candidates(rows, less)
-    assert score_a.argmax() != score_less.argmax()
-
-    gentle, _ = clap_steering.normalize_terms([{'term': pair[0], 'weight': 0.1}])
-    score_gentle, _ = clap_steering.rank_candidates(rows, gentle)
-    assert score_gentle.min() > score_a.min()
+    assert not np.allclose(combined, single)
 
     unknown, warnings = clap_steering.normalize_terms([{'term': 'a concept nobody trained'}])
     assert unknown == []
