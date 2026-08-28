@@ -1037,11 +1037,12 @@ CLAP_SAE_CONCEPTS_PATH = os.environ.get(
 # time, so beyond a handful the edits start fighting each other.
 CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
 # Strength grid (alpha). Each concept mask is L2 normalised, so alpha is a fixed
-# length step in latent space and means the same for every concept. The paper's
-# own grid stops at 2.0, which on this dictionary's activation scale is close to
-# a no-op, so the usable range sits an order of magnitude higher.
-CLAP_SAE_ALPHA_STEPS = [1.0, 3.0, 5.0, 10.0]
-CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "5.0"))
+# length step in latent space and means the same for every concept. The grid stops
+# at 5: beyond that the edit stops refining the query and starts replacing it, and
+# an instrument concept begins returning instrumental material that has lost the
+# genre and the vocals the query asked for.
+CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0]
+CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "3.0"))
 # Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
 CLAP_SAE_IDLE_UNLOAD_SECONDS = int(os.environ.get("CLAP_SAE_IDLE_UNLOAD_SECONDS", "300"))
 # CPU threading for CLAP analysis:
