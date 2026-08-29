@@ -362,6 +362,7 @@ CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
+AUDIO_MIN_DECODED_FRACTION = float(os.getenv("AUDIO_MIN_DECODED_FRACTION", "0.5")) # Applies to the PyAV fallback only, never to a plain librosa load. When PyAV has to skip corrupt packets, at least this fraction of the duration the container declares must survive, otherwise the track counts as not decodable and is marked as such.
 ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via the queue every poll regardless).
 
 # --- Guided Evolutionary Clustering Constants ---

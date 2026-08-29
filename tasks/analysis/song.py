@@ -51,6 +51,7 @@ import onnxruntime as ort  # noqa: F401
 
 from config import (
     AUDIO_LOAD_TIMEOUT,
+    AUDIO_MIN_DECODED_FRACTION,
     MUSICNN_BATCH_SIZE,
     OTHER_FEATURE_LABELS,
     PER_SONG_MODEL_RELOAD,
@@ -277,6 +278,32 @@ def _frame_to_mono_mean(rframe):
     return arr.astype(np.float32, copy=False)
 
 
+def _declared_seconds(container):
+    import av
+
+    if not container.duration:
+        return None
+    declared = float(container.duration) / av.time_base
+    if declared <= 0:
+        return None
+    return min(declared, AUDIO_LOAD_TIMEOUT) if AUDIO_LOAD_TIMEOUT else declared
+
+
+def _enough_survived(audio, sr, declared, name):
+    if not declared or not sr or not AUDIO_MIN_DECODED_FRACTION:
+        return True
+    recovered = audio.size / float(sr)
+    if recovered >= declared * AUDIO_MIN_DECODED_FRACTION:
+        return True
+    logger.error(
+        "Only %.1fs of the %.1fs %s declares survived the corrupt packets (%.0f%%, "
+        "minimum %.0f%%); treating it as not decodable.",
+        recovered, declared, name, 100.0 * recovered / declared,
+        100.0 * AUDIO_MIN_DECODED_FRACTION,
+    )
+    return False
+
+
 def _tolerant_frames(container, stream, skipped):
     import av
 
@@ -298,9 +325,11 @@ def _decode_audio_with_pyav(file_path, target_sr):
     total = 0
     actual_sr = target_sr
     skipped = [0]
+    declared = None
     with av.open(file_path) as container:
         if not container.streams.audio:
             return np.array([], dtype=np.float32), actual_sr
+        declared = _declared_seconds(container)
         stream = container.streams.audio[0]
         resampler = av.audio.resampler.AudioResampler(
             format="fltp", layout=stream.layout, rate=target_sr
@@ -325,16 +354,19 @@ def _decode_audio_with_pyav(file_path, target_sr):
             arr = _frame_to_mono_mean(rframe)
             if arr.size:
                 chunks.append(arr)
+    name = os.path.basename(file_path)
     if skipped[0]:
         logger.warning(
             "Skipped %d corrupt audio packet(s) while decoding %s; the recovered "
-            "audio is shorter than the file claims.", skipped[0], os.path.basename(file_path)
+            "audio is shorter than the file claims.", skipped[0], name
         )
     if not chunks:
         return np.array([], dtype=np.float32), actual_sr
     audio = np.concatenate(chunks).astype(np.float32, copy=False)
     if max_samples:
         audio = audio[:max_samples]
+    if not _enough_survived(audio, actual_sr, declared, name):
+        return np.array([], dtype=np.float32), actual_sr
     return audio, actual_sr
 
 

@@ -1456,6 +1456,101 @@ class TestRobustLoadAudioWithFallback:
         assert call_args.kwargs['duration'] == 600
 
 
+class TestPyAVRejectsWhatIsMostlyLost:
+    RATE = 44100
+
+    def _write_mp3(self, path, seconds):
+        import av
+
+        with av.open(str(path), 'w') as container:
+            stream = container.add_stream('mp3', rate=self.RATE)
+            stream.layout = 'stereo'
+            n = int(self.RATE * seconds)
+            t = np.arange(n, dtype=np.float32) / self.RATE
+            data = np.vstack([np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 660 * t)])
+            data = (data * 0.5 * 32767).astype(np.int16)
+            frame = av.AudioFrame.from_ndarray(
+                data.T.reshape(1, -1), format='s16', layout='stereo'
+            )
+            frame.sample_rate = self.RATE
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+
+    def test_a_lightly_damaged_file_stays_above_the_floor(self, tmp_path):
+        good = tmp_path / 'good.mp3'
+        bad = tmp_path / 'nicked.mp3'
+        self._write_mp3(good, 10.0)
+        raw = bytearray(good.read_bytes())
+        offset = len(raw) // 2
+        raw[offset:offset + 383] = (bytes([0x0b, 0x4e, 0x88, 0xf9]) * 383)[:383]
+        bad.write_bytes(bytes(raw))
+
+        audio, sr = _decode_audio_with_pyav(str(bad), None)
+
+        assert audio.size / sr > 9.0
+
+    def test_losing_most_of_the_declared_duration_is_rejected(self, tmp_path, caplog):
+        good = tmp_path / 'good.mp3'
+        stump = tmp_path / 'stump.mp3'
+        self._write_mp3(good, 10.0)
+        raw = good.read_bytes()
+        stump.write_bytes(raw[: len(raw) // 4])
+
+        with caplog.at_level(logging.ERROR, logger='tasks.analysis.song'):
+            audio, _sr = _decode_audio_with_pyav(str(stump), None)
+
+        assert audio.size == 0
+        assert 'not decodable' in caplog.text
+
+    def test_the_floor_only_applies_once_librosa_has_given_up(self, tmp_path):
+        good = tmp_path / 'good.mp3'
+        stump = tmp_path / 'stump.mp3'
+        self._write_mp3(good, 10.0)
+        raw = good.read_bytes()
+        stump.write_bytes(raw[: len(raw) // 4])
+
+        kept, _sr = robust_load_audio_with_fallback(str(stump), target_sr=None)
+        assert kept is not None and kept.size > 0
+
+        with patch('tasks.analysis.song.librosa.load', side_effect=RuntimeError('boom')):
+            audio, sr = robust_load_audio_with_fallback(str(stump), target_sr=None)
+
+        assert audio is None
+        assert sr is None
+
+    def test_lowering_the_floor_to_zero_accepts_anything_that_decodes(self, tmp_path):
+        from tasks.analysis import song as song_mod
+
+        good = tmp_path / 'good.mp3'
+        stump = tmp_path / 'stump.mp3'
+        self._write_mp3(good, 10.0)
+        raw = good.read_bytes()
+        stump.write_bytes(raw[: len(raw) // 4])
+
+        with patch.object(song_mod, 'AUDIO_MIN_DECODED_FRACTION', 0.0):
+            audio, _sr = _decode_audio_with_pyav(str(stump), None)
+
+        assert audio.size > 0
+
+    def test_the_load_timeout_cap_is_not_mistaken_for_a_loss(self, tmp_path):
+        from tasks.analysis import song as song_mod
+
+        path = tmp_path / 'long.mp3'
+        self._write_mp3(path, 4.0)
+        with patch.object(song_mod, 'AUDIO_LOAD_TIMEOUT', 2):
+            audio, sr = _decode_audio_with_pyav(str(path), None)
+
+        assert audio.size > 0
+        assert audio.size / sr <= 2.5
+
+    def test_an_unknown_declared_duration_never_rejects(self):
+        from tasks.analysis import song as song_mod
+
+        assert song_mod._enough_survived(np.ones(10, dtype=np.float32), 10, None, 'x')
+
+
 class TestPyAVSurvivesCorruptPackets:
     RATE = 44100
 
