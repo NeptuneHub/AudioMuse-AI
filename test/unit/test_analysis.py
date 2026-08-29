@@ -1512,7 +1512,8 @@ class TestPyAVRejectsWhatIsMostlyLost:
         stump.write_bytes(raw[: len(raw) // 4])
 
         kept, _sr = robust_load_audio_with_fallback(str(stump), target_sr=None)
-        assert kept is not None and kept.size > 0
+        assert kept is not None
+        assert kept.size > 0
 
         with patch('tasks.analysis.song.librosa.load', side_effect=RuntimeError('boom')):
             audio, sr = robust_load_audio_with_fallback(str(stump), target_sr=None)
@@ -2975,10 +2976,10 @@ class TestEverySingleStageRerunHandlesUndecodableAudio:
         monkeypatch.setattr(
             album_mod, 'robust_load_audio_with_fallback', lambda *a, **k: (None, None)
         )
+        plan = self._plan(plan_name)
+        calls = _UndecodableCalls()
         with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
-            _run_single_track(
-                self._plan(plan_name), _UndecodableCalls(), monkeypatch, overrides
-            )
+            _run_single_track(plan, calls, monkeypatch, overrides)
 
         assert excinfo.value.cacheable is True, f"{plan_name} would loop forever"
 
@@ -2992,11 +2993,11 @@ class TestEverySingleStageRerunHandlesUndecodableAudio:
 
         monkeypatch.setattr(album_mod._ah, 'ensure_musicnn_sessions', lambda *a, **k: {})
         monkeypatch.setattr(album_mod, 'analyze_track', dead_analyze)
+        plan = TrackPlan(musicnn=True, clap=False, lyrics=False, base=False)
+        recycler = Mock()
         with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
             album_mod._stage_musicnn(
-                '/nonexistent.mp3', 'Artist - Track',
-                TrackPlan(musicnn=True, clap=False, lyrics=False, base=False),
-                {}, Mock(), None, 'Album',
+                '/nonexistent.mp3', 'Artist - Track', plan, {}, recycler, None, 'Album',
             )
 
         assert excinfo.value.cacheable is True
@@ -3053,17 +3054,15 @@ class TestAudioIsReadFromDiskOnlyOnce:
             return _fail
 
         calls = _UndecodableCalls()
+        plan = TrackPlan(musicnn=True, clap=True, lyrics=True, base=False)
+        overrides = {
+            '_stage_musicnn': boom('musicnn'),
+            '_stage_base': boom('base'),
+            '_stage_clap': boom('clap'),
+            '_stage_lyrics': boom('lyrics'),
+        }
         with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
-            _run_single_track(
-                TrackPlan(musicnn=True, clap=True, lyrics=True, base=False),
-                calls, monkeypatch,
-                {
-                    '_stage_musicnn': boom('musicnn'),
-                    '_stage_base': boom('base'),
-                    '_stage_clap': boom('clap'),
-                    '_stage_lyrics': boom('lyrics'),
-                },
-            )
+            _run_single_track(plan, calls, monkeypatch, overrides)
 
         assert calls.decodes == 1
         assert excinfo.value.cacheable is True
@@ -3081,11 +3080,10 @@ class TestAudioIsReadFromDiskOnlyOnce:
             pytest.fail('a stage ran on undecodable audio')
 
         calls = _UndecodableCalls()
+        plan = TrackPlan(**plan_kwargs)
+        overrides = {'_stage_base': boom, '_stage_clap': boom, '_stage_lyrics': boom}
         with pytest.raises(album_mod.TrackNotAnalyzable):
-            _run_single_track(
-                TrackPlan(**plan_kwargs), calls, monkeypatch,
-                {'_stage_base': boom, '_stage_clap': boom, '_stage_lyrics': boom},
-            )
+            _run_single_track(plan, calls, monkeypatch, overrides)
         assert calls.decodes == 1
 
     def test_lyrics_reuses_the_single_decode_instead_of_reading_the_file_again(self, monkeypatch):
