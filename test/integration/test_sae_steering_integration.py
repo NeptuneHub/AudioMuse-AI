@@ -20,8 +20,9 @@ test hermetic and free of anybody's music.
 Main Features:
 * Replays latent activations and concept scores against stored golden vectors.
 * Records a fresh baseline when none is present, the way the lyrics test does.
-* Pins the encoder sha256 in the baseline, so a changed model fails loudly
-  instead of being silently compared against vectors it never produced.
+* Pins the encoder and concept-catalogue sha256 in the baseline, so a changed
+  model or a re-inverted concept fails loudly and by name instead of being
+  silently compared against vectors it never produced.
 * Asserts the properties that must hold whatever the numbers are: conjunction,
   direction inversion and an untouched ranking when nothing is requested.
 """
@@ -126,8 +127,10 @@ def test_real_sae_steering_matches_expected_vectors(monkeypatch):
     explicit_record = os.environ.get('SAE_RECORD_EXPECTED', '').lower() in ('1', 'true', 'yes')
     record_mode = explicit_record or not expected_path.exists()
 
+    concepts_sha = _sha256(concepts_path)
     current_meta = {
         'encoder_sha256': encoder_sha,
+        'concepts_sha256': concepts_sha,
         'd_sae': int(activations.shape[1]),
         'probes': N_PROBES,
         'concepts': probes,
@@ -146,7 +149,8 @@ def test_real_sae_steering_matches_expected_vectors(monkeypatch):
         }
         with open(expected_path, 'w', newline='\n') as handle:
             json.dump(payload, handle, indent=2)
-        print(f'  wrote baseline : {expected_path.name} (encoder sha256={encoder_sha})')
+        print(f'  wrote baseline : {expected_path.name} (encoder sha256={encoder_sha}, '
+              f'concepts sha256={concepts_sha})')
         pytest.skip(f'recorded a fresh baseline in {expected_path.name}; re-run to replay it')
 
     with open(expected_path) as handle:
@@ -161,6 +165,15 @@ def test_real_sae_steering_matches_expected_vectors(monkeypatch):
             f'The recorded vectors in {expected_path.name} are no longer valid for this '
             'model. Delete the file to re-record against the new model, or restore the '
             'model the baseline was recorded with.'
+        )
+    baseline_concepts = baseline_meta.get('concepts_sha256')
+    if baseline_concepts and baseline_concepts != concepts_sha:
+        pytest.fail(
+            'the concept catalogue changed since the baseline was recorded '
+            f'(baseline sha256={baseline_concepts}, current sha256={concepts_sha}). '
+            'Re-inverting a concept moves every steered query that uses it, so the '
+            f'recorded vectors in {expected_path.name} no longer describe this catalogue. '
+            'Delete the file to re-record, or restore the catalogue it was recorded with.'
         )
     assert baseline_meta.get('d_sae') == int(activations.shape[1])
 

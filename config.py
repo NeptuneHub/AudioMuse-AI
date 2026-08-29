@@ -1052,6 +1052,13 @@ CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
 # at 5: beyond that the edit stops refining the query and starts replacing it, and
 # an instrument concept begins returning instrumental material that has lost the
 # genre and the vocals the query asked for.
+# Strength values the refinement UI offers. A step moves the query by the same
+# amount whatever the concept or the collection: measured across queries and
+# concepts, a step of 3 lands at cosine 0.992 to 0.994 of the original, a spread
+# of 0.002, so the scale needs no per-collection calibration. Within this range a
+# concept reorders the results it is given; past roughly 8 it stops refining the
+# query and substitutes its own, which is why the range stops at 5. The reference
+# implementation's own grid stops at 2.0.
 CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0]
 CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "3.0"))
 # Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
