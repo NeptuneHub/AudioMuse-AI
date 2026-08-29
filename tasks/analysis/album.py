@@ -275,10 +275,13 @@ def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings,
 
 def _stage_lyrics(item, path, track_audio, track_sr, track_name_full, top_moods,
                   ensure_download):
-    saved = _ah.run_lyrics_for_track(
-        item, path, track_audio, track_sr, track_name_full,
-        robust_load_audio_with_fallback, top_moods=top_moods, download_fn=ensure_download,
-    )
+    try:
+        saved = _ah.run_lyrics_for_track(
+            item, path, track_audio, track_sr, track_name_full,
+            robust_load_audio_with_fallback, top_moods=top_moods, download_fn=ensure_download,
+        )
+    except AudioNotDecodableError as exc:
+        raise TrackNotAnalyzable(str(exc), cacheable=True) from exc
     if not saved:
         logger.info(
             "  - No lyrics for '%s' (instrumental or ungradable transcript); "
@@ -312,6 +315,14 @@ def _analyze_single_track(
         if path and plan.needs_audio:
             native_audio, native_sr = decode_audio_once(path)
             audio_undecodable = native_audio is None
+            if audio_undecodable:
+                logger.warning(
+                    "  - Audio for '%s' could not be decoded; every stage that needs "
+                    "it is skipped instead of re-reading the file.", track_name_full
+                )
+                raise TrackNotAnalyzable(
+                    f"no decodable audio for {track_name_full}", cacheable=True
+                )
 
         def ensure_download():
             nonlocal path
@@ -368,6 +379,10 @@ def _analyze_single_track(
             produced = produced or clap_saved
 
         if plan.lyrics:
+            if track_audio is None and native_audio is not None and native_sr:
+                track_audio = resample_audio(native_audio, native_sr, 16000)
+                track_sr = 16000
+            native_audio = None
             produced = _stage_lyrics(
                 item, path, track_audio, track_sr, track_name_full, top_moods,
                 ensure_download,

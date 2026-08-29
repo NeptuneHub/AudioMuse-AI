@@ -15,11 +15,21 @@ each result under the canonical catalogue id.
 
 Main Features:
 * analyze_track / robust_load_audio_with_fallback: decode a file and produce the
-  MusiCNN moods + embedding; a track that cannot be decoded returns None. The PyAV
-  fallback averages the channels itself rather than letting swresample downmix,
-  because swresample is power-preserving (1/sqrt(2) per channel) while librosa is
+  MusiCNN moods + embedding; a track that yields no audio at all returns None,
+  while one whose packets are only partly corrupt returns however much decoded
+  cleanly. The PyAV fallback skips undecodable packets rather than abandoning the
+  whole track, and averages the channels itself rather than letting swresample
+  downmix, because swresample is power-preserving (1/sqrt(2) per channel) while librosa is
   amplitude-preserving ((L+R)/2); the two decoders must agree or the same file
   yields different embeddings depending on which one opened it.
+* duration_seconds is MEASURED on the audio that actually decoded, never read from
+  the container header, and two consequences follow. AUDIO_LOAD_TIMEOUT caps the
+  decode at 600s, so a track longer than that already stores a truncated duration
+  today. And a partly corrupt file stores a short duration, which makes the
+  identity duration veto (DURATION_TOLERANCE_SECONDS, 1s) split it from an intact
+  copy of the same song on another server. That split is DELIBERATE: a damaged
+  file must not share a catalogue row with a good one, otherwise replacing it with
+  a working copy would reuse the damaged embedding instead of re-analyzing it.
 * run_clap_for_track / run_lyrics_for_track: the optional per-song stages; every
   failure is recorded through the central error registry and never raised past
   the stage (a DB outage is the one exception: it re-raises so the album retries).
@@ -267,6 +277,19 @@ def _frame_to_mono_mean(rframe):
     return arr.astype(np.float32, copy=False)
 
 
+def _tolerant_frames(container, stream, skipped):
+    import av
+
+    for packet in container.demux(stream):
+        try:
+            frames = list(packet.decode())
+        except av.FFmpegError:
+            skipped[0] += 1
+            continue
+        for frame in frames:
+            yield frame
+
+
 def _decode_audio_with_pyav(file_path, target_sr):
     import av
 
@@ -274,6 +297,7 @@ def _decode_audio_with_pyav(file_path, target_sr):
     chunks = []
     total = 0
     actual_sr = target_sr
+    skipped = [0]
     with av.open(file_path) as container:
         if not container.streams.audio:
             return np.array([], dtype=np.float32), actual_sr
@@ -281,7 +305,7 @@ def _decode_audio_with_pyav(file_path, target_sr):
         resampler = av.audio.resampler.AudioResampler(
             format="fltp", layout=stream.layout, rate=target_sr
         )
-        for frame in container.decode(stream):
+        for frame in _tolerant_frames(container, stream, skipped):
             for rframe in resampler.resample(frame):
                 if actual_sr is None:
                     actual_sr = rframe.sample_rate
@@ -301,6 +325,11 @@ def _decode_audio_with_pyav(file_path, target_sr):
             arr = _frame_to_mono_mean(rframe)
             if arr.size:
                 chunks.append(arr)
+    if skipped[0]:
+        logger.warning(
+            "Skipped %d corrupt audio packet(s) while decoding %s; the recovered "
+            "audio is shorter than the file claims.", skipped[0], os.path.basename(file_path)
+        )
     if not chunks:
         return np.array([], dtype=np.float32), actual_sr
     audio = np.concatenate(chunks).astype(np.float32, copy=False)
@@ -650,7 +679,7 @@ def _make_lyrics_audio_loader(robust_load_fn, download_fn):
             raise RuntimeError("Failed to download audio for lyrics ASR")
         a, s = robust_load_fn(str(p), target_sr=16000)
         if a is None or a.size == 0 or s is None:
-            raise RuntimeError("Failed to load audio for lyrics ASR")
+            raise AudioNotDecodableError(f"no decodable audio for lyrics ASR of {p}")
         return a, s, str(p)
 
     return audio_loader
@@ -663,7 +692,7 @@ def _prepare_lyrics_audio(path, track_audio, track_sr, robust_load_fn, download_
         logger.info("  - Loading audio from file for lyrics analysis")
         track_audio, track_sr = robust_load_fn(str(path), target_sr=16000)
         if track_audio is None or track_audio.size == 0 or track_sr is None:
-            raise RuntimeError("Failed to load audio for lyrics analysis")
+            raise AudioNotDecodableError(f"no decodable audio for lyrics analysis of {path}")
         return track_audio, track_sr, None
     return track_audio, track_sr, _make_lyrics_audio_loader(robust_load_fn, download_fn)
 
@@ -703,7 +732,7 @@ def run_lyrics_for_track(
         save_lyrics_embedding(catalog_item_id(item), emb, result.get('axis_vector'))
         logger.info("  - Lyrics embedding saved")
         return True
-    except OperationalError:
+    except (OperationalError, AudioNotDecodableError):
         raise
     except Exception as e:
         error_manager.record(

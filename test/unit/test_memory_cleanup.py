@@ -215,6 +215,8 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.album.get_tracks_from_album')
     @patch('tasks.analysis.album.download_track')
     @patch('tasks.analysis.album.analyze_track')
+    @patch('tasks.analysis.album.decode_audio_once',
+           new=lambda path: (np.ones(16000, dtype=np.float32), 16000))
     @patch('tasks.analysis.helper.get_db')
     @patch('tasks.onnx_utils.ort')
     @patch('tasks.analysis.song.cleanup_onnx_session')
@@ -288,6 +290,8 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.album.get_tracks_from_album')
     @patch('tasks.analysis.album.download_track')
     @patch('tasks.analysis.album.analyze_track')
+    @patch('tasks.analysis.album.decode_audio_once',
+           new=lambda path: (np.ones(16000, dtype=np.float32), 16000))
     @patch('tasks.analysis.helper.get_db')
     @patch('tasks.analysis.song.create_onnx_session')
     @patch('tasks.analysis.song.cleanup_onnx_session')
