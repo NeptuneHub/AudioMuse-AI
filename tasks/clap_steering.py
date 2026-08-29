@@ -102,7 +102,7 @@ def _warmup_locked():
             return False
 
     try:
-        import onnxruntime as ort
+        from tasks.onnx_utils import create_onnx_session
 
         catalogue = _load_concepts(CLAP_SAE_CONCEPTS_PATH)
         concepts = catalogue.get('concepts') or []
@@ -111,13 +111,12 @@ def _warmup_locked():
             logger.warning("CLAP steering disabled: %s", _STATE['unavailable_reason'])
             return False
 
-        options = ort.SessionOptions()
-        options.log_severity_level = 3
-        encoder = ort.InferenceSession(
-            CLAP_SAE_ENCODER_PATH, sess_options=options, providers=['CPUExecutionProvider']
+        cpu_only = [('CPUExecutionProvider', {})]
+        encoder = create_onnx_session(
+            CLAP_SAE_ENCODER_PATH, cpu_only, label='dclap-sae-encoder'
         )
-        decoder = ort.InferenceSession(
-            CLAP_SAE_MODEL_PATH, sess_options=options, providers=['CPUExecutionProvider']
+        decoder = create_onnx_session(
+            CLAP_SAE_MODEL_PATH, cpu_only, label='dclap-sae-decoder'
         )
 
         _STATE['encoder'] = encoder

@@ -286,3 +286,45 @@ def test_steering_survives_an_encoder_failure(steering, monkeypatch):
     out, applied = steering.apply_steering(query, terms)
     assert out is query
     assert applied == []
+
+
+class TestTheSaeModelsAlwaysLoadOnCpu:
+    def _warm(self, monkeypatch, tmp_path):
+        from tasks import clap_steering
+
+        seen = []
+
+        class _Sess:
+            def get_inputs(self):
+                return [type('I', (), {'name': 'x', 'shape': [None, 1024]})()]
+
+        def fake_create(path, provider_options=None, label='', **kwargs):
+            seen.append({'path': path, 'providers': provider_options, 'label': label})
+            return _Sess()
+
+        import config
+
+        for name in ('CLAP_SAE_ENCODER_PATH', 'CLAP_SAE_MODEL_PATH', 'CLAP_SAE_CONCEPTS_PATH'):
+            f = tmp_path / name
+            f.write_text('x')
+            monkeypatch.setattr(config, name, str(f))
+        monkeypatch.setattr(
+            clap_steering, '_load_concepts',
+            lambda path: {'d_sae': 1024, 'concepts': [{'term': 'techno', 'latents': []}]},
+        )
+        monkeypatch.setattr('tasks.onnx_utils.create_onnx_session', fake_create)
+        clap_steering._STATE['encoder'] = None
+        clap_steering._STATE['decoder'] = None
+        assert clap_steering._warmup_locked() is True
+        return seen
+
+    def test_both_sessions_are_built_through_the_central_helper(self, monkeypatch, tmp_path):
+        seen = self._warm(monkeypatch, tmp_path)
+
+        assert len(seen) == 2
+
+    def test_neither_session_ever_asks_for_a_gpu_provider(self, monkeypatch, tmp_path):
+        seen = self._warm(monkeypatch, tmp_path)
+
+        for call in seen:
+            assert call['providers'] == [('CPUExecutionProvider', {})], call['label']
