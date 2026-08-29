@@ -256,7 +256,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.5.0"
+APP_VERSION = "v3.5.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -362,6 +362,7 @@ CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
+AUDIO_MIN_DECODED_FRACTION = float(os.getenv("AUDIO_MIN_DECODED_FRACTION", "0.5")) # Applies to the PyAV fallback only, never to a plain librosa load. When PyAV has to skip corrupt packets, at least this fraction of the duration the container declares must survive, otherwise the track counts as not decodable and is marked as such.
 ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via the queue every poll regardless).
 
 # --- Guided Evolutionary Clustering Constants ---
@@ -1012,6 +1013,57 @@ CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").l
 
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
+
+# Root of the files that ship inside the application: the source directory in a
+# normal checkout, and the unpacked bundle when running as a frozen build.
+def _bundle_data_root():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# Sparse-autoencoder concept steering over the DCLAP space (arXiv:2608.08757).
+# Equations 6 and 7: the query embedding is encoded into sparse concept latents,
+# the chosen concept's coordinates are moved by alpha times a unit norm mask, and
+# the edited code is decoded back. Only the difference between the edited and the
+# unedited reconstruction is applied, because the autoencoder does not round trip
+# a text embedding exactly. The index is never touched: only the query moves, so
+# storage dtype and paging are unaffected.
+# The two ONNX graphs are downloaded into model/ by the Dockerfile from the
+# AudioMuse-AI-SAE release, like the other models. The concept catalogue is small
+# and ships in the repository at the project root, which is /app in the container.
+CLAP_SAE_STEERING_ENABLED = os.environ.get("CLAP_SAE_STEERING_ENABLED", "true").lower() == "true"
+CLAP_SAE_MODEL_PATH = os.environ.get(
+    "CLAP_SAE_MODEL_PATH", "/app/model/dclap_sae_k20_d1024_best_decoder.onnx"
+)
+CLAP_SAE_ENCODER_PATH = os.environ.get(
+    "CLAP_SAE_ENCODER_PATH", "/app/model/dclap_sae_k20_d1024_best_encoder.onnx"
+)
+# The concept catalogue ships inside the repository, so it resolves from the
+# bundle root the same way the other shipped JSON files do. Only the two ONNX
+# graphs are fetched from the AudioMuse-AI-SAE release.
+CLAP_SAE_CONCEPTS_PATH = os.environ.get(
+    "CLAP_SAE_CONCEPTS_PATH", os.path.join(_bundle_data_root(), "dclap_sae_concepts.json")
+)
+# A refinement may stack at most this many concepts; the paper steers one at a
+# time, so beyond a handful the edits start fighting each other.
+CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
+# Strength grid (alpha). Each concept mask is L2 normalised, so alpha is a fixed
+# length step in latent space and means the same for every concept. The grid stops
+# at 5: beyond that the edit stops refining the query and starts replacing it, and
+# an instrument concept begins returning instrumental material that has lost the
+# genre and the vocals the query asked for.
+# Strength values the refinement UI offers. A step moves the query by the same
+# amount whatever the concept or the collection: measured across queries and
+# concepts, a step of 3 lands at cosine 0.992 to 0.994 of the original, a spread
+# of 0.002, so the scale needs no per-collection calibration. Within this range a
+# concept reorders the results it is given; past roughly 8 it stops refining the
+# query and substitutes its own, which is why the range stops at 5. The reference
+# implementation's own grid stops at 2.0.
+CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0]
+CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "3.0"))
+# Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
+CLAP_SAE_IDLE_UNLOAD_SECONDS = int(os.environ.get("CLAP_SAE_IDLE_UNLOAD_SECONDS", "300"))
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
@@ -1121,10 +1173,6 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 # in potentially shorter paths). Can be overridden via env var PATH_FIX_SIZE.
 PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
-def _bundle_data_root():
-    if getattr(sys, "frozen", False):
-        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.dirname(os.path.abspath(__file__))
 
 
 # Path to the JSON file containing mood centroids for the path-to-mood feature.

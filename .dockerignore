@@ -43,6 +43,11 @@ venv
 env
 .env*
 
+# SAE sparse autoencoder workspace: training code, the 4 GB venv, the embedding
+# corpus, checkpoints and every exported model. Nothing here runs in production.
+# The three runtime artifacts it produces live at the project root instead.
+SAE/
+
 # IDE and editor configuration
 .vscode/
 .idea/
@@ -61,6 +66,9 @@ htmlcov/
 # Large model files and caches (these are downloaded inside the container)
 model/
 *.onnx
+# The SAE concept catalogue is small and ships in the repository; the two ONNX
+# graphs it refers to are downloaded into model/ by the Dockerfile.
+!dclap_sae_concepts.json
 *.pt
 *.pth
 *.bin

@@ -73,6 +73,12 @@ def build_child_env(paths, role, database_url, postgres, extra):
             "PREDICTION_MODEL_PATH": os.path.join(model_dir, "musicnn_prediction.onnx"),
             "CLAP_AUDIO_MODEL_PATH": os.path.join(model_dir, "model_epoch_36.onnx"),
             "CLAP_TEXT_MODEL_PATH": os.path.join(model_dir, "clap_text_model.onnx"),
+            "CLAP_SAE_ENCODER_PATH": os.path.join(
+                model_dir, "dclap_sae_k20_d1024_best_encoder.onnx"
+            ),
+            "CLAP_SAE_MODEL_PATH": os.path.join(
+                model_dir, "dclap_sae_k20_d1024_best_decoder.onnx"
+            ),
             "LYRICS_MODEL_DIR": model_dir,
             "LYRICS_WHISPER_MODEL_DIR": os.path.join(model_dir, "whisper-small-onnx"),
             "SILERO_VAD_ONNX_PATH": os.path.join(model_dir, "silero_vad.onnx"),

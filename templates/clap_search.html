@@ -86,6 +86,284 @@
         border-radius: 8px;
         margin-top: 1rem;
     }
+
+    .refine-fieldset {
+        border: none;
+        padding: 0;
+        margin: 0 0 1.5rem;
+    }
+
+    .refine-heading {
+        display: block;
+        margin-bottom: 0.5rem;
+        padding: 0;
+        font-size: inherit;
+        font-weight: inherit;
+        color: inherit;
+    }
+
+    .info-tooltip-button {
+        background: none;
+        border: none;
+        padding: 0;
+        font: inherit;
+        color: inherit;
+        cursor: help;
+    }
+
+    .refine-box {
+        background: var(--bg-code);
+        border-radius: 8px;
+        padding: 1rem;
+    }
+
+    .refine-empty {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        margin: 0 0 0.75rem;
+    }
+
+    .refine-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 0.6rem 0.75rem;
+        margin-bottom: 0.6rem;
+    }
+
+    .refine-term {
+        font-weight: 600;
+        flex: 1 1 9rem;
+        min-width: 9rem;
+    }
+
+    .refine-toggle {
+        display: inline-flex;
+        border: 1px solid var(--border-color);
+        border-radius: 20px;
+        overflow: hidden;
+    }
+
+    .refine-toggle button {
+        border: none;
+        background: var(--bg-card);
+        color: var(--text-muted);
+        padding: 0.3rem 0.9rem;
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+
+    .refine-toggle button.active {
+        background: var(--color-primary);
+        color: white;
+    }
+
+    .refine-strength {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex: 1 1 12rem;
+    }
+
+    .refine-strength input[type="range"] {
+        flex: 1;
+        min-width: 7rem;
+    }
+
+    .refine-alpha {
+        font-variant-numeric: tabular-nums;
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        min-width: 2.2rem;
+        text-align: right;
+    }
+
+    .refine-remove {
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 1.1rem;
+        line-height: 1;
+        padding: 0.2rem 0.4rem;
+    }
+
+    .refine-remove:hover {
+        color: var(--status-failure-text);
+    }
+
+    .refine-picker {
+        border-top: 1px solid var(--border-color);
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        max-height: 19rem;
+        overflow-y: auto;
+    }
+
+    .refine-category h4 {
+        margin: 0.6rem 0 0.35rem;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-muted);
+    }
+
+    .refine-chip {
+        display: inline-block;
+        padding: 0.3rem 0.7rem;
+        margin: 0.2rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 20px;
+        cursor: pointer;
+        font-size: 0.85rem;
+        transition: all 0.2s;
+    }
+
+    .refine-chip:hover:not(:disabled) {
+        background: var(--color-primary);
+        color: white;
+        border-color: var(--color-primary);
+    }
+
+    .refine-chip:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    .latent-panel {
+        background: var(--bg-code);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .latent-panel h3 {
+        margin: 0 0 0.25rem;
+        font-size: 1rem;
+    }
+
+    .latent-caption {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        margin: 0 0 0.75rem;
+    }
+
+    .latent-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+        font-size: 0.82rem;
+    }
+
+    .latent-legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+
+    .latent-swatch {
+        width: 0.75rem;
+        height: 0.75rem;
+        border-radius: 2px;
+        display: inline-block;
+    }
+
+    .latent-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.25rem;
+        font-size: 0.8rem;
+    }
+
+    .latent-id {
+        width: 4.5rem;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+        flex-shrink: 0;
+    }
+
+    .latent-id.shared {
+        color: var(--color-primary);
+        font-weight: 600;
+    }
+
+    .latent-bars {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        height: 1rem;
+        background: var(--bg-card);
+        border-radius: 3px;
+        overflow: hidden;
+        min-width: 6rem;
+    }
+
+    .latent-seg {
+        height: 100%;
+    }
+
+    .latent-seg.negative {
+        opacity: 0.55;
+        background-image: repeating-linear-gradient(
+            45deg, transparent, transparent 3px,
+            rgba(255, 255, 255, 0.35) 3px, rgba(255, 255, 255, 0.35) 6px);
+    }
+
+    .latent-value {
+        width: 7rem;
+        text-align: right;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+        flex-shrink: 0;
+    }
+
+    .refine-note {
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        margin-top: 0.5rem;
+    }
+
+    @media (max-width: 600px) {
+        .latent-panel {
+            padding: 0.75rem;
+        }
+
+        .latent-row {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            grid-template-areas:
+                "id value"
+                "bars bars";
+            align-items: baseline;
+            gap: 0.15rem 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.75rem;
+        }
+
+        .latent-id {
+            grid-area: id;
+            width: auto;
+        }
+
+        .latent-value {
+            grid-area: value;
+            width: auto;
+            text-align: right;
+        }
+
+        .latent-bars {
+            grid-area: bars;
+            height: 0.6rem;
+            min-width: 0;
+        }
+    }
 </style>
 {% endblock %}
 
@@ -148,7 +426,24 @@
                 </label>
                 <input type="number" id="limit" name="limit" value="50" min="1" max="500">
             </div>
-            
+
+            <fieldset class="param-group refine-fieldset hidden" id="refine-group">
+                <legend class="refine-heading label-with-tooltip">
+                    Refine the sound (optional):
+                    <button type="button" class="info-tooltip info-tooltip-button" aria-label="About refinement">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Works best on a word your query already uses: add it to push that part of the sound forward. For a sound your query does not mention, use Less to push it away. Add up to <span id="refine-max">10</span>, then search again.</span>
+                    </button>
+                </legend>
+                <div class="refine-box">
+                    <p class="refine-empty" id="refine-empty">No refinement. The search runs on your text alone.</p>
+                    <div id="refine-list"></div>
+                    <button type="button" class="btn btn-primary" id="refine-add">+ Add concept</button>
+                    <div class="refine-picker hidden" id="refine-picker"></div>
+                    <p class="refine-note" id="refine-note"></p>
+                </div>
+            </fieldset>
+
             <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.loaded %}disabled{% endif %}>
                 🔍 Search
             </button>
@@ -168,6 +463,12 @@
 <section id="results-container" class="hidden">
     <h2>Search Results</h2>
     <div id="result-count" style="margin-bottom: 1rem; font-weight: 600;"></div>
+    <div id="latent-panel" class="latent-panel hidden">
+        <h3>What the refinement changed</h3>
+        <p class="latent-caption" id="latent-caption"></p>
+        <div class="latent-legend" id="latent-legend"></div>
+        <div id="latent-rows"></div>
+    </div>
     <div id="results-list"></div>
 </section>
 
@@ -260,12 +561,172 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
     
+    // Concept refinement (SAE steering). The vocabulary is fetched from the
+    // backend so only concepts verified against this library are offered.
+    const refineGroup = document.getElementById('refine-group');
+    const refineList = document.getElementById('refine-list');
+    const refineEmpty = document.getElementById('refine-empty');
+    const refineAdd = document.getElementById('refine-add');
+    const refinePicker = document.getElementById('refine-picker');
+    const refineNote = document.getElementById('refine-note');
+
+    let alphaSteps = [0.1, 0.2, 0.5, 1.0, 2.0];
+    let defaultAlpha = 1.0;
+    let maxTerms = 10;
+    let selectedTerms = [];
+
+    function nearestAlphaIndex(value) {
+        let best = 0;
+        alphaSteps.forEach((step, i) => {
+            if (Math.abs(step - value) < Math.abs(alphaSteps[best] - value)) best = i;
+        });
+        return best;
+    }
+
+    function renderSelected() {
+        refineEmpty.classList.toggle('hidden', selectedTerms.length > 0);
+        refineAdd.disabled = selectedTerms.length >= maxTerms;
+        refineAdd.textContent = selectedTerms.length >= maxTerms
+            ? `Maximum ${maxTerms} concepts`
+            : '+ Add concept';
+        refineList.innerHTML = '';
+
+        selectedTerms.forEach((entry, index) => {
+            const row = document.createElement('div');
+            row.className = 'refine-row';
+
+            const name = document.createElement('span');
+            name.className = 'refine-term';
+            name.textContent = entry.term;
+            row.appendChild(name);
+
+            const toggle = document.createElement('div');
+            toggle.className = 'refine-toggle';
+            ['more', 'less'].forEach(direction => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = direction === 'more' ? 'More' : 'Less';
+                button.className = entry.direction === direction ? 'active' : '';
+                button.addEventListener('click', () => {
+                    selectedTerms[index].direction = direction;
+                    renderSelected();
+                });
+                toggle.appendChild(button);
+            });
+            row.appendChild(toggle);
+
+            const strength = document.createElement('div');
+            strength.className = 'refine-strength';
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = '0';
+            slider.max = String(alphaSteps.length - 1);
+            slider.step = '1';
+            slider.value = String(nearestAlphaIndex(entry.weight));
+            const readout = document.createElement('span');
+            readout.className = 'refine-alpha';
+            readout.textContent = entry.weight.toFixed(1);
+            slider.addEventListener('input', () => {
+                const alpha = alphaSteps[Number.parseInt(slider.value, 10)];
+                selectedTerms[index].weight = alpha;
+                readout.textContent = alpha.toFixed(1);
+            });
+            strength.appendChild(slider);
+            strength.appendChild(readout);
+            row.appendChild(strength);
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'refine-remove';
+            remove.setAttribute('aria-label', `Remove ${entry.term}`);
+            remove.textContent = 'x';
+            remove.addEventListener('click', () => {
+                selectedTerms.splice(index, 1);
+                renderSelected();
+                renderPicker();
+            });
+            row.appendChild(remove);
+
+            refineList.appendChild(row);
+        });
+    }
+
+    function renderPicker() {
+        const chosen = new Set(selectedTerms.map(t => t.term));
+        refinePicker.querySelectorAll('.refine-chip').forEach(chip => {
+            chip.disabled = chosen.has(chip.dataset.term) || selectedTerms.length >= maxTerms;
+        });
+    }
+
+    function addConcept(term) {
+        if (selectedTerms.length >= maxTerms) return;
+        if (selectedTerms.some(t => t.term === term)) return;
+        selectedTerms.push({ term: term, direction: 'more', weight: defaultAlpha });
+        refinePicker.classList.add('hidden');
+        renderSelected();
+        renderPicker();
+    }
+
+    function buildPicker(categories) {
+        refinePicker.innerHTML = '';
+        categories.forEach(category => {
+            const block = document.createElement('div');
+            block.className = 'refine-category';
+            const heading = document.createElement('h4');
+            heading.textContent = category.label;
+            block.appendChild(heading);
+            category.terms.forEach(item => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'refine-chip';
+                chip.dataset.term = item.term;
+                chip.textContent = item.term;
+                if (typeof item.grounding === 'number') {
+                    chip.title = `evidence score ${item.grounding.toFixed(2)}`;
+                }
+                chip.addEventListener('click', () => addConcept(item.term));
+                block.appendChild(chip);
+            });
+            refinePicker.appendChild(block);
+        });
+    }
+
+    refineAdd.addEventListener('click', () => {
+        refinePicker.classList.toggle('hidden');
+        renderPicker();
+    });
+
+    async function loadConcepts() {
+        try {
+            const response = await fetch("{{ url_for('clap_search_bp.clap_concepts_api') }}");
+            const data = await response.json();
+            if (!data.available || !data.categories || !data.categories.length) return;
+
+            alphaSteps = data.alpha_steps || alphaSteps;
+            defaultAlpha = data.default_alpha || defaultAlpha;
+            maxTerms = data.max_terms || maxTerms;
+            document.getElementById('refine-max').textContent = String(maxTerms);
+            buildPicker(data.categories);
+            refineGroup.classList.remove('hidden');
+            renderSelected();
+        } catch (error) {
+            // Steering is optional: leave the plain search untouched if it is unavailable.
+            console.warn('concept refinement unavailable:', error);
+        }
+    }
+    loadConcepts();
+
     // Search form submission
     searchForm.addEventListener('submit', async function(e) {
         e.preventDefault();
         
         const query = searchQuery.value.trim();
         const limit = parseInt(document.getElementById('limit').value);
+        const steering = selectedTerms.map(t => ({
+            term: t.term,
+            weight: t.weight,
+            direction: t.direction,
+        }));
         
         if (!query || query.length < 1) {
             alert('Please enter at least 1 character');
@@ -281,7 +742,9 @@ document.addEventListener('DOMContentLoaded', function() {
             const response = await fetch("{{ url_for('clap_search_bp.clap_search_api') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query, limit })
+                body: JSON.stringify(steering.length
+                    ? { query, limit, steering, explain: true }
+                    : { query, limit })
             });
             
             const data = await response.json();
@@ -291,21 +754,118 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
             currentResults = data.results || [];
-            displayResults(currentResults, query);
+            displayResults(currentResults, query, data.steering);
+            renderLatentPanel(data.steering_explain);
+            if (data.steering_warnings && data.steering_warnings.length) {
+                refineNote.textContent = data.steering_warnings.join(' ');
+            }
             
         } catch (error) {
             resultsList.innerHTML = `<div class="error-message">❌ ${error.message}</div>`;
         }
     });
     
-    function displayResults(results, query) {
+    // Latent panel: the query's strongest neurons in the 1024 dim expanded space,
+    // and the edit each concept applies to them, so overlaps are visible.
+    const CONCEPT_COLORS = ['#e8743b', '#19a979', '#945ecf', '#13a4b4', '#ef4d9c', '#bf399e'];
+
+    function renderLatentPanel(explain) {
+        const panel = document.getElementById('latent-panel');
+        if (!explain || !explain.latents || !explain.latents.length) {
+            panel.classList.add('hidden');
+            return;
+        }
+        const colorOf = {};
+        explain.concepts.forEach((c, i) => { colorOf[c.term] = CONCEPT_COLORS[i % CONCEPT_COLORS.length]; });
+
+        const caption = document.getElementById('latent-caption');
+        const shared = explain.overlap ? explain.overlap.length : 0;
+        caption.textContent =
+            `Your text lights up ${explain.query_active} of ${explain.d_sae} neurons. `
+            + (shared
+                ? `${shared} neuron${shared === 1 ? '' : 's'} highlighted below are touched by more than one concept.`
+                : 'No neuron is touched by more than one concept.');
+
+        const legend = document.getElementById('latent-legend');
+        legend.innerHTML = '';
+        const entries = [{ label: 'your query', color: 'var(--text-muted)' }].concat(
+            explain.concepts.map(c => ({
+                label: `${c.direction === 'less' ? '-' : '+'}${c.term} x${c.weight}`,
+                color: colorOf[c.term],
+            })));
+        entries.forEach(e => {
+            const span = document.createElement('span');
+            const sw = document.createElement('i');
+            sw.className = 'latent-swatch';
+            sw.style.background = e.color;
+            span.appendChild(sw);
+            span.appendChild(document.createTextNode(e.label));
+            legend.appendChild(span);
+        });
+
+        let scale = 0;
+        explain.latents.forEach(r => {
+            scale = Math.max(scale, r.query + Object.values(r.edits).reduce((a, v) => a + Math.abs(v), 0));
+        });
+        scale = scale || 1;
+
+        const rows = document.getElementById('latent-rows');
+        rows.innerHTML = '';
+        explain.latents.forEach(r => {
+            const row = document.createElement('div');
+            row.className = 'latent-row';
+
+            const id = document.createElement('span');
+            id.className = 'latent-id' + (r.shared ? ' shared' : '');
+            id.textContent = `#${r.latent}`;
+            row.appendChild(id);
+
+            const bars = document.createElement('div');
+            bars.className = 'latent-bars';
+            if (r.query > 0) {
+                const seg = document.createElement('div');
+                seg.className = 'latent-seg';
+                seg.style.width = `${(r.query / scale) * 100}%`;
+                seg.style.background = 'var(--text-muted)';
+                seg.title = `your query: ${r.query.toFixed(2)}`;
+                bars.appendChild(seg);
+            }
+            Object.keys(r.edits).forEach(term => {
+                const value = r.edits[term];
+                const seg = document.createElement('div');
+                seg.className = 'latent-seg' + (value < 0 ? ' negative' : '');
+                seg.style.width = `${(Math.abs(value) / scale) * 100}%`;
+                seg.style.background = colorOf[term];
+                seg.title = `${term}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`;
+                bars.appendChild(seg);
+            });
+            row.appendChild(bars);
+
+            const value = document.createElement('span');
+            value.className = 'latent-value';
+            const edited = Object.keys(r.edits)
+                .map(t => `${r.edits[t] > 0 ? '+' : ''}${r.edits[t].toFixed(1)}`).join(' ');
+            value.textContent = r.query > 0 ? `${r.query.toFixed(1)} ${edited}`.trim() : edited;
+            row.appendChild(value);
+
+            rows.appendChild(row);
+        });
+        panel.classList.remove('hidden');
+    }
+
+    function displayResults(results, query, steering) {
         if (results.length === 0) {
             resultsList.innerHTML = '<p>No results found. Try a different query.</p>';
             resultCount.textContent = '';
             return;
         }
-        
-        resultCount.textContent = `Found ${results.length} matches for "${query}"`;
+
+        const refinement = (steering || [])
+            .map(t => `${t.direction === 'less' ? '-' : '+'}${t.term} x${t.weight}`)
+            .join(', ');
+        resultCount.textContent = refinement
+            ? `Found ${results.length} matches for "${query}" refined by ${refinement}`
+            : `Found ${results.length} matches for "${query}"`;
 
         resultsList.innerHTML = renderSongList(results, { metric: songSimilarityBadge });
 

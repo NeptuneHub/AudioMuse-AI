@@ -26,7 +26,7 @@ import time
 
 import numpy as np
 from psycopg2.extras import DictCursor
-from typing import List, Dict
+from typing import Dict, List, Optional
 import config
 
 from .idle_unload import IdleUnloadTimer
@@ -168,7 +168,28 @@ def is_clap_cache_loaded() -> bool:
     return _CLAP_CACHE['loaded']
 
 
-def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
+def _query_clap_index(text_embedding, fetch_size, limit, artist_cap):
+    from .paged_ivf import begin_query
+
+    ivf_index = _CLAP_INDEX_CACHE['index']
+    id_map = _CLAP_INDEX_CACHE['id_map'] or {}
+
+    begin_query(ivf_index)
+    num_to_query = min(fetch_size, len(ivf_index))
+    if num_to_query <= 0:
+        logger.warning("CLAP index is loaded but contains no items.")
+        return []
+
+    neighbor_ids, distances = ivf_index.query(text_embedding, k=num_to_query)
+    candidate_item_ids = [id_map.get(int(vec_id)) for vec_id in neighbor_ids]
+    candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
+    metadata_map = _fetch_clap_metadata(candidate_item_ids)
+    return _build_capped_results(
+        ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+    )
+
+
+def search_by_text(query_text: str, limit: int = 100, steering: Optional[List[Dict]] = None) -> List[Dict]:
     from .clap_analyzer import get_text_embedding
     from config import CLAP_ENABLED
 
@@ -190,6 +211,16 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             logger.error(f"Failed to generate text embedding for: {query_text}")
             return []
 
+        if steering:
+            from .clap_steering import apply_steering
+
+            text_embedding, applied = apply_steering(text_embedding, steering)
+            if applied:
+                logger.info(
+                    "Query steered by %s",
+                    ", ".join(f"{t['direction']} {t['term']} x{t['weight']}" for t in applied),
+                )
+
         from config import MAX_SONGS_PER_ARTIST
 
         artist_cap = (
@@ -200,27 +231,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
-            ivf_index = _CLAP_INDEX_CACHE['index']
-            id_map = _CLAP_INDEX_CACHE['id_map'] or {}
-            from .paged_ivf import begin_query
-
-            begin_query(ivf_index)
-            num_to_query = min(fetch_size, len(ivf_index))
-
-            if num_to_query <= 0:
-                logger.warning("CLAP index is loaded but contains no items.")
-                return []
-
-            neighbor_ids, distances = ivf_index.query(text_embedding, k=num_to_query)
-            candidate_item_ids = [id_map.get(int(vec_id)) for vec_id in neighbor_ids]
-            candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
-
-            metadata_map = _fetch_clap_metadata(candidate_item_ids)
-
-            results = _build_capped_results(
-                ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
-            )
-
+            results = _query_clap_index(text_embedding, fetch_size, limit, artist_cap)
             logger.info(
                 f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})"
             )

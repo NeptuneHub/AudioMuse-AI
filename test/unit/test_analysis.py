@@ -24,6 +24,10 @@ Main Features:
   fingerprinting thousands of tracks after a Cancel.
 """
 
+import logging
+import sys
+
+import librosa
 import numpy as np
 import pytest
 import config
@@ -320,6 +324,10 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
     monkeypatch.setattr(analysis, 'cleanup_cuda_memory', lambda *args, **kwargs: None)
     fake_embedding = (
         _FAKE_EMBEDDING if analyzed_embedding is None else analyzed_embedding
+    )
+    monkeypatch.setattr(
+        analysis, 'decode_audio_once',
+        lambda path: (np.ones(16000, dtype=np.float32), 16000),
     )
     monkeypatch.setattr(
         analysis,
@@ -1446,6 +1454,159 @@ class TestRobustLoadAudioWithFallback:
         call_args = mock_librosa_load.call_args
         assert 'duration' in call_args.kwargs
         assert call_args.kwargs['duration'] == 600
+
+
+class TestPyAVRejectsWhatIsMostlyLost:
+    RATE = 44100
+
+    def _write_mp3(self, path, seconds):
+        import av
+
+        with av.open(str(path), 'w') as container:
+            stream = container.add_stream('mp3', rate=self.RATE)
+            stream.layout = 'stereo'
+            n = int(self.RATE * seconds)
+            t = np.arange(n, dtype=np.float32) / self.RATE
+            data = np.vstack([np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 660 * t)])
+            data = (data * 0.5 * 32767).astype(np.int16)
+            frame = av.AudioFrame.from_ndarray(
+                data.T.reshape(1, -1), format='s16', layout='stereo'
+            )
+            frame.sample_rate = self.RATE
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+
+    def test_a_lightly_damaged_file_stays_above_the_floor(self, tmp_path):
+        good = tmp_path / 'good.mp3'
+        bad = tmp_path / 'nicked.mp3'
+        self._write_mp3(good, 10.0)
+        raw = bytearray(good.read_bytes())
+        offset = len(raw) // 2
+        raw[offset:offset + 383] = (bytes([0x0b, 0x4e, 0x88, 0xf9]) * 383)[:383]
+        bad.write_bytes(bytes(raw))
+
+        audio, sr = _decode_audio_with_pyav(str(bad), None)
+
+        assert audio.size / sr > 9.0
+
+    def test_losing_most_of_the_declared_duration_is_rejected(self, tmp_path, caplog):
+        good = tmp_path / 'good.mp3'
+        stump = tmp_path / 'stump.mp3'
+        self._write_mp3(good, 10.0)
+        raw = good.read_bytes()
+        stump.write_bytes(raw[: len(raw) // 4])
+
+        with caplog.at_level(logging.ERROR, logger='tasks.analysis.song'):
+            audio, _sr = _decode_audio_with_pyav(str(stump), None)
+
+        assert audio.size == 0
+        assert 'not decodable' in caplog.text
+
+    def test_the_floor_only_applies_once_librosa_has_given_up(self, tmp_path):
+        good = tmp_path / 'good.mp3'
+        stump = tmp_path / 'stump.mp3'
+        self._write_mp3(good, 10.0)
+        raw = good.read_bytes()
+        stump.write_bytes(raw[: len(raw) // 4])
+
+        kept, _sr = robust_load_audio_with_fallback(str(stump), target_sr=None)
+        assert kept is not None
+        assert kept.size > 0
+
+        with patch('tasks.analysis.song.librosa.load', side_effect=RuntimeError('boom')):
+            audio, sr = robust_load_audio_with_fallback(str(stump), target_sr=None)
+
+        assert audio is None
+        assert sr is None
+
+    def test_lowering_the_floor_to_zero_accepts_anything_that_decodes(self, tmp_path):
+        from tasks.analysis import song as song_mod
+
+        good = tmp_path / 'good.mp3'
+        stump = tmp_path / 'stump.mp3'
+        self._write_mp3(good, 10.0)
+        raw = good.read_bytes()
+        stump.write_bytes(raw[: len(raw) // 4])
+
+        with patch.object(song_mod, 'AUDIO_MIN_DECODED_FRACTION', 0.0):
+            audio, _sr = _decode_audio_with_pyav(str(stump), None)
+
+        assert audio.size > 0
+
+    def test_the_load_timeout_cap_is_not_mistaken_for_a_loss(self, tmp_path):
+        from tasks.analysis import song as song_mod
+
+        path = tmp_path / 'long.mp3'
+        self._write_mp3(path, 4.0)
+        with patch.object(song_mod, 'AUDIO_LOAD_TIMEOUT', 2):
+            audio, sr = _decode_audio_with_pyav(str(path), None)
+
+        assert audio.size > 0
+        assert audio.size / sr <= 2.5
+
+    def test_an_unknown_declared_duration_never_rejects(self):
+        from tasks.analysis import song as song_mod
+
+        assert song_mod._enough_survived(np.ones(10, dtype=np.float32), 10, None, 'x')
+
+
+class TestPyAVSurvivesCorruptPackets:
+    RATE = 44100
+
+    def _write_mp3(self, path, seconds):
+        import av
+
+        with av.open(str(path), 'w') as container:
+            stream = container.add_stream('mp3', rate=self.RATE)
+            stream.layout = 'stereo'
+            n = int(self.RATE * seconds)
+            t = np.arange(n, dtype=np.float32) / self.RATE
+            data = np.vstack([np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 660 * t)])
+            data = (data * 0.5 * 32767).astype(np.int16)
+            frame = av.AudioFrame.from_ndarray(
+                data.T.reshape(1, -1), format='s16', layout='stereo'
+            )
+            frame.sample_rate = self.RATE
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+
+    def _corrupt_middle(self, src, dst, nbytes=383):
+        raw = bytearray(src.read_bytes())
+        offset = len(raw) // 2
+        pattern = bytes([0x0b, 0x4e, 0x88, 0xf9])
+        raw[offset:offset + nbytes] = (pattern * nbytes)[:nbytes]
+        dst.write_bytes(bytes(raw))
+
+    def test_a_corrupt_packet_mid_file_keeps_the_audio_that_decoded(self, tmp_path, caplog):
+        good = tmp_path / 'good.mp3'
+        bad = tmp_path / 'bad.mp3'
+        self._write_mp3(good, 10.0)
+        self._corrupt_middle(good, bad)
+
+        with caplog.at_level(logging.WARNING, logger='tasks.analysis.song'):
+            audio, sr = _decode_audio_with_pyav(str(bad), None)
+
+        assert 'corrupt audio packet' in caplog.text
+        assert audio.size > 0
+        assert sr == self.RATE
+        assert audio.size / sr > 5.0
+
+    def test_a_clean_file_matches_a_plain_librosa_decode_and_skips_nothing(self, tmp_path, caplog):
+        good = tmp_path / 'clean.mp3'
+        self._write_mp3(good, 2.0)
+
+        with caplog.at_level(logging.WARNING, logger='tasks.analysis.song'):
+            audio, sr = _decode_audio_with_pyav(str(good), None)
+        reference, ref_sr = librosa.load(str(good), sr=None, mono=True)
+
+        assert 'corrupt audio packet' not in caplog.text
+        assert sr == ref_sr
+        assert audio.size == reference.size
+        np.testing.assert_allclose(audio, reference, atol=1e-4)
 
 
 class TestPyAVDecodeDownmix:
@@ -2680,7 +2841,7 @@ class _StageCalls:
         return ('NATIVE_AUDIO', 44100)
 
 
-def _run_single_track(plan, calls, monkeypatch):
+def _run_single_track(plan, calls, monkeypatch, overrides=None):
     from tasks.analysis import album as album_mod
     from tasks.analysis.helper import TrackPlan
 
@@ -2694,7 +2855,8 @@ def _run_single_track(plan, calls, monkeypatch):
 
     def fake_musicnn(path, name, plan_, *a, native_audio=None, native_sr=None, **k):
         calls.native_seen['musicnn'] = (native_audio, native_sr)
-        return (None, {'duration_seconds': 1.0}, 'EMB', None, None)
+        track_audio, track_sr = ('MUSICNN_AUDIO', 16000) if plan_.lyrics else (None, None)
+        return (None, {'duration_seconds': 1.0}, 'EMB', track_audio, track_sr)
 
     def fake_identity(item, plan_, name, emb, index, pending, track_duration=None):
         return index, plan_, 'track-1', True
@@ -2716,6 +2878,9 @@ def _run_single_track(plan, calls, monkeypatch):
     monkeypatch.setattr(album_mod, '_stage_base', fake_base)
     monkeypatch.setattr(album_mod, '_stage_clap', fake_clap)
     monkeypatch.setattr(album_mod, '_stage_lyrics', fake_lyrics)
+
+    for _name, _fake in (overrides or {}).items():
+        monkeypatch.setattr(album_mod, _name, _fake)
 
     assert isinstance(plan, TrackPlan)
     album_mod._analyze_single_track(
@@ -2778,12 +2943,230 @@ class TestAudioIsFetchedOncePerTrack:
         assert calls.downloads == 1
         assert calls.decodes == 0
 
-    def test_base_stage_is_counted_as_needing_audio(self):
+
+class _UndecodableCalls(_StageCalls):
+    def decode(self, path):
+        self.decodes += 1
+        return (None, None)
+
+
+class TestEverySingleStageRerunHandlesUndecodableAudio:
+    PLANS = {
+        'musicnn only': dict(musicnn=True, clap=False, lyrics=False, base=False),
+        'base only': dict(musicnn=False, clap=False, lyrics=False, base=True),
+        'clap only': dict(musicnn=False, clap=True, lyrics=False, base=False),
+        'lyrics only': dict(musicnn=False, clap=False, lyrics=True, base=False),
+    }
+
+    def _plan(self, name):
         from tasks.analysis.helper import TrackPlan
 
-        assert TrackPlan(musicnn=False, clap=False, lyrics=False, base=True).needs_audio
-        assert TrackPlan(musicnn=False, clap=False, lyrics=True, base=False).needs_audio is False
+        return TrackPlan(**self.PLANS[name])
 
+    @pytest.mark.parametrize('plan_name', ['base only', 'clap only'])
+    def test_an_undecodable_file_is_marked_cacheable_on_the_audio_only_stages(
+        self, plan_name, monkeypatch
+    ):
+        from tasks.analysis import album as album_mod
+
+        overrides = {
+            '_stage_base': lambda *a, **k: False,
+            '_stage_clap': lambda *a, **k: (None, False),
+        }
+        monkeypatch.setattr(
+            album_mod, 'robust_load_audio_with_fallback', lambda *a, **k: (None, None)
+        )
+        plan = self._plan(plan_name)
+        calls = _UndecodableCalls()
+        with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
+            _run_single_track(plan, calls, monkeypatch, overrides)
+
+        assert excinfo.value.cacheable is True, f"{plan_name} would loop forever"
+
+    def test_the_musicnn_stage_turns_an_undecodable_file_into_a_cacheable_mark(self, monkeypatch):
+        from tasks.analysis import album as album_mod
+        from tasks.analysis.helper import TrackPlan
+        from tasks.analysis.song import AudioNotDecodableError
+
+        def dead_analyze(*a, **k):
+            raise AudioNotDecodableError('no decodable audio')
+
+        monkeypatch.setattr(album_mod._ah, 'ensure_musicnn_sessions', lambda *a, **k: {})
+        monkeypatch.setattr(album_mod, 'analyze_track', dead_analyze)
+        plan = TrackPlan(musicnn=True, clap=False, lyrics=False, base=False)
+        recycler = Mock()
+        with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
+            album_mod._stage_musicnn(
+                '/nonexistent.mp3', 'Artist - Track', plan, {}, recycler, None, 'Album',
+            )
+
+        assert excinfo.value.cacheable is True
+
+    def test_the_lyrics_stage_turns_an_undecodable_file_into_a_cacheable_mark(self, monkeypatch):
+        from tasks.analysis import album as album_mod
+        from tasks.analysis.song import AudioNotDecodableError
+
+        def dead_lyrics(*a, **k):
+            raise AudioNotDecodableError('no decodable audio for lyrics ASR')
+
+        monkeypatch.setattr(album_mod._ah, 'run_lyrics_for_track', dead_lyrics)
+        with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
+            album_mod._stage_lyrics(
+                {'Id': 'x'}, None, None, None, 'Artist - Track', None, lambda: None
+            )
+
+        assert excinfo.value.cacheable is True
+
+    def test_lyrics_that_simply_are_not_found_is_not_a_cacheable_mark(self, monkeypatch):
+        from tasks.analysis import album as album_mod
+
+        monkeypatch.setattr(album_mod._ah, 'run_lyrics_for_track', lambda *a, **k: False)
+        assert album_mod._stage_lyrics(
+            {'Id': 'x'}, None, None, None, 'Artist - Track', None, lambda: None
+        ) is False
+
+    @pytest.mark.parametrize('plan_name', list(PLANS))
+    def test_a_single_stage_rerun_reads_the_file_at_most_once(self, plan_name, monkeypatch):
+        from tasks.analysis import album as album_mod
+
+        reloads = []
+        monkeypatch.setattr(
+            album_mod, 'robust_load_audio_with_fallback',
+            lambda *a, **k: reloads.append(a[0] if a else None) or (
+                np.ones(160, dtype=np.float32), 16000
+            ),
+        )
+        calls = _run_single_track(self._plan(plan_name), _StageCalls(), monkeypatch)
+
+        assert calls.decodes + len(reloads) <= 1, (
+            f"{plan_name} read the audio {calls.decodes + len(reloads)} times"
+        )
+
+
+class TestAudioIsReadFromDiskOnlyOnce:
+    def test_a_failed_decode_reaches_no_stage_at_all(self, monkeypatch):
+        from tasks.analysis import album as album_mod
+        from tasks.analysis.helper import TrackPlan
+
+        def boom(name):
+            def _fail(*a, **k):
+                pytest.fail(f"{name} ran on undecodable audio")
+            return _fail
+
+        calls = _UndecodableCalls()
+        plan = TrackPlan(musicnn=True, clap=True, lyrics=True, base=False)
+        overrides = {
+            '_stage_musicnn': boom('musicnn'),
+            '_stage_base': boom('base'),
+            '_stage_clap': boom('clap'),
+            '_stage_lyrics': boom('lyrics'),
+        }
+        with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
+            _run_single_track(plan, calls, monkeypatch, overrides)
+
+        assert calls.decodes == 1
+        assert excinfo.value.cacheable is True
+
+    @pytest.mark.parametrize('plan_kwargs', [
+        dict(musicnn=False, clap=False, lyrics=False, base=True),
+        dict(musicnn=False, clap=True, lyrics=False, base=False),
+        dict(musicnn=False, clap=True, lyrics=True, base=True),
+    ])
+    def test_no_stage_runs_after_a_failed_decode_whatever_the_plan(self, plan_kwargs, monkeypatch):
+        from tasks.analysis import album as album_mod
+        from tasks.analysis.helper import TrackPlan
+
+        def boom(*a, **k):
+            pytest.fail('a stage ran on undecodable audio')
+
+        calls = _UndecodableCalls()
+        plan = TrackPlan(**plan_kwargs)
+        overrides = {'_stage_base': boom, '_stage_clap': boom, '_stage_lyrics': boom}
+        with pytest.raises(album_mod.TrackNotAnalyzable):
+            _run_single_track(plan, calls, monkeypatch, overrides)
+        assert calls.decodes == 1
+
+    def test_lyrics_reuses_the_single_decode_instead_of_reading_the_file_again(self, monkeypatch):
+        from tasks.analysis import album as album_mod
+        from tasks.analysis.helper import TrackPlan
+
+        monkeypatch.setattr(album_mod, 'resample_audio', lambda a, o, t: 'RESAMPLED')
+        seen = {}
+
+        def fake_lyrics(item, path, audio, sr, name, moods, ensure_download):
+            seen['audio'] = audio
+            seen['sr'] = sr
+            return True
+
+        calls = _run_single_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=True, base=True),
+            _StageCalls(), monkeypatch, {'_stage_lyrics': fake_lyrics},
+        )
+
+        assert calls.decodes == 1
+        assert seen['audio'] == 'RESAMPLED'
+        assert seen['sr'] == 16000
+
+    def test_the_native_buffer_is_released_before_the_lyrics_stage_runs(self, monkeypatch):
+        from tasks.analysis import album as album_mod
+        from tasks.analysis.helper import TrackPlan
+
+        monkeypatch.setattr(album_mod, 'resample_audio', lambda a, o, t: 'RESAMPLED')
+        seen = {}
+
+        def fake_lyrics(item, path, audio, sr, name, moods, ensure_download):
+            frame = sys._getframe(1)
+            seen['native_audio'] = frame.f_locals.get('native_audio')
+            return True
+
+        _run_single_track(
+            TrackPlan(musicnn=False, clap=False, lyrics=True, base=True),
+            _StageCalls(), monkeypatch, {'_stage_lyrics': fake_lyrics},
+        )
+
+        assert seen['native_audio'] is None
+
+
+class TestUndecodableAudioOnAReanalysisIsMarkedNotAnalyzable:
+    _BARREN = {
+        '_stage_base': lambda *a, **k: False,
+        '_stage_clap': lambda *a, **k: (None, False),
+        '_stage_lyrics': lambda *a, **k: False,
+    }
+
+    def _run(self, plan, calls, monkeypatch, overrides=None):
+        from tasks.analysis import album as album_mod
+
+        with pytest.raises(album_mod.TrackNotAnalyzable) as excinfo:
+            _run_single_track(plan, calls, monkeypatch, overrides or self._BARREN)
+        return excinfo.value
+
+    def test_a_base_only_reanalysis_that_cannot_decode_is_cacheable(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        error = self._run(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _UndecodableCalls(), monkeypatch,
+        )
+        assert error.cacheable is True
+
+    def test_a_clap_only_reanalysis_that_cannot_decode_is_cacheable(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        error = self._run(
+            TrackPlan(musicnn=False, clap=True, lyrics=False, base=False),
+            _UndecodableCalls(), monkeypatch,
+        )
+        assert error.cacheable is True
+
+    def test_a_barren_stage_on_decodable_audio_stays_uncacheable(self, monkeypatch):
+        from tasks.analysis.helper import TrackPlan
+
+        error = self._run(
+            TrackPlan(musicnn=False, clap=False, lyrics=False, base=True),
+            _StageCalls(), monkeypatch,
+        )
+        assert error.cacheable is False
 
 class _BaseCalls:
     def __init__(self):
