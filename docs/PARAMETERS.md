@@ -77,7 +77,6 @@ These are the default parameters used when launching analysis or clustering task
 | `CLAP_ENABLED`                              | If false disable CLAP model during the analysis and the use of Text Search functionality.                                  | `true` |
 | `CLAP_PYTHON_MULTITHREADS`                  | CPU threading for CLAP analysis. False (default) = Use ONNX internal threading (recommended). True = Use Python ThreadPoolExecutor  | `false`         |
 | `PER_SONG_MODEL_RELOAD`                     | Model reloading strategy. true (default) = Unload MusiCNN and CLAP after each song (stable VRAM, slower). false = MusiCNN reloads every 20 songs, CLAP at album end (faster but may accumulate VRAM) | `true`          |
-| `CLAP_SEARCH_DEFAULT_LIMIT`                 | Number of songs `/api/clap/search` returns when the caller omits `limit`.                                                  | `50` |
 | `MUSICNN_BATCH_SIZE`                        | Max spectrogram patches per MusiCNN embedding inference call. Small batches keep peak RAM/VRAM flat on long tracks. 0 = whole track in one batch (previous behavior) | `8`             |
 | **Analysis General**                        |                                                                                                                            |                 |
 | `NUM_RECENT_ALBUMS`                         | Number of recent albums to scan (0 for all).                                                                              | `0`             |
@@ -136,8 +135,6 @@ These are the default parameters used when launching analysis or clustering task
 | `IVF_DISK_CACHE_IDLE_SECONDS`               | Drop the resident (RSS) pages of every disk-cache mmap after this many seconds with no query (mapping stays; the next query re-faults from disk). Frees idle RAM. `0` = never drop. | `300`           |
 | `IVF_LAZY_LOAD_RETRY_SECONDS`               | Only the Flask process loads the indexes at startup; a worker task that queries one (the sonic fingerprint cron) loads it on first query. Minimum seconds between retries when that load finds no index in the database, so a library with no analysis yet is not re-queried on every call. | `60` |
 | `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
-| `SIMILARITY_DEFAULT_N_RESULTS`              | Number of similar songs `/api/similar_tracks` returns when the caller omits `n`.                                          | `50`            |
-| `ARTIST_SIMILARITY_DEFAULT_N_RESULTS`       | Number of similar artists `/api/similar_artists` returns when the caller omits `n`.                                       | `50`            |
 | `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |
 | `SONIC_FINGERPRINT_TOP_N_SONGS`             | Number of most-played/most-recent tracks used as the fingerprint seed pool.                                               | `20`            |
@@ -244,9 +241,6 @@ These are the default parameters used when launching analysis or clustering task
 | `LYRICS_GTE_WARMUP_DURATION`                | Duration (seconds) to keep the gte-multilingual-base lyrics-search model loaded after last use. Auto-unloads after this idle period to free RAM. | `300` |
 | `SEM_GROVE_WEIGHT_LYRICS`                   | Contribution of the lyrics embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.75` |
 | `SEM_GROVE_WEIGHT_AUDIO`                    | Contribution of the MusicNN audio embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.25` |
-| `LYRICS_AXES_DEFAULT_LIMIT`                 | Number of songs `/api/lyrics/search/axes` returns when the caller omits `limit`. | `50` |
-| `LYRICS_TEXT_DEFAULT_LIMIT`                 | Number of songs `/api/lyrics/search/text` returns when the caller omits `limit`. | `50` |
-| `SEM_GROVE_DEFAULT_LIMIT`                   | Number of songs `/api/sem_grove/search` returns when the caller omits `limit`. | `50` |
 | **Hyperbolic Explorer**                     |                                                                                            |                                        |
 | `HYPERBOLIC_DEFAULT_LIMIT`                  | Default number of tracks returned by a Hyperbolic Explorer query.                         | `50`                                   |
 | `HYPERBOLIC_RADIAL_SPREAD`                  | Fraction of the radial range a candidate must move for the roots / niche modes to accept it, so the two modes visibly differ from plain similar. `0` keeps every mode hugging the seed's own radius. | `0.15` |

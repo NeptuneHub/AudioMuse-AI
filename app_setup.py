@@ -162,6 +162,15 @@ HIDDEN_ADVANCED_FIELDS = {
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
+    # Per-endpoint result-count defaults used only when an API caller omits the
+    # count. Every page sends an explicit value from its own input box, so these
+    # never affect the UI and only exist for direct API calls.
+    'SIMILARITY_DEFAULT_N_RESULTS',
+    'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
+    'CLAP_SEARCH_DEFAULT_LIMIT',
+    'LYRICS_AXES_DEFAULT_LIMIT',
+    'LYRICS_TEXT_DEFAULT_LIMIT',
+    'SEM_GROVE_DEFAULT_LIMIT',
     'CHROMAPRINT_BACKFILL_REPORT_SECONDS',
     'MOOD_LABELS',
     'APP_VERSION',

@@ -95,7 +95,7 @@ class TestIvfSimilarTracksNCoercion:
         with patch.object(app_ivf, 'find_nearest_neighbors_by_id', return_value=[]) as backend:
             resp = client.get('/api/similar_tracks', query_string={'item_id': 'x', 'n': 'notanint'})
         assert resp.status_code != 500
-        assert backend.call_args.kwargs['n'] == 10
+        assert backend.call_args.kwargs['n'] == config.SIMILARITY_DEFAULT_N_RESULTS
 
     def test_valid_n_is_passed_through(self, client):
         with patch.object(app_ivf, 'find_nearest_neighbors_by_id', return_value=[]) as backend:
