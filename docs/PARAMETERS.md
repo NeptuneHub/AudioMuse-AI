@@ -148,6 +148,7 @@ These are the default parameters used when launching analysis or clustering task
 | **Similar Song and Song Path Duplicate filtering General** |                                                                                                            |                 |
 | `DUPLICATE_DISTANCE_THRESHOLD_COSINE`       | Less than this cosine distance the track is a duplicate.                                                                  | `0.01`          |
 | `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`    | Less than this euclidean distance the track is a duplicate.                                                               | `0.15`          |
+| `DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS` | Less than this cosine distance the track is a duplicate, for the SemGrove (Lyrics Search "By Song") and the Song Path in SemGrove mode. Kept separate from the audio threshold because the SemGrove vector is mostly lyrics. | `0.05`          |
 | `DUPLICATE_DISTANCE_CHECK_LOOKBACK`         | How many previous song need to be checked for duplicate.                                                                  | `1`             |
 | `MOOD_SIMILARITY_THRESHOLD`                 | Maximum normalized distance for mood similarity filtering. Lower value will give more importance to mood                  | `0.15`          |
 | `MOOD_SIMILARITY_ENABLE`                    | Enable or disable mood similarity filtering globally.                                                                     | `false`         |
