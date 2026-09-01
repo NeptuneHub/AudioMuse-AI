@@ -784,8 +784,7 @@ HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFE
 # exact Poincare distance within that window. 0 keeps the old band-hugging
 # behaviour where every mode returns the tracks nearest to the seed's radius.
 HYPERBOLIC_RADIAL_SPREAD = float(os.environ.get("HYPERBOLIC_RADIAL_SPREAD", "0.15"))
-HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "20"))
-HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
+HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "10"))
 # Directory tree shape: when genre_subgenre.json is present and dimensionally
 # usable the root is a MAIN GENRE partition (nearest genre centroid), then a
 # SUBGENRE partition (nearest of that genre's subgenres), then named k-means

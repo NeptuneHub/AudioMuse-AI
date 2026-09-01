@@ -497,13 +497,15 @@ def _rank_mode_results(ids, distances, cand_radii, mode, target_radius):
     return results
 
 
-def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None, server_id=None):
+def hyperbolic_similar(target_item_id, mode="similar", limit=None, radial_spread=None, server_id=None):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
     mode = (mode or "similar").strip().lower()
     if mode not in ("similar", "roots", "niche"):
         raise ValueError('mode must be one of "similar", "roots", "niche"')
-    limit = max(1, min(int(limit), int(config.HYPERBOLIC_MAX_LIMIT)))
+    if limit is None:
+        limit = config.HYPERBOLIC_DEFAULT_LIMIT
+    limit = max(1, int(limit))
     if radial_spread is None:
         radial_spread = config.HYPERBOLIC_RADIAL_SPREAD
     target = _fetch_poincare_rows([target_item_id]).get(target_item_id)

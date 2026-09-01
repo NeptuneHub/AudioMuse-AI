@@ -191,7 +191,7 @@
                             <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
                         </span>
                     </label>
-                    <input type="number" id="axis-limit" name="limit" value="50" min="1" max="500">
+                    <input type="number" id="axis-limit" name="limit" value="50" min="1" max="200">
                 </div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.axis_loaded %}disabled{% endif %}>
                     🔍 Search by axes
@@ -223,7 +223,7 @@
                             <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
                         </span>
                     </label>
-                    <input type="number" id="text-limit" name="limit" value="50" min="1" max="500">
+                    <input type="number" id="text-limit" name="limit" value="50" min="1" max="200">
                 </div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.index_loaded %}disabled{% endif %}>
                     🔍 Search by text
@@ -277,7 +277,7 @@
                             <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches.</span>
                         </span>
                     </label>
-                    <input type="number" id="song-limit" name="limit" value="50" min="1" max="500"
+                    <input type="number" id="song-limit" name="limit" value="50" min="1" max="200"
                            {% if not sem_grove_stats.loaded %}disabled{% endif %}>
                 </div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not sem_grove_stats.loaded %}disabled{% endif %}>
