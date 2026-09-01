@@ -49,8 +49,10 @@ def sem_grove_search_api():
               limit:
                 type: integer
                 minimum: 1
-                maximum: 500
                 default: 50
+                description: >-
+                  Number of tracks to return. Not capped - ask for as many
+                  as the index holds.
     responses:
       200:
         description: Sorted similar tracks (seed song included with `is_seed=true`).
@@ -103,7 +105,7 @@ def sem_grove_search_api():
             limit = int(data.get("limit", config.SEM_GROVE_DEFAULT_LIMIT))
         except (TypeError, ValueError):
             return jsonify({"error": 'Invalid "limit" value.'}), 400
-        limit = min(max(1, limit), 500)
+        limit = max(1, limit)
 
         import app_server_context
 

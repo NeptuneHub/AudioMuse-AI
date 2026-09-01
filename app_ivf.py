@@ -155,7 +155,10 @@ def similarity_page():
               type: string
     """
     return render_template(
-        'similarity.html', title='AudioMuse-AI - Playlist from Similar Song', active='similarity'
+        'similarity.html',
+        title='AudioMuse-AI - Playlist from Similar Song',
+        active='similarity',
+        similarity_n_default=SIMILARITY_DEFAULT_N_RESULTS,
     )
 
 

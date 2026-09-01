@@ -53,7 +53,12 @@ def alchemy_page():
       200:
         description: HTML page rendered.
     """
-    return render_template('alchemy.html', title='AudioMuse-AI - Song Alchemy', active='alchemy')
+    return render_template(
+        'alchemy.html',
+        title='AudioMuse-AI - Song Alchemy',
+        active='alchemy',
+        alchemy_n_results_default=config.ALCHEMY_DEFAULT_N_RESULTS,
+    )
 
 
 @alchemy_bp.route('/api/search_artists', methods=['GET'])

@@ -253,6 +253,19 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'SUPERVISORCTL_CMD',
     'SUPERVISOR_CONF',
     'DISABLE_FLASK_RESTART',
+    # Per-endpoint result-count defaults for direct API callers. Every page sends
+    # an explicit count from its own input box, so these never reach the UI and
+    # the wizard hides them (HIDDEN_ADVANCED_FIELDS). Hiding alone would still
+    # mirror them into app_config on the first boot, and a hidden row that
+    # overrides from the DB is a value no operator can ever change again - not
+    # in the wizard, and not by the environment variable the DB row outranks.
+    # Excluded so they stay env-driven, and any row an older boot left is pruned.
+    'SIMILARITY_DEFAULT_N_RESULTS',
+    'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
+    'CLAP_SEARCH_DEFAULT_LIMIT',
+    'LYRICS_AXES_DEFAULT_LIMIT',
+    'LYRICS_TEXT_DEFAULT_LIMIT',
+    'SEM_GROVE_DEFAULT_LIMIT',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---

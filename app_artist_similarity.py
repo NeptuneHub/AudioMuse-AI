@@ -86,6 +86,7 @@ def artist_similarity_page():
         'artist_similarity.html',
         title='AudioMuse-AI - Artist Similarity',
         active='artist_similarity',
+        artist_similarity_n_default=config.ARTIST_SIMILARITY_DEFAULT_N_RESULTS,
     )
 
 

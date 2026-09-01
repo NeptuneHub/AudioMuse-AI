@@ -72,6 +72,7 @@ def hyperbolic_page():
             title="AudioMuse-AI - Hyperbolic Explorer",
             active="hyperbolic",
             app_version=APP_VERSION,
+            hyperbolic_limit_default=config.HYPERBOLIC_DEFAULT_LIMIT,
             hyperbolic_radial_spread_default=min(max(config.HYPERBOLIC_RADIAL_SPREAD, 0.0), 0.99),
             hyperbolic_journey_length_default=config.HYPERBOLIC_JOURNEY_DEFAULT_LENGTH,
             hyperbolic_journey_dive_default=min(
