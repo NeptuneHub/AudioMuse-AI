@@ -315,7 +315,7 @@
                     </div>
                     <div>
                         <label for="hyper-limit">Number of results:</label>
-                        <input type="number" id="hyper-limit" name="limit" value="20" min="1" max="200">
+                        <input type="number" id="hyper-limit" name="limit" value="50" min="1" max="200">
                     </div>
                     <div>
                         <label for="hyper-spread-slider" class="label-with-tooltip">
@@ -839,7 +839,7 @@
                     return;
                 }
                 const mode = document.getElementById('hyper-mode').value;
-                const limit = Number.parseInt(document.getElementById('hyper-limit').value, 10) || 20;
+                const limit = Number.parseInt(document.getElementById('hyper-limit').value, 10) || 50;
                 const radialSpread = clampSpread(Number.parseFloat(spreadInput.value));
                 statusDiv.textContent = 'Searching hyperbolic neighbors...';
                 statusDiv.className = '';
