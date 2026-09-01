@@ -115,7 +115,7 @@ def hyperbolic_similar_api():
               limit:
                 type: integer
                 minimum: 1
-                default: 10
+                default: 50
                 description: >-
                   Number of tracks to return. Not capped - ask for as many as
                   the projected catalogue holds.

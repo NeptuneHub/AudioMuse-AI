@@ -264,6 +264,10 @@ MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs p
 SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = os.environ.get("SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT", "True").lower() == 'true'
 # Default behavior for radius similarity mode. Can be toggled via environment variable.
 SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").lower() == 'true'
+# Default result count when the similarity APIs are called without an explicit
+# count. Each mirrors the value its page ships in its own input box.
+SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("SIMILARITY_DEFAULT_N_RESULTS", "50"))
+ARTIST_SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("ARTIST_SIMILARITY_DEFAULT_N_RESULTS", "50"))
 # Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
 RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
@@ -784,7 +788,7 @@ HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFE
 # exact Poincare distance within that window. 0 keeps the old band-hugging
 # behaviour where every mode returns the tracks nearest to the seed's radius.
 HYPERBOLIC_RADIAL_SPREAD = float(os.environ.get("HYPERBOLIC_RADIAL_SPREAD", "0.15"))
-HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "10"))
+HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "50"))
 # Directory tree shape: when genre_subgenre.json is present and dimensionally
 # usable the root is a MAIN GENRE partition (nearest genre centroid), then a
 # SUBGENRE partition (nearest of that genre's subgenres), then named k-means
@@ -967,6 +971,11 @@ LYRICS_VAD_SPEECH_PAD_MS = int(os.environ.get("LYRICS_VAD_SPEECH_PAD_MS", "400")
 # time; changing them requires rebuilding the SemGrove index.
 SEM_GROVE_WEIGHT_LYRICS = float(os.environ.get("SEM_GROVE_WEIGHT_LYRICS", "0.75"))
 SEM_GROVE_WEIGHT_AUDIO  = float(os.environ.get("SEM_GROVE_WEIGHT_AUDIO",  "0.25"))
+# Default result count when the lyrics / SemGrove search APIs are called
+# without an explicit limit. Each mirrors its own input box on the search page.
+LYRICS_AXES_DEFAULT_LIMIT = int(os.environ.get("LYRICS_AXES_DEFAULT_LIMIT", "50"))
+LYRICS_TEXT_DEFAULT_LIMIT = int(os.environ.get("LYRICS_TEXT_DEFAULT_LIMIT", "50"))
+SEM_GROVE_DEFAULT_LIMIT = int(os.environ.get("SEM_GROVE_DEFAULT_LIMIT", "50"))
 
 # --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
 # These give us three things at once:
@@ -1104,6 +1113,9 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Duration (in seconds) to keep CLAP model loaded for text search after last use
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
+# Default result count when /api/clap/search is called without an explicit
+# limit. Mirrors the value the CLAP search page ships in its own input box.
+CLAP_SEARCH_DEFAULT_LIMIT = int(os.environ.get("CLAP_SEARCH_DEFAULT_LIMIT", "50"))
 
 # Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
 # loaded after last use. Auto-unloads after this idle period to free RAM.
@@ -1184,7 +1196,7 @@ GENRE_SUBGENRE_FILE = os.path.join(_bundle_data_root(), 'genre_subgenre.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
-ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "100"))
+ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "50"))
 ALCHEMY_MAX_N_RESULTS = int(os.environ.get("ALCHEMY_MAX_N_RESULTS", "200"))
 # Temperature for probabilistic sampling in Song Alchemy (softmax temperature)
 ALCHEMY_TEMPERATURE = float(os.environ.get("ALCHEMY_TEMPERATURE", "1.0"))
@@ -1304,7 +1316,7 @@ SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONG
 # Max tracks a single album may contribute to the seed pool, so one large album
 # (e.g. a 100+ track DJ mix) cannot dominate the fingerprint - see issue #603.
 SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = int(os.environ.get("SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM", "3"))
-SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
+SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "50"))
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
     "Sonic Fingerprint by AudioMuse-AI",

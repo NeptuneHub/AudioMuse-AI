@@ -125,7 +125,7 @@ def lyrics_search_axes_api():
       500:
         description: Internal error.
     """
-    from config import LYRICS_ENABLED
+    from config import LYRICS_ENABLED, LYRICS_AXES_DEFAULT_LIMIT
     from tasks.lyrics_manager import search_by_axes
 
     if not LYRICS_ENABLED:
@@ -154,7 +154,7 @@ def lyrics_search_axes_api():
             return jsonify({'error': 'No valid axis selections supplied.'}), 400
 
         try:
-            limit = int(data.get('limit', 50))
+            limit = int(data.get('limit', LYRICS_AXES_DEFAULT_LIMIT))
         except (TypeError, ValueError):
             return jsonify({'error': 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
@@ -218,7 +218,7 @@ def lyrics_search_text_api():
       500:
         description: Internal error.
     """
-    from config import LYRICS_ENABLED
+    from config import LYRICS_ENABLED, LYRICS_TEXT_DEFAULT_LIMIT
     from tasks.lyrics_manager import search_by_text
 
     if not LYRICS_ENABLED:
@@ -241,7 +241,7 @@ def lyrics_search_text_api():
             return jsonify({'error': 'Query must be at least 1 character.'}), 400
 
         try:
-            limit = int(data.get('limit', 50))
+            limit = int(data.get('limit', LYRICS_TEXT_DEFAULT_LIMIT))
         except (TypeError, ValueError):
             return jsonify({'error': 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
