@@ -1163,10 +1163,11 @@ def missing_required_creds(server_type, creds):
             missing.append('password')
         return missing
 
+    optional = set(config.MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE.get(server_type, []))
     required = [
         config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
         for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(server_type, [])
-        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD
+        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD and field not in optional
     ]
     return [key for key in required if not creds.get(key)]
 

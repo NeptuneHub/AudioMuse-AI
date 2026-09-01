@@ -114,6 +114,24 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 # Wizard treats this as mutually exclusive with username/password.
 NAVIDROME_API_KEY = os.environ.get("NAVIDROME_API_KEY", "")
 
+# --- Ampache Constants ---
+# These are used only if MEDIASERVER_TYPE is "ampache". AMPACHE_PASSWORD takes either the
+# account password or an API key; an API key is preferred, because it is sent as an
+# Authorization header and Ampache opens the session itself - no handshake, and no secret
+# in the query string. A password has to handshake and travels as a query parameter.
+AMPACHE_URL = os.environ.get("AMPACHE_URL", "")  # e.g. https://your-ampache-server
+# Optional: an API key authenticates on its own, so leave this empty in that mode.
+AMPACHE_USER = os.environ.get("AMPACHE_USER", "")
+AMPACHE_PASSWORD = os.environ.get("AMPACHE_PASSWORD", "")
+# Rows per page when paging Ampache browse results: the full catalogue enumeration used by the
+# sweep and cleaning, and album discovery. Ampache does per-object work on every row it
+# serialises, so a bigger page cuts the number of requests but not the server's cost, and makes
+# each request longer. HARD CEILING: requests time out at _REQUEST_TIMEOUT_SECONDS (60), and a
+# page too big to serve inside that budget makes EVERY page fail, retry once and abort the
+# enumeration - a sweep that fails outright rather than running slowly. At ~38 songs/second that
+# is ~2300 rows, so keep well under it; 1000 is a safe step up on a fast local server.
+AMPACHE_PAGE_SIZE = int(os.environ.get("AMPACHE_PAGE_SIZE", "500") or 500)
+
 # --- Lyrion (LMS) Constants ---
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "")
@@ -129,6 +147,14 @@ MEDIASERVER_FIELDS_BY_TYPE = {
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
     'plex': ['PLEX_URL', 'PLEX_TOKEN'],
+    'ampache': ['AMPACHE_URL', 'AMPACHE_USER', 'AMPACHE_PASSWORD'],
+}
+
+# Fields the provider offers but does not require. Ampache's handshake takes an
+# API key in the password field, and an API key needs no username, so demanding
+# one would make the documented API-key-only install impossible to save.
+MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE = {
+    'ampache': ['AMPACHE_USER'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
@@ -153,6 +179,7 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
     'NAVIDROME_API_KEY': 'api_key',
     'LYRION_URL': 'url',
     'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
+    'AMPACHE_URL': 'url', 'AMPACHE_USER': 'user', 'AMPACHE_PASSWORD': 'password',
 }
 
 # The ONLY persistent home of these settings is the music_servers registry
@@ -192,6 +219,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'POSTGRES_PORT',
     'POSTGRES_DB',
     'MEDIASERVER_FIELDS_BY_TYPE',
+    'MEDIASERVER_OPTIONAL_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'MEDIASERVER_CONFIG_KEYS',
