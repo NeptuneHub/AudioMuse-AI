@@ -266,7 +266,12 @@ def get_axes_definition() -> Dict:
 
 
 def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
-    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
+    from config import (
+        LYRICS_ENABLED,
+        MAX_SONGS_PER_ARTIST,
+        DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS,
+        DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+    )
 
     if not LYRICS_ENABLED:
         return []
@@ -304,7 +309,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     begin_query(ivf_index)
 
     artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-    fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+    fetch_size = limit + max(20, limit * 4) + 1
     num_to_query = min(fetch_size, len(ivf_index))
     if num_to_query <= 0:
         return []
@@ -316,7 +321,16 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
         return []
 
     results = _build_capped_results(
-        ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+        ivf_index,
+        id_map,
+        metadata_map,
+        neighbor_ids,
+        distances,
+        limit,
+        artist_cap,
+        dedup_names=True,
+        dup_threshold=DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS,
+        lookback=DUPLICATE_DISTANCE_CHECK_LOOKBACK,
     )
 
     logger.info(
@@ -338,7 +352,12 @@ def _embed_text_query(query_text: str):
 def search_by_text(
     query_text: str, limit: int = 50, artist_cap: Optional[int] = None
 ) -> List[Dict]:
-    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
+    from config import (
+        LYRICS_ENABLED,
+        MAX_SONGS_PER_ARTIST,
+        DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT,
+        DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+    )
 
     if not LYRICS_ENABLED:
         return []
@@ -359,7 +378,7 @@ def search_by_text(
         if artist_cap is None:
             artist_cap = MAX_SONGS_PER_ARTIST
         artist_cap = artist_cap if artist_cap and artist_cap > 0 else 0
-        fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+        fetch_size = limit + max(20, limit * 4) + 1
 
         ivf_index = _LYRICS_INDEX_CACHE['index']
         id_map = _LYRICS_INDEX_CACHE['id_map'] or {}
@@ -376,7 +395,16 @@ def search_by_text(
         metadata_map = _fetch_lyrics_metadata(candidate_item_ids)
 
         results = _build_capped_results(
-            ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+            ivf_index,
+            id_map,
+            metadata_map,
+            neighbor_ids,
+            distances,
+            limit,
+            artist_cap,
+            dedup_names=True,
+            dup_threshold=DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT,
+            lookback=DUPLICATE_DISTANCE_CHECK_LOOKBACK,
         )
 
         logger.info(

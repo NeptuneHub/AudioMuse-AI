@@ -17,11 +17,16 @@ Main Features:
 * dedup_by_content: drop duplicate tracks (same normalized title + author)
   that can appear twice after duplicate recordings were merged into one row.
 * apply_artist_cap: cap the number of tracks per artist at MAX_SONGS_PER_ARTIST.
-* build_capped_results: walk IVF neighbours and assemble the final capped list.
+* build_capped_results: walk IVF neighbours and assemble the final capped list,
+  optionally dropping same title+author repeats and vector-space near duplicates.
+* is_near_duplicate_vector: cosine near-duplicate test against a lookback window,
+  reading the candidate vector back from the paged IVF index.
 """
 
 import logging
 from typing import Dict, List
+
+import numpy as np
 
 import config
 
@@ -78,12 +83,46 @@ def apply_artist_cap(songs, author_resolver, warn_missing=False):
     return capped
 
 
+def unit_vector_from_index(ivf_index, vid):
+    try:
+        vec = np.array(ivf_index.get_vector(int(vid)), dtype=np.float32)
+    except Exception:
+        logger.exception("Could not read vector %s back from the index for the duplicate check", vid)
+        return None
+    norm = float(np.linalg.norm(vec))
+    if norm <= 0.0:
+        return vec
+    return vec / norm
+
+
+def is_near_duplicate_vector(candidate_unit, lookback_units, threshold):
+    if candidate_unit is None or threshold <= 0.0 or not lookback_units:
+        return False
+    for previous in lookback_units:
+        cosine_distance = float(np.clip(1.0 - float(np.dot(candidate_unit, previous)), 0.0, 2.0))
+        if cosine_distance < threshold:
+            return True
+    return False
+
+
 def build_capped_results(
-    ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+    ivf_index,
+    id_map,
+    metadata_map,
+    neighbor_ids,
+    distances,
+    limit,
+    artist_cap,
+    dedup_names=False,
+    dup_threshold=0.0,
+    lookback=0,
 ) -> List[Dict]:
     results: List[Dict] = []
     artist_counts: Dict[str, int] = {}
     seen: set = set()
+    seen_names: set = set()
+    lookback_units: List = []
+    distance_active = dup_threshold > 0.0 and lookback > 0
     for vid, dist in zip(neighbor_ids, distances):
         if len(results) >= limit:
             break
@@ -93,11 +132,32 @@ def build_capped_results(
         seen.add(item_id)
         meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
         author = meta.get('author', '') or ''
+        title = meta.get('title', '') or ''
+        if dedup_names:
+            name_key = (title.strip().lower(), author.strip().lower())
+            if name_key in seen_names:
+                logger.info(
+                    "Found duplicate (NAME FILTER): '%s' by '%s'.", title, author
+                )
+                continue
+            seen_names.add(name_key)
         if artist_cap and author:
             an = author.strip().lower()
             if artist_counts.get(an, 0) >= artist_cap:
                 continue
             artist_counts[an] = artist_counts.get(an, 0) + 1
+        if distance_active:
+            candidate_unit = unit_vector_from_index(ivf_index, vid)
+            if is_near_duplicate_vector(candidate_unit, lookback_units[-lookback:], dup_threshold):
+                logger.info(
+                    "Found duplicate (DISTANCE FILTER): '%s' by '%s' within %.4f.",
+                    title,
+                    author,
+                    dup_threshold,
+                )
+                continue
+            if candidate_unit is not None:
+                lookback_units.append(candidate_unit)
         similarity = ivf_index.distance_to_similarity(dist)
         results.append(
             {

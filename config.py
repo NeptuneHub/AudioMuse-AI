@@ -1378,6 +1378,28 @@ DUPLICATE_DISTANCE_THRESHOLD_COSINE = float(os.getenv("DUPLICATE_DISTANCE_THRESH
 DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", "0.05"))
 DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN", "0.15"))
 DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOKBACK", "1"))
+# Per-space duplicate thresholds for the searches that had no distance filter at all.
+# Each index lives in its own geometry, so one shared number cannot serve them: the values
+# below were measured on a 199915 track catalogue by comparing, per space, how many genuinely
+# different neighbours a threshold drops against how many known same-recording pairs it
+# catches. The audio filter above (0.01 cosine) drops 0.24% of real neighbours, and that is
+# the tolerance each value here was matched to.
+# Lyrics text search (768-dim GTE embedding, cosine). 0.01 catches only half of the known
+# duplicates for the same cost as 0.05, which catches three quarters, so 0.05 it is. Note
+# that most of the effect is collapsing tracks whose lyrics embedding is byte-identical
+# (instrumentals and failed transcriptions, 17.9% of that catalogue): they are one single
+# point in this space, so a run of them can only ever be ranked arbitrarily.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT", "0.05"))
+# Lyrics axis search (27-dim axis vector, cosine). DISABLED ON PURPOSE, and 0.0 means off.
+# Axis distances are compressed into a very narrow band (median gap between consecutive
+# results 0.014), so even 0.0025 drops 18% of real neighbours and 0.01 drops 28%. Songs that
+# share an axis profile exactly are what a By Axis search is asking for, not duplicates.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS", "0.0"))
+# Hyperbolic search and hyperbolic journey (Poincare disk, arccosh distance, NOT cosine).
+# Distances here run an order of magnitude larger: the closest two distinct neighbours ever
+# come is 0.093, so 0.01 never fires. 0.30 drops 0.22% of real neighbours, matching the audio
+# filter, and catches 95% of known same-recording pairs.
+DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC", "0.30"))
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
 # recording for catalogue identity. Tightened to 1s: two songs that merely sound alike but
 # differ in length by more than this are kept separate. Unknown duration = not the same.
