@@ -157,7 +157,7 @@ def test_similar_mode_returns_sorted_by_distance(monkeypatch):
         "tasks.hyperbolic_index.hyperbolic_nearest",
         lambda *a, **kw: [("fp_a", 0.11), ("fp_b", 0.2), ("fp_c", 0.3)],
     )
-    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results, vector_map=None: results)
     results = hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
     assert [r["item_id"] for r in results] == ["fp_a", "fp_b"]
     distances = [r["distance"] for r in results]
@@ -188,7 +188,7 @@ def test_roots_mode_filters_radius_below_target(monkeypatch):
 
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
     monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
-    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results, vector_map=None: results)
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
     results = hm.hyperbolic_similar("fp_t", mode="roots", limit=2)
     assert captured["below"] is True
@@ -208,7 +208,7 @@ def test_niche_mode_filters_radius_above_target(monkeypatch):
 
     monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
     monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
-    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results: results)
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results, vector_map=None: results)
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
     results = hm.hyperbolic_similar("fp_t", mode="niche", limit=2)
     assert captured["below"] is False

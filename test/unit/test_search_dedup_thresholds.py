@@ -22,8 +22,12 @@ Main Features:
 * The distance pass never consults the index when it is disabled
 * The lyrics text search passes its own threshold, the axis search passes its
   own, and the two are read from config rather than hard coded
+* CLAP text search asks for both filters and reuses the audio threshold, the
+  space it measures like
 * The hyperbolic result filter measures in arccosh units, so a cosine-sized
   0.01 keeps tracks that 0.30 removes
+* The hyperbolic filter is handed the projections its caller already fetched
+  rather than reading them back from the database a second time
 * The journey drops a near-duplicate pick instead of shortening by a hole
 """
 
@@ -63,6 +67,26 @@ class TestNameFilterOnTheLyricsStyleResultBuilder:
         results = build_capped_results(
             idx, {0: 'a', 1: 'b'},
             _meta([('a', 'Song', 'Artist'), ('b', 'song', ' artist ')]),
+            [0, 1], [0.1, 0.2], 10, 0, dedup_names=True,
+        )
+
+        assert [r['item_id'] for r in results] == ['a']
+
+    def test_tracks_with_no_metadata_at_all_are_not_collapsed_onto_the_first(self):
+        idx = _index({0: [1.0, 0.0], 1: [0.0, 1.0], 2: [0.5, 0.5]})
+        results = build_capped_results(
+            idx, {0: 'a', 1: 'b', 2: 'c'},
+            _meta([('a', '', ''), ('b', '', ''), ('c', '', '')]),
+            [0, 1, 2], [0.1, 0.2, 0.3], 10, 0, dedup_names=True,
+        )
+
+        assert [r['item_id'] for r in results] == ['a', 'b', 'c']
+
+    def test_a_missing_author_alone_still_dedups_on_the_title(self):
+        idx = _index({0: [1.0, 0.0], 1: [0.0, 1.0]})
+        results = build_capped_results(
+            idx, {0: 'a', 1: 'b'},
+            _meta([('a', 'Song', ''), ('b', 'song', '')]),
             [0, 1], [0.1, 0.2], 10, 0, dedup_names=True,
         )
 
@@ -160,11 +184,11 @@ class TestTheHyperbolicThresholdIsReadInArccoshUnits:
         from tasks import hyperbolic_manager
 
         results = [{'item_id': i} for i in ('a', 'b', 'c')]
-        with patch.object(hyperbolic_manager, '_fetch_poincare_rows', return_value=self._rows()), \
-                patch.object(config, 'DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC', threshold), \
+        with patch.object(config, 'DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC', threshold), \
                 patch.object(config, 'DUPLICATE_DISTANCE_CHECK_LOOKBACK', 1):
             return [r['item_id'] for r in
-                    hyperbolic_manager._filter_hyperbolic_near_duplicates(results)]
+                    hyperbolic_manager._filter_hyperbolic_near_duplicates(
+                        results, self._rows())]
 
     def test_a_cosine_sized_threshold_removes_nothing_in_this_space(self):
         assert self._run(0.01) == ['a', 'b', 'c']
@@ -180,10 +204,10 @@ class TestTheHyperbolicThresholdIsReadInArccoshUnits:
         from tasks import hyperbolic_manager
 
         results = [{'item_id': 'a'}, {'item_id': 'missing'}]
-        with patch.object(hyperbolic_manager, '_fetch_poincare_rows', return_value=self._rows()), \
-                patch.object(config, 'DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC', 0.30), \
+        with patch.object(config, 'DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC', 0.30), \
                 patch.object(config, 'DUPLICATE_DISTANCE_CHECK_LOOKBACK', 1):
-            kept = hyperbolic_manager._filter_hyperbolic_near_duplicates(results)
+            kept = hyperbolic_manager._filter_hyperbolic_near_duplicates(
+                results, self._rows())
 
         assert [r['item_id'] for r in kept] == ['a', 'missing']
 
@@ -229,11 +253,37 @@ class TestTheJourneySkipsANearDuplicatePickInsteadOfLeavingAHole:
         assert [p['item_id'] for p in picks] == ['near']
 
 
+class TestClapTextSearchGetsTheSameTreatment:
+    def test_the_clap_threshold_matches_the_audio_one_it_was_measured_against(self):
+        assert config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP == pytest.approx(
+            config.DUPLICATE_DISTANCE_THRESHOLD_COSINE
+        )
+
+    def test_the_clap_query_asks_for_both_the_name_and_the_distance_filter(self):
+        import inspect
+
+        from tasks import clap_text_search
+
+        source = inspect.getsource(clap_text_search._query_clap_index)
+        assert 'dedup_names=True' in source
+        assert 'DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP' in source
+        assert 'DUPLICATE_DISTANCE_CHECK_LOOKBACK' in source
+
+    def test_the_bulk_path_still_over_fetches_so_dedup_does_not_eat_the_limit(self):
+        import inspect
+
+        from tasks import clap_text_search
+
+        source = inspect.getsource(clap_text_search.search_by_text)
+        assert 'else limit + max(20, limit // 4) + 1' in source
+
+
 class TestEachSearchPathPassesItsOwnThreshold:
     @pytest.mark.parametrize('name,expected', [
         ('DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT', 0.05),
         ('DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS', 0.0),
         ('DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC', 0.30),
+        ('DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP', 0.01),
     ])
     def test_the_measured_default_is_the_shipped_default(self, name, expected):
         assert getattr(config, name) == pytest.approx(expected)
@@ -242,6 +292,7 @@ class TestEachSearchPathPassesItsOwnThreshold:
         'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT',
         'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS',
         'DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC',
+        'DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP',
     ])
     def test_the_operator_can_reach_it_from_the_setup_wizard(self, name):
         import app_setup

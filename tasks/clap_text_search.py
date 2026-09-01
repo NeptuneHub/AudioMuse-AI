@@ -185,7 +185,16 @@ def _query_clap_index(text_embedding, fetch_size, limit, artist_cap):
     candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
     metadata_map = _fetch_clap_metadata(candidate_item_ids)
     return _build_capped_results(
-        ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+        ivf_index,
+        id_map,
+        metadata_map,
+        neighbor_ids,
+        distances,
+        limit,
+        artist_cap,
+        dedup_names=True,
+        dup_threshold=config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP,
+        lookback=config.DUPLICATE_DISTANCE_CHECK_LOOKBACK,
     )
 
 
@@ -228,7 +237,10 @@ def search_by_text(query_text: str, limit: int = 100, steering: Optional[List[Di
         )
         if limit >= 1000:
             artist_cap = 0
-        fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+        fetch_size = (
+            limit + max(20, limit * 4) + 1 if artist_cap
+            else limit + max(20, limit // 4) + 1
+        )
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
             results = _query_clap_index(text_embedding, fetch_size, limit, artist_cap)

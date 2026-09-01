@@ -19,6 +19,9 @@ Main Features:
 * apply_artist_cap: cap the number of tracks per artist at MAX_SONGS_PER_ARTIST.
 * build_capped_results: walk IVF neighbours and assemble the final capped list,
   optionally dropping same title+author repeats and vector-space near duplicates.
+  A track with no title and no author carries no name to compare, so it is never
+  treated as a name duplicate: otherwise one failed metadata lookup would
+  collapse a whole result page onto its first row.
 * is_near_duplicate_vector: cosine near-duplicate test against a lookback window,
   reading the candidate vector back from the paged IVF index.
 """
@@ -133,7 +136,7 @@ def build_capped_results(
         meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
         author = meta.get('author', '') or ''
         title = meta.get('title', '') or ''
-        if dedup_names:
+        if dedup_names and (title.strip() or author.strip()):
             name_key = (title.strip().lower(), author.strip().lower())
             if name_key in seen_names:
                 logger.info(

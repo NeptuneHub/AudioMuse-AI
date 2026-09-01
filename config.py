@@ -1400,6 +1400,11 @@ DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS = float(os.getenv("DUPLICATE_DIS
 # come is 0.093, so 0.01 never fires. 0.30 drops 0.22% of real neighbours, matching the audio
 # filter, and catches 95% of known same-recording pairs.
 DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC", "0.30"))
+# CLAP text search (512-dim CLAP embedding, cosine). CLAP is an audio-derived space and
+# measures almost identically to the plain audio index, so it takes the same 0.01: that drops
+# 0.12% of real neighbours (nothing at all on real text queries) and catches 75% of known
+# same-recording pairs. 0.02 would catch 90% but costs 0.67%, over the audio budget.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP", "0.01"))
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
 # recording for catalogue identity. Tightened to 1s: two songs that merely sound alike but
 # differ in length by more than this are kept separate. Unknown duration = not the same.
