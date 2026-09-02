@@ -307,10 +307,10 @@ def test_deduplicate_and_cap_results_matches_similar_song_rules(monkeypatch):
         {"item_id": "d4", "distance": 0.4, "hyperbolic_radius": 0.6},
         {"item_id": "d5", "distance": 0.5, "hyperbolic_radius": 0.7},  # 4th Artist A -> capped
         {"item_id": "d6", "distance": 0.6, "hyperbolic_radius": 0.7},
-        {"item_id": "d7", "distance": 0.7, "hyperbolic_radius": 0.8},  # no author -> skipped
+        {"item_id": "d7", "distance": 0.7, "hyperbolic_radius": 0.8},  # no author -> exempt from the cap, kept
     ]
     out = hm._deduplicate_and_cap_results(results)
-    assert [r["item_id"] for r in out] == ["d1", "d3", "d4", "d6"]
+    assert [r["item_id"] for r in out] == ["d1", "d3", "d4", "d6", "d7"]
 
 
 def test_deduplicate_and_cap_results_empty_is_noop():
