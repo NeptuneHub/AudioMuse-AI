@@ -22,8 +22,8 @@
         })();
     </script>
     {% include 'includes/reverse_proxy_prefix.html' %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ app_version }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}?v={{ app_version }}">
     <style>
         .server-selector-nav { display: none; padding: 0.4rem 0 0; }
         .server-selector-nav.active { display: block; }
@@ -35,7 +35,7 @@
          selected server). The JSON above it hands the script the server list with
          the page itself, so no /api/servers round trip is needed after load. -->
     {% if nav_music_servers %}<script type="application/json" id="server-selector-data">{{ nav_music_servers|tojson }}</script>{% endif %}
-    <script src="{{ url_for('static', filename='server_selector.js') }}"></script>
+    <script src="{{ url_for('static', filename='server_selector.js') }}?v={{ app_version }}"></script>
 
     {% block headAdditions %}
         {# head additions from template will be set here #}
@@ -111,15 +111,15 @@
        redirect into a server that had not come back yet, or a poll loop that
        never recognised its own terminal status. They load BEFORE bodyAdditions
        so a page script may use them at top level, not only after DOMContentLoaded. #}
-    <script src="{{ url_for('static', filename='task_status.js') }}"></script>
-    <script src="{{ url_for('static', filename='restart_wait.js') }}"></script>
+    <script src="{{ url_for('static', filename='task_status.js') }}?v={{ app_version }}"></script>
+    <script src="{{ url_for('static', filename='restart_wait.js') }}?v={{ app_version }}"></script>
 
     {% block bodyAdditions %}
         {# body additions from template will be set here #}
     {% endblock %}
 
-    <script src="{{ url_for('static', filename='song_tags.js') }}"></script>
-    <script src="{{ url_for('static', filename='error_display.js') }}"></script>
+    <script src="{{ url_for('static', filename='song_tags.js') }}?v={{ app_version }}"></script>
+    <script src="{{ url_for('static', filename='error_display.js') }}?v={{ app_version }}"></script>
 </body>
 </html>
 {% block postHTMLScripts %}

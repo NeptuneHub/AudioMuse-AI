@@ -288,6 +288,7 @@ def find_path_endpoint():
     mood_pct = request.args.get('mood_pct', 100, type=int)
     # Use the default from config if max_steps is not provided in the request
     max_steps = request.args.get('max_steps', PATH_DEFAULT_LENGTH, type=int)
+    max_steps = max(1, max_steps)
 
     # Cannot have more than one special endpoint among start/end (mood or anchor)
     if (start_mood or start_anchor) and (end_mood or end_anchor):

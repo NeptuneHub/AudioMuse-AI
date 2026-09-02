@@ -274,7 +274,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.5.1"
+APP_VERSION = "v3.5.2"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1484,6 +1484,12 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 
 # --- Instant Playlist Optimization ---
+# How many songs the instant playlist targets when the caller sends no count, and
+# the ceiling the chat page puts on its own input box. The max is a FRONTEND-only
+# bound (the input's max= attribute): the API applies the default and the floor of
+# 1 but never the ceiling, so a direct API caller can ask for any number.
+INSTANT_PLAYLIST_DEFAULT_N_RESULTS = int(os.environ.get("INSTANT_PLAYLIST_DEFAULT_N_RESULTS", "50"))
+INSTANT_PLAYLIST_MAX_N_RESULTS = int(os.environ.get("INSTANT_PLAYLIST_MAX_N_RESULTS", "200"))
 # Max songs from a single artist in the instant playlist (diversity enforcement)
 MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
 # Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)

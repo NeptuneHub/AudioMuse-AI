@@ -17,6 +17,7 @@ Main Features:
 * Mood lists split out voices and energy phrases; non-canonical genres dropped with a note
 * Plan args drop seedless searches, hallucinated min_rating and sub-1900 years; duplicate calls dropped and plans capped
 * build_tool_calls_schema emits typed per-tool branches (reasoning first, name enum locked); prompts derive tool prose from the schemas
+* Per-tool retrieval budget over-fetches a multiple of the requested playlist length
 * Genre/negation hint extraction (incl. 4-digit decades), hint backstop, hallucinated year/instrumental/exclusion stripping (exclusions need a negation cue), whole-word artist-relax regex, similarity-blended re-rank with skit demotion and the instrumental dimension, exclusion hard cuts, empty/self-subtract coercion to union, underfilled-hard-filter broadening, and the zero-result replan
 """
 
@@ -1470,3 +1471,42 @@ class TestPlannerLogLinesStayFrontendParsable:
             assert line.split(':', 1)[1].strip() in {
                 'seed_search', 'text_match', 'knowledge_lookup', 'search_database',
             }
+
+
+class TestRetrievalBudget:
+    def _budget_for(self, monkeypatch, target):
+        p = _plan()
+        import tasks.ai.tools as tools_mod
+        import tasks.ai.tool_impl as impl_mod
+
+        seen = []
+
+        def fake_exec(name, args, cfg):
+            seen.append(args.get('get_songs'))
+            return {'songs': [], 'message': ''}
+
+        monkeypatch.setattr(tools_mod, 'execute_mcp_tool', fake_exec)
+        monkeypatch.setattr(impl_mod, '_fetch_pool_features', lambda ids: {})
+
+        plan = p.ToolPlan(
+            primaries=[{'name': 'text_match', 'arguments': {'query': 'calm piano'}}]
+        )
+        _drive(
+            p._execute_plan(
+                plan, {'provider': 'NONE'}, [], target_song_count=target
+            )
+        )
+        return seen[0]
+
+    def test_budget_over_fetches_twice_the_target_so_dedup_and_diversity_have_slack(
+        self, monkeypatch
+    ):
+        assert self._budget_for(monkeypatch, 200) == 400
+        assert self._budget_for(monkeypatch, 500) == 1000
+
+    def test_budget_keeps_its_200_floor_for_short_playlists(self, monkeypatch):
+        assert self._budget_for(monkeypatch, 10) == 200
+        assert self._budget_for(monkeypatch, 50) == 200
+
+    def test_budget_at_the_legacy_100_target_is_unchanged(self, monkeypatch):
+        assert self._budget_for(monkeypatch, 100) == 200

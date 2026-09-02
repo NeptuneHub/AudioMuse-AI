@@ -202,7 +202,7 @@ def generate_sonic_fingerprint_endpoint():
         num_results = data.get('n')
         if num_results is not None:
             try:
-                num_results = int(num_results)
+                num_results = max(1, int(num_results))
             except (ValueError, TypeError):
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
 

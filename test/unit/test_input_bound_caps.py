@@ -9,16 +9,25 @@
 """Input bounds and name validation on the search and alchemy API routes.
 
 Drives the IVF, artist-similarity, and alchemy blueprints to confirm untrusted
-range and count params are clamped and playlist/anchor names are validated.
+range and count params are bounded and playlist/anchor names are validated.
+
+Two different knobs, two different rules. A PAGINATION page size (search
+start/end) is capped, because it bounds one response body. A requested RESULT
+COUNT - how many neighbours/songs to return - is NEVER capped in the backend:
+its configured maximum bounds only the page's own input box, so a direct API
+caller may ask for any number. Both get a floor and a default.
 
 Main Features:
-* Search limits cap at 500 (tracks) / 100 (artists); small ranges pass through
-* Similar-tracks and alchemy n coerce non-numeric to the default and clamp
-  negatives up and huge values down to the configured maximum
+* Search pagination limits cap at 500 (tracks) / 100 (artists)
+* Similar-tracks and alchemy n coerce non-numeric to the default and floor
+  negatives at 1, while a huge count reaches the backend unchanged
+* Every result-count route floors its count at 1 so a zero or negative never
+  reaches the backend
 * Empty, whitespace, and non-string playlist/anchor names are rejected 4xx
   before the backend is ever called
 """
 
+import io
 from unittest.mock import patch
 import pytest
 from flask import Flask
@@ -110,7 +119,7 @@ class TestIvfSimilarTracksNCoercion:
 
 
 class TestAlchemyNClamp:
-    def test_huge_n_is_clamped_to_max(self, alchemy_client):
+    def test_n_above_the_frontend_maximum_reaches_the_backend_uncapped(self, alchemy_client):
         with (
             patch.object(app_alchemy, 'song_alchemy', return_value={'results': []}) as backend,
             patch.object(app_alchemy, 'attach_song_features'),
@@ -120,8 +129,8 @@ class TestAlchemyNClamp:
             )
         assert resp.status_code == 200
         used = backend.call_args.kwargs['n_results']
-        assert used == config.ALCHEMY_MAX_N_RESULTS
-        assert used < 999999
+        assert used == 999999
+        assert used > config.ALCHEMY_MAX_N_RESULTS
 
     def test_non_numeric_n_falls_back_to_default(self, alchemy_client):
         with (
@@ -193,3 +202,53 @@ class TestAlchemyAnchorName:
             resp = alchemy_client.post('/api/anchors', json={'name': 123, 'centroid': [1.0, 2.0]})
         assert 400 <= resp.status_code < 500
         backend.assert_not_called()
+
+
+class TestNoBackendCeilingOnRequestedCounts:
+    def test_alchemy_engine_does_not_reclamp_the_count_it_is_handed(self):
+        import tasks.song_alchemy as sa
+
+        src = io.open(sa.__file__, encoding='utf-8').read()
+        assert 'min(n_results, config.ALCHEMY_MAX_N_RESULTS)' not in src
+
+    def test_no_route_clamps_a_requested_count_to_a_configured_maximum(self):
+        import glob
+        import re
+
+        offenders = []
+        for path in sorted(glob.glob('app_*.py')) + ['tasks/song_alchemy.py']:
+            for num, line in enumerate(io.open(path, encoding='utf-8'), start=1):
+                m = re.search(r'min\(\s*(n_results|num_neighbors|get_songs|n)\s*,\s*([^),]+)', line)
+                if m and not m.group(2).strip().startswith('len('):
+                    offenders.append(path + ':' + str(num) + ': ' + line.strip())
+        assert offenders == [], (
+            'A requested result count (neighbours/songs) is clamped in the '
+            'backend. Its only ceiling belongs in the page input; the API stays '
+            'uncapped. Pagination page size is a separate knob and may cap: '
+            + '\n'.join(offenders)
+        )
+
+
+class TestResultCountsAreFloored:
+    def _scoped_n(self, client, n):
+        rows = [{'artist': f'A{i}'} for i in range(5)]
+        with (
+            patch.object(app_artist_similarity, 'find_similar_artists', return_value=rows),
+            patch.object(
+                app_artist_similarity.app_server_context,
+                'scope_artist_results',
+                return_value=rows,
+            ) as scoped,
+        ):
+            resp = client.get(
+                '/api/similar_artists', query_string={'artist': 'Nas', 'n': n}
+            )
+        assert resp.status_code != 500
+        return scoped.call_args.args[1]
+
+    @pytest.mark.parametrize('bad_n', [-5, -1, 0])
+    def test_artist_similarity_floors_a_non_positive_n(self, client, bad_n):
+        assert self._scoped_n(client, bad_n) >= 1
+
+    def test_artist_similarity_passes_a_large_n_through_uncapped(self, client):
+        assert self._scoped_n(client, 5000) == 5000

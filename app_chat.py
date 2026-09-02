@@ -64,7 +64,13 @@ def chat_home():
     """
     Serves the main chat page.
     """
-    return render_template('chat.html', title='AudioMuse-AI - Instant Playlist', active='chat')
+    return render_template(
+        'chat.html',
+        title='AudioMuse-AI - Instant Playlist',
+        active='chat',
+        instant_playlist_n_results_default=config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS,
+        instant_playlist_max_n_results=config.INSTANT_PLAYLIST_MAX_N_RESULTS,
+    )
 
 
 @chat_bp.route('/api/config_defaults', methods=['GET'])
@@ -102,6 +108,14 @@ def chat_home():
                                     'type': 'string',
                                     'example': 'ministral-3b-latest',
                                 },
+                                'instant_playlist_default_n_results': {
+                                    'type': 'integer',
+                                    'example': 50,
+                                },
+                                'instant_playlist_max_n_results': {
+                                    'type': 'integer',
+                                    'example': 200,
+                                },
                             },
                         }
                     }
@@ -126,6 +140,8 @@ def chat_config_defaults_api():
             "openai_server_url": cfg.OPENAI_SERVER_URL,
             "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
             "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
+            "instant_playlist_default_n_results": cfg.INSTANT_PLAYLIST_DEFAULT_N_RESULTS,
+            "instant_playlist_max_n_results": cfg.INSTANT_PLAYLIST_MAX_N_RESULTS,
         }
     ), 200
 
@@ -139,6 +155,15 @@ def _reject_missing_user_input(data):
     ):
         return jsonify({"error": "Missing userInput in request"}), 400
     return None
+
+
+def _resolve_target_song_count(data):
+    raw = (data or {}).get('n', config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS
+    return max(1, n)
 
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
@@ -192,6 +217,12 @@ def _reject_missing_user_input(data):
                             'mistral_api_key': {
                                 'type': 'string',
                                 'description': 'Custom Mistral API key (optional, defaults to server configuration).',
+                            },
+                            'n': {
+                                'type': 'integer',
+                                'description': 'Number of songs the playlist should aim for. Defaults to INSTANT_PLAYLIST_DEFAULT_N_RESULTS. The API applies no upper bound (INSTANT_PLAYLIST_MAX_N_RESULTS only caps the chat page input).',
+                                'example': 50,
+                                'minimum': 1,
                             },
                         },
                     }
@@ -271,7 +302,8 @@ def chat_playlist_api():
     3. search_database - Filter by artist, album, genre, voice, mood, year, tempo, energy, key (ALL filters in ONE call)
     4. knowledge_lookup - Popularity/cultural requests turned into a grounded library recipe
 
-    AI analyzes request -> calls tools -> combines results -> returns 100 songs
+    AI analyzes request -> calls tools -> combines results -> returns the
+    requested number of songs (`n`, default INSTANT_PLAYLIST_DEFAULT_N_RESULTS)
 
     Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
@@ -539,7 +571,8 @@ def _run_chat_pipeline(data, log_messages):
     # ====================
 
     log_messages.append("\nUsing MCP Agentic Workflow for playlist generation")
-    log_messages.append("Target: 100 songs")
+    target_song_count = _resolve_target_song_count(data)
+    log_messages.append(f"Target: {target_song_count} songs")
 
     # Get MCP tools and library context
     mcp_tools = get_mcp_tools()
@@ -556,10 +589,9 @@ def _run_chat_pipeline(data, log_messages):
 
     yield
 
-    target_song_count = 100
     from config import MAX_SONGS_PER_ARTIST_PLAYLIST
 
-    collection_cap = 1000
+    collection_cap = max(1000, target_song_count * 10)
 
     plan_result = yield from plan_and_execute_once(
         user_message=f'Build a {target_song_count}-song playlist for: "{original_user_input}"',

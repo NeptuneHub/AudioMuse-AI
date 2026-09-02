@@ -187,6 +187,7 @@ def get_similar_artists_endpoint():
     artist = request.args.get('artist')
     artist_id = request.args.get('artist_id')
     n = request.args.get('n', config.ARTIST_SIMILARITY_DEFAULT_N_RESULTS, type=int)
+    n = max(1, n)
     ef_search = request.args.get('ef_search', type=int)
     include_component_matches = (
         request.args.get('include_component_matches', 'false').lower() == 'true'

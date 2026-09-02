@@ -160,9 +160,11 @@ AI providers:
 
 Safety caps:
 
-- `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`,
-  `MAX_SONGS_PER_ARTIST`, `DASHBOARD_BROWSE_MAX_OFFSET`,
+- `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST`, `DASHBOARD_BROWSE_MAX_OFFSET`,
   `SWEEP_PRUNE_MIN_FETCH_RATIO`.
+- `ALCHEMY_MAX_N_RESULTS` and `INSTANT_PLAYLIST_MAX_N_RESULTS` are NOT safety
+  caps: they bound only their page's own input box. No API route and no internal
+  routine clamps a requested result count to them.
 
 Authentication:
 
@@ -1490,8 +1492,10 @@ selected in the sidebar, because that page is per server.
 
 ### 8.3. Environment Variable Configuration
 
-- `ALCHEMY_DEFAULT_N_RESULTS`, `ALCHEMY_MAX_N_RESULTS`: default and hard cap on
-  the number of results.
+- `ALCHEMY_DEFAULT_N_RESULTS`, `ALCHEMY_MAX_N_RESULTS`: the count used when the
+  caller names none, and the ceiling the Alchemy page puts on its own input box.
+  The maximum is frontend-only: the API and the engine enforce the default and a
+  floor of 1, never the cap, so a direct API caller can ask for any number.
 - `ALCHEMY_TEMPERATURE`: default sampling temperature.
 - `ALCHEMY_SUBTRACT_DISTANCE_ANGULAR`, `ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN`:
   default subtract thresholds. The metric in use decides which one applies.
@@ -1985,6 +1989,11 @@ re-rank on top of that would fight the brainstorm.
 
 #### Streaming and playlist creation
 
+The playlist length comes from the request's `n` (the chat page's "Number of
+songs" box), defaulting to `INSTANT_PLAYLIST_DEFAULT_N_RESULTS`. The pool the
+tools fill is ten times that, with a floor of 1000, so dedup and the artist
+diversity cap still leave enough to select from.
+
 `POST /chat/api/chatPlaylist` returns the final result in one response.
 `POST /chat/api/chatPlaylistStream` streams the same run as Server-Sent Events, so
 the page can show each step as it happens. Optionally
@@ -2019,6 +2028,10 @@ reaches the container log.
   calls.
 - `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD`: the read-only role used for
   the library queries. The role is created or reset automatically when set.
+- `INSTANT_PLAYLIST_DEFAULT_N_RESULTS`, `INSTANT_PLAYLIST_MAX_N_RESULTS`: how
+  many songs the playlist aims for when the caller sends no `n`, and the ceiling
+  the chat page puts on its own "Number of songs" box. The maximum is
+  frontend-only: the API enforces the default and a floor of 1, never the cap.
 - `MAX_SONGS_PER_ARTIST_PLAYLIST`: diversity cap inside an instant playlist.
 - `PLAYLIST_ENERGY_ARC`: enable the energy arc when ordering.
 - `AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX`, `AI_BRAINSTORM_SEED_ARTISTS_MAX`,
