@@ -1286,7 +1286,7 @@ tbody tr:hover {
 
 /* Tooltip text */
 .tooltip-text {
-    visibility: hidden;
+    display: none;
     opacity: 0;
     width: 280px;
     background-color: #1F2937; /* Always dark for tooltips */
@@ -1322,7 +1322,7 @@ tbody tr:hover {
 .info-tooltip:hover .tooltip-text,
 .info-tooltip:focus .tooltip-text,
 .info-tooltip:active .tooltip-text {
-    visibility: visible;
+    display: block;
     opacity: 1;
 }
 
