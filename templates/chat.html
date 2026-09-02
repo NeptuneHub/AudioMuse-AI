@@ -1108,10 +1108,12 @@
                     title.textContent = `Generated Playlist (${responseData.query_results.length} songs)`;
                     resultsDiv.appendChild(title);
 
+                    const songScroll = document.createElement('div');
+                    songScroll.style.maxHeight = '400px';
+                    songScroll.style.overflowY = 'auto';
+
                     const songList = document.createElement('ol');
                     songList.className = 'song-list';
-                    songList.style.maxHeight = '400px';
-                    songList.style.overflowY = 'auto';
                     
                     document.getElementById('playlistItemIds').value = ''; // Clear previous item IDs
 
@@ -1122,7 +1124,8 @@
                         const currentItemIds = document.getElementById('playlistItemIds').value;
                         document.getElementById('playlistItemIds').value = currentItemIds ? `${currentItemIds},${song.item_id}` : song.item_id;
                     });
-                    resultsDiv.appendChild(songList);
+                    songScroll.appendChild(songList);
+                    resultsDiv.appendChild(songScroll);
                     responseArea.appendChild(resultsDiv);
                     createPlaylistSection.classList.remove('hidden'); // Show the create playlist form
                 } else if (responseData.executed_query) {
