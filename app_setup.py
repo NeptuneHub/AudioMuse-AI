@@ -162,9 +162,11 @@ HIDDEN_ADVANCED_FIELDS = {
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
-    # Per-endpoint result-count defaults used only when an API caller omits the
-    # count. Every page sends an explicit value from its own input box, so these
-    # never affect the UI and only exist for direct API calls.
+    # Per-endpoint result-count defaults. Each search page renders one of them into
+    # its count input's value= attribute, so they ARE the UI's starting number, and
+    # they are also the fallback for a direct API call that sends no count. Hidden
+    # here and excluded in SETUP_BOOTSTRAP_EXCLUDED_KEYS so they stay env-only: see
+    # the comment there for why half-hiding one would strand it beyond any reach.
     'SIMILARITY_DEFAULT_N_RESULTS',
     'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
     'CLAP_SEARCH_DEFAULT_LIMIT',

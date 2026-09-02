@@ -31,6 +31,7 @@ import numpy as np
 import config
 
 from .search_shaping import build_capped_results as _build_capped_results
+from .search_shaping import overfetch_size
 
 logger = logging.getLogger(__name__)
 
@@ -265,14 +266,17 @@ def get_axes_definition() -> Dict:
     }
 
 
-def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
+def search_by_axes(targets: Dict[str, str], limit: Optional[int] = None) -> List[Dict]:
     from config import (
         LYRICS_ENABLED,
+        LYRICS_AXES_DEFAULT_LIMIT,
         MAX_SONGS_PER_ARTIST,
         DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS,
         DUPLICATE_DISTANCE_CHECK_LOOKBACK,
     )
 
+    if limit is None:
+        limit = LYRICS_AXES_DEFAULT_LIMIT
     if not LYRICS_ENABLED:
         return []
     if not _LYRICS_AXIS_CACHE['loaded'] or _LYRICS_AXIS_CACHE['index'] is None:
@@ -309,8 +313,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     begin_query(ivf_index)
 
     artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-    fetch_size = limit + max(20, limit * 4) + 1
-    num_to_query = min(fetch_size, len(ivf_index))
+    num_to_query = min(overfetch_size(limit), len(ivf_index))
     if num_to_query <= 0:
         return []
 
@@ -350,15 +353,18 @@ def _embed_text_query(query_text: str):
 
 
 def search_by_text(
-    query_text: str, limit: int = 50, artist_cap: Optional[int] = None
+    query_text: str, limit: Optional[int] = None, artist_cap: Optional[int] = None
 ) -> List[Dict]:
     from config import (
         LYRICS_ENABLED,
+        LYRICS_TEXT_DEFAULT_LIMIT,
         MAX_SONGS_PER_ARTIST,
         DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT,
         DUPLICATE_DISTANCE_CHECK_LOOKBACK,
     )
 
+    if limit is None:
+        limit = LYRICS_TEXT_DEFAULT_LIMIT
     if not LYRICS_ENABLED:
         return []
     if not _LYRICS_INDEX_CACHE['loaded'] or _LYRICS_INDEX_CACHE['index'] is None:
@@ -378,7 +384,7 @@ def search_by_text(
         if artist_cap is None:
             artist_cap = MAX_SONGS_PER_ARTIST
         artist_cap = artist_cap if artist_cap and artist_cap > 0 else 0
-        fetch_size = limit + max(20, limit * 4) + 1
+        fetch_size = overfetch_size(limit)
 
         ivf_index = _LYRICS_INDEX_CACHE['index']
         id_map = _LYRICS_INDEX_CACHE['id_map'] or {}

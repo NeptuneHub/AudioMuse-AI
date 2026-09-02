@@ -58,6 +58,8 @@ def alchemy_page():
         title='AudioMuse-AI - Song Alchemy',
         active='alchemy',
         alchemy_n_results_default=config.ALCHEMY_DEFAULT_N_RESULTS,
+        alchemy_max_n_results=config.ALCHEMY_MAX_N_RESULTS,
+        alchemy_temperature_default=config.ALCHEMY_TEMPERATURE,
     )
 
 

@@ -561,30 +561,36 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=None, radial_spread
     return _deduplicate_and_cap_results(results, rows)[:limit]
 
 
+def hyperbolic_duplicate_window():
+    from tasks.hyperbolic_geometry import hyperbolic_distance
+    from tasks.search_shaping import NearDuplicateWindow
+
+    return NearDuplicateWindow(
+        config.DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC,
+        config.DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+        hyperbolic_distance,
+    )
+
+
 def _filter_hyperbolic_near_duplicates(results, vector_map):
-    threshold = float(config.DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC)
-    lookback = int(config.DUPLICATE_DISTANCE_CHECK_LOOKBACK)
-    if threshold <= 0.0 or lookback <= 0 or len(results) < 2 or not vector_map:
+    window = hyperbolic_duplicate_window()
+    if not window.active or len(results) < 2 or not vector_map:
         return results
 
-    from tasks.hyperbolic_geometry import hyperbolic_distance
-
     kept = []
-    window = []
     for song in results:
         row = vector_map.get(song["item_id"])
         if row is None:
             kept.append(song)
             continue
-        vec = row[0]
-        if any(hyperbolic_distance(vec, previous) < threshold for previous in window[-lookback:]):
+        if window.is_duplicate(row[0]):
             logger.info(
                 "Hyperbolic: dropping near-duplicate '%s' within %.4f.",
                 song["item_id"],
-                threshold,
+                window.threshold,
             )
             continue
-        window.append(vec)
+        window.remember(row[0])
         kept.append(song)
     return kept
 

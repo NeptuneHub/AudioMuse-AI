@@ -423,32 +423,6 @@ def _resolve_search_params(limit, radius_similarity):
     }
 
 
-def _is_near_duplicate(index, vid, lookback_vecs, lookback_n, dist_threshold, title, author):
-    import numpy as np
-
-    try:
-        candidate_vec = np.array(index.get_vector(int(vid)), dtype=np.float32)
-        norm = np.linalg.norm(candidate_vec)
-        if norm > 0:
-            candidate_vec = candidate_vec / norm
-        for lv in lookback_vecs[-lookback_n:]:
-            cosine_dist = float(np.clip(1.0 - np.dot(candidate_vec, lv), 0.0, 2.0))
-            if cosine_dist < dist_threshold:
-                logger.debug(
-                    "SemGrove: dropping near-duplicate '%s' by '%s' "
-                    "(cosine dist %.4f < threshold %.4f).",
-                    title,
-                    author,
-                    cosine_dist,
-                    dist_threshold,
-                )
-                return True
-        lookback_vecs.append(candidate_vec)
-    except Exception as _vec_exc:
-        logger.debug("SemGrove: could not fetch vector for distance check: %s", _vec_exc)
-    return False
-
-
 def _build_seed_result(seed_item_id, metadata_map):
     seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": "", "album": ""})
     return {
@@ -461,46 +435,11 @@ def _build_seed_result(seed_item_id, metadata_map):
     }
 
 
-def _passes_artist_cap(author, artist_cap, artist_counts):
-    if not (artist_cap and author):
-        return True
-    an = author.strip().lower()
-    if artist_counts.get(an, 0) >= artist_cap:
-        return False
-    artist_counts[an] = artist_counts.get(an, 0) + 1
-    return True
-
-
-def _accept_candidate(
-    index,
-    vid,
-    title,
-    author,
-    seen_names,
-    artist_cap,
-    artist_counts,
-    lookback_vecs,
-    lookback_n,
-    dist_threshold,
-):
-    name_key = (title.strip().lower(), author.strip().lower())
-    if name_key in seen_names:
-        return False
-    seen_names.add(name_key)
-
-    if not _passes_artist_cap(author, artist_cap, artist_counts):
-        return False
-
-    if (
-        lookback_n
-        and dist_threshold > 0
-        and _is_near_duplicate(
-            index, vid, lookback_vecs, lookback_n, dist_threshold, title, author
-        )
-    ):
-        return False
-
-    return True
+def _artist_key(author, artist_cap):
+    if not artist_cap:
+        return None
+    clean = (author or "").strip().lower()
+    return clean or None
 
 
 def _collect_search_results(
@@ -515,10 +454,24 @@ def _collect_search_results(
     dist_threshold,
     lookback_n,
 ):
+    from tasks.search_shaping import cosine_duplicate_window, name_key_for, read_unit_vectors
+
     results: List[Dict] = [_build_seed_result(seed_item_id, metadata_map)]
     artist_counts: Dict[str, int] = {}
     seen_names: set = set()
-    lookback_vecs: list = []
+    window = cosine_duplicate_window(dist_threshold, lookback_n)
+
+    seed_meta = metadata_map.get(seed_item_id) or {}
+    seed_key = name_key_for(seed_meta.get("title"), seed_meta.get("author"))
+    if seed_key is not None:
+        seen_names.add(seed_key)
+
+    unit_vectors = {}
+    if window.active:
+        unit_vectors = read_unit_vectors(index, neighbor_ids)
+        if unit_vectors is None:
+            unit_vectors = {}
+            window = cosine_duplicate_window(0.0, 0)
 
     for vid, dist in zip(neighbor_ids, distances):
         if len(results) - 1 >= limit:
@@ -530,19 +483,29 @@ def _collect_search_results(
         author = meta.get("author", "") or ""
         title = meta.get("title", "") or ""
 
-        if not _accept_candidate(
-            index,
-            vid,
-            title,
-            author,
-            seen_names,
-            artist_cap,
-            artist_counts,
-            lookback_vecs,
-            lookback_n,
-            dist_threshold,
-        ):
+        name_key = name_key_for(title, author)
+        if name_key is not None and name_key in seen_names:
             continue
+
+        artist_key = _artist_key(author, artist_cap)
+        if artist_key is not None and artist_counts.get(artist_key, 0) >= artist_cap:
+            continue
+
+        candidate_unit = unit_vectors.get(int(vid)) if window.active else None
+        if window.is_duplicate(candidate_unit):
+            logger.info(
+                "SemGrove: dropping near-duplicate '%s' by '%s' within %.4f.",
+                title,
+                author,
+                window.threshold,
+            )
+            continue
+
+        if name_key is not None:
+            seen_names.add(name_key)
+        if artist_key is not None:
+            artist_counts[artist_key] = artist_counts.get(artist_key, 0) + 1
+        window.remember(candidate_unit)
 
         results.append(
             {

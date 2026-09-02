@@ -253,13 +253,18 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'SUPERVISORCTL_CMD',
     'SUPERVISOR_CONF',
     'DISABLE_FLASK_RESTART',
-    # Per-endpoint result-count defaults for direct API callers. Every page sends
-    # an explicit count from its own input box, so these never reach the UI and
-    # the wizard hides them (HIDDEN_ADVANCED_FIELDS). Hiding alone would still
-    # mirror them into app_config on the first boot, and a hidden row that
-    # overrides from the DB is a value no operator can ever change again - not
-    # in the wizard, and not by the environment variable the DB row outranks.
-    # Excluded so they stay env-driven, and any row an older boot left is pruned.
+    # Per-endpoint result-count defaults. These DO reach the UI: each search page
+    # renders one of them into its count input's value= attribute, so they are the
+    # number the box starts on as well as the fallback for a direct API caller that
+    # sends no count. They are deliberately env-only all the same. The wizard hides
+    # them (HIDDEN_ADVANCED_FIELDS), and hiding alone would still mirror them into
+    # app_config on the first boot, where a hidden row that overrides from the DB is
+    # a value no operator could ever change again - not in the wizard, and not by the
+    # environment variable the DB row outranks. Excluding them keeps them env-driven
+    # and prunes any row an older boot left behind. To make one of these operator-
+    # tunable instead, drop it from BOTH this set and HIDDEN_ADVANCED_FIELDS, the way
+    # HYPERBOLIC_DEFAULT_LIMIT / ALCHEMY_DEFAULT_N_RESULTS / SONIC_FINGERPRINT_NEIGHBORS
+    # / PATH_DEFAULT_LENGTH are handled.
     'SIMILARITY_DEFAULT_N_RESULTS',
     'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
     'CLAP_SEARCH_DEFAULT_LIMIT',

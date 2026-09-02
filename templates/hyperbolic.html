@@ -315,7 +315,7 @@
                     </div>
                     <div>
                         <label for="hyper-limit">Number of results:</label>
-                        <input type="number" id="hyper-limit" name="limit" value="{{ hyperbolic_limit_default }}" min="1" max="200">
+                        <input type="number" id="hyper-limit" name="limit" value="{{ hyperbolic_limit_default }}" min="{{ hyperbolic_limit_default|min_bound(1) }}" max="{{ hyperbolic_limit_default|max_bound(200) }}">
                     </div>
                     <div>
                         <label for="hyper-spread-slider" class="label-with-tooltip">
@@ -326,10 +326,10 @@
                             </span>
                         </label>
                         <div class="param-row">
-                            <input type="range" id="hyper-spread-slider" min="0" max="0.99" step="0.01"
+                            <input type="range" id="hyper-spread-slider" min="{{ hyperbolic_radial_spread_default|min_bound(0) }}" max="{{ hyperbolic_radial_spread_default|max_bound(0.99) }}" step="0.01"
                                    value="{{ hyperbolic_radial_spread_default }}">
                             <span id="hyper-spread-label" style="font-weight: 500;">{{ '%.2f'|format(hyperbolic_radial_spread_default) }}</span>
-                            <input type="number" id="hyper-spread-input" min="0" max="0.99" step="0.01"
+                            <input type="number" id="hyper-spread-input" min="{{ hyperbolic_radial_spread_default|min_bound(0) }}" max="{{ hyperbolic_radial_spread_default|max_bound(0.99) }}" step="0.01"
                                    value="{{ '%.2f'|format(hyperbolic_radial_spread_default) }}"
                                    aria-label="Search depth (radial spread)">
                         </div>
@@ -429,7 +429,7 @@
                         <label for="journey-length">How many songs on the path (start and end included):</label>
                         <input type="number" id="journey-length" name="length"
                                value="{{ hyperbolic_journey_length_default }}"
-                               min="3">
+                               min="{{ hyperbolic_journey_length_default|min_bound(3) }}">
                     </div>
                     <div>
                         <label for="journey-dive-slider" class="label-with-tooltip">
@@ -440,10 +440,10 @@
                             </span>
                         </label>
                         <div class="param-row">
-                            <input type="range" id="journey-dive-slider" min="0" max="0.95" step="0.05"
+                            <input type="range" id="journey-dive-slider" min="{{ hyperbolic_journey_dive_default|min_bound(0) }}" max="{{ hyperbolic_journey_dive_default|max_bound(0.95) }}" step="0.05"
                                    value="{{ hyperbolic_journey_dive_default }}">
                             <span id="journey-dive-label" style="font-weight: 500;">{{ '%.2f'|format(hyperbolic_journey_dive_default) }}</span>
-                            <input type="number" id="journey-dive-input" min="0" max="0.95" step="0.05"
+                            <input type="number" id="journey-dive-input" min="{{ hyperbolic_journey_dive_default|min_bound(0) }}" max="{{ hyperbolic_journey_dive_default|max_bound(0.95) }}" step="0.05"
                                    value="{{ '%.2f'|format(hyperbolic_journey_dive_default) }}"
                                    aria-label="How deep to dig for the shared root">
                         </div>

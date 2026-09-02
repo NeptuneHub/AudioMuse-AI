@@ -37,7 +37,13 @@ Main Features:
   near-duplicate check at DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC are enforced
   while picking rather than afterwards, so enforcing them shortens the walk
   instead of tearing holes in the middle of it. The threshold is in arccosh
-  units, an order of magnitude larger than the cosine thresholds elsewhere
+  units, an order of magnitude larger than the cosine thresholds elsewhere. The
+  lookback window follows WALK order - seeded with the start song, extended by
+  each pick, and the destination compared against the final pick - so a step is
+  always measured against the song that actually precedes it. A candidate
+  rejected as a near-duplicate at one step stays available at every later step,
+  where the window holds different songs. A track with no author is exempt from
+  the cap rather than rejected by it, the same rule apply_artist_cap follows
 * The apex (lowest common ancestor) and every picked track are labelled with
   the nearest genre/subgenre centroid, so the journey narrates the regions it
   crosses instead of returning bare ids
@@ -51,6 +57,7 @@ import logging
 import numpy as np
 
 import config
+from tasks.search_shaping import name_key_for
 
 logger = logging.getLogger(__name__)
 
@@ -160,70 +167,78 @@ def _gather_journey_candidates(interior_points, excluded, server_id=None):
     return kept, vectors, radii
 
 
-def _is_near_taken_vector(vec, taken_vecs, threshold, lookback):
-    from tasks.hyperbolic_geometry import hyperbolic_distance
-
-    if threshold <= 0.0 or lookback <= 0 or not taken_vecs:
-        return False
-    return any(
-        hyperbolic_distance(vec, previous) < threshold
-        for previous in taken_vecs[-lookback:]
-    )
-
-
 def _pick_steps(interior_points, candidate_ids, candidate_vecs, details, seed_details, seed_vecs=None):
     from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
-    from tasks.search_shaping import is_same_song
+    from tasks.hyperbolic_manager import hyperbolic_duplicate_window
 
     distances = hyperbolic_distance_matrix(interior_points, candidate_vecs)
     ranked = np.argsort(distances, axis=1)
     cap = config.MAX_SONGS_PER_ARTIST
-    threshold = float(config.DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC)
-    lookback = int(config.DUPLICATE_DISTANCE_CHECK_LOOKBACK)
     used = set()
     artist_counts = {}
-    taken = [info for info in seed_details if info]
-    for info in taken:
+    taken_keys = set()
+    for info in seed_details:
+        if not info:
+            continue
         author = info.get("author")
         if author:
             artist_counts[author] = artist_counts.get(author, 0) + 1
-    taken_vecs = [np.asarray(v, dtype=np.float32) for v in (seed_vecs or [])]
+        key = name_key_for(info.get("title"), author)
+        if key is not None:
+            taken_keys.add(key)
+
+    start_vec, end_vec = _walk_endpoint_vectors(seed_vecs)
+    window = hyperbolic_duplicate_window()
+    window.remember(start_vec)
+
     picks = []
     for step, ranking in enumerate(ranked):
-        chosen = None
-        while True:
-            chosen = _choose_candidate(
-                ranking, candidate_ids, details, used, taken, artist_counts, cap, is_same_song
-            )
-            if chosen is None:
-                break
-            if not _is_near_taken_vector(
-                candidate_vecs[chosen[1]], taken_vecs, threshold, lookback
-            ):
-                break
-            logger.info(
-                "Journey: dropping near-duplicate '%s' within %.4f.", chosen[0], threshold
-            )
-            used.add(chosen[0])
+        chosen = _choose_candidate(
+            ranking, candidate_ids, details, used, taken_keys, artist_counts, cap,
+            lambda column: window.is_duplicate(candidate_vecs[column]),
+        )
         if chosen is None:
             continue
         item_id, column, info = chosen
         used.add(item_id)
-        taken.append(info)
-        taken_vecs.append(np.asarray(candidate_vecs[column], dtype=np.float32))
+        window.remember(np.asarray(candidate_vecs[column], dtype=np.float32))
         author = info.get("author")
         if author:
             artist_counts[author] = artist_counts.get(author, 0) + 1
+        key = name_key_for(info.get("title"), author)
+        if key is not None:
+            taken_keys.add(key)
         picks.append({
             "item_id": item_id,
             "step": step + 1,
             "distance": float(distances[step, column]),
             "column": column,
         })
+    return _drop_last_pick_if_it_shadows_the_destination(picks, candidate_vecs, end_vec, window)
+
+
+def _walk_endpoint_vectors(seed_vecs):
+    vectors = [np.asarray(v, dtype=np.float32) for v in (seed_vecs or []) if v is not None]
+    start_vec = vectors[0] if vectors else None
+    end_vec = vectors[1] if len(vectors) > 1 else None
+    return start_vec, end_vec
+
+
+def _drop_last_pick_if_it_shadows_the_destination(picks, candidate_vecs, end_vec, window):
+    if not picks or end_vec is None or not window.active:
+        return picks
+    last_vec = np.asarray(candidate_vecs[picks[-1]["column"]], dtype=np.float32)
+    if window.distance_fn(last_vec, end_vec) < window.threshold:
+        logger.info(
+            "Journey: dropping final pick '%s', a near-duplicate of the destination within %.4f.",
+            picks[-1]["item_id"],
+            window.threshold,
+        )
+        return picks[:-1]
     return picks
 
 
-def _choose_candidate(ranking, candidate_ids, details, used, taken, artist_counts, cap, is_same_song):
+def _choose_candidate(ranking, candidate_ids, details, used, taken_keys, artist_counts, cap, is_near_duplicate):
     for column in ranking:
         item_id = candidate_ids[int(column)]
         if item_id in used:
@@ -232,12 +247,11 @@ def _choose_candidate(ranking, candidate_ids, details, used, taken, artist_count
         if not info:
             continue
         author = info.get("author")
-        if cap and cap > 0 and (not author or artist_counts.get(author, 0) >= cap):
+        if cap and cap > 0 and author and artist_counts.get(author, 0) >= cap:
             continue
-        if any(
-            is_same_song(info.get("title"), author, prev.get("title"), prev.get("author"))
-            for prev in taken
-        ):
+        if name_key_for(info.get("title"), author) in taken_keys:
+            continue
+        if is_near_duplicate(int(column)):
             continue
         return item_id, int(column), info
     return None

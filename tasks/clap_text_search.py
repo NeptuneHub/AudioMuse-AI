@@ -31,6 +31,7 @@ import config
 
 from .idle_unload import IdleUnloadTimer
 from .search_shaping import build_capped_results as _build_capped_results
+from .search_shaping import overfetch_size
 
 logger = logging.getLogger(__name__)
 
@@ -198,10 +199,14 @@ def _query_clap_index(text_embedding, fetch_size, limit, artist_cap):
     )
 
 
-def search_by_text(query_text: str, limit: int = 100, steering: Optional[List[Dict]] = None) -> List[Dict]:
+def search_by_text(
+    query_text: str, limit: Optional[int] = None, steering: Optional[List[Dict]] = None
+) -> List[Dict]:
     from .clap_analyzer import get_text_embedding
-    from config import CLAP_ENABLED
+    from config import CLAP_ENABLED, CLAP_SEARCH_DEFAULT_LIMIT
 
+    if limit is None:
+        limit = CLAP_SEARCH_DEFAULT_LIMIT
     if not CLAP_ENABLED:
         return []
 
@@ -237,10 +242,7 @@ def search_by_text(query_text: str, limit: int = 100, steering: Optional[List[Di
         )
         if limit >= 1000:
             artist_cap = 0
-        fetch_size = (
-            limit + max(20, limit * 4) + 1 if artist_cap
-            else limit + max(20, limit // 4) + 1
-        )
+        fetch_size = overfetch_size(limit)
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
             results = _query_clap_index(text_embedding, fetch_size, limit, artist_cap)
