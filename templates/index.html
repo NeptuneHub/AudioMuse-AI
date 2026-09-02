@@ -23,7 +23,7 @@
                     <div>
                         <label for="config-num_recent_albums" class="label-with-tooltip">
                             Number of Recent Albums:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">How many recently added albums to analyze. Set to 0 to select your entire music library and skip the analysis for already analyzed tracks. Use a smaller number (like 5-10) to quickly test new additions without re-analyzing everything.</span>
                             </span>
@@ -33,7 +33,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-top_n_moods" class="label-with-tooltip">
                             Top N Moods:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">How many dominant moods to identify for each song (e.g., energetic, calm, dark). Higher numbers capture more subtle moods but use more processing power. Default of 5 works well for most libraries.</span>
                             </span>
@@ -49,7 +49,7 @@
                     <div id="basic-algorithm-display">
                         <label class="label-with-tooltip">
                             Clustering Algorithm:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">The method used to group similar songs together. K-Means is recommended for most users. Switch to the Advanced view to change it.</span>
                             </span>
@@ -59,7 +59,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-cluster_algorithm" class="label-with-tooltip">
                             Clustering Algorithm:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">K-Means: Balanced groups (recommended). DBSCAN: Finds natural clusters of any shape. GMM: Softer boundaries between groups. Spectral: Good for complex patterns.</span>
                             </span>
@@ -74,7 +74,7 @@
                     <div>
                         <label for="config-clustering_runs" class="label-with-tooltip">
                             Clustering Runs:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">How many times to try different groupings to find the best playlists. More runs = better results but takes longer. 5000 is a good balance for most libraries.</span>
                             </span>
@@ -84,7 +84,7 @@
                     <div>
                         <label for="config-auto_parameter_discovery" class="label-with-tooltip">
                             Automatic Parameter Discovery:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Recommended: quick test runs tune the clustering parameters for each server before the real run (cluster count, sampling percentile, DBSCAN density). When enabled it overrides the manual cluster-count/eps/percentile values below. Disable to use them exactly as configured.</span>
                             </span>
@@ -97,7 +97,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-top_n_clustering_playlist" class="label-with-tooltip">
                             Top Clustering Playlists:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Maximum final playlist count. The default 10 uses two distant variants for each of the three most represented genres, then four distant playlists with different non-top genres.</span>
                             </span>
@@ -107,7 +107,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-max_distance" class="label-with-tooltip">
                             Max Distance:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Maximum sonic difference allowed between songs in the same playlist. Lower values = more similar songs within each playlist. Range: 0.0 (identical) to 1.0 (very different).</span>
                             </span>
@@ -117,7 +117,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-max_songs_per_cluster" class="label-with-tooltip">
                             Max Songs Per Cluster:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Limit playlist size to this many songs. Set to 0 for no limit. Useful to prevent huge playlists that are hard to listen through.</span>
                             </span>
@@ -127,7 +127,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-pca_components_min" class="label-with-tooltip">
                             PCA Components Min:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Principal Component Analysis simplifies song data. Minimum number of components to use (0 to disable PCA). Lower = faster but less accurate. Advanced users only.</span>
                             </span>
@@ -137,7 +137,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-pca_components_max" class="label-with-tooltip">
                             PCA Components Max:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Maximum number of PCA components. Higher = more detailed analysis but slower. For embeddings: try 50-199. For feature vectors: try 8-20.</span>
                             </span>
@@ -147,7 +147,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-min_songs_per_genre_for_stratification" class="label-with-tooltip">
                             Min Songs Per Genre for Stratification:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">When testing different clustering approaches, sample at least this many songs from each genre. Ensures all music styles are represented. Default: 100.</span>
                             </span>
@@ -157,7 +157,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-stratified_sampling_target_percentile" class="label-with-tooltip">
                             Stratified Sampling Target Percentile:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Percentile used to determine target sample size per genre (0-100). 50 means use median genre size. Higher = more songs sampled. Overridden by Automatic Parameter Discovery when enabled.</span>
                             </span>
@@ -167,7 +167,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-score_weight_diversity" class="label-with-tooltip">
                             Diversity Score Weight:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">How much to prioritize different moods BETWEEN playlists. Higher = each playlist has a more unique vibe. Default: 2.0</span>
                             </span>
@@ -177,7 +177,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-score_weight_purity" class="label-with-tooltip">
                             Purity Score Weight:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">How much to prioritize similar moods WITHIN each playlist. Higher = more consistent vibe within playlists. Default: 1.0</span>
                             </span>
@@ -187,7 +187,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-score_weight_other_feature_diversity" class="label-with-tooltip">
                             Other Feature Diversity Weight:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Like Diversity Score but for technical audio features (tempo, key, etc.) instead of moods. Usually keep at 0 to focus on moods.</span>
                             </span>
@@ -197,7 +197,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-score_weight_other_feature_purity" class="label-with-tooltip">
                             Other Feature Purity Weight:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Like Purity Score but for technical audio features instead of moods. Usually keep at 0 to focus on moods.</span>
                             </span>
@@ -207,7 +207,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-score_weight_silhouette" class="label-with-tooltip">
                             Silhouette Score Weight:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Measures how well-separated clusters are. Higher = prioritize clear boundaries between playlists. Usually keep at 0 unless experimenting.</span>
                             </span>
@@ -217,7 +217,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-score_weight_davies_bouldin" class="label-with-tooltip">
                             Davies-Bouldin Score Weight:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Another cluster separation measure. Lower is better (so this score is minimized). Usually keep at 0 unless experimenting.</span>
                             </span>
@@ -227,7 +227,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-score_weight_calinski_harabasz" class="label-with-tooltip">
                             Calinski-Harabasz Score Weight:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Measures cluster quality by comparing within-cluster vs between-cluster variance. Usually keep at 0 unless experimenting.</span>
                             </span>
@@ -237,7 +237,7 @@
                     <div class="advanced-param hidden">
                         <label for="config-enable_clustering_embeddings" class="label-with-tooltip">
                             Use Embeddings for Clustering:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Checked: Use AI-learned song fingerprints (more accurate). Unchecked: Use calculated features like tempo and energy (faster). Recommended: keep checked.</span>
                             </span>
@@ -252,7 +252,7 @@
                         <div>
                             <label for="config-num_clusters_min" class="label-with-tooltip">
                                 Min Clusters:
-                                <span class="info-tooltip" tabindex="0">
+                                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                     <span class="info-icon"></span>
                                     <span class="tooltip-text">Minimum number of playlists K-Means can create. Overridden by Automatic Parameter Discovery when enabled.</span>
                                 </span>
@@ -262,7 +262,7 @@
                         <div>
                             <label for="config-num_clusters_max" class="label-with-tooltip">
                                 Max Clusters:
-                                <span class="info-tooltip" tabindex="0">
+                                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                     <span class="info-icon"></span>
                                     <span class="tooltip-text">Maximum number of playlists K-Means can create. Overridden by Automatic Parameter Discovery when enabled.</span>
                                 </span>
@@ -277,7 +277,7 @@
                     <div>
                         <label for="config-dbscan_eps_min" class="label-with-tooltip">
                             DBSCAN Epsilon Min:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Minimum neighbor distance. Overridden by Automatic Parameter Discovery, which derives it from your library's data.</span>
                             </span>
@@ -287,7 +287,7 @@
                     <div>
                         <label for="config-dbscan_eps_max" class="label-with-tooltip">
                             DBSCAN Epsilon Max:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Maximum neighbor distance. Overridden by Automatic Parameter Discovery, which derives it from your library's data.</span>
                             </span>
@@ -297,7 +297,7 @@
                     <div>
                         <label for="config-dbscan_min_samples_min" class="label-with-tooltip">
                             DBSCAN Min Samples Min:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Minimum songs needed to form a cluster core. Lower = more small playlists. Advanced users only. Range: 5-20</span>
                             </span>
@@ -307,7 +307,7 @@
                     <div>
                         <label for="config-dbscan_min_samples_max" class="label-with-tooltip">
                             DBSCAN Min Samples Max:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Maximum songs needed to form a cluster core. Higher = fewer, larger playlists. Advanced users only. Range: 5-20</span>
                             </span>
@@ -321,7 +321,7 @@
                     <div>
                         <label for="config-gmm_n_components_min" class="label-with-tooltip">
                             GMM Components Min:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Minimum number of Gaussian components (similar to clusters). Overridden by Automatic Parameter Discovery when enabled.</span>
                             </span>
@@ -331,7 +331,7 @@
                     <div>
                         <label for="config-gmm_n_components_max" class="label-with-tooltip">
                             GMM Components Max:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Maximum number of Gaussian components. Overridden by Automatic Parameter Discovery when enabled.</span>
                             </span>
@@ -345,7 +345,7 @@
                     <div>
                         <label for="config-spectral_n_clusters_min" class="label-with-tooltip">
                             Spectral Clusters Min:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Minimum number of clusters for Spectral clustering. Overridden by Automatic Parameter Discovery when enabled.</span>
                             </span>
@@ -355,7 +355,7 @@
                     <div>
                         <label for="config-spectral_n_clusters_max" class="label-with-tooltip">
                             Spectral Clusters Max:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Maximum number of clusters for Spectral clustering. Overridden by Automatic Parameter Discovery when enabled.</span>
                             </span>
@@ -371,7 +371,7 @@
                     <div>
                         <label for="config-ai_model_provider" class="label-with-tooltip">
                             AI Provider:
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">OPTIONAL: Choose an AI service to generate creative playlist names for your clustering results. This is just for naming - it doesn't affect how playlists are created. Select "None" if you prefer default names or don't want to use AI.</span>
                             </span>

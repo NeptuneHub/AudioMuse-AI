@@ -18,7 +18,7 @@
         <div style="max-width:100%; margin-top:1rem;">
             <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
                 Analysis
-                <span class="info-tooltip" tabindex="0">
+                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                     <span class="info-icon"></span>
                     <span class="tooltip-text">Schedule automatic song analysis. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 2 * * 0-5" = 2:00 AM every day except Saturday. "0 2 * * *" = 2:00 AM daily.</span>
                 </span>
@@ -30,7 +30,7 @@
 
             <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
                 Clustering
-                <span class="info-tooltip" tabindex="0">
+                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                     <span class="info-icon"></span>
                     <span class="tooltip-text">Schedule automatic playlist clustering. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 2 * * 6" = 2:00 AM every Saturday. Run less frequently than analysis since it processes all analyzed songs.</span>
                 </span>
@@ -42,7 +42,7 @@
 
             <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
                 Sonic Fingerprint
-                <span class="info-tooltip" tabindex="0">
+                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                     <span class="info-icon"></span>
                     <span class="tooltip-text">Schedule automatic generation of the Sonic Fingerprint playlist. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 1 * * 6" = 1:00 AM every Saturday. Uses default parameters.</span>
                 </span>
@@ -54,7 +54,7 @@
 
             <label for="alchemy-radio-cron" style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
                 Radio Playlists
-                <span class="info-tooltip" tabindex="0">
+                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                     <span class="info-icon"></span>
                     <span class="tooltip-text">Schedule automatic creation of the Radio playlists defined in the Alchemy page (Radio tab). Each radio's existing playlist is updated in-place (preserving its server-side ID) to avoid duplicates on sync clients. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 3 * * 6" = 3:00 AM every Saturday.</span>
                 </span>
@@ -66,7 +66,7 @@
                 <hr style="margin:1rem 0;">
                 <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
                     Plugin tasks
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Scheduled tasks registered by installed plugins. Same cron notation as above.</span>
                     </span>

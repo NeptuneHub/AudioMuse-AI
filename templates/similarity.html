@@ -66,7 +66,7 @@
             <div class="autocomplete-container" id="song-mode-container">
                 <label for="search_query" class="label-with-tooltip">
                     Song, Artist or Album name:
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Type the song, artist or album you want to find similar tracks to. As you type, suggestions will appear below.</span>
                     </span>
@@ -102,7 +102,7 @@
             <div id="anchor-mode-container" class="hidden">
                 <label for="anchor_select" class="label-with-tooltip">
                     Anchor:
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Select a pre-built anchor to find songs similar to its sound profile.</span>
                     </span>
@@ -116,7 +116,7 @@
             <div>
                 <label for="n" class="label-with-tooltip">
                     Number of results:
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">How many similar songs to find. More results = longer playlist. Typical values: 10-50 songs for a good mix.</span>
                     </span>
@@ -129,7 +129,7 @@
                 <input type="checkbox" id="eliminate_duplicates" name="eliminate_duplicates" checked>
                 <label for="eliminate_duplicates" class="label-with-tooltip">
                     Limit songs per artist in results
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Prevents the playlist from being dominated by one artist. When enabled, limits how many tracks from the same artist can appear in results.</span>
                     </span>
@@ -139,7 +139,7 @@
                 <input type="checkbox" id="radius_similarity" name="radius_similarity" checked>
                 <label for="radius_similarity" class="label-with-tooltip">
                     Radius Similarity
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Groups similar songs into "buckets" and orders them for better listening flow. Recommended for smoother transitions between tracks.</span>
                     </span>

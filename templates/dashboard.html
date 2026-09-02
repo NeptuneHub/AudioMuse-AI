@@ -234,7 +234,7 @@
     <section id="music-server-status-section" class="scope-chip-host" style="display:none;">
         <span class="scope-chip scope-chip-corner scope-server">Per server</span>
         <h2>Music Server Status
-            <span class="info-tooltip" tabindex="0">
+            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">Each server holds its own library; the catalogue is the union of all of them, deduplicated. "Unique in catalogue" counts THAT server's distinct analyzed songs; "Duplicate files" are extra copies of a song already counted (same audio, several files). The "On multiple servers" row is a NEGATIVE adjustment: a song on more than one server is counted in each server row above, so it is subtracted once to avoid double-counting. The "Orphan" row counts songs bound to NO server (a removed server or deleted file leaves the analysis in the catalogue). With both, the "Unique in catalogue" column sums exactly to the total unique songs.</span>
             </span>
@@ -258,7 +258,7 @@
     <section class="scope-chip-host">
         <span class="scope-chip scope-chip-corner scope-catalog">Catalogue</span>
         <h2>Queue Workers
-            <span class="info-tooltip" tabindex="0">
+            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">Each worker container runs two queue worker processes: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
             </span>
@@ -284,7 +284,7 @@
     <section class="scope-chip-host">
         <span class="scope-chip scope-chip-corner scope-catalog">Catalogue</span>
         <h2>Recent tasks
-            <span class="info-tooltip" tabindex="0">
+            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">The last 10 completed top-level tasks. This is the full history AudioMuse-AI keeps: only the newest 10 rows are retained.</span>
             </span>
@@ -308,7 +308,7 @@
     <section class="scope-chip-host">
         <span class="scope-chip scope-chip-corner scope-catalog">Catalogue</span>
         <h2>Library
-            <span class="info-tooltip" tabindex="0">
+            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">The catalogue is every analyzed song across all your music servers, deduplicated: a song present on two servers is counted once.</span>
             </span>
@@ -317,7 +317,7 @@
 
         <div class="dash-subsection">
             <h3 class="dash-subhead">Genres
-                <span class="info-tooltip" tabindex="0">
+                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                     <span class="info-icon" aria-hidden="true"></span>
                     <span class="tooltip-text">Every analyzed song is counted once, under the mood that scored highest in its vector (the closest proxy for "genre" in this library). All detected genres are shown.</span>
                 </span>
@@ -327,7 +327,7 @@
 
         <div class="dash-subsection">
             <h3 class="dash-subhead">Moods Coverage
-                <span class="info-tooltip" tabindex="0">
+                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                     <span class="info-icon" aria-hidden="true"></span>
                     <span class="tooltip-text" id="moods-tooltip">Emotional mood breakdown (<strong>danceable</strong>, <strong>aggressive</strong>, <strong>happy</strong>, <strong>party</strong>, <strong>relaxed</strong>, <strong>sad</strong>). Each song is counted once, under whichever of the six scored highest for it. Only songs with a CLAP analysis are included.</span>
                 </span>
@@ -337,7 +337,7 @@
 
         <div class="dash-subsection">
             <h3 class="dash-subhead">Tempo Profile
-                <span class="info-tooltip" tabindex="0">
+                <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                     <span class="info-icon" aria-hidden="true"></span>
                     <span class="tooltip-text" id="tempo-tooltip">Distribution of songs across tempo buckets: Slow (&lt;85 BPM), Medium (85–110), Fast (110–140), Very Fast (≥140).</span>
                 </span>
@@ -350,7 +350,7 @@
     <section class="scope-chip-host">
         <span class="scope-chip scope-chip-corner scope-catalog">Catalogue</span>
         <h2>Scheduled Tasks
-            <span class="info-tooltip" tabindex="0">
+            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                 <span class="info-icon" aria-hidden="true"></span>
                 <span class="tooltip-text">Every schedule is catalogue-wide: a batch task always runs against all configured music servers, one server at a time. "Last triggered" is when the schedule last fired, not when the job last succeeded: a run skipped because another main task was already active still counts as triggered.</span>
             </span>

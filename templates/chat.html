@@ -160,7 +160,7 @@
                 <div>
                     <label for="aiProvider" class="label-with-tooltip">
                         AI Provider
-                        <span class="info-tooltip" tabindex="0">
+                        <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                             <span class="info-icon"></span>
                             <span class="tooltip-text">Choose an AI service to help create your playlist. Gemini and Mistral are cloud services (require API key). Ollama runs locally on your computer. "None" lets you describe moods manually.</span>
                         </span>
@@ -176,7 +176,7 @@
                 <div id="ollamaConfig" class="hidden">
                     <label for="ollamaModel" class="label-with-tooltip">
                         Ollama Model
-                        <span class="info-tooltip" tabindex="0">
+                        <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                             <span class="info-icon"></span>
                             <span class="tooltip-text">The specific AI model running on your Ollama server. Popular choices: mistral:7b, llama2, phi. Larger models give better results but need more RAM.</span>
                         </span>
@@ -185,7 +185,7 @@
                     <div style="margin-top: 1.5rem;">
                         <label for="ollamaServerUrl" class="label-with-tooltip">
                             Ollama Server URL
-                            <span class="info-tooltip" tabindex="0">
+                            <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">The web address where your Ollama server is running. Usually http://localhost:11434/api/generate if running on the same machine.</span>
                             </span>
@@ -205,7 +205,7 @@
                 <div id="geminiConfig" class="hidden">
                     <label for="geminiModel" class="label-with-tooltip">
                         Gemini Model
-                        <span class="info-tooltip" tabindex="0">
+                        <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                             <span class="info-icon"></span>
                             <span class="tooltip-text">Google's AI model to use. gemini-2.0-flash-exp is fast and free. gemini-2.5-pro gives better quality but may have usage limits.</span>
                         </span>
@@ -215,7 +215,7 @@
                 <div id="mistralConfig" class="hidden">
                     <label for="mistralModel" class="label-with-tooltip">
                         Mistral Model
-                        <span class="info-tooltip" tabindex="0">
+                        <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                             <span class="info-icon"></span>
                             <span class="tooltip-text">Mistral AI's model to use. ministral-3b-latest is lightweight and fast. mistral-large-latest gives the best understanding of complex requests.</span>
                         </span>
@@ -230,7 +230,7 @@
             <div>
                 <label for="userInput" class="label-with-tooltip">
                     What kind of music are you in the mood for?
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">Describe the vibe you want! Examples: "Upbeat songs for a workout", "Calm acoustic music for studying", "Dark and moody electronic". The AI will find songs that match your description.</span>
                     </span>
@@ -256,7 +256,7 @@
             <div>
                 <label for="numResults" class="label-with-tooltip">
                     Number of songs:
-                    <span class="info-tooltip" tabindex="0">
+                    <span class="info-tooltip" tabindex="0" role="button" aria-label="More info">
                         <span class="info-icon"></span>
                         <span class="tooltip-text">How many songs the generated playlist should contain. Higher numbers give a longer playlist but may include songs that match your request less closely. Try 50 for a normal playlist, or 20-30 for a quick mix.</span>
                     </span>
