@@ -285,7 +285,7 @@ SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").
 # Default result count when the similarity APIs are called without an explicit
 # count. Each mirrors the value its page ships in its own input box.
 SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("SIMILARITY_DEFAULT_N_RESULTS", "50"))
-ARTIST_SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("ARTIST_SIMILARITY_DEFAULT_N_RESULTS", "50"))
+ARTIST_SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("ARTIST_SIMILARITY_DEFAULT_N_RESULTS", "10"))
 # Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
 RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
