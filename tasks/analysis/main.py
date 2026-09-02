@@ -251,6 +251,62 @@ def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
 _CHROMAPRINT_BACKFILL_DRAIN_POLL_SECONDS = 5
 
 
+def _enqueue_backfill_batches(
+    server_id, targets, total, batch_size, parent_task_id, should_stop, active_jobs
+):
+    """Chunk the targets and enqueue one chromaprint_backfill batch job per chunk.
+
+    Adds each enqueued job's id to active_jobs. Stops early (without enqueuing the
+    remaining chunks) if should_stop fires. Returns (batches_enqueued, stopped).
+    """
+    batches_enqueued = 0
+    for start in range(0, total, batch_size):
+        if should_stop and should_stop():
+            return batches_enqueued, True
+        batch = targets[start:start + batch_size]
+        batch_task_id = str(uuid.uuid4())
+        taskqueue.enqueue(
+            'tasks.analysis.chromaprint_backfill_batch_task',
+            args=(server_id, batch, parent_task_id),
+            task_id=batch_task_id,
+            task_type='chromaprint_backfill',
+            queue=taskqueue.QUEUE_DEFAULT,
+            parent_task_id=parent_task_id,
+            sub_type_identifier=batch_task_id,
+        )
+        active_jobs.add(batch_task_id)
+        batches_enqueued += 1
+    return batches_enqueued, False
+
+
+def _reap_backfill_batches(parent_task_id, active_jobs):
+    """Reap finished backfill batches, returning the (filled, done) deltas.
+
+    Drops each completed job from active_jobs and sums the filled/total it published
+    in final_summary_details. A reap failure is logged and treated as no progress this
+    tick so the caller simply retries on the next poll.
+    """
+    try:
+        reaped = taskqueue.reap_finished_children(parent_task_id)
+    except Exception:
+        logger.exception("Failed to reap finished Chromaprint backfill batches")
+        return 0, 0
+    filled = 0
+    done = 0
+    for child in reaped:
+        if child['task_id'] not in active_jobs:
+            continue
+        active_jobs.discard(child['task_id'])
+        details = child.get('details') or {}
+        summary = (
+            details.get('final_summary_details') if isinstance(details, dict) else None
+        )
+        if isinstance(summary, dict):
+            filled += int(summary.get('filled') or 0)
+            done += int(summary.get('total') or 0)
+    return filled, done
+
+
 def _backfill_server_chromaprints_distributed(
     server_id, targets, total, log_fn=None, should_stop=None
 ):
@@ -266,60 +322,24 @@ def _backfill_server_chromaprints_distributed(
     parent_task_id = taskqueue.current_task_id()
     batch_size = max(1, CHROMAPRINT_BACKFILL_BATCH_SIZE)
     active_jobs = set()
+
+    batches_enqueued, stopped = _enqueue_backfill_batches(
+        server_id, targets, total, batch_size, parent_task_id, should_stop, active_jobs
+    )
+
     filled = 0
     done = 0
-    batches_enqueued = 0
-    stopped = False
-
-    def drain():
-        nonlocal filled, done
-        try:
-            reaped = taskqueue.reap_finished_children(parent_task_id)
-        except Exception:
-            logger.exception("Failed to reap finished Chromaprint backfill batches")
-            return
-        for child in reaped:
-            if child['task_id'] not in active_jobs:
-                continue
-            active_jobs.discard(child['task_id'])
-            details = child.get('details') or {}
-            summary = (
-                details.get('final_summary_details') if isinstance(details, dict) else None
-            )
-            if isinstance(summary, dict):
-                filled += int(summary.get('filled') or 0)
-                done += int(summary.get('total') or 0)
-
-    def report():
-        log_fn(
-            f"Calculating Chromaprint fingerprints on server {server_id}: "
-            f"{min(done, total)}/{total} track(s)...", 99,
-        )
-
-    for start in range(0, total, batch_size):
-        if should_stop and should_stop():
-            stopped = True
-            break
-        batch = targets[start:start + batch_size]
-        batch_task_id = str(uuid.uuid4())
-        taskqueue.enqueue(
-            'tasks.analysis.chromaprint_backfill_batch_task',
-            args=(server_id, batch, parent_task_id),
-            task_id=batch_task_id,
-            task_type='chromaprint_backfill',
-            queue=taskqueue.QUEUE_DEFAULT,
-            parent_task_id=parent_task_id,
-            sub_type_identifier=batch_task_id,
-        )
-        active_jobs.add(batch_task_id)
-        batches_enqueued += 1
-
     while active_jobs:
         if should_stop and should_stop():
             stopped = True
             break
-        drain()
-        report()
+        batch_filled, batch_done = _reap_backfill_batches(parent_task_id, active_jobs)
+        filled += batch_filled
+        done += batch_done
+        log_fn(
+            f"Calculating Chromaprint fingerprints on server {server_id}: "
+            f"{min(done, total)}/{total} track(s)...", 99,
+        )
         if active_jobs:
             time.sleep(_CHROMAPRINT_BACKFILL_DRAIN_POLL_SECONDS)
 
@@ -348,78 +368,115 @@ def chromaprint_backfill_batch_task(server_id, targets, parent_task_id):
         return _chromaprint_backfill_batch_task_impl(server_id, targets, parent_task_id)
 
 
+def _backfill_batch_parent_unavailable(claimed_task_id, parent_task_id):
+    """True when a claimed batch's parent analysis is already gone or terminal.
+
+    Only a queue-claimed batch with a parent can be orphaned; an unclaimed
+    (in-process) run has no parent to check, so it is never unavailable.
+    """
+    if not (claimed_task_id and parent_task_id):
+        return False
+    parent_statuses = get_task_statuses([parent_task_id])
+    return (
+        parent_task_id not in parent_statuses
+        or parent_statuses.get(parent_task_id)
+        in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    )
+
+
+def _make_backfill_batch_revocation_check(claimed_task_id, current_task_id, parent_task_id):
+    """Build the throttled should-stop predicate for a distributed backfill batch.
+
+    Unclaimed (in-process) runs are never revoked. Claimed runs poll task status at
+    most once per ANALYSIS_MONITOR_DB_INTERVAL and stop when their own row or the
+    parent's row goes terminal, mirroring the album-analysis revocation contract.
+    """
+    last_revocation_check = [float('-inf')]
+
+    def revoked():
+        if not claimed_task_id:
+            return False
+        now = time.monotonic()
+        if now - last_revocation_check[0] < ANALYSIS_MONITOR_DB_INTERVAL:
+            return False
+        last_revocation_check[0] = now
+        statuses = get_task_statuses([current_task_id, parent_task_id])
+        if statuses.get(current_task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED:
+            return True
+        parent_status = statuses.get(parent_task_id) if parent_task_id else None
+        return parent_status in (TASK_STATUS_REVOKED, TASK_STATUS_FAILURE)
+
+    return revoked
+
+
+def _fingerprint_backfill_batch(server_id, targets, log_and_update, revoked):
+    """Fingerprint each target in one batch, tolerating per-track failures.
+
+    Runs the unchanged per-track work (download then fpcalc via _backfill_one_track);
+    a track that cannot be fingerprinted is counted as not filled but never aborts the
+    batch. Returns the batch result dict, stopping early with TASK_STATUS_REVOKED the
+    moment `revoked()` reports the run was cancelled.
+    """
+    total = len(targets)
+    filled = 0
+    for done, target in enumerate(targets, 1):
+        if revoked():
+            log_and_update(
+                f"Chromaprint backfill batch stopped after {done - 1}/{total} "
+                f"track(s) on server {server_id}.",
+                log_and_update.state['progress'],
+                task_state=TASK_STATUS_REVOKED,
+            )
+            return {"status": TASK_STATUS_REVOKED, "filled": filled, "total": total}
+        provider_track_id, file_path = target
+        if _backfill_one_track(server_id, provider_track_id, file_path):
+            filled += 1
+        log_and_update(
+            f"Calculating Chromaprint fingerprints on server {server_id}: "
+            f"{done}/{total} track(s)...",
+            int(100 * (done / float(total))) if total else 100,
+        )
+    summary = {"filled": filled, "total": total}
+    log_and_update(
+        f"Chromaprint backfill batch complete: {filled}/{total} filled on "
+        f"server {server_id}.",
+        100, task_state=TASK_STATUS_SUCCESS,
+        final_summary_details=summary,
+    )
+    return {"status": TASK_STATUS_SUCCESS, **summary}
+
+
 def _chromaprint_backfill_batch_task_impl(server_id, targets, parent_task_id):
     claimed_task_id = taskqueue.current_task_id()
     current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
-        if claimed_task_id and parent_task_id:
-            parent_statuses = get_task_statuses([parent_task_id])
-            if (
-                parent_task_id not in parent_statuses
-                or parent_statuses.get(parent_task_id)
-                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-            ):
-                logger.info(
-                    "Chromaprint backfill batch %s will not start because parent %s "
-                    "is missing or terminal.", current_task_id, parent_task_id,
-                )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Parent analysis was cancelled.",
-                }
+        if _backfill_batch_parent_unavailable(claimed_task_id, parent_task_id):
+            logger.info(
+                "Chromaprint backfill batch %s will not start because parent %s "
+                "is missing or terminal.", current_task_id, parent_task_id,
+            )
+            return {
+                "status": TASK_STATUS_REVOKED,
+                "message": "Parent analysis was cancelled.",
+            }
 
-        total = len(targets)
         log_and_update = make_task_reporter(
             current_task_id, "chromaprint_backfill",
             "Chromaprint backfill batch started.",
             parent_task_id=parent_task_id,
-            base_details={"batch_size": total},
+            base_details={"batch_size": len(targets)},
             prefix=f"ChromaprintBatch-{current_task_id}",
             min_db_interval=ANALYSIS_MONITOR_DB_INTERVAL,
         )
-        last_revocation_check = [float('-inf')]
+        revoked = _make_backfill_batch_revocation_check(
+            claimed_task_id, current_task_id, parent_task_id
+        )
 
-        def revoked():
-            if not claimed_task_id:
-                return False
-            now = time.monotonic()
-            if now - last_revocation_check[0] < ANALYSIS_MONITOR_DB_INTERVAL:
-                return False
-            last_revocation_check[0] = now
-            statuses = get_task_statuses([current_task_id, parent_task_id])
-            if statuses.get(current_task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED:
-                return True
-            parent_status = statuses.get(parent_task_id) if parent_task_id else None
-            return parent_status in (TASK_STATUS_REVOKED, TASK_STATUS_FAILURE)
-
-        filled = 0
         try:
-            for done, target in enumerate(targets, 1):
-                if revoked():
-                    log_and_update(
-                        f"Chromaprint backfill batch stopped after {done - 1}/{total} "
-                        f"track(s) on server {server_id}.",
-                        log_and_update.state['progress'],
-                        task_state=TASK_STATUS_REVOKED,
-                    )
-                    return {"status": TASK_STATUS_REVOKED, "filled": filled, "total": total}
-                provider_track_id, file_path = target
-                if _backfill_one_track(server_id, provider_track_id, file_path):
-                    filled += 1
-                log_and_update(
-                    f"Calculating Chromaprint fingerprints on server {server_id}: "
-                    f"{done}/{total} track(s)...",
-                    int(100 * (done / float(total))) if total else 100,
-                )
-            summary = {"filled": filled, "total": total}
-            log_and_update(
-                f"Chromaprint backfill batch complete: {filled}/{total} filled on "
-                f"server {server_id}.",
-                100, task_state=TASK_STATUS_SUCCESS,
-                final_summary_details=summary,
+            return _fingerprint_backfill_batch(
+                server_id, targets, log_and_update, revoked
             )
-            return {"status": TASK_STATUS_SUCCESS, **summary}
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
