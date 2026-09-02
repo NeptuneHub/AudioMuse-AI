@@ -29,6 +29,7 @@ import app_server_context
 # Import the new config option
 from config import (
     SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
+    SIMILARITY_DEFAULT_N_RESULTS,
     SIMILARITY_RADIUS_DEFAULT,
     MOOD_CENTROIDS_FILE,
 )
@@ -154,7 +155,10 @@ def similarity_page():
               type: string
     """
     return render_template(
-        'similarity.html', title='AudioMuse-AI - Playlist from Similar Song', active='similarity'
+        'similarity.html',
+        title='AudioMuse-AI - Playlist from Similar Song',
+        active='similarity',
+        similarity_n_default=SIMILARITY_DEFAULT_N_RESULTS,
     )
 
 
@@ -338,7 +342,7 @@ def get_similar_tracks_endpoint():
         description: The number of similar tracks to return.
         schema:
           type: integer
-          default: 10
+          default: 50
       - name: eliminate_duplicates
         in: query
         description: If 'true', limits the number of songs per artist in the results. If 'false', this is disabled. If the parameter is omitted, the server's default behavior is used.
@@ -382,7 +386,7 @@ def get_similar_tracks_endpoint():
     item_id = request.args.get('item_id')
     title = request.args.get('title')
     artist = request.args.get('artist')
-    num_neighbors = request.args.get('n', 10, type=int)
+    num_neighbors = request.args.get('n', SIMILARITY_DEFAULT_N_RESULTS, type=int)
     num_neighbors = max(1, num_neighbors)
 
     # Optional mood centroid parameters

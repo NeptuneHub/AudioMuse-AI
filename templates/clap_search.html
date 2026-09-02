@@ -421,10 +421,10 @@
                     Number of results:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Maximum number of matching songs to return (1-500).</span>
+                        <span class="tooltip-text">Maximum number of matching songs to return (1-200).</span>
                     </span>
                 </label>
-                <input type="number" id="limit" name="limit" value="50" min="1" max="500">
+                <input type="number" id="limit" name="limit" value="{{ clap_search_limit_default }}" min="{{ clap_search_limit_default|min_bound(1) }}" max="{{ clap_search_limit_default|max_bound(200) }}">
             </div>
 
             <fieldset class="param-group refine-fieldset hidden" id="refine-group">

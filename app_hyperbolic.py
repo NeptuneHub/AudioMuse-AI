@@ -72,6 +72,7 @@ def hyperbolic_page():
             title="AudioMuse-AI - Hyperbolic Explorer",
             active="hyperbolic",
             app_version=APP_VERSION,
+            hyperbolic_limit_default=config.HYPERBOLIC_DEFAULT_LIMIT,
             hyperbolic_radial_spread_default=min(max(config.HYPERBOLIC_RADIAL_SPREAD, 0.0), 0.99),
             hyperbolic_journey_length_default=config.HYPERBOLIC_JOURNEY_DEFAULT_LENGTH,
             hyperbolic_journey_dive_default=min(
@@ -115,8 +116,10 @@ def hyperbolic_similar_api():
               limit:
                 type: integer
                 minimum: 1
-                maximum: 100
-                default: 20
+                default: 50
+                description: >-
+                  Number of tracks to return. Not capped - ask for as many as
+                  the projected catalogue holds.
               radial_spread:
                 type: number
                 format: float
@@ -195,7 +198,7 @@ def hyperbolic_similar_api():
             limit = int(data.get("limit", config.HYPERBOLIC_DEFAULT_LIMIT))
         except (TypeError, ValueError):
             return jsonify({"error": 'Invalid "limit" value.'}), 400
-        limit = min(max(1, limit), config.HYPERBOLIC_MAX_LIMIT)
+        limit = max(1, limit)
 
         radial_spread = data.get("radial_spread")
         if radial_spread is None:

@@ -253,6 +253,24 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'SUPERVISORCTL_CMD',
     'SUPERVISOR_CONF',
     'DISABLE_FLASK_RESTART',
+    # Per-endpoint result-count defaults. These DO reach the UI: each search page
+    # renders one of them into its count input's value= attribute, so they are the
+    # number the box starts on as well as the fallback for a direct API caller that
+    # sends no count. They are deliberately env-only all the same. The wizard hides
+    # them (HIDDEN_ADVANCED_FIELDS), and hiding alone would still mirror them into
+    # app_config on the first boot, where a hidden row that overrides from the DB is
+    # a value no operator could ever change again - not in the wizard, and not by the
+    # environment variable the DB row outranks. Excluding them keeps them env-driven
+    # and prunes any row an older boot left behind. To make one of these operator-
+    # tunable instead, drop it from BOTH this set and HIDDEN_ADVANCED_FIELDS, the way
+    # HYPERBOLIC_DEFAULT_LIMIT / ALCHEMY_DEFAULT_N_RESULTS / SONIC_FINGERPRINT_NEIGHBORS
+    # / PATH_DEFAULT_LENGTH are handled.
+    'SIMILARITY_DEFAULT_N_RESULTS',
+    'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
+    'CLAP_SEARCH_DEFAULT_LIMIT',
+    'LYRICS_AXES_DEFAULT_LIMIT',
+    'LYRICS_TEXT_DEFAULT_LIMIT',
+    'SEM_GROVE_DEFAULT_LIMIT',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
@@ -264,6 +282,10 @@ MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs p
 SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = os.environ.get("SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT", "True").lower() == 'true'
 # Default behavior for radius similarity mode. Can be toggled via environment variable.
 SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").lower() == 'true'
+# Default result count when the similarity APIs are called without an explicit
+# count. Each mirrors the value its page ships in its own input box.
+SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("SIMILARITY_DEFAULT_N_RESULTS", "50"))
+ARTIST_SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("ARTIST_SIMILARITY_DEFAULT_N_RESULTS", "10"))
 # Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
 RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
@@ -784,8 +806,7 @@ HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFE
 # exact Poincare distance within that window. 0 keeps the old band-hugging
 # behaviour where every mode returns the tracks nearest to the seed's radius.
 HYPERBOLIC_RADIAL_SPREAD = float(os.environ.get("HYPERBOLIC_RADIAL_SPREAD", "0.15"))
-HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "20"))
-HYPERBOLIC_MAX_LIMIT = int(os.environ.get("HYPERBOLIC_MAX_LIMIT", "100"))
+HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "50"))
 # Directory tree shape: when genre_subgenre.json is present and dimensionally
 # usable the root is a MAIN GENRE partition (nearest genre centroid), then a
 # SUBGENRE partition (nearest of that genre's subgenres), then named k-means
@@ -968,6 +989,11 @@ LYRICS_VAD_SPEECH_PAD_MS = int(os.environ.get("LYRICS_VAD_SPEECH_PAD_MS", "400")
 # time; changing them requires rebuilding the SemGrove index.
 SEM_GROVE_WEIGHT_LYRICS = float(os.environ.get("SEM_GROVE_WEIGHT_LYRICS", "0.75"))
 SEM_GROVE_WEIGHT_AUDIO  = float(os.environ.get("SEM_GROVE_WEIGHT_AUDIO",  "0.25"))
+# Default result count when the lyrics / SemGrove search APIs are called
+# without an explicit limit. Each mirrors its own input box on the search page.
+LYRICS_AXES_DEFAULT_LIMIT = int(os.environ.get("LYRICS_AXES_DEFAULT_LIMIT", "50"))
+LYRICS_TEXT_DEFAULT_LIMIT = int(os.environ.get("LYRICS_TEXT_DEFAULT_LIMIT", "50"))
+SEM_GROVE_DEFAULT_LIMIT = int(os.environ.get("SEM_GROVE_DEFAULT_LIMIT", "50"))
 
 # --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
 # These give us three things at once:
@@ -1105,6 +1131,9 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Duration (in seconds) to keep CLAP model loaded for text search after last use
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
+# Default result count when /api/clap/search is called without an explicit
+# limit. Mirrors the value the CLAP search page ships in its own input box.
+CLAP_SEARCH_DEFAULT_LIMIT = int(os.environ.get("CLAP_SEARCH_DEFAULT_LIMIT", "50"))
 
 # Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
 # loaded after last use. Auto-unloads after this idle period to free RAM.
@@ -1185,7 +1214,7 @@ GENRE_SUBGENRE_FILE = os.path.join(_bundle_data_root(), 'genre_subgenre.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
-ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "100"))
+ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "50"))
 ALCHEMY_MAX_N_RESULTS = int(os.environ.get("ALCHEMY_MAX_N_RESULTS", "200"))
 # Temperature for probabilistic sampling in Song Alchemy (softmax temperature)
 ALCHEMY_TEMPERATURE = float(os.environ.get("ALCHEMY_TEMPERATURE", "1.0"))
@@ -1305,7 +1334,7 @@ SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONG
 # Max tracks a single album may contribute to the seed pool, so one large album
 # (e.g. a 100+ track DJ mix) cannot dominate the fingerprint - see issue #603.
 SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = int(os.environ.get("SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM", "3"))
-SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
+SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "50"))
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
     "Sonic Fingerprint by AudioMuse-AI",
@@ -1354,6 +1383,33 @@ DUPLICATE_DISTANCE_THRESHOLD_COSINE = float(os.getenv("DUPLICATE_DISTANCE_THRESH
 DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", "0.05"))
 DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN", "0.15"))
 DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOKBACK", "1"))
+# Per-space duplicate thresholds for the searches that had no distance filter at all.
+# Each index lives in its own geometry, so one shared number cannot serve them: the values
+# below were measured on a 199915 track catalogue by comparing, per space, how many genuinely
+# different neighbours a threshold drops against how many known same-recording pairs it
+# catches. The audio filter above (0.01 cosine) drops 0.24% of real neighbours, and that is
+# the tolerance each value here was matched to.
+# Lyrics text search (768-dim GTE embedding, cosine). 0.01 catches only half of the known
+# duplicates for the same cost as 0.05, which catches three quarters, so 0.05 it is. Note
+# that most of the effect is collapsing tracks whose lyrics embedding is byte-identical
+# (instrumentals and failed transcriptions, 17.9% of that catalogue): they are one single
+# point in this space, so a run of them can only ever be ranked arbitrarily.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT", "0.05"))
+# Lyrics axis search (27-dim axis vector, cosine). DISABLED ON PURPOSE, and 0.0 means off.
+# Axis distances are compressed into a very narrow band (median gap between consecutive
+# results 0.014), so even 0.0025 drops 18% of real neighbours and 0.01 drops 28%. Songs that
+# share an axis profile exactly are what a By Axis search is asking for, not duplicates.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS", "0.0"))
+# Hyperbolic search and hyperbolic journey (Poincare disk, arccosh distance, NOT cosine).
+# Distances here run an order of magnitude larger: the closest two distinct neighbours ever
+# come is 0.093, so 0.01 never fires. 0.30 drops 0.22% of real neighbours, matching the audio
+# filter, and catches 95% of known same-recording pairs.
+DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC", "0.30"))
+# CLAP text search (512-dim CLAP embedding, cosine). CLAP is an audio-derived space and
+# measures almost identically to the plain audio index, so it takes the same 0.01: that drops
+# 0.12% of real neighbours (nothing at all on real text queries) and catches 75% of known
+# same-recording pairs. 0.02 would catch 90% but costs 0.67%, over the audio budget.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP", "0.01"))
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
 # recording for catalogue identity. Tightened to 1s: two songs that merely sound alike but
 # differ in length by more than this are kept separate. Unknown duration = not the same.

@@ -22,7 +22,7 @@ Main Features:
 * Returns the subtract vectors with their exclusion radius as `exclusions` so a
   saved anchor can persist them; ADD-ed anchors re-apply their stored exclusions
   (each at its saved radius), which keeps anchor re-runs and radios reproducible.
-* Governed by config: ALCHEMY_DEFAULT_N_RESULTS (100) capped by ALCHEMY_MAX_N_RESULTS
+* Governed by config: ALCHEMY_DEFAULT_N_RESULTS (50) capped by ALCHEMY_MAX_N_RESULTS
   (200), ALCHEMY_TEMPERATURE (1.0), and the metric-dependent subtract cutoffs
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0).
 """

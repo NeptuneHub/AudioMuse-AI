@@ -20,6 +20,7 @@ Main Features:
 
 from flask import Blueprint, jsonify, request, render_template
 import logging
+import config
 
 import app_server_context
 from app_helper import index_error_body
@@ -85,6 +86,7 @@ def artist_similarity_page():
         'artist_similarity.html',
         title='AudioMuse-AI - Artist Similarity',
         active='artist_similarity',
+        artist_similarity_n_default=config.ARTIST_SIMILARITY_DEFAULT_N_RESULTS,
     )
 
 
@@ -143,7 +145,7 @@ def get_similar_artists_endpoint():
         description: The number of similar artists to return.
         schema:
           type: integer
-          default: 10
+          default: 50
       - name: ef_search
         in: query
         description: HNSW search parameter (higher = more accurate but slower).
@@ -184,7 +186,7 @@ def get_similar_artists_endpoint():
     """
     artist = request.args.get('artist')
     artist_id = request.args.get('artist_id')
-    n = request.args.get('n', 10, type=int)
+    n = request.args.get('n', config.ARTIST_SIMILARITY_DEFAULT_N_RESULTS, type=int)
     ef_search = request.args.get('ef_search', type=int)
     include_component_matches = (
         request.args.get('include_component_matches', 'false').lower() == 'true'

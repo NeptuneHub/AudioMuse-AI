@@ -50,6 +50,8 @@ from flask_app import app
 
 # Import helper functions
 import app_server_context
+from app_helper import max_bound as _max_bound_filter
+from app_helper import min_bound as _min_bound_filter
 from app_helper import (
     revoke_inline_task_row,
     cancel_job_and_children_recursive,
@@ -129,6 +131,10 @@ _jwt_secret = JWT_SECRET
 
 def _get_jwt_secret():
     return _jwt_secret
+
+
+app.add_template_filter(_min_bound_filter, 'min_bound')
+app.add_template_filter(_max_bound_filter, 'max_bound')
 
 
 @app.context_processor

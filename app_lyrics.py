@@ -53,7 +53,13 @@ def lyrics_search_page():
       200:
         description: HTML page rendered.
     """
-    from config import APP_VERSION, LYRICS_ENABLED
+    from config import (
+        APP_VERSION,
+        LYRICS_ENABLED,
+        LYRICS_AXES_DEFAULT_LIMIT,
+        LYRICS_TEXT_DEFAULT_LIMIT,
+        SEM_GROVE_DEFAULT_LIMIT,
+    )
     from tasks.lyrics_manager import get_axes_definition, get_cache_stats
     from tasks.sem_grove_manager import get_sem_grove_stats
 
@@ -70,6 +76,9 @@ def lyrics_search_page():
         cache_stats=cache_stats,
         axes=axes,
         sem_grove_stats=sem_grove_stats,
+        lyrics_axes_limit_default=LYRICS_AXES_DEFAULT_LIMIT,
+        lyrics_text_limit_default=LYRICS_TEXT_DEFAULT_LIMIT,
+        sem_grove_limit_default=SEM_GROVE_DEFAULT_LIMIT,
     )
 
 
@@ -102,8 +111,10 @@ def lyrics_search_axes_api():
               limit:
                 type: integer
                 minimum: 1
-                maximum: 500
                 default: 50
+                description: >-
+                  Number of tracks to return. Not capped - ask for as many
+                  as the index holds.
     responses:
       200:
         description: Matching tracks.
@@ -125,7 +136,7 @@ def lyrics_search_axes_api():
       500:
         description: Internal error.
     """
-    from config import LYRICS_ENABLED
+    from config import LYRICS_ENABLED, LYRICS_AXES_DEFAULT_LIMIT
     from tasks.lyrics_manager import search_by_axes
 
     if not LYRICS_ENABLED:
@@ -154,10 +165,10 @@ def lyrics_search_axes_api():
             return jsonify({'error': 'No valid axis selections supplied.'}), 400
 
         try:
-            limit = int(data.get('limit', 50))
+            limit = int(data.get('limit', LYRICS_AXES_DEFAULT_LIMIT))
         except (TypeError, ValueError):
             return jsonify({'error': 'Invalid "limit" value.'}), 400
-        limit = min(max(1, limit), 500)
+        limit = max(1, limit)
 
         results = search_by_axes(targets, limit=limit)
         if not results:
@@ -193,8 +204,10 @@ def lyrics_search_text_api():
               limit:
                 type: integer
                 minimum: 1
-                maximum: 500
                 default: 50
+                description: >-
+                  Number of tracks to return. Not capped - ask for as many
+                  as the index holds.
     responses:
       200:
         description: Matching tracks.
@@ -218,7 +231,7 @@ def lyrics_search_text_api():
       500:
         description: Internal error.
     """
-    from config import LYRICS_ENABLED
+    from config import LYRICS_ENABLED, LYRICS_TEXT_DEFAULT_LIMIT
     from tasks.lyrics_manager import search_by_text
 
     if not LYRICS_ENABLED:
@@ -241,10 +254,10 @@ def lyrics_search_text_api():
             return jsonify({'error': 'Query must be at least 1 character.'}), 400
 
         try:
-            limit = int(data.get('limit', 50))
+            limit = int(data.get('limit', LYRICS_TEXT_DEFAULT_LIMIT))
         except (TypeError, ValueError):
             return jsonify({'error': 'Invalid "limit" value.'}), 400
-        limit = min(max(1, limit), 500)
+        limit = max(1, limit)
 
         results = search_by_text(query, limit=limit)
         if not results:

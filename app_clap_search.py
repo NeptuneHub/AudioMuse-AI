@@ -42,7 +42,7 @@ def clap_search_page():
       200:
         description: HTML page rendered.
     """
-    from config import CLAP_ENABLED, APP_VERSION
+    from config import CLAP_ENABLED, APP_VERSION, CLAP_SEARCH_DEFAULT_LIMIT
     from tasks.clap_text_search import get_cache_stats
 
     cache_stats = get_cache_stats()
@@ -54,6 +54,7 @@ def clap_search_page():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         cache_stats=cache_stats,
+        clap_search_limit_default=CLAP_SEARCH_DEFAULT_LIMIT,
     )
 
 
@@ -80,8 +81,10 @@ def clap_search_api():
               limit:
                 type: integer
                 minimum: 1
-                maximum: 500
-                default: 100
+                default: 50
+                description: >-
+                  Number of tracks to return. Not capped - ask for as many
+                  as the index holds.
               explain:
                 type: boolean
                 default: false
@@ -143,7 +146,7 @@ def clap_search_api():
       503:
         description: CLAP cache not loaded yet (run analysis first).
     """
-    from config import CLAP_ENABLED
+    from config import CLAP_ENABLED, CLAP_SEARCH_DEFAULT_LIMIT
     from tasks.clap_steering import explain_steering, normalize_terms
     from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
     from app_helper import attach_song_features
@@ -171,7 +174,7 @@ def clap_search_api():
             return jsonify({'error': 'Missing "query" in request body'}), 400
 
         query = data['query'].strip()
-        limit = data.get('limit', 100)
+        limit = data.get('limit', CLAP_SEARCH_DEFAULT_LIMIT)
 
         if not query:
             return jsonify({'error': 'Query cannot be empty'}), 400
@@ -180,7 +183,7 @@ def clap_search_api():
             return jsonify({'error': 'Query must be at least 1 character'}), 400
 
         # Validate limit
-        limit = min(max(1, int(limit)), 500)  # Between 1 and 500
+        limit = max(1, int(limit))
 
         # Check if cache is loaded
         if not is_clap_cache_loaded():

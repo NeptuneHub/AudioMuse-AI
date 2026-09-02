@@ -26,6 +26,7 @@ from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 from tasks.mediaserver import resolve_emby_jellyfin_user  # Import the new resolver function
 from config import (
     MEDIASERVER_TYPE,
+    SONIC_FINGERPRINT_NEIGHBORS,
     JELLYFIN_USER_ID,
     JELLYFIN_TOKEN,
     EMBY_USER_ID,
@@ -63,6 +64,7 @@ def sonic_fingerprint_page():
             mediaserver_type=MEDIASERVER_TYPE,
             title='AudioMuse-AI - Sonic Fingerprint',
             active='sonic_fingerprint',
+            sonic_fingerprint_n_default=SONIC_FINGERPRINT_NEIGHBORS,
         )
     except Exception:
         logger.exception("Error rendering sonic_fingerprint.html")

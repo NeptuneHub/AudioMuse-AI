@@ -146,10 +146,10 @@
                         Number of results:
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">How many songs to include in your personalized playlist. Higher numbers (200+) give you more variety based on your listening patterns. Try 100-200 for a comprehensive fingerprint.</span>
+                            <span class="tooltip-text">How many songs to include in your personalized playlist. Higher numbers give you more variety based on your listening patterns. Try 100-200 for a comprehensive fingerprint.</span>
                         </span>
                     </label>
-                    <input type="number" id="n" name="n" value="200" min="40" max="1000">
+                    <input type="number" id="n" name="n" value="{{ sonic_fingerprint_n_default }}" min="{{ sonic_fingerprint_n_default|min_bound(40) }}" max="{{ sonic_fingerprint_n_default|max_bound(200) }}">
                 </div>
             </div>
         </fieldset>

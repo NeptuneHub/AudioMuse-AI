@@ -60,6 +60,21 @@ from error.error_dictionary import ERR_TASK_IN_PROGRESS, UNKNOWN_ERROR_CODE
 logger = logging.getLogger(__name__)
 
 
+def min_bound(value, floor):
+    try:
+        return floor if float(value) >= float(floor) else value
+    except (TypeError, ValueError):
+        return floor
+
+
+def max_bound(value, ceiling):
+    try:
+        return ceiling if float(value) <= float(ceiling) else value
+    except (TypeError, ValueError):
+        return ceiling
+
+
+
 # The Flask `app` object is intentionally NOT imported here (circular import);
 # use the module-level `logger` above. The 2D map/artist projection caches live
 # in database.MAP_PROJECTION_CACHE / database.ARTIST_PROJECTION_CACHE, written by

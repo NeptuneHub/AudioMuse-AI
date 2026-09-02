@@ -121,10 +121,10 @@
                         Number of results:
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">How many songs to find from your alchemy blend. Higher numbers give you more variety but may include less-similar songs. Try 100 for a full playlist, or 20-30 for a quick mix.</span>
+                            <span class="tooltip-text">How many songs to find from your alchemy blend. Higher numbers give you more variety but may include less-similar songs. Try 100-200 for a full playlist, or 20-30 for a quick mix.</span>
                         </span>
                     </label>
-                    <input id="n_results" name="n_results" type="number" value="100" min="1" max="200" />
+                    <input id="n_results" name="n_results" type="number" value="{{ alchemy_n_results_default }}" min="{{ alchemy_n_results_default|min_bound(1) }}" max="{{ alchemy_n_results_default|max_bound(alchemy_max_n_results) }}" />
                 </div>
                 <div>
                     <label for="temperature" class="label-with-tooltip">
@@ -237,9 +237,9 @@
 <script>
     (async () => {
         // Fetch config to get ALCHEMY defaults
-        let defaultN = 100;
-        let maxN = 200;
-        let defaultTemp = 1;
+        let defaultN = {{ alchemy_n_results_default }};
+        let maxN = {{ alchemy_max_n_results }};
+        let defaultTemp = {{ alchemy_temperature_default }};
         let cfg = {};
         try {
             const resp = await fetch("{{ url_for('get_config_endpoint') }}");

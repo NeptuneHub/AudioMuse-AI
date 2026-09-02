@@ -162,6 +162,17 @@ HIDDEN_ADVANCED_FIELDS = {
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
+    # Per-endpoint result-count defaults. Each search page renders one of them into
+    # its count input's value= attribute, so they ARE the UI's starting number, and
+    # they are also the fallback for a direct API call that sends no count. Hidden
+    # here and excluded in SETUP_BOOTSTRAP_EXCLUDED_KEYS so they stay env-only: see
+    # the comment there for why half-hiding one would strand it beyond any reach.
+    'SIMILARITY_DEFAULT_N_RESULTS',
+    'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
+    'CLAP_SEARCH_DEFAULT_LIMIT',
+    'LYRICS_AXES_DEFAULT_LIMIT',
+    'LYRICS_TEXT_DEFAULT_LIMIT',
+    'SEM_GROVE_DEFAULT_LIMIT',
     'CHROMAPRINT_BACKFILL_REPORT_SECONDS',
     'MOOD_LABELS',
     'APP_VERSION',
@@ -236,7 +247,6 @@ HIDDEN_ADVANCED_FIELDS = {
     'ALCHEMY_MAX_ANCHOR_POINTS',
     'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR',
     'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
-    'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
     # Worker / queue / batch-orchestration infra knobs (operator-level)
     'QUEUE_POLL_INTERVAL_SECONDS',
     'QUEUE_MAX_ATTEMPTS',

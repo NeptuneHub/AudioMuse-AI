@@ -33,9 +33,17 @@ Main Features:
 * Candidate generation pulls the exact top-k nearest tracks per waypoint from
   tasks.hyperbolic_index and re-ranks the pooled candidates by exact Poincare
   distance
-* Content de-duplication and the MAX_SONGS_PER_ARTIST cap are enforced while
-  picking rather than afterwards, so enforcing them shortens the walk instead
-  of tearing holes in the middle of it
+* Content de-duplication, the MAX_SONGS_PER_ARTIST cap and a Poincare-distance
+  near-duplicate check at DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC are enforced
+  while picking rather than afterwards, so enforcing them shortens the walk
+  instead of tearing holes in the middle of it. The threshold is in arccosh
+  units, an order of magnitude larger than the cosine thresholds elsewhere. The
+  lookback window follows WALK order - seeded with the start song, extended by
+  each pick, and the destination compared against the final pick - so a step is
+  always measured against the song that actually precedes it. A candidate
+  rejected as a near-duplicate at one step stays available at every later step,
+  where the window holds different songs. A track with no author is exempt from
+  the cap rather than rejected by it, the same rule apply_artist_cap follows
 * The apex (lowest common ancestor) and every picked track are labelled with
   the nearest genre/subgenre centroid, so the journey narrates the regions it
   crosses instead of returning bare ids
@@ -49,6 +57,7 @@ import logging
 import numpy as np
 
 import config
+from tasks.search_shaping import name_key_for
 
 logger = logging.getLogger(__name__)
 
@@ -158,43 +167,78 @@ def _gather_journey_candidates(interior_points, excluded, server_id=None):
     return kept, vectors, radii
 
 
-def _pick_steps(interior_points, candidate_ids, candidate_vecs, details, seed_details):
+def _pick_steps(interior_points, candidate_ids, candidate_vecs, details, seed_details, seed_vecs=None):
     from tasks.hyperbolic_geometry import hyperbolic_distance_matrix
-    from tasks.search_shaping import is_same_song
+    from tasks.hyperbolic_manager import hyperbolic_duplicate_window
 
     distances = hyperbolic_distance_matrix(interior_points, candidate_vecs)
     ranked = np.argsort(distances, axis=1)
     cap = config.MAX_SONGS_PER_ARTIST
     used = set()
     artist_counts = {}
-    taken = [info for info in seed_details if info]
-    for info in taken:
+    taken_keys = set()
+    for info in seed_details:
+        if not info:
+            continue
         author = info.get("author")
         if author:
             artist_counts[author] = artist_counts.get(author, 0) + 1
+        key = name_key_for(info.get("title"), author)
+        if key is not None:
+            taken_keys.add(key)
+
+    start_vec, end_vec = _walk_endpoint_vectors(seed_vecs)
+    window = hyperbolic_duplicate_window()
+    window.remember(start_vec)
+
     picks = []
     for step, ranking in enumerate(ranked):
         chosen = _choose_candidate(
-            ranking, candidate_ids, details, used, taken, artist_counts, cap, is_same_song
+            ranking, candidate_ids, details, used, taken_keys, artist_counts, cap,
+            lambda column: window.is_duplicate(candidate_vecs[column]),
         )
         if chosen is None:
             continue
         item_id, column, info = chosen
         used.add(item_id)
-        taken.append(info)
+        window.remember(np.asarray(candidate_vecs[column], dtype=np.float32))
         author = info.get("author")
         if author:
             artist_counts[author] = artist_counts.get(author, 0) + 1
+        key = name_key_for(info.get("title"), author)
+        if key is not None:
+            taken_keys.add(key)
         picks.append({
             "item_id": item_id,
             "step": step + 1,
             "distance": float(distances[step, column]),
             "column": column,
         })
+    return _drop_last_pick_if_it_shadows_the_destination(picks, candidate_vecs, end_vec, window)
+
+
+def _walk_endpoint_vectors(seed_vecs):
+    vectors = [np.asarray(v, dtype=np.float32) for v in (seed_vecs or []) if v is not None]
+    start_vec = vectors[0] if vectors else None
+    end_vec = vectors[1] if len(vectors) > 1 else None
+    return start_vec, end_vec
+
+
+def _drop_last_pick_if_it_shadows_the_destination(picks, candidate_vecs, end_vec, window):
+    if not picks or end_vec is None or not window.active:
+        return picks
+    last_vec = np.asarray(candidate_vecs[picks[-1]["column"]], dtype=np.float32)
+    if window.distance_fn(last_vec, end_vec) < window.threshold:
+        logger.info(
+            "Journey: dropping final pick '%s', a near-duplicate of the destination within %.4f.",
+            picks[-1]["item_id"],
+            window.threshold,
+        )
+        return picks[:-1]
     return picks
 
 
-def _choose_candidate(ranking, candidate_ids, details, used, taken, artist_counts, cap, is_same_song):
+def _choose_candidate(ranking, candidate_ids, details, used, taken_keys, artist_counts, cap, is_near_duplicate):
     for column in ranking:
         item_id = candidate_ids[int(column)]
         if item_id in used:
@@ -203,12 +247,11 @@ def _choose_candidate(ranking, candidate_ids, details, used, taken, artist_count
         if not info:
             continue
         author = info.get("author")
-        if cap and cap > 0 and (not author or artist_counts.get(author, 0) >= cap):
+        if cap and cap > 0 and author and artist_counts.get(author, 0) >= cap:
             continue
-        if any(
-            is_same_song(info.get("title"), author, prev.get("title"), prev.get("author"))
-            for prev in taken
-        ):
+        if name_key_for(info.get("title"), author) in taken_keys:
+            continue
+        if is_near_duplicate(int(column)):
             continue
         return item_id, int(column), info
     return None
@@ -262,7 +305,7 @@ def _apex_payload(start_vec, end_vec, dive, e1, e2):
     }
 
 
-def _snap_interior(interior, start_item_id, end_item_id, seed_details, server_id=None):
+def _snap_interior(interior, start_item_id, end_item_id, seed_details, server_id=None, seed_vecs=None):
     from database import get_score_data_by_ids
 
     if not interior.shape[0]:
@@ -273,7 +316,9 @@ def _snap_interior(interior, start_item_id, end_item_id, seed_details, server_id
     if not candidate_ids:
         return [], None, None
     details = {d["item_id"]: d for d in get_score_data_by_ids(candidate_ids)}
-    picks = _pick_steps(interior, candidate_ids, candidate_vecs, details, seed_details)
+    picks = _pick_steps(
+        interior, candidate_ids, candidate_vecs, details, seed_details, seed_vecs
+    )
     return picks, candidate_vecs, candidate_radii
 
 
@@ -305,6 +350,7 @@ def build_hyperbolic_journey(start_item_id, end_item_id, length=None, ancestry_d
         interior, start_item_id, end_item_id,
         [seed_details.get(start_item_id) or {}, seed_details.get(end_item_id) or {}],
         server_id,
+        [start_vec, end_vec],
     )
 
     rows = [_journey_row(

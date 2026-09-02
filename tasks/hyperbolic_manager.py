@@ -45,7 +45,8 @@ Main Features:
   from the seed, caller-supplied and defaulting to HYPERBOLIC_RADIAL_SPREAD) so the two
   modes visibly leave the seed's radius band, then rank by exact distance. All
   modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
-  similar-song page
+  similar-song page, followed by a Poincare-distance near-duplicate pass at
+  DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC (arccosh units, not cosine)
 * build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
   partition, the mood fallback, and the named Poincare k-means clusters - PER SERVER,
   and persists one tree per configured server as gzipped JSON blobs chunked
@@ -497,13 +498,15 @@ def _rank_mode_results(ids, distances, cand_radii, mode, target_radius):
     return results
 
 
-def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=None, server_id=None):
+def hyperbolic_similar(target_item_id, mode="similar", limit=None, radial_spread=None, server_id=None):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
     mode = (mode or "similar").strip().lower()
     if mode not in ("similar", "roots", "niche"):
         raise ValueError('mode must be one of "similar", "roots", "niche"')
-    limit = max(1, min(int(limit), int(config.HYPERBOLIC_MAX_LIMIT)))
+    if limit is None:
+        limit = config.HYPERBOLIC_DEFAULT_LIMIT
+    limit = max(1, int(limit))
     if radial_spread is None:
         radial_spread = config.HYPERBOLIC_RADIAL_SPREAD
     target = _fetch_poincare_rows([target_item_id]).get(target_item_id)
@@ -542,7 +545,7 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
                     "hyperbolic_radius": float(row[1]),
                 }
             )
-        return _deduplicate_and_cap_results(results)[:limit]
+        return _deduplicate_and_cap_results(results, rows)[:limit]
 
     rows = _gather_mode_candidates(
         target_radius, mode, radial_spread, overfetch, server_id=server_id
@@ -555,17 +558,56 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=20, radial_spread=N
     distances = hyperbolic_distances_to(target_vec, cand_vecs)
     results = _rank_mode_results(ids, distances, cand_radii, mode, target_radius)
     results = results[:overfetch]
-    return _deduplicate_and_cap_results(results)[:limit]
+    return _deduplicate_and_cap_results(results, rows)[:limit]
 
 
-def _deduplicate_and_cap_results(results):
+def hyperbolic_duplicate_window():
+    from tasks.hyperbolic_geometry import hyperbolic_distance
+    from tasks.search_shaping import NearDuplicateWindow
+
+    return NearDuplicateWindow(
+        config.DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC,
+        config.DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+        hyperbolic_distance,
+    )
+
+
+def _filter_hyperbolic_near_duplicates(results, vector_map):
+    window = hyperbolic_duplicate_window()
+    if not window.active or len(results) < 2 or not vector_map:
+        return results
+
+    kept = []
+    for song in results:
+        row = vector_map.get(song["item_id"])
+        if row is None:
+            kept.append(song)
+            continue
+        if window.is_duplicate(row[0]):
+            logger.info(
+                "Hyperbolic: dropping near-duplicate '%s' within %.4f.",
+                song["item_id"],
+                window.threshold,
+            )
+            continue
+        window.remember(row[0])
+        kept.append(song)
+    return kept
+
+
+def _deduplicate_and_cap_results(results, vector_map=None):
     """Mirror the similar-song page on the final result list.
 
-    Drops content duplicates (same title + author under different item ids) and
-    caps the number of tracks per artist at MAX_SONGS_PER_ARTIST, so a playlist
-    built from any hyperbolic mode follows the same dedup rules as the
-    similar-song page. Tracks without resolvable author metadata are skipped by
-    the artist cap, matching the shared ivf_manager behaviour.
+    Drops content duplicates (same title + author under different item ids),
+    caps the number of tracks per artist at MAX_SONGS_PER_ARTIST, then drops
+    near duplicates that survived both because their metadata differs, using
+    Poincare distance against a DUPLICATE_DISTANCE_CHECK_LOOKBACK window. The
+    threshold is in arccosh units, so it is an order of magnitude larger than
+    the cosine thresholds the audio and lyrics indexes use. Every caller has
+    already fetched the projections it ranked with, so vector_map is passed in
+    rather than read back from the database a second time. Tracks without
+    resolvable author metadata are skipped by the artist cap, matching the
+    shared ivf_manager behaviour.
     """
     if not results:
         return results
@@ -575,9 +617,10 @@ def _deduplicate_and_cap_results(results):
     ids = [r["item_id"] for r in results]
     details = {d["item_id"]: d for d in get_score_data_by_ids(ids)}
     deduped = dedup_by_content(results, details)
-    return apply_artist_cap(
+    capped = apply_artist_cap(
         deduped, lambda song: (details.get(song["item_id"]) or {}).get("author")
     )
+    return _filter_hyperbolic_near_duplicates(capped, vector_map)
 
 
 _TREE_CACHE = {

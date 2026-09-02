@@ -417,6 +417,24 @@ class TestSetupWizardParameterCatalogDoesNotDrift:
             'them and renders nothing, exactly like a hidden key: %s' % basic
         )
 
+    @pytest.mark.parametrize('name', [
+        'SIMILARITY_DEFAULT_N_RESULTS',
+        'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
+        'CLAP_SEARCH_DEFAULT_LIMIT',
+        'LYRICS_AXES_DEFAULT_LIMIT',
+        'LYRICS_TEXT_DEFAULT_LIMIT',
+        'SEM_GROVE_DEFAULT_LIMIT',
+    ])
+    def test_a_wizard_hidden_api_default_is_also_bootstrap_excluded(self, name):
+        assert hasattr(config, name)
+        assert app_setup.should_show_advanced(name) is False
+        assert name in config.SETUP_BOOTSTRAP_EXCLUDED_KEYS, (
+            '%s is hidden from the wizard but still mirrored into app_config, so the '
+            'first boot freezes it in the database where no operator can reach it: '
+            'the wizard will not render it and the DB row outranks the environment '
+            'variable that is now its only remaining input' % name
+        )
+
     def test_js_sections_list_each_field_only_once(self):
         names = _setup_wizard_section_names()
         assert names, 'static/setup.js ADVANCED_SECTIONS must not be empty'
