@@ -228,7 +228,7 @@ legend {
 
 .param-group {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 1.5rem;
 }
 
@@ -253,6 +253,7 @@ textarea {
     border: 1px solid var(--border-color-darker);
     color: var(--text-title);
     box-sizing: border-box;
+    min-width: 0;
     box-shadow: var(--shadow-input);
     transition: border-color 0.2s, box-shadow 0.2s;
     font-size: 1rem; /* Ensure consistent font size */
@@ -720,7 +721,7 @@ html.dark-mode button:not(.btn):disabled {
 .song-list {
     margin-top: 0.75rem;
     list-style-type: decimal;
-    padding-left: 1.5rem;
+    padding-left: 3rem;
     color: var(--text-muted);
 }
 

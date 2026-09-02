@@ -22,9 +22,10 @@ Main Features:
 * Returns the subtract vectors with their exclusion radius as `exclusions` so a
   saved anchor can persist them; ADD-ed anchors re-apply their stored exclusions
   (each at its saved radius), which keeps anchor re-runs and radios reproducible.
-* Governed by config: ALCHEMY_DEFAULT_N_RESULTS (50) capped by ALCHEMY_MAX_N_RESULTS
-  (200), ALCHEMY_TEMPERATURE (1.0), and the metric-dependent subtract cutoffs
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0).
+* Governed by config: ALCHEMY_DEFAULT_N_RESULTS (50) when the caller names no
+  count, ALCHEMY_TEMPERATURE (1.0), and the metric-dependent subtract cutoffs
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0). There is no upper
+  bound on n_results here: ALCHEMY_MAX_N_RESULTS only caps the page's input box.
 """
 
 import json
@@ -403,7 +404,6 @@ def song_alchemy(
 
     if n_results is None:
         n_results = config.ALCHEMY_DEFAULT_N_RESULTS
-    n_results = min(n_results, config.ALCHEMY_MAX_N_RESULTS)
 
     if add_items is None and add_ids is not None:
         add_items = [{'type': 'song', 'id': aid} for aid in add_ids]

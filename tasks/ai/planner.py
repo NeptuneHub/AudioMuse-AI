@@ -1644,7 +1644,7 @@ def _execute_plan(
             tn = tc.get('name')
             ta = dict(tc.get('arguments', {}) or {})
             if 'get_songs' not in ta:
-                ta['get_songs'] = max(200, target_song_count)
+                ta['get_songs'] = max(200, target_song_count * 2)
             pretty = {k: v for k, v in ta.items() if k != 'get_songs'}
             log_messages.append(f"\nTOOL: {tn}")
             try:

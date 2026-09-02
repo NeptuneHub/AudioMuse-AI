@@ -160,9 +160,11 @@ AI providers:
 
 Safety caps:
 
-- `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`,
-  `MAX_SONGS_PER_ARTIST`, `DASHBOARD_BROWSE_MAX_OFFSET`,
+- `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST`, `DASHBOARD_BROWSE_MAX_OFFSET`,
   `SWEEP_PRUNE_MIN_FETCH_RATIO`.
+- `ALCHEMY_MAX_N_RESULTS` and `INSTANT_PLAYLIST_MAX_N_RESULTS` are NOT safety
+  caps: they bound only their page's own input box. No API route and no internal
+  routine clamps a requested result count to them.
 
 Authentication:
 
@@ -1490,8 +1492,10 @@ selected in the sidebar, because that page is per server.
 
 ### 8.3. Environment Variable Configuration
 
-- `ALCHEMY_DEFAULT_N_RESULTS`, `ALCHEMY_MAX_N_RESULTS`: default and hard cap on
-  the number of results.
+- `ALCHEMY_DEFAULT_N_RESULTS`, `ALCHEMY_MAX_N_RESULTS`: the count used when the
+  caller names none, and the ceiling the Alchemy page puts on its own input box.
+  The maximum is frontend-only: the API and the engine enforce the default and a
+  floor of 1, never the cap, so a direct API caller can ask for any number.
 - `ALCHEMY_TEMPERATURE`: default sampling temperature.
 - `ALCHEMY_SUBTRACT_DISTANCE_ANGULAR`, `ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN`:
   default subtract thresholds. The metric in use decides which one applies.
