@@ -29,6 +29,15 @@ GHSA-29pf-2h5f-8g72
 # the 4.x line (fixed only in the 5.x major).
 CVE-2026-5241
 GHSA-fgcw-684q-jj6r
+# transformers save_pretrained() path-traversal arbitrary file write -- unreachable:
+# AudioMuse never calls save_pretrained() on a tokenizer or processor (zero call
+# sites), and never downloads a tokenizer/processor from an untrusted Hub repo --
+# the only from_pretrained call is roberta-base with local_files_only=True against
+# the app-bundled model. The exploit needs both halves (fetch a crafted
+# tokenizer_config.json, then save it back out). Mirrors CVE-2026-9856 in the
+# pip-audit allowlist; fixed only in 5.10.0 (breaking bump from the pinned 4.57.6).
+CVE-2026-9856
+GHSA-xrqw-3rrv-vx5w
 
 # The onnx model-loading CVEs are intentionally NOT excluded here because they
 # are already fixed by onnx==1.21.0 in requirements/common.txt (the version Trivy

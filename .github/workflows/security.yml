@@ -123,6 +123,7 @@ jobs:
         accept PYSEC-2026-113   # pyarrow C++ Use-After-Free - Python binding is NOT vulnerable per the advisory
         accept PYSEC-2026-169   # distributed (Dask) dashboard XSS - needs Jupyter Lab + jupyter-server-proxy + a Dask cluster; none run here
         accept PYSEC-2026-2290  # transformers LightGlue trust_remote_code override RCE - unreachable (no LightGlue, no untrusted model repos, only trusted bundled models); fix only in 5.x major
+        accept CVE-2026-9856    # transformers save_pretrained() path-traversal file write - unreachable (save_pretrained never called; only from_pretrained is roberta-base with local_files_only=True); fix only in 5.10.0 (major bump)
         echo "ids=$(echo $ids | xargs)" >> "$GITHUB_OUTPUT"
 
     # Shared deps - full resolution, so transitive CVEs are caught too.
