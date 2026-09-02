@@ -1177,7 +1177,7 @@ def _finish_plan(
     *,
     library_context: Optional[Dict] = None,
     collection_cap: int = 1000,
-    target_song_count: int = 100,
+    target_song_count: Optional[int] = None,
     raw_request: str = '',
     allow_rescue: bool = True,
 ):
@@ -1237,7 +1237,7 @@ def plan_and_execute_once(
     library_context: Optional[Dict] = None,
     user_wants_rating: bool = False,
     collection_cap: int = 1000,
-    target_song_count: int = 100,
+    target_song_count: Optional[int] = None,
     replan_feedback: Optional[str] = None,
     raw_user_request: Optional[str] = None,
 ):
@@ -1450,11 +1450,14 @@ def _execute_plan(
     *,
     library_context: Optional[Dict] = None,
     collection_cap: int = 1000,
-    target_song_count: int = 100,
+    target_song_count: Optional[int] = None,
     has_knowledge: bool = False,
 ):
     from tasks.ai.tools import execute_mcp_tool
     from tasks.ai.tool_impl import _fetch_pool_features
+
+    if target_song_count is None:
+        target_song_count = config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS
 
     detected_min_rating: Optional[int] = None
     if plan.filter and plan.filter.get('min_rating'):
@@ -1641,7 +1644,7 @@ def _execute_plan(
             tn = tc.get('name')
             ta = dict(tc.get('arguments', {}) or {})
             if 'get_songs' not in ta:
-                ta['get_songs'] = 200
+                ta['get_songs'] = max(200, target_song_count)
             pretty = {k: v for k, v in ta.items() if k != 'get_songs'}
             log_messages.append(f"\nTOOL: {tn}")
             try:

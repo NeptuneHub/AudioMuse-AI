@@ -263,6 +263,16 @@
                     <button type="button" class="suggestion-btn" data-text="Sad jazz from the 90s in minor key">💃 Genre / Mood / Year</button>
                 </div>
             </div>
+            <div>
+                <label for="numResults" class="label-with-tooltip">
+                    Number of songs:
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">How many songs the generated playlist should contain. Higher numbers give a longer playlist but may include songs that match your request less closely. Try 50 for a normal playlist, or 20-30 for a quick mix.</span>
+                    </span>
+                </label>
+                <input id="numResults" name="numResults" type="number" value="{{ instant_playlist_n_results_default }}" min="{{ instant_playlist_n_results_default|min_bound(1) }}" max="{{ instant_playlist_n_results_default|max_bound(instant_playlist_max_n_results) }}" />
+            </div>
         </div>
 
         <!-- Submit Button -->
@@ -301,6 +311,8 @@
         // --- Self-Executing Anonymous Function to Encapsulate Code ---
         (() => {
             let globalConfig = {};
+            let defaultN = {{ instant_playlist_n_results_default }};
+            let maxN = {{ instant_playlist_max_n_results }};
             let loadingTimer = null;
             let liveState = null;
             const CHAT_URL = "{{ url_for('chat_bp.chat_playlist_api') }}";
@@ -320,6 +332,7 @@
             const mistralModelSelect = document.getElementById('mistralModel');
             const playlistForm = document.getElementById('playlistForm');
             const userInput = document.getElementById('userInput');
+            const numResultsInput = document.getElementById('numResults');
             const submitButton = document.getElementById('submitChat');
             const responseArea = document.getElementById('responseArea');
             const submitButtonText = submitButton.querySelector('span');
@@ -364,6 +377,12 @@
 
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
+
+                if (globalConfig.instant_playlist_default_n_results) defaultN = globalConfig.instant_playlist_default_n_results;
+                if (globalConfig.instant_playlist_max_n_results) maxN = globalConfig.instant_playlist_max_n_results;
+                numResultsInput.max = Math.max(defaultN, maxN);
+                numResultsInput.min = Math.min(defaultN, 1);
+                numResultsInput.value = defaultN;
             }
 
             /**
@@ -414,10 +433,12 @@
 
                 setLoadingState(true);
 
+                const nInput = parseInt(numResultsInput.value, 10);
                 const payload = {
                     userInput: userInput.value,
                     ai_provider: aiProviderSelect.value,
-                    ai_model: null
+                    ai_model: null,
+                    n: Math.min(Math.max(Number.isNaN(nInput) ? defaultN : nInput, 1), maxN)
                 };
 
                 if (payload.ai_provider === 'OLLAMA') {

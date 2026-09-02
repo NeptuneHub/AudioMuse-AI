@@ -14,6 +14,7 @@ pipeline.
 Main Features:
 * Seed-search song-seed validation and search_database filter detection.
 * Artist-diversity capping and progressive cap relaxation from the overflow.
+* Playlist-length resolution from the request `n`, with no API upper bound.
 """
 
 import pytest
@@ -49,7 +50,7 @@ def _song(item_id, artist):
     return {'item_id': item_id, 'artist': artist, 'title': f'{artist} {item_id}'}
 
 
-def _run_pipeline_with_pool(monkeypatch, songs):
+def _run_pipeline_with_pool(monkeypatch, songs, payload_extra=None):
     import tasks.ai.planner as planner
     import tasks.mcp_helper as mcp_helper
 
@@ -72,12 +73,12 @@ def _run_pipeline_with_pool(monkeypatch, songs):
         lambda rows, _server, **kwargs: list(rows),
     )
 
+    payload = {'userInput': 'build me a playlist', 'ai_provider': 'OLLAMA'}
+    payload.update(payload_extra or {})
+
     log_messages = []
     response, status = app_chat._drain_pipeline(
-        app_chat._run_chat_pipeline(
-            {'userInput': 'build me a playlist', 'ai_provider': 'OLLAMA'},
-            log_messages,
-        )
+        app_chat._run_chat_pipeline(payload, log_messages)
     )
     assert status == 200
     return response
@@ -218,7 +219,7 @@ class TestArtistDiversityEnforcement:
         songs = [_song(f'b{i}', 'Beatles') for i in range(20)]
         songs += [_song(f'u{i}', f'Solo{i}') for i in range(180)]
 
-        response = _run_pipeline_with_pool(monkeypatch, songs)
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 100})
 
         results = response['query_results']
         assert len(results) == 100
@@ -233,7 +234,7 @@ class TestArtistDiversityEnforcement:
         monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST_PLAYLIST', 5)
         songs = [_song(f'a{a}s{i}', f'Artist{a}') for a in range(20) for i in range(10)]
 
-        response = _run_pipeline_with_pool(monkeypatch, songs)
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 100})
 
         results = response['query_results']
         assert [s['item_id'] for s in results] == [
@@ -248,7 +249,7 @@ class TestArtistDiversityEnforcement:
         songs = [_song(f'a{i}', 'ArtistA') for i in range(30)]
         songs += [_song(f'b{i}', 'ArtistB') for i in range(30)]
 
-        response = _run_pipeline_with_pool(monkeypatch, songs)
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 100})
 
         results = response['query_results']
         assert len(results) == 60
@@ -266,7 +267,7 @@ class TestArtistDiversityEnforcement:
         songs += [_song(f'b{i}', 'ArtistB') for i in range(6)]
         songs += [_song(f'u{i}', f'Solo{i}') for i in range(80)]
 
-        response = _run_pipeline_with_pool(monkeypatch, songs)
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 100})
 
         results = response['query_results']
         assert len(results) == 100
@@ -279,3 +280,61 @@ class TestArtistDiversityEnforcement:
         assert (
             'Progressive cap relaxation: 5 -> 14/artist to reach 100 songs' in response['message']
         )
+
+
+class TestPlaylistLength:
+    def test_request_without_n_falls_back_to_the_configured_default(self, monkeypatch):
+        monkeypatch.setattr(config, 'INSTANT_PLAYLIST_DEFAULT_N_RESULTS', 50)
+        songs = [_song(f'u{i}', f'Solo{i}') for i in range(300)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs)
+
+        assert len(response['query_results']) == 50
+        assert 'Target: 50 songs' in response['message']
+
+    def test_requested_n_sets_the_playlist_length(self, monkeypatch):
+        songs = [_song(f'u{i}', f'Solo{i}') for i in range(300)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 25})
+
+        assert len(response['query_results']) == 25
+        assert 'Target: 25 songs' in response['message']
+
+    def test_api_honours_an_n_above_the_frontend_only_maximum(self, monkeypatch):
+        monkeypatch.setattr(config, 'INSTANT_PLAYLIST_MAX_N_RESULTS', 200)
+        songs = [_song(f'u{i}', f'Solo{i}') for i in range(600)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 500})
+
+        assert len(response['query_results']) == 500
+
+    def test_collected_pool_grows_with_the_target_so_a_long_playlist_can_fill(self, monkeypatch):
+        songs = [_song(f'u{i}', f'Solo{i}') for i in range(4000)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 300})
+
+        assert len(response['query_results']) == 300
+
+    @pytest.mark.parametrize('bad_value', ['many', None, '', {'n': 10}])
+    def test_unparsable_n_falls_back_to_the_configured_default(self, monkeypatch, bad_value):
+        monkeypatch.setattr(config, 'INSTANT_PLAYLIST_DEFAULT_N_RESULTS', 50)
+        songs = [_song(f'u{i}', f'Solo{i}') for i in range(300)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': bad_value})
+
+        assert len(response['query_results']) == 50
+
+    def test_a_fractional_n_is_truncated_to_a_whole_number_of_songs(self, monkeypatch):
+        songs = [_song(f'u{i}', f'Solo{i}') for i in range(300)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 12.7})
+
+        assert len(response['query_results']) == 12
+
+    @pytest.mark.parametrize('bad_value', [0, -5])
+    def test_n_below_one_is_floored_to_a_single_song(self, monkeypatch, bad_value):
+        songs = [_song(f'u{i}', f'Solo{i}') for i in range(300)]
+
+        response = _run_pipeline_with_pool(monkeypatch, songs, {'n': bad_value})
+
+        assert len(response['query_results']) == 1
