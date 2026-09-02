@@ -22,6 +22,10 @@ Main Features:
 * Chromaprint backfill liveness: the per-track loop writes throttled progress so
   the task row never looks hung, and it honours revocation mid-loop instead of
   fingerprinting thousands of tracks after a Cancel.
+* Distributed Chromaprint backfill (opt-in): with the flag on the targets are
+  chunked and enqueued as chromaprint_backfill child jobs; the batch task runs the
+  unchanged per-track work and a per-track failure never aborts the batch; with the
+  flag off no jobs are enqueued and the serial loop runs exactly as before.
 """
 
 import logging
@@ -2598,6 +2602,170 @@ def test_chromaprint_backfill_covers_every_server_when_nothing_is_revoked(monkey
     )
 
     assert {server_id for server_id, _ in processed} == {'srv-a', 'srv-c'}
+
+
+def _distributed_backfill_harness(monkeypatch, targets, batch_size):
+    import contextlib
+    import tasks.analysis.main as analysis
+    from tasks.mediaserver import context as server_context
+
+    monkeypatch.setattr(analysis, 'CHROMAPRINT_COLLECTION_ENABLED', True)
+    monkeypatch.setattr(analysis, 'CHROMAPRINT_BACKFILL_DISTRIBUTED', True)
+    monkeypatch.setattr(analysis, 'CHROMAPRINT_BACKFILL_BATCH_SIZE', batch_size)
+    monkeypatch.setattr(analysis.chromaprint, 'is_available', lambda: True)
+    monkeypatch.setattr(analysis, '_bind_server_context', lambda server_id: server_id)
+    monkeypatch.setattr(
+        server_context, 'use_server', lambda *a, **k: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(
+        analysis, '_chromaprint_backfill_targets',
+        lambda server_id, limit: list(targets),
+    )
+    monkeypatch.setattr(analysis.taskqueue, 'current_task_id', lambda: 'parent-1')
+    monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
+
+    enqueued = []
+
+    def fake_enqueue(func, args=(), kwargs=None, *, task_id, task_type, **rest):
+        enqueued.append({
+            'func': func,
+            'args': args,
+            'task_id': task_id,
+            'task_type': task_type,
+            'parent_task_id': rest.get('parent_task_id'),
+        })
+        return task_id
+
+    monkeypatch.setattr(analysis.taskqueue, 'enqueue', fake_enqueue)
+
+    reaped = {'done': False}
+
+    def fake_reap(parent_task_id, conn=None):
+        if reaped['done']:
+            return []
+        reaped['done'] = True
+        children = []
+        for job in enqueued:
+            batch = job['args'][1]
+            children.append({
+                'task_id': job['task_id'],
+                'status': analysis.TASK_STATUS_SUCCESS,
+                'sub_type_identifier': job['task_id'],
+                'details': {
+                    'final_summary_details': {'filled': len(batch), 'total': len(batch)},
+                },
+            })
+        return children
+
+    monkeypatch.setattr(analysis.taskqueue, 'reap_finished_children', fake_reap)
+    return analysis, enqueued
+
+
+def test_distributed_backfill_enqueues_one_batch_per_chunk(monkeypatch):
+    targets = _fake_targets(5)
+    analysis, enqueued = _distributed_backfill_harness(monkeypatch, targets, batch_size=2)
+
+    stopped = analysis._run_chromaprint_backfill(
+        ['srv'], log_fn=lambda message, progress=99: None
+    )
+
+    assert stopped is False
+    assert len(enqueued) == 3  # ceil(5 / 2)
+    assert all(job['task_type'] == 'chromaprint_backfill' for job in enqueued)
+    assert all(
+        job['func'] == 'tasks.analysis.chromaprint_backfill_batch_task'
+        for job in enqueued
+    )
+    assert all(job['parent_task_id'] == 'parent-1' for job in enqueued)
+    # Each job carries (server_id, batch, parent_task_id) as its positional args.
+    assert all(job['args'][0] == 'srv' and job['args'][2] == 'parent-1' for job in enqueued)
+    batches = [job['args'][1] for job in enqueued]
+    assert [len(batch) for batch in batches] == [2, 2, 1]
+    assert [target for batch in batches for target in batch] == targets
+
+
+def test_distributed_backfill_stops_enqueuing_once_revoked(monkeypatch):
+    targets = _fake_targets(6)
+    analysis, enqueued = _distributed_backfill_harness(monkeypatch, targets, batch_size=2)
+
+    stopped = analysis._run_chromaprint_backfill(
+        ['srv'],
+        log_fn=lambda message, progress=99: None,
+        should_stop=lambda: len(enqueued) >= 2,
+    )
+
+    assert stopped is True
+    assert len(enqueued) == 2  # the third chunk is never enqueued after revocation
+
+
+def test_flag_off_backfill_runs_serially_and_never_enqueues(monkeypatch):
+    targets = _fake_targets(5)
+    analysis, enqueued = _distributed_backfill_harness(monkeypatch, targets, batch_size=2)
+    # Flip distribution back OFF: the serial loop must run and enqueue nothing.
+    monkeypatch.setattr(analysis, 'CHROMAPRINT_BACKFILL_DISTRIBUTED', False)
+    monkeypatch.setattr(analysis, 'CHROMAPRINT_BACKFILL_REPORT_SECONDS', 0)
+    processed = []
+    monkeypatch.setattr(
+        analysis, '_backfill_one_track',
+        lambda server_id, track_id, path: processed.append((server_id, track_id)) or True,
+    )
+
+    stopped = analysis._run_chromaprint_backfill(
+        ['srv'], log_fn=lambda message, progress=99: None
+    )
+
+    assert stopped is False
+    assert len(processed) == 5  # the serial per-track loop ran for every target
+    assert enqueued == []  # and nothing was handed to the queue
+
+
+def _batch_task_harness(monkeypatch, track_results):
+    import contextlib
+    import tasks.analysis.main as analysis
+    import tasks.analysis.helper as analysis_helper
+    from tasks.mediaserver import context as server_context
+
+    monkeypatch.setattr(analysis.taskqueue, 'current_task_id', lambda: None)
+    monkeypatch.setattr(analysis, '_bind_server_context', lambda server_id: server_id)
+    monkeypatch.setattr(
+        server_context, 'use_server', lambda *a, **k: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(analysis_helper, 'save_task_status', lambda *a, **k: None)
+
+    processed = []
+
+    def fake_backfill(server_id, provider_track_id, file_path):
+        processed.append((server_id, provider_track_id, file_path))
+        return track_results.get(provider_track_id, True)
+
+    monkeypatch.setattr(analysis, '_backfill_one_track', fake_backfill)
+    return analysis, processed
+
+
+def test_chromaprint_backfill_batch_task_fingerprints_each_track_and_reports_filled(
+    monkeypatch,
+):
+    analysis, processed = _batch_task_harness(monkeypatch, {})
+    targets = _fake_targets(4)
+
+    result = analysis.chromaprint_backfill_batch_task('srv', targets, 'parent-1')
+
+    assert result['status'] == analysis.TASK_STATUS_SUCCESS
+    assert result['filled'] == 4
+    assert result['total'] == 4
+    # _backfill_one_track ran once per target, in order, with the batch's server id.
+    assert [(sid, tid) for sid, tid, _ in processed] == [('srv', t[0]) for t in targets]
+
+
+def test_chromaprint_backfill_batch_task_keeps_going_when_a_track_fails(monkeypatch):
+    analysis, processed = _batch_task_harness(monkeypatch, {'t1': False})
+    targets = _fake_targets(4)
+
+    result = analysis.chromaprint_backfill_batch_task('srv', targets, 'parent-1')
+
+    assert len(processed) == 4  # a single failing track does not abort the batch
+    assert result['filled'] == 3  # the other three were fingerprinted
+    assert result['total'] == 4
 
 
 def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkeypatch):

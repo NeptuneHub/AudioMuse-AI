@@ -11,6 +11,7 @@
 A lazy facade: every attribute resolves on first use, so importing
 ``tasks.analysis`` stays free of heavy dependencies. queue job strings
 (``tasks.analysis.run_analysis_task``, ``tasks.analysis.analyze_album_task``,
+``tasks.analysis.chromaprint_backfill_batch_task``,
 ``tasks.analysis.rebuild_all_indexes_task``) resolve here.
 
 Main Features:
@@ -32,6 +33,7 @@ _HOMES = {
     '_albums_per_server': 'main',
     '_enabled_analysis_servers': 'main',
     'clean_temp': 'main',
+    'chromaprint_backfill_batch_task': 'main',
     'analyze_album_task': 'album',
     '_analyze_album_task_impl': 'album',
     '_record_album_failure_row': 'album',

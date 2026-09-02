@@ -43,6 +43,7 @@ CANCEL_ALL = queue_names.CANCEL_ALL
 ALLOWED_FUNCS = frozenset((
     'tasks.analysis.run_analysis_task',
     'tasks.analysis.analyze_album_task',
+    'tasks.analysis.chromaprint_backfill_batch_task',
     'tasks.analysis.rebuild_all_indexes_task',
     'tasks.cleaning.identify_and_clean_orphaned_albums_task',
     'tasks.clustering.run_clustering_task',

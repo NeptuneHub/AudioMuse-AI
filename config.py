@@ -1383,6 +1383,16 @@ CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS
 # ignored. Reclaim is advisory-lock based, so this cadence no longer affects whether the row is
 # reaped - it only drives the UI and the cancellation poll.
 CHROMAPRINT_BACKFILL_REPORT_SECONDS = int(os.getenv("CHROMAPRINT_BACKFILL_REPORT_SECONDS", "15"))
+# Distribute the backfill across the worker pool instead of grinding it serially on whichever
+# single worker finished the analysis phase. Off = today's in-process loop, byte-for-byte. On =
+# the missing-fingerprint targets are chunked and enqueued as chromaprint_backfill child jobs that
+# every idle worker drains, mirroring how album analysis already fans out; remote workers then help
+# instead of sitting idle. Per-track work (download then fpcalc) is unchanged either way.
+CHROMAPRINT_BACKFILL_DISTRIBUTED = os.getenv("CHROMAPRINT_BACKFILL_DISTRIBUTED", "False").lower() == "true"
+# Tracks per distributed backfill job. Larger batches mean fewer queue rows but coarser progress
+# and cancellation granularity; smaller batches spread the work more evenly across workers. Floored
+# at 1 so a mis-set 0 or negative value cannot produce empty batches. Only used when distributed.
+CHROMAPRINT_BACKFILL_BATCH_SIZE = max(1, int(os.getenv("CHROMAPRINT_BACKFILL_BATCH_SIZE", "50")))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
 # Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.
