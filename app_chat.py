@@ -158,9 +158,6 @@ def _reject_missing_user_input(data):
 
 
 def _resolve_target_song_count(data):
-    # How many songs the playlist should aim for. Only a floor of 1 is enforced:
-    # INSTANT_PLAYLIST_MAX_N_RESULTS is a frontend-only bound (the chat page input's
-    # max= attribute), so an API caller stays free to ask for any number.
     raw = (data or {}).get('n', config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS)
     try:
         n = int(raw)
@@ -594,8 +591,6 @@ def _run_chat_pipeline(data, log_messages):
 
     from config import MAX_SONGS_PER_ARTIST_PLAYLIST
 
-    # The pool the tools fill has to stay well above the target, otherwise a large
-    # request has nothing left to select from once dedup and the diversity cap run.
     collection_cap = max(1000, target_song_count * 10)
 
     plan_result = yield from plan_and_execute_once(

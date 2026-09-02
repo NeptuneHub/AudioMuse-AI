@@ -21,6 +21,8 @@ Main Features:
 * Search pagination limits cap at 500 (tracks) / 100 (artists)
 * Similar-tracks and alchemy n coerce non-numeric to the default and floor
   negatives at 1, while a huge count reaches the backend unchanged
+* Every result-count route floors its count at 1 so a zero or negative never
+  reaches the backend
 * Empty, whitespace, and non-string playlist/anchor names are rejected 4xx
   before the backend is ever called
 """
@@ -225,3 +227,28 @@ class TestNoBackendCeilingOnRequestedCounts:
             'uncapped. Pagination page size is a separate knob and may cap: '
             + '\n'.join(offenders)
         )
+
+
+class TestResultCountsAreFloored:
+    def _scoped_n(self, client, n):
+        rows = [{'artist': f'A{i}'} for i in range(5)]
+        with (
+            patch.object(app_artist_similarity, 'find_similar_artists', return_value=rows),
+            patch.object(
+                app_artist_similarity.app_server_context,
+                'scope_artist_results',
+                return_value=rows,
+            ) as scoped,
+        ):
+            resp = client.get(
+                '/api/similar_artists', query_string={'artist': 'Nas', 'n': n}
+            )
+        assert resp.status_code != 500
+        return scoped.call_args.args[1]
+
+    @pytest.mark.parametrize('bad_n', [-5, -1, 0])
+    def test_artist_similarity_floors_a_non_positive_n(self, client, bad_n):
+        assert self._scoped_n(client, bad_n) >= 1
+
+    def test_artist_similarity_passes_a_large_n_through_uncapped(self, client):
+        assert self._scoped_n(client, 5000) == 5000
