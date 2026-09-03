@@ -213,12 +213,12 @@ def _run_backfill_over(server_ids, measures=None):
             persist_chromaprint(server_id, provider_id, measures)
         return True
 
-    with mock.patch.object(analysis.chromaprint, 'is_available', lambda: True), \
+    with mock.patch.object(analysis.chromaprint, 'is_available', return_value=True), \
             mock.patch.object(analysis, 'CHROMAPRINT_COLLECTION_ENABLED', True), \
             mock.patch.object(analysis, '_bind_server_context', lambda s: s), \
             mock.patch.object(
                 server_context, 'use_server',
-                lambda *a, **k: contextlib.nullcontext()), \
+                return_value=contextlib.nullcontext()), \
             mock.patch.object(analysis, '_backfill_one_track', _fake_download):
         analysis._run_chromaprint_backfill(server_ids)
     return downloaded
