@@ -786,10 +786,36 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     assert status_calls[1] == ['job-1', 'parent1']
 
 
+class _AnalysisClock:
+    def __init__(self, step_minutes):
+        self.now = 1_000_000.0
+        self.step_seconds = step_minutes * 60.0
+        self.sleeps = 0
+
+    def time(self):
+        return self.now
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, _seconds):
+        self.sleeps += 1
+        if self.sleeps > 2000:
+            raise AssertionError(
+                'the analysis drain loop never returned; the parent is hung on an '
+                'album job that will never finish'
+            )
+        self.now += self.step_seconds
+
+    @property
+    def elapsed_minutes(self):
+        return (self.now - 1_000_000.0) / 60.0
+
+
 def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                       baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
-                      extra_jobs=None):
+                      extra_jobs=None, wedged=None, cancelled=None):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -802,6 +828,14 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     def _record_status(*args, **kwargs):
         if status_calls is not None:
             status_calls.append(kwargs.get('details') or {})
+        if (
+            wedged is not None
+            and len(args) >= 3
+            and args[2] == config.TASK_STATUS_FAILURE
+            and args[0] in wedged
+        ):
+            wedged.remove(args[0])
+            given_up.append(args[0])
 
     monkeypatch.setattr(analysis, 'save_task_status', _record_status)
     monkeypatch.setattr(helper, 'save_task_status', _record_status)
@@ -850,12 +884,27 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     ]
     carried_over_read_done = []
 
+    given_up = []
+
     def _fake_reap(parent_task_id, conn=None):
         if not carried_over_read_done:
             carried_over_read_done.append(True)
             if baseline_read_error is not None:
                 raise baseline_read_error
             return already_terminal_rows
+        if wedged is not None:
+            wedged.extend(queued_ids)
+            queued_ids.clear()
+            drained, given_up[:] = list(given_up), []
+            return [
+                {
+                    'task_id': task_id,
+                    'status': config.TASK_STATUS_FAILURE,
+                    'sub_type_identifier': f'album-for-{task_id}',
+                    'details': {'message': 'gave up'},
+                }
+                for task_id in drained
+            ]
         pending_ids.extend(queued_ids)
         queued_ids.clear()
         reaped = [
@@ -872,14 +921,22 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
 
     monkeypatch.setattr(taskqueue, 'enqueue', _fake_enqueue)
     monkeypatch.setattr(taskqueue, 'reap_finished_children', _fake_reap)
-    monkeypatch.setattr(
-        taskqueue, 'live_children',
-        lambda parent_task_id, conn=None: [
+    def _fake_live_children(parent_task_id, conn=None):
+        if wedged is not None:
+            return [
+                {'task_id': task_id, 'sub_type_identifier': f'album-for-{task_id}',
+                 'progress': 40}
+                for task_id in wedged
+            ]
+        return [
             {'task_id': row['task_id'], 'sub_type_identifier': row['sub_type_identifier']}
             for row in (child_rows or [])
             if row['status'] in (config.TASK_STATUS_NEW, config.TASK_STATUS_RUNNING)
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(taskqueue, 'live_children', _fake_live_children)
+    if cancelled is not None:
+        monkeypatch.setattr(taskqueue, 'request_cancel', cancelled.append)
     if child_rows:
         monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
 
@@ -1062,6 +1119,53 @@ def test_retry_adopts_previous_attempts_running_album_instead_of_duplicating(mon
     assert result['status'] == 'SUCCESS'
     assert enqueued == []
     assert result['message'] == 'Albums 1/1'
+
+
+class TestAnalysisStallValve:
+    @staticmethod
+    def _drive(monkeypatch, step_minutes):
+        import tasks.analysis.main as analysis
+
+        clock = _AnalysisClock(step_minutes=step_minutes)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        wedged, cancelled, status_calls = [], [], []
+        result, enqueued = _run_parent_phase(
+            monkeypatch,
+            [{'Id': 'al0', 'Name': 'Album 0'}],
+            {'al0': [{'Id': 'p0', 'Name': 't'}]},
+            {},
+            child_rows=[],
+            wedged=wedged,
+            cancelled=cancelled,
+            status_calls=status_calls,
+        )
+        return result, cancelled, clock, status_calls
+
+    def test_an_album_that_never_returns_is_given_up_on_and_the_run_finishes(
+        self, monkeypatch
+    ):
+        result, cancelled, clock, status_calls = self._drive(monkeypatch, 30)
+
+        assert len(cancelled) == 1, (
+            'the album job holds its advisory lock while its worker is alive, so '
+            'reclaim will never take it and only the parent can end this wait'
+        )
+        assert clock.elapsed_minutes >= config.ANALYSIS_STALL_TIMEOUT_MINUTES
+        assert any(
+            'gave up on this album' in str(details.get('message', ''))
+            for details in status_calls
+        ), 'the album row has to say why it was ended, not just stop'
+
+    def test_the_abandoned_album_is_reported_as_a_failure_not_as_analysed(
+        self, monkeypatch
+    ):
+        result, _cancelled, _clock, _status = self._drive(monkeypatch, 30)
+
+        assert 'could not be analyzed' in result['message'], (
+            'giving up on an album must land in the failure tally the run reports; '
+            'counting it as done would claim a library was analysed when it was not'
+        )
 
 
 def test_retry_reenqueues_an_album_whose_child_row_is_gone(monkeypatch):

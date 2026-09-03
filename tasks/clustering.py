@@ -1128,9 +1128,10 @@ def _cluster_one_server(
         initial_subset_data = _get_stratified_song_subset(genre_map, target_songs_per_genre)
         state["last_subset_ids"] = [t['item_id'] for t in initial_subset_data]
 
+    from .task_run import StallValve
+
     stop_launching = False
-    last_progress_signature = None
-    last_progress_at = time.time()
+    valve = StallValve(CLUSTERING_STALL_TIMEOUT_MINUTES, lambda: time.time())
 
     while True:
         task_info = get_task_info_from_db(current_task_id)
@@ -1146,7 +1147,7 @@ def _cluster_one_server(
             live_marks = _live_batches(state, current_task_id)
         except Exception:
             logger.exception("Could not list the live clustering batches; retrying")
-            last_progress_at = time.time()
+            valve.restart()
             time.sleep(3)
             continue
         live = [job_id for job_id, _ in live_marks]
@@ -1234,16 +1235,14 @@ def _cluster_one_server(
             state["runs_completed"], state["best_score"], tuple(sorted(live_marks)),
             next_batch_to_launch, stop_launching,
         )
-        if progress_signature != last_progress_signature:
-            last_progress_signature = progress_signature
-            last_progress_at = time.time()
+        if valve.moved(progress_signature):
             report(
                 f"Progress: {state['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(live)}. Best score: {state['best_score']:.2f}",
                 local_pct,
             )
-        elif live and _stall_valve_expired(last_progress_at):
-            stalled_minutes = (time.time() - last_progress_at) / 60.0
-            last_progress_at = time.time()
+        elif live and valve.expired():
+            stalled_minutes = valve.stalled_minutes()
+            valve.restart()
             stop_launching = True
             abandoned = _give_up_on_stalled_batches(
                 live, current_task_id, stalled_minutes
@@ -1428,12 +1427,6 @@ def _revoke_batch(job_id, parent_task_id, message):
     except Exception:
         logger.exception("Could not cancel the clustering batch %s", job_id)
         return False
-
-
-def _stall_valve_expired(last_progress_at):
-    if CLUSTERING_STALL_TIMEOUT_MINUTES <= 0:
-        return False
-    return (time.time() - last_progress_at) >= CLUSTERING_STALL_TIMEOUT_MINUTES * 60
 
 
 def _give_up_on_stalled_batches(live, parent_task_id, stalled_minutes):

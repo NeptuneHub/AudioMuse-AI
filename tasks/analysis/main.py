@@ -19,6 +19,13 @@ Main Features:
 * _verify_media_server_reachable: pre-flight probe aborting early (1101/1104).
 * _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
   an earlier attempt's analysed songs into this attempt's total.
+* The album drain waits behind the shared StallValve on
+  ANALYSIS_STALL_TIMEOUT_MINUTES. An album whose worker is alive but whose native
+  code never returns holds its advisory lock, so reclaim cannot take it and the
+  parent would wait on it forever. The window slides on any sign of life, a live
+  album advancing one track included, so only a wedged album runs it out; it is
+  then FAILED (not revoked) so the ordinary reap counts it into the album failure
+  tally the run reports, instead of vanishing from the totals.
 * Chromaprint work a sweep already paid for is never paid again, at two layers.
   Writing the mapping is what hands the fingerprint over: upsert_track_maps
   inherits the Chromaprint stored for the canonical track in the same
@@ -49,6 +56,7 @@ from config import (
     MAX_QUEUED_ANALYSIS_JOBS,
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
+    ANALYSIS_STALL_TIMEOUT_MINUTES,
     QUEUE_MAX_ERRORS_KEPT,
     REBUILD_INDEX_BATCH_SIZE,
     CHROMAPRINT_COLLECTION_ENABLED,
@@ -553,6 +561,39 @@ def _run_analysis_server_task_impl(
                     )
                     last_rebuild_count = albums_completed
 
+            def _live_album_marks():
+                return tuple(sorted(
+                    (str(child.get('task_id')), child.get('progress'))
+                    for child in taskqueue.live_children(current_task_id)
+                    if child.get('task_id') in active_jobs
+                ))
+
+            def _give_up_on_stalled_albums(stalled_minutes):
+                message = (
+                    'The analysis gave up on this album: nothing anywhere in the run '
+                    f'changed for {stalled_minutes:.0f} minutes, so it stopped waiting '
+                    'rather than hang the whole analysis on it.'
+                )
+                abandoned = 0
+                for job_id in sorted(active_jobs):
+                    try:
+                        save_task_status(
+                            job_id, 'album_analysis', TASK_STATUS_FAILURE, progress=100,
+                            parent_task_id=current_task_id,
+                            details={'message': message},
+                        )
+                        taskqueue.request_cancel(job_id)
+                        abandoned += 1
+                    except Exception:
+                        logger.exception("Could not cancel the album job %s", job_id)
+                logger.warning(
+                    "Analysis %s made no progress of any kind for %.0f minutes (limit: "
+                    "%d minutes); gave up on %d of %d unfinished album job(s).",
+                    current_task_id, stalled_minutes, ANALYSIS_STALL_TIMEOUT_MINUTES,
+                    abandoned, len(active_jobs),
+                )
+                return abandoned
+
             def report_progress(force=False):
                 nonlocal last_status_report
                 now = time.monotonic()
@@ -677,12 +718,30 @@ def _run_analysis_server_task_impl(
             work_map = None
             all_albums = None
 
+            from ..task_run import StallValve
+
+            drain_valve = StallValve(
+                ANALYSIS_STALL_TIMEOUT_MINUTES, lambda: time.time()
+            )
             while active_jobs:
                 if revoked_now():
                     logger.info("Analysis revoked; abandoning the drain loop.")
                     return {'status': TASK_STATUS_REVOKED}
                 monitor_and_clear_jobs()
                 report_progress(force=True)
+                if not active_jobs:
+                    break
+                try:
+                    marks = _live_album_marks()
+                except Exception:
+                    logger.exception("Could not list the live album jobs; retrying")
+                    drain_valve.restart()
+                    time.sleep(5)
+                    continue
+                if not drain_valve.moved(marks) and drain_valve.expired():
+                    stalled_minutes = drain_valve.stalled_minutes()
+                    drain_valve.restart()
+                    _give_up_on_stalled_albums(stalled_minutes)
                 time.sleep(5)
 
             if finalize_indexes:

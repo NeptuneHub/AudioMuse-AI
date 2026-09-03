@@ -358,6 +358,13 @@ CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MA
 CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact per-iteration sample cap; all per-genre quotas are calculated before selecting tracks, and smaller libraries contribute every clusterable song
 CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches that brought back nothing better; a CRASHED batch counts as one of them, so this is also the number of failures that ends a run with the best result it holds. In-flight batches still drain
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in task queue (reduced from 100 to prevent resource exhaustion)
+# The analysis twin of CLUSTERING_STALL_TIMEOUT_MINUTES, and the same sliding
+# window: an album job whose worker is alive but whose native code never returns
+# holds its advisory lock, so reclaim cannot take it and the parent would wait on
+# it forever. Any sign of life restarts the clock, a live album merely advancing
+# one track included, so only a genuinely wedged album runs it out; it is then
+# failed and reported in the album failure tally. 0 disables it.
+ANALYSIS_STALL_TIMEOUT_MINUTES = int(os.environ.get("ANALYSIS_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in the album drain - none finished, failed, and no live album advanced a track - before the parent gives up on the albums it is waiting for
 
 # --- Batching Constants for Clustering Runs ---
 ITERATIONS_PER_BATCH_JOB = int(os.environ.get("ITERATIONS_PER_BATCH_JOB", "20")) # Number of clustering iterations per queued batch job
