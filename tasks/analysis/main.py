@@ -181,20 +181,29 @@ def clean_temp(temp_dir):
             logger.warning(f"Could not remove {path} from {temp_dir}: {e}")
 
 
-def _chromaprint_backfill_targets(server_id, album_limit):
+def _chromaprint_backfill_targets(server_id, album_limit, exclude_covered=True):
     from ..provider_migration_matcher import SWEEP_MATCH_TIERS
 
-    with get_db() as conn, conn.cursor() as cur:
-        cur.execute(
-            "WITH missing AS ("
-            "  SELECT m.item_id, m.provider_track_id, m.file_path, s.album "
-            "  FROM track_server_map m "
-            "  JOIN score s ON s.item_id = m.item_id "
-            "  LEFT JOIN chromaprint c "
-            "    ON c.server_id = m.server_id AND c.provider_track_id = m.provider_track_id "
-            "  WHERE m.server_id = %s AND c.provider_track_id IS NULL "
-            "    AND (m.match_tier IS NULL OR m.match_tier <> ALL(%s)) "
-            "    AND s.album IS NOT NULL AND s.album <> ''"
+    head = (
+        "WITH missing AS ("
+        "  SELECT m.item_id, m.provider_track_id, m.file_path, s.album "
+        "  FROM track_server_map m "
+        "  JOIN score s ON s.item_id = m.item_id "
+        "  LEFT JOIN chromaprint c "
+        "    ON c.server_id = m.server_id AND c.provider_track_id = m.provider_track_id "
+        "  WHERE m.server_id = %s AND c.provider_track_id IS NULL "
+        "    AND (m.match_tier IS NULL OR m.match_tier <> ALL(%s)) "
+        "    AND s.album IS NOT NULL AND s.album <> ''"
+    )
+    tail = (
+        "), picked AS ("
+        "  SELECT album FROM needed GROUP BY album ORDER BY album LIMIT %s"
+        ") "
+        "SELECT needed.provider_track_id, needed.file_path "
+        "FROM needed JOIN picked ON picked.album = needed.album"
+    )
+    if exclude_covered:
+        mid = (
             "), covered AS ("
             "  SELECT DISTINCT o.item_id FROM track_server_map o "
             "  JOIN chromaprint oc ON oc.server_id = o.server_id "
@@ -208,14 +217,15 @@ def _chromaprint_backfill_targets(server_id, album_limit):
             "  LEFT JOIN covered ON covered.item_id = missing.item_id "
             "  LEFT JOIN local_dupes ON local_dupes.item_id = missing.item_id "
             "  WHERE covered.item_id IS NULL OR local_dupes.item_id IS NOT NULL"
-            "), picked AS ("
-            "  SELECT album FROM needed GROUP BY album ORDER BY album LIMIT %s"
-            ") "
-            "SELECT needed.provider_track_id, needed.file_path "
-            "FROM needed JOIN picked ON picked.album = needed.album",
-            (str(server_id), list(SWEEP_MATCH_TIERS), str(server_id),
-             str(server_id), album_limit),
         )
+        params = (str(server_id), list(SWEEP_MATCH_TIERS), str(server_id),
+                  str(server_id), album_limit)
+    else:
+        mid = "), needed AS (SELECT missing.* FROM missing"
+        params = (str(server_id), list(SWEEP_MATCH_TIERS), album_limit)
+
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(head + mid + tail, params)
         return cur.fetchall()
 
 
@@ -251,10 +261,12 @@ def _noop_progress(message, progress):
     return None
 
 
-def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
+def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None, exclude_covered=True):
     from ..mediaserver import context as server_context
 
-    targets = _chromaprint_backfill_targets(server_id, CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN)
+    targets = _chromaprint_backfill_targets(
+        server_id, CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN, exclude_covered
+    )
     if not targets:
         return False
     log_fn = log_fn or _noop_progress
@@ -291,7 +303,7 @@ def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
 def _run_chromaprint_backfill(server_ids, log_fn=None, should_stop=None):
     if not CHROMAPRINT_COLLECTION_ENABLED:
         return False
-    inherit_chromaprints_for_mapped_tracks()
+    inherit_failed = inherit_chromaprints_for_mapped_tracks() < 0
     if not chromaprint.is_available():
         return False
     for server_id in server_ids:
@@ -302,7 +314,8 @@ def _run_chromaprint_backfill(server_ids, log_fn=None, should_stop=None):
             return True
         try:
             if _backfill_server_chromaprints(
-                server_id, log_fn=log_fn, should_stop=should_stop
+                server_id, log_fn=log_fn, should_stop=should_stop,
+                exclude_covered=not inherit_failed,
             ):
                 inherit_chromaprints_for_mapped_tracks()
                 return True

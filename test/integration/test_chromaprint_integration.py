@@ -356,6 +356,23 @@ class TestChromaprintDbPath:
         targets = _chromaprint_backfill_targets('srv2', 5)
         assert {provider_id for provider_id, _path in targets} == {'new'}
 
+    def test_a_covered_track_is_measured_when_inherit_falls_back(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_fb', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_fb', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        assert _chromaprint_backfill_targets('srv2', 5) == []
+        targets = _chromaprint_backfill_targets('srv2', 5, exclude_covered=False)
+        assert {provider_id for provider_id, _path in targets} == {'new'}
+
     def test_same_server_duplicates_are_still_fingerprinted_for_the_splitter(
         self, db, use_test_db
     ):

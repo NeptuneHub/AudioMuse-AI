@@ -2686,7 +2686,9 @@ def _chromaprint_backfill_harness(monkeypatch, targets_by_server, report_seconds
     monkeypatch.setattr(
         analysis,
         '_chromaprint_backfill_targets',
-        lambda server_id, limit: list(targets_by_server.get(server_id, [])),
+        lambda server_id, limit, exclude_covered=True: list(
+            targets_by_server.get(server_id, [])
+        ),
     )
     monkeypatch.setattr(analysis, 'inherit_chromaprints_for_mapped_tracks', lambda: 0)
     processed = []
@@ -2708,7 +2710,7 @@ def test_inheriting_stored_chromaprints_never_raises_into_the_analysis_run():
         def rollback(self):
             raise RuntimeError("database gone")
 
-    assert database.inherit_chromaprints_for_mapped_tracks(conn=_DeadConn()) == 0
+    assert database.inherit_chromaprints_for_mapped_tracks(conn=_DeadConn()) == -1
 
 
 def test_one_server_failing_during_its_backfill_never_stops_the_other_servers(
@@ -2718,7 +2720,7 @@ def test_one_server_failing_during_its_backfill_never_stops_the_other_servers(
         monkeypatch, {'srv-a': _fake_targets(2, 'a'), 'srv-b': _fake_targets(2, 'b')}
     )
 
-    def _targets_or_raise(server_id, limit):
+    def _targets_or_raise(server_id, limit, exclude_covered=True):
         if server_id == 'srv-a':
             raise RuntimeError("database gone")
         return _fake_targets(2, 'b')
@@ -2727,6 +2729,25 @@ def test_one_server_failing_during_its_backfill_never_stops_the_other_servers(
 
     assert analysis._run_chromaprint_backfill(['srv-a', 'srv-b']) is False
     assert {server_id for server_id, _track in processed} == {'srv-b'}
+
+
+def test_failed_inherit_measures_covered_rows_as_a_fallback(monkeypatch):
+    analysis, processed = _chromaprint_backfill_harness(
+        monkeypatch, {'srv': _fake_targets(2)}
+    )
+    monkeypatch.setattr(analysis, 'inherit_chromaprints_for_mapped_tracks', lambda: -1)
+
+    seen = []
+
+    def _targets(server_id, limit, exclude_covered=True):
+        seen.append(exclude_covered)
+        return _fake_targets(2)
+
+    monkeypatch.setattr(analysis, '_chromaprint_backfill_targets', _targets)
+
+    analysis._run_chromaprint_backfill(['srv'])
+
+    assert seen == [False]
 
 
 def _fake_targets(count, prefix='t'):

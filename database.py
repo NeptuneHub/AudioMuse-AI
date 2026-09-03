@@ -1014,6 +1014,7 @@ def inherit_chromaprints_for_mapped_tracks(conn=None):
     db = None
     cur = None
     done = []
+    failed = False
     try:
         db = conn or get_db()
         cur = db.cursor()
@@ -1021,6 +1022,7 @@ def inherit_chromaprints_for_mapped_tracks(conn=None):
             cur, MAPPED_TRACKS_SCOPE, commit=db.commit, done=done
         )
     except Exception:
+        failed = True
         if db is not None:
             try:
                 db.rollback()
@@ -1039,6 +1041,8 @@ def inherit_chromaprints_for_mapped_tracks(conn=None):
             "%d mapping(s) inherited a Chromaprint already stored for the same "
             "canonical track, so they need no download", inherited,
         )
+    if failed and inherited == 0:
+        return -1
     return inherited
 
 
