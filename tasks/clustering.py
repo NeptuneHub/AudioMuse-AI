@@ -24,6 +24,9 @@ Main Features:
   a batch is never counted twice; no per-batch timeout, and
   CLUSTERING_STALL_TIMEOUT_MINUTES bounds the one wedge case (native code
   that never returns) by revoking and finishing with the best result held.
+  That window SLIDES on any sign of life - a batch finishing, failing, launching,
+  or a live batch merely advancing its own iteration counter - so a slow batch and
+  a batch a fresh worker picked up after the old one died both hold it open.
 * The parent persists its own progress on its row (_resumable_progress), so a
   crashed main task resumes with the winning result instead of redoing the search.
 * Reap and launch ride the SAME status write (never a separate commit), so a
@@ -1137,12 +1140,13 @@ def _cluster_one_server(
         _absorb_finished_batches(state, current_task_id, persist_progress)
 
         try:
-            live = _live_batches(state, current_task_id)
+            live_marks = _live_batches(state, current_task_id)
         except Exception:
             logger.exception("Could not list the live clustering batches; retrying")
             last_progress_at = time.time()
             time.sleep(3)
             continue
+        live = [job_id for job_id, _ in live_marks]
 
         failed_batch_count = state.get("failed_batches", 0)
         if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES and not stop_launching:
@@ -1224,7 +1228,7 @@ def _cluster_one_server(
             else 5
         )
         progress_signature = (
-            state["runs_completed"], state["best_score"], len(live),
+            state["runs_completed"], state["best_score"], tuple(sorted(live_marks)),
             next_batch_to_launch, stop_launching,
         )
         if progress_signature != last_progress_signature:
@@ -1622,7 +1626,7 @@ def _absorb_finished_batches(state_dict, parent_task_id, persist):
 def _live_batches(state_dict, parent_task_id):
     mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
     return [
-        str(child.get('task_id'))
+        (str(child.get('task_id')), child.get('progress'))
         for child in taskqueue.live_children(parent_task_id)
         if str(child.get('task_id') or '').startswith(mine)
     ]

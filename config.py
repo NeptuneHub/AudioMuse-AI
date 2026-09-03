@@ -375,11 +375,12 @@ CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHE
 # so the worker still holds the advisory lock, reclaim correctly leaves it alone and
 # an unattended cron run would wait at a frozen generation count forever. When this
 # expires the parent cancels the batches it is still waiting on and finishes with the
-# best result it already has. The predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES was 60
-# and killed a batch on ITS OWN elapsed time, which a merely slow batch trips; this
-# one only fires when the entire run is frozen, so it is set to four times that to
-# stay far above any legitimate single-batch duration on slow hardware. 0 disables it.
-CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "240")) # Minutes without ANY change anywhere in a clustering run before the parent gives up on the batches it is waiting for (0 = never give up)
+# best result it already has. A live batch's own iteration counter counts as change,
+# so a slow batch and one a fresh worker restarted after a worker death both keep the
+# window open; only a batch producing nothing at all runs it out. Same 60 minutes as
+# the predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES, which was a per-batch budget that
+# a merely slow batch could trip. 0 disables it.
+CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in a clustering run - no batch finished, failed, launched, and no live batch advanced even one iteration - before the parent gives up on the batches it is waiting for and finishes with its best result (0 = never give up)
 
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.

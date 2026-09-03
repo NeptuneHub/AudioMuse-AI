@@ -26,6 +26,9 @@ Main Features:
   returning with the connection idle in one
 * A batch that keeps delivering results is never cancelled, however long the
   whole run takes in wall-clock terms
+* A batch that delivers no result but is still advancing its own iterations is
+  never cancelled either, and neither is one a fresh worker restarted from zero
+  after the worker holding it died
 * A batch that delivers nothing at all is cancelled once nothing anywhere in the
   run has changed for CLUSTERING_STALL_TIMEOUT_MINUTES, and the parent returns
 * Giving up on the live batches also stops new launches, so the valve never
@@ -67,7 +70,7 @@ class _Clock:
 
 
 class _ScriptedQueue:
-    def __init__(self, batch_ids, finish_every_reaps=None):
+    def __init__(self, batch_ids, finish_every_reaps=None, progress_script=None):
         self.live_ids = list(batch_ids)
         self.pending = []
         self.enqueued = []
@@ -75,23 +78,44 @@ class _ScriptedQueue:
         self.cancelled = []
         self.reaps = 0
         self.finish_every_reaps = finish_every_reaps
+        self.progress_script = list(progress_script or ())
+        self.marks = {}
 
     def live_children(self, _parent_task_id, conn=None):
-        return [{'task_id': tid, 'sub_type_identifier': tid} for tid in self.live_ids]
+        return [
+            {
+                'task_id': tid,
+                'sub_type_identifier': tid,
+                'progress': self.marks.get(tid, 0),
+            }
+            for tid in self.live_ids
+        ]
+
+    def _finish_oldest(self):
+        if not self.live_ids:
+            return
+        self.terminal.append({
+            'task_id': self.live_ids.pop(0),
+            'status': config.TASK_STATUS_SUCCESS,
+            'sub_type_identifier': 'batch',
+            'details': {'iterations_completed_in_batch': config.ITERATIONS_PER_BATCH_JOB},
+        })
 
     def reap_finished_children(self, _parent_task_id, conn=None):
         self.reaps += 1
+        if self.progress_script:
+            step = self.progress_script.pop(0)
+            if step is None:
+                self._finish_oldest()
+            else:
+                for tid in self.live_ids:
+                    self.marks[tid] = step
         if (
             self.finish_every_reaps
             and self.live_ids
             and self.reaps % self.finish_every_reaps == 0
         ):
-            self.terminal.append({
-                'task_id': self.live_ids.pop(0),
-                'status': config.TASK_STATUS_SUCCESS,
-                'sub_type_identifier': 'batch',
-                'details': {'iterations_completed_in_batch': config.ITERATIONS_PER_BATCH_JOB},
-            })
+            self._finish_oldest()
         drained, self.terminal = self.terminal, []
         return drained
 
@@ -337,7 +361,7 @@ class TestClusteringLaunchTransaction:
 
 class TestClusteringStallValve:
     def test_a_progressing_child_is_never_given_up_on(self, monkeypatch):
-        clock = _Clock(step_minutes=45)
+        clock = _Clock(step_minutes=config.CLUSTERING_STALL_TIMEOUT_MINUTES / 6.0)
         queue = _ScriptedQueue(_batch_ids(20), finish_every_reaps=3)
 
         run = _drive(monkeypatch, queue, clock, batches_launched=20)
@@ -353,6 +377,43 @@ class TestClusteringStallValve:
             'the valve must be a no-progress bound, not a total-runtime bound: this '
             'run outlived it many times over and was never touched'
         )
+
+    def test_a_batch_that_only_advances_its_own_iterations_is_never_given_up_on(
+        self, monkeypatch
+    ):
+        clock = _Clock(step_minutes=30)
+        queue = _ScriptedQueue(
+            _batch_ids(1), progress_script=list(range(1, 21)) + [None]
+        )
+
+        run = _drive(monkeypatch, queue, clock, batches_launched=1)
+
+        assert queue.cancelled == [], (
+            'nothing the parent can count moved for ten hours - no batch finished, '
+            'failed or launched - and the single batch was still working through its '
+            'iterations the whole time, so the run must be left alone'
+        )
+        assert run.revoked == []
+        assert clock.elapsed_minutes > config.CLUSTERING_STALL_TIMEOUT_MINUTES
+        assert run.state['runs_completed'] == config.ITERATIONS_PER_BATCH_JOB
+
+    def test_a_batch_a_fresh_worker_restarted_from_zero_holds_the_valve_open(
+        self, monkeypatch
+    ):
+        clock = _Clock(step_minutes=30)
+        queue = _ScriptedQueue(
+            _batch_ids(1), progress_script=[1, 2, 3, 0, 1, 2, 3, None]
+        )
+
+        run = _drive(monkeypatch, queue, clock, batches_launched=1)
+
+        assert queue.cancelled == [], (
+            'the drop back to zero is a worker dying and its replacement claiming the '
+            'same batch, which is the run carrying on rather than wedging: the valve '
+            'must read it as life and not cancel the batch out from under the new worker'
+        )
+        assert clock.elapsed_minutes > config.CLUSTERING_STALL_TIMEOUT_MINUTES
+        assert run.state['runs_completed'] == config.ITERATIONS_PER_BATCH_JOB
 
     def test_a_completely_stalled_child_is_eventually_given_up_on(self, monkeypatch):
         clock = _Clock(step_minutes=30)

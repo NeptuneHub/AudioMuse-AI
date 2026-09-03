@@ -769,7 +769,7 @@ def reap_children(cur, parent_task_id):
 
 
 _LIVE_CHILDREN = f"""
-    SELECT task_id, sub_type_identifier FROM task_status
+    SELECT task_id, sub_type_identifier, progress FROM task_status
     WHERE parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
 """
 
@@ -777,7 +777,7 @@ _LIVE_CHILDREN = f"""
 def live_children(cur, parent_task_id):
     cur.execute(_LIVE_CHILDREN, (parent_task_id,))
     return [
-        {'task_id': row[0], 'sub_type_identifier': row[1]}
+        {'task_id': row[0], 'sub_type_identifier': row[1], 'progress': row[2]}
         for row in (cur.fetchall() or ())
     ]
 
