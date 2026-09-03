@@ -916,6 +916,84 @@ def set_hyperbolic_projection(item_id, poincare_embedding, hyperbolic_radius):
         cur.close()
 
 
+MAPPED_TRACKS_SCOPE = "track_server_map"
+STAGED_MAPS_SCOPE = "incoming_track_server_map"
+
+
+def _chromaprint_inherit_sql(scope_table):
+    return (
+        "WITH targets AS ("
+        "  SELECT m.item_id, m.server_id, m.provider_track_id "
+        "  FROM " + scope_table + " m "
+        "  LEFT JOIN chromaprint c ON c.server_id = m.server_id "
+        "    AND c.provider_track_id = m.provider_track_id "
+        "  WHERE c.provider_track_id IS NULL "
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM track_server_map d "
+        "      WHERE d.item_id = m.item_id AND d.server_id = m.server_id "
+        "        AND d.provider_track_id <> m.provider_track_id"
+        "    )"
+        "), src AS ("
+        "  SELECT DISTINCT ON (o.item_id) o.item_id, cp.fingerprint "
+        "  FROM (SELECT DISTINCT item_id FROM targets) t "
+        "  JOIN track_server_map o ON o.item_id = t.item_id "
+        "  JOIN chromaprint cp ON cp.server_id = o.server_id "
+        "    AND cp.provider_track_id = o.provider_track_id "
+        "  WHERE cp.fingerprint IS NOT NULL "
+        "  ORDER BY o.item_id"
+        ") "
+        "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
+        "SELECT t.server_id, t.provider_track_id, src.fingerprint, now() "
+        "FROM targets t JOIN src ON src.item_id = t.item_id "
+        "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
+    )
+
+
+def inherit_chromaprints_from_staged_maps(cur):
+    cur.execute("SAVEPOINT chromaprint_inherit")
+    try:
+        cur.execute(_chromaprint_inherit_sql(STAGED_MAPS_SCOPE))
+        inherited = cur.rowcount or 0
+        cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        return inherited
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT chromaprint_inherit")
+        cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        logger.exception(
+            "Could not hand the stored Chromaprints to the mappings just written; "
+            "the mappings stand and the backfill will fingerprint them"
+        )
+        return 0
+
+
+def inherit_chromaprints_for_mapped_tracks(conn=None):
+    db = None
+    cur = None
+    try:
+        db = conn or get_db()
+        cur = db.cursor()
+        cur.execute(_chromaprint_inherit_sql(MAPPED_TRACKS_SCOPE))
+        inherited = cur.rowcount or 0
+        db.commit()
+        if inherited:
+            logger.info(
+                "%d mapping(s) inherited a Chromaprint already stored for the same "
+                "canonical track, so they need no download", inherited,
+            )
+        return inherited
+    except Exception:
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Rollback failed after chromaprint inherit error")
+        logger.exception("Could not inherit Chromaprints for mapped tracks")
+        return 0
+    finally:
+        if cur is not None:
+            cur.close()
+
+
 def persist_chromaprint(server_id, provider_track_id, fingerprint):
     if not server_id or not provider_track_id:
         return

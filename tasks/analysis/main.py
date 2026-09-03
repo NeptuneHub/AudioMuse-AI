@@ -19,15 +19,17 @@ Main Features:
 * _verify_media_server_reachable: pre-flight probe aborting early (1101/1104).
 * _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
   an earlier attempt's analysed songs into this attempt's total.
-* _chromaprint_backfill_targets: fingerprints are stored per file, but every
-  consumer that reads one back for a canonical track (_fetch_row_fingerprint and
-  so the dedup gate) takes ANY mapped file's, and the false-merge splitter only
-  ever compares files on the SAME server. So a track a sweep mapped onto an
-  already-fingerprinted canonical id needs no download of its own: the target
-  query skips it unless this server has no other file on that id. Without that
-  skip, adding a second server made the backfill re-download a whole catalogue
-  already fingerprinted through the first one. The album limit is applied AFTER
-  the skip, so the per-run budget always buys real work.
+* Chromaprint work a sweep already paid for is never paid again, at two layers.
+  Writing the mapping is what hands the fingerprint over: upsert_track_maps
+  inherits the Chromaprint stored for the canonical track in the same
+  transaction, so matching a track on a second server and knowing its
+  fingerprint are ONE step and the backfill is left nothing to download.
+  _backfill_server_chromaprints then runs inherit_chromaprints_for_mapped_tracks
+  for mappings written before their source was fingerprinted (an upgrade, or a
+  server fingerprinted later in this same run), and _chromaprint_backfill_targets
+  still skips anything already covered elsewhere. What remains for the backfill
+  is what no server has fingerprinted at all, plus same-server duplicate groups,
+  which must stay individually measured for the false-merge splitter to compare.
 
 TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
 task having no live children; if they cannot be read the wipe is skipped.
@@ -70,6 +72,7 @@ from .. import chromaprint
 from flask_app import app
 from database import (
     persist_chromaprint,
+    inherit_chromaprints_for_mapped_tracks,
     get_db,
     save_task_status,
     get_task_statuses,
@@ -227,6 +230,7 @@ def _noop_progress(message, progress):
 def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
     from ..mediaserver import context as server_context
 
+    inherit_chromaprints_for_mapped_tracks()
     targets = _chromaprint_backfill_targets(server_id, CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN)
     if not targets:
         return False

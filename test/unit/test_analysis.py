@@ -2509,6 +2509,7 @@ def _chromaprint_backfill_harness(monkeypatch, targets_by_server, report_seconds
         '_chromaprint_backfill_targets',
         lambda server_id, limit: list(targets_by_server.get(server_id, [])),
     )
+    monkeypatch.setattr(analysis, 'inherit_chromaprints_for_mapped_tracks', lambda: 0)
     processed = []
     monkeypatch.setattr(
         analysis,
@@ -2516,6 +2517,40 @@ def _chromaprint_backfill_harness(monkeypatch, targets_by_server, report_seconds
         lambda server_id, track_id, path: processed.append((server_id, track_id)) or True,
     )
     return analysis, processed
+
+
+def test_inheriting_stored_chromaprints_never_raises_into_the_analysis_run():
+    import database
+
+    class _DeadConn:
+        def cursor(self):
+            raise RuntimeError("database gone")
+
+        def rollback(self):
+            raise RuntimeError("database gone")
+
+    assert database.inherit_chromaprints_for_mapped_tracks(conn=_DeadConn()) == 0
+
+
+def test_one_server_failing_to_inherit_never_stops_the_other_servers(monkeypatch):
+    analysis, processed = _chromaprint_backfill_harness(
+        monkeypatch, {'srv-a': _fake_targets(2, 'a'), 'srv-b': _fake_targets(2, 'b')}
+    )
+
+    calls = []
+
+    def _fail_first():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database gone")
+        return 0
+
+    monkeypatch.setattr(
+        analysis, 'inherit_chromaprints_for_mapped_tracks', _fail_first
+    )
+
+    assert analysis._run_chromaprint_backfill(['srv-a', 'srv-b']) is False
+    assert {server_id for server_id, _track in processed} == {'srv-b'}
 
 
 def _fake_targets(count, prefix='t'):

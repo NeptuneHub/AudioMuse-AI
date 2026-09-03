@@ -29,6 +29,11 @@ Main Features:
 * Self-heals the default server: context_for compares the config projection
   against the default row and binds the row when they disagree, so a stale boot
   never talks to the wrong machine.
+* upsert_track_maps hands each mapping the Chromaprint already stored for its
+  canonical track, in the SAME transaction that writes the mapping. Matching a
+  track and knowing its fingerprint are one step, so a sweep can never leave the
+  Chromaprint backfill a catalogue to re-download. The inherit rides a SAVEPOINT
+  and can only ever be skipped: the mapping write is the job and always stands.
 """
 
 import logging
@@ -40,7 +45,11 @@ import psycopg2
 from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
-from database import get_db, missing_required_creds
+from database import (
+    get_db,
+    inherit_chromaprints_from_staged_maps,
+    missing_required_creds,
+)
 from sanitization import sanitize_string_for_db, sanitize_string_for_db_loud
 
 logger = logging.getLogger(__name__)
@@ -810,6 +819,13 @@ def upsert_track_maps(server_id, mapping, conn=None):
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (server_id,),
         )
+        inherited = inherit_chromaprints_from_staged_maps(cur)
+        if inherited:
+            logger.info(
+                "%d of the %d mapping(s) written for server %s inherited the "
+                "Chromaprint already stored for their canonical track",
+                inherited, len(rows), server_id,
+            )
 
     def _run():
         return _staged_map_upsert(

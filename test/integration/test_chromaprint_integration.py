@@ -20,11 +20,16 @@ Main Features:
 * _fetch_row_fingerprint JOIN from a canonical id to any mapped file's blob.
 * Backfill target query picks whole missing albums and skips present and
   sentinel rows, bounded by the album limit.
-* A mapping a sweep added on a second server is NOT re-downloaded when the
-  canonical track already carries a fingerprint from another server, while a
-  failed-once sentinel elsewhere and same-server duplicate groups (the only ones
-  the false-merge splitter can compare) still are, and the album limit is spent
-  only on albums that survive that skip.
+* The target query skips a mapping the canonical track is already covered for,
+  and spends its album limit only on albums that survive that skip.
+* A sweep match carries the fingerprint with the mapping in the SAME
+  transaction that writes it, so the backfill has nothing left to download; a
+  mapping written before its source was fingerprinted catches up set-based.
+* What is never inherited: a failed-once NULL sentinel, a file that already has
+  its own fingerprint, and the same-server duplicate groups the false-merge
+  splitter compares, which must stay individually measured.
+* The inherit rides a SAVEPOINT, so a chromaprint table that is missing or
+  mid-migration can never roll back the mapping write it travels with.
 """
 
 import os
@@ -45,12 +50,14 @@ _SCHEMA = [
     "duration DOUBLE PRECISION)",
     "CREATE TABLE embedding (item_id TEXT PRIMARY KEY REFERENCES score (item_id) "
     "ON DELETE CASCADE, embedding BYTEA)",
-    "CREATE TABLE music_servers (server_id TEXT PRIMARY KEY, name TEXT, server_type TEXT)",
+    "CREATE TABLE music_servers (server_id TEXT PRIMARY KEY, name TEXT, server_type TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
     "CREATE TABLE track_server_map ("
     "item_id TEXT NOT NULL REFERENCES score (item_id) ON DELETE CASCADE, "
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
     "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
     "PRIMARY KEY (server_id, provider_track_id))",
+    "CREATE INDEX idx_track_server_map_item ON track_server_map (item_id, server_id)",
     "CREATE TABLE chromaprint ("
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
     "provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
@@ -312,7 +319,188 @@ class TestChromaprintDbPath:
         targets = _chromaprint_backfill_targets('srv2', 1)
         assert {provider_id for provider_id, _path in targets} == {'solo'}
 
+    def test_a_sweep_match_carries_the_fingerprint_with_the_mapping(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_s', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_s', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert get_chromaprint('srv2', 'new') == _blob(1)
+
+    def test_a_carried_fingerprint_leaves_the_backfill_nothing_to_download(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint
+        from tasks.analysis.main import _chromaprint_backfill_targets
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_s', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_s', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert _chromaprint_backfill_targets('srv2', 5) == []
+
+    def test_a_mapping_written_before_the_source_was_fingerprinted_catches_up(
+        self, db, use_test_db
+    ):
+        from database import (
+            persist_chromaprint,
+            get_chromaprint,
+            inherit_chromaprints_for_mapped_tracks,
+        )
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_l', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_l', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        assert inherit_chromaprints_for_mapped_tracks(conn=db) == 1
+        assert get_chromaprint('srv2', 'new') == _blob(1)
+        assert _chromaprint_backfill_targets('srv2', 5) == []
+
+    def test_nothing_is_inherited_when_no_server_has_a_fingerprint_yet(
+        self, db, use_test_db
+    ):
+        from database import inherit_chromaprints_for_mapped_tracks
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_n', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_n', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+
+        assert inherit_chromaprints_for_mapped_tracks(conn=db) == 0
+        targets = _chromaprint_backfill_targets('srv2', 5)
+        assert {provider_id for provider_id, _path in targets} == {'new'}
+
+    def test_a_failed_fingerprint_is_never_inherited_as_if_it_were_one(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, inherit_chromaprints_for_mapped_tracks
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_f', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_f', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+        persist_chromaprint('srv', 'old', None)
+
+        assert inherit_chromaprints_for_mapped_tracks(conn=db) == 0
+        targets = _chromaprint_backfill_targets('srv2', 5)
+        assert {provider_id for provider_id, _path in targets} == {'new'}
+
+    def test_inheriting_never_overwrites_a_fingerprint_a_file_already_has(
+        self, db, use_test_db
+    ):
+        from database import (
+            persist_chromaprint,
+            get_chromaprint,
+            inherit_chromaprints_for_mapped_tracks,
+        )
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_k', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_k', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+        persist_chromaprint('srv2', 'new', _blob(9))
+
+        assert inherit_chromaprints_for_mapped_tracks(conn=db) == 0
+        assert get_chromaprint('srv2', 'new') == _blob(9)
+
+    def test_same_server_duplicates_are_measured_not_inherited(self, db, use_test_db):
+        from database import (
+            persist_chromaprint,
+            get_chromaprint,
+            inherit_chromaprints_for_mapped_tracks,
+        )
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_d', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_d', 'newA', 'A-album', '/two/a.flac', server_id='srv2')
+            _seed(cur, 'fp_d', 'newB', 'A-album', '/two/b.flac', server_id='srv2')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        assert inherit_chromaprints_for_mapped_tracks(conn=db) == 0
+        assert get_chromaprint('srv2', 'newA') is None
+        assert get_chromaprint('srv2', 'newB') is None
+        targets = _chromaprint_backfill_targets('srv2', 5)
+        assert {provider_id for provider_id, _path in targets} == {'newA', 'newB'}
+
+    def test_a_second_file_on_one_id_never_gets_handed_a_borrowed_fingerprint(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_p', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        registry.upsert_track_maps(
+            'srv2',
+            {
+                'newA': ('fp_p', 'path', '/two/a.flac'),
+                'newB': ('fp_p', 'path', '/two/b.flac'),
+            },
+            conn=db,
+        )
+
+        assert get_chromaprint('srv2', 'newA') is None
+        assert get_chromaprint('srv2', 'newB') is None
+
+    def test_a_broken_chromaprint_table_never_fails_the_mapping_write(
+        self, db, use_test_db
+    ):
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_r', 'old', 'A-album', '/one/old.flac')
+            cur.execute("DROP TABLE chromaprint")
+        db.commit()
+
+        written = registry.upsert_track_maps(
+            'srv2', {'new': ('fp_r', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert written == 1
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT item_id FROM track_server_map "
+                "WHERE server_id = 'srv2' AND provider_track_id = 'new'"
+            )
+            assert cur.fetchone()[0] == 'fp_r'
+
     def test_a_single_server_library_still_backfills_everything(self, db, use_test_db):
+        from database import inherit_chromaprints_for_mapped_tracks
         from tasks.analysis.main import _chromaprint_backfill_targets
 
         with db.cursor() as cur:
@@ -320,5 +508,6 @@ class TestChromaprintDbPath:
             _seed(cur, 'fp_o2', 'q2', 'B-album', '/m/q2.flac')
         db.commit()
 
+        assert inherit_chromaprints_for_mapped_tracks(conn=db) == 0
         targets = _chromaprint_backfill_targets('srv', 5)
         assert {provider_id for provider_id, _path in targets} == {'q1', 'q2'}
