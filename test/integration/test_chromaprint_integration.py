@@ -20,6 +20,11 @@ Main Features:
 * _fetch_row_fingerprint JOIN from a canonical id to any mapped file's blob.
 * Backfill target query picks whole missing albums and skips present and
   sentinel rows, bounded by the album limit.
+* A mapping a sweep added on a second server is NOT re-downloaded when the
+  canonical track already carries a fingerprint from another server, while a
+  failed-once sentinel elsewhere and same-server duplicate groups (the only ones
+  the false-merge splitter can compare) still are, and the album limit is spent
+  only on albums that survive that skip.
 """
 
 import os
@@ -110,7 +115,15 @@ def use_test_db(db, monkeypatch):
     return db
 
 
-def _seed(cur, item_id, provider_id, album, file_path):
+def _add_server(cur, server_id):
+    cur.execute(
+        "INSERT INTO music_servers (server_id, name, server_type) "
+        "VALUES (%s, %s, 'navidrome') ON CONFLICT (server_id) DO NOTHING",
+        (server_id, server_id),
+    )
+
+
+def _seed(cur, item_id, provider_id, album, file_path, server_id='srv'):
     cur.execute(
         "INSERT INTO score (item_id, title, album, duration) VALUES (%s, %s, %s, 200.0) "
         "ON CONFLICT (item_id) DO NOTHING",
@@ -123,8 +136,8 @@ def _seed(cur, item_id, provider_id, album, file_path):
     )
     cur.execute(
         "INSERT INTO track_server_map (item_id, server_id, provider_track_id, "
-        "match_tier, file_path) VALUES (%s, 'srv', %s, 'fingerprint', %s)",
-        (item_id, provider_id, file_path),
+        "match_tier, file_path) VALUES (%s, %s, %s, 'fingerprint', %s)",
+        (item_id, server_id, provider_id, file_path),
     )
 
 
@@ -212,3 +225,100 @@ class TestChromaprintDbPath:
         targets = _chromaprint_backfill_targets('srv', 2)
         picked = {provider_id for provider_id, _path in targets}
         assert picked == {'p1', 'p2'}
+
+    def test_a_swept_mapping_is_not_refingerprinted_when_another_server_has_one(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_s', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_s', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        assert _chromaprint_backfill_targets('srv2', 5) == []
+
+    def test_a_swept_mapping_is_fingerprinted_when_no_server_has_one(
+        self, db, use_test_db
+    ):
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_n', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_n', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+
+        targets = _chromaprint_backfill_targets('srv2', 5)
+        assert {provider_id for provider_id, _path in targets} == {'new'}
+
+    def test_a_failed_fingerprint_elsewhere_does_not_count_as_covered(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_f', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_f', 'new', 'A-album', '/two/new.flac', server_id='srv2')
+        db.commit()
+
+        persist_chromaprint('srv', 'old', None)
+
+        targets = _chromaprint_backfill_targets('srv2', 5)
+        assert {provider_id for provider_id, _path in targets} == {'new'}
+
+    def test_same_server_duplicates_are_still_fingerprinted_for_the_splitter(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_d', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_d', 'newA', 'A-album', '/two/a.flac', server_id='srv2')
+            _seed(cur, 'fp_d', 'newB', 'A-album', '/two/b.flac', server_id='srv2')
+        db.commit()
+
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        targets = _chromaprint_backfill_targets('srv2', 5)
+        assert {provider_id for provider_id, _path in targets} == {'newA', 'newB'}
+
+    def test_the_album_limit_is_spent_on_albums_that_still_need_work(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_a', 'old-a', 'A-album', '/one/a.flac')
+            _seed(cur, 'fp_a', 'new-a', 'A-album', '/two/a.flac', server_id='srv2')
+            _seed(cur, 'fp_b', 'old-b', 'B-album', '/one/b.flac')
+            _seed(cur, 'fp_b', 'new-b', 'B-album', '/two/b.flac', server_id='srv2')
+            _seed(cur, 'fp_solo', 'solo', 'C-album', '/two/solo.flac', server_id='srv2')
+        db.commit()
+
+        persist_chromaprint('srv', 'old-a', _blob(1))
+        persist_chromaprint('srv', 'old-b', _blob(2))
+
+        targets = _chromaprint_backfill_targets('srv2', 1)
+        assert {provider_id for provider_id, _path in targets} == {'solo'}
+
+    def test_a_single_server_library_still_backfills_everything(self, db, use_test_db):
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _seed(cur, 'fp_o1', 'q1', 'A-album', '/m/q1.flac')
+            _seed(cur, 'fp_o2', 'q2', 'B-album', '/m/q2.flac')
+        db.commit()
+
+        targets = _chromaprint_backfill_targets('srv', 5)
+        assert {provider_id for provider_id, _path in targets} == {'q1', 'q2'}

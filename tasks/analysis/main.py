@@ -19,6 +19,15 @@ Main Features:
 * _verify_media_server_reachable: pre-flight probe aborting early (1101/1104).
 * _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
   an earlier attempt's analysed songs into this attempt's total.
+* _chromaprint_backfill_targets: fingerprints are stored per file, but every
+  consumer that reads one back for a canonical track (_fetch_row_fingerprint and
+  so the dedup gate) takes ANY mapped file's, and the false-merge splitter only
+  ever compares files on the SAME server. So a track a sweep mapped onto an
+  already-fingerprinted canonical id needs no download of its own: the target
+  query skips it unless this server has no other file on that id. Without that
+  skip, adding a second server made the backfill re-download a whole catalogue
+  already fingerprinted through the first one. The album limit is applied AFTER
+  the skip, so the per-run budget always buys real work.
 
 TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
 task having no live children; if they cannot be read the wipe is skipped.
@@ -153,19 +162,32 @@ def _chromaprint_backfill_targets(server_id, album_limit):
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             "WITH missing AS ("
-            "  SELECT m.provider_track_id, m.file_path, s.album "
+            "  SELECT m.item_id, m.provider_track_id, m.file_path, s.album "
             "  FROM track_server_map m "
             "  JOIN score s ON s.item_id = m.item_id "
             "  LEFT JOIN chromaprint c "
             "    ON c.server_id = m.server_id AND c.provider_track_id = m.provider_track_id "
             "  WHERE m.server_id = %s AND c.provider_track_id IS NULL "
             "    AND s.album IS NOT NULL AND s.album <> ''"
+            "), covered AS ("
+            "  SELECT DISTINCT o.item_id FROM track_server_map o "
+            "  JOIN chromaprint oc ON oc.server_id = o.server_id "
+            "    AND oc.provider_track_id = o.provider_track_id "
+            "  WHERE o.server_id <> %s AND oc.fingerprint IS NOT NULL"
+            "), local_dupes AS ("
+            "  SELECT item_id FROM track_server_map WHERE server_id = %s "
+            "  GROUP BY item_id HAVING count(*) > 1"
+            "), needed AS ("
+            "  SELECT missing.* FROM missing "
+            "  LEFT JOIN covered ON covered.item_id = missing.item_id "
+            "  LEFT JOIN local_dupes ON local_dupes.item_id = missing.item_id "
+            "  WHERE covered.item_id IS NULL OR local_dupes.item_id IS NOT NULL"
             "), picked AS ("
-            "  SELECT album FROM missing GROUP BY album ORDER BY album LIMIT %s"
+            "  SELECT album FROM needed GROUP BY album ORDER BY album LIMIT %s"
             ") "
-            "SELECT missing.provider_track_id, missing.file_path "
-            "FROM missing JOIN picked ON picked.album = missing.album",
-            (str(server_id), album_limit),
+            "SELECT needed.provider_track_id, needed.file_path "
+            "FROM needed JOIN picked ON picked.album = needed.album",
+            (str(server_id), str(server_id), str(server_id), album_limit),
         )
         return cur.fetchall()
 
