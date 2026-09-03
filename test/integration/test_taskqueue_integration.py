@@ -590,6 +590,102 @@ class TestALiveWorkerSessionProtectsARowWhoseLockIsGone:
         )
 
 
+class TestAWedgedMainTaskIsNotLeftHoldingTheQueue:
+    @staticmethod
+    def _held_by_a_live_worker(queue_db, shared_pg_dsn, task_id, silent_minutes,
+                               task_type='main_analysis', parent_task_id=None):
+        identity = f'audiomuse-worker-high-host-{abs(hash(task_id)) % 999}-ab12'
+        _enqueue(
+            queue_db, task_id, task_type=task_type, queue=sql.QUEUE_HIGH,
+            parent_task_id=parent_task_id,
+        )
+        holder = _fresh(shared_pg_dsn, identity)
+        with holder.cursor() as cur:
+            sql.claim(cur, sql.QUEUE_HIGH, time.time(), worker_id=identity)
+            sql.hold(cur, task_id)
+        holder.commit()
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET timestamp = NOW() - make_interval(mins => %s) "
+                "WHERE task_id = %s",
+                (silent_minutes, task_id),
+            )
+        queue_db.commit()
+        return holder
+
+    def _nudge(self, shared_pg_dsn):
+        from taskqueue import maintenance
+
+        conn = _fresh(shared_pg_dsn)
+        try:
+            return maintenance.nudge_wedged_main_tasks(conn)
+        finally:
+            conn.close()
+
+    def test_a_main_task_silent_past_the_limit_with_a_live_worker_is_cancelled(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'wedged-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['wedged-1'], (
+                'its worker still answers Postgres so reclaim will never take this '
+                'row, and the one-live-main index means every other main task is '
+                'locked out until somebody ends that worker'
+            )
+        finally:
+            holder.close()
+
+    def test_a_main_task_that_reported_recently_is_left_alone(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'busy-1',
+            max(0, config.QUEUE_WEDGED_MAIN_TASK_MINUTES - 10),
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == [], (
+                'a run that is still writing progress is working, however slowly, and '
+                'killing it would charge an attempt against a healthy task'
+            )
+        finally:
+            holder.close()
+
+    def test_a_child_row_is_never_nudged_however_silent_it_is(
+        self, queue_db, shared_pg_dsn
+    ):
+        _enqueue(queue_db, 'root-1', task_type='main_clustering', queue=sql.QUEUE_HIGH)
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'kid-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+            task_type='main_clustering', parent_task_id='root-1',
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == [], (
+                'a silent child belongs to the stall valve, which gives up on that '
+                'batch alone; ending the worker from here would take the whole run '
+                'down with it'
+            )
+        finally:
+            holder.close()
+
+    def test_a_task_whose_worker_is_gone_is_left_to_the_ordinary_reclaim(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'dead-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        holder.close()
+
+        assert self._nudge(shared_pg_dsn) == [], (
+            'reclaim already requeues a task whose worker died, and nudging it too '
+            'would cancel a task that is about to be resumed'
+        )
+
+
 class TestAttemptsCountsWorkerDeathsNotClaims:
     def test_a_requeue_and_reclaim_burns_one_attempt_per_death(
         self, queue_db, shared_pg_dsn

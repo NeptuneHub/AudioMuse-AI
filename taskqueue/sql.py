@@ -768,6 +768,28 @@ def reap_children(cur, parent_task_id):
     return reaped
 
 
+_WEDGED_MAIN_TASKS = """
+    SELECT task_id, task_type FROM task_status AS t
+    WHERE t.status='{running}' AND t.parent_task_id IS NULL AND t.func IS NOT NULL
+      AND t.task_type IN ({types})
+      AND t.timestamp < NOW() - make_interval(secs => %s)
+      AND EXISTS (SELECT 1 FROM pg_stat_activity AS a
+                  WHERE a.datname = current_database()
+                    AND a.application_name IN (t.worker_id, t.worker_id || %s))
+""".format(
+    running=_RUNNING,
+    types=', '.join(f"'{name}'" for name in MAIN_TASK_TYPES),
+)
+
+
+def wedged_main_tasks(cur, silent_seconds):
+    cur.execute(_WEDGED_MAIN_TASKS, (silent_seconds, WORKER_LISTEN_SUFFIX))
+    return [
+        {'task_id': row[0], 'task_type': row[1]}
+        for row in (cur.fetchall() or ())
+    ]
+
+
 _LIVE_CHILDREN = f"""
     SELECT task_id, sub_type_identifier, progress FROM task_status
     WHERE parent_task_id = %s AND status IN ({_LIVE_IN_LIST})

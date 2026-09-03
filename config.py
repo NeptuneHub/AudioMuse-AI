@@ -356,7 +356,7 @@ CLUSTERING_AUTO_CALIBRATION = os.environ.get("CLUSTERING_AUTO_CALIBRATION", "Tru
 CLUSTERING_MAX_PLAYLIST_SONGS = int(os.environ.get("CLUSTERING_MAX_PLAYLIST_SONGS", "200")) # Calibration tries to keep playlists at or under this many songs (soft goal; big beats empty)
 CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MAX_TRIES", "3")) # Quick single-iteration probes per server before the real run
 CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact per-iteration sample cap; all per-genre quotas are calculated before selecting tracks, and smaller libraries contribute every clusterable song
-CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches without a better result; in-flight batches still drain
+CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches that brought back nothing better; a CRASHED batch counts as one of them, so this is also the number of failures that ends a run with the best result it holds. In-flight batches still drain
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in task queue (reduced from 100 to prevent resource exhaustion)
 
 # --- Batching Constants for Clustering Runs ---
@@ -367,7 +367,7 @@ MAX_CONCURRENT_BATCH_JOBS = int(os.environ.get("MAX_CONCURRENT_BATCH_JOBS", "10"
 # Recommended values: 10-25 for servers with limited resources, 50-100 for powerful servers
 
 # --- Clustering Batch Timeout and Failure Recovery ---
-CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Max number of failed batches before stopping
+CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Upper bound on failed batches. Failures also count toward CLUSTERING_EARLY_STOP_BATCHES, so while that stays lower this bound is only reached when successes keep resetting the early-stop counter between failures
 # Last-resort safety valve for the clustering parent's drain loop, NOT a per-batch
 # budget: it measures the wall time during which NOTHING in the whole run changed
 # (no batch finished, none failed, none was launched, no live batch appeared or
@@ -607,6 +607,14 @@ QUEUE_SECRET_KWARGS = (
 # rows and the reclaim only at RUNNING ones. That is one of the two ways a main
 # task could "never get re-enqueued".
 QUEUE_MAX_ATTEMPTS = max(1, int(os.getenv('QUEUE_MAX_ATTEMPTS', '3')))
+# A main task whose worker process is ALIVE but whose row has not changed for this
+# long is wedged, not working: reclaim deliberately will not touch it, because its
+# advisory lock is still held, so it would block every other main task forever.
+# Maintenance sends it a cancel, which ends that worker's process tree; supervisord
+# restarts the worker and the normal reclaim then requeues the task, so it RESUMES
+# from its persisted progress rather than being thrown away. Well above any silence
+# a healthy run has (clustering's AI naming phase is the longest). 0 disables it.
+QUEUE_WEDGED_MAIN_TASK_MINUTES = int(os.environ.get("QUEUE_WEDGED_MAIN_TASK_MINUTES", "180")) # Minutes a RUNNING main task row may stay unchanged while its worker is still alive before maintenance restarts that worker
 # Jobs a worker runs before recycling itself, bounding native-extension leaks the
 # same way the queue worker's max_jobs did.
 QUEUE_MAX_JOBS = int(os.getenv('QUEUE_MAX_JOBS', '50'))

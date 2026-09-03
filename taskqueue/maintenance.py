@@ -31,6 +31,10 @@ Main Features:
   with their worker, deferring to an in-flight control-plane action instead
 * fail_stale_inline_rows finishes task rows left RUNNING by a web process
   that stopped, skipping any protected migration handshake task
+* nudge_wedged_main_tasks covers the one case reclaim cannot: a main task whose
+  worker is ALIVE but stopped making progress, which holds its advisory lock and
+  so blocks every other main task forever. Cancelling it ends that worker's tree;
+  reclaim then requeues the task and it resumes from its persisted progress
 * run_cycle elects one maintenance winner per pass and runs reclaim plus the
   slower retention sweeps only when they are due
 * reclaim_blob_space VACUUMs what autovacuum cannot reach, because its threshold
@@ -250,6 +254,26 @@ def fail_stale_inline_rows(conn):
     return failed
 
 
+def nudge_wedged_main_tasks(conn):
+    minutes = config.QUEUE_WEDGED_MAIN_TASK_MINUTES
+    if minutes <= 0:
+        return []
+    with conn.cursor() as cur:
+        wedged = sql.wedged_main_tasks(cur, minutes * 60)
+        for task in wedged:
+            sql.notify_cancel(cur, task['task_id'])
+    conn.commit()
+    for task in wedged:
+        logger.warning(
+            "Main task %s (%s) has held its worker for %d minutes without changing "
+            "its row. Its worker is still alive, so reclaim cannot take it and it "
+            "would block every other main task forever; ending that worker so the "
+            "task can be requeued and resume from its persisted progress.",
+            task['task_id'], task['task_type'], minutes,
+        )
+    return [task['task_id'] for task in wedged]
+
+
 def recover_migration_handshakes():
     try:
         from tasks.provider_migration_tasks import (
@@ -396,6 +420,7 @@ def run_cycle(conn, with_retention=True):
         reclaim_orphans(conn)
         if with_retention:
             fail_stale_inline_rows(conn)
+            nudge_wedged_main_tasks(conn)
             recover_migration_handshakes()
             clear_terminal_shared_payloads(conn)
     finally:

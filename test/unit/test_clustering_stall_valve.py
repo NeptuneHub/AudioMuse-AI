@@ -33,6 +33,9 @@ Main Features:
   run has changed for CLUSTERING_STALL_TIMEOUT_MINUTES, and the parent returns
 * Giving up on the live batches also stops new launches, so the valve never
   abandons what is running and then queues more of it
+* Batches that crash count toward CLUSTERING_EARLY_STOP_BATCHES like any other
+  batch that brought back nothing better, so a run whose workers keep dying ends
+  on its own after that many and never has to wait out the stall valve
 * The parent's own status says how long it waited and how many batches it
   dropped, so the give-up is visible rather than silent
 """
@@ -70,7 +73,10 @@ class _Clock:
 
 
 class _ScriptedQueue:
-    def __init__(self, batch_ids, finish_every_reaps=None, progress_script=None):
+    def __init__(
+        self, batch_ids, finish_every_reaps=None, progress_script=None,
+        finish_status=None,
+    ):
         self.live_ids = list(batch_ids)
         self.pending = []
         self.enqueued = []
@@ -79,6 +85,7 @@ class _ScriptedQueue:
         self.reaps = 0
         self.finish_every_reaps = finish_every_reaps
         self.progress_script = list(progress_script or ())
+        self.finish_status = finish_status or config.TASK_STATUS_SUCCESS
         self.marks = {}
 
     def live_children(self, _parent_task_id, conn=None):
@@ -96,7 +103,7 @@ class _ScriptedQueue:
             return
         self.terminal.append({
             'task_id': self.live_ids.pop(0),
-            'status': config.TASK_STATUS_SUCCESS,
+            'status': self.finish_status,
             'sub_type_identifier': 'batch',
             'details': {'iterations_completed_in_batch': config.ITERATIONS_PER_BATCH_JOB},
         })
@@ -356,6 +363,36 @@ class TestClusteringLaunchTransaction:
             'the launch transaction was already open when the parent turned out to be '
             'gone, so it has to be closed before returning rather than left idle in '
             'transaction on a pooled connection'
+        )
+
+
+class TestClusteringWorkerDeath:
+    def test_crashed_batches_end_the_run_at_the_early_stop_not_at_the_valve(
+        self, monkeypatch
+    ):
+        clock = _Clock(step_minutes=1)
+        queue = _ScriptedQueue(
+            [], finish_every_reaps=1, finish_status=config.TASK_STATUS_FAIL,
+        )
+
+        run = _drive(
+            monkeypatch, queue, clock, batches_launched=0, total_batches=200,
+            max_concurrent=1,
+        )
+
+        assert len(run.enqueued_ids) == config.CLUSTERING_EARLY_STOP_BATCHES, (
+            'a crashed batch counts toward the early stop exactly like one that came '
+            'back no better, so the run stops after that many and finishes with the '
+            'best result it holds rather than grinding through the whole plan'
+        )
+        assert [m for m in run.messages if m.startswith('Early stop')]
+        assert queue.cancelled == [], (
+            'the run ended itself through the early stop, so no batch was left live '
+            'for the stall valve to give up on'
+        )
+        assert clock.elapsed_minutes < config.CLUSTERING_STALL_TIMEOUT_MINUTES, (
+            'the crashes ended the run in minutes; waiting out the valve first would '
+            'be an hour of a frozen progress bar for a run already known to be over'
         )
 
 

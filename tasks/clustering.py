@@ -19,7 +19,10 @@ Main Features:
 * Per-server persistence: playlists replace ITS OWN rows, so the table is always
   the last run per server, never a growing history.
 * Fan-out of parameter sets into batch jobs with elite tracking and adaptive
-  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES without improvement.
+  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES that brought back
+  nothing better. A CRASHED batch counts as one of those, deliberately: after
+  that many failures the run ends with the best result it holds rather than
+  feeding more batches to workers that keep dying.
 * The drain loop REAPS finished children (row deleted as the result is read) so
   a batch is never counted twice; no per-batch timeout, and
   CLUSTERING_STALL_TIMEOUT_MINUTES bounds the one wedge case (native code
