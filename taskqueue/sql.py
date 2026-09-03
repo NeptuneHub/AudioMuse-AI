@@ -769,7 +769,7 @@ def reap_children(cur, parent_task_id):
 
 
 _WEDGED_MAIN_TASKS = """
-    SELECT task_id, task_type FROM task_status AS t
+    SELECT task_id, task_type, attempts, max_attempts FROM task_status AS t
     WHERE t.status='{running}' AND t.parent_task_id IS NULL AND t.func IS NOT NULL
       AND t.task_type IN ({types})
       AND t.timestamp < NOW() - make_interval(secs => %s)
@@ -785,13 +785,16 @@ _WEDGED_MAIN_TASKS = """
 def wedged_main_tasks(cur, silent_seconds):
     cur.execute(_WEDGED_MAIN_TASKS, (silent_seconds, WORKER_LISTEN_SUFFIX))
     return [
-        {'task_id': row[0], 'task_type': row[1]}
+        {
+            'task_id': row[0], 'task_type': row[1],
+            'attempts': row[2], 'max_attempts': row[3],
+        }
         for row in (cur.fetchall() or ())
     ]
 
 
 _LIVE_CHILDREN = f"""
-    SELECT task_id, sub_type_identifier, progress FROM task_status
+    SELECT task_id, sub_type_identifier, progress, status FROM task_status
     WHERE parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
 """
 
@@ -799,7 +802,10 @@ _LIVE_CHILDREN = f"""
 def live_children(cur, parent_task_id):
     cur.execute(_LIVE_CHILDREN, (parent_task_id,))
     return [
-        {'task_id': row[0], 'sub_type_identifier': row[1], 'progress': row[2]}
+        {
+            'task_id': row[0], 'sub_type_identifier': row[1],
+            'progress': row[2], 'status': row[3],
+        }
         for row in (cur.fetchall() or ())
     ]
 

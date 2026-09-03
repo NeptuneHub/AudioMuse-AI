@@ -1449,6 +1449,12 @@ CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "Tr
 # Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
 # run. Editable in the setup wizard (advanced section) and applied on the next analysis.
 CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "1000"))
+# Mappings handed a stored fingerprint per statement. The hand-over is one set-based
+# INSERT..SELECT, but an unbounded one over a large catalogue copies gigabytes of BYTEA and
+# exceeds the 10 minute statement_timeout, which cancels it and leaves swept tracks with no
+# fingerprint at all. Chunking keeps every statement short and commits as it goes, so a slow
+# database makes the hand-over take longer instead of making it fail.
+CHROMAPRINT_INHERIT_BATCH_SIZE = int(os.getenv("CHROMAPRINT_INHERIT_BATCH_SIZE", "2000"))
 # Seconds between progress writes (and cancellation polls) inside the backfill loop. The loop
 # downloads and fingerprints one track at a time, so a 1000-album run is hours of work: without
 # a periodic write the task row's timestamp freezes, the UI looks hung at 99% and Cancel is

@@ -927,41 +927,85 @@ def _chromaprint_inherit_sql(scope_table):
         "  FROM " + scope_table + " m "
         "  LEFT JOIN chromaprint c ON c.server_id = m.server_id "
         "    AND c.provider_track_id = m.provider_track_id "
-        "  WHERE c.provider_track_id IS NULL "
+        "  WHERE (m.server_id, m.provider_track_id) > (%s, %s) "
+        "    AND c.provider_track_id IS NULL "
         "    AND NOT EXISTS ("
         "      SELECT 1 FROM track_server_map d "
         "      WHERE d.item_id = m.item_id AND d.server_id = m.server_id "
         "        AND d.provider_track_id <> m.provider_track_id"
         "    )"
+        "    AND EXISTS ("
+        "      SELECT 1 FROM track_server_map o "
+        "      JOIN chromaprint oc ON oc.server_id = o.server_id "
+        "        AND oc.provider_track_id = o.provider_track_id "
+        "      WHERE o.item_id = m.item_id AND oc.fingerprint IS NOT NULL"
+        "    )"
+        "  ORDER BY m.server_id, m.provider_track_id "
+        "  LIMIT %s"
         "), src AS ("
-        "  SELECT DISTINCT ON (o.item_id) o.item_id, cp.fingerprint "
+        "  SELECT DISTINCT ON (o.item_id) o.item_id, "
+        "         o.server_id AS src_server_id, "
+        "         o.provider_track_id AS src_provider_track_id "
         "  FROM (SELECT DISTINCT item_id FROM targets) t "
         "  JOIN track_server_map o ON o.item_id = t.item_id "
         "  JOIN chromaprint cp ON cp.server_id = o.server_id "
         "    AND cp.provider_track_id = o.provider_track_id "
         "  WHERE cp.fingerprint IS NOT NULL "
-        "  ORDER BY o.item_id"
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM track_server_map sd "
+        "      WHERE sd.item_id = o.item_id AND sd.server_id = o.server_id "
+        "        AND sd.provider_track_id <> o.provider_track_id"
+        "    ) "
+        "  ORDER BY o.item_id, o.server_id, o.provider_track_id"
         ") "
         "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
-        "SELECT t.server_id, t.provider_track_id, src.fingerprint, now() "
-        "FROM targets t JOIN src ON src.item_id = t.item_id "
-        "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
+        "SELECT t.server_id, t.provider_track_id, cp.fingerprint, now() "
+        "FROM targets t "
+        "JOIN src ON src.item_id = t.item_id "
+        "JOIN chromaprint cp ON cp.server_id = src.src_server_id "
+        "  AND cp.provider_track_id = src.src_provider_track_id "
+        "ON CONFLICT (server_id, provider_track_id) DO NOTHING "
+        "RETURNING server_id, provider_track_id"
     )
 
 
+def _inherit_chromaprints_in_batches(cur, scope_table, commit=None, done=None):
+    from config import CHROMAPRINT_INHERIT_BATCH_SIZE
+
+    statement = _chromaprint_inherit_sql(scope_table)
+    batch = max(1, CHROMAPRINT_INHERIT_BATCH_SIZE)
+    at_server, at_track = '', ''
+    total = 0
+    while True:
+        cur.execute(statement, (at_server, at_track, batch))
+        rows = cur.fetchall()
+        if commit is not None:
+            commit()
+        if done is not None:
+            done.append(len(rows))
+        total += len(rows)
+        if len(rows) < batch:
+            return total
+        at_server, at_track = max((str(row[0]), str(row[1])) for row in rows)
+
+
 def inherit_chromaprints_from_staged_maps(cur):
-    cur.execute("SAVEPOINT chromaprint_inherit")
     try:
-        cur.execute(_chromaprint_inherit_sql(STAGED_MAPS_SCOPE))
-        inherited = cur.rowcount or 0
+        cur.execute("SAVEPOINT chromaprint_inherit")
+        inherited = _inherit_chromaprints_in_batches(cur, STAGED_MAPS_SCOPE)
         cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
         return inherited
     except Exception:
-        cur.execute("ROLLBACK TO SAVEPOINT chromaprint_inherit")
-        cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT chromaprint_inherit")
+            cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        except Exception:
+            logger.debug(
+                "Could not unwind the chromaprint inherit savepoint", exc_info=True
+            )
         logger.exception(
             "Could not hand the stored Chromaprints to the mappings just written; "
-            "the mappings stand and the backfill will fingerprint them"
+            "the mappings stand and the next run retries the hand-over"
         )
         return 0
 
@@ -969,29 +1013,33 @@ def inherit_chromaprints_from_staged_maps(cur):
 def inherit_chromaprints_for_mapped_tracks(conn=None):
     db = None
     cur = None
+    done = []
     try:
         db = conn or get_db()
         cur = db.cursor()
-        cur.execute(_chromaprint_inherit_sql(MAPPED_TRACKS_SCOPE))
-        inherited = cur.rowcount or 0
-        db.commit()
-        if inherited:
-            logger.info(
-                "%d mapping(s) inherited a Chromaprint already stored for the same "
-                "canonical track, so they need no download", inherited,
-            )
-        return inherited
+        _inherit_chromaprints_in_batches(
+            cur, MAPPED_TRACKS_SCOPE, commit=db.commit, done=done
+        )
     except Exception:
         if db is not None:
             try:
                 db.rollback()
             except Exception:
                 logger.exception("Rollback failed after chromaprint inherit error")
-        logger.exception("Could not inherit Chromaprints for mapped tracks")
-        return 0
+        logger.exception(
+            "Could not finish handing stored Chromaprints to mapped tracks; "
+            "%d already committed, the rest follow on the next run", sum(done),
+        )
     finally:
         if cur is not None:
             cur.close()
+    inherited = sum(done)
+    if inherited:
+        logger.info(
+            "%d mapping(s) inherited a Chromaprint already stored for the same "
+            "canonical track, so they need no download", inherited,
+        )
+    return inherited
 
 
 def persist_chromaprint(server_id, provider_track_id, fingerprint):

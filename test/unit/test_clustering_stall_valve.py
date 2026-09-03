@@ -58,6 +58,9 @@ class _Clock:
     def time(self):
         return self.now
 
+    def monotonic(self):
+        return self.now
+
     def sleep(self, _seconds):
         self.sleeps += 1
         if self.sleeps > 5000:

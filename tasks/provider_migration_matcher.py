@@ -140,6 +140,7 @@ def normalize_meta(s):
 
 _TIERS = ('path', 'tail', 'exact_meta', 'norm_meta')
 _OPT_TIER_TITLE_ARTIST = 'title_artist'
+SWEEP_MATCH_TIERS = _TIERS + (_OPT_TIER_TITLE_ARTIST,)
 
 
 def _best_artist_old(row):

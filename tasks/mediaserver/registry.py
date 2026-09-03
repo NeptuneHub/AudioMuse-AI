@@ -819,6 +819,8 @@ def upsert_track_maps(server_id, mapping, conn=None):
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (server_id,),
         )
+        if not config.CHROMAPRINT_COLLECTION_ENABLED:
+            return
         inherited = inherit_chromaprints_from_staged_maps(cur)
         if inherited:
             logger.info(

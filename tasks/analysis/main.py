@@ -19,24 +19,35 @@ Main Features:
 * _verify_media_server_reachable: pre-flight probe aborting early (1101/1104).
 * _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
   an earlier attempt's analysed songs into this attempt's total.
-* The album drain waits behind the shared StallValve on
-  ANALYSIS_STALL_TIMEOUT_MINUTES. An album whose worker is alive but whose native
+* BOTH album waits - the dispatch throttle that holds at
+  MAX_QUEUED_ANALYSIS_JOBS and the tail drain - watch the shared StallValve on
+  ANALYSIS_STALL_TIMEOUT_MINUTES. The throttle is where a wedge on a real library
+  actually lands, and its own progress writes keep the parent row fresh, so the
+  wedged-main nudge cannot see it either: guarding only the tail left the hang.
+  The give-up then fails only the albums a worker is actually HOLDING, never the
+  ones still queued behind them: a queued album is not wedged, it is waiting, and
+  ending the album that holds the worker is what lets it run. Failing the queue
+  too would burn a whole MAX_QUEUED_ANALYSIS_JOBS window of untouched albums. An album whose worker is alive but whose native
   code never returns holds its advisory lock, so reclaim cannot take it and the
   parent would wait on it forever. The window slides on any sign of life, a live
   album advancing one track included, so only a wedged album runs it out; it is
   then FAILED (not revoked) so the ordinary reap counts it into the album failure
   tally the run reports, instead of vanishing from the totals.
-* Chromaprint work a sweep already paid for is never paid again, at two layers.
-  Writing the mapping is what hands the fingerprint over: upsert_track_maps
-  inherits the Chromaprint stored for the canonical track in the same
-  transaction, so matching a track on a second server and knowing its
-  fingerprint are ONE step and the backfill is left nothing to download.
-  _backfill_server_chromaprints then runs inherit_chromaprints_for_mapped_tracks
-  for mappings written before their source was fingerprinted (an upgrade, or a
-  server fingerprinted later in this same run), and _chromaprint_backfill_targets
-  still skips anything already covered elsewhere. What remains for the backfill
-  is what no server has fingerprinted at all, plus same-server duplicate groups,
-  which must stay individually measured for the false-merge splitter to compare.
+* Adding a server NEVER starts a Chromaprint backfill, and a swept track still
+  ends up WITH a Chromaprint. A sweep is a metadata pass that downloads nothing,
+  so the files it maps must never be downloaded later just to fingerprint them:
+  _chromaprint_backfill_targets takes only rows this server actually analysed and
+  skips every SWEEP_MATCH_TIERS row. They are fingerprinted by inheritance
+  instead - upsert_track_maps hands each new mapping the Chromaprint already
+  stored for its canonical track in the SAME transaction it is written. When
+  there is none to inherit yet (a library from before Chromaprint),
+  inherit_chromaprints_for_mapped_tracks runs at the START of the backfill and
+  again at the END, so the moment ANY server measures a canonical track every
+  swept mapping of it is handed the result whatever order the
+  servers ran in. The opening pass sits BEFORE the fpcalc probe, so a missing
+  fpcalc stops new measurements but never stops that hand-over. Nothing is lost
+  by not measuring a swept file: the false-merge splitter only ever compares
+  files on ONE server, so its own fingerprint would never have been read.
 
 TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
 task having no live children; if they cannot be read the wipe is skipped.
@@ -66,6 +77,7 @@ from config import (
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
+    TASK_STATUS_RUNNING,
 )
 
 from ..mediaserver import (
@@ -170,6 +182,8 @@ def clean_temp(temp_dir):
 
 
 def _chromaprint_backfill_targets(server_id, album_limit):
+    from ..provider_migration_matcher import SWEEP_MATCH_TIERS
+
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             "WITH missing AS ("
@@ -179,6 +193,7 @@ def _chromaprint_backfill_targets(server_id, album_limit):
             "  LEFT JOIN chromaprint c "
             "    ON c.server_id = m.server_id AND c.provider_track_id = m.provider_track_id "
             "  WHERE m.server_id = %s AND c.provider_track_id IS NULL "
+            "    AND (m.match_tier IS NULL OR m.match_tier <> ALL(%s)) "
             "    AND s.album IS NOT NULL AND s.album <> ''"
             "), covered AS ("
             "  SELECT DISTINCT o.item_id FROM track_server_map o "
@@ -198,7 +213,8 @@ def _chromaprint_backfill_targets(server_id, album_limit):
             ") "
             "SELECT needed.provider_track_id, needed.file_path "
             "FROM needed JOIN picked ON picked.album = needed.album",
-            (str(server_id), str(server_id), str(server_id), album_limit),
+            (str(server_id), list(SWEEP_MATCH_TIERS), str(server_id),
+             str(server_id), album_limit),
         )
         return cur.fetchall()
 
@@ -238,7 +254,6 @@ def _noop_progress(message, progress):
 def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
     from ..mediaserver import context as server_context
 
-    inherit_chromaprints_for_mapped_tracks()
     targets = _chromaprint_backfill_targets(server_id, CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN)
     if not targets:
         return False
@@ -274,7 +289,10 @@ def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
 
 
 def _run_chromaprint_backfill(server_ids, log_fn=None, should_stop=None):
-    if not CHROMAPRINT_COLLECTION_ENABLED or not chromaprint.is_available():
+    if not CHROMAPRINT_COLLECTION_ENABLED:
+        return False
+    inherit_chromaprints_for_mapped_tracks()
+    if not chromaprint.is_available():
         return False
     for server_id in server_ids:
         if not server_id:
@@ -286,9 +304,11 @@ def _run_chromaprint_backfill(server_ids, log_fn=None, should_stop=None):
             if _backfill_server_chromaprints(
                 server_id, log_fn=log_fn, should_stop=should_stop
             ):
+                inherit_chromaprints_for_mapped_tracks()
                 return True
         except Exception:
             logger.exception("Chromaprint backfill failed for server %s", server_id)
+    inherit_chromaprints_for_mapped_tracks()
     return False
 
 
@@ -563,19 +583,29 @@ def _run_analysis_server_task_impl(
 
             def _live_album_marks():
                 return tuple(sorted(
-                    (str(child.get('task_id')), child.get('progress'))
+                    (
+                        str(child.get('task_id')),
+                        str(child.get('status') or ''),
+                        child.get('progress'),
+                    )
                     for child in taskqueue.live_children(current_task_id)
                     if child.get('task_id') in active_jobs
                 ))
 
-            def _give_up_on_stalled_albums(stalled_minutes):
+            def _give_up_on_stalled_albums(stalled_minutes, marks):
                 message = (
                     'The analysis gave up on this album: nothing anywhere in the run '
                     f'changed for {stalled_minutes:.0f} minutes, so it stopped waiting '
                     'rather than hang the whole analysis on it.'
                 )
+                held = [
+                    task_id for task_id, status, _progress in marks
+                    if status == TASK_STATUS_RUNNING
+                ]
+                victims = held or sorted(active_jobs)
+                spared = len(active_jobs) - len(victims)
                 abandoned = 0
-                for job_id in sorted(active_jobs):
+                for job_id in victims:
                     try:
                         save_task_status(
                             job_id, 'album_analysis', TASK_STATUS_FAILURE, progress=100,
@@ -588,11 +618,37 @@ def _run_analysis_server_task_impl(
                         logger.exception("Could not cancel the album job %s", job_id)
                 logger.warning(
                     "Analysis %s made no progress of any kind for %.0f minutes (limit: "
-                    "%d minutes); gave up on %d of %d unfinished album job(s).",
+                    "%d minutes); gave up on %d of %d unfinished album job(s) and left "
+                    "%d that no worker had started yet to run once one is free again.",
                     current_task_id, stalled_minutes, ANALYSIS_STALL_TIMEOUT_MINUTES,
-                    abandoned, len(active_jobs),
+                    abandoned, len(active_jobs), spared,
                 )
                 return abandoned
+
+            from ..task_run import StallValve
+
+            drain_valve = StallValve(
+                ANALYSIS_STALL_TIMEOUT_MINUTES, lambda: time.monotonic()
+            )
+            last_marks_check = float('-inf')
+
+            def watch_for_a_wedged_album():
+                nonlocal last_marks_check
+                now = time.monotonic()
+                if now - last_marks_check < ANALYSIS_MONITOR_DB_INTERVAL:
+                    return
+                last_marks_check = now
+                try:
+                    marks = _live_album_marks()
+                except Exception:
+                    logger.exception("Could not list the live album jobs; retrying")
+                    drain_valve.restart()
+                    return
+                if drain_valve.moved(marks) or not drain_valve.expired():
+                    return
+                stalled_minutes = drain_valve.stalled_minutes()
+                drain_valve.restart()
+                _give_up_on_stalled_albums(stalled_minutes, marks)
 
             def report_progress(force=False):
                 nonlocal last_status_report
@@ -627,6 +683,7 @@ def _run_analysis_server_task_impl(
                         return {'status': TASK_STATUS_REVOKED}
                     monitor_and_clear_jobs()
                     report_progress()
+                    watch_for_a_wedged_album()
                     time.sleep(5)
 
                 tracks = get_tracks_from_album(album['Id'])
@@ -718,11 +775,6 @@ def _run_analysis_server_task_impl(
             work_map = None
             all_albums = None
 
-            from ..task_run import StallValve
-
-            drain_valve = StallValve(
-                ANALYSIS_STALL_TIMEOUT_MINUTES, lambda: time.time()
-            )
             while active_jobs:
                 if revoked_now():
                     logger.info("Analysis revoked; abandoning the drain loop.")
@@ -731,17 +783,7 @@ def _run_analysis_server_task_impl(
                 report_progress(force=True)
                 if not active_jobs:
                     break
-                try:
-                    marks = _live_album_marks()
-                except Exception:
-                    logger.exception("Could not list the live album jobs; retrying")
-                    drain_valve.restart()
-                    time.sleep(5)
-                    continue
-                if not drain_valve.moved(marks) and drain_valve.expired():
-                    stalled_minutes = drain_valve.stalled_minutes()
-                    drain_valve.restart()
-                    _give_up_on_stalled_albums(stalled_minutes)
+                watch_for_a_wedged_album()
                 time.sleep(5)
 
             if finalize_indexes:

@@ -885,6 +885,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     carried_over_read_done = []
 
     given_up = []
+    worker_freed = []
 
     def _fake_reap(parent_task_id, conn=None):
         if not carried_over_read_done:
@@ -896,15 +897,25 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
             wedged.extend(queued_ids)
             queued_ids.clear()
             drained, given_up[:] = list(given_up), []
-            return [
-                {
-                    'task_id': task_id,
-                    'status': config.TASK_STATUS_FAILURE,
-                    'sub_type_identifier': f'album-for-{task_id}',
-                    'details': {'message': 'gave up'},
-                }
-                for task_id in drained
-            ]
+            if drained:
+                worker_freed.append(True)
+                return [
+                    {
+                        'task_id': task_id,
+                        'status': config.TASK_STATUS_FAILURE,
+                        'sub_type_identifier': f'album-for-{task_id}',
+                        'details': {'message': 'gave up'},
+                    }
+                    for task_id in drained
+                ]
+            if worker_freed and wedged:
+                return [{
+                    'task_id': wedged.pop(0),
+                    'status': config.TASK_STATUS_SUCCESS,
+                    'sub_type_identifier': 'album-freed',
+                    'details': {'tracks_analyzed': 1},
+                }]
+            return []
         pending_ids.extend(queued_ids)
         queued_ids.clear()
         reaped = [
@@ -924,9 +935,16 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     def _fake_live_children(parent_task_id, conn=None):
         if wedged is not None:
             return [
-                {'task_id': task_id, 'sub_type_identifier': f'album-for-{task_id}',
-                 'progress': 40}
-                for task_id in wedged
+                {
+                    'task_id': task_id,
+                    'sub_type_identifier': f'album-for-{task_id}',
+                    'progress': 40 if index == 0 else 0,
+                    'status': (
+                        config.TASK_STATUS_RUNNING if index == 0
+                        else config.TASK_STATUS_NEW
+                    ),
+                }
+                for index, task_id in enumerate(wedged)
             ]
         return [
             {'task_id': row['task_id'], 'sub_type_identifier': row['sub_type_identifier']}
@@ -1156,6 +1174,63 @@ class TestAnalysisStallValve:
             'gave up on this album' in str(details.get('message', ''))
             for details in status_calls
         ), 'the album row has to say why it was ended, not just stop'
+
+    def test_a_wedge_while_the_dispatch_queue_is_full_is_given_up_on_too(
+        self, monkeypatch
+    ):
+        import tasks.analysis.main as analysis
+
+        monkeypatch.setattr(analysis, 'MAX_QUEUED_ANALYSIS_JOBS', 1)
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        wedged, cancelled = [], []
+
+        _run_parent_phase(
+            monkeypatch,
+            [{'Id': 'al0', 'Name': 'Album 0'}, {'Id': 'al1', 'Name': 'Album 1'}],
+            {'al0': [{'Id': 'p0', 'Name': 't'}], 'al1': [{'Id': 'p1', 'Name': 't'}]},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+        )
+
+        assert cancelled, (
+            'the parent blocks here, not in the tail drain, for any library bigger '
+            'than MAX_QUEUED_ANALYSIS_JOBS: the queue fills, one album wedges, and '
+            'no later album is ever dispatched, so a valve on the tail alone never '
+            'runs. Its own progress writes also keep the parent row fresh, so the '
+            'wedged-main nudge cannot see this either'
+        )
+
+    def test_only_the_album_holding_the_worker_is_given_up_on(self, monkeypatch):
+        import tasks.analysis.main as analysis
+
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+        wedged, cancelled = [], []
+
+        result, _enqueued = _run_parent_phase(
+            monkeypatch,
+            albums,
+            {a['Id']: [{'Id': f"p{a['Id']}", 'Name': 't'}] for a in albums},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+        )
+
+        assert len(cancelled) == 1, (
+            'only one album is held by a worker; the other two are queued behind it '
+            'and are not wedged at all. Failing them too would burn a whole '
+            'MAX_QUEUED_ANALYSIS_JOBS window of albums nothing had even started, and '
+            'save_task_status NULLs func/payload on a terminal row so they could '
+            'never be claimed again'
+        )
+        assert '2 could not be analyzed' not in result['message']
+        assert result['message'].startswith('Albums 3/3'), (
+            'once the album holding the worker is ended the worker is free, so the '
+            'albums queued behind it still get analysed in this same run'
+        )
 
     def test_the_abandoned_album_is_reported_as_a_failure_not_as_analysed(
         self, monkeypatch
@@ -2636,22 +2711,19 @@ def test_inheriting_stored_chromaprints_never_raises_into_the_analysis_run():
     assert database.inherit_chromaprints_for_mapped_tracks(conn=_DeadConn()) == 0
 
 
-def test_one_server_failing_to_inherit_never_stops_the_other_servers(monkeypatch):
+def test_one_server_failing_during_its_backfill_never_stops_the_other_servers(
+    monkeypatch,
+):
     analysis, processed = _chromaprint_backfill_harness(
         monkeypatch, {'srv-a': _fake_targets(2, 'a'), 'srv-b': _fake_targets(2, 'b')}
     )
 
-    calls = []
-
-    def _fail_first():
-        calls.append(1)
-        if len(calls) == 1:
+    def _targets_or_raise(server_id, limit):
+        if server_id == 'srv-a':
             raise RuntimeError("database gone")
-        return 0
+        return _fake_targets(2, 'b')
 
-    monkeypatch.setattr(
-        analysis, 'inherit_chromaprints_for_mapped_tracks', _fail_first
-    )
+    monkeypatch.setattr(analysis, '_chromaprint_backfill_targets', _targets_or_raise)
 
     assert analysis._run_chromaprint_backfill(['srv-a', 'srv-b']) is False
     assert {server_id for server_id, _track in processed} == {'srv-b'}

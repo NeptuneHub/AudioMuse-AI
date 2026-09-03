@@ -20,6 +20,14 @@ Main Features:
 * _fetch_row_fingerprint JOIN from a canonical id to any mapped file's blob.
 * Backfill target query picks whole missing albums and skips present and
   sentinel rows, bounded by the album limit.
+* Adding a server can never start a backfill: every tier a sweep writes is
+  skipped outright, even when NO server has a fingerprint yet and even when the
+  swept rows form a local duplicate group. What the server analysed itself, and
+  legacy rows with no tier, are still backfilled.
+* A swept track still ENDS UP with a Chromaprint: driving the real
+  _run_chromaprint_backfill downloads nothing for it, and the moment any server
+  measures that canonical track the swept mapping is handed the result, in
+  either server order.
 * The target query skips a mapping the canonical track is already covered for,
   and spends its album limit only on albums that survive that skip.
 * A sweep match carries the fingerprint with the mapping in the SAME
@@ -30,6 +38,9 @@ Main Features:
   splitter compares, which must stay individually measured.
 * The inherit rides a SAVEPOINT, so a chromaprint table that is missing or
   mid-migration can never roll back the mapping write it travels with.
+* It is chunked, so it completes past a batch boundary and a failure part way
+  through keeps every batch already committed and reports that count honestly -
+  an unbounded copy of real kilobyte fingerprints hit the statement timeout.
 """
 
 import os
@@ -130,7 +141,8 @@ def _add_server(cur, server_id):
     )
 
 
-def _seed(cur, item_id, provider_id, album, file_path, server_id='srv'):
+def _seed(cur, item_id, provider_id, album, file_path, server_id='srv',
+          match_tier='fingerprint'):
     cur.execute(
         "INSERT INTO score (item_id, title, album, duration) VALUES (%s, %s, %s, 200.0) "
         "ON CONFLICT (item_id) DO NOTHING",
@@ -143,9 +155,73 @@ def _seed(cur, item_id, provider_id, album, file_path, server_id='srv'):
     )
     cur.execute(
         "INSERT INTO track_server_map (item_id, server_id, provider_track_id, "
-        "match_tier, file_path) VALUES (%s, %s, %s, 'fingerprint', %s)",
-        (item_id, server_id, provider_id, file_path),
+        "match_tier, file_path) VALUES (%s, %s, %s, %s, %s)",
+        (item_id, server_id, provider_id, match_tier, file_path),
     )
+
+
+class _DropsOnExecute:
+    def __init__(self, real, fail_on):
+        self._real = real
+        self._fail_on = fail_on
+        self._executes = 0
+
+    def cursor(self):
+        outer = self
+
+        class _Cursor:
+            def __init__(self):
+                self._cur = outer._real.cursor()
+
+            def execute(self, *args, **kwargs):
+                outer._executes += 1
+                if outer._executes == outer._fail_on:
+                    raise RuntimeError("connection lost")
+                return self._cur.execute(*args, **kwargs)
+
+            def fetchall(self):
+                return self._cur.fetchall()
+
+            @property
+            def rowcount(self):
+                return self._cur.rowcount
+
+            def close(self):
+                return self._cur.close()
+
+        return _Cursor()
+
+    def commit(self):
+        return self._real.commit()
+
+    def rollback(self):
+        return self._real.rollback()
+
+
+def _run_backfill_over(server_ids, measures=None):
+    import contextlib
+    from unittest import mock
+    import tasks.analysis.main as analysis
+    from tasks.mediaserver import context as server_context
+    from database import persist_chromaprint
+
+    downloaded = []
+
+    def _fake_download(server_id, provider_id, _path):
+        downloaded.append((server_id, provider_id))
+        if measures is not None:
+            persist_chromaprint(server_id, provider_id, measures)
+        return True
+
+    with mock.patch.object(analysis.chromaprint, 'is_available', lambda: True), \
+            mock.patch.object(analysis, 'CHROMAPRINT_COLLECTION_ENABLED', True), \
+            mock.patch.object(analysis, '_bind_server_context', lambda s: s), \
+            mock.patch.object(
+                server_context, 'use_server',
+                lambda *a, **k: contextlib.nullcontext()), \
+            mock.patch.object(analysis, '_backfill_one_track', _fake_download):
+        analysis._run_chromaprint_backfill(server_ids)
+    return downloaded
 
 
 def _blob(seed):
@@ -498,6 +574,180 @@ class TestChromaprintDbPath:
                 "WHERE server_id = 'srv2' AND provider_track_id = 'new'"
             )
             assert cur.fetchone()[0] == 'fp_r'
+
+    def test_adding_a_server_never_starts_a_backfill_even_with_no_fingerprints(
+        self, db, use_test_db
+    ):
+        from tasks.analysis.main import _chromaprint_backfill_targets
+        from tasks.provider_migration_matcher import SWEEP_MATCH_TIERS
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            for index, tier in enumerate(SWEEP_MATCH_TIERS):
+                _seed(cur, 'fp_w%d' % index, 'old%d' % index,
+                      'album-%d' % index, '/one/%d.flac' % index)
+                _seed(cur, 'fp_w%d' % index, 'new%d' % index,
+                      'album-%d' % index, '/two/%d.flac' % index,
+                      server_id='srv2', match_tier=tier)
+        db.commit()
+
+        assert _chromaprint_backfill_targets('srv2', 100) == []
+
+    def test_a_swept_mapping_is_never_downloaded_even_when_it_is_a_local_duplicate(
+        self, db, use_test_db
+    ):
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_wd', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_wd', 'newA', 'A-album', '/two/a.flac',
+                  server_id='srv2', match_tier='path')
+            _seed(cur, 'fp_wd', 'newB', 'A-album', '/two/b.flac',
+                  server_id='srv2', match_tier='norm_meta')
+        db.commit()
+
+        assert _chromaprint_backfill_targets('srv2', 100) == []
+
+    def test_what_this_server_analysed_itself_is_still_backfilled(
+        self, db, use_test_db
+    ):
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_own', 'mine', 'A-album', '/two/mine.flac',
+                  server_id='srv2', match_tier='fingerprint')
+            _seed(cur, 'fp_leg', 'legacy', 'B-album', '/two/legacy.flac',
+                  server_id='srv2', match_tier=None)
+        db.commit()
+
+        targets = _chromaprint_backfill_targets('srv2', 100)
+        assert {provider_id for provider_id, _path in targets} == {'mine', 'legacy'}
+
+    def test_a_swept_track_ends_up_with_a_chromaprint_once_any_server_measures_it(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.analysis.main import _chromaprint_backfill_targets
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_c', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_c', 'new', 'A-album', '/two/new.flac',
+                  server_id='srv2', match_tier='path')
+        db.commit()
+
+        assert get_chromaprint('srv2', 'new') is None
+        assert _chromaprint_backfill_targets('srv2', 100) == []
+
+        targets = _chromaprint_backfill_targets('srv', 100)
+        assert {provider_id for provider_id, _path in targets} == {'old'}
+        persist_chromaprint('srv', 'old', _blob(4))
+
+        assert _run_backfill_over(['srv', 'srv2']) == []
+        assert get_chromaprint('srv2', 'new') == _blob(4)
+
+    def test_the_swept_track_is_covered_whatever_order_the_servers_run_in(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_o', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_o', 'new', 'A-album', '/two/new.flac',
+                  server_id='srv2', match_tier='path')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(5))
+
+        assert _run_backfill_over(['srv2', 'srv']) == []
+        assert get_chromaprint('srv2', 'new') == _blob(5)
+
+    def test_a_measurement_made_during_the_run_reaches_the_swept_track(
+        self, db, use_test_db
+    ):
+        from database import get_chromaprint
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_run', 'old', 'A-album', '/one/old.flac')
+            _seed(cur, 'fp_run', 'new', 'A-album', '/two/new.flac',
+                  server_id='srv2', match_tier='path')
+        db.commit()
+
+        downloaded = _run_backfill_over(['srv2', 'srv'], measures=_blob(7))
+
+        assert downloaded == [('srv', 'old')]
+        assert get_chromaprint('srv2', 'new') == _blob(7)
+
+    def test_the_hand_over_completes_past_a_batch_boundary(self, db, use_test_db):
+        import config
+        from database import (
+            persist_chromaprint,
+            get_chromaprint,
+            inherit_chromaprints_for_mapped_tracks,
+        )
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            for index in range(7):
+                item = 'fp_b%d' % index
+                _seed(cur, item, 'old%d' % index, 'A-album', '/one/%d.flac' % index)
+                _seed(cur, item, 'new%d' % index, 'A-album', '/two/%d.flac' % index,
+                      server_id='srv2', match_tier='path')
+        db.commit()
+        for index in range(7):
+            persist_chromaprint('srv', 'old%d' % index, _blob(index + 1))
+
+        original = config.CHROMAPRINT_INHERIT_BATCH_SIZE
+        config.CHROMAPRINT_INHERIT_BATCH_SIZE = 2
+        try:
+            assert inherit_chromaprints_for_mapped_tracks(conn=db) == 7
+        finally:
+            config.CHROMAPRINT_INHERIT_BATCH_SIZE = original
+
+        for index in range(7):
+            assert get_chromaprint('srv2', 'new%d' % index) == _blob(index + 1)
+
+    def test_a_failure_part_way_through_keeps_what_was_already_committed(
+        self, db, use_test_db
+    ):
+        import config
+        import database
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            for index in range(6):
+                item = 'fp_p%d' % index
+                _seed(cur, item, 'old%d' % index, 'A-album', '/one/%d.flac' % index)
+                _seed(cur, item, 'new%d' % index, 'A-album', '/two/%d.flac' % index,
+                      server_id='srv2', match_tier='path')
+        db.commit()
+        for index in range(6):
+            database.persist_chromaprint('srv', 'old%d' % index, _blob(index + 1))
+
+        original = config.CHROMAPRINT_INHERIT_BATCH_SIZE
+        config.CHROMAPRINT_INHERIT_BATCH_SIZE = 2
+        try:
+            reported = database.inherit_chromaprints_for_mapped_tracks(
+                conn=_DropsOnExecute(db, 3)
+            )
+        finally:
+            config.CHROMAPRINT_INHERIT_BATCH_SIZE = original
+
+        stored = sum(
+            1 for index in range(6)
+            if database.get_chromaprint('srv2', 'new%d' % index) is not None
+        )
+        assert stored == 4
+        assert reported == stored
+
+        assert database.inherit_chromaprints_for_mapped_tracks(conn=db) == 2
+        assert all(
+            database.get_chromaprint('srv2', 'new%d' % index) is not None
+            for index in range(6)
+        )
 
     def test_a_single_server_library_still_backfills_everything(self, db, use_test_db):
         from database import inherit_chromaprints_for_mapped_tracks

@@ -21,8 +21,10 @@ Main Features:
   runtime, so a slow child holds it open as long as something about it keeps
   changing. It exists for the one thing reclaim cannot see: a child whose worker
   is alive and holding its advisory lock but whose native code will never return,
-  which would otherwise hang the parent forever. The clock is injected so the
-  caller owns it and a test can drive days of waiting in milliseconds.
+  which would otherwise hang the parent forever. Callers pass a MONOTONIC clock:
+  on wall-clock time an NTP step or a VM resume larger than the window makes
+  expired() true at once and abandons a run that is perfectly healthy. Injecting
+  it also lets a test drive days of waiting in milliseconds.
 """
 
 import logging

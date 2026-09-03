@@ -1131,7 +1131,7 @@ def _cluster_one_server(
     from .task_run import StallValve
 
     stop_launching = False
-    valve = StallValve(CLUSTERING_STALL_TIMEOUT_MINUTES, lambda: time.time())
+    valve = StallValve(CLUSTERING_STALL_TIMEOUT_MINUTES, lambda: time.monotonic())
 
     while True:
         task_info = get_task_info_from_db(current_task_id)
