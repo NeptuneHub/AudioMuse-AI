@@ -79,6 +79,7 @@ from config import (
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
+    TASK_STATUS_RUNNING,
 )
 
 from error import error_manager
@@ -1150,7 +1151,7 @@ def _cluster_one_server(
             valve.restart()
             time.sleep(3)
             continue
-        live = [job_id for job_id, _ in live_marks]
+        live = [job_id for job_id, _progress, _status in live_marks]
 
         failed_batch_count = state.get("failed_batches", 0)
         if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES and not stop_launching:
@@ -1245,7 +1246,7 @@ def _cluster_one_server(
             valve.restart()
             stop_launching = True
             abandoned = _give_up_on_stalled_batches(
-                live, current_task_id, stalled_minutes
+                live_marks, current_task_id, stalled_minutes
             )
             report(
                 f"No progress of any kind for {stalled_minutes:.0f} min (limit: "
@@ -1429,9 +1430,11 @@ def _revoke_batch(job_id, parent_task_id, message):
         return False
 
 
-def _give_up_on_stalled_batches(live, parent_task_id, stalled_minutes):
+def _give_up_on_stalled_batches(live_marks, parent_task_id, stalled_minutes):
     abandoned = 0
-    for job_id in live:
+    for job_id, _progress, status in live_marks:
+        if status != TASK_STATUS_RUNNING:
+            continue
         if _revoke_batch(
             job_id, parent_task_id,
             'The parent clustering task gave up on this batch: nothing anywhere in '
@@ -1443,7 +1446,7 @@ def _give_up_on_stalled_batches(live, parent_task_id, stalled_minutes):
         "Clustering %s made no progress of any kind for %.0f minutes (limit: %d "
         "minutes); gave up on %d of %d unfinished batch(es).",
         parent_task_id, stalled_minutes, CLUSTERING_STALL_TIMEOUT_MINUTES,
-        abandoned, len(live),
+        abandoned, len(live_marks),
     )
     return abandoned
 
@@ -1622,7 +1625,7 @@ def _absorb_finished_batches(state_dict, parent_task_id, persist):
 def _live_batches(state_dict, parent_task_id):
     mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
     return [
-        (str(child.get('task_id')), child.get('progress'))
+        (str(child.get('task_id')), child.get('progress'), str(child.get('status') or ''))
         for child in taskqueue.live_children(parent_task_id)
         if str(child.get('task_id') or '').startswith(mine)
     ]

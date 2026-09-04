@@ -97,6 +97,7 @@ class _ScriptedQueue:
                 'task_id': tid,
                 'sub_type_identifier': tid,
                 'progress': self.marks.get(tid, 0),
+                'status': config.TASK_STATUS_RUNNING,
             }
             for tid in self.live_ids
         ]
@@ -505,3 +506,22 @@ class TestClusteringStallValve:
         )
         assert run.state['batches_launched'] == 1
         assert run.status == 'failed'
+
+    def test_give_up_revokes_only_the_batches_a_worker_is_holding(self, monkeypatch):
+        from tasks import clustering
+
+        revoked = []
+        monkeypatch.setattr(
+            clustering, '_revoke_batch',
+            lambda job_id, parent_id, message: revoked.append(job_id) or True,
+        )
+        marks = [
+            ('main_s0_batch_0', 0, config.TASK_STATUS_RUNNING),
+            ('main_s0_batch_1', 0, config.TASK_STATUS_NEW),
+            ('main_s0_batch_2', 0, config.TASK_STATUS_NEW),
+        ]
+
+        abandoned = clustering._give_up_on_stalled_batches(marks, 'main_s0', 60)
+
+        assert abandoned == 1
+        assert revoked == ['main_s0_batch_0']
