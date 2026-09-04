@@ -812,7 +812,8 @@ class _AnalysisClock:
 def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                       baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
-                      extra_jobs=None, wedged=None, cancelled=None):
+                      extra_jobs=None, wedged=None, cancelled=None,
+                      all_live_new=False):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -937,8 +938,12 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                     'sub_type_identifier': f'album-for-{task_id}',
                     'progress': 40 if index == 0 else 0,
                     'status': (
-                        config.TASK_STATUS_RUNNING if index == 0
-                        else config.TASK_STATUS_NEW
+                        config.TASK_STATUS_NEW
+                        if all_live_new
+                        else (
+                            config.TASK_STATUS_RUNNING if index == 0
+                            else config.TASK_STATUS_NEW
+                        )
                     ),
                 }
                 for index, task_id in enumerate(wedged)
@@ -1238,6 +1243,31 @@ class TestAnalysisStallValve:
             'giving up on an album must land in the failure tally the run reports; '
             'counting it as done would claim a library was analysed when it was not'
         )
+
+    def test_all_queued_albums_with_nothing_running_are_cleared_out(self, monkeypatch):
+        import tasks.analysis.main as analysis
+
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+        wedged, cancelled = [], []
+
+        result, _enqueued = _run_parent_phase(
+            monkeypatch,
+            albums,
+            {a['Id']: [{'Id': f"p{a['Id']}", 'Name': 't'}] for a in albums},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+            all_live_new=True,
+        )
+
+        assert len(cancelled) == 3, (
+            'with nothing RUNNING and nothing progressing for the whole window, '
+            'the queue itself is the wedge: every queued album is failed so the '
+            'run ends instead of waiting forever on workers that never pick them up'
+        )
+        assert '3 could not be analyzed' in result['message']
 
 
 def test_retry_reenqueues_an_album_whose_child_row_is_gone(monkeypatch):
