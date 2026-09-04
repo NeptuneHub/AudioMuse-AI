@@ -68,7 +68,11 @@ from sanitization import sanitize_string_for_db, sanitize_string_for_db_loud
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_TTL = 10.0
-_default_cache = {'expires': 0.0, 'row': None, 'secondary_expires': 0.0, 'secondary': None}
+_default_cache = {
+    'expires': 0.0, 'row': None,
+    'secondary_expires': 0.0, 'secondary': None,
+    'multi_expires': 0.0, 'multi': None,
+}
 _default_cache_lock = threading.Lock()
 _warned_once = {'projection': False, 'row': False}
 
@@ -79,6 +83,8 @@ def invalidate_server_cache():
         _default_cache['row'] = None
         _default_cache['secondary_expires'] = 0.0
         _default_cache['secondary'] = None
+        _default_cache['multi_expires'] = 0.0
+        _default_cache['multi'] = None
         _warned_once['projection'] = False
         _warned_once['row'] = False
 
@@ -220,7 +226,6 @@ def servers_for_scope(scope, conn=None):
     return servers
 
 
-_HAS_SECONDARY_SERVERS = "SELECT EXISTS (SELECT 1 FROM music_servers WHERE NOT is_default)"
 
 
 def has_secondary_servers(conn=None):
@@ -233,7 +238,9 @@ def has_secondary_servers(conn=None):
     db = conn or get_db()
     cur = db.cursor()
     try:
-        cur.execute(_HAS_SECONDARY_SERVERS)
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM music_servers WHERE NOT is_default)"
+        )
         result = bool(cur.fetchone()[0])
     finally:
         cur.close()
@@ -244,17 +251,24 @@ def has_secondary_servers(conn=None):
     return result
 
 
+# A DIFFERENT question from has_secondary_servers above, on its own cache slot.
+# "Is any server not the default one" and "are there two servers at all" disagree on
+# a catalogue whose single server carries no default flag, and they used to answer out
+# of one slot, so whichever ran first decided what the other saw for the whole TTL.
+# The two queries stay apart as well as the two slots: this one runs INSIDE the
+# mapping-write transaction on every sweep match, so it deliberately names no column -
+# it needs the table to exist and nothing more.
 def _catalogue_has_two_servers(cur):
     now = time.monotonic()
     with _default_cache_lock:
-        if _default_cache['secondary_expires'] > now:
-            return bool(_default_cache['secondary'])
-    cur.execute(_HAS_SECONDARY_SERVERS)
+        if _default_cache['multi_expires'] > now:
+            return bool(_default_cache['multi'])
+    cur.execute("SELECT EXISTS (SELECT 1 FROM music_servers OFFSET 1)")
     row = cur.fetchone()
     result = bool(row and row[0])
     with _default_cache_lock:
-        _default_cache['secondary'] = result
-        _default_cache['secondary_expires'] = time.monotonic() + _DEFAULT_CACHE_TTL
+        _default_cache['multi'] = result
+        _default_cache['multi_expires'] = time.monotonic() + _DEFAULT_CACHE_TTL
     return result
 
 
