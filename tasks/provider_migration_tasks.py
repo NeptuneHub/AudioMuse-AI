@@ -46,6 +46,8 @@ from config import (
 )
 from sanitization import sanitize_string_for_db as _sanitize_text
 
+from .recovery import row_heartbeat
+
 logger = logging.getLogger(__name__)
 
 
@@ -526,18 +528,23 @@ def execute_provider_migration(session_id):
         alignment_task_id = str(uuid.uuid4())
         restart_request_id = _restart_request_id(task_id, session_id)
         try:
-            index_rebuild_needed = _run_migration_transaction(
-                cur=cur,
-                mapping=mapping,
-                new_meta=new_meta,
-                target_type=target_type,
-                target_creds=target_creds,
-                session_id=session_id,
-                selected_libraries=selected_libraries,
-                alignment_task_id=alignment_task_id,
-                exec_task_id=task_id,
-                restart_request_id=restart_request_id,
-            )
+            with row_heartbeat(
+                task_id,
+                'the provider-migration transaction, which rewrites every catalogue '
+                'id in one statement sequence and writes no row until it commits',
+            ):
+                index_rebuild_needed = _run_migration_transaction(
+                    cur=cur,
+                    mapping=mapping,
+                    new_meta=new_meta,
+                    target_type=target_type,
+                    target_creds=target_creds,
+                    session_id=session_id,
+                    selected_libraries=selected_libraries,
+                    alignment_task_id=alignment_task_id,
+                    exec_task_id=task_id,
+                    restart_request_id=restart_request_id,
+                )
             conn.commit()
         except Exception:
             try:

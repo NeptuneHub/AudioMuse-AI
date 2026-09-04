@@ -782,6 +782,21 @@ _WEDGED_MAIN_TASKS = """
 )
 
 
+_TERMINATE_WEDGED_WORKER = """
+    SELECT a.pid, pg_terminate_backend(a.pid)
+    FROM pg_stat_activity AS a, task_status AS t
+    WHERE t.task_id = %s
+      AND a.datname = current_database()
+      AND a.pid <> pg_backend_pid()
+      AND a.application_name IN (t.worker_id, t.worker_id || %s)
+"""
+
+
+def terminate_wedged_worker_backends(cur, task_id):
+    cur.execute(_TERMINATE_WEDGED_WORKER, (task_id, WORKER_LISTEN_SUFFIX))
+    return [row[0] for row in (cur.fetchall() or ()) if row[1]]
+
+
 def wedged_main_tasks(cur, silent_seconds):
     cur.execute(_WEDGED_MAIN_TASKS, (silent_seconds, WORKER_LISTEN_SUFFIX))
     return [
@@ -793,8 +808,13 @@ def wedged_main_tasks(cur, silent_seconds):
     ]
 
 
+# beat_at is the child's own timestamp, and a fan-out parent puts it in its
+# no-progress signature. Without it the only sign of life a child can give is a
+# progress WRITE, so a child whose one step is a single opaque call - a spectral
+# fit over 10k songs - looked identical to a wedge and was revoked while healthy.
 _LIVE_CHILDREN = f"""
-    SELECT task_id, sub_type_identifier, progress, status FROM task_status
+    SELECT task_id, sub_type_identifier, progress, status, timestamp
+    FROM task_status
     WHERE parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
 """
 
@@ -804,7 +824,7 @@ def live_children(cur, parent_task_id):
     return [
         {
             'task_id': row[0], 'sub_type_identifier': row[1],
-            'progress': row[2], 'status': row[3],
+            'progress': row[2], 'status': row[3], 'beat_at': row[4],
         }
         for row in (cur.fetchall() or ())
     ]

@@ -33,7 +33,11 @@ Main Features:
   canonical track, in the SAME transaction that writes the mapping. Matching a
   track and knowing its fingerprint are one step, so a sweep always carries the
   fingerprint with the mapping. The inherit rides a SAVEPOINT and can only ever
-  be skipped: the mapping write is the job and always stands.
+  be skipped: the mapping write is the job and always stands. It COPIES stored
+  prints and computes none, so CHROMAPRINT_COLLECTION_ENABLED (compute new ones)
+  is the wrong switch to gate it on alone: an install with fpcalc missing but
+  CHROMAPRINT_GATE_ENABLED on still uses stored prints, and with the backfill
+  gone this is the only path that would ever fill them.
 """
 
 import logging
@@ -819,7 +823,9 @@ def upsert_track_maps(server_id, mapping, conn=None):
             "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
             (server_id,),
         )
-        if not config.CHROMAPRINT_COLLECTION_ENABLED:
+        if not (
+            config.CHROMAPRINT_COLLECTION_ENABLED or config.CHROMAPRINT_GATE_ENABLED
+        ):
             return
         inherited = inherit_chromaprints_from_staged_maps(cur)
         if inherited:

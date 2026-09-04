@@ -813,7 +813,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                       baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
                       extra_jobs=None, wedged=None, cancelled=None,
-                      all_live_new=False):
+                      all_live_new=False, wedge_forever=False):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -906,7 +906,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                     }
                     for task_id in drained
                 ]
-            if worker_freed and wedged:
+            if worker_freed and wedged and not wedge_forever:
                 return [{
                     'task_id': wedged.pop(0),
                     'status': config.TASK_STATUS_SUCCESS,
@@ -1243,6 +1243,39 @@ class TestAnalysisStallValve:
             'giving up on an album must land in the failure tally the run reports; '
             'counting it as done would claim a library was analysed when it was not'
         )
+
+    def test_a_worker_that_wedges_on_every_album_ends_the_run_at_the_cap(
+        self, monkeypatch
+    ):
+        import tasks.analysis.main as analysis
+
+        monkeypatch.setattr(analysis, 'MAX_QUEUED_ANALYSIS_JOBS', 1)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MAX_STALL_GIVE_UPS', 2)
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(10)]
+        wedged, cancelled = [], []
+
+        result, enqueued = _run_parent_phase(
+            monkeypatch,
+            albums,
+            {a['Id']: [{'Id': f"p{a['Id']}", 'Name': 't'}] for a in albums},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+            wedge_forever=True,
+        )
+
+        assert len(enqueued) <= 3, (
+            'every album this worker claims wedges, so without a bound the valve '
+            'just fires once per album and the run lasts one stall window times '
+            'the whole library instead of ending; the parent keeps its own row '
+            'fresh while it waits, so the wedged-main nudge never sees it either'
+        )
+        assert result['message'].startswith('Albums '), (
+            'the run has to finish and report what it did analyse, not hang'
+        )
+        assert clock.sleeps < 2000
 
     def test_all_queued_albums_with_nothing_running_are_cleared_out(self, monkeypatch):
         import tasks.analysis.main as analysis

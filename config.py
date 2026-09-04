@@ -365,6 +365,12 @@ MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25"))
 # one track included, so only a genuinely wedged album runs it out; it is then
 # failed and reported in the album failure tally. 0 disables it.
 ANALYSIS_STALL_TIMEOUT_MINUTES = int(os.environ.get("ANALYSIS_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in the album drain - none finished, failed, and no live album advanced a track - before the parent gives up on the albums it is waiting for
+# The bound on how OFTEN the valve above may fire in one run, and the analysis
+# counterpart of CLUSTERING_EARLY_STOP_BATCHES. A worker that wedges on every
+# album it claims makes the valve fire once per album forever - one stall window
+# each - and the parent's own progress writes keep the wedged-main nudge blind to
+# it, so without this bound a run never ends. 0 disables it.
+ANALYSIS_MAX_STALL_GIVE_UPS = int(os.environ.get("ANALYSIS_MAX_STALL_GIVE_UPS", "3")) # How many times an analysis run may give up on a wedged album before it stops dispatching and finishes with what it has analysed
 
 # --- Batching Constants for Clustering Runs ---
 ITERATIONS_PER_BATCH_JOB = int(os.environ.get("ITERATIONS_PER_BATCH_JOB", "20")) # Number of clustering iterations per queued batch job
@@ -1449,8 +1455,11 @@ CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "Tr
 # Mappings handed a stored fingerprint per statement. The hand-over is one set-based
 # INSERT..SELECT, but an unbounded one over a large catalogue copies gigabytes of BYTEA and
 # exceeds the 10 minute statement_timeout, which cancels it and leaves swept tracks with no
-# fingerprint at all. Chunking keeps every statement short and commits as it goes, so a slow
-# database makes the hand-over take longer instead of making it fail.
+# fingerprint at all. Chunking keeps every statement short, so a slow database makes the
+# hand-over take longer instead of making it fail. It does NOT commit as it goes and cannot:
+# the whole hand-over shares the one transaction that writes the mappings, on a temp table
+# that is ON COMMIT DROP. A failure mid-loop unwinds to the savepoint and the mappings still
+# stand; the next sweep retries the hand-over.
 CHROMAPRINT_INHERIT_BATCH_SIZE = int(os.getenv("CHROMAPRINT_INHERIT_BATCH_SIZE", "2000"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"

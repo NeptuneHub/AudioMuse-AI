@@ -258,7 +258,8 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
             log_and_update_main("Performing final index rebuild...", 92)
             try:
                 _run_all_index_builds(
-                    log_fn=log_and_update_main, progress_start=92, progress_end=99
+                    log_fn=log_and_update_main, progress_start=92, progress_end=99,
+                    task_id=current_task_id,
                 )
             except error_manager.AudioMuseError:
                 raise

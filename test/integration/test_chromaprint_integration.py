@@ -22,6 +22,13 @@ Main Features:
   that writes it.
 * The inherit rides a SAVEPOINT, so a chromaprint table that is missing or
   mid-migration can never roll back the mapping write it travels with.
+* A track whose own fpcalc run failed carries the NULL retry-stop sentinel, and
+  that row must not lock it out of the hand-over: with the backfill gone this is
+  the only path that would ever give it a real print.
+* The SOURCE side refuses an ambiguous fingerprint exactly like the target side.
+  A source server holding two files for one canonical id cannot say which one the
+  stored print belongs to, so handing either on is a guess the gate then treats
+  as fact.
 """
 
 import os
@@ -236,6 +243,64 @@ class TestChromaprintDbPath:
 
         assert get_chromaprint('srv2', 'newA') is None
         assert get_chromaprint('srv2', 'newB') is None
+
+    def test_a_failed_fpcalc_sentinel_still_inherits_a_sibling_print(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_n', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('fp_n', 'srv2', 'new', 'path', '/two/new.flac')"
+            )
+        db.commit()
+        persist_chromaprint('srv2', 'new', None)
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_n', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert get_chromaprint('srv2', 'new') == _blob(1), (
+            'the NULL row says fpcalc failed on this file, not that the track is '
+            'finished with: matching on c.provider_track_id IS NULL treated the '
+            'sentinel as a print and locked the track out of every future sweep'
+        )
+
+    def test_an_ambiguous_source_never_hands_on_a_guessed_fingerprint(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_a', 'oldA', 'A-album', '/one/a.flac')
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('fp_a', 'srv', 'oldB', 'path', '/one/b.flac')"
+            )
+        db.commit()
+        persist_chromaprint('srv', 'oldA', _blob(1))
+        persist_chromaprint('srv', 'oldB', _blob(7))
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_a', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert get_chromaprint('srv2', 'new') is None, (
+            'two files on the source server share this canonical id, so neither '
+            'print is known to be the right one; DISTINCT ON just took whichever '
+            'sorted first and the gate then compared against a guess'
+        )
 
     def test_a_broken_chromaprint_table_never_fails_the_mapping_write(
         self, db, use_test_db

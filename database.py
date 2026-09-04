@@ -927,7 +927,7 @@ def _chromaprint_inherit_sql(scope_table):
         "  LEFT JOIN chromaprint c ON c.server_id = m.server_id "
         "    AND c.provider_track_id = m.provider_track_id "
         "  WHERE (m.server_id, m.provider_track_id) > (%s, %s) "
-        "    AND c.provider_track_id IS NULL "
+        "    AND c.fingerprint IS NULL "
         "    AND NOT EXISTS ("
         "      SELECT 1 FROM track_server_map d "
         "      WHERE d.item_id = m.item_id AND d.server_id = m.server_id "
@@ -937,7 +937,12 @@ def _chromaprint_inherit_sql(scope_table):
         "      SELECT 1 FROM track_server_map o "
         "      JOIN chromaprint oc ON oc.server_id = o.server_id "
         "        AND oc.provider_track_id = o.provider_track_id "
-        "      WHERE o.item_id = m.item_id AND oc.fingerprint IS NOT NULL"
+        "      WHERE o.item_id = m.item_id AND oc.fingerprint IS NOT NULL "
+        "        AND NOT EXISTS ("
+        "          SELECT 1 FROM track_server_map od "
+        "          WHERE od.item_id = o.item_id AND od.server_id = o.server_id "
+        "            AND od.provider_track_id <> o.provider_track_id"
+        "        )"
         "    )"
         "  ORDER BY m.server_id, m.provider_track_id "
         "  LIMIT %s"
@@ -950,42 +955,57 @@ def _chromaprint_inherit_sql(scope_table):
         "  JOIN chromaprint cp ON cp.server_id = o.server_id "
         "    AND cp.provider_track_id = o.provider_track_id "
         "  WHERE cp.fingerprint IS NOT NULL "
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM track_server_map od "
+        "      WHERE od.item_id = o.item_id AND od.server_id = o.server_id "
+        "        AND od.provider_track_id <> o.provider_track_id"
+        "    )"
         "  ORDER BY o.item_id, o.server_id, o.provider_track_id"
+        "), ins AS ("
+        "  INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
+        "  SELECT t.server_id, t.provider_track_id, cp.fingerprint, now() "
+        "  FROM targets t "
+        "  JOIN src ON src.item_id = t.item_id "
+        "  JOIN chromaprint cp ON cp.server_id = src.src_server_id "
+        "    AND cp.provider_track_id = src.src_provider_track_id "
+        "  ON CONFLICT (server_id, provider_track_id) DO UPDATE "
+        "    SET fingerprint = EXCLUDED.fingerprint, updated_at = now() "
+        "    WHERE chromaprint.fingerprint IS NULL "
+        "  RETURNING server_id, provider_track_id"
         ") "
-        "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
-        "SELECT t.server_id, t.provider_track_id, cp.fingerprint, now() "
+        "SELECT t.server_id, t.provider_track_id, "
+        "       (i.provider_track_id IS NOT NULL) AS inherited "
         "FROM targets t "
-        "JOIN src ON src.item_id = t.item_id "
-        "JOIN chromaprint cp ON cp.server_id = src.src_server_id "
-        "  AND cp.provider_track_id = src.src_provider_track_id "
-        "ON CONFLICT (server_id, provider_track_id) DO NOTHING "
-        "RETURNING server_id, provider_track_id"
+        "LEFT JOIN ins i ON i.server_id = t.server_id "
+        "  AND i.provider_track_id = t.provider_track_id "
+        "ORDER BY t.server_id, t.provider_track_id"
     )
 
 
-def _inherit_chromaprints_in_batches(cur, scope_table, commit=None, done=None):
-    from config import CHROMAPRINT_INHERIT_BATCH_SIZE
-
+def _inherit_chromaprints_in_batches(cur, scope_table):
     statement = _chromaprint_inherit_sql(scope_table)
-    batch = max(1, CHROMAPRINT_INHERIT_BATCH_SIZE)
+    batch = max(1, config.CHROMAPRINT_INHERIT_BATCH_SIZE)
     at_server, at_track = '', ''
     total = 0
     while True:
         cur.execute(statement, (at_server, at_track, batch))
         rows = cur.fetchall()
-        if commit is not None:
-            commit()
-        if done is not None:
-            done.append(len(rows))
-        total += len(rows)
+        if not rows:
+            return total
+        total += sum(1 for row in rows if row[2])
+        at_server, at_track = str(rows[-1][0]), str(rows[-1][1])
         if len(rows) < batch:
             return total
-        at_server, at_track = max((str(row[0]), str(row[1])) for row in rows)
 
 
 def inherit_chromaprints_from_staged_maps(cur):
     try:
         cur.execute("SAVEPOINT chromaprint_inherit")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS incoming_track_server_map_keyset "
+            "ON " + STAGED_MAPS_SCOPE + " (server_id, provider_track_id)"
+        )
+        cur.execute("ANALYZE " + STAGED_MAPS_SCOPE)
         inherited = _inherit_chromaprints_in_batches(cur, STAGED_MAPS_SCOPE)
         cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
         return inherited

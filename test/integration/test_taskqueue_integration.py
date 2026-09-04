@@ -638,6 +638,78 @@ class TestAWedgedMainTaskIsNotLeftHoldingTheQueue:
         finally:
             holder.close()
 
+    def test_one_nudge_alone_never_terminates_a_backend(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'firstpass-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['firstpass-1']
+            with holder.cursor() as cur:
+                cur.execute("SELECT 1")
+                assert cur.fetchone()[0] == 1, (
+                    'a worker that can hear the cancel ends itself, and killing its '
+                    'connection first would take down a tree that was already going'
+                )
+        finally:
+            holder.close()
+
+    def test_a_task_that_ignores_the_cancel_has_its_backend_terminated(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'stubborn-1',
+            int(config.QUEUE_WEDGED_MAIN_TASK_MINUTES * 2) + 10,
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['stubborn-1']
+            with pytest.raises(psycopg2.Error):
+                with holder.cursor() as cur:
+                    cur.execute("SELECT 1")
+        finally:
+            holder.close()
+
+    def test_a_heartbeat_keeps_one_long_step_from_looking_wedged(
+        self, queue_db, shared_pg_dsn
+    ):
+        from tasks.recovery import _beat_once
+
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'building-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        try:
+            beat = _fresh(shared_pg_dsn)
+            try:
+                assert _beat_once(beat, 'building-1') is True
+            finally:
+                beat.close()
+            assert self._nudge(shared_pg_dsn) == [], (
+                'one index build is a single opaque call that writes no row while '
+                'it runs, so without the heartbeat a big-library IVF or artist-GMM '
+                'build is indistinguishable from a wedge and gets cancelled'
+            )
+        finally:
+            holder.close()
+
+    def test_a_heartbeat_stops_once_the_row_leaves_running(
+        self, queue_db, shared_pg_dsn
+    ):
+        from tasks.recovery import _beat_once
+
+        _enqueue(queue_db, 'gone-1', task_type='main_analysis', queue=sql.QUEUE_HIGH)
+        beat = _fresh(shared_pg_dsn)
+        try:
+            assert _beat_once(beat, 'gone-1') is False, (
+                'the row is NEW, not RUNNING: a heartbeat that kept bumping a row '
+                'this process no longer owns would hold off the reclaim that does'
+            )
+            assert _beat_once(beat, 'never-existed') is False
+        finally:
+            beat.close()
+
     def test_a_main_task_that_reported_recently_is_left_alone(
         self, queue_db, shared_pg_dsn
     ):

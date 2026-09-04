@@ -86,7 +86,8 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     rebuilds = rebuild_calls if rebuild_calls is not None else []
 
-    def _fake_run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
+    def _fake_run_all_index_builds(log_fn=None, progress_start=95, progress_end=98,
+                                   task_id=None):
         rebuilds.append((progress_start, progress_end))
         if log_fn:
             log_fn("Similarity indexes rebuilt.", progress_end)

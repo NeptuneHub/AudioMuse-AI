@@ -16,15 +16,9 @@ Main Features:
 * task_run_prologue resolves the claimed id and reads its task_status row
 * terminal_skip returns the revoked/terminal dict the entry point must return,
   or None when the task should actually run
-* StallValve is the shared no-progress bound every fan-out parent waits behind.
-  It is a SLIDING window over a caller-chosen signature, never a budget on total
-  runtime, so a slow child holds it open as long as something about it keeps
-  changing. It exists for the one thing reclaim cannot see: a child whose worker
-  is alive and holding its advisory lock but whose native code will never return,
-  which would otherwise hang the parent forever. Callers pass a MONOTONIC clock:
-  on wall-clock time an NTP step or a VM resume larger than the window makes
-  expired() true at once and abandons a run that is perfectly healthy. Injecting
-  it also lets a test drive days of waiting in milliseconds.
+* Everything about recovering a wedged run - the stall window, who a give-up
+  ends, and the heartbeat a long opaque phase needs - lives in tasks.recovery.
+  It was split across the two fan-out parents and they drifted; see that module.
 """
 
 import logging
@@ -75,32 +69,3 @@ def terminal_skip(
             result["details"] = terminal_details(task_info)
         return result
     return None
-
-
-_NO_SIGNATURE = object()
-
-
-class StallValve:
-    def __init__(self, timeout_minutes, clock):
-        self._timeout_seconds = max(0.0, float(timeout_minutes or 0)) * 60.0
-        self._clock = clock
-        self._signature = _NO_SIGNATURE
-        self._since = clock()
-
-    def moved(self, signature):
-        if signature == self._signature:
-            return False
-        self._signature = signature
-        self._since = self._clock()
-        return True
-
-    def stalled_minutes(self):
-        return (self._clock() - self._since) / 60.0
-
-    def expired(self):
-        if self._timeout_seconds <= 0:
-            return False
-        return (self._clock() - self._since) >= self._timeout_seconds
-
-    def restart(self):
-        self._since = self._clock()

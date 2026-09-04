@@ -20,19 +20,28 @@ Main Features:
 * _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
   an earlier attempt's analysed songs into this attempt's total.
 * BOTH album waits - the dispatch throttle that holds at
-  MAX_QUEUED_ANALYSIS_JOBS and the tail drain - watch the shared StallValve on
+  MAX_QUEUED_ANALYSIS_JOBS and the tail drain - watch one ChildDrainSupervisor on
   ANALYSIS_STALL_TIMEOUT_MINUTES. The throttle is where a wedge on a real library
   actually lands, and its own progress writes keep the parent row fresh, so the
   wedged-main nudge cannot see it either: guarding only the tail left the hang.
-  The give-up then fails only the albums a worker is actually HOLDING, never the
-  ones still queued behind them: a queued album is not wedged, it is waiting, and
-  ending the album that holds the worker is what lets it run. Failing the queue
-  too would burn a whole MAX_QUEUED_ANALYSIS_JOBS window of untouched albums. An album whose worker is alive but whose native
-  code never returns holds its advisory lock, so reclaim cannot take it and the
-  parent would wait on it forever. The window slides on any sign of life, a live
-  album advancing one track included, so only a wedged album runs it out; it is
-  then FAILED (not revoked) so the ordinary reap counts it into the album failure
-  tally the run reports, instead of vanishing from the totals.
+  An album whose worker is alive but whose native code never returns holds its
+  advisory lock, so reclaim cannot take it and the parent would wait on it
+  forever. The window slides on any sign of life, a live album advancing one
+  track included, so only a wedged album runs it out; it is then FAILED (not
+  revoked) so the ordinary reap counts it into the album failure tally the run
+  reports, instead of vanishing from the totals.
+* The window, WHO a give-up ends and how many give-ups a run gets are all
+  ChildDrainSupervisor in tasks.recovery, shared with the clustering twin so the
+  two cannot drift apart again. Normally it ends only the albums a worker is
+  actually HOLDING, because a queued album is not wedged, it is waiting; when
+  NOTHING is running the queue itself is the wedge and it ends every live album,
+  which costs a MAX_QUEUED_ANALYSIS_JOBS window the NEXT run re-enqueues anyway.
+  ANALYSIS_MAX_STALL_GIVE_UPS then bounds how often that may happen: without it a
+  worker that wedges on every album makes the run last one window PER ALBUM.
+* The final index rebuild runs under a row_heartbeat. It is nine opaque calls that
+  write a row per STEP and nothing inside one, so on a big library a single build
+  outlived QUEUE_WEDGED_MAIN_TASK_MINUTES and the nudge cancelled a healthy run;
+  the union path was worse still, one row at 92% then silence for all nine.
 * A swept track keeps its Chromaprint: upsert_track_maps hands each new mapping
   the Chromaprint already stored for its canonical track in the SAME transaction
   it is written, so a sweep never leaves a mapping fingerprintless.
@@ -56,13 +65,13 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     ANALYSIS_STALL_TIMEOUT_MINUTES,
+    ANALYSIS_MAX_STALL_GIVE_UPS,
     QUEUE_MAX_ERRORS_KEPT,
     REBUILD_INDEX_BATCH_SIZE,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
-    TASK_STATUS_RUNNING,
 )
 
 from ..mediaserver import (
@@ -93,6 +102,7 @@ from error.error_dictionary import (
 
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
+from ..recovery import ChildDrainSupervisor
 
 
 def _run_all_index_builds(*args, **kwargs):
@@ -361,6 +371,9 @@ def _run_analysis_server_task_impl(
             last_monitor_db_check = float('-inf')
             last_status_report = float('-inf')
             last_revocation_poll = float('-inf')
+            live_album_marks = [()]
+            monitor_read_ok = [True]
+            stop_dispatch = [False]
             adopted_albums = set()
             for child in (inflight_children or ()):
                 if not child['sub_type_identifier']:
@@ -407,8 +420,24 @@ def _run_analysis_server_task_impl(
                                     tracks_analyzed_total[0] += int(counted)
                             if child['status'] == TASK_STATUS_FAILURE:
                                 _remember_album_error(child)
+                        live_album_marks[0] = tuple(sorted(
+                            (
+                                str(child.get('task_id')),
+                                str(child.get('status') or ''),
+                                str(child.get('progress')),
+                                str(child.get('beat_at') or ''),
+                            )
+                            for child in taskqueue.live_children(current_task_id)
+                            if child.get('task_id') in active_jobs
+                        ))
+                        monitor_read_ok[0] = True
                     except Exception:
-                        logger.exception("Failed to reap finished album tasks")
+                        monitor_read_ok[0] = False
+                        logger.exception(
+                            "Failed to reap finished album tasks or list the live "
+                            "ones; the stall window restarts rather than counting "
+                            "a database blip as a wedge"
+                        )
 
                 if (
                     finalize_indexes
@@ -430,74 +459,41 @@ def _run_analysis_server_task_impl(
                     )
                     last_rebuild_count = albums_completed
 
-            def _live_album_marks():
-                return tuple(sorted(
-                    (
-                        str(child.get('task_id')),
-                        str(child.get('status') or ''),
-                        child.get('progress'),
-                    )
-                    for child in taskqueue.live_children(current_task_id)
-                    if child.get('task_id') in active_jobs
-                ))
-
-            def _give_up_on_stalled_albums(stalled_minutes, marks):
-                message = (
-                    'The analysis gave up on this album: nothing anywhere in the run '
-                    f'changed for {stalled_minutes:.0f} minutes, so it stopped waiting '
-                    'rather than hang the whole analysis on it.'
+            def _fail_album(job_id, message):
+                save_task_status(
+                    job_id, 'album_analysis', TASK_STATUS_FAILURE, progress=100,
+                    parent_task_id=current_task_id, details={'message': message},
                 )
-                held = [
-                    task_id for task_id, status, _progress in marks
-                    if status == TASK_STATUS_RUNNING
-                ]
-                victims = held or sorted(active_jobs)
-                spared = len(active_jobs) - len(victims)
-                abandoned = 0
-                for job_id in victims:
-                    try:
-                        save_task_status(
-                            job_id, 'album_analysis', TASK_STATUS_FAILURE, progress=100,
-                            parent_task_id=current_task_id,
-                            details={'message': message},
-                        )
-                        taskqueue.request_cancel(job_id)
-                        abandoned += 1
-                    except Exception:
-                        logger.exception("Could not cancel the album job %s", job_id)
-                logger.warning(
-                    "Analysis %s made no progress of any kind for %.0f minutes (limit: "
-                    "%d minutes); gave up on %d of %d unfinished album job(s) and left "
-                    "%d that no worker had started yet to run once one is free again.",
-                    current_task_id, stalled_minutes, ANALYSIS_STALL_TIMEOUT_MINUTES,
-                    abandoned, len(active_jobs), spared,
-                )
-                return abandoned
+                taskqueue.request_cancel(job_id)
+                return True
 
-            from ..task_run import StallValve
-
-            drain_valve = StallValve(
-                ANALYSIS_STALL_TIMEOUT_MINUTES, lambda: time.monotonic()
+            supervisor = ChildDrainSupervisor(
+                current_task_id, _fail_album,
+                ANALYSIS_STALL_TIMEOUT_MINUTES, ANALYSIS_MAX_STALL_GIVE_UPS,
+                lambda: time.monotonic(), label='album',
             )
-            last_marks_check = float('-inf')
 
             def watch_for_a_wedged_album():
-                nonlocal last_marks_check
-                now = time.monotonic()
-                if now - last_marks_check < ANALYSIS_MONITOR_DB_INTERVAL:
+                if not monitor_read_ok[0]:
+                    supervisor.restart()
                     return
-                last_marks_check = now
-                try:
-                    marks = _live_album_marks()
-                except Exception:
-                    logger.exception("Could not list the live album jobs; retrying")
-                    drain_valve.restart()
+                marks = live_album_marks[0]
+                if supervisor.moved(marks) or not supervisor.expired():
                     return
-                if drain_valve.moved(marks) or not drain_valve.expired():
-                    return
-                stalled_minutes = drain_valve.stalled_minutes()
-                drain_valve.restart()
-                _give_up_on_stalled_albums(stalled_minutes, marks)
+                supervisor.give_up(
+                    [(task_id, status) for task_id, status, _p, _b in marks],
+                    sorted(active_jobs),
+                )
+                if supervisor.exhausted() and not stop_dispatch[0]:
+                    stop_dispatch[0] = True
+                    logger.warning(
+                        "Analysis %s has given up on a wedged album %d time(s) "
+                        "(limit: %d); no further album is dispatched and the run "
+                        "finishes with what it has analysed instead of feeding "
+                        "more albums to workers that keep wedging.",
+                        current_task_id, supervisor.give_ups,
+                        ANALYSIS_MAX_STALL_GIVE_UPS,
+                    )
 
             def report_progress(force=False):
                 nonlocal last_status_report
@@ -533,7 +529,11 @@ def _run_analysis_server_task_impl(
                     monitor_and_clear_jobs()
                     report_progress()
                     watch_for_a_wedged_album()
+                    if stop_dispatch[0]:
+                        break
                     time.sleep(5)
+                if stop_dispatch[0]:
+                    break
 
                 tracks = get_tracks_from_album(album['Id'])
                 if not tracks:
@@ -638,7 +638,9 @@ def _run_analysis_server_task_impl(
             if finalize_indexes:
                 log_and_update_main("Performing final index rebuild...", 95)
                 try:
-                    _run_all_index_builds(log_fn=log_and_update_main)
+                    _run_all_index_builds(
+                        log_fn=log_and_update_main, task_id=current_task_id
+                    )
                 except (OperationalError, InterfaceError):
                     raise
                 except error_manager.AudioMuseError:
@@ -833,7 +835,7 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
             details={"message": "Building union catalogue indexes once..."},
         )
         try:
-            _run_all_index_builds()
+            _run_all_index_builds(task_id=parent_id)
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise

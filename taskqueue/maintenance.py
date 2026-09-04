@@ -36,7 +36,20 @@ Main Features:
   so blocks every other main task forever. Cancelling it ends that worker's tree;
   reclaim then requeues the task and it resumes from its persisted progress - or,
   on its last attempt, fails it, which still frees the queue. It stands down for
-  an in-flight control action for the same reason reclaim does
+  an in-flight control action for the same reason reclaim does. The cancel is a
+  NOTIFY, and reaching stop_hard needs the worker's listener thread to run Python:
+  native code holding the GIL never gets there, so a row still silent at
+  _ESCALATE_AFTER x the limit has ignored it (the notify kills a worker that can
+  hear it within seconds) and its worker's BACKENDS are terminated instead. That
+  drops the connection holding the advisory lock, which is what actually frees the
+  queue, and the worker dies on its next statement. The escalation is decided from
+  the ROW's silence, not from remembering last pass: any container may win the
+  election, so per-process memory would only escalate when the same one won twice.
+  Without it the same useless NOTIFY re-fired every cycle forever
+* Every retention step runs inside its own guard. They share one connection, so
+  before the guards a single failure in any of them skipped the rest of the
+  cycle, dropped the connection, and burnt one more cycle on the reconnect's
+  settling skip. A lost connection still propagates - that one IS the drop
 * run_cycle elects one maintenance winner per pass and runs reclaim plus the
   slower retention sweeps only when they are due
 * reclaim_blob_space VACUUMs what autovacuum cannot reach, because its threshold
@@ -55,6 +68,8 @@ import logging
 import os
 import threading
 import time
+
+import psycopg2
 
 import service_roles
 
@@ -256,6 +271,9 @@ def fail_stale_inline_rows(conn):
     return failed
 
 
+_ESCALATE_AFTER = 2.0
+
+
 def nudge_wedged_main_tasks(conn):
     minutes = config.QUEUE_WEDGED_MAIN_TASK_MINUTES
     if minutes <= 0:
@@ -269,9 +287,25 @@ def nudge_wedged_main_tasks(conn):
             )
             return []
         wedged = sql.wedged_main_tasks(cur, minutes * 60)
+        stubborn = {
+            task['task_id']
+            for task in sql.wedged_main_tasks(cur, minutes * 60 * _ESCALATE_AFTER)
+        }
+        terminated = {}
         for task in wedged:
-            sql.notify_cancel(cur, task['task_id'])
+            task_id = task['task_id']
+            sql.notify_cancel(cur, task_id)
+            if task_id in stubborn:
+                terminated[task_id] = sql.terminate_wedged_worker_backends(cur, task_id)
     conn.commit()
+    for task_id, pids in terminated.items():
+        logger.warning(
+            "Main task %s has ignored the cancel for %.0f minutes, so its Postgres "
+            "backend(s) %s were terminated: a worker that can hear the cancel dies "
+            "within seconds, and terminating the backend releases the advisory lock "
+            "reclaim needs whether the worker can hear anything or not.",
+            task_id, minutes * _ESCALATE_AFTER, pids or 'none found',
+        )
     for task in wedged:
         resumes = (task['attempts'] or 0) + 1 <= (task['max_attempts'] or 0)
         logger.warning(
@@ -314,8 +348,6 @@ def clear_terminal_shared_payloads(conn):
 
 
 def reclaim_blob_space(conn):
-    import psycopg2
-
     previous = conn.autocommit
     try:
         conn.autocommit = True
@@ -425,6 +457,22 @@ def start_blob_reclaim_thread(application):
     return thread
 
 
+def _retention_step(conn, name, step, *args):
+    try:
+        return step(*args)
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        raise
+    except Exception:
+        logger.exception(
+            "Maintenance step '%s' failed; the rest of this cycle still runs", name
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            logger.debug("Rollback after a failed step failed", exc_info=True)
+        return None
+
+
 def run_cycle(conn, with_retention=True):
     with conn.cursor() as cur:
         elected = sql.try_maintenance_lock(cur)
@@ -434,10 +482,12 @@ def run_cycle(conn, with_retention=True):
     try:
         reclaim_orphans(conn)
         if with_retention:
-            fail_stale_inline_rows(conn)
-            nudge_wedged_main_tasks(conn)
-            recover_migration_handshakes()
-            clear_terminal_shared_payloads(conn)
+            _retention_step(conn, 'stale inline rows', fail_stale_inline_rows, conn)
+            _retention_step(conn, 'wedged main tasks', nudge_wedged_main_tasks, conn)
+            _retention_step(conn, 'migration handshakes', recover_migration_handshakes)
+            _retention_step(
+                conn, 'terminal shared payloads', clear_terminal_shared_payloads, conn
+            )
     finally:
         try:
             conn.rollback()
