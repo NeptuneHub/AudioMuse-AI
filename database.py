@@ -998,14 +998,15 @@ def _inherit_chromaprints_in_batches(cur, scope_table):
             return total
 
 
-def inherit_chromaprints_from_staged_maps(cur):
+def inherit_chromaprints_from_staged_maps(cur, staged_rows=0):
     try:
         cur.execute("SAVEPOINT chromaprint_inherit")
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS incoming_track_server_map_keyset "
-            "ON " + STAGED_MAPS_SCOPE + " (server_id, provider_track_id)"
-        )
-        cur.execute("ANALYZE " + STAGED_MAPS_SCOPE)
+        if staged_rows > max(1, config.CHROMAPRINT_INHERIT_BATCH_SIZE):
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS incoming_track_server_map_keyset "
+                "ON " + STAGED_MAPS_SCOPE + " (server_id, provider_track_id)"
+            )
+            cur.execute("ANALYZE " + STAGED_MAPS_SCOPE)
         inherited = _inherit_chromaprints_in_batches(cur, STAGED_MAPS_SCOPE)
         cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
         return inherited

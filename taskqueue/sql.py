@@ -769,7 +769,9 @@ def reap_children(cur, parent_task_id):
 
 
 _WEDGED_MAIN_TASKS = """
-    SELECT task_id, task_type, attempts, max_attempts FROM task_status AS t
+    SELECT task_id, task_type, attempts, max_attempts,
+           EXTRACT(EPOCH FROM (NOW() - t.timestamp)) AS silent_seconds
+    FROM task_status AS t
     WHERE t.status='{running}' AND t.parent_task_id IS NULL AND t.func IS NOT NULL
       AND t.task_type IN ({types})
       AND t.timestamp < NOW() - make_interval(secs => %s)
@@ -803,6 +805,7 @@ def wedged_main_tasks(cur, silent_seconds):
         {
             'task_id': row[0], 'task_type': row[1],
             'attempts': row[2], 'max_attempts': row[3],
+            'silent_seconds': float(row[4] or 0.0),
         }
         for row in (cur.fetchall() or ())
     ]

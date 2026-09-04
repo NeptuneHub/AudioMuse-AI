@@ -144,7 +144,8 @@ class ChildDrainSupervisor:
         stalled_minutes = self._valve.stalled_minutes()
         self._valve.restart()
         victims = stalled_victims(marks, live_ids)
-        self.last_spared = len(list(live_ids)) - len(victims)
+        live_count = len(live_ids)
+        self.last_spared = live_count - len(victims)
         message = (
             f'The parent gave up on this {self._label}: nothing anywhere in the '
             f'run changed for {stalled_minutes:.0f} minutes, so it stopped waiting '
@@ -163,7 +164,7 @@ class ChildDrainSupervisor:
             "minutes); ended %d of %d unfinished %s(ren) and left %d that a worker "
             "may still pick up. Give-up %d of %s.",
             self._label.capitalize(), self._parent_task_id, stalled_minutes,
-            self._timeout_minutes, ended, len(list(live_ids)), self._label,
+            self._timeout_minutes, ended, live_count, self._label,
             self.last_spared, self.give_ups, self._max_give_ups or 'unbounded',
         )
         return ended, stalled_minutes

@@ -37,7 +37,11 @@ Main Features:
   prints and computes none, so CHROMAPRINT_COLLECTION_ENABLED (compute new ones)
   is the wrong switch to gate it on alone: an install with fpcalc missing but
   CHROMAPRINT_GATE_ENABLED on still uses stored prints, and with the backfill
-  gone this is the only path that would ever fill them.
+  gone this is the only path that would ever fill them. The hand-over runs on
+  EVERY call, and the analysis calls this once per TRACK with a single row, so
+  nothing here may cost more than that one row is worth: the keyset index on the
+  staging table is built only when the staged set is big enough for the chunking
+  to loop, which is the sweep, never the per-track flush.
 """
 
 import logging
@@ -827,7 +831,7 @@ def upsert_track_maps(server_id, mapping, conn=None):
             config.CHROMAPRINT_COLLECTION_ENABLED or config.CHROMAPRINT_GATE_ENABLED
         ):
             return
-        inherited = inherit_chromaprints_from_staged_maps(cur)
+        inherited = inherit_chromaprints_from_staged_maps(cur, len(rows))
         if inherited:
             logger.info(
                 "%d of the %d mapping(s) written for server %s inherited the "

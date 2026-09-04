@@ -43,8 +43,9 @@ Main Features:
   hear it within seconds) and its worker's BACKENDS are terminated instead. That
   drops the connection holding the advisory lock, which is what actually frees the
   queue, and the worker dies on its next statement. The escalation is decided from
-  the ROW's silence, not from remembering last pass: any container may win the
-  election, so per-process memory would only escalate when the same one won twice.
+  the ROW's silence, which the one wedged_main_tasks query already returns, not
+  from remembering last pass: any container may win the election, so per-process
+  memory would only escalate when the same one won twice.
   Without it the same useless NOTIFY re-fired every cycle forever
 * Every retention step runs inside its own guard. They share one connection, so
   before the guards a single failure in any of them skipped the rest of the
@@ -287,15 +288,12 @@ def nudge_wedged_main_tasks(conn):
             )
             return []
         wedged = sql.wedged_main_tasks(cur, minutes * 60)
-        stubborn = {
-            task['task_id']
-            for task in sql.wedged_main_tasks(cur, minutes * 60 * _ESCALATE_AFTER)
-        }
+        escalate_after = minutes * 60 * _ESCALATE_AFTER
         terminated = {}
         for task in wedged:
             task_id = task['task_id']
             sql.notify_cancel(cur, task_id)
-            if task_id in stubborn:
+            if task['silent_seconds'] >= escalate_after:
                 terminated[task_id] = sql.terminate_wedged_worker_backends(cur, task_id)
     conn.commit()
     for task_id, pids in terminated.items():
