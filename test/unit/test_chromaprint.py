@@ -199,15 +199,20 @@ class TestConfirmPairsChromaprintGate:
 
 
 class _RecordingCursor:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, pages=None):
         self.statements = []
+        self.params = []
         self._rows = rows or []
+        self._pages = list(pages) if pages is not None else None
 
     def execute(self, statement, params=None):
         self.statements.append(' '.join(str(statement).split()))
+        self.params.append(params)
 
     def fetchall(self):
-        return list(self._rows)
+        if self._pages is None:
+            return list(self._rows)
+        return list(self._pages.pop(0)) if self._pages else []
 
     @property
     def created_indexes(self):
@@ -257,3 +262,71 @@ class TestTheStagedHandOverCostsWhatItIsHanded:
         database.inherit_chromaprints_from_staged_maps(cur)
 
         assert cur.created_indexes == []
+
+
+class TestTheKeysetHandOverLoop:
+    def test_it_pages_until_a_short_page_and_counts_only_what_it_wrote(
+        self, monkeypatch
+    ):
+        import config
+        import database
+
+        monkeypatch.setattr(config, 'CHROMAPRINT_INHERIT_BATCH_SIZE', 2)
+        cur = _RecordingCursor(pages=[
+            [('s1', 'a', True), ('s1', 'b', False)],
+            [('s1', 'c', True)],
+        ])
+
+        total = database._inherit_chromaprints_in_batches(cur, 'staged')
+
+        assert total == 2, (
+            'a row the statement did not actually write must not be counted, or '
+            'the log claims fingerprints it never handed over'
+        )
+        assert len(cur.statements) == 2, 'a short page ends the loop'
+
+    def test_the_cursor_advances_from_the_last_row_of_the_page(self, monkeypatch):
+        import config
+        import database
+
+        monkeypatch.setattr(config, 'CHROMAPRINT_INHERIT_BATCH_SIZE', 2)
+        cur = _RecordingCursor(pages=[
+            [('s1', 'a', True), ('s1', 'b', True)],
+            [('s1', 'c', True)],
+        ])
+
+        database._inherit_chromaprints_in_batches(cur, 'staged')
+
+        assert cur.params[0] == ('', '', 2)
+        assert cur.params[1] == ('s1', 'b', 2), (
+            'the statement ORDERs by (server_id, provider_track_id) and the loop '
+            'takes the LAST row, so the next page starts where this one ended; '
+            'taking a Python max() here instead compares by codepoint and can '
+            'disagree with the database collation'
+        )
+
+    def test_an_empty_first_page_stops_at_once(self, monkeypatch):
+        import config
+        import database
+
+        monkeypatch.setattr(config, 'CHROMAPRINT_INHERIT_BATCH_SIZE', 2)
+        cur = _RecordingCursor(pages=[[]])
+
+        assert database._inherit_chromaprints_in_batches(cur, 'staged') == 0
+        assert len(cur.statements) == 1
+
+    def test_a_full_page_that_wrote_nothing_still_terminates(self, monkeypatch):
+        import config
+        import database
+
+        monkeypatch.setattr(config, 'CHROMAPRINT_INHERIT_BATCH_SIZE', 2)
+        cur = _RecordingCursor(pages=[
+            [('s1', 'a', False), ('s1', 'b', False)],
+            [],
+        ])
+
+        assert database._inherit_chromaprints_in_batches(cur, 'staged') == 0
+        assert len(cur.statements) == 2, (
+            'counting written rows instead of returned ones is what used to end '
+            'the sweep early; the loop has to keep paging and stop on the rows'
+        )

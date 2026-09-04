@@ -39,9 +39,14 @@ Main Features:
   CHROMAPRINT_GATE_ENABLED on still uses stored prints, and with the backfill
   gone this is the only path that would ever fill them. The hand-over runs on
   EVERY call, and the analysis calls this once per TRACK with a single row, so
-  nothing here may cost more than that one row is worth: the keyset index on the
-  staging table is built only when the staged set is big enough for the chunking
-  to loop, which is the sweep, never the per-track flush.
+  nothing here may cost more than that one row is worth. Two things keep it that
+  way: the keyset index on the staging table is built only when the staged set is
+  big enough for the chunking to loop (the sweep, never the per-track flush), and
+  the whole hand-over - savepoint, statement, release - is skipped outright when
+  the catalogue has ONE server. That skip is exact, not a heuristic: a mapping can
+  only borrow from a mapping of the same item_id on a DIFFERENT server, because
+  the same server holding two files for one item_id is the ambiguity both sides
+  already refuse. One server therefore cannot inherit anything, ever.
 """
 
 import logging
@@ -235,6 +240,20 @@ def has_secondary_servers(conn=None):
         with _default_cache_lock:
             _default_cache['secondary'] = result
             _default_cache['secondary_expires'] = time.monotonic() + _DEFAULT_CACHE_TTL
+    return result
+
+
+def _catalogue_has_two_servers(cur):
+    now = time.monotonic()
+    with _default_cache_lock:
+        if _default_cache['secondary_expires'] > now:
+            return bool(_default_cache['secondary'])
+    cur.execute("SELECT EXISTS (SELECT 1 FROM music_servers OFFSET 1)")
+    row = cur.fetchone()
+    result = bool(row and row[0])
+    with _default_cache_lock:
+        _default_cache['secondary'] = result
+        _default_cache['secondary_expires'] = time.monotonic() + _DEFAULT_CACHE_TTL
     return result
 
 
@@ -830,6 +849,8 @@ def upsert_track_maps(server_id, mapping, conn=None):
         if not (
             config.CHROMAPRINT_COLLECTION_ENABLED or config.CHROMAPRINT_GATE_ENABLED
         ):
+            return
+        if not _catalogue_has_two_servers(cur):
             return
         inherited = inherit_chromaprints_from_staged_maps(cur, len(rows))
         if inherited:

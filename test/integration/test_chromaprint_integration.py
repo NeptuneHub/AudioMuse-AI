@@ -25,6 +25,11 @@ Main Features:
 * A track whose own fpcalc run failed carries the NULL retry-stop sentinel, and
   that row must not lock it out of the hand-over: with the backfill gone this is
   the only path that would ever give it a real print.
+* A one-server catalogue skips the hand-over outright. The analysis flushes track
+  maps once per TRACK, and a mapping can only ever borrow from a mapping of the
+  same item_id on a DIFFERENT server, so with one server the savepoint, the
+  statement and the release are three round trips per analyzed song that provably
+  cannot find anything.
 * The SOURCE side refuses an ambiguous fingerprint exactly like the target side.
   A source server holding two files for one canonical id cannot say which one the
   stored print belongs to, so handing either on is a guess the gate then treats
@@ -93,6 +98,9 @@ def pg_dsn():
 
 @pytest.fixture
 def db(pg_dsn):
+    from tasks.mediaserver import registry
+
+    registry.invalidate_server_cache()
     conn = psycopg2.connect(pg_dsn)
     with conn.cursor() as cur:
         cur.execute(
@@ -300,6 +308,57 @@ class TestChromaprintDbPath:
             'two files on the source server share this canonical id, so neither '
             'print is known to be the right one; DISTINCT ON just took whichever '
             'sorted first and the gate then compared against a guess'
+        )
+
+    def test_a_one_server_catalogue_skips_the_hand_over_entirely(
+        self, db, use_test_db, monkeypatch
+    ):
+        from database import get_chromaprint
+        from tasks.mediaserver import registry
+
+        calls = []
+        monkeypatch.setattr(
+            registry, 'inherit_chromaprints_from_staged_maps',
+            lambda cur, staged_rows=0: calls.append(staged_rows) or 0,
+        )
+        with db.cursor() as cur:
+            _seed(cur, 'fp_one', 'only', 'A-album', '/one/only.flac')
+        db.commit()
+
+        written = registry.upsert_track_maps(
+            'srv', {'only2': ('fp_one', 'path', '/one/only2.flac')}, conn=db
+        )
+
+        assert written == 1, 'the mapping write is the job and always stands'
+        assert calls == [], (
+            'one server cannot borrow a print from itself: both sides already '
+            'refuse the same-server two-files case, so this is three round trips '
+            'per analyzed track that provably find nothing'
+        )
+        assert get_chromaprint('srv', 'only2') is None
+
+    def test_a_second_server_turns_the_hand_over_back_on(
+        self, db, use_test_db, monkeypatch
+    ):
+        from tasks.mediaserver import registry
+
+        calls = []
+        monkeypatch.setattr(
+            registry, 'inherit_chromaprints_from_staged_maps',
+            lambda cur, staged_rows=0: calls.append(staged_rows) or 0,
+        )
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_two', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_two', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert calls == [1], (
+            'the skip must be exactly "one server", not a blanket disable; a '
+            'second server is the whole reason the hand-over exists'
         )
 
     def test_a_broken_chromaprint_table_never_fails_the_mapping_write(
