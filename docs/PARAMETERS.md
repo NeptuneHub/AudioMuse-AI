@@ -87,7 +87,6 @@ These are the default parameters used when launching analysis or clustering task
 | `CATALOGUE_ID_SCHEME_VERSION`               | Version of the `fp_<n>` content-id scheme. New ids are minted at this version and the startup migration relabels every older-version id up to it exactly once. Bump it only to force a one-time catalogue re-migration. | `4` |
 | `CHROMAPRINT_COLLECTION_ENABLED`            | Compute and store a Chromaprint acoustic fingerprint per analyzed track (needs the fpcalc binary; off if it is missing).    | `true`          |
 | `CHROMAPRINT_GATE_ENABLED`                  | Use stored fingerprints as an extra same-recording check in duplicate detection; skipped for any pair missing a print.      | `true`          |
-| `CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN`       | Albums per server whose already-analyzed tracks get a fingerprint back-filled at the end of each analysis run.              | `1000`          |
 | `CHROMAPRINT_MATCH_THRESHOLD`               | Fraction of matching fingerprint bits at/above which two tracks are the same recording. Higher = split more aggressively.   | `0.95`          |
 | **Clustering General**                      |                                                                                                                            |                 |
 | `ENABLE_CLUSTERING_EMBEDDINGS`              | Whether to use audio embeddings (True) or score-based features (False) for clustering.                                    | `true`          |

@@ -916,7 +916,6 @@ def set_hyperbolic_projection(item_id, poincare_embedding, hyperbolic_radius):
         cur.close()
 
 
-MAPPED_TRACKS_SCOPE = "track_server_map"
 STAGED_MAPS_SCOPE = "incoming_track_server_map"
 
 
@@ -951,11 +950,6 @@ def _chromaprint_inherit_sql(scope_table):
         "  JOIN chromaprint cp ON cp.server_id = o.server_id "
         "    AND cp.provider_track_id = o.provider_track_id "
         "  WHERE cp.fingerprint IS NOT NULL "
-        "    AND NOT EXISTS ("
-        "      SELECT 1 FROM track_server_map sd "
-        "      WHERE sd.item_id = o.item_id AND sd.server_id = o.server_id "
-        "        AND sd.provider_track_id <> o.provider_track_id"
-        "    ) "
         "  ORDER BY o.item_id, o.server_id, o.provider_track_id"
         ") "
         "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
@@ -1008,42 +1002,6 @@ def inherit_chromaprints_from_staged_maps(cur):
             "the mappings stand and the next run retries the hand-over"
         )
         return 0
-
-
-def inherit_chromaprints_for_mapped_tracks(conn=None):
-    db = None
-    cur = None
-    done = []
-    failed = False
-    try:
-        db = conn or get_db()
-        cur = db.cursor()
-        _inherit_chromaprints_in_batches(
-            cur, MAPPED_TRACKS_SCOPE, commit=db.commit, done=done
-        )
-    except Exception:
-        failed = True
-        if db is not None:
-            try:
-                db.rollback()
-            except Exception:
-                logger.exception("Rollback failed after chromaprint inherit error")
-        logger.exception(
-            "Could not finish handing stored Chromaprints to mapped tracks; "
-            "%d already committed, the rest follow on the next run", sum(done),
-        )
-    finally:
-        if cur is not None:
-            cur.close()
-    inherited = sum(done)
-    if inherited:
-        logger.info(
-            "%d mapping(s) inherited a Chromaprint already stored for the same "
-            "canonical track, so they need no download", inherited,
-        )
-    if failed and inherited == 0:
-        return -1
-    return inherited
 
 
 def persist_chromaprint(server_id, provider_track_id, fingerprint):

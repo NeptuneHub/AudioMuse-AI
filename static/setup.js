@@ -434,8 +434,7 @@ var ADVANCED_SECTIONS = [
         title: 'Catalogue Identity & Chromaprint',
         items: [
             'CATALOGUE_ID_SCHEME_VERSION', 'CHROMAPRINT_COLLECTION_ENABLED',
-            'CHROMAPRINT_GATE_ENABLED', 'CHROMAPRINT_MATCH_THRESHOLD',
-            'CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN'
+            'CHROMAPRINT_GATE_ENABLED', 'CHROMAPRINT_MATCH_THRESHOLD'
         ]
     },
     {

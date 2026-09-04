@@ -497,8 +497,6 @@ valid mappings.
   the same recording.
 - `CHROMAPRINT_COLLECTION_ENABLED`: compute and store a fingerprint for every
   newly analyzed track.
-- `CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN`: albums per server whose already
-  analyzed tracks get a fingerprint back-filled on each analysis run.
 - `CHROMAPRINT_GATE_ENABLED`: use the fingerprints in the identity decision.
 - `CHROMAPRINT_MATCH_THRESHOLD`, `CHROMAPRINT_MAX_ALIGN_OFFSET`,
   `CHROMAPRINT_MIN_OVERLAP`: the comparison parameters.

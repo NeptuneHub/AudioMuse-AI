@@ -31,9 +31,9 @@ Main Features:
   never talks to the wrong machine.
 * upsert_track_maps hands each mapping the Chromaprint already stored for its
   canonical track, in the SAME transaction that writes the mapping. Matching a
-  track and knowing its fingerprint are one step, so a sweep can never leave the
-  Chromaprint backfill a catalogue to re-download. The inherit rides a SAVEPOINT
-  and can only ever be skipped: the mapping write is the job and always stands.
+  track and knowing its fingerprint are one step, so a sweep always carries the
+  fingerprint with the mapping. The inherit rides a SAVEPOINT and can only ever
+  be skipped: the mapping write is the job and always stands.
 """
 
 import logging

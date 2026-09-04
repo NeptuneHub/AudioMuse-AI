@@ -19,9 +19,6 @@ Main Features:
   under its provider id and records the empty-string retry-stop sentinel.
 * run_analysis_task scope handling: empty enabled-server list skips instead of
   falling back to the config default server.
-* Chromaprint backfill liveness: the per-track loop writes throttled progress so
-  the task row never looks hung, and it honours revocation mid-loop instead of
-  fingerprinting thousands of tracks after a Cancel.
 """
 
 import logging
@@ -2595,7 +2592,6 @@ def test_a_requeued_job_refuses_to_rerun_a_terminal_task(monkeypatch, terminal_s
 
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', forbidden)
     monkeypatch.setattr(analysis, '_run_all_index_builds', forbidden)
-    monkeypatch.setattr(analysis, '_run_chromaprint_backfill', forbidden)
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
 
     result = analysis.run_analysis_task(0, 5)
@@ -2603,7 +2599,7 @@ def test_a_requeued_job_refuses_to_rerun_a_terminal_task(monkeypatch, terminal_s
     assert result['status'] == terminal_status
 
 
-def test_a_run_cancelled_during_the_album_phases_never_reaches_chromaprint(monkeypatch):
+def test_a_run_cancelled_during_the_album_phases_never_reaches_the_index_rebuild(monkeypatch):
     import tasks.analysis.main as analysis
 
     servers = [
@@ -2631,7 +2627,6 @@ def test_a_run_cancelled_during_the_album_phases_never_reaches_chromaprint(monke
         raise AssertionError('the tail phases must not run after a cancel')
 
     monkeypatch.setattr(analysis, '_run_all_index_builds', forbidden)
-    monkeypatch.setattr(analysis, '_run_chromaprint_backfill', forbidden)
 
     result = analysis.run_analysis_task(0, 5)
 
@@ -2667,169 +2662,6 @@ def test_an_unreadable_status_lets_the_run_proceed_rather_than_stalling(monkeypa
     result = analysis.run_analysis_task(0, 5)
 
     assert result['status'] == 'SKIPPED'
-
-
-def _chromaprint_backfill_harness(monkeypatch, targets_by_server, report_seconds=0):
-    import contextlib
-    import tasks.analysis.main as analysis
-    from tasks.mediaserver import context as server_context
-
-    monkeypatch.setattr(analysis, 'CHROMAPRINT_COLLECTION_ENABLED', True)
-    monkeypatch.setattr(
-        analysis, 'CHROMAPRINT_BACKFILL_REPORT_SECONDS', report_seconds
-    )
-    monkeypatch.setattr(analysis.chromaprint, 'is_available', lambda: True)
-    monkeypatch.setattr(analysis, '_bind_server_context', lambda server_id: server_id)
-    monkeypatch.setattr(
-        server_context, 'use_server', lambda *a, **k: contextlib.nullcontext()
-    )
-    monkeypatch.setattr(
-        analysis,
-        '_chromaprint_backfill_targets',
-        lambda server_id, limit, exclude_covered=True: list(
-            targets_by_server.get(server_id, [])
-        ),
-    )
-    monkeypatch.setattr(analysis, 'inherit_chromaprints_for_mapped_tracks', lambda: 0)
-    processed = []
-    monkeypatch.setattr(
-        analysis,
-        '_backfill_one_track',
-        lambda server_id, track_id, path: processed.append((server_id, track_id)) or True,
-    )
-    return analysis, processed
-
-
-def test_inheriting_stored_chromaprints_never_raises_into_the_analysis_run():
-    import database
-
-    class _DeadConn:
-        def cursor(self):
-            raise RuntimeError("database gone")
-
-        def rollback(self):
-            raise RuntimeError("database gone")
-
-    assert database.inherit_chromaprints_for_mapped_tracks(conn=_DeadConn()) == -1
-
-
-def test_one_server_failing_during_its_backfill_never_stops_the_other_servers(
-    monkeypatch,
-):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv-a': _fake_targets(2, 'a'), 'srv-b': _fake_targets(2, 'b')}
-    )
-
-    def _targets_or_raise(server_id, limit, exclude_covered=True):
-        if server_id == 'srv-a':
-            raise RuntimeError("database gone")
-        return _fake_targets(2, 'b')
-
-    monkeypatch.setattr(analysis, '_chromaprint_backfill_targets', _targets_or_raise)
-
-    assert analysis._run_chromaprint_backfill(['srv-a', 'srv-b']) is False
-    assert {server_id for server_id, _track in processed} == {'srv-b'}
-
-
-def test_failed_inherit_measures_covered_rows_as_a_fallback(monkeypatch):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv': _fake_targets(2)}
-    )
-    monkeypatch.setattr(analysis, 'inherit_chromaprints_for_mapped_tracks', lambda: -1)
-
-    seen = []
-
-    def _targets(server_id, limit, exclude_covered=True):
-        seen.append(exclude_covered)
-        return _fake_targets(2)
-
-    monkeypatch.setattr(analysis, '_chromaprint_backfill_targets', _targets)
-
-    analysis._run_chromaprint_backfill(['srv'])
-
-    assert seen == [False]
-
-
-def _fake_targets(count, prefix='t'):
-    return [(f'{prefix}{i}', f'/music/{prefix}{i}.flac') for i in range(count)]
-
-
-def test_chromaprint_backfill_writes_progress_during_the_loop_not_only_before_it(
-    monkeypatch,
-):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv': _fake_targets(5)}
-    )
-    reports = []
-
-    analysis._run_chromaprint_backfill(
-        ['srv'], log_fn=lambda message, progress=99: reports.append(message)
-    )
-
-    assert len(processed) == 5
-    assert len(reports) == 6
-    assert '5/5 track(s)' in reports[-1]
-
-
-def test_chromaprint_backfill_throttles_progress_writes_to_the_configured_interval(
-    monkeypatch,
-):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv': _fake_targets(5)}, report_seconds=3600
-    )
-    reports = []
-
-    analysis._run_chromaprint_backfill(
-        ['srv'], log_fn=lambda message, progress=99: reports.append(message)
-    )
-
-    assert len(processed) == 5
-    assert len(reports) == 1
-
-
-def test_chromaprint_backfill_stops_mid_loop_once_the_run_is_revoked(monkeypatch):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv': _fake_targets(10)}
-    )
-
-    analysis._run_chromaprint_backfill(
-        ['srv'],
-        log_fn=lambda message, progress=99: None,
-        should_stop=lambda: len(processed) >= 3,
-    )
-
-    assert len(processed) == 3
-
-
-def test_chromaprint_backfill_leaves_remaining_servers_untouched_once_revoked(
-    monkeypatch,
-):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch,
-        {'srv-a': _fake_targets(2, 'a'), 'srv-b': _fake_targets(2, 'b'),
-         'srv-c': _fake_targets(2, 'c')},
-    )
-
-    analysis._run_chromaprint_backfill(
-        ['srv-a', 'srv-b', 'srv-c'],
-        log_fn=lambda message, progress=99: None,
-        should_stop=lambda: len(processed) >= 2,
-    )
-
-    assert {server_id for server_id, _ in processed} == {'srv-a'}
-
-
-def test_chromaprint_backfill_covers_every_server_when_nothing_is_revoked(monkeypatch):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch,
-        {'srv-a': _fake_targets(2, 'a'), 'srv-b': [], 'srv-c': _fake_targets(1, 'c')},
-    )
-
-    analysis._run_chromaprint_backfill(
-        ['srv-a', 'srv-b', 'srv-c'], log_fn=lambda message, progress=99: None
-    )
-
-    assert {server_id for server_id, _ in processed} == {'srv-a', 'srv-c'}
 
 
 def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkeypatch):
