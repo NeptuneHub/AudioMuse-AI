@@ -768,6 +768,15 @@ def reap_children(cur, parent_task_id):
     return reaped
 
 
+# server_sweep is watched too, even though it is not a MAIN_TASK_TYPE and holds
+# its own index rather than the one-live-main one. "It blocks only other sweeps"
+# was wrong: the cleaning start and the provider-migration execute both refuse
+# while a sweep is live, so a wedged sweep locked out cleaning, migration and
+# every future sweep, and nothing else was watching it - reclaim needs the worker
+# to DIE, and a wedged worker does not.
+NUDGE_TASK_TYPES = MAIN_TASK_TYPES + (SWEEP_TASK_TYPE,)
+
+
 _WEDGED_MAIN_TASKS = """
     SELECT task_id, task_type, attempts, max_attempts,
            EXTRACT(EPOCH FROM (NOW() - t.timestamp)) AS silent_seconds
@@ -780,7 +789,7 @@ _WEDGED_MAIN_TASKS = """
                     AND a.application_name IN (t.worker_id, t.worker_id || %s))
 """.format(
     running=_RUNNING,
-    types=', '.join(f"'{name}'" for name in MAIN_TASK_TYPES),
+    types=', '.join(f"'{name}'" for name in NUDGE_TASK_TYPES),
 )
 
 
@@ -816,7 +825,7 @@ def wedged_main_tasks(cur, silent_seconds):
 # progress WRITE, so a child whose one step is a single opaque call - a spectral
 # fit over 10k songs - looked identical to a wedge and was revoked while healthy.
 _LIVE_CHILDREN = f"""
-    SELECT task_id, sub_type_identifier, progress, status, timestamp
+    SELECT task_id, sub_type_identifier, progress, status, timestamp, task_type
     FROM task_status
     WHERE parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
 """
@@ -828,6 +837,7 @@ def live_children(cur, parent_task_id):
         {
             'task_id': row[0], 'sub_type_identifier': row[1],
             'progress': row[2], 'status': row[3], 'beat_at': row[4],
+            'task_type': row[5],
         }
         for row in (cur.fetchall() or ())
     ]

@@ -27,8 +27,13 @@ Main Features:
 * Zero-download alignment, artist link upserts, and batch metadata refresh.
 * Lean memory: fetched catalogue is condensed into a slim CandidateIndex and the
   local side streams through it in keyset-paginated chunks.
-* A sweep whose worker died is restarted by the queue's own reclaim; an
-  empty-catalogue guard makes first-install sweeps instant no-ops.
+* A sweep whose worker died is restarted by the queue's own reclaim, and one
+  whose worker is ALIVE but wedged is ended by the wedged-main nudge, which
+  watches this task type as well (taskqueue.sql.NUDGE_TASK_TYPES): a live sweep
+  refuses a cleaning start and a provider-migration execute, so a wedged one
+  locked out far more than the next sweep. Its one whole-catalogue fetch per
+  server therefore holds a row_heartbeat, so only a sweep that is really stuck
+  runs the nudge's limit out.
 * prune_stale_mappings invalidates BOTH the paged-IVF and the hyperbolic
   availability-mask caches whenever it actually removes track_server_map
   rows, so every index's per-server view corrects itself the moment a
@@ -43,7 +48,7 @@ import uuid
 from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
-from config import SWEEP_PRUNE_MIN_FETCH_RATIO
+from config import SWEEP_PRUNE_MIN_FETCH_RATIO, QUEUE_WEDGED_MAIN_TASK_MINUTES
 from database import (
     connect_raw,
     stage_pending_task_row,
@@ -52,6 +57,7 @@ from sanitization import sanitize_string_for_db
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
 from tasks.provider_migration_matcher import CandidateIndex
+from tasks.recovery import row_heartbeat, slow_step_budget_minutes
 
 logger = logging.getLogger(__name__)
 
@@ -507,7 +513,8 @@ def fetch_server_catalogue(server):
         return provider_probe.fetch_all_tracks(stype, creds, apply_filter=True)
 
 
-def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
+def _sweep_one(server, db, report, base, span, cancel, task_id=None,
+               full_refresh=False):
     registry.invalidate_server_cache()
     stype = server['server_type']
     server_id = server['server_id']
@@ -535,7 +542,13 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
         }
 
     report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
-    target_tracks = fetch_server_catalogue(server)
+    with row_heartbeat(
+        task_id,
+        f"fetching the whole catalogue of {server['name']}, one call that writes "
+        "no row until it returns",
+        stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+    ):
+        target_tracks = fetch_server_catalogue(server)
     cancel()
 
     target_total = len(target_tracks)
@@ -641,7 +654,9 @@ def sweep_server(server_id, task_id=None, conn=None, parent_task_id=None):
 
         report(f"Starting alignment for {server['name']}...", 2, task_state=TASK_STATUS_STARTED)
         cancel()
-        summary = _sweep_one(server, db, report, 5, 95, cancel, full_refresh=True)
+        summary = _sweep_one(
+            server, db, report, 5, 95, cancel, task_id=task_id, full_refresh=True
+        )
         if summary.get('empty_catalogue'):
             message = "Nothing analyzed yet; alignment runs automatically during the first analysis."
         elif summary.get('aligned'):
@@ -716,7 +731,7 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
                 results.append(
                     _sweep_one(
                         server, db, report, 5 + i * span, span, cancel,
-                        full_refresh=full_refresh,
+                        task_id=task_id, full_refresh=full_refresh,
                     )
                 )
             except SweepCancelled:

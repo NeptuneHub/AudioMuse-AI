@@ -361,6 +361,63 @@ class TestChromaprintDbPath:
             'second server is the whole reason the hand-over exists'
         )
 
+    def test_a_third_server_inherits_and_picks_one_source_deterministically(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _add_server(cur, 'srv3')
+            _seed(cur, 'fp_three', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        registry.upsert_track_maps(
+            'srv2', {'mid': ('fp_three', 'path', '/two/mid.flac')}, conn=db
+        )
+        assert get_chromaprint('srv2', 'mid') == _blob(1)
+
+        registry.invalidate_server_cache()
+        registry.upsert_track_maps(
+            'srv3', {'last': ('fp_three', 'path', '/three/last.flac')}, conn=db
+        )
+
+        assert get_chromaprint('srv3', 'last') == _blob(1), (
+            'the skip is "fewer than two servers", not "exactly two": a third '
+            'server must still be handed the print its canonical track already has'
+        )
+
+    def test_two_servers_holding_the_same_print_pick_the_same_source_every_time(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _add_server(cur, 'srv3')
+            _seed(cur, 'fp_pick', 'old', 'A-album', '/one/old.flac')
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('fp_pick', 'srv2', 'mid', 'path', '/two/mid.flac')"
+            )
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+        persist_chromaprint('srv2', 'mid', _blob(2))
+
+        registry.upsert_track_maps(
+            'srv3', {'last': ('fp_pick', 'path', '/three/last.flac')}, conn=db
+        )
+
+        assert get_chromaprint('srv3', 'last') == _blob(1), (
+            'two servers can both hold a print for one canonical track, so the '
+            'source has to be chosen by a total order (lowest server_id) rather '
+            'than by whichever row the planner happened to return first'
+        )
+
     def test_a_broken_chromaprint_table_never_fails_the_mapping_write(
         self, db, use_test_db
     ):

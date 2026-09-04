@@ -1528,7 +1528,8 @@ class TestSweepAlignment:
             sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
         )
 
-        def fake_sweep(server, db, report, base, span, cancel, full_refresh=False):
+        def fake_sweep(server, db, report, base, span, cancel, task_id=None,
+                       full_refresh=False):
             if server['server_id'] == 's1':
                 raise RuntimeError('provider down')
             return {'server_id': server['server_id'], 'matched': 3}
@@ -1605,7 +1606,8 @@ class TestSweepAlignment:
         )
         monkeypatch.setattr(
             sync, '_sweep_one',
-            lambda server, db, report, base, span, cancel, full_refresh=False: {
+            lambda server, db, report, base, span, cancel, task_id=None,
+            full_refresh=False: {
                 'server_id': server['server_id'], 'matched': 0, 'aligned': True,
                 'empty_catalogue': True, 'tier_counts': {},
             },
@@ -2058,7 +2060,8 @@ class TestSweepAlignment:
             },
         )
 
-        def fake_sweep_one(server, db, report, base, span, cancel, full_refresh=False):
+        def fake_sweep_one(server, db, report, base, span, cancel, task_id=None,
+                           full_refresh=False):
             report(f"Aligning {server['name']}: 3 tracks to match...", 50)
             return {
                 'server_id': server['server_id'], 'matched': 2, 'unmapped': 3,

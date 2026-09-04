@@ -387,13 +387,22 @@ CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHE
 # disappeared). A batch wedged in non-returning native code keeps its worker alive,
 # so the worker still holds the advisory lock, reclaim correctly leaves it alone and
 # an unattended cron run would wait at a frozen generation count forever. When this
-# expires the parent cancels the batches it is still waiting on and finishes with the
-# best result it already has. A live batch's own iteration counter counts as change,
+# expires the parent ends the batches a worker is HOLDING and launches the next one;
+# only CLUSTERING_MAX_STALL_GIVE_UPS of those end the run. A live batch's own iteration counter counts as change,
 # so a slow batch and one a fresh worker restarted after a worker death both keep the
 # window open; only a batch producing nothing at all runs it out. Same 60 minutes as
 # the predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES, which was a per-batch budget that
 # a merely slow batch could trip. 0 disables it.
-CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in a clustering run - no batch finished, failed, launched, and no live batch advanced even one iteration - before the parent gives up on the batches it is waiting for and finishes with its best result (0 = never give up)
+CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in a clustering run - no batch finished, failed, launched, and no live batch advanced even one iteration - before the parent gives up on the batches it is waiting for and launches the next one (0 = never give up)
+# The clustering twin of ANALYSIS_MAX_STALL_GIVE_UPS, and the two are deliberately the
+# same number. This used to be hard-wired to 1: the FIRST wedged batch ended the whole
+# search, so an overnight run of fifty batches could return the result of five. One
+# wedged batch is a wedged batch, not a wedged run - the parent ends it, launches the
+# next one, and only gives up on the search after this many. It costs nothing to be
+# generous here because a given-up batch is also counted as failed, so
+# CLUSTERING_EARLY_STOP_BATCHES and CLUSTERING_MAX_FAILED_BATCHES still end a run whose
+# batches are genuinely all dying. 0 = never stop launching over stalls.
+CLUSTERING_MAX_STALL_GIVE_UPS = int(os.environ.get("CLUSTERING_MAX_STALL_GIVE_UPS", "3")) # How many times a clustering run may give up on a wedged batch before it stops launching new ones and finishes with its best result
 
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.

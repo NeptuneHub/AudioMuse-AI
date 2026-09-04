@@ -68,7 +68,11 @@ from sanitization import sanitize_string_for_db, sanitize_string_for_db_loud
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_TTL = 10.0
-_default_cache = {'expires': 0.0, 'row': None, 'secondary_expires': 0.0, 'secondary': None}
+_default_cache = {
+    'expires': 0.0, 'row': None,
+    'secondary_expires': 0.0, 'secondary': None,
+    'multi_expires': 0.0, 'multi': None,
+}
 _default_cache_lock = threading.Lock()
 _warned_once = {'projection': False, 'row': False}
 
@@ -79,6 +83,8 @@ def invalidate_server_cache():
         _default_cache['row'] = None
         _default_cache['secondary_expires'] = 0.0
         _default_cache['secondary'] = None
+        _default_cache['multi_expires'] = 0.0
+        _default_cache['multi'] = None
         _warned_once['projection'] = False
         _warned_once['row'] = False
 
@@ -220,6 +226,8 @@ def servers_for_scope(scope, conn=None):
     return servers
 
 
+
+
 def has_secondary_servers(conn=None):
     """True when any non-default server exists (cached like the default row)."""
     if conn is None:
@@ -246,14 +254,14 @@ def has_secondary_servers(conn=None):
 def _catalogue_has_two_servers(cur):
     now = time.monotonic()
     with _default_cache_lock:
-        if _default_cache['secondary_expires'] > now:
-            return bool(_default_cache['secondary'])
+        if _default_cache['multi_expires'] > now:
+            return bool(_default_cache['multi'])
     cur.execute("SELECT EXISTS (SELECT 1 FROM music_servers OFFSET 1)")
     row = cur.fetchone()
     result = bool(row and row[0])
     with _default_cache_lock:
-        _default_cache['secondary'] = result
-        _default_cache['secondary_expires'] = time.monotonic() + _DEFAULT_CACHE_TTL
+        _default_cache['multi'] = result
+        _default_cache['multi_expires'] = time.monotonic() + _DEFAULT_CACHE_TTL
     return result
 
 

@@ -98,6 +98,8 @@ def _imports_row_heartbeat(relative_path):
 class TestEveryLongOpaquePhaseHasAHeartbeat:
     @pytest.mark.parametrize('relative_path', [
         'tasks/analysis/index.py',
+        'tasks/analysis/main.py',
+        'tasks/cleaning.py',
         'tasks/clustering.py',
         'tasks/sonic_fingerprint_manager.py',
         'tasks/provider_migration_tasks.py',
@@ -124,12 +126,19 @@ class TestEveryLongOpaquePhaseHasAHeartbeat:
         if not claims:
             return
         modules = {
-            'main_analysis': 'tasks/analysis/index.py',
-            'cleaning': 'tasks/analysis/index.py',
-            'sonic_fingerprint': 'tasks/sonic_fingerprint_manager.py',
-            'provider_migration': 'tasks/provider_migration_tasks.py',
+            'main_analysis': ('tasks/analysis/index.py', 'tasks/analysis/main.py'),
+            'main_clustering': ('tasks/clustering.py',),
+            'cleaning': ('tasks/analysis/index.py', 'tasks/cleaning.py'),
+            'sonic_fingerprint': ('tasks/sonic_fingerprint_manager.py',),
+            'provider_migration': ('tasks/provider_migration_tasks.py',),
+            'server_sweep': ('tasks/multiserver_sync.py',),
         }
-        assert _imports_row_heartbeat(modules[task_type])
+        assert task_type in modules, (
+            f'{task_type} claims a row_heartbeat and names no module that could '
+            'hold one; a claim nobody can check is how a phase went unguarded'
+        )
+        for relative_path in modules[task_type]:
+            assert _imports_row_heartbeat(relative_path), relative_path
 
 
 class _Clock:

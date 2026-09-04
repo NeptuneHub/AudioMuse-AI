@@ -25,18 +25,30 @@ Main Features:
 * Refreshes each server's stored library size (music_servers.track_count).
 * Runs the Chromaprint dedup (Path B) each time: splits merged groups whose
   stored fingerprints prove they are different recordings (skip-if-missing).
+* Cleaning is a MAIN_TASK_TYPE, so it holds the one-live-main index and the
+  wedged-main nudge watches its row. Both of its opaque phases therefore hold a
+  row_heartbeat: the one whole-catalogue fetch PER SERVER, and the final index
+  rebuild. Each is a single call that writes no row while it runs, which the
+  nudge cannot tell from a wedge; both are bounded, so a fetch that really never
+  returns is still handed back to it.
 """
 
 import logging
 import time
 from collections import defaultdict
 
-from config import CLEANING_SAFETY_LIMIT, CLEANING_CATALOGUE, CHROMAPRINT_GATE_ENABLED
+from config import (
+    CLEANING_SAFETY_LIMIT,
+    CLEANING_CATALOGUE,
+    CHROMAPRINT_GATE_ENABLED,
+    QUEUE_WEDGED_MAIN_TASK_MINUTES,
+)
 
 from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION, ERR_INDEX_BUILD
 
 from .mediaserver import registry
+from .recovery import row_heartbeat, slow_step_budget_minutes
 
 from psycopg2 import OperationalError
 
@@ -130,7 +142,15 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                     f"Fetching the track list from {server_name}...", window_start
                 )
                 try:
-                    tracks = fetch_server_catalogue(server)
+                    with row_heartbeat(
+                        current_task_id,
+                        f"fetching the whole track list of {server_name}, one call "
+                        "that writes no row until it returns",
+                        stop_after_minutes=slow_step_budget_minutes(
+                            QUEUE_WEDGED_MAIN_TASK_MINUTES
+                        ),
+                    ):
+                        tracks = fetch_server_catalogue(server)
                 except Exception:
                     logger.exception(f"Failed to fetch the library from {server_name}")
                     failed_servers.append(server_name)
