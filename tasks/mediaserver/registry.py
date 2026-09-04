@@ -220,6 +220,9 @@ def servers_for_scope(scope, conn=None):
     return servers
 
 
+_HAS_SECONDARY_SERVERS = "SELECT EXISTS (SELECT 1 FROM music_servers WHERE NOT is_default)"
+
+
 def has_secondary_servers(conn=None):
     """True when any non-default server exists (cached like the default row)."""
     if conn is None:
@@ -230,9 +233,7 @@ def has_secondary_servers(conn=None):
     db = conn or get_db()
     cur = db.cursor()
     try:
-        cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM music_servers WHERE NOT is_default)"
-        )
+        cur.execute(_HAS_SECONDARY_SERVERS)
         result = bool(cur.fetchone()[0])
     finally:
         cur.close()
@@ -248,7 +249,7 @@ def _catalogue_has_two_servers(cur):
     with _default_cache_lock:
         if _default_cache['secondary_expires'] > now:
             return bool(_default_cache['secondary'])
-    cur.execute("SELECT EXISTS (SELECT 1 FROM music_servers OFFSET 1)")
+    cur.execute(_HAS_SECONDARY_SERVERS)
     row = cur.fetchone()
     result = bool(row and row[0])
     with _default_cache_lock:

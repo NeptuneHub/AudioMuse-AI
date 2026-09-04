@@ -319,7 +319,8 @@ RECOVERY = {
     'main_analysis': {
         MAIN_WORKER_DIED: handled(_RECLAIM),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; row_heartbeat covers the nine index builds'
+            _NUDGE + '; row_heartbeat covers the nine index builds and the opening '
+            'album listing plus work-map scan, once per server on the union path'
         ),
         CHILD_WORKER_DIED: handled(_RECLAIM + ' for each album_analysis child'),
         CHILD_NEVER_RETURNS: handled(
@@ -333,7 +334,10 @@ RECOVERY = {
     'main_clustering': {
         MAIN_WORKER_DIED: handled(_RECLAIM),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; the parent writes a row every drain pass'
+            _NUDGE + '; the parent writes a row every drain pass, and row_heartbeat '
+            'covers the two phases where it does not: calibration, which runs the '
+            'same opaque fit the batch heartbeats, and the tail, which is one '
+            'uncapped LLM naming call plus one media-server write PER PLAYLIST'
         ),
         CHILD_WORKER_DIED: handled(_RECLAIM + ' for each clustering_batch child'),
         CHILD_NEVER_RETURNS: handled(
@@ -348,7 +352,8 @@ RECOVERY = {
     'cleaning': {
         MAIN_WORKER_DIED: handled(_RECLAIM),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; row_heartbeat covers its final index rebuild'
+            _NUDGE + '; row_heartbeat covers its final index rebuild and the one '
+            'whole-catalogue fetch it makes per server'
         ),
         CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
@@ -357,8 +362,10 @@ RECOVERY = {
     'provider_migration': {
         MAIN_WORKER_DIED: handled(_RECLAIM),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; row_heartbeat covers the one whole-catalogue fetch per '
-            'server, which is a single call that writes no row while it runs'
+            _NUDGE + '; row_heartbeat covers the migration transaction, which '
+            'rewrites every catalogue id in one statement sequence and writes no '
+            'row until it commits. The whole-catalogue fetch is not this task: it '
+            'belongs to the dry run, which is a provider_migration_planner row'
         ),
         CHILD_WORKER_DIED: not_applicable(
             'its only child is the restart handshake, which recover_migration_'

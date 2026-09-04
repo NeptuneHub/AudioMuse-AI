@@ -42,6 +42,12 @@ Main Features:
   write a row per STEP and nothing inside one, so on a big library a single build
   outlived QUEUE_WEDGED_MAIN_TASK_MINUTES and the nudge cancelled a healthy run;
   the union path was worse still, one row at 92% then silence for all nine.
+* The OPENING of a run is the same shape and holds a row_heartbeat too. Between
+  "Starting main analysis process..." and the first per-album report there is one
+  whole-catalogue album listing against the media server plus one bulk work-map
+  scan, neither writing a row; the union path runs that listing once PER SERVER
+  back to back before any phase starts. Both are bounded, so a listing that really
+  never returns is still handed back to the nudge.
 * A swept track keeps its Chromaprint: upsert_track_maps hands each new mapping
   the Chromaprint already stored for its canonical track in the SAME transaction
   it is written, so a sweep never leaves a mapping fingerprintless.
@@ -67,6 +73,7 @@ from config import (
     ANALYSIS_STALL_TIMEOUT_MINUTES,
     ANALYSIS_MAX_STALL_GIVE_UPS,
     QUEUE_MAX_ERRORS_KEPT,
+    QUEUE_WEDGED_MAIN_TASK_MINUTES,
     REBUILD_INDEX_BATCH_SIZE,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
@@ -102,7 +109,7 @@ from error.error_dictionary import (
 
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
-from ..recovery import ChildDrainSupervisor
+from ..recovery import ChildDrainSupervisor, row_heartbeat, slow_step_budget_minutes
 
 
 def _run_all_index_builds(*args, **kwargs):
@@ -307,33 +314,47 @@ def _run_analysis_server_task_impl(
             inflight_children = _inflight_children(current_task_id)
             if inflight_children is not None and not inflight_children:
                 clean_temp(TEMP_DIR)
-            all_albums = albums if albums is not None else get_recent_albums(num_recent_albums)
-            if not all_albums:
-                _verify_media_server_reachable()
-                log_and_update_main(
-                    "No new albums to analyze.", 100, albums_found=0, task_state=TASK_STATUS_SUCCESS
+            opening_step = ['listing the albums this server holds']
+            with row_heartbeat(
+                current_task_id, lambda: opening_step[0],
+                stop_after_minutes=slow_step_budget_minutes(
+                    QUEUE_WEDGED_MAIN_TASK_MINUTES
+                ),
+            ):
+                all_albums = (
+                    albums if albums is not None
+                    else get_recent_albums(num_recent_albums)
                 )
-                return {"status": "SUCCESS", "message": "No new albums to analyze."}
+                if not all_albums:
+                    _verify_media_server_reachable()
+                    log_and_update_main(
+                        "No new albums to analyze.", 100, albums_found=0,
+                        task_state=TASK_STATUS_SUCCESS,
+                    )
+                    return {"status": "SUCCESS", "message": "No new albums to analyze."}
 
-            total_albums_to_check = len(all_albums)
-            reported_total = albums_total or total_albums_to_check
-            clap_available = is_clap_available()
-            wm_server_id = server_id or registry.get_default_server_id()
-            try:
-                work_map = _ah.load_server_work_map(
-                    wm_server_id, clap_available, LYRICS_ENABLED
+                total_albums_to_check = len(all_albums)
+                reported_total = albums_total or total_albums_to_check
+                clap_available = is_clap_available()
+                wm_server_id = server_id or registry.get_default_server_id()
+                opening_step[0] = (
+                    f"scanning which of {total_albums_to_check} albums still need work"
                 )
-                work_map_bulk_ok = True
-            except (OperationalError, InterfaceError):
-                raise
-            except Exception:
-                logger.warning(
-                    "Bulk work-map scan failed for server %s; falling back to "
-                    "per-album checks so one scan error does not abort the phase.",
-                    wm_server_id, exc_info=True,
-                )
-                work_map = {}
-                work_map_bulk_ok = False
+                try:
+                    work_map = _ah.load_server_work_map(
+                        wm_server_id, clap_available, LYRICS_ENABLED
+                    )
+                    work_map_bulk_ok = True
+                except (OperationalError, InterfaceError):
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Bulk work-map scan failed for server %s; falling back to "
+                        "per-album checks so one scan error does not abort the phase.",
+                        wm_server_id, exc_info=True,
+                    )
+                    work_map = {}
+                    work_map_bulk_ok = False
             done_bits = _ah.work_done_bits(clap_available, LYRICS_ENABLED)
             logger.info(
                 "Work map for this server: %d provider tracks already known%s.",
@@ -773,7 +794,13 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
         server_id = server['server_id'] if server else None
         return run_analysis_server_task(num_recent_albums, top_n_moods, server_id=server_id)
 
-    albums_by_server = _albums_per_server(servers, num_recent_albums)
+    with row_heartbeat(
+        parent_id,
+        f"listing the albums of all {len(servers)} servers, one whole-catalogue "
+        "fetch each and no row written between them",
+        stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+    ):
+        albums_by_server = _albums_per_server(servers, num_recent_albums)
     grand_total = sum(len(a or []) for a in albums_by_server)
     logger.info(
         "Union analysis: %d albums to check across %d servers.", grand_total, len(servers)

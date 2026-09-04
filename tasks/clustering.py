@@ -39,6 +39,15 @@ Main Features:
   now holds a row_heartbeat across each iteration and the parent reads the child's
   beat_at, so being alive is visible without waiting for the iteration to end. The
   heartbeat is bounded, so a fit that never returns is still caught.
+* The PARENT runs two opaque phases of its own, and both hold a row_heartbeat for
+  the same reason the batch does: the wedged-main nudge reads task_status.timestamp
+  and nothing else, so a phase that writes no row while it runs is indistinguishable
+  from a wedge and a healthy run gets its worker ended at
+  QUEUE_WEDGED_MAIN_TASK_MINUTES. The phases are calibration, which runs up to
+  CLUSTERING_CALIBRATION_MAX_TRIES of the very same fit the batch heartbeats, and
+  the tail: AI naming is one LLM call PER PLAYLIST with no output-token cap, and
+  playlist creation is one media-server write per playlist, neither writing a row
+  in between. Both are bounded, so a phase that really never returns is still caught.
 * The parent persists its own progress on its row (_resumable_progress), so a
   crashed main task resumes with the winning result instead of redoing the search.
 * Reap and launch ride the SAME status write (never a separate commit), so a
@@ -83,6 +92,7 @@ from config import (
     CLUSTERING_CALIBRATION_MAX_TRIES,
     CLUSTERING_EARLY_STOP_BATCHES,
     CLUSTERING_STALL_TIMEOUT_MINUTES,
+    QUEUE_WEDGED_MAIN_TASK_MINUTES,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
@@ -1082,27 +1092,35 @@ def _cluster_one_server(
             range_min, range_max = dbscan_eps_min, dbscan_eps_max
         else:
             range_min, range_max = num_clusters_min, num_clusters_max
-        range_min, range_max, stratified_sampling_target_percentile_param = (
-            _calibrate_cluster_params(
-                clustering_method,
-                genre_map,
-                range_min,
-                range_max,
-                stratified_sampling_target_percentile_param,
-                min_songs_per_genre_for_stratification_param,
-                dbscan_eps_min,
-                dbscan_eps_max,
-                dbscan_min_samples_min,
-                dbscan_min_samples_max,
-                pca_components_min,
-                pca_components_max,
-                max_songs_per_cluster_val,
-                top_n_clustering_playlist_param,
-                top_n_moods_for_clustering_param,
-                enable_clustering_embeddings_param,
-                report,
+        with row_heartbeat(
+            current_task_id,
+            f"calibrating {clustering_method} for {server_name}, which is up to "
+            f"{CLUSTERING_CALIBRATION_MAX_TRIES} opaque fits run in the parent",
+            stop_after_minutes=slow_step_budget_minutes(
+                QUEUE_WEDGED_MAIN_TASK_MINUTES
+            ),
+        ):
+            range_min, range_max, stratified_sampling_target_percentile_param = (
+                _calibrate_cluster_params(
+                    clustering_method,
+                    genre_map,
+                    range_min,
+                    range_max,
+                    stratified_sampling_target_percentile_param,
+                    min_songs_per_genre_for_stratification_param,
+                    dbscan_eps_min,
+                    dbscan_eps_max,
+                    dbscan_min_samples_min,
+                    dbscan_min_samples_max,
+                    pca_components_min,
+                    pca_components_max,
+                    max_songs_per_cluster_val,
+                    top_n_clustering_playlist_param,
+                    top_n_moods_for_clustering_param,
+                    enable_clustering_embeddings_param,
+                    report,
+                )
             )
-        )
         if clustering_method == 'gmm':
             gmm_n_components_min, gmm_n_components_max = range_min, range_max
         elif clustering_method == 'spectral':
@@ -1370,53 +1388,61 @@ def _cluster_one_server(
     previous_playlist_names = _previous_names_for_naming(
         target_server['server_id'] if target_server else None
     )
-    final_playlists_with_details = _name_and_prepare_playlists(
-        best_result,
-        ai_model_provider_param,
-        ollama_server_url_param,
-        ollama_model_name_param,
-        openai_server_url_param,
-        openai_model_name_param,
-        openai_api_key_param,
-        gemini_api_key_param,
-        gemini_model_name_param,
-        mistral_api_key_param,
-        mistral_model_name_param,
-        previous_playlist_names=previous_playlist_names,
-    )
-
-    if _run_claim_is_gone(claimed_task_id, current_task_id):
-        logger.info(
-            "Clustering %s was cancelled before playlist creation; the server is "
-            "left untouched.",
-            current_task_id,
+    tail_step = [f"naming the playlists of {server_name}"]
+    with row_heartbeat(
+        current_task_id, lambda: tail_step[0],
+        stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+    ):
+        final_playlists_with_details = _name_and_prepare_playlists(
+            best_result,
+            ai_model_provider_param,
+            ollama_server_url_param,
+            ollama_model_name_param,
+            openai_server_url_param,
+            openai_model_name_param,
+            openai_api_key_param,
+            gemini_api_key_param,
+            gemini_model_name_param,
+            mistral_api_key_param,
+            mistral_model_name_param,
+            previous_playlist_names=previous_playlist_names,
         )
-        return 'revoked', None
 
-    report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
-    with registry.bind(target_server):
-        if CLUSTERING_CLEANING:
-            delete_automatic_playlists()
-        for name, songs_with_details in final_playlists_with_details.items():
-            item_ids = [item_id for item_id, _, _ in songs_with_details]
-            try:
-                create_playlist(name, item_ids)
-            except PlaylistIdTranslationError:
-                logger.exception(
-                    "PLAYLIST CREATION ABORTED on server '%s': the id "
-                    "translation infrastructure failed while creating '%s'. "
-                    "This is NOT an availability skip; failing the task.",
-                    server_name,
-                    name,
-                )
-                raise
-            except ValueError:
-                logger.warning(
-                    "Playlist '%s' skipped on server '%s': none of its "
-                    "tracks are available there.",
-                    name,
-                    server_name,
-                )
+        if _run_claim_is_gone(claimed_task_id, current_task_id):
+            logger.info(
+                "Clustering %s was cancelled before playlist creation; the server is "
+                "left untouched.",
+                current_task_id,
+            )
+            return 'revoked', None
+
+        tail_step[0] = (
+            f"creating {len(final_playlists_with_details)} playlists on {server_name}"
+        )
+        report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
+        with registry.bind(target_server):
+            if CLUSTERING_CLEANING:
+                delete_automatic_playlists()
+            for name, songs_with_details in final_playlists_with_details.items():
+                item_ids = [item_id for item_id, _, _ in songs_with_details]
+                try:
+                    create_playlist(name, item_ids)
+                except PlaylistIdTranslationError:
+                    logger.exception(
+                        "PLAYLIST CREATION ABORTED on server '%s': the id "
+                        "translation infrastructure failed while creating '%s'. "
+                        "This is NOT an availability skip; failing the task.",
+                        server_name,
+                        name,
+                    )
+                    raise
+                except ValueError:
+                    logger.warning(
+                        "Playlist '%s' skipped on server '%s': none of its "
+                        "tracks are available there.",
+                        name,
+                        server_name,
+                    )
 
     return 'success', {
         'playlists': final_playlists_with_details,
