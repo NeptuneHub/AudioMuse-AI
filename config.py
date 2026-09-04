@@ -89,6 +89,28 @@ MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = max(1, int(os.environ.get("MIGRATION_
 MIGRATION_MAX_COLLISION_DETAILS = int(os.environ.get("MIGRATION_MAX_COLLISION_DETAILS", "1000"))
 TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")
 
+# --- Direct file access ---
+# When the music library is mounted into this container, analysis can read each
+# track from disk instead of downloading it from the media server. Off by
+# default because it needs the paths the server reports to be valid in here.
+LOCAL_FILE_ACCESS = os.environ.get("LOCAL_FILE_ACCESS", "false").lower() == "true"
+# Comma-separated allowlist of directories a track may be read from. REQUIRED
+# when LOCAL_FILE_ACCESS is on: the path is reported by the media server, so it
+# is untrusted input, and anything resolving outside these roots is refused.
+LOCAL_FILE_ROOTS = os.environ.get("LOCAL_FILE_ROOTS", "")
+# Rewrites the media server's path onto this container's mount point, as
+# comma-separated "server_prefix=container_prefix" pairs (for example
+# "/srv/music=/music"). Leave empty when the library is mounted at the same
+# path the server reports.
+LOCAL_FILE_PATH_MAP = os.environ.get("LOCAL_FILE_PATH_MAP", "")
+# Only read from roots this process CANNOT write to, so no bug, dependency or
+# future change can modify or delete a library file. Mount the library read-only
+# (docker "/music:/music:ro") and leave this on; a writable root is skipped and
+# its tracks are downloaded instead. Turning it off removes that guarantee.
+LOCAL_FILE_REQUIRE_READONLY = os.environ.get(
+    "LOCAL_FILE_REQUIRE_READONLY", "true"
+).lower() == "true"
+
 
 def jellyfin_auth_header(token):
     # Jellyfin 12.0 disables the legacy X-Emby-Token header by default; the
