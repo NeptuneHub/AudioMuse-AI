@@ -19,11 +19,26 @@ Main Features:
 * Per-server persistence: playlists replace ITS OWN rows, so the table is always
   the last run per server, never a growing history.
 * Fan-out of parameter sets into batch jobs with elite tracking and adaptive
-  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES without improvement.
+  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES that brought back
+  nothing better. A CRASHED batch counts as one of those, deliberately: after
+  that many failures the run ends with the best result it holds rather than
+  feeding more batches to workers that keep dying.
 * The drain loop REAPS finished children (row deleted as the result is read) so
   a batch is never counted twice; no per-batch timeout, and
   CLUSTERING_STALL_TIMEOUT_MINUTES bounds the one wedge case (native code
   that never returns) by revoking and finishing with the best result held.
+  That window SLIDES on any sign of life - a batch finishing, failing, launching,
+  or a live batch merely advancing its own iteration counter - so a slow batch and
+  a batch a fresh worker picked up after the old one died both hold it open.
+  The window, the victim rule and the give-up bound are ChildDrainSupervisor in
+  tasks.recovery, shared with the analysis twin so the two cannot drift again.
+* ONE iteration is a single opaque fit (spectral/GMM over CLUSTERING_SUBSET_SONGS
+  songs) and the batch writes its row only AFTER it returns, so with one worker
+  container - the default - an iteration slower than the stall window looked
+  exactly like a wedge and a healthy batch was revoked. run_clustering_batch_task
+  now holds a row_heartbeat across each iteration and the parent reads the child's
+  beat_at, so being alive is visible without waiting for the iteration to end. The
+  heartbeat is bounded, so a fit that never returns is still caught.
 * The parent persists its own progress on its row (_resumable_progress), so a
   crashed main task resumes with the winning result instead of redoing the search.
 * Reap and launch ride the SAME status write (never a separate commit), so a
@@ -77,6 +92,8 @@ from config import (
 
 from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED, ERR_DB_CONNECTION
+
+from .recovery import ChildDrainSupervisor, row_heartbeat, slow_step_budget_minutes
 
 from database import (
     save_task_status,
@@ -297,25 +314,37 @@ def run_clustering_batch_task(
                     )
                     continue
 
-                iteration_result = _perform_single_clustering_iteration(
-                    run_idx=current_run_global_idx,
-                    item_ids_for_subset=item_ids_for_iteration,
-                    clustering_method=clustering_method,
-                    num_clusters_min_max=num_clusters_min_max_tuple,
-                    dbscan_params_ranges=dbscan_params_ranges_dict,
-                    gmm_params_ranges=gmm_params_ranges_dict,
-                    spectral_params_ranges=spectral_params_ranges_dict,
-                    pca_params_ranges=pca_params_ranges_dict,
-                    active_mood_labels=active_mood_labels_for_batch,
-                    max_songs_per_cluster=max_songs_per_cluster,
-                    log_prefix=f"[Batch-{current_task_id}]",
-                    elite_solutions_params_list=elite_solutions_params_list,
-                    exploitation_probability=exploitation_probability,
-                    mutation_config=mutation_config,
-                    score_weights=score_weights_dict,
-                    enable_clustering_embeddings=enable_clustering_embeddings_param,
-                    tracks_cache=tracks_cache,
+                iteration_step = (
+                    f"iteration {current_run_global_idx} "
+                    f"({clustering_method} over {len(item_ids_for_iteration)} songs)"
                 )
+                with row_heartbeat(
+                    claimed_task_id,
+                    iteration_step,
+                    every_minutes=CLUSTERING_STALL_TIMEOUT_MINUTES,
+                    stop_after_minutes=slow_step_budget_minutes(
+                        CLUSTERING_STALL_TIMEOUT_MINUTES
+                    ),
+                ):
+                    iteration_result = _perform_single_clustering_iteration(
+                        run_idx=current_run_global_idx,
+                        item_ids_for_subset=item_ids_for_iteration,
+                        clustering_method=clustering_method,
+                        num_clusters_min_max=num_clusters_min_max_tuple,
+                        dbscan_params_ranges=dbscan_params_ranges_dict,
+                        gmm_params_ranges=gmm_params_ranges_dict,
+                        spectral_params_ranges=spectral_params_ranges_dict,
+                        pca_params_ranges=pca_params_ranges_dict,
+                        active_mood_labels=active_mood_labels_for_batch,
+                        max_songs_per_cluster=max_songs_per_cluster,
+                        log_prefix=f"[Batch-{current_task_id}]",
+                        elite_solutions_params_list=elite_solutions_params_list,
+                        exploitation_probability=exploitation_probability,
+                        mutation_config=mutation_config,
+                        score_weights=score_weights_dict,
+                        enable_clustering_embeddings=enable_clustering_embeddings_param,
+                        tracks_cache=tracks_cache,
+                    )
                 iterations_completed += 1
 
                 iteration_rank = (
@@ -1123,8 +1152,14 @@ def _cluster_one_server(
         state["last_subset_ids"] = [t['item_id'] for t in initial_subset_data]
 
     stop_launching = False
-    last_progress_signature = None
-    last_progress_at = time.time()
+    supervisor = ChildDrainSupervisor(
+        current_task_id,
+        lambda job_id, message: _revoke_batch(job_id, current_task_id, message),
+        CLUSTERING_STALL_TIMEOUT_MINUTES,
+        1,
+        lambda: time.monotonic(),
+        label='batch',
+    )
 
     while True:
         task_info = get_task_info_from_db(current_task_id)
@@ -1137,12 +1172,13 @@ def _cluster_one_server(
         _absorb_finished_batches(state, current_task_id, persist_progress)
 
         try:
-            live = _live_batches(state, current_task_id)
+            live_marks = _live_batches(state, current_task_id)
         except Exception:
             logger.exception("Could not list the live clustering batches; retrying")
-            last_progress_at = time.time()
+            supervisor.restart()
             time.sleep(3)
             continue
+        live = [job_id for job_id, _progress, _beat, _status in live_marks]
 
         failed_batch_count = state.get("failed_batches", 0)
         if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES and not stop_launching:
@@ -1224,23 +1260,21 @@ def _cluster_one_server(
             else 5
         )
         progress_signature = (
-            state["runs_completed"], state["best_score"], len(live),
+            state["runs_completed"], state["best_score"], tuple(sorted(live_marks)),
             next_batch_to_launch, stop_launching,
         )
-        if progress_signature != last_progress_signature:
-            last_progress_signature = progress_signature
-            last_progress_at = time.time()
+        if supervisor.moved(progress_signature):
             report(
                 f"Progress: {state['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(live)}. Best score: {state['best_score']:.2f}",
                 local_pct,
             )
-        elif live and _stall_valve_expired(last_progress_at):
-            stalled_minutes = (time.time() - last_progress_at) / 60.0
-            last_progress_at = time.time()
-            stop_launching = True
-            abandoned = _give_up_on_stalled_batches(
-                live, current_task_id, stalled_minutes
+        elif live and supervisor.expired():
+            abandoned, stalled_minutes = supervisor.give_up(
+                [(job_id, status) for job_id, _progress, _beat, status in live_marks],
+                [job_id for job_id, _progress, _beat, _status in live_marks],
             )
+            if supervisor.exhausted():
+                stop_launching = True
             report(
                 f"No progress of any kind for {stalled_minutes:.0f} min (limit: "
                 f"{CLUSTERING_STALL_TIMEOUT_MINUTES} min). Gave up on {abandoned} of "
@@ -1423,31 +1457,6 @@ def _revoke_batch(job_id, parent_task_id, message):
         return False
 
 
-def _stall_valve_expired(last_progress_at):
-    if CLUSTERING_STALL_TIMEOUT_MINUTES <= 0:
-        return False
-    return (time.time() - last_progress_at) >= CLUSTERING_STALL_TIMEOUT_MINUTES * 60
-
-
-def _give_up_on_stalled_batches(live, parent_task_id, stalled_minutes):
-    abandoned = 0
-    for job_id in live:
-        if _revoke_batch(
-            job_id, parent_task_id,
-            'The parent clustering task gave up on this batch: nothing anywhere in '
-            f'the run changed for {stalled_minutes:.0f} minutes, so it stopped '
-            'waiting rather than hang the whole run on it.',
-        ):
-            abandoned += 1
-    logger.warning(
-        "Clustering %s made no progress of any kind for %.0f minutes (limit: %d "
-        "minutes); gave up on %d of %d unfinished batch(es).",
-        parent_task_id, stalled_minutes, CLUSTERING_STALL_TIMEOUT_MINUTES,
-        abandoned, len(live),
-    )
-    return abandoned
-
-
 def _revoke_foreign_batches(parent_task_id, job_prefix):
     try:
         live = taskqueue.live_children(parent_task_id)
@@ -1622,7 +1631,12 @@ def _absorb_finished_batches(state_dict, parent_task_id, persist):
 def _live_batches(state_dict, parent_task_id):
     mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
     return [
-        str(child.get('task_id'))
+        (
+            str(child.get('task_id')),
+            child.get('progress'),
+            str(child.get('beat_at') or ''),
+            str(child.get('status') or ''),
+        )
         for child in taskqueue.live_children(parent_task_id)
         if str(child.get('task_id') or '').startswith(mine)
     ]

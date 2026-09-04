@@ -9,17 +9,31 @@
 """Drive the Chromaprint DB path against a real PostgreSQL.
 
 Proves the SQL the unit tests mock: persist_chromaprint upserts the compressed
-blob and the NULL retry-stop sentinel, the _fetch_row_fingerprint JOIN maps a
-canonical id back to any file's fingerprint via track_server_map, and the
-backfill target query picks whole albums that still lack a fingerprint while
-skipping both already-fingerprinted tracks and the failed-once sentinel rows.
+blob and the NULL retry-stop sentinel, _fetch_row_fingerprint maps a canonical
+id back to any file's fingerprint via track_server_map, and upsert_track_maps
+hands a swept mapping the Chromaprint already stored for its canonical track in
+the same transaction.
 
 Main Features:
 * persist_chromaprint / get_chromaprint round-trip and the NULL retry-stop
   sentinel reading back as abstain.
 * _fetch_row_fingerprint JOIN from a canonical id to any mapped file's blob.
-* Backfill target query picks whole missing albums and skips present and
-  sentinel rows, bounded by the album limit.
+* A sweep match carries the fingerprint with the mapping in the SAME transaction
+  that writes it.
+* The inherit rides a SAVEPOINT, so a chromaprint table that is missing or
+  mid-migration can never roll back the mapping write it travels with.
+* A track whose own fpcalc run failed carries the NULL retry-stop sentinel, and
+  that row must not lock it out of the hand-over: with the backfill gone this is
+  the only path that would ever give it a real print.
+* A one-server catalogue skips the hand-over outright. The analysis flushes track
+  maps once per TRACK, and a mapping can only ever borrow from a mapping of the
+  same item_id on a DIFFERENT server, so with one server the savepoint, the
+  statement and the release are three round trips per analyzed song that provably
+  cannot find anything.
+* The SOURCE side refuses an ambiguous fingerprint exactly like the target side.
+  A source server holding two files for one canonical id cannot say which one the
+  stored print belongs to, so handing either on is a guess the gate then treats
+  as fact.
 """
 
 import os
@@ -40,12 +54,14 @@ _SCHEMA = [
     "duration DOUBLE PRECISION)",
     "CREATE TABLE embedding (item_id TEXT PRIMARY KEY REFERENCES score (item_id) "
     "ON DELETE CASCADE, embedding BYTEA)",
-    "CREATE TABLE music_servers (server_id TEXT PRIMARY KEY, name TEXT, server_type TEXT)",
+    "CREATE TABLE music_servers (server_id TEXT PRIMARY KEY, name TEXT, server_type TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
     "CREATE TABLE track_server_map ("
     "item_id TEXT NOT NULL REFERENCES score (item_id) ON DELETE CASCADE, "
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
     "provider_track_id TEXT NOT NULL, match_tier TEXT, file_path TEXT, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
     "PRIMARY KEY (server_id, provider_track_id))",
+    "CREATE INDEX idx_track_server_map_item ON track_server_map (item_id, server_id)",
     "CREATE TABLE chromaprint ("
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "
     "provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
@@ -82,6 +98,9 @@ def pg_dsn():
 
 @pytest.fixture
 def db(pg_dsn):
+    from tasks.mediaserver import registry
+
+    registry.invalidate_server_cache()
     conn = psycopg2.connect(pg_dsn)
     with conn.cursor() as cur:
         cur.execute(
@@ -102,15 +121,23 @@ def db(pg_dsn):
 @pytest.fixture
 def use_test_db(db, monkeypatch):
     import database
-    from tasks.analysis import helper, main
+    from tasks.analysis import helper
 
     monkeypatch.setattr(database, 'get_db', lambda: db)
     monkeypatch.setattr(helper, 'get_db', lambda: db)
-    monkeypatch.setattr(main, 'get_db', lambda: db)
     return db
 
 
-def _seed(cur, item_id, provider_id, album, file_path):
+def _add_server(cur, server_id):
+    cur.execute(
+        "INSERT INTO music_servers (server_id, name, server_type) "
+        "VALUES (%s, %s, 'navidrome') ON CONFLICT (server_id) DO NOTHING",
+        (server_id, server_id),
+    )
+
+
+def _seed(cur, item_id, provider_id, album, file_path, server_id='srv',
+          match_tier='fingerprint'):
     cur.execute(
         "INSERT INTO score (item_id, title, album, duration) VALUES (%s, %s, %s, 200.0) "
         "ON CONFLICT (item_id) DO NOTHING",
@@ -123,8 +150,8 @@ def _seed(cur, item_id, provider_id, album, file_path):
     )
     cur.execute(
         "INSERT INTO track_server_map (item_id, server_id, provider_track_id, "
-        "match_tier, file_path) VALUES (%s, 'srv', %s, 'fingerprint', %s)",
-        (item_id, provider_id, file_path),
+        "match_tier, file_path) VALUES (%s, %s, %s, %s, %s)",
+        (item_id, server_id, provider_id, match_tier, file_path),
     )
 
 
@@ -183,32 +210,177 @@ class TestChromaprintDbPath:
         persist_chromaprint('srv', 'p3', _blob(9))
         assert _fetch_row_fingerprint('fp_z') == _blob(9)
 
-    def test_backfill_targets_skip_present_and_sentinel_rows(self, db, use_test_db):
-        from database import persist_chromaprint
-        from tasks.analysis.main import _chromaprint_backfill_targets
+    def test_a_sweep_match_carries_the_fingerprint_with_the_mapping(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
 
         with db.cursor() as cur:
-            _seed(cur, 'fp_a', 'pa', 'A-album', '/m/pa.flac')
-            _seed(cur, 'fp_b', 'pb', 'B-album', '/m/pb.flac')
-            _seed(cur, 'fp_c', 'pc', 'C-album', '/m/pc.flac')
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_s', 'old', 'A-album', '/one/old.flac')
         db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
 
-        persist_chromaprint('srv', 'pa', _blob(1))
-        persist_chromaprint('srv', 'pb', None)
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_s', 'path', '/two/new.flac')}, conn=db
+        )
 
-        targets = _chromaprint_backfill_targets('srv', 5)
-        picked = {provider_id for provider_id, _path in targets}
-        assert picked == {'pc'}
+        assert get_chromaprint('srv2', 'new') == _blob(1)
 
-    def test_backfill_album_limit_bounds_the_work(self, db, use_test_db):
-        from tasks.analysis.main import _chromaprint_backfill_targets
+    def test_a_second_file_on_one_id_never_gets_handed_a_borrowed_fingerprint(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
 
         with db.cursor() as cur:
-            _seed(cur, 'fp_1', 'p1', 'A-album', '/m/p1.flac')
-            _seed(cur, 'fp_2', 'p2', 'B-album', '/m/p2.flac')
-            _seed(cur, 'fp_3', 'p3', 'C-album', '/m/p3.flac')
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_p', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+
+        registry.upsert_track_maps(
+            'srv2',
+            {
+                'newA': ('fp_p', 'path', '/two/a.flac'),
+                'newB': ('fp_p', 'path', '/two/b.flac'),
+            },
+            conn=db,
+        )
+
+        assert get_chromaprint('srv2', 'newA') is None
+        assert get_chromaprint('srv2', 'newB') is None
+
+    def test_a_failed_fpcalc_sentinel_still_inherits_a_sibling_print(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_n', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+        persist_chromaprint('srv', 'old', _blob(1))
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('fp_n', 'srv2', 'new', 'path', '/two/new.flac')"
+            )
+        db.commit()
+        persist_chromaprint('srv2', 'new', None)
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_n', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert get_chromaprint('srv2', 'new') == _blob(1), (
+            'the NULL row says fpcalc failed on this file, not that the track is '
+            'finished with: matching on c.provider_track_id IS NULL treated the '
+            'sentinel as a print and locked the track out of every future sweep'
+        )
+
+    def test_an_ambiguous_source_never_hands_on_a_guessed_fingerprint(
+        self, db, use_test_db
+    ):
+        from database import persist_chromaprint, get_chromaprint
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_a', 'oldA', 'A-album', '/one/a.flac')
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('fp_a', 'srv', 'oldB', 'path', '/one/b.flac')"
+            )
+        db.commit()
+        persist_chromaprint('srv', 'oldA', _blob(1))
+        persist_chromaprint('srv', 'oldB', _blob(7))
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_a', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert get_chromaprint('srv2', 'new') is None, (
+            'two files on the source server share this canonical id, so neither '
+            'print is known to be the right one; DISTINCT ON just took whichever '
+            'sorted first and the gate then compared against a guess'
+        )
+
+    def test_a_one_server_catalogue_skips_the_hand_over_entirely(
+        self, db, use_test_db, monkeypatch
+    ):
+        from database import get_chromaprint
+        from tasks.mediaserver import registry
+
+        calls = []
+        monkeypatch.setattr(
+            registry, 'inherit_chromaprints_from_staged_maps',
+            lambda cur, staged_rows=0: calls.append(staged_rows) or 0,
+        )
+        with db.cursor() as cur:
+            _seed(cur, 'fp_one', 'only', 'A-album', '/one/only.flac')
         db.commit()
 
-        targets = _chromaprint_backfill_targets('srv', 2)
-        picked = {provider_id for provider_id, _path in targets}
-        assert picked == {'p1', 'p2'}
+        written = registry.upsert_track_maps(
+            'srv', {'only2': ('fp_one', 'path', '/one/only2.flac')}, conn=db
+        )
+
+        assert written == 1, 'the mapping write is the job and always stands'
+        assert calls == [], (
+            'one server cannot borrow a print from itself: both sides already '
+            'refuse the same-server two-files case, so this is three round trips '
+            'per analyzed track that provably find nothing'
+        )
+        assert get_chromaprint('srv', 'only2') is None
+
+    def test_a_second_server_turns_the_hand_over_back_on(
+        self, db, use_test_db, monkeypatch
+    ):
+        from tasks.mediaserver import registry
+
+        calls = []
+        monkeypatch.setattr(
+            registry, 'inherit_chromaprints_from_staged_maps',
+            lambda cur, staged_rows=0: calls.append(staged_rows) or 0,
+        )
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_two', 'old', 'A-album', '/one/old.flac')
+        db.commit()
+
+        registry.upsert_track_maps(
+            'srv2', {'new': ('fp_two', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert calls == [1], (
+            'the skip must be exactly "one server", not a blanket disable; a '
+            'second server is the whole reason the hand-over exists'
+        )
+
+    def test_a_broken_chromaprint_table_never_fails_the_mapping_write(
+        self, db, use_test_db
+    ):
+        from tasks.mediaserver import registry
+
+        with db.cursor() as cur:
+            _add_server(cur, 'srv2')
+            _seed(cur, 'fp_r', 'old', 'A-album', '/one/old.flac')
+            cur.execute("DROP TABLE chromaprint")
+        db.commit()
+
+        written = registry.upsert_track_maps(
+            'srv2', {'new': ('fp_r', 'path', '/two/new.flac')}, conn=db
+        )
+
+        assert written == 1
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT item_id FROM track_server_map "
+                "WHERE server_id = 'srv2' AND provider_track_id = 'new'"
+            )
+            assert cur.fetchone()[0] == 'fp_r'
+

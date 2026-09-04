@@ -425,6 +425,7 @@ var ADVANCED_SECTIONS = [
         title: 'Audio Analysis',
         items: [
             'NUM_RECENT_ALBUMS', 'TOP_N_MOODS', 'ANALYSIS_MONITOR_DB_INTERVAL',
+            'ANALYSIS_STALL_TIMEOUT_MINUTES', 'ANALYSIS_MAX_STALL_GIVE_UPS',
             'CLAP_ENABLED', 'CLAP_PYTHON_MULTITHREADS', 'PER_SONG_MODEL_RELOAD',
             'MUSICNN_BATCH_SIZE'
         ]
@@ -433,8 +434,7 @@ var ADVANCED_SECTIONS = [
         title: 'Catalogue Identity & Chromaprint',
         items: [
             'CATALOGUE_ID_SCHEME_VERSION', 'CHROMAPRINT_COLLECTION_ENABLED',
-            'CHROMAPRINT_GATE_ENABLED', 'CHROMAPRINT_MATCH_THRESHOLD',
-            'CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN'
+            'CHROMAPRINT_GATE_ENABLED', 'CHROMAPRINT_MATCH_THRESHOLD'
         ]
     },
     {

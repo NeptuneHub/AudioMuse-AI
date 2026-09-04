@@ -16,6 +16,9 @@ Main Features:
 * task_run_prologue resolves the claimed id and reads its task_status row
 * terminal_skip returns the revoked/terminal dict the entry point must return,
   or None when the task should actually run
+* Everything about recovering a wedged run - the stall window, who a give-up
+  ends, and the heartbeat a long opaque phase needs - lives in tasks.recovery.
+  It was split across the two fan-out parents and they drifted; see that module.
 """
 
 import logging

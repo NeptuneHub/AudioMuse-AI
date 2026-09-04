@@ -37,6 +37,7 @@ def run_sonic_fingerprint_task(server_scope="all"):
     from database import save_task_status
     from config import (
         SONIC_FINGERPRINT_CRON_PLAYLIST_NAME,
+        QUEUE_WEDGED_MAIN_TASK_MINUTES,
         TASK_STATUS_STARTED,
         TASK_STATUS_SUCCESS,
         TASK_STATUS_FAILURE,
@@ -47,6 +48,7 @@ def run_sonic_fingerprint_task(server_scope="all"):
 
     with app.app_context():
         from .task_run import task_run_prologue, terminal_skip
+        from .recovery import row_heartbeat, slow_step_budget_minutes
 
         claimed_task_id, task_id, task_info = task_run_prologue()
         skip = terminal_skip(
@@ -63,12 +65,19 @@ def run_sonic_fingerprint_task(server_scope="all"):
             )
         created = 0
         failed = []
+        current = ['resolving the server scope']
         try:
             servers = registry.servers_for_scope(server_scope)
             for server in servers:
                 server_name = server['name'] if server else 'default server'
+                current[0] = f"the sonic fingerprint for {server_name}"
                 try:
-                    with registry.bind(server):
+                    with registry.bind(server), row_heartbeat(
+                        claimed_task_id, lambda: current[0],
+                        stop_after_minutes=slow_step_budget_minutes(
+                            QUEUE_WEDGED_MAIN_TASK_MINUTES
+                        ),
+                    ):
                         fingerprint_results = generate_sonic_fingerprint()
                         if not fingerprint_results:
                             logger.warning(

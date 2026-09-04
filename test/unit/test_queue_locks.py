@@ -21,6 +21,11 @@ Main Features:
 * The database-side start lock is session scoped, the queue-side one is per txn
 * A maintenance process that loses the election does no work at all
 * The maintenance lock is released even when a step of the cycle raises
+* One retention step blowing up never skips the ones behind it. They share a
+  connection and a cycle, so before the guards a failure in any of them cost the
+  whole cycle plus the settling cycle after the reconnect; reclaim itself still
+  propagates, because a reclaim that cannot run is exactly when the connection
+  deserves to be dropped
 """
 
 from unittest.mock import MagicMock
@@ -136,12 +141,8 @@ class TestOnlyTheElectedMaintenanceProcessRunsTheCycle:
 
 
 class TestAFailedStepStillReleasesTheMaintenanceLock:
-    @pytest.mark.parametrize('failing_step', [
-        'reclaim_orphans', 'fail_stale_inline_rows',
-        'recover_migration_handshakes', 'clear_terminal_shared_payloads',
-    ])
-    def test_the_lock_never_leaks_to_the_next_cycle(self, monkeypatch, failing_step):
-        cycle = _Cycle(monkeypatch, failing_step=failing_step)
+    def test_a_failed_reclaim_propagates_but_never_leaks_the_lock(self, monkeypatch):
+        cycle = _Cycle(monkeypatch, failing_step='reclaim_orphans')
 
         with pytest.raises(RuntimeError):
             maintenance.run_cycle(cycle.conn)
@@ -150,3 +151,23 @@ class TestAFailedStepStillReleasesTheMaintenanceLock:
             'the lock is session scoped on a long-lived connection, so leaking it '
             'once means this process wins every future election and never works'
         )
+
+    @pytest.mark.parametrize('failing_step', [
+        'fail_stale_inline_rows',
+        'recover_migration_handshakes', 'clear_terminal_shared_payloads',
+    ])
+    def test_one_failed_retention_step_never_skips_the_others(
+        self, monkeypatch, failing_step
+    ):
+        cycle = _Cycle(monkeypatch, failing_step=failing_step)
+
+        assert maintenance.run_cycle(cycle.conn) is True
+        assert cycle.ran == [
+            'reclaim_orphans', 'fail_stale_inline_rows',
+            'recover_migration_handshakes', 'clear_terminal_shared_payloads',
+        ], (
+            'these share one connection and one cycle, so letting a transient '
+            'failure in any of them out skipped every sweep behind it, dropped the '
+            'connection and burnt the settling cycle after the reconnect too'
+        )
+        assert cycle.released == [True]

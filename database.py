@@ -916,6 +916,115 @@ def set_hyperbolic_projection(item_id, poincare_embedding, hyperbolic_radius):
         cur.close()
 
 
+STAGED_MAPS_SCOPE = "incoming_track_server_map"
+
+
+def _chromaprint_inherit_sql(scope_table):
+    return (
+        "WITH targets AS ("
+        "  SELECT m.item_id, m.server_id, m.provider_track_id "
+        "  FROM " + scope_table + " m "
+        "  LEFT JOIN chromaprint c ON c.server_id = m.server_id "
+        "    AND c.provider_track_id = m.provider_track_id "
+        "  WHERE (m.server_id, m.provider_track_id) > (%s, %s) "
+        "    AND c.fingerprint IS NULL "
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM track_server_map d "
+        "      WHERE d.item_id = m.item_id AND d.server_id = m.server_id "
+        "        AND d.provider_track_id <> m.provider_track_id"
+        "    )"
+        "    AND EXISTS ("
+        "      SELECT 1 FROM track_server_map o "
+        "      JOIN chromaprint oc ON oc.server_id = o.server_id "
+        "        AND oc.provider_track_id = o.provider_track_id "
+        "      WHERE o.item_id = m.item_id AND oc.fingerprint IS NOT NULL "
+        "        AND NOT EXISTS ("
+        "          SELECT 1 FROM track_server_map od "
+        "          WHERE od.item_id = o.item_id AND od.server_id = o.server_id "
+        "            AND od.provider_track_id <> o.provider_track_id"
+        "        )"
+        "    )"
+        "  ORDER BY m.server_id, m.provider_track_id "
+        "  LIMIT %s"
+        "), src AS ("
+        "  SELECT DISTINCT ON (o.item_id) o.item_id, "
+        "         o.server_id AS src_server_id, "
+        "         o.provider_track_id AS src_provider_track_id "
+        "  FROM (SELECT DISTINCT item_id FROM targets) t "
+        "  JOIN track_server_map o ON o.item_id = t.item_id "
+        "  JOIN chromaprint cp ON cp.server_id = o.server_id "
+        "    AND cp.provider_track_id = o.provider_track_id "
+        "  WHERE cp.fingerprint IS NOT NULL "
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM track_server_map od "
+        "      WHERE od.item_id = o.item_id AND od.server_id = o.server_id "
+        "        AND od.provider_track_id <> o.provider_track_id"
+        "    )"
+        "  ORDER BY o.item_id, o.server_id, o.provider_track_id"
+        "), ins AS ("
+        "  INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
+        "  SELECT t.server_id, t.provider_track_id, cp.fingerprint, now() "
+        "  FROM targets t "
+        "  JOIN src ON src.item_id = t.item_id "
+        "  JOIN chromaprint cp ON cp.server_id = src.src_server_id "
+        "    AND cp.provider_track_id = src.src_provider_track_id "
+        "  ON CONFLICT (server_id, provider_track_id) DO UPDATE "
+        "    SET fingerprint = EXCLUDED.fingerprint, updated_at = now() "
+        "    WHERE chromaprint.fingerprint IS NULL "
+        "  RETURNING server_id, provider_track_id"
+        ") "
+        "SELECT t.server_id, t.provider_track_id, "
+        "       (i.provider_track_id IS NOT NULL) AS inherited "
+        "FROM targets t "
+        "LEFT JOIN ins i ON i.server_id = t.server_id "
+        "  AND i.provider_track_id = t.provider_track_id "
+        "ORDER BY t.server_id, t.provider_track_id"
+    )
+
+
+def _inherit_chromaprints_in_batches(cur, scope_table):
+    statement = _chromaprint_inherit_sql(scope_table)
+    batch = max(1, config.CHROMAPRINT_INHERIT_BATCH_SIZE)
+    at_server, at_track = '', ''
+    total = 0
+    while True:
+        cur.execute(statement, (at_server, at_track, batch))
+        rows = cur.fetchall()
+        if not rows:
+            return total
+        total += sum(1 for row in rows if row[2])
+        at_server, at_track = str(rows[-1][0]), str(rows[-1][1])
+        if len(rows) < batch:
+            return total
+
+
+def inherit_chromaprints_from_staged_maps(cur, staged_rows=0):
+    try:
+        cur.execute("SAVEPOINT chromaprint_inherit")
+        if staged_rows > max(1, config.CHROMAPRINT_INHERIT_BATCH_SIZE):
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS incoming_track_server_map_keyset "
+                "ON " + STAGED_MAPS_SCOPE + " (server_id, provider_track_id)"
+            )
+            cur.execute("ANALYZE " + STAGED_MAPS_SCOPE)
+        inherited = _inherit_chromaprints_in_batches(cur, STAGED_MAPS_SCOPE)
+        cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        return inherited
+    except Exception:
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT chromaprint_inherit")
+            cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        except Exception:
+            logger.debug(
+                "Could not unwind the chromaprint inherit savepoint", exc_info=True
+            )
+        logger.exception(
+            "Could not hand the stored Chromaprints to the mappings just written; "
+            "the mappings stand and the next run retries the hand-over"
+        )
+        return 0
+
+
 def persist_chromaprint(server_id, provider_track_id, fingerprint):
     if not server_id or not provider_track_id:
         return

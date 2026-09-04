@@ -19,6 +19,32 @@ Main Features:
 * _verify_media_server_reachable: pre-flight probe aborting early (1101/1104).
 * _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
   an earlier attempt's analysed songs into this attempt's total.
+* BOTH album waits - the dispatch throttle that holds at
+  MAX_QUEUED_ANALYSIS_JOBS and the tail drain - watch one ChildDrainSupervisor on
+  ANALYSIS_STALL_TIMEOUT_MINUTES. The throttle is where a wedge on a real library
+  actually lands, and its own progress writes keep the parent row fresh, so the
+  wedged-main nudge cannot see it either: guarding only the tail left the hang.
+  An album whose worker is alive but whose native code never returns holds its
+  advisory lock, so reclaim cannot take it and the parent would wait on it
+  forever. The window slides on any sign of life, a live album advancing one
+  track included, so only a wedged album runs it out; it is then FAILED (not
+  revoked) so the ordinary reap counts it into the album failure tally the run
+  reports, instead of vanishing from the totals.
+* The window, WHO a give-up ends and how many give-ups a run gets are all
+  ChildDrainSupervisor in tasks.recovery, shared with the clustering twin so the
+  two cannot drift apart again. Normally it ends only the albums a worker is
+  actually HOLDING, because a queued album is not wedged, it is waiting; when
+  NOTHING is running the queue itself is the wedge and it ends every live album,
+  which costs a MAX_QUEUED_ANALYSIS_JOBS window the NEXT run re-enqueues anyway.
+  ANALYSIS_MAX_STALL_GIVE_UPS then bounds how often that may happen: without it a
+  worker that wedges on every album makes the run last one window PER ALBUM.
+* The final index rebuild runs under a row_heartbeat. It is nine opaque calls that
+  write a row per STEP and nothing inside one, so on a big library a single build
+  outlived QUEUE_WEDGED_MAIN_TASK_MINUTES and the nudge cancelled a healthy run;
+  the union path was worse still, one row at 92% then silence for all nine.
+* A swept track keeps its Chromaprint: upsert_track_maps hands each new mapping
+  the Chromaprint already stored for its canonical track in the SAME transaction
+  it is written, so a sweep never leaves a mapping fingerprintless.
 
 TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
 task having no live children; if they cannot be read the wipe is skipped.
@@ -38,11 +64,10 @@ from config import (
     MAX_QUEUED_ANALYSIS_JOBS,
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
+    ANALYSIS_STALL_TIMEOUT_MINUTES,
+    ANALYSIS_MAX_STALL_GIVE_UPS,
     QUEUE_MAX_ERRORS_KEPT,
     REBUILD_INDEX_BATCH_SIZE,
-    CHROMAPRINT_COLLECTION_ENABLED,
-    CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN,
-    CHROMAPRINT_BACKFILL_REPORT_SECONDS,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
@@ -52,16 +77,12 @@ from config import (
 from ..mediaserver import (
     get_recent_albums,
     get_tracks_from_album,
-    download_track,
     registry,
     test_connection as mediaserver_test_connection,
 )
-from .. import chromaprint
 
 from flask_app import app
 from database import (
-    persist_chromaprint,
-    get_db,
     save_task_status,
     get_task_statuses,
 )
@@ -81,6 +102,7 @@ from error.error_dictionary import (
 
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
+from ..recovery import ChildDrainSupervisor
 
 
 def _run_all_index_builds(*args, **kwargs):
@@ -147,115 +169,6 @@ def clean_temp(temp_dir):
             (shutil.rmtree if os.path.isdir(path) and not os.path.islink(path) else os.unlink)(path)
         except Exception as e:
             logger.warning(f"Could not remove {path} from {temp_dir}: {e}")
-
-
-def _chromaprint_backfill_targets(server_id, album_limit):
-    with get_db() as conn, conn.cursor() as cur:
-        cur.execute(
-            "WITH missing AS ("
-            "  SELECT m.provider_track_id, m.file_path, s.album "
-            "  FROM track_server_map m "
-            "  JOIN score s ON s.item_id = m.item_id "
-            "  LEFT JOIN chromaprint c "
-            "    ON c.server_id = m.server_id AND c.provider_track_id = m.provider_track_id "
-            "  WHERE m.server_id = %s AND c.provider_track_id IS NULL "
-            "    AND s.album IS NOT NULL AND s.album <> ''"
-            "), picked AS ("
-            "  SELECT album FROM missing GROUP BY album ORDER BY album LIMIT %s"
-            ") "
-            "SELECT missing.provider_track_id, missing.file_path "
-            "FROM missing JOIN picked ON picked.album = missing.album",
-            (str(server_id), album_limit),
-        )
-        return cur.fetchall()
-
-
-def _backfill_one_track(server_id, provider_track_id, file_path):
-    item = {'Id': provider_track_id, 'id': provider_track_id, 'FilePath': file_path}
-    name = os.path.basename(file_path) if file_path else provider_track_id
-    path = None
-    try:
-        path = download_track(TEMP_DIR, item)
-        if not path:
-            return False
-        blob = chromaprint.compute(path)
-        persist_chromaprint(server_id, provider_track_id, blob)
-        if blob:
-            logger.info("Calculated Chromaprint for '%s' (backfill)", name)
-            return True
-        logger.warning("Could not calculate Chromaprint for '%s' (backfill)", name)
-        return False
-    except Exception:
-        logger.exception(
-            "Chromaprint backfill failed for %s/%s", server_id, provider_track_id
-        )
-        return False
-    finally:
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-
-
-def _noop_progress(message, progress):
-    return None
-
-
-def _backfill_server_chromaprints(server_id, log_fn=None, should_stop=None):
-    from ..mediaserver import context as server_context
-
-    targets = _chromaprint_backfill_targets(server_id, CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN)
-    if not targets:
-        return False
-    log_fn = log_fn or _noop_progress
-    total = len(targets)
-    log_fn(
-        f"Calculating Chromaprint fingerprints for {total} track(s) "
-        f"on server {server_id}...", 99,
-    )
-    filled = 0
-    stopped = False
-    last_tick = time.monotonic()
-    with server_context.use_server(_bind_server_context(server_id)):
-        for done, (provider_track_id, file_path) in enumerate(targets, 1):
-            if _backfill_one_track(server_id, provider_track_id, file_path):
-                filled += 1
-            now = time.monotonic()
-            if now - last_tick < CHROMAPRINT_BACKFILL_REPORT_SECONDS:
-                continue
-            last_tick = now
-            if should_stop and should_stop():
-                stopped = True
-                break
-            log_fn(
-                f"Calculating Chromaprint fingerprints on server {server_id}: "
-                f"{done}/{total} track(s)...", 99,
-            )
-    logger.info(
-        "Chromaprint backfill filled %d of %d track(s) on server %s%s",
-        filled, total, server_id, " (cancelled early)" if stopped else "",
-    )
-    return stopped
-
-
-def _run_chromaprint_backfill(server_ids, log_fn=None, should_stop=None):
-    if not CHROMAPRINT_COLLECTION_ENABLED or not chromaprint.is_available():
-        return False
-    for server_id in server_ids:
-        if not server_id:
-            continue
-        if should_stop and should_stop():
-            logger.info("Chromaprint backfill cancelled before server %s.", server_id)
-            return True
-        try:
-            if _backfill_server_chromaprints(
-                server_id, log_fn=log_fn, should_stop=should_stop
-            ):
-                return True
-        except Exception:
-            logger.exception("Chromaprint backfill failed for server %s", server_id)
-    return False
 
 
 def _task_revoked_in_db(task_id):
@@ -458,6 +371,9 @@ def _run_analysis_server_task_impl(
             last_monitor_db_check = float('-inf')
             last_status_report = float('-inf')
             last_revocation_poll = float('-inf')
+            live_album_marks = [()]
+            monitor_read_ok = [True]
+            stop_dispatch = [False]
             adopted_albums = set()
             for child in (inflight_children or ()):
                 if not child['sub_type_identifier']:
@@ -504,8 +420,24 @@ def _run_analysis_server_task_impl(
                                     tracks_analyzed_total[0] += int(counted)
                             if child['status'] == TASK_STATUS_FAILURE:
                                 _remember_album_error(child)
+                        live_album_marks[0] = tuple(sorted(
+                            (
+                                str(child.get('task_id')),
+                                str(child.get('status') or ''),
+                                str(child.get('progress')),
+                                str(child.get('beat_at') or ''),
+                            )
+                            for child in taskqueue.live_children(current_task_id)
+                            if child.get('task_id') in active_jobs
+                        ))
+                        monitor_read_ok[0] = True
                     except Exception:
-                        logger.exception("Failed to reap finished album tasks")
+                        monitor_read_ok[0] = False
+                        logger.exception(
+                            "Failed to reap finished album tasks or list the live "
+                            "ones; the stall window restarts rather than counting "
+                            "a database blip as a wedge"
+                        )
 
                 if (
                     finalize_indexes
@@ -526,6 +458,42 @@ def _run_analysis_server_task_impl(
                         log_and_update_main.state['progress'],
                     )
                     last_rebuild_count = albums_completed
+
+            def _fail_album(job_id, message):
+                save_task_status(
+                    job_id, 'album_analysis', TASK_STATUS_FAILURE, progress=100,
+                    parent_task_id=current_task_id, details={'message': message},
+                )
+                taskqueue.request_cancel(job_id)
+                return True
+
+            supervisor = ChildDrainSupervisor(
+                current_task_id, _fail_album,
+                ANALYSIS_STALL_TIMEOUT_MINUTES, ANALYSIS_MAX_STALL_GIVE_UPS,
+                lambda: time.monotonic(), label='album',
+            )
+
+            def watch_for_a_wedged_album():
+                if not monitor_read_ok[0]:
+                    supervisor.restart()
+                    return
+                marks = live_album_marks[0]
+                if supervisor.moved(marks) or not supervisor.expired():
+                    return
+                supervisor.give_up(
+                    [(task_id, status) for task_id, status, _p, _b in marks],
+                    sorted(active_jobs),
+                )
+                if supervisor.exhausted() and not stop_dispatch[0]:
+                    stop_dispatch[0] = True
+                    logger.warning(
+                        "Analysis %s has given up on a wedged album %d time(s) "
+                        "(limit: %d); no further album is dispatched and the run "
+                        "finishes with what it has analysed instead of feeding "
+                        "more albums to workers that keep wedging.",
+                        current_task_id, supervisor.give_ups,
+                        ANALYSIS_MAX_STALL_GIVE_UPS,
+                    )
 
             def report_progress(force=False):
                 nonlocal last_status_report
@@ -560,7 +528,12 @@ def _run_analysis_server_task_impl(
                         return {'status': TASK_STATUS_REVOKED}
                     monitor_and_clear_jobs()
                     report_progress()
+                    watch_for_a_wedged_album()
+                    if stop_dispatch[0]:
+                        break
                     time.sleep(5)
+                if stop_dispatch[0]:
+                    break
 
                 tracks = get_tracks_from_album(album['Id'])
                 if not tracks:
@@ -657,12 +630,17 @@ def _run_analysis_server_task_impl(
                     return {'status': TASK_STATUS_REVOKED}
                 monitor_and_clear_jobs()
                 report_progress(force=True)
+                if not active_jobs:
+                    break
+                watch_for_a_wedged_album()
                 time.sleep(5)
 
             if finalize_indexes:
                 log_and_update_main("Performing final index rebuild...", 95)
                 try:
-                    _run_all_index_builds(log_fn=log_and_update_main)
+                    _run_all_index_builds(
+                        log_fn=log_and_update_main, task_id=current_task_id
+                    )
                 except (OperationalError, InterfaceError):
                     raise
                 except error_manager.AudioMuseError:
@@ -671,11 +649,6 @@ def _run_analysis_server_task_impl(
                     raise error_manager.AudioMuseError(
                         error_manager.classify(e, ERR_INDEX_BUILD), str(e), cause=e
                     ) from e
-                if _run_chromaprint_backfill(
-                    [server_id], log_fn=log_and_update_main, should_stop=revoked_now
-                ):
-                    logger.info("Analysis revoked during the Chromaprint backfill.")
-                    return {'status': TASK_STATUS_REVOKED}
             logger.info(
                 "Phase complete. Albums: %d launched, %d skipped of %d, %d failed. "
                 "Songs: %d sent for analysis, %d already analyzed of %d. "
@@ -862,7 +835,7 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
             details={"message": "Building union catalogue indexes once..."},
         )
         try:
-            _run_all_index_builds()
+            _run_all_index_builds(task_id=parent_id)
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
@@ -885,21 +858,6 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 },
             )
             raise
-
-        def _chromaprint_progress(message, _progress=99):
-            save_task_status(
-                parent_id, "main_analysis", TASK_STATUS_PROGRESS,
-                progress=99, details={"message": message},
-            )
-
-        backfill_cancelled = _run_chromaprint_backfill(
-            [server['server_id'] for server in servers if server['name'] not in failed],
-            log_fn=_chromaprint_progress,
-            should_stop=lambda: _task_revoked_in_db(parent_id),
-        )
-        if backfill_cancelled:
-            logger.info("Union analysis revoked during the Chromaprint backfill.")
-            return {'status': 'REVOKED', 'servers_completed': len(summaries)}
 
         analyzed_servers = len(servers) - len(failed)
         run_failed = analyzed_servers == 0

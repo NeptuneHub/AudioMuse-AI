@@ -356,8 +356,21 @@ CLUSTERING_AUTO_CALIBRATION = os.environ.get("CLUSTERING_AUTO_CALIBRATION", "Tru
 CLUSTERING_MAX_PLAYLIST_SONGS = int(os.environ.get("CLUSTERING_MAX_PLAYLIST_SONGS", "200")) # Calibration tries to keep playlists at or under this many songs (soft goal; big beats empty)
 CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MAX_TRIES", "3")) # Quick single-iteration probes per server before the real run
 CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact per-iteration sample cap; all per-genre quotas are calculated before selecting tracks, and smaller libraries contribute every clusterable song
-CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches without a better result; in-flight batches still drain
+CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches that brought back nothing better; a CRASHED batch counts as one of them, so this is also the number of failures that ends a run with the best result it holds. In-flight batches still drain
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in task queue (reduced from 100 to prevent resource exhaustion)
+# The analysis twin of CLUSTERING_STALL_TIMEOUT_MINUTES, and the same sliding
+# window: an album job whose worker is alive but whose native code never returns
+# holds its advisory lock, so reclaim cannot take it and the parent would wait on
+# it forever. Any sign of life restarts the clock, a live album merely advancing
+# one track included, so only a genuinely wedged album runs it out; it is then
+# failed and reported in the album failure tally. 0 disables it.
+ANALYSIS_STALL_TIMEOUT_MINUTES = int(os.environ.get("ANALYSIS_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in the album drain - none finished, failed, and no live album advanced a track - before the parent gives up on the albums it is waiting for
+# The bound on how OFTEN the valve above may fire in one run, and the analysis
+# counterpart of CLUSTERING_EARLY_STOP_BATCHES. A worker that wedges on every
+# album it claims makes the valve fire once per album forever - one stall window
+# each - and the parent's own progress writes keep the wedged-main nudge blind to
+# it, so without this bound a run never ends. 0 disables it.
+ANALYSIS_MAX_STALL_GIVE_UPS = int(os.environ.get("ANALYSIS_MAX_STALL_GIVE_UPS", "3")) # How many times an analysis run may give up on a wedged album before it stops dispatching and finishes with what it has analysed
 
 # --- Batching Constants for Clustering Runs ---
 ITERATIONS_PER_BATCH_JOB = int(os.environ.get("ITERATIONS_PER_BATCH_JOB", "20")) # Number of clustering iterations per queued batch job
@@ -367,7 +380,7 @@ MAX_CONCURRENT_BATCH_JOBS = int(os.environ.get("MAX_CONCURRENT_BATCH_JOBS", "10"
 # Recommended values: 10-25 for servers with limited resources, 50-100 for powerful servers
 
 # --- Clustering Batch Timeout and Failure Recovery ---
-CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Max number of failed batches before stopping
+CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Upper bound on failed batches. Failures also count toward CLUSTERING_EARLY_STOP_BATCHES, so while that stays lower this bound is only reached when successes keep resetting the early-stop counter between failures
 # Last-resort safety valve for the clustering parent's drain loop, NOT a per-batch
 # budget: it measures the wall time during which NOTHING in the whole run changed
 # (no batch finished, none failed, none was launched, no live batch appeared or
@@ -375,11 +388,12 @@ CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHE
 # so the worker still holds the advisory lock, reclaim correctly leaves it alone and
 # an unattended cron run would wait at a frozen generation count forever. When this
 # expires the parent cancels the batches it is still waiting on and finishes with the
-# best result it already has. The predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES was 60
-# and killed a batch on ITS OWN elapsed time, which a merely slow batch trips; this
-# one only fires when the entire run is frozen, so it is set to four times that to
-# stay far above any legitimate single-batch duration on slow hardware. 0 disables it.
-CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "240")) # Minutes without ANY change anywhere in a clustering run before the parent gives up on the batches it is waiting for (0 = never give up)
+# best result it already has. A live batch's own iteration counter counts as change,
+# so a slow batch and one a fresh worker restarted after a worker death both keep the
+# window open; only a batch producing nothing at all runs it out. Same 60 minutes as
+# the predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES, which was a per-batch budget that
+# a merely slow batch could trip. 0 disables it.
+CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in a clustering run - no batch finished, failed, launched, and no live batch advanced even one iteration - before the parent gives up on the batches it is waiting for and finishes with its best result (0 = never give up)
 
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
@@ -606,6 +620,14 @@ QUEUE_SECRET_KWARGS = (
 # rows and the reclaim only at RUNNING ones. That is one of the two ways a main
 # task could "never get re-enqueued".
 QUEUE_MAX_ATTEMPTS = max(1, int(os.getenv('QUEUE_MAX_ATTEMPTS', '3')))
+# A main task whose worker process is ALIVE but whose row has not changed for this
+# long is wedged, not working: reclaim deliberately will not touch it, because its
+# advisory lock is still held, so it would block every other main task forever.
+# Maintenance sends it a cancel, which ends that worker's process tree; supervisord
+# restarts the worker and the normal reclaim then requeues the task, so it RESUMES
+# from its persisted progress rather than being thrown away. Well above any silence
+# a healthy run has (clustering's AI naming phase is the longest). 0 disables it.
+QUEUE_WEDGED_MAIN_TASK_MINUTES = int(os.environ.get("QUEUE_WEDGED_MAIN_TASK_MINUTES", "180")) # Minutes a RUNNING main task row may stay unchanged while its worker is still alive before maintenance restarts that worker
 # Jobs a worker runs before recycling itself, bounding native-extension leaks the
 # same way the queue worker's max_jobs did.
 QUEUE_MAX_JOBS = int(os.getenv('QUEUE_MAX_JOBS', '50'))
@@ -1430,15 +1452,15 @@ CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "4"))
 FPCALC_BINARY = os.getenv("FPCALC", "fpcalc")
 # Compute and store a fingerprint for every newly analyzed track.
 CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "True").lower() == "true"
-# Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
-# run. Editable in the setup wizard (advanced section) and applied on the next analysis.
-CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "1000"))
-# Seconds between progress writes (and cancellation polls) inside the backfill loop. The loop
-# downloads and fingerprints one track at a time, so a 1000-album run is hours of work: without
-# a periodic write the task row's timestamp freezes, the UI looks hung at 99% and Cancel is
-# ignored. Reclaim is advisory-lock based, so this cadence no longer affects whether the row is
-# reaped - it only drives the UI and the cancellation poll.
-CHROMAPRINT_BACKFILL_REPORT_SECONDS = int(os.getenv("CHROMAPRINT_BACKFILL_REPORT_SECONDS", "15"))
+# Mappings handed a stored fingerprint per statement. The hand-over is one set-based
+# INSERT..SELECT, but an unbounded one over a large catalogue copies gigabytes of BYTEA and
+# exceeds the 10 minute statement_timeout, which cancels it and leaves swept tracks with no
+# fingerprint at all. Chunking keeps every statement short, so a slow database makes the
+# hand-over take longer instead of making it fail. It does NOT commit as it goes and cannot:
+# the whole hand-over shares the one transaction that writes the mappings, on a temp table
+# that is ON COMMIT DROP. A failure mid-loop unwinds to the savepoint and the mappings still
+# stand; the next sweep retries the hand-over.
+CHROMAPRINT_INHERIT_BATCH_SIZE = int(os.getenv("CHROMAPRINT_INHERIT_BATCH_SIZE", "2000"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
 # Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.

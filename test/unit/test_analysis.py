@@ -19,9 +19,6 @@ Main Features:
   under its provider id and records the empty-string retry-stop sentinel.
 * run_analysis_task scope handling: empty enabled-server list skips instead of
   falling back to the config default server.
-* Chromaprint backfill liveness: the per-track loop writes throttled progress so
-  the task row never looks hung, and it honours revocation mid-loop instead of
-  fingerprinting thousands of tracks after a Cancel.
 """
 
 import logging
@@ -786,10 +783,37 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     assert status_calls[1] == ['job-1', 'parent1']
 
 
+class _AnalysisClock:
+    def __init__(self, step_minutes):
+        self.now = 1_000_000.0
+        self.step_seconds = step_minutes * 60.0
+        self.sleeps = 0
+
+    def time(self):
+        return self.now
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, _seconds):
+        self.sleeps += 1
+        if self.sleeps > 2000:
+            raise AssertionError(
+                'the analysis drain loop never returned; the parent is hung on an '
+                'album job that will never finish'
+            )
+        self.now += self.step_seconds
+
+    @property
+    def elapsed_minutes(self):
+        return (self.now - 1_000_000.0) / 60.0
+
+
 def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                       baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
-                      extra_jobs=None):
+                      extra_jobs=None, wedged=None, cancelled=None,
+                      all_live_new=False, wedge_forever=False):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -802,6 +826,14 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     def _record_status(*args, **kwargs):
         if status_calls is not None:
             status_calls.append(kwargs.get('details') or {})
+        if (
+            wedged is not None
+            and len(args) >= 3
+            and args[2] == config.TASK_STATUS_FAILURE
+            and args[0] in wedged
+        ):
+            wedged.remove(args[0])
+            given_up.append(args[0])
 
     monkeypatch.setattr(analysis, 'save_task_status', _record_status)
     monkeypatch.setattr(helper, 'save_task_status', _record_status)
@@ -850,12 +882,38 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     ]
     carried_over_read_done = []
 
+    given_up = []
+    worker_freed = []
+
     def _fake_reap(parent_task_id, conn=None):
         if not carried_over_read_done:
             carried_over_read_done.append(True)
             if baseline_read_error is not None:
                 raise baseline_read_error
             return already_terminal_rows
+        if wedged is not None:
+            wedged.extend(queued_ids)
+            queued_ids.clear()
+            drained, given_up[:] = list(given_up), []
+            if drained:
+                worker_freed.append(True)
+                return [
+                    {
+                        'task_id': task_id,
+                        'status': config.TASK_STATUS_FAILURE,
+                        'sub_type_identifier': f'album-for-{task_id}',
+                        'details': {'message': 'gave up'},
+                    }
+                    for task_id in drained
+                ]
+            if worker_freed and wedged and not wedge_forever:
+                return [{
+                    'task_id': wedged.pop(0),
+                    'status': config.TASK_STATUS_SUCCESS,
+                    'sub_type_identifier': 'album-freed',
+                    'details': {'tracks_analyzed': 1},
+                }]
+            return []
         pending_ids.extend(queued_ids)
         queued_ids.clear()
         reaped = [
@@ -872,14 +930,33 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
 
     monkeypatch.setattr(taskqueue, 'enqueue', _fake_enqueue)
     monkeypatch.setattr(taskqueue, 'reap_finished_children', _fake_reap)
-    monkeypatch.setattr(
-        taskqueue, 'live_children',
-        lambda parent_task_id, conn=None: [
+    def _fake_live_children(parent_task_id, conn=None):
+        if wedged is not None:
+            return [
+                {
+                    'task_id': task_id,
+                    'sub_type_identifier': f'album-for-{task_id}',
+                    'progress': 40 if index == 0 else 0,
+                    'status': (
+                        config.TASK_STATUS_NEW
+                        if all_live_new
+                        else (
+                            config.TASK_STATUS_RUNNING if index == 0
+                            else config.TASK_STATUS_NEW
+                        )
+                    ),
+                }
+                for index, task_id in enumerate(wedged)
+            ]
+        return [
             {'task_id': row['task_id'], 'sub_type_identifier': row['sub_type_identifier']}
             for row in (child_rows or [])
             if row['status'] in (config.TASK_STATUS_NEW, config.TASK_STATUS_RUNNING)
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(taskqueue, 'live_children', _fake_live_children)
+    if cancelled is not None:
+        monkeypatch.setattr(taskqueue, 'request_cancel', cancelled.append)
     if child_rows:
         monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
 
@@ -1062,6 +1139,168 @@ def test_retry_adopts_previous_attempts_running_album_instead_of_duplicating(mon
     assert result['status'] == 'SUCCESS'
     assert enqueued == []
     assert result['message'] == 'Albums 1/1'
+
+
+class TestAnalysisStallValve:
+    @staticmethod
+    def _drive(monkeypatch, step_minutes):
+        import tasks.analysis.main as analysis
+
+        clock = _AnalysisClock(step_minutes=step_minutes)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        wedged, cancelled, status_calls = [], [], []
+        result, enqueued = _run_parent_phase(
+            monkeypatch,
+            [{'Id': 'al0', 'Name': 'Album 0'}],
+            {'al0': [{'Id': 'p0', 'Name': 't'}]},
+            {},
+            child_rows=[],
+            wedged=wedged,
+            cancelled=cancelled,
+            status_calls=status_calls,
+        )
+        return result, cancelled, clock, status_calls
+
+    def test_an_album_that_never_returns_is_given_up_on_and_the_run_finishes(
+        self, monkeypatch
+    ):
+        result, cancelled, clock, status_calls = self._drive(monkeypatch, 30)
+
+        assert len(cancelled) == 1, (
+            'the album job holds its advisory lock while its worker is alive, so '
+            'reclaim will never take it and only the parent can end this wait'
+        )
+        assert clock.elapsed_minutes >= config.ANALYSIS_STALL_TIMEOUT_MINUTES
+        assert any(
+            'gave up on this album' in str(details.get('message', ''))
+            for details in status_calls
+        ), 'the album row has to say why it was ended, not just stop'
+
+    def test_a_wedge_while_the_dispatch_queue_is_full_is_given_up_on_too(
+        self, monkeypatch
+    ):
+        import tasks.analysis.main as analysis
+
+        monkeypatch.setattr(analysis, 'MAX_QUEUED_ANALYSIS_JOBS', 1)
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        wedged, cancelled = [], []
+
+        _run_parent_phase(
+            monkeypatch,
+            [{'Id': 'al0', 'Name': 'Album 0'}, {'Id': 'al1', 'Name': 'Album 1'}],
+            {'al0': [{'Id': 'p0', 'Name': 't'}], 'al1': [{'Id': 'p1', 'Name': 't'}]},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+        )
+
+        assert cancelled, (
+            'the parent blocks here, not in the tail drain, for any library bigger '
+            'than MAX_QUEUED_ANALYSIS_JOBS: the queue fills, one album wedges, and '
+            'no later album is ever dispatched, so a valve on the tail alone never '
+            'runs. Its own progress writes also keep the parent row fresh, so the '
+            'wedged-main nudge cannot see this either'
+        )
+
+    def test_only_the_album_holding_the_worker_is_given_up_on(self, monkeypatch):
+        import tasks.analysis.main as analysis
+
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+        wedged, cancelled = [], []
+
+        result, _enqueued = _run_parent_phase(
+            monkeypatch,
+            albums,
+            {a['Id']: [{'Id': f"p{a['Id']}", 'Name': 't'}] for a in albums},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+        )
+
+        assert len(cancelled) == 1, (
+            'only one album is held by a worker; the other two are queued behind it '
+            'and are not wedged at all. Failing them too would burn a whole '
+            'MAX_QUEUED_ANALYSIS_JOBS window of albums nothing had even started, and '
+            'save_task_status NULLs func/payload on a terminal row so they could '
+            'never be claimed again'
+        )
+        assert '2 could not be analyzed' not in result['message']
+        assert result['message'].startswith('Albums 3/3'), (
+            'once the album holding the worker is ended the worker is free, so the '
+            'albums queued behind it still get analysed in this same run'
+        )
+
+    def test_the_abandoned_album_is_reported_as_a_failure_not_as_analysed(
+        self, monkeypatch
+    ):
+        result, _cancelled, _clock, _status = self._drive(monkeypatch, 30)
+
+        assert 'could not be analyzed' in result['message'], (
+            'giving up on an album must land in the failure tally the run reports; '
+            'counting it as done would claim a library was analysed when it was not'
+        )
+
+    def test_a_worker_that_wedges_on_every_album_ends_the_run_at_the_cap(
+        self, monkeypatch
+    ):
+        import tasks.analysis.main as analysis
+
+        monkeypatch.setattr(analysis, 'MAX_QUEUED_ANALYSIS_JOBS', 1)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MAX_STALL_GIVE_UPS', 2)
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(10)]
+        wedged, cancelled = [], []
+
+        result, enqueued = _run_parent_phase(
+            monkeypatch,
+            albums,
+            {a['Id']: [{'Id': f"p{a['Id']}", 'Name': 't'}] for a in albums},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+            wedge_forever=True,
+        )
+
+        assert len(enqueued) <= 3, (
+            'every album this worker claims wedges, so without a bound the valve '
+            'just fires once per album and the run lasts one stall window times '
+            'the whole library instead of ending; the parent keeps its own row '
+            'fresh while it waits, so the wedged-main nudge never sees it either'
+        )
+        assert result['message'].startswith('Albums '), (
+            'the run has to finish and report what it did analyse, not hang'
+        )
+        assert clock.sleeps < 2000
+
+    def test_all_queued_albums_with_nothing_running_are_cleared_out(self, monkeypatch):
+        import tasks.analysis.main as analysis
+
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+        wedged, cancelled = [], []
+
+        result, _enqueued = _run_parent_phase(
+            monkeypatch,
+            albums,
+            {a['Id']: [{'Id': f"p{a['Id']}", 'Name': 't'}] for a in albums},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+            all_live_new=True,
+        )
+
+        assert len(cancelled) == 3, (
+            'with nothing RUNNING and nothing progressing for the whole window, '
+            'the queue itself is the wedge: every queued album is failed so the '
+            'run ends instead of waiting forever on workers that never pick them up'
+        )
+        assert '3 could not be analyzed' in result['message']
 
 
 def test_retry_reenqueues_an_album_whose_child_row_is_gone(monkeypatch):
@@ -2416,7 +2655,6 @@ def test_a_requeued_job_refuses_to_rerun_a_terminal_task(monkeypatch, terminal_s
 
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', forbidden)
     monkeypatch.setattr(analysis, '_run_all_index_builds', forbidden)
-    monkeypatch.setattr(analysis, '_run_chromaprint_backfill', forbidden)
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
 
     result = analysis.run_analysis_task(0, 5)
@@ -2424,7 +2662,7 @@ def test_a_requeued_job_refuses_to_rerun_a_terminal_task(monkeypatch, terminal_s
     assert result['status'] == terminal_status
 
 
-def test_a_run_cancelled_during_the_album_phases_never_reaches_chromaprint(monkeypatch):
+def test_a_run_cancelled_during_the_album_phases_never_reaches_the_index_rebuild(monkeypatch):
     import tasks.analysis.main as analysis
 
     servers = [
@@ -2452,7 +2690,6 @@ def test_a_run_cancelled_during_the_album_phases_never_reaches_chromaprint(monke
         raise AssertionError('the tail phases must not run after a cancel')
 
     monkeypatch.setattr(analysis, '_run_all_index_builds', forbidden)
-    monkeypatch.setattr(analysis, '_run_chromaprint_backfill', forbidden)
 
     result = analysis.run_analysis_task(0, 5)
 
@@ -2488,116 +2725,6 @@ def test_an_unreadable_status_lets_the_run_proceed_rather_than_stalling(monkeypa
     result = analysis.run_analysis_task(0, 5)
 
     assert result['status'] == 'SKIPPED'
-
-
-def _chromaprint_backfill_harness(monkeypatch, targets_by_server, report_seconds=0):
-    import contextlib
-    import tasks.analysis.main as analysis
-    from tasks.mediaserver import context as server_context
-
-    monkeypatch.setattr(analysis, 'CHROMAPRINT_COLLECTION_ENABLED', True)
-    monkeypatch.setattr(
-        analysis, 'CHROMAPRINT_BACKFILL_REPORT_SECONDS', report_seconds
-    )
-    monkeypatch.setattr(analysis.chromaprint, 'is_available', lambda: True)
-    monkeypatch.setattr(analysis, '_bind_server_context', lambda server_id: server_id)
-    monkeypatch.setattr(
-        server_context, 'use_server', lambda *a, **k: contextlib.nullcontext()
-    )
-    monkeypatch.setattr(
-        analysis,
-        '_chromaprint_backfill_targets',
-        lambda server_id, limit: list(targets_by_server.get(server_id, [])),
-    )
-    processed = []
-    monkeypatch.setattr(
-        analysis,
-        '_backfill_one_track',
-        lambda server_id, track_id, path: processed.append((server_id, track_id)) or True,
-    )
-    return analysis, processed
-
-
-def _fake_targets(count, prefix='t'):
-    return [(f'{prefix}{i}', f'/music/{prefix}{i}.flac') for i in range(count)]
-
-
-def test_chromaprint_backfill_writes_progress_during_the_loop_not_only_before_it(
-    monkeypatch,
-):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv': _fake_targets(5)}
-    )
-    reports = []
-
-    analysis._run_chromaprint_backfill(
-        ['srv'], log_fn=lambda message, progress=99: reports.append(message)
-    )
-
-    assert len(processed) == 5
-    assert len(reports) == 6
-    assert '5/5 track(s)' in reports[-1]
-
-
-def test_chromaprint_backfill_throttles_progress_writes_to_the_configured_interval(
-    monkeypatch,
-):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv': _fake_targets(5)}, report_seconds=3600
-    )
-    reports = []
-
-    analysis._run_chromaprint_backfill(
-        ['srv'], log_fn=lambda message, progress=99: reports.append(message)
-    )
-
-    assert len(processed) == 5
-    assert len(reports) == 1
-
-
-def test_chromaprint_backfill_stops_mid_loop_once_the_run_is_revoked(monkeypatch):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch, {'srv': _fake_targets(10)}
-    )
-
-    analysis._run_chromaprint_backfill(
-        ['srv'],
-        log_fn=lambda message, progress=99: None,
-        should_stop=lambda: len(processed) >= 3,
-    )
-
-    assert len(processed) == 3
-
-
-def test_chromaprint_backfill_leaves_remaining_servers_untouched_once_revoked(
-    monkeypatch,
-):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch,
-        {'srv-a': _fake_targets(2, 'a'), 'srv-b': _fake_targets(2, 'b'),
-         'srv-c': _fake_targets(2, 'c')},
-    )
-
-    analysis._run_chromaprint_backfill(
-        ['srv-a', 'srv-b', 'srv-c'],
-        log_fn=lambda message, progress=99: None,
-        should_stop=lambda: len(processed) >= 2,
-    )
-
-    assert {server_id for server_id, _ in processed} == {'srv-a'}
-
-
-def test_chromaprint_backfill_covers_every_server_when_nothing_is_revoked(monkeypatch):
-    analysis, processed = _chromaprint_backfill_harness(
-        monkeypatch,
-        {'srv-a': _fake_targets(2, 'a'), 'srv-b': [], 'srv-c': _fake_targets(1, 'c')},
-    )
-
-    analysis._run_chromaprint_backfill(
-        ['srv-a', 'srv-b', 'srv-c'], log_fn=lambda message, progress=99: None
-    )
-
-    assert {server_id for server_id, _ in processed} == {'srv-a', 'srv-c'}
 
 
 def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkeypatch):

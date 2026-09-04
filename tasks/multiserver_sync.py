@@ -508,6 +508,7 @@ def fetch_server_catalogue(server):
 
 
 def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
+    registry.invalidate_server_cache()
     stype = server['server_type']
     server_id = server['server_id']
     total_local = _local_track_count(db)

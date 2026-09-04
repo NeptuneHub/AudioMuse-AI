@@ -25,6 +25,16 @@ Main Features:
   index blobs climbed to 145MB RSS and stayed there, while a fresh connection
   per build peaked at 69MB and released it on close. Recycling costs one cheap
   reconnect per step and keeps Postgres' idle footprint flat after an analysis.
+* Every step runs under a row_heartbeat on the task's own row. The wedged-main
+  nudge reads task_status.timestamp and nothing else, but a step is ONE opaque
+  call that writes no row while it runs, so on a big library the IVF, artist-GMM
+  or hyperbolic backfill outlived QUEUE_WEDGED_MAIN_TASK_MINUTES and had a
+  perfectly healthy analysis cancelled out from under it. The heartbeat also
+  names the running step at WARNING each time it fires, so a step that really is
+  stuck is loud rather than silent. It bumps from this process, so a worker that
+  actually dies stops bumping and reclaim still takes the row, and it is BOUNDED:
+  a build that never returns stops being propped up after several windows, or the
+  nudge could never fire and one wedged rebuild would lock out every main task.
 * After the nine builds finish, the worker issues a CHECKPOINT on its own
   connection and closes it. Postgres only releases WAL segments and flushed
   dirty buffers at a checkpoint, so without it the hundreds of MB written as
@@ -45,12 +55,17 @@ from app_helper import (
     build_and_store_artist_projection,
 )
 from database import close_db, get_db
-from config import TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
+from config import (
+    TASK_STATUS_SUCCESS,
+    TASK_STATUS_FAILURE,
+    QUEUE_WEDGED_MAIN_TASK_MINUTES,
+)
 
 from error import error_manager
 from error.error_dictionary import ERR_INDEX_BUILD
 
 from ..memory_utils import release_memory_to_os
+from ..recovery import row_heartbeat, slow_step_budget_minutes
 from .helper import make_task_reporter
 
 
@@ -77,7 +92,7 @@ def _checkpoint_postgres():
         logger.debug("Post-analysis Postgres CHECKPOINT failed", exc_info=True)
 
 
-def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
+def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_id=None):
     from ..ivf_manager import build_and_store_ivf_index
     from ..clap_text_search import build_and_store_clap_index
     from ..lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
@@ -122,24 +137,30 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
             logger.debug("Index-build progress callback failed", exc_info=True)
 
     safe_log("Rebuilding similarity indexes...", progress_start)
-    for index, (label, banner, build, fatal) in enumerate(steps):
-        safe_log(
-            f"{banner} ({index + 1}/{len(steps)})",
-            progress_start + (span * index) // len(steps),
-        )
-        try:
-            build()
-            logger.info(f"OK {label}")
-        except Exception as e:
-            error_manager.record(
-                error_manager.classify(e, ERR_INDEX_BUILD),
-                f"{label}: {e}", exc=e, logger=logger, level=logging.WARNING,
+    running = ['the index rebuild']
+    with row_heartbeat(
+        task_id, lambda: running[0],
+        stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+    ):
+        for index, (label, banner, build, fatal) in enumerate(steps):
+            running[0] = f"{label} ({index + 1}/{len(steps)})"
+            safe_log(
+                f"{banner} ({index + 1}/{len(steps)})",
+                progress_start + (span * index) // len(steps),
             )
-            if fatal:
-                raise
-        finally:
-            _recycle_db_connection()
-            gc.collect()
+            try:
+                build()
+                logger.info(f"OK {label}")
+            except Exception as e:
+                error_manager.record(
+                    error_manager.classify(e, ERR_INDEX_BUILD),
+                    f"{label}: {e}", exc=e, logger=logger, level=logging.WARNING,
+                )
+                if fatal:
+                    raise
+            finally:
+                _recycle_db_connection()
+                gc.collect()
     try:
         taskqueue.publish_event('index-reload')
     except Exception as e:
@@ -181,7 +202,8 @@ def rebuild_all_indexes_task(parent_task_id=None):
         )
         try:
             _run_all_index_builds(
-                log_fn=log_and_update, progress_start=0, progress_end=99
+                log_fn=log_and_update, progress_start=0, progress_end=99,
+                task_id=current_task_id,
             )
         except Exception as e:
             err = error_manager.from_exception(
