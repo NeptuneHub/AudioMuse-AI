@@ -251,13 +251,6 @@ def has_secondary_servers(conn=None):
     return result
 
 
-# A DIFFERENT question from has_secondary_servers above, on its own cache slot.
-# "Is any server not the default one" and "are there two servers at all" disagree on
-# a catalogue whose single server carries no default flag, and they used to answer out
-# of one slot, so whichever ran first decided what the other saw for the whole TTL.
-# The two queries stay apart as well as the two slots: this one runs INSIDE the
-# mapping-write transaction on every sweep match, so it deliberately names no column -
-# it needs the table to exist and nothing more.
 def _catalogue_has_two_servers(cur):
     now = time.monotonic()
     with _default_cache_lock:
