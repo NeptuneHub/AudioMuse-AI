@@ -43,10 +43,11 @@ from config import (
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
+    QUEUE_WEDGED_MAIN_TASK_MINUTES,
 )
 from sanitization import sanitize_string_for_db as _sanitize_text
 
-from .recovery import row_heartbeat
+from .recovery import row_heartbeat, slow_step_budget_minutes
 
 logger = logging.getLogger(__name__)
 
@@ -532,6 +533,9 @@ def execute_provider_migration(session_id):
                 task_id,
                 'the provider-migration transaction, which rewrites every catalogue '
                 'id in one statement sequence and writes no row until it commits',
+                stop_after_minutes=slow_step_budget_minutes(
+                    QUEUE_WEDGED_MAIN_TASK_MINUTES
+                ),
             ):
                 index_rebuild_needed = _run_migration_transaction(
                     cur=cur,
