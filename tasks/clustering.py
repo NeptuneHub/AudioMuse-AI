@@ -92,6 +92,7 @@ from config import (
     CLUSTERING_CALIBRATION_MAX_TRIES,
     CLUSTERING_EARLY_STOP_BATCHES,
     CLUSTERING_STALL_TIMEOUT_MINUTES,
+    CLUSTERING_MAX_STALL_GIVE_UPS,
     QUEUE_WEDGED_MAIN_TASK_MINUTES,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
@@ -1174,7 +1175,7 @@ def _cluster_one_server(
         current_task_id,
         lambda job_id, message: _revoke_batch(job_id, current_task_id, message),
         CLUSTERING_STALL_TIMEOUT_MINUTES,
-        1,
+        CLUSTERING_MAX_STALL_GIVE_UPS,
         lambda: time.monotonic(),
         label='batch',
     )

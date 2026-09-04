@@ -41,7 +41,16 @@ Main Features:
   unbounded heartbeat on a main task is strictly worse than no heartbeat, because
   it holds the one-live-main index open against every other run forever. The
   budget is measured against the clock, not by adding up intervals, so a database
-  outage that skips beats cannot quietly extend it either.
+  outage that skips beats cannot quietly extend it either. It bounds ONE step,
+  not one `with` block: a caller whose label names the step it is on (the nine
+  index builds, naming then creating) restarts the budget every time that label
+  changes, so a loop of legitimately slow steps cannot spend a budget sized for
+  one of them. That is what lets the budget be short. It is deliberately short -
+  _MAX_SLOW_STEP_WINDOWS is 2, not the 6 it started at - because this is
+  overnight work: at 6 windows a main task that hung at 23:00 was still holding
+  the queue at 20:00 the next day (18h propped up, then the nudge's own limit on
+  top). Two windows puts the whole detect-and-clear inside a night, and being
+  wrong is cheap: the task is requeued and resumes from its persisted progress.
 * RECOVERY maps every task type to its stance on every scenario, so a gap is
   visible in one table instead of being spread over six modules.
 
@@ -76,7 +85,7 @@ SCENARIOS = (
     GIVE_UP_RUNS_FOREVER,
 )
 
-_MAX_SLOW_STEP_WINDOWS = 6
+_MAX_SLOW_STEP_WINDOWS = 2
 
 
 _NO_SIGNATURE = object()
@@ -217,20 +226,24 @@ def row_heartbeat(task_id, label=None, every_minutes=None, stop_after_minutes=No
     )
     stop = threading.Event()
 
-    started = clock()
-
     def _loop():
         from database import connect_raw
 
         conn = None
+        step = _describe(label)
+        started = clock()
         while not stop.wait(interval):
+            running = _describe(label)
+            if running != step:
+                step = running
+                started = clock()
             held = clock() - started
             if _budget_spent(started, clock, budget):
                 logger.warning(
                     "Task %s has been inside '%s' for %.0f minutes, past the %.0f "
                     "minutes a single step is allowed to hold its row open; the "
                     "heartbeat stops here so the stall valve can see it.",
-                    task_id, _describe(label), held / 60.0, budget / 60.0,
+                    task_id, step, held / 60.0, budget / 60.0,
                 )
                 break
             try:
@@ -253,7 +266,7 @@ def row_heartbeat(task_id, label=None, every_minutes=None, stop_after_minutes=No
             logger.warning(
                 "Task %s has been inside '%s' for %.0f minutes without finishing "
                 "it; refreshing its row so it is not mistaken for a wedge.",
-                task_id, _describe(label), held / 60.0,
+                task_id, step, held / 60.0,
             )
         _close_quietly(conn)
 
@@ -345,8 +358,9 @@ RECOVERY = {
             'batches a worker holds, or every live batch when none is running'
         ),
         GIVE_UP_RUNS_FOREVER: handled(
-            'the first give-up sets stop_launching, and CLUSTERING_EARLY_STOP_'
-            'BATCHES / CLUSTERING_MAX_FAILED_BATCHES end the run before that'
+            'CLUSTERING_MAX_STALL_GIVE_UPS stops launching and finishes the run; '
+            'a given-up batch also counts as failed, so CLUSTERING_EARLY_STOP_'
+            'BATCHES / CLUSTERING_MAX_FAILED_BATCHES can end it sooner'
         ),
     },
     'cleaning': {
@@ -427,13 +441,16 @@ RECOVERY = {
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
     },
     'server_sweep': {
-        MAIN_WORKER_DIED: not_applicable(
-            'not a main task type: it holds the sweep index, not the one-live-main '
-            'index, so a stuck sweep blocks only other sweeps'
+        MAIN_WORKER_DIED: handled(
+            _RECLAIM + '; it holds the sweep index rather than the one-live-main '
+            'one, but a live sweep still refuses a cleaning start and a '
+            'provider-migration execute, so it is not free to sit there'
         ),
-        MAIN_ROW_SILENT: not_applicable(
-            'the nudge covers MAIN_TASK_TYPES only; a sweep that goes quiet is '
-            'reclaimed when its worker dies and blocks no main task meanwhile'
+        MAIN_ROW_SILENT: handled(
+            _NUDGE + ', which watches this type too (NUDGE_TASK_TYPES): the old '
+            'stance that a stuck sweep "blocks only other sweeps" was wrong, and '
+            'nothing else watches it because reclaim needs the worker to DIE. '
+            'row_heartbeat covers its one whole-catalogue fetch per server'
         ),
         CHILD_WORKER_DIED: handled(_RECLAIM),
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),

@@ -131,6 +131,7 @@ class TestEveryLongOpaquePhaseHasAHeartbeat:
             'cleaning': ('tasks/analysis/index.py', 'tasks/cleaning.py'),
             'sonic_fingerprint': ('tasks/sonic_fingerprint_manager.py',),
             'provider_migration': ('tasks/provider_migration_tasks.py',),
+            'server_sweep': ('tasks/multiserver_sync.py',),
         }
         assert task_type in modules, (
             f'{task_type} claims a row_heartbeat and names no module that could '

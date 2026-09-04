@@ -31,8 +31,9 @@ Main Features:
   after the worker holding it died
 * A batch that delivers nothing at all is cancelled once nothing anywhere in the
   run has changed for CLUSTERING_STALL_TIMEOUT_MINUTES, and the parent returns
-* Giving up on the live batches also stops new launches, so the valve never
-  abandons what is running and then queues more of it
+* Giving up on a wedged batch ends only that batch and LAUNCHES the next one,
+  because one wedged batch is not a wedged run; the give-up count, not the first
+  give-up, is what finally stops a pool that wedges everything it claims
 * A run whose batches are ALL still queued - no worker ever claimed one - ends
   too. There is nothing running to spare, and the loop only leaves when no batch
   is live, so sparing that queue is the forever-hang the valve exists to bound
@@ -498,9 +499,7 @@ class TestClusteringStallValve:
         assert str(config.CLUSTERING_STALL_TIMEOUT_MINUTES) in gave_up[0]
         assert 'gave up on this batch' in run.revoked[0][2]['message']
 
-    def test_giving_up_on_the_live_batches_also_stops_launching_the_remaining_ones(
-        self, monkeypatch
-    ):
+    def test_a_wedged_batch_is_ended_and_the_next_one_is_launched(self, monkeypatch):
         clock = _Clock(step_minutes=30)
         queue = _ScriptedQueue([])
 
@@ -509,14 +508,33 @@ class TestClusteringStallValve:
             max_concurrent=1,
         )
 
-        assert queue.cancelled == ['main_s0_batch_0']
-        assert run.enqueued_ids == ['main_s0_batch_0'], (
-            'the valve fires because the run is wedged, so the four batches never '
-            'launched must stay unlaunched: queueing more work onto the same wedged '
-            'worker pool is how the give-up would restart the hang it just ended'
+        assert queue.cancelled == _batch_ids(config.CLUSTERING_MAX_STALL_GIVE_UPS), (
+            'one wedged batch is a wedged batch, not a wedged run: the parent ends '
+            'the one a worker is holding and tries the next, so a single bad batch '
+            'cannot turn an overnight search of fifty into a search of one'
         )
-        assert run.state['batches_launched'] == 1
+        assert run.enqueued_ids == _batch_ids(config.CLUSTERING_MAX_STALL_GIVE_UPS)
+        assert run.state['batches_launched'] == config.CLUSTERING_MAX_STALL_GIVE_UPS
         assert run.status == 'failed'
+
+    def test_the_give_up_bound_stops_feeding_a_pool_that_wedges_every_batch(
+        self, monkeypatch
+    ):
+        clock = _Clock(step_minutes=30)
+        queue = _ScriptedQueue([])
+
+        run = _drive(
+            monkeypatch, queue, clock, batches_launched=0, total_batches=50,
+            max_concurrent=1,
+        )
+
+        assert len(run.enqueued_ids) == config.CLUSTERING_MAX_STALL_GIVE_UPS, (
+            'a worker pool that wedges every batch it claims would otherwise cost '
+            'one stall window PER BATCH, so fifty batches is fifty hours; the bound '
+            'is what keeps the retry from becoming the new forever-hang'
+        )
+        assert run.status == 'failed'
+        assert clock.sleeps < 5000
 
     def test_a_run_whose_batches_are_all_still_queued_still_ends(self, monkeypatch):
         clock = _Clock(step_minutes=30)

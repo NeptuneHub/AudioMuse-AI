@@ -813,7 +813,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                       baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
                       extra_jobs=None, wedged=None, cancelled=None,
-                      all_live_new=False, wedge_forever=False):
+                      all_live_new=False, wedge_forever=False, busy_sibling=None):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -834,6 +834,13 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
         ):
             wedged.remove(args[0])
             given_up.append(args[0])
+        if (
+            busy_sibling is not None
+            and len(args) >= 3
+            and args[2] == config.TASK_STATUS_FAILURE
+            and args[0] == busy_sibling
+        ):
+            sibling_ended.append(args[0])
 
     monkeypatch.setattr(analysis, 'save_task_status', _record_status)
     monkeypatch.setattr(helper, 'save_task_status', _record_status)
@@ -884,6 +891,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
 
     given_up = []
     worker_freed = []
+    sibling_ended = []
 
     def _fake_reap(parent_task_id, conn=None):
         if not carried_over_read_done:
@@ -906,6 +914,14 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                     }
                     for task_id in drained
                 ]
+            if sibling_ended and wedged:
+                worker_freed.append(True)
+                return [{
+                    'task_id': sibling_ended.pop(0),
+                    'status': config.TASK_STATUS_FAILURE,
+                    'sub_type_identifier': None,
+                    'details': {'message': 'gave up'},
+                }]
             if worker_freed and wedged and not wedge_forever:
                 return [{
                     'task_id': wedged.pop(0),
@@ -932,7 +948,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     monkeypatch.setattr(taskqueue, 'reap_finished_children', _fake_reap)
     def _fake_live_children(parent_task_id, conn=None):
         if wedged is not None:
-            return [
+            rows = [
                 {
                     'task_id': task_id,
                     'sub_type_identifier': f'album-for-{task_id}',
@@ -945,9 +961,19 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                             else config.TASK_STATUS_NEW
                         )
                     ),
+                    'task_type': 'album_analysis',
                 }
                 for index, task_id in enumerate(wedged)
             ]
+            if busy_sibling is not None and not sibling_ended:
+                rows.insert(0, {
+                    'task_id': busy_sibling,
+                    'sub_type_identifier': None,
+                    'progress': 0,
+                    'status': config.TASK_STATUS_RUNNING,
+                    'task_type': 'index_rebuild',
+                })
+            return rows
         return [
             {'task_id': row['task_id'], 'sub_type_identifier': row['sub_type_identifier']}
             for row in (child_rows or [])
@@ -1173,7 +1199,7 @@ class TestAnalysisStallValve:
         )
         assert clock.elapsed_minutes >= config.ANALYSIS_STALL_TIMEOUT_MINUTES
         assert any(
-            'gave up on this album' in str(details.get('message', ''))
+            'gave up on this job' in str(details.get('message', ''))
             for details in status_calls
         ), 'the album row has to say why it was ended, not just stop'
 
@@ -1232,6 +1258,37 @@ class TestAnalysisStallValve:
         assert result['message'].startswith('Albums 3/3'), (
             'once the album holding the worker is ended the worker is free, so the '
             'albums queued behind it still get analysed in this same run'
+        )
+
+    def test_the_index_rebuild_hogging_the_only_worker_is_the_victim(
+        self, monkeypatch
+    ):
+        import tasks.analysis.main as analysis
+
+        clock = _AnalysisClock(step_minutes=30)
+        monkeypatch.setattr(analysis, 'time', clock)
+        monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+        albums = [{'Id': f'al{i}', 'Name': f'Album {i}'} for i in range(3)]
+        wedged, cancelled = [], []
+
+        result, _enqueued = _run_parent_phase(
+            monkeypatch,
+            albums,
+            {a['Id']: [{'Id': f"p{a['Id']}", 'Name': 't'}] for a in albums},
+            {},
+            child_rows=[], wedged=wedged, cancelled=cancelled,
+            all_live_new=True, busy_sibling='rebuild-1',
+        )
+
+        assert cancelled == ['rebuild-1'], (
+            'this task puts index_rebuild children on the SAME single-worker default '
+            'queue as its albums, so while one runs no album can start. Counting only '
+            'the albums made that look like total silence and failed every queued '
+            'album instead of the rebuild that was starving them'
+        )
+        assert result['message'].startswith('Albums 3/3'), (
+            'ending the rebuild frees the one worker, so the albums it was starving '
+            'are analysed in this same run'
         )
 
     def test_the_abandoned_album_is_reported_as_a_failure_not_as_analysed(
