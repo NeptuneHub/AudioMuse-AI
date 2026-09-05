@@ -433,45 +433,7 @@ def _execute_provider_migration(session_id, task_id, cancel):
         state = session['state']
 
         if session['status'] == 'completed':
-            summary = _completed_summary(state)
-            request_id = state.get('restart_request_id') or _restart_request_id(
-                task_id, session_id
-            )
-            logger.warning(
-                "provider migration: session %s is already applied; this run is a "
-                "retry of a job that committed before restart acknowledgement",
-                session_id,
-            )
-            if not state.get('restart_request_id'):
-                _persist_completed_restart_state(conn, session_id, request_id)
-
-            message = "Provider migration applied and worker restart acknowledged."
-            try:
-                if not state.get('restart_acknowledged'):
-                    acknowledged = _restart_request_result(request_id)
-                    if acknowledged is not True:
-                        request_id = _await_worker_restart(
-                            conn,
-                            session_id,
-                            request_id,
-                            alignment_task_id=state.get('alignment_task_id'),
-                        )
-
-                _finalize_restart_handshake(
-                    conn, session_id, request_id, task_id, message, details=summary,
-                )
-            except Exception:
-                logger.exception(
-                    "PROVIDER MIGRATION SESSION %s IS COMMITTED BUT THE WORKER RESTART "
-                    "HANDSHAKE DID NOT COMPLETE. The catalogue swap is durable; the "
-                    "workers must be restarted by hand so they pick up the new provider.",
-                    session_id,
-                )
-                message = (
-                    "Provider migration was applied. The workers did not confirm their "
-                    "restart, so restart AudioMuse by hand."
-                )
-            return {**summary, 'message': message}
+            return _resume_applied_session(conn, session_id, task_id, state)
 
         if session['status'] != 'dry_run_ready':
             raise RuntimeError(
@@ -565,6 +527,48 @@ def _execute_provider_migration(session_id, task_id, cancel):
     except Exception:
         logger.exception("Provider migration failed for session %s", session_id)
         raise
+
+
+def _resume_applied_session(conn, session_id, task_id, state):
+    summary = _completed_summary(state)
+    request_id = state.get('restart_request_id') or _restart_request_id(
+        task_id, session_id
+    )
+    logger.warning(
+        "provider migration: session %s is already applied; this run is a "
+        "retry of a job that committed before restart acknowledgement",
+        session_id,
+    )
+    if not state.get('restart_request_id'):
+        _persist_completed_restart_state(conn, session_id, request_id)
+
+    message = "Provider migration applied and worker restart acknowledged."
+    try:
+        if not state.get('restart_acknowledged'):
+            acknowledged = _restart_request_result(request_id)
+            if acknowledged is not True:
+                request_id = _await_worker_restart(
+                    conn,
+                    session_id,
+                    request_id,
+                    alignment_task_id=state.get('alignment_task_id'),
+                )
+
+        _finalize_restart_handshake(
+            conn, session_id, request_id, task_id, message, details=summary,
+        )
+    except Exception:
+        logger.exception(
+            "PROVIDER MIGRATION SESSION %s IS COMMITTED BUT THE WORKER RESTART "
+            "HANDSHAKE DID NOT COMPLETE. The catalogue swap is durable; the "
+            "workers must be restarted by hand so they pick up the new provider.",
+            session_id,
+        )
+        message = (
+            "Provider migration was applied. The workers did not confirm their "
+            "restart, so restart AudioMuse by hand."
+        )
+    return {**summary, 'message': message}
 
 
 def _load_session(cur, session_id):

@@ -1733,8 +1733,10 @@ def test_a_batch_whose_opening_write_fails_raises_that_error_not_an_unbound_name
 
     monkeypatch.setattr(task_run, 'save_task_status', _db_gone)
 
+    kwargs = _batch_kwargs()
+
     with pytest.raises(RuntimeError, match='db gone'):
-        clustering.run_clustering_batch_task(**_batch_kwargs())
+        clustering.run_clustering_batch_task(**kwargs)
 
 
 def test_a_batch_returns_its_best_result_so_the_queue_row_carries_it(monkeypatch):

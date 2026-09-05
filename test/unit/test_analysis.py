@@ -1242,7 +1242,8 @@ def test_the_monitor_lists_the_live_children_inside_the_reap_transaction(monkeyp
         cancelled=cancelled,
     )
 
-    assert seen and all(conn is db for conn in seen), (
+    assert seen
+    assert all(conn is db for conn in seen), (
         'the reap and the list of live children are one transaction: listing on '
         'its own connection resolves get_db(), the SAME Flask connection the reap '
         'is open on, and COMMITS it, so the rollback the monitor promises on a '

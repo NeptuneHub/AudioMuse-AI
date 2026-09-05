@@ -1575,8 +1575,10 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync, '_sweep_one', fake_sweep)
 
+        conn = MagicMock()
+
         with pytest.raises(RuntimeError, match='every selected server'):
-            sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
+            sync.sweep_all_secondary_servers(task_id='tid', conn=conn)
 
     def test_aligned_server_is_noop_without_fetch(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -1719,8 +1721,10 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync, '_sweep_one', fake_sweep)
 
+        conn = MagicMock()
+
         with pytest.raises(TaskFailed):
-            sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
+            sync.sweep_all_secondary_servers(task_id='tid', conn=conn)
 
     def test_unmapped_rows_matched_and_written(self, monkeypatch):
         from tasks import multiserver_sync as sync

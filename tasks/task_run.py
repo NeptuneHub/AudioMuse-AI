@@ -143,6 +143,45 @@ def _close_quietly(conn):
         logger.debug("Closing the cancel-check connection failed", exc_info=True)
 
 
+def _statuses_or_none(state, task_id, watched):
+    if not state['opened']:
+        state['opened'] = True
+        state['conn'] = _open_check_connection()
+    conn = state['conn']
+    if conn is None:
+        state['opened'] = False
+        return None
+    try:
+        statuses = _read_task_statuses(conn, watched)
+    except Exception:
+        logger.exception(
+            "Cancel check for %s could not read task_status; assuming the run "
+            "is live and reopening the connection next time", task_id,
+        )
+        _close_quietly(conn)
+        state['conn'] = None
+        state['opened'] = False
+        return None
+    return statuses if isinstance(statuses, dict) else None
+
+
+def _raise_if_cancelled(task_id, parent_task_id, statuses):
+    if task_id and task_id not in statuses:
+        raise TaskCancelled(
+            f"task {task_id} has no task_status row any more; it was cancelled"
+        )
+    if task_id and statuses.get(task_id) == TASK_STATUS_REVOKED:
+        raise TaskCancelled(f"task {task_id} was revoked")
+    if not parent_task_id:
+        return
+    parent = statuses.get(parent_task_id)
+    if parent is None or parent in TASK_STATUS_TERMINAL:
+        raise TaskCancelled(
+            f"parent {parent_task_id} of {task_id} is "
+            f"{parent or 'gone'}, so this child has nothing to report to"
+        )
+
+
 def make_cancel_check(task_id, parent_task_id=None, every_seconds=None,
                       clock=time.monotonic):
     interval = QUEUE_CANCEL_CHECK_SECONDS if every_seconds is None else float(every_seconds)
@@ -156,39 +195,9 @@ def make_cancel_check(task_id, parent_task_id=None, every_seconds=None,
         if not force and now - state['last'] < interval:
             return
         state['last'] = now
-        if not state['opened']:
-            state['opened'] = True
-            state['conn'] = _open_check_connection()
-        conn = state['conn']
-        if conn is None:
-            state['opened'] = False
-            return
-        try:
-            statuses = _read_task_statuses(conn, watched)
-        except Exception:
-            logger.exception(
-                "Cancel check for %s could not read task_status; assuming the run "
-                "is live and reopening the connection next time", task_id,
-            )
-            _close_quietly(conn)
-            state['conn'] = None
-            state['opened'] = False
-            return
-        if not isinstance(statuses, dict):
-            return
-        if task_id and task_id not in statuses:
-            raise TaskCancelled(
-                f"task {task_id} has no task_status row any more; it was cancelled"
-            )
-        if task_id and statuses.get(task_id) == TASK_STATUS_REVOKED:
-            raise TaskCancelled(f"task {task_id} was revoked")
-        if parent_task_id:
-            parent = statuses.get(parent_task_id)
-            if parent is None or parent in TASK_STATUS_TERMINAL:
-                raise TaskCancelled(
-                    f"parent {parent_task_id} of {task_id} is "
-                    f"{parent or 'gone'}, so this child has nothing to report to"
-                )
+        statuses = _statuses_or_none(state, task_id, watched)
+        if statuses is not None:
+            _raise_if_cancelled(task_id, parent_task_id, statuses)
 
     def close():
         _close_quietly(state['conn'])

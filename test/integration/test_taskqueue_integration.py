@@ -828,7 +828,8 @@ class TestARetryWaitsAndAWorkerDeathDoesNot:
         assert status == config.TASK_STATUS_NEW
 
         scheduled, in_future = self._next_run_at(queue_db, 'delayed-1')
-        assert scheduled is not None and in_future
+        assert scheduled is not None
+        assert in_future
 
         too_early = _fresh(shared_pg_dsn, 'w2')
         try:
@@ -848,7 +849,8 @@ class TestARetryWaitsAndAWorkerDeathDoesNot:
             with too_early.cursor() as cur:
                 claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w2')
             too_early.commit()
-            assert claimed is not None and claimed['task_id'] == 'delayed-1'
+            assert claimed is not None
+            assert claimed['task_id'] == 'delayed-1'
             assert claimed['attempts'] == 1
         finally:
             too_early.close()
@@ -922,7 +924,8 @@ class TestARetryWaitsAndAWorkerDeathDoesNot:
                 conn.close()
 
         holder, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='w3')
-        assert claimed is not None and claimed['attempts'] == 2
+        assert claimed is not None
+        assert claimed['attempts'] == 2
         with holder.cursor() as cur:
             sql.release(cur, 'budget-1')
             third = sql.requeue_or_fail(
@@ -933,7 +936,8 @@ class TestARetryWaitsAndAWorkerDeathDoesNot:
         assert third == config.TASK_STATUS_NEW, 'the third bad ending still earns a restart'
 
         holder, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='w4')
-        assert claimed is not None and claimed['attempts'] == 3
+        assert claimed is not None
+        assert claimed['attempts'] == 3
         with holder.cursor() as cur:
             sql.release(cur, 'budget-1')
             fourth = sql.requeue_or_fail(
@@ -980,7 +984,8 @@ class TestTheSchemaUpgradeAddsTheNewestColumn:
         with queue_db.cursor() as cur:
             claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w1')
         queue_db.commit()
-        assert claimed is not None and claimed['task_id'] == 'upgraded-1'
+        assert claimed is not None
+        assert claimed['task_id'] == 'upgraded-1'
 
 
 class TestAttemptsCountsWorkerDeathsAndRaisesNotClaims:

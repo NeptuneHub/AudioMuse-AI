@@ -1202,15 +1202,16 @@ class TestMigrationSuccessFinalization:
             conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
         )
 
-        conn.commit.assert_called_once(), (
+        assert conn.commit.call_count == 1, (
             'the acknowledgement is marked on the session over the raw migration '
             'connection, in one commit'
         )
-        assert recorded == {} and collapsed == {}, (
+        assert recorded == {}, (
             'the SUCCESS row, its history line and the collapse to one recap are '
             "the queue's, written when the task returns; a finaliser that wrote "
             'them itself used to win the race against the queue and veto its retry'
         )
+        assert collapsed == {}
 
     def test_the_recovery_job_closes_the_root_row_the_worker_never_finalizes(
         self, monkeypatch

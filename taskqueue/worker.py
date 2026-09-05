@@ -531,11 +531,7 @@ class Worker:
                     self.connect()
                 with self._conn.cursor() as cur:
                     row = sql.current_row(cur, task_id)
-                    if (
-                        row is None
-                        or row['status'] != config.TASK_STATUS_RUNNING
-                        or row['worker_id'] not in (None, self.identity)
-                    ):
+                    if not self._still_mine(row):
                         logger.error(
                             "Not retrying %s: its row is no longer this worker's RUNNING "
                             "row (%s), so something else already decided its fate.",
@@ -561,19 +557,15 @@ class Worker:
                 )
                 return
             self._safe_commit()
-            if status == config.TASK_STATUS_NEW:
-                logger.warning(
-                    "Task %s failed on attempt %d (%s); restart %d of %d runs in %.0fs.",
-                    task_id, job['attempts'] + 1, summary, job['attempts'] + 1,
-                    job['max_attempts'], delay,
-                )
-            else:
-                logger.error(
-                    "Task %s failed on attempt %d (%s) with no restart left of %d; "
-                    "the queue gave it %s.",
-                    task_id, job['attempts'] + 1, summary, job['max_attempts'], status,
-                )
+            _log_retry_verdict(job, summary, status, delay)
             return
+
+    def _still_mine(self, row):
+        return (
+            row is not None
+            and row['status'] == config.TASK_STATUS_RUNNING
+            and row['worker_id'] in (None, self.identity)
+        )
 
     def _run_in_child(self, job, kwargs):
         task_id = job['task_id']
@@ -830,6 +822,21 @@ class Worker:
         from .maintenance import reclaim_orphans
 
         return reclaim_orphans(self._conn, grace_seconds=0)
+
+
+def _log_retry_verdict(job, summary, status, delay):
+    attempt = job['attempts'] + 1
+    if status == config.TASK_STATUS_NEW:
+        logger.warning(
+            "Task %s failed on attempt %d (%s); restart %d of %d runs in %.0fs.",
+            job['task_id'], attempt, summary, attempt, job['max_attempts'], delay,
+        )
+        return
+    logger.error(
+        "Task %s failed on attempt %d (%s) with no restart left of %d; "
+        "the queue gave it %s.",
+        job['task_id'], attempt, summary, job['max_attempts'], status,
+    )
 
 
 def _report_foreign_terminal(task_id, status, row):

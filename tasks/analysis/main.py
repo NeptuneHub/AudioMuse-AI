@@ -868,7 +868,10 @@ def _run_union_phases(parent_id, cancel, servers, num_recent_albums, top_n_moods
         albums_offset += len(albums_by_server[index] or [])
 
     cancel(force=True)
+    return _finish_union_run(parent_id, servers, summaries, failed)
 
+
+def _finish_union_run(parent_id, servers, summaries, failed):
     with app.app_context():
         report = make_task_reporter(
             parent_id, "main_analysis", "Building union catalogue indexes once...",

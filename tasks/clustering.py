@@ -896,7 +896,7 @@ def _cluster_one_server(target_server, state, report, claimed_task_id, current_t
                         *args, **kwargs):
     with cancel_guard(claimed_task_id) as cancel:
         return _cluster_one_server_impl(
-            target_server, state, report, claimed_task_id, current_task_id,
+            target_server, state, report, current_task_id,
             *args, cancel=cancel, **kwargs,
         )
 
@@ -905,7 +905,6 @@ def _cluster_one_server_impl(
     target_server,
     state,
     report,
-    claimed_task_id,
     current_task_id,
     clustering_method,
     num_clusters_min,
