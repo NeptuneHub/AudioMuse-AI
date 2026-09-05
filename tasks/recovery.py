@@ -27,7 +27,18 @@ Main Features:
   lives but never returns, and the parent giving up over and over forever.
 * ChildDrainSupervisor is the ONE implementation of the sliding no-progress
   window, of WHICH children a give-up ends, and of how many give-ups a run gets.
-  Both fan-out parents drive it; they differ only in end_child.
+  Both fan-out parents drive it through observe, handing it the same child_marks
+  record and, for analysis, the ids it has launched that the database has not
+  shown it yet; they differ only in end_child. The two used to compute the
+  victim set and the empty-queue guard on their own, differently, so both now
+  live inside observe. observe answers (moved, gave_up): moved says the run
+  changed since the last look, gave_up carries (ended, stalled_minutes) after
+  a give-up and is None otherwise, so no caller infers movement from the clock.
+  child_marks reads on the connection it is handed, so a parent that lists its
+  children inside its reap transaction does not commit that reap by accident.
+* OUTSIDE_THE_QUEUE names the two retry engines that are deliberately NOT the
+  queue's: the cron retry of a BLOCKED START and the provider-migration
+  restart HANDSHAKE. Neither is a failure retry, so neither is a gap.
 * stalled_victims is the victim rule: the children a worker is HOLDING, or every
   live child when nothing is running at all, because then the queue itself is the
   wedge and sparing it hangs the parent forever.
@@ -122,6 +133,22 @@ def stalled_victims(marks, live_ids):
     return held or sorted(live_ids)
 
 
+def child_marks(parent_task_id, prefix=None, conn=None):
+    import taskqueue
+
+    return tuple(sorted(
+        (
+            str(child.get('task_id')),
+            str(child.get('status') or ''),
+            str(child.get('progress')),
+            str(child.get('beat_at') or ''),
+            str(child.get('task_type') or ''),
+        )
+        for child in taskqueue.live_children(parent_task_id, conn=conn)
+        if prefix is None or str(child.get('task_id') or '').startswith(prefix)
+    ))
+
+
 class ChildDrainSupervisor:
     def __init__(self, parent_task_id, end_child, timeout_minutes, max_give_ups,
                  clock, label='child'):
@@ -148,6 +175,18 @@ class ChildDrainSupervisor:
 
     def exhausted(self):
         return self._max_give_ups > 0 and self.give_ups >= self._max_give_ups
+
+    def observe(self, marks, pending_ids=(), extras=()):
+        if self.moved((tuple(marks), tuple(extras))):
+            return True, None
+        if not self.expired():
+            return False, None
+        live_ids = {mark[0] for mark in marks} | set(pending_ids)
+        if not live_ids:
+            return False, None
+        return False, self.give_up(
+            [(mark[0], mark[1]) for mark in marks], sorted(live_ids)
+        )
 
     def give_up(self, marks, live_ids):
         stalled_minutes = self._valve.stalled_minutes()
@@ -328,6 +367,26 @@ _NO_CHILDREN = 'this task fans out to nothing, so it never waits on a child'
 _NEVER_GIVES_UP = 'this task never gives up on a child, because it has none'
 
 
+OUTSIDE_THE_QUEUE = {
+    'cron_retry': (
+        'database.record_cron_retry / app_cron.retry_due_cron_jobs retry a cron '
+        'START that the queue guard refused because another catalogue task was '
+        'live. Nothing failed: the run never began. It is re-attempted every '
+        'CRON_RETRY_INTERVAL_MINUTES up to CRON_RETRY_MAX_MINUTES and then recorded '
+        'as a visible skip. A failure retry would be the wrong tool: there is no '
+        'row, no attempt and no worker to charge'
+    ),
+    'provider_migration_restart_handshake': (
+        'tasks.provider_migration_tasks._await_worker_restart waits up to '
+        '_RESTART_HANDSHAKE_MAX_SECONDS for every worker to acknowledge the restart '
+        'a committed migration published, rotating the request id when one is '
+        'refused. The catalogue swap is already durable when it runs, so it must '
+        'NEVER end as a failure retry of the migration: re-running the migration is '
+        'what the handshake guard exists to refuse. recover_migration_handshakes '
+        'resumes it from the session row if the worker died mid-wait'
+    ),
+}
+
 RECOVERY = {
     'main_analysis': {
         MAIN_WORKER_DIED: handled(_RECLAIM),
@@ -337,8 +396,12 @@ RECOVERY = {
         ),
         CHILD_WORKER_DIED: handled(_RECLAIM + ' for each album_analysis child'),
         CHILD_NEVER_RETURNS: handled(
-            'ChildDrainSupervisor on ANALYSIS_STALL_TIMEOUT_MINUTES fails the '
-            'albums a worker holds, or every live album when none is running'
+            'ChildDrainSupervisor.observe on ANALYSIS_STALL_TIMEOUT_MINUTES fails '
+            'the albums a worker holds, or every live album when none is running; '
+            'the ids it has launched but not yet read back are pending_ids, so a '
+            'give-up can never miss an album the cached read had not shown yet. '
+            'It ends a victim as FAILURE, not REVOKED, on purpose: the ordinary '
+            'reap then counts it into the album failure tally the run reports'
         ),
         GIVE_UP_RUNS_FOREVER: handled(
             'ANALYSIS_MAX_STALL_GIVE_UPS stops dispatching and finishes the run'
@@ -354,8 +417,11 @@ RECOVERY = {
         ),
         CHILD_WORKER_DIED: handled(_RECLAIM + ' for each clustering_batch child'),
         CHILD_NEVER_RETURNS: handled(
-            'ChildDrainSupervisor on CLUSTERING_STALL_TIMEOUT_MINUTES revokes the '
-            'batches a worker holds, or every live batch when none is running'
+            'ChildDrainSupervisor.observe on CLUSTERING_STALL_TIMEOUT_MINUTES '
+            'revokes the batches a worker holds, or every live batch when none is '
+            'running. It ends a victim as REVOKED, not FAILURE, on purpose: a '
+            'revoked batch is absorbed as failed AND stale, so it feeds '
+            'CLUSTERING_MAX_FAILED_BATCHES and CLUSTERING_EARLY_STOP_BATCHES both'
         ),
         GIVE_UP_RUNS_FOREVER: handled(
             'CLUSTERING_MAX_STALL_GIVE_UPS stops launching and finishes the run; '
@@ -439,6 +505,83 @@ RECOVERY = {
             'keeps its own row honest'
         ),
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
+    },
+    'plugin.': {
+        MAIN_WORKER_DIED: handled(_RECLAIM),
+        MAIN_ROW_SILENT: handled(
+            _NUDGE + '. It is matched by PREFIX (NUDGE_TASK_TYPE_PREFIXES) '
+            'because the namespace is open and there is no fixed list to put in '
+            'an IN clause. It needs watching for the same reason the sweep did: '
+            'get_queue_blocking_task ORs in plugin.%, so a live plugin task '
+            'refuses every cron start and every manual batch start, and reclaim '
+            'cannot help because reclaim needs the worker to DIE. row_heartbeat '
+            'covers the plugin function itself, one call per server that writes '
+            'no row until it returns'
+        ),
+        CHILD_WORKER_DIED: not_applicable(
+            'plugin.manager runs the plugin function inline, once per server in '
+            'scope, and enqueues nothing'
+        ),
+        CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
+        GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
+    },
+    'provider_migration_planner': {
+        MAIN_WORKER_DIED: handled(
+            'taskqueue.maintenance.reclaim_orphans FAILS it on the first worker '
+            'loss rather than requeueing, because it is enqueued with '
+            'max_attempts=0 on purpose: a dry run that silently re-ran would '
+            'hold the migration session claimed for a whole extra attempt'
+        ),
+        MAIN_ROW_SILENT: not_applicable(
+            'it holds no admission index and is in NON_BLOCKING_TASK_TYPES, so '
+            'it refuses no start, and session_discard CANCELS a live planner '
+            'rather than blocking on it. A silent planner therefore delays '
+            'nothing the user cannot clear from the wizard'
+        ),
+        CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
+        CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
+        GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
+    },
+    'alchemy_radio': {
+        MAIN_WORKER_DIED: not_applicable(
+            'it never runs on a worker: it is an inline Flask run '
+            '(INLINE_FLASK_TASK_TYPES) and its row carries no func, which is '
+            'exactly what reclaim filters on'
+        ),
+        MAIN_ROW_SILENT: handled(
+            'taskqueue.maintenance.fail_stale_inline_rows fails it once its row '
+            'has sat untouched for QUEUE_INLINE_STALE_SECONDS, and '
+            'app_cron.reap_interrupted_inline_runs fails whatever a restart left '
+            'behind at boot'
+        ),
+        CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
+        CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
+        GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
+    },
+    'worker_control': {
+        MAIN_WORKER_DIED: not_applicable(
+            'the control listener owns this row, not a queue worker; it carries '
+            'no func, so reclaim never considers it'
+        ),
+        MAIN_ROW_SILENT: handled(
+            'its timestamp is written once when the action is published and is '
+            'never refreshed, so QUEUE_CONTROL_ACTION_WINDOW_SECONDS expires it '
+            'on its own and fail_stale_inline_rows then fails the row. A '
+            'heartbeat here would be the unbounded reclaim stand-down this must '
+            'never have'
+        ),
+        CHILD_WORKER_DIED: not_applicable(
+            'an acknowledgement row is INSERTed already terminal, so no worker '
+            'ever claims one and there is no worker to lose'
+        ),
+        CHILD_NEVER_RETURNS: handled(
+            'the publisher polls for acknowledgements on a widening cadence '
+            'bounded by QUEUE_CONTROL_TIMEOUT_SECONDS, then stops waiting'
+        ),
+        GIVE_UP_RUNS_FOREVER: not_applicable(
+            'giving up is the caller returning; the request row is left RUNNING '
+            'on purpose so late acknowledgements still land on it'
+        ),
     },
     'server_sweep': {
         MAIN_WORKER_DIED: handled(

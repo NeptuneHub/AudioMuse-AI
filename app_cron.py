@@ -47,6 +47,7 @@ from database import (
     cron_retry_task_already_done,
     INLINE_FLASK_TASK_TYPES,
 )
+import task_types
 import taskqueue
 from config import (
     TASK_STATUS_FAILURE,
@@ -568,7 +569,7 @@ _CRON_RETRY_TASK_TYPES = ('analysis', 'clustering', 'sonic_fingerprint')
 # plugin's own dotted path, not a fixed name), but they are still admitted
 # through the same blocking=True queue guard, so a busy queue can starve them
 # exactly like the three fixed types - they get the same retry coverage via
-# the startswith('plugin.') checks below.
+# the task_types.PREFIXES checks below.
 _CRON_TASK_TYPE_TO_QUEUE_TYPE = {
     'analysis': 'main_analysis',
     'clustering': 'main_clustering',
@@ -577,7 +578,9 @@ _CRON_TASK_TYPE_TO_QUEUE_TYPE = {
 
 
 def _cron_retry_eligible(task_type):
-    return task_type in _CRON_RETRY_TASK_TYPES or task_type.startswith('plugin.')
+    return task_type in _CRON_RETRY_TASK_TYPES or task_types.matches(
+        task_type, prefixes=task_types.PREFIXES
+    )
 
 
 def _queue_type_for_cron_task_type(task_type):
@@ -734,7 +737,7 @@ def _dispatch_cron_row(db, r):
             ),
             conn=db,
         )
-    elif task_type.startswith('plugin.'):
+    elif task_types.matches(task_type, prefixes=task_types.PREFIXES):
         from plugin.manager import plugin_manager
 
         cron_task = plugin_manager.get_cron_task(task_type)

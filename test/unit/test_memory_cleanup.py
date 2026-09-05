@@ -257,7 +257,7 @@ class TestAnalyzeAlbumMemoryCleanup:
 
     @patch('tasks.analysis.album.get_tracks_from_album')
     @patch('tasks.analysis.album.comprehensive_memory_cleanup')
-    @patch('tasks.analysis.helper.save_task_status')
+    @patch('tasks.task_run.save_task_status')
     @patch('tasks.task_run.get_task_info_from_db')
     @patch('tasks.analysis.album.taskqueue.current_task_id')
     @patch('tasks.analysis.helper.get_db')
@@ -296,7 +296,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.song.create_onnx_session')
     @patch('tasks.analysis.song.cleanup_onnx_session')
     @patch('tasks.analysis.album.cleanup_cuda_memory')
-    @patch('tasks.analysis.helper.save_task_status')
+    @patch('tasks.task_run.save_task_status')
     @patch('tasks.task_run.get_task_info_from_db')
     @patch('tasks.analysis.album.taskqueue.current_task_id')
     @patch('tasks.analysis.song.save_track_analysis_and_embedding')

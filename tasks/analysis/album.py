@@ -35,7 +35,6 @@ Main Features:
 
 import logging
 import os
-import time
 import uuid
 
 import taskqueue
@@ -50,6 +49,7 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     CHROMAPRINT_COLLECTION_ENABLED,
+    TASK_STATUS_RUNNING,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
@@ -83,6 +83,7 @@ from database import (
 )
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
+from ..task_run import TaskCancelled, make_cancel_check
 from .song import (
     analyze_track_for_album,
     AudioNotDecodableError,
@@ -416,14 +417,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
     try:
         with server_context.use_server(_bind_server_context(server_id)):
             return _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id)
-    except (OperationalError, InterfaceError):
+    except (OperationalError, InterfaceError, TaskCancelled):
         raise
     except Exception as e:
-        _record_album_failure_row(album_id, album_name, parent_task_id, e)
+        _record_album_error_on_row(album_id, album_name, parent_task_id, e)
         raise
 
 
-def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
+def _record_album_error_on_row(album_id, album_name, parent_task_id, exc):
     current_task_id = taskqueue.current_task_id()
     if current_task_id is None:
         return
@@ -439,8 +440,6 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
                 in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
             ):
                 return
-            if statuses.get(current_task_id) == TASK_STATUS_FAILURE:
-                return
             err = error_manager.from_exception(
                 exc, code=error_manager.classify(exc, ERR_ALBUM_ANALYSIS_FAILED),
                 logger=logger,
@@ -448,7 +447,7 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
             save_task_status(
                 current_task_id,
                 "album_analysis",
-                TASK_STATUS_FAILURE,
+                TASK_STATUS_RUNNING,
                 parent_task_id=parent_task_id,
                 sub_type_identifier=album_id,
                 progress=0,
@@ -460,8 +459,8 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
             )
     except Exception:
         logger.exception(
-            "Could not record the failure row for album '%s'; the phase may "
-            "count this job as completed.", album_name,
+            "Could not record the error for album '%s' on its row; the queue still "
+            "fails the row, with only the exception text", album_name,
         )
 
 
@@ -472,22 +471,10 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
-        if claimed_task_id and parent_task_id:
-            parent_statuses = get_task_statuses([parent_task_id])
-            if (
-                parent_task_id not in parent_statuses
-                or parent_statuses.get(parent_task_id)
-                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-            ):
-                logger.info(
-                    "Album task %s will not start because parent %s is missing or terminal.",
-                    current_task_id,
-                    parent_task_id,
-                )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Parent analysis was cancelled.",
-                }
+        cancel, close_cancel = make_cancel_check(
+            claimed_task_id, parent_task_id, every_seconds=ANALYSIS_MONITOR_DB_INTERVAL,
+        )
+        cancel(force=True)
         tracks_analyzed_count, tracks_skipped_count = 0, 0
         tracks_not_analyzable_count = 0
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
@@ -503,16 +490,15 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             prefix=f"AlbumTask-{current_task_id}-{album_name}",
             min_db_interval=ANALYSIS_MONITOR_DB_INTERVAL,
         )
+        pending_track_maps = {}
+        map_flush_errors = []
         try:
             log_and_update_album_task(f"Fetching tracks for album: {album_name}", 5)
             tracks = get_tracks_from_album(album_id)
             if not tracks:
-                log_and_update_album_task(
-                    f"No tracks found for album: {album_name}", 100, task_state=TASK_STATUS_SUCCESS
-                )
                 return {
-                    "status": "SUCCESS",
-                    "message": f"No tracks in album {album_name}",
+                    "status": TASK_STATUS_SUCCESS,
+                    "message": f"No tracks found for album: {album_name}",
                     "tracks_analyzed": 0,
                 }
 
@@ -530,37 +516,11 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album_name)
 
             fingerprint_index = None
-            pending_track_maps = {}
             failed_tracks = []
             unavailable_tracks = []
-            map_flush_errors = []
-            last_revocation_check = float('-inf')
-
-            def revoked():
-                nonlocal last_revocation_check
-                if not claimed_task_id:
-                    return False
-                now = time.monotonic()
-                if now - last_revocation_check < ANALYSIS_MONITOR_DB_INTERVAL:
-                    return False
-                last_revocation_check = now
-                statuses = get_task_statuses([current_task_id, parent_task_id])
-                if statuses.get(current_task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED:
-                    return True
-                parent_status = statuses.get(parent_task_id) if parent_task_id else None
-                return parent_status in (TASK_STATUS_REVOKED, TASK_STATUS_FAILURE)
 
             for idx, item in enumerate(tracks, 1):
-                if revoked():
-                    _ah.flush_pending_track_maps(
-                        pending_track_maps, map_flush_errors, album_name
-                    )
-                    log_and_update_album_task(
-                        f"Stopping album analysis for '{album_name}' due to parent/self revocation.",
-                        log_and_update_album_task.state['progress'],
-                        task_state=TASK_STATUS_REVOKED,
-                    )
-                    return {"status": "REVOKED"}
+                cancel()
 
                 track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
                 provider_id = _ah.provider_item_id(item)
@@ -687,16 +647,13 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     f" {len(unavailable_tracks)}/{total_tracks_in_album} track(s) were "
                     "unavailable on the server and were skipped."
                 )
-            log_and_update_album_task(
-                completion_message,
-                100,
-                task_state=TASK_STATUS_SUCCESS,
-                final_summary_details=summary,
-            )
-            return {"status": "SUCCESS", **summary}
+            return {"status": TASK_STATUS_SUCCESS, "message": completion_message, **summary}
 
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
+            raise
+        except TaskCancelled:
+            _ah.flush_pending_track_maps(pending_track_maps, map_flush_errors, album_name)
             raise
         except Exception as e:
             err = error_manager.from_exception(
@@ -705,11 +662,11 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             log_and_update_album_task(
                 f"Failed to analyze album '{album_name}': {e}",
                 log_and_update_album_task.state['progress'],
-                task_state=TASK_STATUS_FAILURE,
-                error=err,
+                error=err, force=True,
             )
             raise
         finally:
+            close_cancel()
             cleanup_musicnn_sessions(onnx_sessions, context="finally")
             onnx_sessions = None
             try:

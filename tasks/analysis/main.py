@@ -61,6 +61,12 @@ Main Features:
 * A swept track keeps its Chromaprint: upsert_track_maps hands each new mapping
   the Chromaprint already stored for its canonical track in the SAME transaction
   it is written, so a sweep never leaves a mapping fingerprintless.
+* AnalysisNotRetryable is the one failure the queue must not retry: a media
+  server that refused the credentials, and a union run where EVERY server failed
+  that way. It is both the structured AudioMuseError the dashboard reads and a
+  TaskFailed, so the row fails once and the next scheduled run is the retry, as
+  cleaning already does. An unreachable server, or a run where any server failed
+  for another reason, keeps the ordinary backed-off retry.
 
 TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
 task having no live children; if they cannot be read the wipe is skipped.
@@ -85,7 +91,6 @@ from config import (
     QUEUE_MAX_ERRORS_KEPT,
     QUEUE_WEDGED_MAIN_TASK_MINUTES,
     REBUILD_INDEX_BATCH_SIZE,
-    TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
@@ -100,6 +105,7 @@ from ..mediaserver import (
 
 from flask_app import app
 from database import (
+    get_db,
     save_task_status,
     get_task_statuses,
 )
@@ -119,7 +125,14 @@ from error.error_dictionary import (
 
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
-from ..recovery import ChildDrainSupervisor, row_heartbeat, slow_step_budget_minutes
+from ..recovery import (
+    ChildDrainSupervisor, child_marks, row_heartbeat, slow_step_budget_minutes,
+)
+from ..task_run import TaskCancelled, TaskFailed, cancel_guard, make_cancel_check
+
+
+class AnalysisNotRetryable(error_manager.AudioMuseError, TaskFailed):
+    pass
 
 
 def _run_all_index_builds(*args, **kwargs):
@@ -188,15 +201,6 @@ def clean_temp(temp_dir):
             logger.warning(f"Could not remove {path} from {temp_dir}: {e}")
 
 
-def _task_revoked_in_db(task_id):
-    try:
-        statuses = get_task_statuses([task_id])
-    except Exception:
-        logger.exception("Revocation poll failed; assuming the run is live")
-        return False
-    return statuses.get(task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED
-
-
 _AUTH_FAILURE_HINTS = (
     'wrong username',
     'wrong password',
@@ -236,7 +240,7 @@ def _verify_media_server_reachable():
 
     message = (probe or {}).get('error') or None
     if _probe_looks_like_auth_failure(probe):
-        raise error_manager.AudioMuseError(ERR_MEDIASERVER_AUTH, message)
+        raise AnalysisNotRetryable(ERR_MEDIASERVER_AUTH, message)
     raise error_manager.AudioMuseError(ERR_MEDIASERVER_UNREACHABLE, message)
 
 
@@ -254,7 +258,7 @@ def _phase_outcome(final_done, reported_total, albums_launched, failed_count,
     )
     phase_status = TASK_STATUS_FAILURE if nothing_analyzed else TASK_STATUS_SUCCESS
 
-    final_kwargs = {"task_state": phase_status}
+    final_kwargs = {}
     if failed_count:
         final_kwargs["failed_albums"] = failed_count
         final_kwargs["failed_album_errors"] = failed_errors
@@ -317,7 +321,9 @@ def _run_analysis_server_task_impl(
             "Starting main analysis process...",
             prefix=f"MainAnalysisTask-{current_task_id}",
             progress_base=progress_base, progress_span=progress_span,
-            downgrade_terminal=not final_phase,
+        )
+        cancel, close_cancel = make_cancel_check(
+            claimed_task_id, every_seconds=ANALYSIS_MONITOR_DB_INTERVAL,
         )
         try:
             carried_over_tracks = _carried_over_tracks(current_task_id)
@@ -337,11 +343,12 @@ def _run_analysis_server_task_impl(
                 )
                 if not all_albums:
                     _verify_media_server_reachable()
-                    log_and_update_main(
-                        "No new albums to analyze.", 100, albums_found=0,
-                        task_state=TASK_STATUS_SUCCESS,
-                    )
-                    return {"status": "SUCCESS", "message": "No new albums to analyze."}
+                    log_and_update_main("No new albums to analyze.", 100, albums_found=0)
+                    return {
+                        "status": TASK_STATUS_SUCCESS,
+                        "message": "No new albums to analyze.",
+                        "albums_found": 0,
+                    }
 
                 total_albums_to_check = len(all_albums)
                 reported_total = albums_total or total_albums_to_check
@@ -401,7 +408,6 @@ def _run_analysis_server_task_impl(
             songs_done = 0
             last_monitor_db_check = float('-inf')
             last_status_report = float('-inf')
-            last_revocation_poll = float('-inf')
             live_child_marks = [()]
             monitor_read_ok = [True]
             stop_dispatch = [False]
@@ -420,56 +426,65 @@ def _run_analysis_server_task_impl(
                     len(active_jobs),
                 )
 
-            def revoked_now():
-                nonlocal last_revocation_poll
-                now = time.monotonic()
-                if now - last_revocation_poll < ANALYSIS_MONITOR_DB_INTERVAL:
-                    return False
-                last_revocation_poll = now
-                return _task_revoked_in_db(current_task_id)
+            def _absorb_reaped(reaped):
+                nonlocal albums_completed
+                for child in reaped:
+                    active_jobs.discard(child['task_id'])
+                    if not child.get('sub_type_identifier'):
+                        continue
+                    albums_completed += 1
+                    child_details = child.get('details') or {}
+                    if isinstance(child_details, dict):
+                        child_summary = child_details.get('final_summary_details')
+                        counted = (
+                            child_summary.get('tracks_analyzed')
+                            if isinstance(child_summary, dict) else None
+                        )
+                        if counted is None:
+                            counted = child_details.get('tracks_analyzed')
+                        if isinstance(counted, (int, float)):
+                            tracks_analyzed_total[0] += int(counted)
+                    if child['status'] == TASK_STATUS_FAILURE:
+                        _remember_album_error(child)
 
             def monitor_and_clear_jobs():
                 nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
+                nonlocal failed_count
                 now = time.monotonic()
                 if now - last_monitor_db_check >= ANALYSIS_MONITOR_DB_INTERVAL:
                     last_monitor_db_check = now
+                    snapshot = (
+                        set(active_jobs), albums_completed, tracks_analyzed_total[0],
+                        failed_count, len(failed_errors),
+                    )
+                    db = None
                     try:
-                        for child in taskqueue.reap_finished_children(current_task_id):
-                            active_jobs.discard(child['task_id'])
-                            if not child.get('sub_type_identifier'):
-                                continue
-                            albums_completed += 1
-                            child_details = child.get('details') or {}
-                            if isinstance(child_details, dict):
-                                child_summary = child_details.get('final_summary_details')
-                                counted = (
-                                    child_summary.get('tracks_analyzed')
-                                    if isinstance(child_summary, dict) else None
-                                )
-                                if counted is None:
-                                    counted = child_details.get('tracks_analyzed')
-                                if isinstance(counted, (int, float)):
-                                    tracks_analyzed_total[0] += int(counted)
-                            if child['status'] == TASK_STATUS_FAILURE:
-                                _remember_album_error(child)
-                        live_child_marks[0] = tuple(sorted(
-                            (
-                                str(child.get('task_id')),
-                                str(child.get('status') or ''),
-                                str(child.get('progress')),
-                                str(child.get('beat_at') or ''),
-                                str(child.get('task_type') or ''),
-                            )
-                            for child in taskqueue.live_children(current_task_id)
-                        ))
+                        db = get_db()
+                        _absorb_reaped(
+                            taskqueue.reap_finished_children(current_task_id, conn=db)
+                        )
+                        live_child_marks[0] = child_marks(current_task_id, conn=db)
+                        db.commit()
                         monitor_read_ok[0] = True
                     except Exception:
                         monitor_read_ok[0] = False
                         logger.exception(
                             "Failed to reap finished album tasks or list the live "
-                            "ones; the stall window restarts rather than counting "
-                            "a database blip as a wedge"
+                            "ones; the reap is rolled back so no album is counted "
+                            "twice or lost, and the stall window restarts rather "
+                            "than counting a database blip as a wedge"
                         )
+                        if db is not None:
+                            try:
+                                db.rollback()
+                            except Exception:
+                                logger.exception("Could not roll back the album reap")
+                        active_jobs.clear()
+                        active_jobs.update(snapshot[0])
+                        albums_completed = snapshot[1]
+                        tracks_analyzed_total[0] = snapshot[2]
+                        failed_count = snapshot[3]
+                        del failed_errors[snapshot[4]:]
 
                 if (
                     finalize_indexes
@@ -511,16 +526,11 @@ def _run_analysis_server_task_impl(
                     supervisor.restart()
                     return
                 marks = live_child_marks[0]
-                if supervisor.moved(marks) or not supervisor.expired():
-                    return
                 child_types.clear()
-                child_types.update(
-                    {task_id: kind for task_id, _s, _p, _b, kind in marks}
-                )
-                supervisor.give_up(
-                    [(task_id, status) for task_id, status, _p, _b, _t in marks],
-                    sorted({task_id for task_id, _s, _p, _b, _t in marks} | active_jobs),
-                )
+                child_types.update({mark[0]: mark[4] for mark in marks})
+                _moved, gave_up = supervisor.observe(marks, pending_ids=active_jobs)
+                if gave_up is None:
+                    return
                 if supervisor.exhausted() and not stop_dispatch[0]:
                     stop_dispatch[0] = True
                     logger.warning(
@@ -552,17 +562,13 @@ def _run_analysis_server_task_impl(
 
             all_albums = list({a['Id']: a for a in all_albums}.values())
             for album in all_albums:
-                if revoked_now():
-                    logger.info("Analysis revoked; stopping album dispatch.")
-                    return {'status': TASK_STATUS_REVOKED}
+                cancel()
                 monitor_and_clear_jobs()
                 if str(album['Id']) in adopted_albums:
                     report_progress()
                     continue
                 while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
-                    if revoked_now():
-                        logger.info("Analysis revoked; stopping album dispatch.")
-                        return {'status': TASK_STATUS_REVOKED}
+                    cancel()
                     monitor_and_clear_jobs()
                     report_progress()
                     watch_for_a_wedged_child()
@@ -662,9 +668,7 @@ def _run_analysis_server_task_impl(
             all_albums = None
 
             while active_jobs:
-                if revoked_now():
-                    logger.info("Analysis revoked; abandoning the drain loop.")
-                    return {'status': TASK_STATUS_REVOKED}
+                cancel()
                 monitor_and_clear_jobs()
                 report_progress(force=True)
                 if not active_jobs:
@@ -707,6 +711,10 @@ def _run_analysis_server_task_impl(
                 **final_kwargs,
             )
             clean_temp(TEMP_DIR)
+            if final_phase and phase_status == TASK_STATUS_FAILURE:
+                raise error_manager.AudioMuseError(
+                    ERR_ANALYSIS_NO_TRACKS_ANALYZED, final_message
+                )
             return {
                 "status": phase_status,
                 "message": final_message,
@@ -718,6 +726,8 @@ def _run_analysis_server_task_impl(
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
+        except (TaskCancelled, error_manager.AudioMuseError):
+            raise
         except Exception as e:
             err = error_manager.from_exception(
                 e, code=error_manager.classify(e, ERR_ANALYSIS_FAILED), logger=logger
@@ -725,10 +735,11 @@ def _run_analysis_server_task_impl(
             log_and_update_main(
                 f"X Main analysis failed: {e}",
                 log_and_update_main.state['progress'],
-                task_state=TASK_STATUS_FAILURE,
                 error=err,
             )
             raise
+        finally:
+            close_cancel()
 
 
 def _albums_per_server(servers, num_recent_albums):
@@ -796,20 +807,25 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     if not servers:
         message = f"No enabled server matches scope '{server_scope}'; analysis skipped."
         logger.warning(message)
-        with app.app_context():
-            save_task_status(
-                parent_id,
-                "main_analysis",
-                TASK_STATUS_SUCCESS,
-                progress=100,
-                details={"message": message},
-            )
         return {'status': 'SKIPPED', 'message': message}
     if len(servers) == 1:
         server = servers[0]
         server_id = server['server_id'] if server else None
         return run_analysis_server_task(num_recent_albums, top_n_moods, server_id=server_id)
 
+    return _run_union_analysis(
+        parent_id, claimed_task_id, servers, num_recent_albums, top_n_moods
+    )
+
+
+def _run_union_analysis(parent_id, claimed_task_id, servers, num_recent_albums, top_n_moods):
+    with cancel_guard(claimed_task_id) as cancel:
+        return _run_union_phases(
+            parent_id, cancel, servers, num_recent_albums, top_n_moods
+        )
+
+
+def _run_union_phases(parent_id, cancel, servers, num_recent_albums, top_n_moods):
     with row_heartbeat(
         parent_id,
         f"listing the albums of all {len(servers)} servers, one whole-catalogue "
@@ -824,13 +840,11 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
 
     summaries = []
     failed = []
+    permanent = []
     span = 90.0 / len(servers)
     albums_offset = 0
     for index, server in enumerate(servers):
-        with app.app_context():
-            if _task_revoked_in_db(parent_id):
-                logger.info("Union analysis revoked; stopping before phase %d.", index + 1)
-                return {'status': 'REVOKED', 'servers_completed': len(summaries)}
+        cancel(force=True)
         logger.info(
             "Union analysis phase %d/%d: %s", index + 1, len(servers), server['name']
         )
@@ -849,33 +863,32 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 albums_total=grand_total,
             )
             summaries.append(phase_summary)
-            phase_status = phase_summary.get('status')
-            if phase_status == TASK_STATUS_REVOKED:
-                return {'status': 'REVOKED', 'servers_completed': len(summaries)}
-            if phase_status != TASK_STATUS_SUCCESS:
+            if phase_summary.get('status') != TASK_STATUS_SUCCESS:
                 failed.append(server['name'])
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise
+        except TaskCancelled:
+            raise
         except Exception as e:
             failed.append(server['name'])
+            if isinstance(e, TaskFailed):
+                permanent.append(server['name'])
             error_manager.record(
                 error_manager.classify(e, ERR_ANALYSIS_SERVER_FAILED),
                 f"{server['name']}: {e}", exc=e, logger=logger, level=logging.WARNING,
             )
         albums_offset += len(albums_by_server[index] or [])
 
-    already = _run_already_finished(parent_id)
-    if already:
-        return {'status': already, 'servers_completed': len(summaries)}
+    cancel(force=True)
+    return _finish_union_run(parent_id, servers, summaries, failed, permanent)
 
+
+def _finish_union_run(parent_id, servers, summaries, failed, permanent=()):
     with app.app_context():
-        save_task_status(
-            parent_id,
-            "main_analysis",
-            TASK_STATUS_PROGRESS,
-            progress=92,
-            details={"message": "Building union catalogue indexes once..."},
+        report = make_task_reporter(
+            parent_id, "main_analysis", "Building union catalogue indexes once...",
+            prefix=f"MainAnalysisTask-{parent_id}", progress_base=92.0, progress_span=8.0,
         )
         try:
             _run_all_index_builds(task_id=parent_id)
@@ -886,19 +899,10 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
             err = error_manager.record(
                 error_manager.classify(e, ERR_INDEX_BUILD), str(e), exc=e, logger=logger
             )
-            save_task_status(
-                parent_id,
-                "main_analysis",
-                TASK_STATUS_FAILURE,
-                progress=100,
-                details={
-                    "message": (
-                        "The analysis finished, but the final similarity index rebuild "
-                        "failed. Check the container logs."
-                    ),
-                    "failed_servers": failed,
-                    "error": err,
-                },
+            report(
+                "The analysis finished, but the final similarity index rebuild "
+                "failed. Check the container logs.",
+                0, failed_servers=failed, error=err,
             )
             raise
 
@@ -930,17 +934,16 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 f"Analysis complete for {analyzed_servers} of {len(servers)} music servers. "
                 f"Could not analyze: {', '.join(failed)}."
             )
-        details["message"] = message
-        save_task_status(
-            parent_id,
-            "main_analysis",
-            TASK_STATUS_FAILURE if run_failed else TASK_STATUS_SUCCESS,
-            progress=100,
-            details=details,
-        )
+        report(message, 100, **details)
+        if run_failed:
+            if len(permanent) == len(failed):
+                raise AnalysisNotRetryable(ERR_ANALYSIS_SERVER_FAILED, message)
+            raise error_manager.AudioMuseError(ERR_ANALYSIS_SERVER_FAILED, message)
     return {
-        'status': TASK_STATUS_FAILURE if run_failed else TASK_STATUS_SUCCESS,
+        'status': TASK_STATUS_SUCCESS,
         'message': message,
         'servers': summaries,
         'failed_servers': failed,
+        'tracks_analyzed': details['tracks_analyzed'],
+        'albums_completed': details['albums_completed'],
     }

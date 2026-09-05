@@ -55,11 +55,7 @@ from app_helper import (
     build_and_store_artist_projection,
 )
 from database import close_db, get_db
-from config import (
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
-    QUEUE_WEDGED_MAIN_TASK_MINUTES,
-)
+from config import QUEUE_WEDGED_MAIN_TASK_MINUTES
 
 from error import error_manager
 from error.error_dictionary import ERR_INDEX_BUILD
@@ -176,46 +172,37 @@ def rebuild_all_indexes_task(parent_task_id=None):
     current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
-        if claimed_task_id and parent_task_id:
-            from database import get_task_statuses
-            from config import TASK_STATUS_REVOKED
+        from ..task_run import TaskCancelled, cancel_guard
 
-            statuses = get_task_statuses([parent_task_id])
-            if parent_task_id not in statuses or statuses.get(parent_task_id) in (
-                TASK_STATUS_SUCCESS,
-                TASK_STATUS_FAILURE,
-                TASK_STATUS_REVOKED,
-            ):
-                logger.info(
-                    "Index rebuild %s will not start because parent %s was cancelled.",
-                    current_task_id,
-                    parent_task_id,
+        with cancel_guard(claimed_task_id, parent_task_id) as cancel:
+            cancel(force=True)
+            log_and_update = make_task_reporter(
+                current_task_id, "index_rebuild",
+                "Index rebuild started.", parent_task_id=parent_task_id,
+                prefix=f"IndexRebuild-{current_task_id}",
+            )
+
+            def report_between_builds(message, progress, **kwargs):
+                cancel()
+                return log_and_update(message, progress, **kwargs)
+
+            try:
+                _run_all_index_builds(
+                    log_fn=report_between_builds, progress_start=0, progress_end=99,
+                    task_id=current_task_id,
                 )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Parent analysis was cancelled.",
-                }
-        log_and_update = make_task_reporter(
-            current_task_id, "index_rebuild",
-            "Index rebuild started.", parent_task_id=parent_task_id,
-            prefix=f"IndexRebuild-{current_task_id}",
-        )
-        try:
-            _run_all_index_builds(
-                log_fn=log_and_update, progress_start=0, progress_end=99,
-                task_id=current_task_id,
-            )
-        except Exception as e:
-            err = error_manager.from_exception(
-                e, code=error_manager.classify(e, ERR_INDEX_BUILD), logger=logger
-            )
-            log_and_update(
-                "Index rebuild failed. Check the container logs for details.",
-                100, task_state=TASK_STATUS_FAILURE, error=err,
-            )
-            raise
-        log_and_update(
-            "All similarity indexes rebuilt.", 100, task_state=TASK_STATUS_SUCCESS
-        )
+            except TaskCancelled:
+                raise
+            except Exception as e:
+                err = error_manager.from_exception(
+                    e, code=error_manager.classify(e, ERR_INDEX_BUILD), logger=logger
+                )
+                log_and_update(
+                    "Index rebuild failed. Check the container logs for details.",
+                    log_and_update.state['progress'], error=err,
+                )
+                raise
+        message = "All similarity indexes rebuilt."
+        log_and_update(message, 100)
         logger.info("OK Index rebuild task completed successfully")
-        return {"status": "SUCCESS", "message": "All indexes rebuilt"}
+        return {"message": message}

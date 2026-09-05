@@ -20,7 +20,12 @@ Main Features:
 * publish_control_request asks, waits, and returns a real verdict
 * ControlListener performs the supervisor action and records its ack
 * A deliberate restart/stop requeues stopped workers' tasks without charging a
-  worker-loss attempt
+  worker-loss attempt. A restart is performed as stop, requeue, start, in that
+  order, so the requeued rows are claimable BEFORE the fresh workers pick up
+  anything queued behind them: with supervisorctl restart the requeue landed
+  after the new workers were already claiming, and the provider migration's own
+  root row, requeued by the restart it had published, sat NEW for the whole
+  alignment that root had queued instead of resuming first
 """
 
 import json
@@ -294,7 +299,7 @@ class ControlListener:
             )
         logger.info("Control request %s received: %s", request_id, action)
         ok = self._execute(action)
-        if ok and action in WORKER_STOPPING_ACTIONS and conn is not None:
+        if ok and action == ACTION_STOP and conn is not None:
             self._requeue_tasks_of_stopped_workers(conn)
         self._close_ack_conn(self._record_ack(conn, request_id, action, ok))
 
@@ -379,7 +384,7 @@ class ControlListener:
 
         try:
             if action == ACTION_RESTART:
-                return bool(restart_manager.restart_supervisor_workers())
+                return self._restart_workers(restart_manager)
             if action == ACTION_STOP:
                 return bool(restart_manager.stop_supervisor_workers())
             if action == ACTION_START:
@@ -388,6 +393,18 @@ class ControlListener:
         except Exception:
             logger.exception("Control action %s failed", action)
             return False
+
+    def _restart_workers(self, restart_manager):
+        stopped = bool(restart_manager.stop_supervisor_workers())
+        if stopped:
+            conn = self._open_ack_conn()
+            if conn is not None:
+                try:
+                    self._requeue_tasks_of_stopped_workers(conn)
+                finally:
+                    self._close_ack_conn(conn)
+        started = bool(restart_manager.start_supervisor_workers())
+        return stopped and started
 
     def _dispatch_plugin_sync(self):
         try:

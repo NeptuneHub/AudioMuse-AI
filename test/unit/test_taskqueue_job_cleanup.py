@@ -38,6 +38,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import config
+from taskqueue import retry
 from taskqueue.worker import Worker, _encode_outcome
 
 
@@ -238,7 +239,10 @@ class TestChildOutcome:
     def test_a_child_killed_by_a_signal_fails_with_the_signal_number(self):
         instance = _worker()
         outcome = instance._child_outcome('task-2', signal.SIGKILL, b'')
-        assert outcome[0] == config.TASK_STATUS_FAIL
+        assert outcome[0] == retry.FAIL_RETRYABLE, (
+            'a child the kernel killed for memory is retried like any other failure: '
+            'memory pressure is transient, and the queue bounds the retries'
+        )
         assert 'signal 9' in outcome[1]
         assert 'out of memory' in outcome[1]
         assert outcome[2] is None
@@ -246,19 +250,19 @@ class TestChildOutcome:
     def test_a_child_that_exits_without_reporting_fails_with_its_exit_code(self):
         instance = _worker()
         outcome = instance._child_outcome('task-3', 1 << 8, b'')
-        assert outcome[0] == config.TASK_STATUS_FAIL
+        assert outcome[0] == retry.FAIL_RETRYABLE
         assert 'exited with code 1' in outcome[1]
 
     def test_a_garbage_report_falls_back_to_the_death_summary(self):
         instance = _worker()
         outcome = instance._child_outcome('task-4', 3 << 8, b'not-a-pickle')
-        assert outcome[0] == config.TASK_STATUS_FAIL
+        assert outcome[0] == retry.FAIL_RETRYABLE
         assert 'exited with code 3' in outcome[1]
 
     def test_a_malformed_report_falls_back_to_the_death_summary(self):
         instance = _worker()
         outcome = instance._child_outcome('task-5', 0, pickle.dumps(['wrong', 'shape']))
-        assert outcome[0] == config.TASK_STATUS_FAIL
+        assert outcome[0] == retry.FAIL_RETRYABLE
 
 
 class TestEncodeOutcome:
@@ -305,7 +309,7 @@ class TestRealFork:
 
         monkeypatch.setattr(taskqueue, 'resolve_func', lambda _dotted: _raising)
         outcome = instance._run_in_child(_job('fork-boom'), {})
-        assert outcome[0] == config.TASK_STATUS_FAIL
+        assert outcome[0] == retry.FAIL_RETRYABLE
         assert 'exploded in the child' in outcome[1]
         assert outcome[2] is None
 
@@ -321,7 +325,7 @@ class TestRealFork:
 
         monkeypatch.setattr(taskqueue, 'resolve_func', lambda _dotted: _suicide)
         outcome = instance._run_in_child(_job('fork-killed'), {})
-        assert outcome[0] == config.TASK_STATUS_FAIL
+        assert outcome[0] == retry.FAIL_RETRYABLE
         assert 'signal 9' in outcome[1]
 
 

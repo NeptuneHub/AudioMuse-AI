@@ -22,7 +22,9 @@ Main Features:
   content identity via the embedding signature, confirmed by exact cosine plus
   track-duration agreement and settled against the DB so concurrent workers
   converge on one catalogue row per recording.
-* make_task_reporter: the one task_status reporter every analysis task uses
+* make_task_reporter is resolved lazily from tasks.task_run, the one reporter
+  every task uses; the lazy hop keeps helper -> task_run off the eager import
+  graph so the analysis chain stays inside the depth ceiling
   (one status_message, optional progress rescaling and DB throttling).
 * flush_pending_track_maps: per-track map-row flush, so a killed worker cannot
   strand an analyzed track without its server mapping.
@@ -36,22 +38,14 @@ import numpy as np
 
 from config import (
     ANALYSIS_MONITOR_DB_INTERVAL,
-    TASK_STATUS_RUNNING,
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAIL,
 )
 from database import (
     get_db,
-    save_task_status,
-    MAX_LOG_ENTRIES_STORED,
     get_analysis_exclusions,
 )
-from psycopg2 import OperationalError
 from psycopg2 import sql as pgsql
 from sanitization import sanitize_string_for_db
 
-from error import error_manager
-from error.error_dictionary import ERR_DB_CONNECTION
 
 _SONG_EXPORTS = frozenset((
     'analysis_server_identity', 'catalog_item_id', 'provider_item_id',
@@ -64,6 +58,10 @@ _SONG_EXPORTS = frozenset((
 
 
 def __getattr__(name):
+    if name == 'make_task_reporter':
+        from ..task_run import make_task_reporter
+
+        return make_task_reporter
     if name in _SONG_EXPORTS:
         from . import song
 
@@ -86,65 +84,6 @@ def _bind_server_context(server_id):
 
 
 logger = logging.getLogger(__name__)
-
-
-def make_task_reporter(task_id, task_type, initial_message,
-                        parent_task_id=None, sub_type_identifier=None,
-                        base_details=None, prefix=None,
-                        progress_base=0.0, progress_span=100.0,
-                        downgrade_terminal=False, min_db_interval=0.0):
-    base = dict(base_details or {})
-    state = {'progress': 0, 'last_db': float('-inf')}
-    label = prefix or f"{task_type}-{task_id}"
-    logs = [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {initial_message}"]
-
-    try:
-        save_task_status(
-            task_id, task_type, TASK_STATUS_RUNNING,
-            parent_task_id=parent_task_id, sub_type_identifier=sub_type_identifier,
-            progress=int(progress_base),
-            details={
-                **base, "message": initial_message, "status_message": initial_message,
-                "log": list(logs),
-            },
-        )
-    except OperationalError as e:
-        error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
-        raise
-
-    def report(message, progress, **kwargs):
-        state['progress'] = progress
-        logger.info(f"[{label}] {message}")
-        task_state = kwargs.get('task_state', TASK_STATUS_RUNNING)
-        details = {**base, **kwargs, "message": message, "status_message": message}
-        if downgrade_terminal and task_state in (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL):
-            task_state = TASK_STATUS_RUNNING
-        if task_state == TASK_STATUS_SUCCESS:
-            details["log"] = [f"Task completed successfully. Final status: {message}"]
-        else:
-            logs.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
-            if len(logs) > MAX_LOG_ENTRIES_STORED:
-                del logs[:-MAX_LOG_ENTRIES_STORED]
-            details["log"] = logs
-        scaled = int(progress_base + (progress or 0) * progress_span / 100.0)
-        now = time.monotonic()
-        throttled = (
-            min_db_interval
-            and task_state == TASK_STATUS_RUNNING
-            and 'task_state' not in kwargs
-            and now - state['last_db'] < min_db_interval
-        )
-        if throttled:
-            return
-        state['last_db'] = now
-        save_task_status(
-            task_id, task_type, task_state,
-            parent_task_id=parent_task_id, sub_type_identifier=sub_type_identifier,
-            progress=scaled, details=details,
-        )
-
-    report.state = state
-    return report
 
 
 def _str_ids(ids):

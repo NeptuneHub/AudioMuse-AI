@@ -18,6 +18,11 @@ Main Features:
   connection the server closed and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped rows; a
   status write the row refuses ends the transaction with a ROLLBACK.
+* record_root_recap is the ONE root-finish bookkeeping (the task_history line
+  and the collapse to a single recap row) shared by save_task_status, the
+  worker's terminal write and the migration handshake recovery. It must run
+  AFTER the terminal row is committed: record_task_history rolls back on
+  failure, and in the worker that rollback used to undo the verdict itself.
 * stage_pending_task_row is the one way to stage a placeholder row that a later
   taskqueue.enqueue on the same transaction adopts (returns True only for a row
   this call created).
@@ -38,6 +43,7 @@ from psycopg2 import sql
 from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
+import task_types
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +81,12 @@ GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 # sonic_fingerprint is deliberately NOT here: a running fingerprint blocked an
 # analysis or clustering start on main, and quietly excluding it here let the two
 # run concurrently over the same catalogue.
-SELF_MANAGED_TASK_TYPES = (
-    'server_sweep', 'alchemy_radio', 'worker_control',
-    'provider_migration_planner',
-)
+SELF_MANAGED_TASK_TYPES = task_types.SELF_MANAGED_TASK_TYPES
 
-SELF_MANAGED_TASK_TYPE_PREFIXES = ('plugin.',)
+SELF_MANAGED_TASK_TYPE_PREFIXES = task_types.SELF_MANAGED_TASK_TYPE_PREFIXES
+_BLOCKING_TASK_TYPE_PATTERNS = [
+    prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
+]
 
 # Rows that must never refuse a batch start. A restart handshake, the inline radio
 # and the migration PLANNER are machinery, not work that touches the catalogue.
@@ -88,11 +94,9 @@ SELF_MANAGED_TASK_TYPE_PREFIXES = ('plugin.',)
 # write the mappings a cleaning or a migration rewrites, so they must still block.
 # The starts used to pass an empty tuple, which excluded NOTHING, so a restart
 # handshake in flight answered 409 to a cleaning the user had just asked for.
-NON_BLOCKING_TASK_TYPES = (
-    'worker_control', 'alchemy_radio', 'provider_migration_planner',
-)
+NON_BLOCKING_TASK_TYPES = task_types.NON_BLOCKING_TASK_TYPES
 
-INLINE_FLASK_TASK_TYPES = ('alchemy_radio',)
+INLINE_FLASK_TASK_TYPES = task_types.INLINE_FLASK_TASK_TYPES
 
 USERS_PASSWORD_CHANGED_AT_DDL = (
     "ALTER TABLE IF EXISTS audiomuse_users "
@@ -309,7 +313,9 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
             duration_s = max(0.0, float(end) - float(row[0]))
     except Exception:
         pass
-    record_task_history(task_id, task_type, status, duration_s, details=details)
+    record_task_history(
+        task_id, task_type, status, duration_seconds=duration_s, details=details, conn=db,
+    )
 
 
 def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
@@ -343,6 +349,16 @@ def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
             sanitize_for_log(task_id), sanitize_for_log(status), deleted,
         )
     return deleted
+
+
+def record_root_recap(db, task_id, task_type, parent_task_id, status, details, now=None):
+    if parent_task_id is not None:
+        return 0
+    _maybe_record_task_history(
+        db, task_id, task_type, status, parent_task_id, details,
+        time.time() if now is None else now,
+    )
+    return collapse_finished_task(db, task_id, task_type, parent_task_id, status)
 
 
 def save_task_status(
@@ -405,7 +421,7 @@ def save_task_status(
                               WHEN EXCLUDED.status = ANY(%s) THEN NULL
                               ELSE task_status.payload
                           END
-            WHERE task_status.status IS DISTINCT FROM %s
+            WHERE COALESCE(task_status.status, '') <> ALL(%s)
             RETURNING parent_task_id
         """,
             (
@@ -429,7 +445,7 @@ def save_task_status(
                 current_unix_time,
                 _TERMINAL_STATUSES,
                 _TERMINAL_STATUSES,
-                TASK_STATUS_REVOKED,
+                _TERMINAL_STATUSES,
             ),
         )
         written = cur.rowcount > 0
@@ -456,20 +472,22 @@ def save_task_status(
 
     if not written:
         logger.info(
-            "Discarded the %s report for task %s (parent %s): the row is REVOKED, or "
-            "it does not exist and its parent is missing or already terminal.",
+            "Discarded the %s report for task %s (parent %s): the row is already "
+            "terminal, or it does not exist and its parent is missing or terminal. A "
+            "terminal row is the queue's verdict and no later report may regress it.",
             status, task_id, parent_task_id,
         )
         return False
 
     try:
-        _maybe_record_task_history(
-            db, task_id, task_type, status, stored_parent_task_id, details, current_unix_time
+        record_root_recap(
+            db, task_id, task_type, stored_parent_task_id, status, details, current_unix_time
         )
-    except Exception as e_hist:
-        logger.debug(f"history record skipped for {task_id}: {e_hist}")
-
-    collapse_finished_task(db, task_id, task_type, stored_parent_task_id, status)
+    except Exception:
+        logger.exception(
+            "Wrote %s for task %s but could not record its history or collapse the table",
+            status, sanitize_for_log(task_id),
+        )
     return True
 
 
@@ -2655,9 +2673,12 @@ def get_queue_blocking_task(conn=None):
             "SELECT task_id, task_type, status, details "
             "FROM task_status "
             "WHERE status IN %s AND parent_task_id IS NULL "
-            "AND (task_type = ANY(%s) OR task_type LIKE %s) "
+            "AND (task_type = ANY(%s) OR task_type LIKE ANY(%s)) "
             "ORDER BY timestamp DESC LIMIT 1",
-            (non_terminal_statuses, list(config.QUEUE_BLOCKING_TASK_TYPES), 'plugin.%'),
+            (
+                non_terminal_statuses, list(config.QUEUE_BLOCKING_TASK_TYPES),
+                _BLOCKING_TASK_TYPE_PATTERNS,
+            ),
         )
         active_task = cur.fetchone()
     finally:
@@ -2712,7 +2733,9 @@ def cron_retry_task_already_done(cron_task_type, first_blocked_at, conn=None):
         'clustering': 'main_clustering',
         'sonic_fingerprint': 'sonic_fingerprint',
     }.get(cron_task_type)
-    if queue_type is None and cron_task_type.startswith('plugin.'):
+    if queue_type is None and task_types.matches(
+        cron_task_type, prefixes=task_types.PREFIXES
+    ):
         queue_type = cron_task_type
     if queue_type is None:
         return False

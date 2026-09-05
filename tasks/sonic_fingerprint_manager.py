@@ -16,6 +16,10 @@ Main Features:
   a target size via nearest-neighbour lookups around each seed.
 * Falls back gracefully to an empty result when no play history or embeddings are
   available, and can scope play counts to per-user credentials.
+* run_sonic_fingerprint_task runs it once per server through the shared per-server
+  loop, cancel check and reporter (tasks.task_run) and returns its summary; the
+  queue writes the terminal row. It raises only when EVERY server failed, so one
+  unreachable server never fails the playlists the others got.
 """
 
 import logging
@@ -34,20 +38,19 @@ def run_sonic_fingerprint_task(server_scope="all"):
     import time
 
     from flask_app import app
-    from database import save_task_status
     from config import (
         SONIC_FINGERPRINT_CRON_PLAYLIST_NAME,
         QUEUE_WEDGED_MAIN_TASK_MINUTES,
-        TASK_STATUS_STARTED,
-        TASK_STATUS_SUCCESS,
-        TASK_STATUS_FAILURE,
     )
 
-    from .mediaserver import create_or_replace_playlist, registry
+    from .mediaserver import create_or_replace_playlist
     from .ivf_manager import create_playlist_from_ids
 
     with app.app_context():
-        from .task_run import task_run_prologue, terminal_skip
+        from .task_run import (
+            task_run_prologue, terminal_skip, cancel_guard, make_task_reporter,
+            for_each_server_in_scope,
+        )
         from .recovery import row_heartbeat, slow_step_budget_minutes
 
         claimed_task_id, task_id, task_info = task_run_prologue()
@@ -58,80 +61,77 @@ def run_sonic_fingerprint_task(server_scope="all"):
         )
         if skip is not None:
             return skip
-        if claimed_task_id:
-            save_task_status(
-                task_id, 'sonic_fingerprint', TASK_STATUS_STARTED, progress=0,
-                details={"message": "Building the sonic fingerprint playlist..."},
-            )
-        created = 0
-        failed = []
+        report = make_task_reporter(
+            task_id, 'sonic_fingerprint', "Building the sonic fingerprint playlist...",
+            prefix=f"SonicFingerprint-{task_id}",
+        )
+        created = [0]
         current = ['resolving the server scope']
-        try:
-            servers = registry.servers_for_scope(server_scope)
-            for server in servers:
-                server_name = server['name'] if server else 'default server'
-                current[0] = f"the sonic fingerprint for {server_name}"
-                try:
-                    with registry.bind(server), row_heartbeat(
-                        claimed_task_id, lambda: current[0],
-                        stop_after_minutes=slow_step_budget_minutes(
-                            QUEUE_WEDGED_MAIN_TASK_MINUTES
-                        ),
-                    ):
-                        fingerprint_results = generate_sonic_fingerprint()
-                        if not fingerprint_results:
-                            logger.warning(
-                                "Sonic fingerprint found no results on %s; preserving "
-                                "the previous playlist.", server_name,
-                            )
-                            continue
-                        track_ids = [
-                            row['item_id'] for row in fingerprint_results if 'item_id' in row
-                        ]
-                        try:
-                            if create_or_replace_playlist(
-                                SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
-                            ) is None:
-                                raise RuntimeError(
-                                    "Media server reported failure upserting the "
-                                    "sonic fingerprint playlist"
-                                )
-                            name = SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
-                        except NotImplementedError:
-                            name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
-                            create_playlist_from_ids(name, track_ids)
-                        created += 1
-                        logger.info(
-                            "Sonic fingerprint playlist '%s' upserted on %s with %d tracks.",
-                            name, server_name, len(track_ids),
-                        )
-                except Exception:
-                    failed.append(server_name)
-                    logger.exception(
-                        "Sonic fingerprint failed on %s; continuing with remaining servers.",
-                        server_name,
-                    )
-        except Exception:
-            logger.exception("Sonic fingerprint cron run failed")
-            if task_id:
-                save_task_status(
-                    task_id, 'sonic_fingerprint', TASK_STATUS_FAILURE, progress=100,
-                    details={"error": "Sonic fingerprint run failed; check the container logs."},
-                )
-            raise
 
+        def build(server, server_name):
+            current[0] = f"the sonic fingerprint for {server_name}"
+            with row_heartbeat(
+                claimed_task_id, lambda: current[0],
+                stop_after_minutes=slow_step_budget_minutes(
+                    QUEUE_WEDGED_MAIN_TASK_MINUTES
+                ),
+            ):
+                fingerprint_results = generate_sonic_fingerprint()
+                if not fingerprint_results:
+                    logger.warning(
+                        "Sonic fingerprint found no results on %s; preserving "
+                        "the previous playlist.", server_name,
+                    )
+                    return None
+                track_ids = [
+                    row['item_id'] for row in fingerprint_results if 'item_id' in row
+                ]
+                try:
+                    if create_or_replace_playlist(
+                        SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
+                    ) is None:
+                        raise RuntimeError(
+                            "Media server reported failure upserting the "
+                            "sonic fingerprint playlist"
+                        )
+                    name = SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
+                except NotImplementedError:
+                    name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
+                    create_playlist_from_ids(name, track_ids)
+                created[0] += 1
+                logger.info(
+                    "Sonic fingerprint playlist '%s' upserted on %s with %d tracks.",
+                    name, server_name, len(track_ids),
+                )
+                return name
+
+        def on_server(index, total, _server, server_name):
+            report(
+                f"Building the sonic fingerprint for {server_name} ({index + 1}/{total})...",
+                int(100 * index / max(1, total)),
+            )
+
+        with cancel_guard(claimed_task_id) as cancel:
+            cancel(force=True)
+            servers, _results, failed = for_each_server_in_scope(
+                server_scope, build, on_server=on_server, cancel=cancel,
+            )
+
+        if failed and len(failed) == len(servers):
+            raise RuntimeError(
+                "Sonic fingerprint failed on every server: " + ", ".join(failed)
+            )
+        message = f"Created {created[0]} sonic fingerprint playlist(s)."
+        if failed:
+            message += f" Failed on: {', '.join(failed)}."
         summary = {
-            "message": f"Created {created} sonic fingerprint playlist(s).",
+            "message": message,
             "servers_enabled": len(servers),
-            "playlists_created": created,
+            "playlists_created": created[0],
             "failed": failed,
         }
-        if task_id:
-            save_task_status(
-                task_id, 'sonic_fingerprint', TASK_STATUS_SUCCESS, progress=100,
-                details=summary,
-            )
-        logger.info(f"Sonic fingerprint cron run finished: {summary}")
+        report(message, 100)
+        logger.info("Sonic fingerprint run finished: %s", summary)
         return summary
 
 

@@ -43,7 +43,7 @@ _SKIP_DIRS = {
 
 # Columns that exist only because task_status is also the queue. A caller naming
 # one of these has reached past the API into the storage layout.
-_QUEUE_ONLY_COLUMNS = ('queue_name', 'worker_id', 'max_attempts')
+_QUEUE_ONLY_COLUMNS = ('queue_name', 'worker_id', 'max_attempts', 'next_run_at')
 
 # The primitives that decide who runs what. These belong to exactly one module.
 #
@@ -61,7 +61,8 @@ _QUEUE_PRIMITIVES = (
 _PUBLIC_API = frozenset((
     'enqueue', 'cancel', 'request_cancel', 'request_cancel_all', 'publish_event',
     'current_task_id', 'set_current_task_id', 'resolve_func',
-    'reap_finished_children', 'live_children', 'worker_snapshot', 'queue_backlog',
+    'reap_finished_children', 'live_children', 'task_statuses', 'worker_snapshot',
+    'queue_backlog',
     # Cancel has to be ordered against a Start, and which key does that is the
     # queue's business, not a blueprint's - so it is exposed here rather than
     # letting app_helper reach into taskqueue.sql for the lock id.
@@ -72,6 +73,9 @@ _PUBLIC_API = frozenset((
     # An enqueue outcome callers must be able to catch: a resumed parent
     # re-launching a child whose row already exists gets this instead of a row.
     'TaskNotQueued',
+    # The two things a task may raise to steer the queue's verdict; every other
+    # exception is retried, so a task needs no other vocabulary.
+    'TaskFailed', 'TaskCancelled',
     'TaskAlreadyRunning', 'UnknownTaskFunction', 'ALLOWED_FUNCS',
     'QUEUE_HIGH', 'QUEUE_DEFAULT', 'PRIORITY_FRONT', 'CANCEL_ALL',
 ))

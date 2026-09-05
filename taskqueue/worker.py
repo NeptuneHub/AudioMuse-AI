@@ -55,12 +55,46 @@ Main Features:
   OS; frozen native builds run the job in-process and unload the models
   after each job
 * A cancel notification ends the process tree in about 50ms
+* The claim connection is re-checked at every listener poll while a job runs:
+  one Postgres dropped mid-job is reopened and the task lock re-taken at once,
+  and a lock that meanwhile went to a reclaim ends this worker as the duplicate
+  it has become, instead of running unlocked until the job ends
 * Boot reclaims orphaned tasks bounded by QUEUE_MAX_ATTEMPTS
 * A lost connection (SQLSTATE class 08, 57Pxx, InterfaceError) requeues the row
   without charging an attempt, up to UNCHARGED_REQUEUE_LIMIT free passes,
   then charges and fails as usual
+* The queue writes EVERY terminal row and decides EVERY retry (taskqueue.retry):
+  a task that raises is requeued with a backoff until QUEUE_MAX_ATTEMPTS is
+  spent, a task that raises TaskFailed is failed at once, a task that raises
+  TaskCancelled is revoked, and a job child the kernel killed is retried like
+  any other failure. The retry is requeued only AFTER the worker has dropped
+  its hold on the task: requeue_or_fail publishes the same reclaim notice a
+  maintenance reclaim does, and on_reclaimed ends a worker whose held task and
+  attempt number match that notice, so requeueing while still holding would
+  make the worker end itself on every retry
+* The terminal row carries the message the task returned and the log its
+  progress reports built up, so the dashboard recap reads exactly as it did
+  when tasks wrote that row themselves; and because tasks used to write that
+  row through save_task_status, the worker now also records task_history and
+  collapses the finished rows to the one recap, which that path did for them.
+  The terminal row is COMMITTED first and that bookkeeping runs after it on
+  its own transactions: record_task_history rolls back on failure, and while
+  the two shared one transaction that rollback silently undid the verdict and
+  left the row RUNNING under a worker that had already moved on
+* The payload is checked against the function's signature before the call, and a
+  func outside ALLOWED_FUNCS never resolves: both are permanent failures, not
+  three wasted retries. A verdict the task declared (TaskFailed, TaskCancelled)
+  is logged as one line; the traceback is kept for the exceptions it did not
+* A declared verdict's message is the task's own recap line and is kept whole
+  (up to _VERDICT_SUMMARY_LIMIT); the text of an unexpected exception is cut at
+  _SUMMARY_LIMIT, because a traceback's first line is all the dashboard needs
+* A shared payload that is gone or no longer matches its token cannot come back
+  on a retry, so that failure is permanent too, decided here rather than by
+  making sql.SharedPayloadUnavailable a TaskFailed: sql must stay a leaf of the
+  package, and importing its sibling would lengthen the eager import chain
 """
 
+import inspect
 import logging
 import os
 import pickle
@@ -122,7 +156,9 @@ service_roles.declare_worker_role(force=True)
 THREAD_CAP = _apply_thread_caps(QUEUE)
 
 import config  # noqa: E402
+from . import retry  # noqa: E402
 from . import sql  # noqa: E402
+from .errors import TaskCancelled, TaskFailed  # noqa: E402
 from .listen import Listener  # noqa: E402
 from .process import stop_hard, sweep_stale_temp_dirs  # noqa: E402
 
@@ -265,6 +301,12 @@ class Worker:
             stop_hard(f"task {task_id} was reclaimed while this worker's connection was down")
         return True
 
+    def on_listener_idle(self):
+        with self._claim_txn:
+            held = self._held_task_id
+            if held is not None:
+                self.ensure_hold(held)
+
     def start_listener(self):
         self._listener = Listener(
             (sql.CHANNEL_JOB, sql.CHANNEL_CANCEL, sql.CHANNEL_RECLAIM),
@@ -272,6 +314,7 @@ class Worker:
             application_name=f"{self.identity}{sql.WORKER_LISTEN_SUFFIX}",
             name=f"listen-{self.queue}",
             on_ready=self.on_listener_ready,
+            on_idle=self.on_listener_idle,
         )
         self._listener.start()
 
@@ -306,12 +349,7 @@ class Worker:
         return False
 
     def _requeue_charging_an_attempt(self, cur, task_id):
-        row = sql.current_row(cur, task_id)
-        if (
-            row is None
-            or row['status'] != config.TASK_STATUS_RUNNING
-            or row['worker_id'] not in (None, self.identity)
-        ):
+        if not self._still_mine(sql.current_row(cur, task_id)):
             return self._forget_abandoned(task_id)
         status = sql.requeue_or_fail(
             cur, task_id, time.time(),
@@ -432,8 +470,8 @@ class Worker:
         task_id = job['task_id']
         set_current_task_id(task_id)
         logger.info(
-            "Running %s (%s) after %d worker loss(es) of an allowed %d",
-            task_id, job['func'], job['attempts'], job['max_attempts'],
+            "Running %s (%s), attempt %d; %d restart(s) allowed",
+            task_id, job['func'], job['attempts'] + 1, job['max_attempts'],
         )
         started = time.time()
         outcome, summary, result = self._execute(job)
@@ -442,12 +480,15 @@ class Worker:
                 self._abandoned.append(task_id)
         else:
             self._uncharged.pop(task_id, None)
+        verdict = retry.decide(job, outcome)
         try:
             with self._claim_txn:
-                if outcome is not None:
-                    self.finalize(job, outcome, summary, result=result)
+                if outcome is not None and verdict != retry.RETRY:
+                    self.finalize(job, retry.row_status(outcome), summary, result=result)
                 set_current_task_id(None)
                 self._clear_held()
+                if verdict == retry.RETRY:
+                    self._requeue_for_retry(job, summary)
                 try:
                     with self._conn.cursor() as cur:
                         sql.release(cur, task_id)
@@ -461,8 +502,10 @@ class Worker:
         task_id = job['task_id']
         try:
             kwargs = self.hydrate_shared(job['kwargs'])
+        except sql.SharedPayloadUnavailable as exc:
+            return self._failure(task_id, TaskFailed(str(exc)))
         except Exception as exc:
-            logger.exception("Task %s raised", task_id)
+            _log_raised(task_id, exc)
             return self._failure(task_id, exc)
         if self._fork_jobs:
             return self._run_in_child(job, kwargs)
@@ -472,16 +515,14 @@ class Worker:
             self._unload_job_models()
 
     def _attempt(self, job, kwargs, hydrate=True):
-        from . import resolve_func
-
         task_id = job['task_id']
         try:
             if hydrate:
                 self.hydrate_config()
-            func = resolve_func(job['func'])
+            func = _callable_for(job, kwargs)
             result = func(*job['args'], **kwargs)
         except Exception as exc:
-            logger.exception("Task %s raised", task_id)
+            _log_raised(task_id, exc)
             return self._failure(task_id, exc)
         return config.TASK_STATUS_SUCCESS, None, result
 
@@ -492,7 +533,61 @@ class Worker:
                 "on the queue instead of failing it.", task_id,
             )
             return None, _error_summary(exc), None
-        return config.TASK_STATUS_FAIL, _error_summary(exc), None
+        if isinstance(exc, TaskCancelled):
+            logger.info("Task %s stopped at its cancel check: %s", task_id, exc)
+            return retry.REVOKED_BY_TASK, _error_summary(exc), None
+        if isinstance(exc, TaskFailed):
+            logger.error(
+                "Task %s failed permanently and will not be retried: %s", task_id, exc
+            )
+            return retry.FAIL_PERMANENT, _error_summary(exc), None
+        return retry.FAIL_RETRYABLE, _error_summary(exc), None
+
+    def _requeue_for_retry(self, job, summary):
+        task_id = job['task_id']
+        delay = retry.backoff_seconds(job['attempts'] + 1)
+        details = _terminal_details(config.TASK_STATUS_FAIL, summary, None)
+        for attempt in (1, 2):
+            try:
+                if self._conn is None or self._conn.closed:
+                    self.connect()
+                with self._conn.cursor() as cur:
+                    row = sql.current_row(cur, task_id)
+                    if not self._still_mine(row):
+                        logger.error(
+                            "Not retrying %s: its row is no longer this worker's RUNNING "
+                            "row (%s), so something else already decided its fate.",
+                            task_id, row and row['status'],
+                        )
+                        self._safe_rollback()
+                        return
+                    status = sql.requeue_or_fail(
+                        cur, task_id, time.time(), details, delay_seconds=delay,
+                    )
+            except Exception:
+                self._safe_rollback()
+                if attempt == 1:
+                    logger.warning(
+                        "Could not requeue %s for a retry; retrying once on a fresh "
+                        "connection", task_id, exc_info=True,
+                    )
+                    self._drop_claim_conn()
+                    continue
+                logger.exception(
+                    "Could not requeue %s for a retry; its row stays RUNNING for "
+                    "reclaim to pick up", task_id,
+                )
+                return
+            self._safe_commit()
+            _log_retry_verdict(job, summary, status, delay)
+            return
+
+    def _still_mine(self, row):
+        return (
+            row is not None
+            and row['status'] == config.TASK_STATUS_RUNNING
+            and row['worker_id'] in (None, self.identity)
+        )
 
     def _run_in_child(self, job, kwargs):
         task_id = job['task_id']
@@ -501,7 +596,7 @@ class Worker:
             read_fd, write_fd = os.pipe()
         except OSError as exc:
             logger.exception("Could not open the report pipe for %s", task_id)
-            return config.TASK_STATUS_FAIL, _error_summary(exc), None
+            return retry.FAIL_RETRYABLE, _error_summary(exc), None
         parent_pid = os.getpid()
         try:
             pid = os.fork()
@@ -509,7 +604,7 @@ class Worker:
             os.close(read_fd)
             os.close(write_fd)
             logger.exception("Could not fork the job process for %s", task_id)
-            return config.TASK_STATUS_FAIL, _error_summary(exc), None
+            return retry.FAIL_RETRYABLE, _error_summary(exc), None
         if pid == 0:
             self._child_main(job, kwargs, read_fd, write_fd, parent_pid)
         os.close(write_fd)
@@ -564,7 +659,7 @@ class Worker:
                 logger.error("The job process report for %s is malformed", task_id)
         summary = _child_death_summary(status)
         logger.error("Task %s: %s", task_id, summary)
-        return config.TASK_STATUS_FAIL, summary, None
+        return retry.FAIL_RETRYABLE, summary, None
 
     def _unload_job_models(self):
         if not self._unload_resident_models():
@@ -612,10 +707,12 @@ class Worker:
         with self._conn.cursor() as cur:
             row = sql.current_row(cur, task_id)
             if row is None or row['status'] != config.TASK_STATUS_RUNNING:
-                return False
+                _report_foreign_terminal(task_id, status, row)
+                return None
+            previous = sql.current_details(cur, task_id)
+            details = _terminal_details(status, error, result, previous=previous)
             written = sql.finish_task(
-                cur, task_id, status, _terminal_details(status, error, result),
-                time.time(), worker_id=self.identity,
+                cur, task_id, status, details, time.time(), worker_id=self.identity,
             )
         if written is None:
             logger.error(
@@ -623,7 +720,23 @@ class Worker:
                 "reclaimed and restarted elsewhere while this process was still on it.",
                 task_id,
             )
-        return True
+            return None
+        return row, details
+
+    def _record_and_collapse(self, task_id, row, status, details):
+        try:
+            from database import record_root_recap
+
+            record_root_recap(
+                self._conn, task_id, row.get('task_type'), row.get('parent_task_id'),
+                status, details,
+            )
+        except Exception:
+            logger.exception(
+                "Finished %s as %s but could not record its history or collapse the "
+                "table; the recap row itself is already committed", task_id, status,
+            )
+            self._safe_rollback()
 
     def finalize(self, job, status, error, result=None):
         task_id = job['task_id']
@@ -635,8 +748,8 @@ class Worker:
                         task_id,
                     )
                     self.connect()
-                if not self._write_terminal_row(task_id, status, error, result):
-                    return
+                recap = self._write_terminal_row(task_id, status, error, result)
+                self._conn.commit()
             except Exception:
                 self._safe_rollback()
                 if attempt == 1:
@@ -647,8 +760,9 @@ class Worker:
                     self._drop_claim_conn()
                     continue
                 logger.exception("Could not write the terminal row for %s", task_id)
-            else:
-                self._safe_commit()
+                return
+            if recap is not None:
+                self._record_and_collapse(task_id, recap[0], status, recap[1])
             return
 
     def _safe_rollback(self):
@@ -720,18 +834,122 @@ class Worker:
         return reclaim_orphans(self._conn, grace_seconds=0)
 
 
-def _final_message(status, error):
+def _callable_for(job, kwargs):
+    from . import UnknownTaskFunction, resolve_func
+
+    try:
+        func = resolve_func(job['func'])
+    except UnknownTaskFunction as exc:
+        raise TaskFailed(
+            f"{job['func']} is not a task function this worker may run; no retry "
+            "can change that"
+        ) from exc
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return func
+    try:
+        signature.bind(*job['args'], **kwargs)
+    except TypeError as exc:
+        raise TaskFailed(
+            f"{job['func']} cannot be called with the stored arguments ({exc}); no "
+            "retry can change that"
+        ) from exc
+    return func
+
+
+def _log_raised(task_id, exc):
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return
+    logger.exception("Task %s raised", task_id)
+
+
+def _log_retry_verdict(job, summary, status, delay):
+    attempt = job['attempts'] + 1
+    if status == config.TASK_STATUS_NEW:
+        logger.warning(
+            "Task %s failed on attempt %d (%s); restart %d of %d runs in %.0fs.",
+            job['task_id'], attempt, summary, attempt, job['max_attempts'], delay,
+        )
+        return
+    logger.error(
+        "Task %s failed on attempt %d (%s) with no restart left of %d; "
+        "the queue gave it %s.",
+        job['task_id'], attempt, summary, job['max_attempts'], status,
+    )
+
+
+def _report_foreign_terminal(task_id, status, row):
+    if row is None:
+        logger.info(
+            "Not finishing %s as %s: its row is gone, which is what a cancel does.",
+            task_id, status,
+        )
+        return
+    if row['status'] == config.TASK_STATUS_REVOKED:
+        logger.info(
+            "Not finishing %s as %s: it was revoked while it ran.", task_id, status,
+        )
+        return
+    if row['status'] == status:
+        logger.info(
+            "Not finishing %s again: its row is already %s, so the earlier write "
+            "landed even though its acknowledgement did not.", task_id, status,
+        )
+        return
+    if row['parent_task_id'] is not None and row['status'] == config.TASK_STATUS_FAIL:
+        logger.info(
+            "Not finishing %s as %s: its parent gave up on it and ended it as %s "
+            "before it returned.", task_id, status, row['status'],
+        )
+        return
+    logger.error(
+        "Not finishing %s as %s: its row is already %s. A task wrote its own "
+        "terminal row, so the queue could not record this attempt's verdict or "
+        "retry it; the task must return or raise instead.",
+        task_id, status, row['status'],
+    )
+
+
+def _final_message(status, error, summary=None):
+    supplied = None
+    if isinstance(summary, dict):
+        supplied = summary.get('status_message') or summary.get('message')
+    if isinstance(supplied, str) and supplied.strip():
+        return supplied
     if status == config.TASK_STATUS_SUCCESS:
         return "Task completed successfully."
+    if status == config.TASK_STATUS_REVOKED:
+        return error or "Task was cancelled."
     return error or "Task failed. Check the container logs for details."
 
 
-def _terminal_details(status, error, result):
-    details = {'message': _final_message(status, error)}
-    if error:
+def _terminal_log(previous_log, status, message):
+    if status == config.TASK_STATUS_SUCCESS:
+        return [f"Task completed successfully. Final status: {message}"]
+    from database import MAX_LOG_ENTRIES_STORED
+
+    log = list(previous_log) if isinstance(previous_log, list) else []
+    log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+    if len(log) > MAX_LOG_ENTRIES_STORED:
+        del log[:-MAX_LOG_ENTRIES_STORED]
+    return log
+
+
+def _terminal_details(status, error, result, previous=None):
+    details = dict(previous) if isinstance(previous, dict) else {}
+    if status == config.TASK_STATUS_SUCCESS:
+        details.pop('error', None)
+    summary = result if isinstance(result, dict) else None
+    if summary:
+        details.update({key: value for key, value in summary.items() if key != 'status'})
+        details['final_summary_details'] = summary
+    message = _final_message(status, error, summary)
+    details['message'] = message
+    details['status_message'] = message
+    if error and not isinstance(details.get('error'), dict):
         details['error'] = error
-    if isinstance(result, dict):
-        details['final_summary_details'] = result
+    details['log'] = _terminal_log(details.get('log'), status, message)
     return details
 
 
@@ -800,9 +1018,15 @@ def _is_connectivity_error(exc):
     )
 
 
+_SUMMARY_LIMIT = 500
+_VERDICT_SUMMARY_LIMIT = 4000
+
+
 def _error_summary(exc):
     text = str(exc).strip() or exc.__class__.__name__
-    return text[:500]
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return text[:_VERDICT_SUMMARY_LIMIT]
+    return text[:_SUMMARY_LIMIT]
 
 
 def _close_inherited_sockets(worker):

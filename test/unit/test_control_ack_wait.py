@@ -255,11 +255,16 @@ class _MarkerConn:
 
 
 def _requeues(monkeypatch, action):
+    import restart_manager
+
     listener = control.ControlListener()
     called = []
     monkeypatch.setattr(listener, 'connect', lambda: MagicMock())
     monkeypatch.setattr(listener, '_already_acknowledged', lambda *_args: None)
-    monkeypatch.setattr(listener, '_execute', lambda _action: True)
+    monkeypatch.setattr(restart_manager, 'stop_supervisor_workers', lambda: True)
+    monkeypatch.setattr(restart_manager, 'start_supervisor_workers', lambda: True)
+    monkeypatch.setattr(restart_manager, 'restart_supervisor_workers', lambda: True)
+    monkeypatch.setattr(listener, '_dispatch_plugin_sync', lambda: True)
     monkeypatch.setattr(listener, '_record_ack', lambda conn, *_args: conn)
     monkeypatch.setattr(
         listener, '_requeue_tasks_of_stopped_workers', lambda _conn: called.append(action)
