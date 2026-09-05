@@ -55,6 +55,10 @@ Main Features:
   OS; frozen native builds run the job in-process and unload the models
   after each job
 * A cancel notification ends the process tree in about 50ms
+* The claim connection is re-checked at every listener poll while a job runs:
+  one Postgres dropped mid-job is reopened and the task lock re-taken at once,
+  and a lock that meanwhile went to a reclaim ends this worker as the duplicate
+  it has become, instead of running unlocked until the job ends
 * Boot reclaims orphaned tasks bounded by QUEUE_MAX_ATTEMPTS
 * A lost connection (SQLSTATE class 08, 57Pxx, InterfaceError) requeues the row
   without charging an attempt, up to UNCHARGED_REQUEUE_LIMIT free passes,
@@ -73,8 +77,13 @@ Main Features:
   when tasks wrote that row themselves; and because tasks used to write that
   row through save_task_status, the worker now also records task_history and
   collapses the finished rows to the one recap, which that path did for them
+* The payload is checked against the function's signature before the call, and a
+  func outside ALLOWED_FUNCS never resolves: both are permanent failures, not
+  three wasted retries. A verdict the task declared (TaskFailed, TaskCancelled)
+  is logged as one line; the traceback is kept for the exceptions it did not
 """
 
+import inspect
 import logging
 import os
 import pickle
@@ -281,6 +290,12 @@ class Worker:
             stop_hard(f"task {task_id} was reclaimed while this worker's connection was down")
         return True
 
+    def on_listener_idle(self):
+        with self._claim_txn:
+            held = self._held_task_id
+            if held is not None:
+                self.ensure_hold(held)
+
     def start_listener(self):
         self._listener = Listener(
             (sql.CHANNEL_JOB, sql.CHANNEL_CANCEL, sql.CHANNEL_RECLAIM),
@@ -288,6 +303,7 @@ class Worker:
             application_name=f"{self.identity}{sql.WORKER_LISTEN_SUFFIX}",
             name=f"listen-{self.queue}",
             on_ready=self.on_listener_ready,
+            on_idle=self.on_listener_idle,
         )
         self._listener.start()
 
@@ -481,7 +497,7 @@ class Worker:
         try:
             kwargs = self.hydrate_shared(job['kwargs'])
         except Exception as exc:
-            logger.exception("Task %s raised", task_id)
+            _log_raised(task_id, exc)
             return self._failure(task_id, exc)
         if self._fork_jobs:
             return self._run_in_child(job, kwargs)
@@ -491,16 +507,14 @@ class Worker:
             self._unload_job_models()
 
     def _attempt(self, job, kwargs, hydrate=True):
-        from . import resolve_func
-
         task_id = job['task_id']
         try:
             if hydrate:
                 self.hydrate_config()
-            func = resolve_func(job['func'])
+            func = _callable_for(job, kwargs)
             result = func(*job['args'], **kwargs)
         except Exception as exc:
-            logger.exception("Task %s raised", task_id)
+            _log_raised(task_id, exc)
             return self._failure(task_id, exc)
         return config.TASK_STATUS_SUCCESS, None, result
 
@@ -822,6 +836,36 @@ class Worker:
         from .maintenance import reclaim_orphans
 
         return reclaim_orphans(self._conn, grace_seconds=0)
+
+
+def _callable_for(job, kwargs):
+    from . import UnknownTaskFunction, resolve_func
+
+    try:
+        func = resolve_func(job['func'])
+    except UnknownTaskFunction as exc:
+        raise TaskFailed(
+            f"{job['func']} is not a task function this worker may run; no retry "
+            "can change that"
+        ) from exc
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return func
+    try:
+        signature.bind(*job['args'], **kwargs)
+    except TypeError as exc:
+        raise TaskFailed(
+            f"{job['func']} cannot be called with the stored arguments ({exc}); no "
+            "retry can change that"
+        ) from exc
+    return func
+
+
+def _log_raised(task_id, exc):
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return
+    logger.exception("Task %s raised", task_id)
 
 
 def _log_retry_verdict(job, summary, status, delay):

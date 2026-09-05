@@ -922,13 +922,26 @@ def clear_task_status(cur):
 
 
 _WORKER_SNAPSHOT = f"""
-    SELECT a.application_name, a.backend_start, t.task_id, t.task_type
-    FROM pg_stat_activity AS a
+    SELECT w.identity, w.backend_start, t.task_id, t.task_type, t.timestamp
+    FROM (
+        SELECT CASE WHEN a.application_name LIKE %s
+                    THEN left(a.application_name, -length(%s))
+                    ELSE a.application_name END AS identity,
+               MIN(a.backend_start) AS backend_start
+        FROM pg_stat_activity AS a
+        WHERE a.application_name LIKE %s AND a.datname = current_database()
+        GROUP BY 1
+    ) AS w
     LEFT JOIN task_status AS t
-      ON t.status = '{_RUNNING}' AND t.worker_id = a.application_name
-    WHERE a.application_name LIKE %s AND a.application_name NOT LIKE %s
-      AND a.datname = current_database()
-    ORDER BY a.application_name
+      ON t.status = '{_RUNNING}' AND t.worker_id = w.identity
+    UNION ALL
+    SELECT t.worker_id, NULL, t.task_id, t.task_type, t.timestamp
+    FROM task_status AS t
+    WHERE t.status = '{_RUNNING}' AND t.worker_id LIKE %s
+      AND NOT EXISTS (SELECT 1 FROM pg_stat_activity AS a
+                      WHERE a.datname = current_database()
+                        AND a.application_name IN (t.worker_id, t.worker_id || %s))
+    ORDER BY 1, 5 DESC NULLS LAST
 """
 
 WORKER_IDENTITY_PREFIX = 'audiomuse-worker-'
@@ -947,19 +960,24 @@ def parse_worker_identity(application_name):
 def worker_snapshot(cur):
     from tz_helper import to_local_str
 
+    listen_pattern = '%' + WORKER_LISTEN_SUFFIX
+    worker_pattern = WORKER_IDENTITY_PREFIX + '%'
     cur.execute(
         _WORKER_SNAPSHOT,
-        (WORKER_IDENTITY_PREFIX + '%', '%' + WORKER_LISTEN_SUFFIX),
+        (
+            listen_pattern, WORKER_LISTEN_SUFFIX, worker_pattern,
+            worker_pattern, WORKER_LISTEN_SUFFIX,
+        ),
     )
     seen = set()
     workers = []
-    for application_name, backend_start, task_id, task_type in (cur.fetchall() or ()):
-        if application_name in seen:
+    for identity, backend_start, task_id, task_type, _beat_at in (cur.fetchall() or ()):
+        if identity in seen:
             continue
-        seen.add(application_name)
-        queue, hostname = parse_worker_identity(application_name)
+        seen.add(identity)
+        queue, hostname = parse_worker_identity(identity)
         workers.append({
-            'hostname': hostname or application_name,
+            'hostname': hostname or identity,
             'queues': [queue] if queue else [],
             'state': 'busy' if task_id else 'idle',
             'current_job_id': task_id,

@@ -22,6 +22,9 @@ Main Features:
 * A finished root keeps one recap row with no func and no payload
 * A fan-out stores its shared body once, counted on the driver, not on a stand-in
 * The backlog counts only NEW rows and drops a row the moment it is claimed
+* The worker table lists every worker that has a live connection, claim or
+  listen, from every container, plus a RUNNING row the queue still believes;
+  only a RUNNING row bound to the worker makes it busy
 """
 
 import json
@@ -1558,6 +1561,130 @@ class TestTheSharedBodyIsWrittenOnceNotOncePerChild:
         with queue_db.cursor() as cur:
             assert sql.get_shared(cur, 'parent-w', second) == 'body-two'
         queue_db.commit()
+
+
+class TestTheWorkerSnapshotListsWhatTheQueueBelieves:
+    def test_a_running_row_whose_worker_has_no_connection_is_still_a_busy_worker(
+        self, queue_db
+    ):
+        _enqueue(queue_db, 'ghost-1', task_type='main_analysis', queue=sql.QUEUE_HIGH)
+        with queue_db.cursor() as cur:
+            claimed = sql.claim(
+                cur, sql.QUEUE_HIGH, time.time(),
+                worker_id='audiomuse-worker-high-ghost-host-1-beef',
+            )
+        queue_db.commit()
+        assert claimed is not None
+
+        with queue_db.cursor() as cur:
+            workers = sql.worker_snapshot(cur)
+
+        ghost = [w for w in workers if w['current_job_id'] == 'ghost-1']
+        assert len(ghost) == 1
+        assert ghost[0]['state'] == 'busy'
+        assert ghost[0]['queues'] == ['high']
+        assert ghost[0]['started_at'] is None
+
+    def test_both_workers_of_one_container_are_listed_and_only_the_working_one_is_busy(
+        self, queue_db, shared_pg_dsn
+    ):
+        host = 'audiomuse-ai-worker-0'
+        high = f'audiomuse-worker-high-{host}-7-c0de'
+        default = f'audiomuse-worker-default-{host}-8-f00d'
+        _enqueue(queue_db, 'album-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        conns = [
+            _fresh(shared_pg_dsn, name)
+            for name in (
+                high, high + sql.WORKER_LISTEN_SUFFIX,
+                default, default + sql.WORKER_LISTEN_SUFFIX,
+            )
+        ]
+        try:
+            with conns[2].cursor() as cur:
+                sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=default)
+            conns[2].commit()
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            for conn in conns:
+                conn.close()
+
+        mine = [w for w in workers if w['hostname'] == host]
+        assert len(mine) == 2, 'a listen connection is the same worker, not a third row'
+        by_queue = {w['queues'][0]: w for w in mine}
+        assert by_queue['high']['state'] == 'idle'
+        assert by_queue['high']['current_job_id'] is None
+        assert by_queue['high']['started_at'] is not None
+        assert by_queue['default']['state'] == 'busy'
+        assert by_queue['default']['current_job_id'] == 'album-1'
+        assert by_queue['default']['current_task_type'] == 'album_analysis'
+
+    def test_a_worker_whose_only_connection_is_its_listener_is_still_listed(
+        self, queue_db, shared_pg_dsn
+    ):
+        identity = 'audiomuse-worker-high-lonely-host-9-abcd'
+        listener = _fresh(shared_pg_dsn, identity + sql.WORKER_LISTEN_SUFFIX)
+        try:
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            listener.close()
+
+        lonely = [w for w in workers if w['hostname'] == 'lonely-host']
+        assert len(lonely) == 1
+        assert lonely[0]['queues'] == ['high']
+        assert lonely[0]['state'] == 'idle'
+        assert lonely[0]['started_at'] is not None
+
+    def test_a_busy_worker_whose_claim_connection_dropped_is_listed_once_as_busy(
+        self, queue_db, shared_pg_dsn
+    ):
+        identity = 'audiomuse-worker-high-dropped-host-3-d00d'
+        _enqueue(queue_db, 'dropped-1', task_type='main_analysis', queue=sql.QUEUE_HIGH)
+        claim_conn = _fresh(shared_pg_dsn, identity)
+        with claim_conn.cursor() as cur:
+            sql.claim(cur, sql.QUEUE_HIGH, time.time(), worker_id=identity)
+        claim_conn.commit()
+        claim_conn.close()
+
+        listener = _fresh(shared_pg_dsn, identity + sql.WORKER_LISTEN_SUFFIX)
+        try:
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            listener.close()
+
+        dropped = [w for w in workers if w['hostname'] == 'dropped-host']
+        assert len(dropped) == 1, 'the listener and the RUNNING row are one worker, not two rows'
+        assert dropped[0]['state'] == 'busy'
+        assert dropped[0]['current_job_id'] == 'dropped-1'
+        assert dropped[0]['started_at'] is not None
+
+    def test_a_worker_with_a_stale_running_row_shows_its_newest_job(
+        self, queue_db, shared_pg_dsn
+    ):
+        identity = 'audiomuse-worker-default-twice-host-5-beef'
+        _enqueue(queue_db, 'twice-a', task_type='album_analysis')
+        _enqueue(queue_db, 'twice-b', task_type='album_analysis')
+        claim_conn = _fresh(shared_pg_dsn, identity)
+        try:
+            with claim_conn.cursor() as cur:
+                first = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=identity)
+            claim_conn.commit()
+            _age_row(queue_db, first['task_id'])
+            with claim_conn.cursor() as cur:
+                second = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=identity)
+            claim_conn.commit()
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            claim_conn.close()
+
+        twice = [w for w in workers if w['hostname'] == 'twice-host']
+        assert len(twice) == 1
+        assert twice[0]['state'] == 'busy'
+        assert twice[0]['current_job_id'] == second['task_id']
+        assert second['task_id'] != first['task_id']
 
 
 class TestQueueBacklogCountsWhatIsActuallyWaiting:

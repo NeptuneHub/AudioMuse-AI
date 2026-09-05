@@ -255,6 +255,24 @@ class TestTheShippedPredicatesKeepTheirExactText:
     def test_the_worker_snapshot_still_joins_on_running_rows(self):
         assert "ON t.status = 'RUNNING'" in sql._WORKER_SNAPSHOT
 
+    def test_the_worker_snapshot_also_lists_a_busy_worker_whose_claim_connection_dropped(self):
+        assert 'UNION ALL' in sql._WORKER_SNAPSHOT
+        assert 'NOT EXISTS (SELECT 1 FROM pg_stat_activity' in sql._WORKER_SNAPSHOT, (
+            'a worker only touches its claim connection again when its job ends, so '
+            'a connection Postgres dropped mid-job left a busy worker off the dashboard '
+            'for the rest of the run while its row kept beating; the RUNNING row is what '
+            'the queue believes and it is listed too'
+        )
+
+    def test_the_worker_snapshot_knows_a_worker_by_either_of_its_two_connections(self):
+        assert 'left(a.application_name, -length(%s))' in sql._WORKER_SNAPSHOT
+        assert 'a.application_name IN (t.worker_id, t.worker_id || %s)' in sql._WORKER_SNAPSHOT, (
+            'reclaim and the nudge already count the listen connection as the worker '
+            'being alive; the dashboard knew only the claim connection, so a worker '
+            'whose claim backend was gone vanished from the table while the queue '
+            'card still counted its running row'
+        )
+
 
 class TestOneParameterisedStatementDropsEveryIndexFamily:
     def test_the_like_pattern_is_a_parameter_not_a_literal(self):

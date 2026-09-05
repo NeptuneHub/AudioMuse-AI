@@ -32,6 +32,9 @@ Main Features:
 * Dispatches ``(channel, payload)`` to a callback on the listener thread
 * ``on_ready`` runs once per (re)connection, for callers that must re-check
   state they could not be notified about while they were disconnected
+* ``on_idle`` runs at every poll timeout that brought nothing to dispatch; the
+  worker uses it to make sure the claim connection of the task it is running
+  is still alive, because nothing else touches that connection mid-job
 """
 
 import logging
@@ -46,12 +49,13 @@ logger = logging.getLogger(__name__)
 
 class Listener:
     def __init__(self, channels, on_notify, application_name=None, name='listener',
-                 on_ready=None):
+                 on_ready=None, on_idle=None):
         self._channels = tuple(channels)
         self._on_notify = on_notify
         self._application_name = application_name
         self._name = name
         self._on_ready = on_ready
+        self._on_idle = on_idle
         self._thread = None
         self._conn = None
 
@@ -104,9 +108,18 @@ class Listener:
         self._dispatch_pending(conn)
         while True:
             if select.select([conn], [], [], config.QUEUE_POLL_INTERVAL_SECONDS) == ([], [], []):
+                self._idle()
                 continue
             conn.poll()
             self._dispatch_pending(conn)
+
+    def _idle(self):
+        if self._on_idle is None:
+            return
+        try:
+            self._on_idle()
+        except Exception:
+            logger.exception("The idle handler of %s failed", self._name)
 
     def _dispatch_pending(self, conn):
         while conn.notifies:
