@@ -34,12 +34,16 @@ Main Features:
   A parent is passed only by a supervised child (an album, a batch) that has
   nothing to report to once its parent is over. A task that merely carries
   lineage on its row, like the alignment a migration queues, watches its own
-  row alone: its parent finishes first by design
+  row alone: its parent finishes first by design. A task whose OWN row is
+  already terminal stops too: a parent that gave up on it wrote that row, so
+  there is nothing left to report and the queue will not accept a verdict
 * make_task_reporter: the ONE progress reporter. It writes RUNNING and only
   RUNNING; a terminal state handed to it is logged as an error and downgraded,
   because that row belongs to the queue. It keeps the capped log, the
   progress window, the write throttle, and can merge a live details dict on
-  every write for a task that persists its resume state on its own row
+  every write for a task that persists its resume state on its own row. A
+  write passed force=True skips the throttle, for the one line that must
+  land: the failure a child records on its row before it raises
 * for_each_server_in_scope: the shared per-server loop for a task that runs
   the same step against every server and reports which ones failed. A
   TaskFailed raised by the step is the task's own verdict and passes through
@@ -170,8 +174,12 @@ def _raise_if_cancelled(task_id, parent_task_id, statuses):
         raise TaskCancelled(
             f"task {task_id} has no task_status row any more; it was cancelled"
         )
-    if task_id and statuses.get(task_id) == TASK_STATUS_REVOKED:
-        raise TaskCancelled(f"task {task_id} was revoked")
+    own = statuses.get(task_id) if task_id else None
+    if own in TASK_STATUS_TERMINAL:
+        raise TaskCancelled(
+            f"task {task_id} is already {own}: it was revoked, or its parent gave "
+            "up on it, and it has nothing left to report"
+        )
     if not parent_task_id:
         return
     parent = statuses.get(parent_task_id)
@@ -251,6 +259,7 @@ def make_task_reporter(task_id, task_type, initial_message,
         state['progress'] = progress
         logger.info(f"[{label}] {message}")
         task_state = kwargs.pop('task_state', TASK_STATUS_RUNNING)
+        force = kwargs.pop('force', False)
         if task_state in TASK_STATUS_TERMINAL:
             logger.error(
                 "[%s] a task asked its reporter to write %s; that row belongs to the "
@@ -265,7 +274,7 @@ def make_task_reporter(task_id, task_type, initial_message,
         details["log"] = logs
         scaled = int(progress_base + (progress or 0) * progress_span / 100.0)
         now = clock()
-        if min_db_interval and now - state['last_db'] < min_db_interval:
+        if min_db_interval and not force and now - state['last_db'] < min_db_interval:
             return True
         state['last_db'] = now
         return save_task_status(

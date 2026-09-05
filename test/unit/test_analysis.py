@@ -116,6 +116,12 @@ def _union_harness(monkeypatch, phase_results):
     def phase(*a, server_id=None, **k):
         if by_id[server_id] == 'REVOKED':
             raise TaskCancelled(f'{server_id} was revoked')
+        if by_id[server_id] == 'AUTH':
+            from error.error_dictionary import ERR_MEDIASERVER_AUTH
+
+            raise analysis.AnalysisNotRetryable(
+                ERR_MEDIASERVER_AUTH, f'{server_id} refused the credentials'
+            )
         return {'status': by_id[server_id]}
 
     monkeypatch.setattr(analysis, 'run_analysis_server_task', phase)
@@ -216,7 +222,7 @@ def test_dequeued_album_with_wiped_parent_stops_before_creating_child(monkeypatc
 
     job = Mock(id='album-cancelled')
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
-    monkeypatch.setattr(album, 'get_task_statuses', lambda ids: {})
+    monkeypatch.setattr('tasks.task_run._read_task_statuses', lambda _conn, ids: {})
     tracks = Mock(side_effect=AssertionError('cancelled album must not fetch tracks'))
     monkeypatch.setattr(album, 'get_tracks_from_album', tracks)
     save = Mock(side_effect=AssertionError('cancelled album must not create a row'))
@@ -236,7 +242,7 @@ def test_dequeued_index_rebuild_with_wiped_parent_does_no_build(monkeypatch):
 
     job = Mock(id='index-cancelled')
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
-    monkeypatch.setattr('database.get_task_statuses', lambda ids: {})
+    monkeypatch.setattr('tasks.task_run._read_task_statuses', lambda _conn, ids: {})
     build = Mock(side_effect=AssertionError('cancelled rebuild must not run'))
     monkeypatch.setattr(index, '_run_all_index_builds', build)
 
@@ -817,10 +823,14 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     )
 
     assert result['status'] == 'SUCCESS'
-    assert status_calls == [['parent1']], 'the pre-flight parent check reads once'
+    assert status_calls == [], (
+        'the pre-flight parent check IS the shared cancel check forced once at '
+        'entry; the album has no second reader of its own any more'
+    )
     assert cancel_reads == [['job-1', 'parent1']], (
         'the shared cancel check is throttled to ANALYSIS_MONITOR_DB_INTERVAL, so '
-        'four tracks cost one read of the album row and its parent, not four'
+        'the entry check plus four tracks cost one read of the album row and its '
+        'parent, not five'
     )
 
 
@@ -3734,3 +3744,59 @@ def test_index_builds_end_with_a_database_checkpoint(monkeypatch):
     # 8 single builds + the hyperbolic step's three internal builds
     assert sum(1 for e in order if e.startswith("build:")) == 11
     assert order.count("close_db") == 9
+
+
+def test_union_analysis_where_every_server_refused_the_credentials_is_never_retried(
+    monkeypatch
+):
+    from taskqueue import TaskFailed
+    from error.error_dictionary import ERR_ANALYSIS_SERVER_FAILED
+
+    result, _saved = _union_harness(monkeypatch, [('Jellyfin', 'AUTH'), ('Plex', 'AUTH')])
+
+    assert isinstance(result, TaskFailed), (
+        'bad credentials do not heal on a retry, so the queue fails the row once and '
+        'the next scheduled run is the retry, as cleaning already does'
+    )
+    assert result.code == ERR_ANALYSIS_SERVER_FAILED
+
+
+def test_union_analysis_with_a_server_down_for_another_reason_keeps_the_retry(monkeypatch):
+    from taskqueue import TaskFailed
+    from error.error_manager import AudioMuseError
+
+    result, _saved = _union_harness(monkeypatch, [('Jellyfin', 'AUTH'), ('Plex', 'FAIL')])
+
+    assert isinstance(result, AudioMuseError)
+    assert not isinstance(result, TaskFailed), (
+        'a server that failed for a reason a retry may fix keeps the backed-off retry'
+    )
+
+
+def test_a_media_server_that_refuses_the_credentials_is_a_permanent_failure(monkeypatch):
+    import tasks.analysis.main as analysis
+    from taskqueue import TaskFailed
+
+    monkeypatch.setattr(
+        analysis, 'mediaserver_test_connection',
+        lambda: {'ok': False, 'auth_failed': True, 'error': '401 Unauthorized'},
+    )
+
+    with pytest.raises(TaskFailed):
+        analysis._verify_media_server_reachable()
+
+
+def test_a_media_server_that_is_unreachable_is_still_retried(monkeypatch):
+    import tasks.analysis.main as analysis
+    from taskqueue import TaskFailed
+    from error.error_manager import AudioMuseError
+
+    monkeypatch.setattr(
+        analysis, 'mediaserver_test_connection',
+        lambda: {'ok': False, 'error': 'connection refused'},
+    )
+
+    with pytest.raises(AudioMuseError) as raised:
+        analysis._verify_media_server_reachable()
+
+    assert not isinstance(raised.value, TaskFailed)

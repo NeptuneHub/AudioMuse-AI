@@ -18,6 +18,11 @@ Main Features:
   connection the server closed and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped rows; a
   status write the row refuses ends the transaction with a ROLLBACK.
+* record_root_recap is the ONE root-finish bookkeeping (the task_history line
+  and the collapse to a single recap row) shared by save_task_status, the
+  worker's terminal write and the migration handshake recovery. It must run
+  AFTER the terminal row is committed: record_task_history rolls back on
+  failure, and in the worker that rollback used to undo the verdict itself.
 * stage_pending_task_row is the one way to stage a placeholder row that a later
   taskqueue.enqueue on the same transaction adopts (returns True only for a row
   this call created).
@@ -308,7 +313,9 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
             duration_s = max(0.0, float(end) - float(row[0]))
     except Exception:
         pass
-    record_task_history(task_id, task_type, status, duration_s, details=details)
+    record_task_history(
+        task_id, task_type, status, duration_seconds=duration_s, details=details, conn=db,
+    )
 
 
 def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
@@ -342,6 +349,16 @@ def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
             sanitize_for_log(task_id), sanitize_for_log(status), deleted,
         )
     return deleted
+
+
+def record_root_recap(db, task_id, task_type, parent_task_id, status, details, now=None):
+    if parent_task_id is not None:
+        return 0
+    _maybe_record_task_history(
+        db, task_id, task_type, status, parent_task_id, details,
+        time.time() if now is None else now,
+    )
+    return collapse_finished_task(db, task_id, task_type, parent_task_id, status)
 
 
 def save_task_status(
@@ -463,13 +480,14 @@ def save_task_status(
         return False
 
     try:
-        _maybe_record_task_history(
-            db, task_id, task_type, status, stored_parent_task_id, details, current_unix_time
+        record_root_recap(
+            db, task_id, task_type, stored_parent_task_id, status, details, current_unix_time
         )
-    except Exception as e_hist:
-        logger.debug(f"history record skipped for {task_id}: {e_hist}")
-
-    collapse_finished_task(db, task_id, task_type, stored_parent_task_id, status)
+    except Exception:
+        logger.exception(
+            "Wrote %s for task %s but could not record its history or collapse the table",
+            status, sanitize_for_log(task_id),
+        )
     return True
 
 

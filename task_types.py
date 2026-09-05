@@ -35,6 +35,12 @@ Main Features:
   is a checksum of, so deriving it never forces an index rebuild
 * Nudge, archive-exemption, non-blocking and inline lists all derive from flags
 * PREFIXES carries the plugin namespace, which is matched by prefix not by name
+* restarts is the restart budget a type declares and taskqueue.enqueue reads
+  when its caller passes none. A child (album, clustering batch, index rebuild)
+  gets ONE: the next run re-queues whatever it missed, so three restarts only
+  made its parent wait out three backoffs on a failure that would not heal. The
+  migration planner gets none, because a silently re-run dry run holds its
+  session claimed for a whole extra attempt. None means QUEUE_MAX_ATTEMPTS
 """
 
 ROLE_MAIN = 'main'
@@ -47,7 +53,7 @@ ROLE_CONTROL = 'control'
 class TaskType:
     def __init__(self, name, role, queue=None, holds_main_index=False,
                  watched_by_nudge=False, blocks_starts=False,
-                 self_managed=False, is_prefix=False):
+                 self_managed=False, is_prefix=False, restarts=None):
         self.name = name
         self.role = role
         self.queue = queue
@@ -56,6 +62,7 @@ class TaskType:
         self.blocks_starts = blocks_starts
         self.self_managed = self_managed
         self.is_prefix = is_prefix
+        self.restarts = restarts
 
 
 ALL = (
@@ -74,10 +81,10 @@ ALL = (
     TaskType('alchemy_radio', ROLE_INLINE, self_managed=True),
     TaskType('worker_control', ROLE_CONTROL, self_managed=True),
     TaskType('provider_migration_planner', ROLE_PLANNER, queue='high',
-             self_managed=True),
-    TaskType('album_analysis', ROLE_CHILD, queue='default'),
-    TaskType('clustering_batch', ROLE_CHILD, queue='default'),
-    TaskType('index_rebuild', ROLE_CHILD, queue='default'),
+             self_managed=True, restarts=0),
+    TaskType('album_analysis', ROLE_CHILD, queue='default', restarts=1),
+    TaskType('clustering_batch', ROLE_CHILD, queue='default', restarts=1),
+    TaskType('index_rebuild', ROLE_CHILD, queue='default', restarts=1),
     TaskType('plugin.', ROLE_MAIN, blocks_starts=True, self_managed=True,
              watched_by_nudge=True, is_prefix=True),
 )
@@ -128,4 +135,14 @@ def matches(task_type, names=(), prefixes=()):
     if task_type in names:
         return True
     return any(task_type.startswith(prefix) for prefix in prefixes)
+
+
+def restarts_for(task_type):
+    for entry in ALL:
+        if entry.is_prefix:
+            if task_type.startswith(entry.name):
+                return entry.restarts
+        elif entry.name == task_type:
+            return entry.restarts
+    return None
 

@@ -17,7 +17,7 @@ UPDATE whose subquery takes FOR UPDATE SKIP LOCKED - so N workers race with no
 coordination and exactly one wins. Second, liveness is a session advisory lock
 rather than a heartbeat: a dead process releases the lock when its connection
 drops. Every function takes a cursor the caller owns and commits, keeping this
-a near-leaf module (imports only config) under the MAX_CHAIN cap.
+a near-leaf module (imports only leaves) under the MAX_CHAIN cap.
 
 Main Features:
 * ensure_schema adds the queue columns, indexes and the one-time migration

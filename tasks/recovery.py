@@ -514,7 +514,9 @@ RECOVERY = {
             'an IN clause. It needs watching for the same reason the sweep did: '
             'get_queue_blocking_task ORs in plugin.%, so a live plugin task '
             'refuses every cron start and every manual batch start, and reclaim '
-            'cannot help because reclaim needs the worker to DIE'
+            'cannot help because reclaim needs the worker to DIE. row_heartbeat '
+            'covers the plugin function itself, one call per server that writes '
+            'no row until it returns'
         ),
         CHILD_WORKER_DIED: not_applicable(
             'plugin.manager runs the plugin function inline, once per server in '

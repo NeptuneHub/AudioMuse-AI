@@ -476,6 +476,34 @@ class TestAFinishedRootIsOneRow:
         assert parsed['message'] == 'Analysed 3900 albums, 12 failed'
         assert 'log' not in parsed, 'details must never grow a log list again'
 
+    def test_a_missing_history_table_never_undoes_the_terminal_row(
+        self, queue_db, shared_pg_dsn
+    ):
+        _enqueue(queue_db, 'nohist-1')
+        worker = _bare_worker(shared_pg_dsn)
+        worker.identity = 'w-nohist'
+        try:
+            with worker._conn.cursor() as cur:
+                sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w-nohist')
+            worker._conn.commit()
+            with queue_db.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS task_history")
+            queue_db.commit()
+            worker.finalize(
+                {'task_id': 'nohist-1'}, config.TASK_STATUS_SUCCESS, None,
+                result={'message': 'Analysed 3 albums.'},
+            )
+        finally:
+            worker._conn.close()
+
+        status, _attempts, _max, func, _payload, _worker = _row(queue_db, 'nohist-1')
+        assert status == config.TASK_STATUS_SUCCESS, (
+            'record_task_history rolls back on failure; while it shared the terminal '
+            "write's transaction that rollback undid the verdict, the row stayed "
+            'RUNNING under a live idle worker, and every start answered 409'
+        )
+        assert func is None
+
 
 class TestChildrenAreReapedByTheirParent:
     def test_a_terminal_child_is_deleted_and_its_result_returned_once(self, queue_db):

@@ -76,11 +76,22 @@ Main Features:
   progress reports built up, so the dashboard recap reads exactly as it did
   when tasks wrote that row themselves; and because tasks used to write that
   row through save_task_status, the worker now also records task_history and
-  collapses the finished rows to the one recap, which that path did for them
+  collapses the finished rows to the one recap, which that path did for them.
+  The terminal row is COMMITTED first and that bookkeeping runs after it on
+  its own transactions: record_task_history rolls back on failure, and while
+  the two shared one transaction that rollback silently undid the verdict and
+  left the row RUNNING under a worker that had already moved on
 * The payload is checked against the function's signature before the call, and a
   func outside ALLOWED_FUNCS never resolves: both are permanent failures, not
   three wasted retries. A verdict the task declared (TaskFailed, TaskCancelled)
   is logged as one line; the traceback is kept for the exceptions it did not
+* A declared verdict's message is the task's own recap line and is kept whole
+  (up to _VERDICT_SUMMARY_LIMIT); the text of an unexpected exception is cut at
+  _SUMMARY_LIMIT, because a traceback's first line is all the dashboard needs
+* A shared payload that is gone or no longer matches its token cannot come back
+  on a retry, so that failure is permanent too, decided here rather than by
+  making sql.SharedPayloadUnavailable a TaskFailed: sql must stay a leaf of the
+  package, and importing its sibling would lengthen the eager import chain
 """
 
 import inspect
@@ -338,12 +349,7 @@ class Worker:
         return False
 
     def _requeue_charging_an_attempt(self, cur, task_id):
-        row = sql.current_row(cur, task_id)
-        if (
-            row is None
-            or row['status'] != config.TASK_STATUS_RUNNING
-            or row['worker_id'] not in (None, self.identity)
-        ):
+        if not self._still_mine(sql.current_row(cur, task_id)):
             return self._forget_abandoned(task_id)
         status = sql.requeue_or_fail(
             cur, task_id, time.time(),
@@ -496,6 +502,8 @@ class Worker:
         task_id = job['task_id']
         try:
             kwargs = self.hydrate_shared(job['kwargs'])
+        except sql.SharedPayloadUnavailable as exc:
+            return self._failure(task_id, TaskFailed(str(exc)))
         except Exception as exc:
             _log_raised(task_id, exc)
             return self._failure(task_id, exc)
@@ -700,7 +708,7 @@ class Worker:
             row = sql.current_row(cur, task_id)
             if row is None or row['status'] != config.TASK_STATUS_RUNNING:
                 _report_foreign_terminal(task_id, status, row)
-                return False
+                return None
             previous = sql.current_details(cur, task_id)
             details = _terminal_details(status, error, result, previous=previous)
             written = sql.finish_task(
@@ -712,34 +720,21 @@ class Worker:
                 "reclaimed and restarted elsewhere while this process was still on it.",
                 task_id,
             )
-            return True
-        self._record_and_collapse(task_id, row, status, details)
-        return True
+            return None
+        return row, details
 
     def _record_and_collapse(self, task_id, row, status, details):
-        if row.get('parent_task_id') is not None:
-            return
         try:
-            from database import collapse_finished_task, record_task_history
+            from database import record_root_recap
 
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
-                    (task_id,),
-                )
-                times = cur.fetchone()
-            duration = None
-            if times and times[0] is not None and times[1] is not None:
-                duration = max(0.0, float(times[1]) - float(times[0]))
-            record_task_history(
-                task_id, row.get('task_type'), status, duration_seconds=duration,
-                details=details, conn=self._conn,
+            record_root_recap(
+                self._conn, task_id, row.get('task_type'), row.get('parent_task_id'),
+                status, details,
             )
-            collapse_finished_task(self._conn, task_id, row.get('task_type'), None, status)
         except Exception:
             logger.exception(
                 "Finished %s as %s but could not record its history or collapse the "
-                "table; the recap row itself is written", task_id, status,
+                "table; the recap row itself is already committed", task_id, status,
             )
             self._safe_rollback()
 
@@ -753,8 +748,8 @@ class Worker:
                         task_id,
                     )
                     self.connect()
-                if not self._write_terminal_row(task_id, status, error, result):
-                    return
+                recap = self._write_terminal_row(task_id, status, error, result)
+                self._conn.commit()
             except Exception:
                 self._safe_rollback()
                 if attempt == 1:
@@ -765,8 +760,9 @@ class Worker:
                     self._drop_claim_conn()
                     continue
                 logger.exception("Could not write the terminal row for %s", task_id)
-            else:
-                self._safe_commit()
+                return
+            if recap is not None:
+                self._record_and_collapse(task_id, recap[0], status, recap[1])
             return
 
     def _safe_rollback(self):
@@ -895,6 +891,18 @@ def _report_foreign_terminal(task_id, status, row):
             "Not finishing %s as %s: it was revoked while it ran.", task_id, status,
         )
         return
+    if row['status'] == status:
+        logger.info(
+            "Not finishing %s again: its row is already %s, so the earlier write "
+            "landed even though its acknowledgement did not.", task_id, status,
+        )
+        return
+    if row['parent_task_id'] is not None and row['status'] == config.TASK_STATUS_FAIL:
+        logger.info(
+            "Not finishing %s as %s: its parent gave up on it and ended it as %s "
+            "before it returned.", task_id, status, row['status'],
+        )
+        return
     logger.error(
         "Not finishing %s as %s: its row is already %s. A task wrote its own "
         "terminal row, so the queue could not record this attempt's verdict or "
@@ -1010,9 +1018,15 @@ def _is_connectivity_error(exc):
     )
 
 
+_SUMMARY_LIMIT = 500
+_VERDICT_SUMMARY_LIMIT = 4000
+
+
 def _error_summary(exc):
     text = str(exc).strip() or exc.__class__.__name__
-    return text[:500]
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return text[:_VERDICT_SUMMARY_LIMIT]
+    return text[:_SUMMARY_LIMIT]
 
 
 def _close_inherited_sockets(worker):

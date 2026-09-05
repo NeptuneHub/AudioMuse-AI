@@ -19,7 +19,9 @@ import below is deferred into function bodies to keep the eager chains under
 MAX_CHAIN.
 
 Main Features:
-* enqueue writes the job row and the wake-up notification in one transaction
+* enqueue writes the job row and the wake-up notification in one transaction,
+  and takes the restart budget from task_types when the caller passes none, so
+  a child's smaller budget is declared once, on its type
 * request_cancel / request_cancel_all publish the real-time stop signal
 * current_task_id tells a running task which row is its own
 * reap_finished_children deletes finished children and returns their outcomes
@@ -35,6 +37,7 @@ import importlib
 import logging
 
 import queue_names
+import task_types
 
 from .errors import TaskCancelled, TaskFailed  # noqa: F401
 
@@ -171,6 +174,8 @@ def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAU
         raise UnknownTaskFunction(f"{func} is not an allowed task function")
 
     kwargs = dict(kwargs or {})
+    if max_attempts is None:
+        max_attempts = task_types.restarts_for(task_type)
     if shared:
         _check_shared(shared, kwargs, parent_task_id)
 

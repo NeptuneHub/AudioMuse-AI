@@ -632,6 +632,9 @@ QUEUE_SECRET_KWARGS = (
 # a long root task that had merely been restarted twice was failed for good on
 # the third restart, and a FAIL row is unreachable afterwards because the claim
 # only looks at NEW rows and the reclaim only at RUNNING ones.
+# A child (album, clustering batch, index rebuild) declares a smaller budget of
+# ONE restart on its type in task_types.py: the next run re-queues whatever it
+# missed, so three restarts only made its parent wait out three backoffs.
 QUEUE_MAX_ATTEMPTS = max(1, int(os.getenv('QUEUE_MAX_ATTEMPTS', '3')))
 # The wait before a task that raised is attempted again: doubles per attempt
 # from the base, capped at the max, with a small jitter so a burst of failures

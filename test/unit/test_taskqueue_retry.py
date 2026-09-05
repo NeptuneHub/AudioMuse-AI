@@ -24,6 +24,8 @@ Main Features:
   base of zero disables it
 * The terminal row keeps the previous details, promotes the message the task
   returned, collapses the log on SUCCESS and appends on FAIL, capped
+* The terminal row is committed BEFORE the history line and the collapse are
+  attempted, so their rollback on failure can no longer undo the verdict
 * The probe that gates the column migration names the column added last
 """
 
@@ -340,16 +342,59 @@ class TestTheQueueRecordsHistoryAndCollapsesOnATerminalWrite:
             config.TASK_STATUS_SUCCESS, {},
         )
 
-    def test_a_failure_to_record_never_undoes_the_terminal_write(self, monkeypatch):
+    def test_the_terminal_row_is_committed_before_the_history_line_is_attempted(
+        self, monkeypatch
+    ):
+        import database
+
+        instance = self._worker()
+        order = []
+        conn = MagicMock()
+        conn.closed = 0
+        conn.commit.side_effect = lambda: order.append('commit')
+        conn.rollback.side_effect = lambda: order.append('rollback')
+        instance._conn = conn
+        monkeypatch.setattr(worker_mod.sql, 'current_row', lambda cur, task_id: {
+            'status': config.TASK_STATUS_RUNNING, 'task_type': 'cleaning',
+            'parent_task_id': None, 'worker_id': instance.identity,
+        })
+        monkeypatch.setattr(worker_mod.sql, 'current_details', lambda cur, task_id: {})
+        monkeypatch.setattr(
+            worker_mod.sql, 'finish_task',
+            lambda *a, **k: order.append('finish') or config.TASK_STATUS_FAIL,
+        )
+
+        def history_that_rolls_back(*args, **kwargs):
+            order.append('history')
+            kwargs['conn'].rollback()
+
+        monkeypatch.setattr(database, 'record_task_history', history_that_rolls_back)
+        monkeypatch.setattr(database, 'collapse_finished_task', lambda *a: 0)
+
+        instance.finalize({'task_id': 'task-1'}, config.TASK_STATUS_FAIL, 'boom')
+
+        assert order[:2] == ['finish', 'commit'], (
+            'record_task_history rolls back on failure; while it shared the terminal '
+            "write's transaction that rollback undid the verdict, the row stayed "
+            'RUNNING under a live idle worker, and every start answered 409'
+        )
+        assert order.index('history') > order.index('commit')
+
+    def test_a_failure_inside_the_bookkeeping_is_rolled_back_after_the_recap_is_durable(
+        self, monkeypatch
+    ):
         import database
 
         instance = self._worker()
         instance._conn = MagicMock()
-        instance._conn.cursor.side_effect = RuntimeError('history table is gone')
         rolled_back = []
         monkeypatch.setattr(instance, '_safe_rollback', lambda: rolled_back.append(True))
-        monkeypatch.setattr(database, 'record_task_history', lambda *a, **k: None)
-        monkeypatch.setattr(database, 'collapse_finished_task', lambda *a: None)
+
+        def history_is_gone(*args, **kwargs):
+            raise RuntimeError('history table is gone')
+
+        monkeypatch.setattr(database, 'record_task_history', history_is_gone)
+        monkeypatch.setattr(database, 'collapse_finished_task', lambda *a: 0)
 
         instance._record_and_collapse(
             'task-1', {'task_type': 'cleaning', 'parent_task_id': None},
@@ -357,6 +402,33 @@ class TestTheQueueRecordsHistoryAndCollapsesOnATerminalWrite:
         )
 
         assert rolled_back == [True]
+
+
+class TestASharedPayloadThatCannotComeBackIsPermanent:
+    def test_a_missing_or_mismatched_body_fails_without_a_retry(self, monkeypatch):
+        import threading
+
+        instance = worker_mod.Worker.__new__(worker_mod.Worker)
+        instance.identity = 'audiomuse-worker-default-hostA-11'
+        instance._claim_txn = threading.Lock()
+        instance._fork_jobs = False
+
+        def gone(kwargs):
+            raise sql.SharedPayloadUnavailable('the shared payload for p is gone')
+
+        monkeypatch.setattr(instance, 'hydrate_shared', gone)
+
+        outcome, summary, result = instance._execute(
+            {'task_id': 'kid-1', 'kwargs': {'__audiomuse_shared__': {}}}
+        )
+
+        assert outcome == retry.FAIL_PERMANENT, (
+            'a body whose token no longer matches its owner cannot come back, so '
+            'spending the restart budget on it only delays the FAIL the parent is '
+            'waiting for'
+        )
+        assert 'gone' in summary
+        assert result is None
 
 
 class TestNoProgressReportRegressesATerminalRow:

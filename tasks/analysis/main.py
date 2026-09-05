@@ -61,6 +61,12 @@ Main Features:
 * A swept track keeps its Chromaprint: upsert_track_maps hands each new mapping
   the Chromaprint already stored for its canonical track in the SAME transaction
   it is written, so a sweep never leaves a mapping fingerprintless.
+* AnalysisNotRetryable is the one failure the queue must not retry: a media
+  server that refused the credentials, and a union run where EVERY server failed
+  that way. It is both the structured AudioMuseError the dashboard reads and a
+  TaskFailed, so the row fails once and the next scheduled run is the retry, as
+  cleaning already does. An unreachable server, or a run where any server failed
+  for another reason, keeps the ordinary backed-off retry.
 
 TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
 task having no live children; if they cannot be read the wipe is skipped.
@@ -122,7 +128,11 @@ from .helper import make_task_reporter, _bind_server_context
 from ..recovery import (
     ChildDrainSupervisor, child_marks, row_heartbeat, slow_step_budget_minutes,
 )
-from ..task_run import TaskCancelled, cancel_guard, make_cancel_check
+from ..task_run import TaskCancelled, TaskFailed, cancel_guard, make_cancel_check
+
+
+class AnalysisNotRetryable(error_manager.AudioMuseError, TaskFailed):
+    pass
 
 
 def _run_all_index_builds(*args, **kwargs):
@@ -230,7 +240,7 @@ def _verify_media_server_reachable():
 
     message = (probe or {}).get('error') or None
     if _probe_looks_like_auth_failure(probe):
-        raise error_manager.AudioMuseError(ERR_MEDIASERVER_AUTH, message)
+        raise AnalysisNotRetryable(ERR_MEDIASERVER_AUTH, message)
     raise error_manager.AudioMuseError(ERR_MEDIASERVER_UNREACHABLE, message)
 
 
@@ -830,6 +840,7 @@ def _run_union_phases(parent_id, cancel, servers, num_recent_albums, top_n_moods
 
     summaries = []
     failed = []
+    permanent = []
     span = 90.0 / len(servers)
     albums_offset = 0
     for index, server in enumerate(servers):
@@ -861,6 +872,8 @@ def _run_union_phases(parent_id, cancel, servers, num_recent_albums, top_n_moods
             raise
         except Exception as e:
             failed.append(server['name'])
+            if isinstance(e, TaskFailed):
+                permanent.append(server['name'])
             error_manager.record(
                 error_manager.classify(e, ERR_ANALYSIS_SERVER_FAILED),
                 f"{server['name']}: {e}", exc=e, logger=logger, level=logging.WARNING,
@@ -868,10 +881,10 @@ def _run_union_phases(parent_id, cancel, servers, num_recent_albums, top_n_moods
         albums_offset += len(albums_by_server[index] or [])
 
     cancel(force=True)
-    return _finish_union_run(parent_id, servers, summaries, failed)
+    return _finish_union_run(parent_id, servers, summaries, failed, permanent)
 
 
-def _finish_union_run(parent_id, servers, summaries, failed):
+def _finish_union_run(parent_id, servers, summaries, failed, permanent=()):
     with app.app_context():
         report = make_task_reporter(
             parent_id, "main_analysis", "Building union catalogue indexes once...",
@@ -923,6 +936,8 @@ def _finish_union_run(parent_id, servers, summaries, failed):
             )
         report(message, 100, **details)
         if run_failed:
+            if len(permanent) == len(failed):
+                raise AnalysisNotRetryable(ERR_ANALYSIS_SERVER_FAILED, message)
             raise error_manager.AudioMuseError(ERR_ANALYSIS_SERVER_FAILED, message)
     return {
         'status': TASK_STATUS_SUCCESS,

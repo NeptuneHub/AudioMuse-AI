@@ -27,7 +27,7 @@ Main Features:
 * The log handed to save_task_status never exceeds MAX_LOG_ENTRIES_STORED
   entries, capped by the reporter itself rather than left to a later layer
 * Progress writes carry the current line as both message and status_message
-* The DB write is throttled while running
+* The DB write is throttled while running; a write passed force=True lands anyway
 * Every terminal state is downgraded to RUNNING: the reporter never writes the
   row the queue owns
 """
@@ -159,6 +159,19 @@ def test_throttling_skips_a_running_write():
         after_first = len(save.call_args_list)
         report('Still going, really.', 20)
         assert len(save.call_args_list) == after_first, 'a throttled progress write is skipped'
+
+
+def test_a_forced_write_bypasses_the_throttle():
+    with patch('tasks.task_run.save_task_status') as save:
+        report = _reporter(min_db_interval=3600)
+        report('Still going.', 10)
+        after_first = len(save.call_args_list)
+        report('Failed to analyze album X.', 10, error={'error_code': 'x'}, force=True)
+
+    assert len(save.call_args_list) == after_first + 1, (
+        'the one line a child writes before it raises must land whatever the throttle says'
+    )
+    assert 'force' not in save.call_args_list[-1][1]['details']
 
 
 def test_progress_is_rescaled_into_the_phase_window():

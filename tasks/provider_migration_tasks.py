@@ -31,6 +31,12 @@ Main Features:
   worker finalizes only the child and the finaliser closes the root itself. A
   root left RUNNING is a main task holding the one-live-main index, and it would
   refuse every catalogue start until reclaim eventually failed it.
+* A condition no retry can change is raised as TaskFailed, so the queue fails the
+  row at once instead of spending three backed-off attempts on it: a session
+  that is gone or not in the status the step needs, an empty mapping, and a
+  restart request another recovery has since superseded. The handshake wait
+  timing out stays a plain raise, because a retry resumes the wait and the
+  workers may acknowledge on it.
 """
 
 import json
@@ -39,6 +45,7 @@ import time
 import uuid
 
 import taskqueue
+from taskqueue import TaskFailed
 
 from config import (
     TASK_STATUS_NEW,
@@ -210,7 +217,7 @@ def _persist_completed_restart_state(conn, session_id, request_id, *, acknowledg
         )
     if cur.fetchone() is None:
         conn.rollback()
-        raise RuntimeError(
+        raise TaskFailed(
             f'completed migration session {session_id} disappeared before restart ACK'
         )
     conn.commit()
@@ -245,7 +252,7 @@ def _finalize_restart_handshake(
             or row[0] != 'completed'
             or state.get('restart_request_id') != request_id
         ):
-            raise RuntimeError(
+            raise TaskFailed(
                 f'provider migration session {session_id} no longer owns restart '
                 f'request {request_id}'
             )
@@ -258,7 +265,7 @@ def _finalize_restart_handshake(
             (session_id, request_id),
         )
         if cur.fetchone() is None:
-            raise RuntimeError(
+            raise TaskFailed(
                 f'provider migration restart request {request_id} was superseded '
                 'before SUCCESS'
             )
@@ -290,29 +297,11 @@ def _finalize_restart_handshake(
 
 def _record_recovered_root(conn, session_id, task_id, payload):
     try:
-        from database import collapse_finished_task, record_task_history
+        from database import record_root_recap
 
-        duration = None
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT start_time, end_time FROM task_status WHERE task_id = %s", (task_id,)
-                )
-                row = cur.fetchone()
-            if row is not None:
-                started, ended = (
-                    (row['start_time'], row['end_time'])
-                    if isinstance(row, dict) else (row[0], row[1])
-                )
-                if started is not None and ended is not None:
-                    duration = max(0.0, float(ended) - float(started))
-        except Exception:
-            logger.debug("Could not compute the migration duration", exc_info=True)
-        record_task_history(
-            task_id, MIGRATION_TASK_TYPE, TASK_STATUS_SUCCESS,
-            duration_seconds=duration, details=payload, conn=conn,
+        record_root_recap(
+            conn, task_id, MIGRATION_TASK_TYPE, None, TASK_STATUS_SUCCESS, payload
         )
-        collapse_finished_task(conn, task_id, MIGRATION_TASK_TYPE, None, TASK_STATUS_SUCCESS)
     except Exception:
         logger.exception(
             "Provider migration %s closed its root row %s as SUCCESS but could not "
@@ -436,14 +425,14 @@ def _execute_provider_migration(session_id, task_id, cancel):
             return _resume_applied_session(conn, session_id, task_id, state)
 
         if session['status'] != 'dry_run_ready':
-            raise RuntimeError(
+            raise TaskFailed(
                 f"Cannot execute migration: session {session_id} is in status "
                 f"'{session['status']}', expected 'dry_run_ready'"
             )
 
         mapping = _merge_mapping(state)
         if not mapping:
-            raise RuntimeError(
+            raise TaskFailed(
                 f"Refusing to execute migration session {session_id}: the mapping is "
                 f"empty, which would unbind every song from the default server. Re-run "
                 f"the dry run."
@@ -578,7 +567,7 @@ def _load_session(cur, session_id):
     )
     row = cur.fetchone()
     if not row:
-        raise RuntimeError(f"migration_session {session_id} not found")
+        raise TaskFailed(f"migration_session {session_id} not found")
     _id, target_type, target_creds_json, state_json, status = row
     try:
         creds = (
@@ -1316,20 +1305,20 @@ def resume_provider_migration_restart(session_id, root_task_id):
         session = _load_session(cur, session_id)
         state = session['state']
         if session['status'] != 'completed':
-            raise RuntimeError(
+            raise TaskFailed(
                 f'provider migration session {session_id} is not completed'
             )
         if state.get('exec_task_id') != root_task_id:
-            raise RuntimeError(
+            raise TaskFailed(
                 f'provider migration root {root_task_id} no longer owns session {session_id}'
             )
         if recovery_id and state.get(_RESTART_RECOVERY_TASK_KEY) != recovery_id:
-            raise RuntimeError(
+            raise TaskFailed(
                 f'provider restart recovery {recovery_id} was superseded'
             )
         request_id = state.get('restart_request_id')
         if not request_id:
-            raise RuntimeError(
+            raise TaskFailed(
                 f'provider migration session {session_id} has no restart request id'
             )
         conn.commit()

@@ -55,11 +55,7 @@ from app_helper import (
     build_and_store_artist_projection,
 )
 from database import close_db, get_db
-from config import (
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
-    QUEUE_WEDGED_MAIN_TASK_MINUTES,
-)
+from config import QUEUE_WEDGED_MAIN_TASK_MINUTES
 
 from error import error_manager
 from error.error_dictionary import ERR_INDEX_BUILD
@@ -178,30 +174,13 @@ def rebuild_all_indexes_task(parent_task_id=None):
     with app.app_context():
         from ..task_run import TaskCancelled, cancel_guard
 
-        if claimed_task_id and parent_task_id:
-            from database import get_task_statuses
-            from config import TASK_STATUS_REVOKED
-
-            statuses = get_task_statuses([parent_task_id])
-            if parent_task_id not in statuses or statuses.get(parent_task_id) in (
-                TASK_STATUS_SUCCESS,
-                TASK_STATUS_FAILURE,
-                TASK_STATUS_REVOKED,
-            ):
-                logger.info(
-                    "Index rebuild %s will not start because parent %s was cancelled.",
-                    current_task_id,
-                    parent_task_id,
-                )
-                raise TaskCancelled("Parent analysis was cancelled.")
-
-        log_and_update = make_task_reporter(
-            current_task_id, "index_rebuild",
-            "Index rebuild started.", parent_task_id=parent_task_id,
-            prefix=f"IndexRebuild-{current_task_id}",
-        )
         with cancel_guard(claimed_task_id, parent_task_id) as cancel:
             cancel(force=True)
+            log_and_update = make_task_reporter(
+                current_task_id, "index_rebuild",
+                "Index rebuild started.", parent_task_id=parent_task_id,
+                prefix=f"IndexRebuild-{current_task_id}",
+            )
 
             def report_between_builds(message, progress, **kwargs):
                 cancel()

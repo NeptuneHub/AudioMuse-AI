@@ -152,8 +152,6 @@ from .clustering_postprocessing import (
 
 logger = logging.getLogger(__name__)
 
-_PARENT_CANCELLED_MESSAGE = "Parent task was cancelled."
-
 
 def _derive_dbscan_eps(item_ids, min_samples, active_moods, enable_embeddings):
     valid_tracks, x_feat, x_embed = _prepare_iteration_data(
@@ -219,18 +217,6 @@ def run_clustering_batch_task(
     logger.info(f"Starting clustering batch task {current_task_id} (Batch: {batch_id_str})")
 
     with app.app_context():
-        parent_task_info = get_task_info_from_db(parent_task_id)
-        if claimed_task_id and (
-            parent_task_info is None
-            or parent_task_info.get('status')
-            in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]
-        ):
-            logger.info(
-                "Clustering batch %s will not start because parent %s is "
-                "missing or terminal.",
-                current_task_id, parent_task_id,
-            )
-            raise TaskCancelled(_PARENT_CANCELLED_MESSAGE)
         with cancel_guard(claimed_task_id, parent_task_id) as cancel:
             cancel(force=True)
             report = make_task_reporter(

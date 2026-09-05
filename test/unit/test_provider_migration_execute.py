@@ -1311,3 +1311,40 @@ class TestMigrationSuccessFinalization:
             conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
         )
         conn.rollback.assert_not_called()
+
+
+class TestAMigrationConditionNoRetryCanFixFailsOnce:
+    def test_a_superseded_recovery_is_a_permanent_failure(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import tasks.provider_migration_tasks as mig
+        from taskqueue import TaskFailed
+
+        monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: MagicMock())
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'recovery-2')
+        monkeypatch.setattr(mig, '_load_session', lambda cur, session_id: {
+            'status': 'completed',
+            'state': {
+                'exec_task_id': 'root-1', 'restart_request_id': 'req-1',
+                mig._RESTART_RECOVERY_TASK_KEY: 'recovery-1',
+            },
+        })
+
+        with pytest.raises(TaskFailed):
+            mig.resume_provider_migration_restart(7, 'root-1')
+
+    def test_a_session_that_is_not_ready_to_execute_is_a_permanent_failure(
+        self, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import tasks.provider_migration_tasks as mig
+        from taskqueue import TaskFailed
+
+        monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: MagicMock())
+        monkeypatch.setattr(mig, '_load_session', lambda cur, session_id: {
+            'status': 'planning', 'state': {}, 'target_type': 'plex', 'target_creds': {},
+        })
+
+        with pytest.raises(TaskFailed):
+            mig._execute_provider_migration(7, 'mig-1', lambda force=False: None)

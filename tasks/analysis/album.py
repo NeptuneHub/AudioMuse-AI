@@ -471,19 +471,10 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
-        if claimed_task_id and parent_task_id:
-            parent_statuses = get_task_statuses([parent_task_id])
-            if (
-                parent_task_id not in parent_statuses
-                or parent_statuses.get(parent_task_id)
-                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-            ):
-                logger.info(
-                    "Album task %s will not start because parent %s is missing or terminal.",
-                    current_task_id,
-                    parent_task_id,
-                )
-                raise TaskCancelled("Parent analysis was cancelled.")
+        cancel, close_cancel = make_cancel_check(
+            claimed_task_id, parent_task_id, every_seconds=ANALYSIS_MONITOR_DB_INTERVAL,
+        )
+        cancel(force=True)
         tracks_analyzed_count, tracks_skipped_count = 0, 0
         tracks_not_analyzable_count = 0
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
@@ -501,9 +492,6 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
         )
         pending_track_maps = {}
         map_flush_errors = []
-        cancel, close_cancel = make_cancel_check(
-            claimed_task_id, parent_task_id, every_seconds=ANALYSIS_MONITOR_DB_INTERVAL,
-        )
         try:
             log_and_update_album_task(f"Fetching tracks for album: {album_name}", 5)
             tracks = get_tracks_from_album(album_id)
@@ -674,7 +662,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             log_and_update_album_task(
                 f"Failed to analyze album '{album_name}': {e}",
                 log_and_update_album_task.state['progress'],
-                error=err,
+                error=err, force=True,
             )
             raise
         finally:

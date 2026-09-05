@@ -1183,7 +1183,7 @@ def test_a_plugin_return_that_is_not_a_dict_is_not_stored_on_the_row(monkeypatch
     module.daily = lambda *a, **k: datetime.datetime(2026, 9, 5)
     monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)
     monkeypatch.setattr(
-        manager, '_run_per_server', lambda func, scope, args, kwargs: func()
+        manager, '_run_per_server', lambda func, scope, args, kwargs, **_: func()
     )
 
     result = manager.run_plugin_task('audiomuse_plugins.demo.tasks.daily', server_scope='all')
@@ -1210,7 +1210,7 @@ def test_a_successful_plugin_run_records_a_one_line_recap(monkeypatch):
     module.daily = lambda *a, **k: {'ok': True}
     monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)
     monkeypatch.setattr(
-        manager, '_run_per_server', lambda func, scope, args, kwargs: {'ok': True}
+        manager, '_run_per_server', lambda func, scope, args, kwargs, **_: {'ok': True}
     )
 
     saved = {}

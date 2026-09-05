@@ -112,6 +112,7 @@ class TestEveryLongOpaquePhaseHasAHeartbeat:
         'tasks/clustering.py',
         'tasks/sonic_fingerprint_manager.py',
         'tasks/provider_migration_tasks.py',
+        'plugin/manager.py',
     ])
     def test_the_module_imports_the_heartbeat(self, relative_path):
         assert _imports_row_heartbeat(relative_path), (
@@ -141,6 +142,7 @@ class TestEveryLongOpaquePhaseHasAHeartbeat:
             'sonic_fingerprint': ('tasks/sonic_fingerprint_manager.py',),
             'provider_migration': ('tasks/provider_migration_tasks.py',),
             'server_sweep': ('tasks/multiserver_sync.py',),
+            'plugin.': ('plugin/manager.py',),
         }
         assert task_type in modules, (
             f'{task_type} claims a row_heartbeat and names no module that could '

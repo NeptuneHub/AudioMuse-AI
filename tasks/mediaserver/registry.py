@@ -21,11 +21,8 @@ Main Features:
   to a target server's provider track ids.
 * canonical_input_ids is the single input-side resolver (fail-open pass-through).
 * servers_for_scope / has_secondary_servers resolve which servers a
-  multi-server operation should touch, and for_each_server runs one callable
-  once per server in that scope with each server's context bound: a per-server
-  failure is logged and the loop continues, but a scope where every server
-  failed raises. It returns the single result for a one-server scope, else the
-  per-server results in scope order.
+  multi-server operation should touch; tasks.task_run.for_each_server_in_scope
+  is the ONE loop that runs a step against each of them with its context bound.
 * Self-heals the default server: context_for compares the config projection
   against the default row and binds the row when they disagree, so a stale boot
   never talks to the wrong machine.
@@ -359,28 +356,6 @@ def bind(server, conn=None):
             raise ValueError(f"Unknown music server '{server_id}'")
         ctx = {'server_id': server_id}
     return ms_context.use_server(ctx)
-
-
-def for_each_server(scope, func, *args, **kwargs):
-    servers = servers_for_scope(scope)
-    results = []
-    failures = []
-    for server in servers:
-        name = server['name'] if server else 'default server'
-        try:
-            with bind(server):
-                results.append(func(*args, **kwargs))
-        except Exception as exc:
-            logger.exception('Operation failed on %s; continuing', name)
-            failures.append(f'{name}: {exc}')
-    if failures and not results:
-        raise RuntimeError('Operation failed on every server: ' + '; '.join(failures))
-    if failures:
-        logger.warning(
-            'Operation completed on %d/%d servers (%s)',
-            len(results), len(servers), '; '.join(failures),
-        )
-    return results[0] if len(results) == 1 else results
 
 
 def _clear_default(db):

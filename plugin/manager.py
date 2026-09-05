@@ -18,7 +18,11 @@ plugin cron/queue tasks inside a Flask app context.
 Main Features:
 * ``sync`` + ``ensure_requirements`` + ``load`` boot sequence shared by web and workers.
 * Zip-slip-safe extraction, md5/size/version validation, and DB-backed canonical storage.
-* ``run_plugin_task`` runs a plugin task by dotted path inside an app context.
+* ``run_plugin_task`` runs a plugin task by dotted path inside an app context,
+  once per server in scope through the shared per-server loop, with the shared
+  cancel check between servers and a row_heartbeat around each call: the plugin
+  function is one opaque call that writes no row, and without the heartbeat a
+  legitimately long one looked wedged to the nudge and was killed at the limit.
 """
 
 import contextlib
@@ -960,18 +964,40 @@ def run_plugin_task(
             ) from exc
         with cancel_guard(task_id) as cancel:
             cancel(force=True)
-            result = _run_per_server(func, server_scope, args, kwargs)
+            result = _run_per_server(
+                func, server_scope, args, kwargs, cancel=cancel, task_id=task_id,
+            )
         summary = dict(result) if isinstance(result, dict) else {}
         summary.setdefault('message', 'Plugin task completed successfully.')
         return summary
 
 
-def _run_per_server(func, server_scope, args, kwargs):
-    from tasks.mediaserver import registry as ms_registry
+def _run_per_server(func, server_scope, args, kwargs, cancel=None, task_id=None):
+    from tasks.recovery import row_heartbeat, slow_step_budget_minutes
+    from tasks.task_run import for_each_server_in_scope
+
+    budget = slow_step_budget_minutes(config.QUEUE_WEDGED_MAIN_TASK_MINUTES)
+
+    def step(_server, name):
+        with row_heartbeat(
+            task_id,
+            f"the plugin function on {name}, one call that writes no row until it "
+            "returns",
+            stop_after_minutes=budget,
+        ):
+            return func(*args, **kwargs)
 
     if not server_scope:
-        return func(*args, **kwargs)
-    return ms_registry.for_each_server(server_scope, func, *args, **kwargs)
+        return step(None, 'default server')
+    servers, results, failed = for_each_server_in_scope(server_scope, step, cancel=cancel)
+    if failed and not results:
+        raise RuntimeError('Plugin task failed on every server: ' + ', '.join(failed))
+    if failed:
+        logger.warning(
+            'Plugin task completed on %d/%d servers; it failed on %s',
+            len(results), len(servers), ', '.join(failed),
+        )
+    return results[0] if len(results) == 1 else results
 
 
 _presync_lock = threading.Lock()

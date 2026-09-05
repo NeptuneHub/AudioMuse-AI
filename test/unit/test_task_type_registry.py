@@ -156,3 +156,61 @@ class TestThePluginPrefixIsSpelledOnce:
         assert task_types.matches('cleaning', names=task_types.NAMES)
         assert not task_types.matches('plugin', prefixes=task_types.PREFIXES)
         assert not task_types.matches('main_analysis', prefixes=task_types.PREFIXES)
+
+
+class TestAChildDeclaresItsOwnRestartBudget:
+    @pytest.mark.parametrize('child', task_types.CHILD_TASK_TYPES)
+    def test_every_child_gets_one_restart(self, child):
+        assert task_types.restarts_for(child) == 1, (
+            'a lost or failed album, batch or rebuild is re-run once; the next run '
+            're-queues whatever it missed, so three restarts only made the parent '
+            'wait out three backoffs on a failure that would not heal'
+        )
+
+    def test_the_planner_opts_out_and_its_enqueue_agrees(self):
+        assert task_types.restarts_for('provider_migration_planner') == 0
+        source = (REPO / 'app_provider_migration.py').read_text(encoding='utf-8')
+        assert 'max_attempts=0' in source
+
+    @pytest.mark.parametrize(
+        'task_type', task_types.MAIN_TASK_TYPES + ('server_sweep', 'plugin.demo.daily')
+    )
+    def test_a_main_task_keeps_the_queue_default(self, task_type):
+        assert task_types.restarts_for(task_type) is None
+
+    def test_enqueue_reads_the_budget_from_the_registry(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import taskqueue
+
+        seen = {}
+        monkeypatch.setattr(
+            sql, 'insert_job', lambda cur, **kwargs: seen.update(kwargs) or True
+        )
+        monkeypatch.setattr(sql, 'notify_job', lambda cur, queue: None)
+
+        taskqueue.enqueue(
+            'tasks.analysis.analyze_album_task', task_id='kid-1',
+            task_type='album_analysis', parent_task_id='root-1', conn=MagicMock(),
+        )
+
+        assert seen['max_attempts'] == 1
+
+    def test_an_explicit_budget_still_wins(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import taskqueue
+
+        seen = {}
+        monkeypatch.setattr(
+            sql, 'insert_job', lambda cur, **kwargs: seen.update(kwargs) or True
+        )
+        monkeypatch.setattr(sql, 'notify_job', lambda cur, queue: None)
+
+        taskqueue.enqueue(
+            'tasks.analysis.analyze_album_task', task_id='kid-1',
+            task_type='album_analysis', parent_task_id='root-1', max_attempts=5,
+            conn=MagicMock(),
+        )
+
+        assert seen['max_attempts'] == 5
