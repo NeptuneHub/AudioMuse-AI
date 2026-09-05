@@ -230,7 +230,7 @@ def run_clustering_batch_task(
                 "missing or terminal.",
                 current_task_id, parent_task_id,
             )
-            return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
+            raise TaskCancelled(_PARENT_CANCELLED_MESSAGE)
         with cancel_guard(claimed_task_id, parent_task_id) as cancel:
             cancel(force=True)
             report = make_task_reporter(

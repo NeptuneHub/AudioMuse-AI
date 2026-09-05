@@ -483,10 +483,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     current_task_id,
                     parent_task_id,
                 )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Parent analysis was cancelled.",
-                }
+                raise TaskCancelled("Parent analysis was cancelled.")
         tracks_analyzed_count, tracks_skipped_count = 0, 0
         tracks_not_analyzable_count = 0
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}

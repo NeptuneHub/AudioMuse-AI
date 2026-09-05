@@ -130,3 +130,29 @@ class TestTheRegistryStaysALeaf:
             'chain, which is the ceiling test_import_architecture pins; the '
             'registry can only hang below it while it imports nothing at all'
         )
+
+
+class TestThePluginPrefixIsSpelledOnce:
+    def test_the_blocking_prefixes_are_the_plugin_namespace(self):
+        import task_types
+
+        assert task_types.BLOCKING_TASK_TYPE_PREFIXES == ('plugin.',)
+
+    def test_the_queue_guard_derives_its_like_patterns_from_the_registry(self):
+        import database
+        import task_types
+
+        assert database._BLOCKING_TASK_TYPE_PATTERNS == [
+            prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
+        ], (
+            "get_queue_blocking_task used to OR in a hand-written 'plugin.%'; a "
+            'renamed namespace would have left plugin tasks invisible to the guard'
+        )
+
+    def test_matches_is_the_one_prefix_and_name_test(self):
+        import task_types
+
+        assert task_types.matches('plugin.demo.daily', prefixes=task_types.PREFIXES)
+        assert task_types.matches('cleaning', names=task_types.NAMES)
+        assert not task_types.matches('plugin', prefixes=task_types.PREFIXES)
+        assert not task_types.matches('main_analysis', prefixes=task_types.PREFIXES)

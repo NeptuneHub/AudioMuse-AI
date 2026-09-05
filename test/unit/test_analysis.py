@@ -222,9 +222,11 @@ def test_dequeued_album_with_wiped_parent_stops_before_creating_child(monkeypatc
     save = Mock(side_effect=AssertionError('cancelled album must not create a row'))
     monkeypatch.setattr(album, 'save_task_status', save)
 
-    result = album._analyze_album_task_impl('a1', 'Cancelled', 5, 'parent-1')
+    from taskqueue import TaskCancelled
 
-    assert result['status'] == 'REVOKED'
+    with pytest.raises(TaskCancelled):
+        album._analyze_album_task_impl('a1', 'Cancelled', 5, 'parent-1')
+
     tracks.assert_not_called()
     save.assert_not_called()
 
@@ -238,9 +240,11 @@ def test_dequeued_index_rebuild_with_wiped_parent_does_no_build(monkeypatch):
     build = Mock(side_effect=AssertionError('cancelled rebuild must not run'))
     monkeypatch.setattr(index, '_run_all_index_builds', build)
 
-    result = index.rebuild_all_indexes_task('parent-1')
+    from taskqueue import TaskCancelled
 
-    assert result['status'] == 'REVOKED'
+    with pytest.raises(TaskCancelled):
+        index.rebuild_all_indexes_task('parent-1')
+
     build.assert_not_called()
 
 

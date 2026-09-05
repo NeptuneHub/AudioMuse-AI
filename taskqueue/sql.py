@@ -970,20 +970,26 @@ def worker_snapshot(cur):
 
 
 _QUEUE_BACKLOG = f"""
-    SELECT queue_name, COUNT(*)
+    SELECT queue_name,
+           COUNT(*) FILTER (WHERE status = '{_RUNNING}'),
+           COUNT(*) FILTER (WHERE status = '{_NEW}'
+                            AND (next_run_at IS NULL OR next_run_at <= NOW())),
+           COUNT(*) FILTER (WHERE status = '{_NEW}' AND next_run_at > NOW())
     FROM task_status
-    WHERE status = '{_NEW}' AND queue_name = ANY(%s)
+    WHERE status IN ('{_NEW}', '{_RUNNING}') AND queue_name = ANY(%s)
     GROUP BY queue_name
 """
 
 
 def queue_backlog(cur):
     cur.execute(_QUEUE_BACKLOG, (list(queue_names.QUEUE_NAMES),))
-    found = dict(cur.fetchall())
+    found = {row[0]: row[1:] for row in (cur.fetchall() or ())}
     return [
         {
             'queue_name': name,
-            'pending_count': found.get(name, 0),
+            'running_count': int(found.get(name, (0, 0, 0))[0] or 0),
+            'pending_count': int(found.get(name, (0, 0, 0))[1] or 0),
+            'delayed_count': int(found.get(name, (0, 0, 0))[2] or 0),
         }
         for name in queue_names.QUEUE_NAMES
     ]

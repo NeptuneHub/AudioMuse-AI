@@ -620,7 +620,8 @@ QUEUE_SECRET_KWARGS = (
     'mistral_api_key_param',
 )
 
-# How many times a task may be attempted before it fails for good. ONE counter
+# How many RESTARTS a task gets before it fails for good: 3 means the first
+# attempt plus three more, the way worker-death reclaim always read it. ONE counter
 # covers a worker death AND a task that raised - a media-server 502, an LLM
 # timeout, a deadlock, a job child the kernel killed for memory - which is what
 # every comparable queue does. A task that raises taskqueue.TaskFailed is

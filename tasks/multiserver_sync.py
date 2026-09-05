@@ -518,6 +518,7 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
     processed = 0
     tier_counts = {}
     claimed = {}
+    last_reported_pct = None
     if index.size:
         for chunk in _iter_unmapped_local_rows(db, server_id):
             cancel()
@@ -529,6 +530,9 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
                     tier_counts[tier] = tier_counts.get(tier, 0) + count
             if unmapped_count:
                 pct = base + span * (0.5 + 0.45 * min(1.0, processed / unmapped_count))
+                if int(pct) == last_reported_pct:
+                    continue
+                last_reported_pct = int(pct)
                 report(
                     f"Aligning {server['name']}: {min(processed, unmapped_count)}/"
                     f"{unmapped_count} checked, {written} matched...",

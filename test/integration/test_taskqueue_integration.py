@@ -1575,7 +1575,7 @@ class TestQueueBacklogCountsWhatIsActuallyWaiting:
         assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 2
         assert by_name[sql.QUEUE_HIGH]['pending_count'] == 1
 
-    def test_a_claimed_row_no_longer_counts_toward_the_backlog(self, queue_db):
+    def test_a_claimed_row_counts_as_running_instead_of_pending(self, queue_db):
         _enqueue(queue_db, 'a-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
         with queue_db.cursor() as cur:
             sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w-1')
@@ -1586,3 +1586,27 @@ class TestQueueBacklogCountsWhatIsActuallyWaiting:
 
         by_name = {row['queue_name']: row for row in backlog}
         assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 0
+        assert by_name[sql.QUEUE_DEFAULT]['running_count'] == 1, (
+            'the dashboard cards read this; a queue whose only work is already '
+            'claimed used to show 0 and look idle while the analysis ran'
+        )
+
+    def test_a_row_waiting_out_its_retry_delay_is_neither_pending_nor_running(
+        self, queue_db
+    ):
+        _enqueue(queue_db, 'a-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET next_run_at = NOW() + interval '1 hour' "
+                "WHERE task_id = %s",
+                ('a-1',),
+            )
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            backlog = sql.queue_backlog(cur)
+
+        by_name = {row['queue_name']: row for row in backlog}
+        assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 0
+        assert by_name[sql.QUEUE_DEFAULT]['running_count'] == 0
+        assert by_name[sql.QUEUE_DEFAULT]['delayed_count'] == 1

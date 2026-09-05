@@ -82,8 +82,6 @@ ALL = (
              watched_by_nudge=True, is_prefix=True),
 )
 
-BY_NAME = {entry.name: entry for entry in ALL}
-
 NAMES = tuple(entry.name for entry in ALL if not entry.is_prefix)
 
 PREFIXES = tuple(entry.name for entry in ALL if entry.is_prefix)
@@ -121,14 +119,13 @@ NON_WORKER_TASK_TYPES = tuple(
 
 QUEUE_BLOCKING_TASK_TYPES = MAIN_TASK_TYPES
 
+BLOCKING_TASK_TYPE_PREFIXES = tuple(
+    entry.name for entry in ALL if entry.blocks_starts and entry.is_prefix
+)
+
 
 def matches(task_type, names=(), prefixes=()):
     if task_type in names:
         return True
     return any(task_type.startswith(prefix) for prefix in prefixes)
 
-
-def is_self_managed(task_type):
-    return matches(
-        task_type, SELF_MANAGED_TASK_TYPES, SELF_MANAGED_TASK_TYPE_PREFIXES
-    )

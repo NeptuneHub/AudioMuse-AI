@@ -176,6 +176,8 @@ def rebuild_all_indexes_task(parent_task_id=None):
     current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
+        from ..task_run import TaskCancelled, cancel_guard
+
         if claimed_task_id and parent_task_id:
             from database import get_task_statuses
             from config import TASK_STATUS_REVOKED
@@ -191,11 +193,7 @@ def rebuild_all_indexes_task(parent_task_id=None):
                     current_task_id,
                     parent_task_id,
                 )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Parent analysis was cancelled.",
-                }
-        from ..task_run import TaskCancelled, cancel_guard
+                raise TaskCancelled("Parent analysis was cancelled.")
 
         log_and_update = make_task_reporter(
             current_task_id, "index_rebuild",

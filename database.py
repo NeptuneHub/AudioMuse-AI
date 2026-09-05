@@ -79,6 +79,9 @@ GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 SELF_MANAGED_TASK_TYPES = task_types.SELF_MANAGED_TASK_TYPES
 
 SELF_MANAGED_TASK_TYPE_PREFIXES = task_types.SELF_MANAGED_TASK_TYPE_PREFIXES
+_BLOCKING_TASK_TYPE_PATTERNS = [
+    prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
+]
 
 # Rows that must never refuse a batch start. A restart handshake, the inline radio
 # and the migration PLANNER are machinery, not work that touches the catalogue.
@@ -2652,9 +2655,12 @@ def get_queue_blocking_task(conn=None):
             "SELECT task_id, task_type, status, details "
             "FROM task_status "
             "WHERE status IN %s AND parent_task_id IS NULL "
-            "AND (task_type = ANY(%s) OR task_type LIKE %s) "
+            "AND (task_type = ANY(%s) OR task_type LIKE ANY(%s)) "
             "ORDER BY timestamp DESC LIMIT 1",
-            (non_terminal_statuses, list(config.QUEUE_BLOCKING_TASK_TYPES), 'plugin.%'),
+            (
+                non_terminal_statuses, list(config.QUEUE_BLOCKING_TASK_TYPES),
+                _BLOCKING_TASK_TYPE_PATTERNS,
+            ),
         )
         active_task = cur.fetchone()
     finally:
@@ -2709,7 +2715,9 @@ def cron_retry_task_already_done(cron_task_type, first_blocked_at, conn=None):
         'clustering': 'main_clustering',
         'sonic_fingerprint': 'sonic_fingerprint',
     }.get(cron_task_type)
-    if queue_type is None and cron_task_type.startswith('plugin.'):
+    if queue_type is None and task_types.matches(
+        cron_task_type, prefixes=task_types.PREFIXES
+    ):
         queue_type = cron_task_type
     if queue_type is None:
         return False

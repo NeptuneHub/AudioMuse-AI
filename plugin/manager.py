@@ -933,7 +933,8 @@ def run_plugin_task(
                 'status': row.get('status'),
                 'message': 'Plugin task is already terminal.',
             }
-        from tasks.task_run import TaskFailed, cancel_guard
+        from taskqueue import TaskFailed
+        from tasks.task_run import cancel_guard
 
         try:
             module = importlib.import_module(module_path)

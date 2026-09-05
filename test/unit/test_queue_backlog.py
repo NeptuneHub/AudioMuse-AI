@@ -44,7 +44,7 @@ class _RecordingCursor:
 
 class TestEveryQueueIsAlwaysRepresented:
     def test_a_queue_with_nothing_waiting_still_reports_zero(self):
-        cur = _RecordingCursor([(queue_names.QUEUE_HIGH, 3)])
+        cur = _RecordingCursor([(queue_names.QUEUE_HIGH, 1, 3, 0)])
 
         result = sql.queue_backlog(cur)
 
@@ -62,7 +62,7 @@ class TestEveryQueueIsAlwaysRepresented:
 
 class TestTheAggregateIsReportedAsIs:
     def test_the_pending_count_comes_from_the_query(self):
-        cur = _RecordingCursor([(queue_names.QUEUE_DEFAULT, 340)])
+        cur = _RecordingCursor([(queue_names.QUEUE_DEFAULT, 0, 340, 0)])
 
         result = sql.queue_backlog(cur)
 
@@ -84,3 +84,27 @@ class TestTheStatementOnlyCountsWaitingRows:
 
     def test_the_statement_groups_by_queue_so_one_row_never_shadows_another(self):
         assert 'GROUP BY queue_name' in sql._QUEUE_BACKLOG
+
+
+class TestTheCardsSayWhatEachQueueIsDoing:
+    def test_running_queued_and_delayed_are_reported_per_queue(self):
+        cur = _RecordingCursor([(queue_names.QUEUE_DEFAULT, 2, 340, 1)])
+
+        result = sql.queue_backlog(cur)
+
+        by_name = {row['queue_name']: row for row in result}
+        assert by_name[queue_names.QUEUE_DEFAULT] == {
+            'queue_name': queue_names.QUEUE_DEFAULT,
+            'running_count': 2,
+            'pending_count': 340,
+            'delayed_count': 1,
+        }, (
+            'the dashboard counted only NEW rows, so a running analysis whose album '
+            'jobs are claimed as fast as they are queued showed 0 and 0 and looked dead'
+        )
+        assert by_name[queue_names.QUEUE_HIGH] == {
+            'queue_name': queue_names.QUEUE_HIGH,
+            'running_count': 0,
+            'pending_count': 0,
+            'delayed_count': 0,
+        }

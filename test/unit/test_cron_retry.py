@@ -33,6 +33,7 @@ Main Features:
 from unittest.mock import MagicMock, patch
 
 import config
+import task_types
 import database
 
 
@@ -248,8 +249,10 @@ def test_get_queue_blocking_task_queries_only_the_guard_task_types():
     sql, params = cur.execute.call_args[0]
     assert 'task_type = ANY(%s)' in sql
     assert set(params[1]) == set(config.QUEUE_BLOCKING_TASK_TYPES)
-    assert 'task_type LIKE %s' in sql
-    assert params[2] == 'plugin.%'
+    assert 'task_type LIKE ANY(%s)' in sql
+    assert params[2] == [
+        prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
+    ], 'the plugin namespace is spelled once, in the registry, not here'
 
 
 def test_get_queue_blocking_task_admits_a_live_plugin_task():
