@@ -31,11 +31,18 @@ Main Features:
   rebuild. Each is a single call that writes no row while it runs, which the
   nudge cannot tell from a wedge; both are bounded, so a fetch that really never
   returns is still handed back to it.
+* A run that could not read every server ends in CleaningIncomplete, which is a
+  TaskFailed: the run itself COMPLETED (every reachable server was cleaned and
+  the summary is on the row), the orphan delete needs every server read, and a
+  queue retry would repeat one whole-catalogue fetch per server plus the full
+  index rebuild while holding the one-live-main slot, to reach the same result.
+  The next cron run is the retry.
 """
 
 import logging
 from collections import defaultdict
 
+from taskqueue import TaskFailed
 from config import (
     CLEANING_SAFETY_LIMIT,
     CLEANING_CATALOGUE,
@@ -57,7 +64,7 @@ logger = logging.getLogger(__name__)
 STARTING_MESSAGE = "Starting per-server library cleanup..."
 
 
-class CleaningIncomplete(RuntimeError):
+class CleaningIncomplete(TaskFailed):
     pass
 
 

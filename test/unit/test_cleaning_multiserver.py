@@ -166,6 +166,19 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     return result, statuses, pruned_calls
 
 
+class TestAPartialRunIsNotRetriedByTheQueue:
+    def test_an_unread_server_is_a_permanent_failure_the_next_cron_run_retries(self):
+        from taskqueue import TaskFailed
+        from tasks import cleaning
+
+        assert issubclass(cleaning.CleaningIncomplete, TaskFailed), (
+            'a plain raise would cost QUEUE_MAX_ATTEMPTS full runs, each one a '
+            'whole-catalogue fetch per server plus the full index rebuild with the '
+            'one-live-main slot held, to reach the identical outcome; the run '
+            'completed, the summary is on the row, and tomorrow is the retry'
+        )
+
+
 class TestCleaningRefreshesTrackCounts:
     def test_each_fetched_server_gets_its_track_count_stored(self, monkeypatch):
         stored = []
