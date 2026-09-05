@@ -41,6 +41,8 @@ EXCLUDED_DIRS = {
 
 LEAF_MODULES = {
     "config",
+    "queue_names",
+    "task_types",
     "tz_helper",
     "error.error_dictionary",
     "ssrf_guard",

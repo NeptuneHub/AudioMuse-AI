@@ -38,6 +38,7 @@ import zlib
 
 import config
 import queue_names
+import task_types
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,8 @@ _ADD_COLUMNS = """
       ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 3,
       ADD COLUMN IF NOT EXISTS worker_id    TEXT,
       ADD COLUMN IF NOT EXISTS shared_token   TEXT,
-      ADD COLUMN IF NOT EXISTS shared_payload TEXT
+      ADD COLUMN IF NOT EXISTS shared_payload TEXT,
+      ADD COLUMN IF NOT EXISTS next_run_at    TIMESTAMP
 """
 
 _SET_FILLFACTOR = "ALTER TABLE task_status SET (fillfactor = 70)"
@@ -118,10 +120,7 @@ _LIVE_INDEX = """
       ON task_status (status) WHERE status IN ({live})
 """.format(name=LIVE_INDEX_NAME, live=_LIVE_STATUS_SQL)
 
-MAIN_TASK_TYPES = (
-    'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
-    'sonic_fingerprint',
-)
+MAIN_TASK_TYPES = task_types.MAIN_TASK_TYPES
 
 MAIN_INDEX_PREFIX = 'idx_task_status_one_live_main'
 
@@ -225,6 +224,8 @@ _MIGRATE_STATUSES = (
     """,
 )
 
+_NON_WORKER_SQL = ','.join(f"'{name}'" for name in task_types.NON_WORKER_TASK_TYPES)
+
 _DROP_LEGACY_CHILDREN = "DELETE FROM task_status WHERE parent_task_id IS NOT NULL"
 
 _RETIRE_SURPLUS_LIVE_ROOTS = """
@@ -236,11 +237,12 @@ _RETIRE_SURPLUS_LIVE_ROOTS = """
             FROM task_status
             WHERE parent_task_id IS NULL
               AND status IN ({live})
-              AND task_type NOT IN ('alchemy_radio','{control}')
+              AND task_type NOT IN ({non_worker})
         ) ranked WHERE ranked.rank > 1
     )
 """.format(
-    revoked=_REVOKED, live=_LIVE_IN_LIST, sweep=SWEEP_TASK_TYPE, control=CONTROL_TASK_TYPE,
+    revoked=_REVOKED, live=_LIVE_IN_LIST, sweep=SWEEP_TASK_TYPE,
+    non_worker=_NON_WORKER_SQL,
 )
 
 _CREATE_BASE_TABLE = """
@@ -259,9 +261,14 @@ _CREATE_BASE_TABLE = """
     )
 """
 
+# This probe gates the WHOLE _ADD_COLUMNS block, so it must always name the
+# column added LAST: an install that already has every earlier column skips the
+# ALTER entirely, and a column appended without moving the probe never arrives.
+NEWEST_COLUMN = 'next_run_at'
+
 _PROBE_NEWEST_COLUMN = (
     "SELECT 1 FROM information_schema.columns "
-    "WHERE table_name = 'task_status' AND column_name = 'shared_payload'"
+    f"WHERE table_name = 'task_status' AND column_name = '{NEWEST_COLUMN}'"
 )
 
 _PROBE_FILLFACTOR = (
@@ -341,6 +348,7 @@ _INSERT_JOB = f"""
                                        task_status.sub_type_identifier),
         details = COALESCE(EXCLUDED.details, task_status.details),
         status = '{_NEW}',
+        next_run_at = NULL,
         timestamp = NOW()
     WHERE task_status.func IS NULL
       AND task_status.status IN ({_LIVE_IN_LIST})
@@ -420,6 +428,7 @@ _CLAIM = f"""
     WHERE task_id = (
         SELECT task_id FROM task_status
         WHERE status='{_NEW}' AND queue_name = %s
+          AND (next_run_at IS NULL OR next_run_at <= NOW())
         ORDER BY priority DESC, id
         FOR UPDATE SKIP LOCKED
         LIMIT 1)
@@ -596,6 +605,8 @@ _REQUEUE_OR_FAIL = f"""
                             THEN t.progress ELSE 100 END,
             end_time = CASE WHEN NOT prev.parent_gone AND t.attempts + 1 <= t.max_attempts
                             THEN NULL ELSE %s END,
+            next_run_at = CASE WHEN NOT prev.parent_gone AND t.attempts + 1 <= t.max_attempts
+                               THEN NOW() + (%s * interval '1 second') ELSE NULL END,
             timestamp = NOW()
         FROM prev
         WHERE t.task_id = prev.task_id AND t.status='{_RUNNING}'
@@ -614,7 +625,7 @@ RECLAIM_SEPARATOR = '\x1f'
 
 
 _REQUEUE_UNCHARGED = f"""
-    UPDATE task_status SET status='{_NEW}', worker_id=NULL, timestamp=NOW()
+    UPDATE task_status SET status='{_NEW}', worker_id=NULL, next_run_at=NULL, timestamp=NOW()
     WHERE task_id = %s AND status='{_RUNNING}'
       AND (%s IS NULL OR worker_id IS NULL OR worker_id = %s)
     RETURNING task_id
@@ -626,11 +637,12 @@ def requeue_uncharged(cur, task_id, worker_id=None):
     return cur.fetchone() is not None
 
 
-def requeue_or_fail(cur, task_id, now, failure_details):
+def requeue_or_fail(cur, task_id, now, failure_details, delay_seconds=None):
+    delay = None if delay_seconds is None else float(delay_seconds)
     cur.execute(
         _REQUEUE_OR_FAIL,
         (
-            task_id, json.dumps(failure_details), now,
+            task_id, json.dumps(failure_details), now, delay,
             CHANNEL_RECLAIM, RECLAIM_SEPARATOR, RECLAIM_SEPARATOR,
         ),
     )
@@ -724,6 +736,35 @@ def current_row(cur, task_id):
     }
 
 
+_TASK_STATUSES = "SELECT task_id, status FROM task_status WHERE task_id = ANY(%s)"
+
+
+def task_statuses(cur, task_ids):
+    cur.execute(_TASK_STATUSES, (list(task_ids),))
+    rows = cur.fetchall()
+    if not isinstance(rows, list):
+        raise TypeError(f"task_status read returned {type(rows).__name__}, not a result set")
+    return {row[0]: row[1] for row in rows}
+
+
+_CURRENT_DETAILS = "SELECT details FROM task_status WHERE task_id = %s"
+
+
+def current_details(cur, task_id):
+    cur.execute(_CURRENT_DETAILS, (task_id,))
+    row = cur.fetchone()
+    if not row:
+        return {}
+    raw = row[0]
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else None
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 _FINISH_TASK = f"""
     UPDATE task_status
     SET status = %s, progress = 100, details = %s,
@@ -738,7 +779,8 @@ _FINISH_TASK = f"""
 
 def finish_task(cur, task_id, status, details, now, worker_id=None):
     cur.execute(
-        _FINISH_TASK, (status, json.dumps(details), now, task_id, worker_id, worker_id)
+        _FINISH_TASK,
+        (status, json.dumps(details, default=str), now, task_id, worker_id, worker_id),
     )
     row = cur.fetchone()
     return row[0] if row else None
@@ -774,7 +816,16 @@ def reap_children(cur, parent_task_id):
 # while a sweep is live, so a wedged sweep locked out cleaning, migration and
 # every future sweep, and nothing else was watching it - reclaim needs the worker
 # to DIE, and a wedged worker does not.
-NUDGE_TASK_TYPES = MAIN_TASK_TYPES + (SWEEP_TASK_TYPE,)
+NUDGE_TASK_TYPES = task_types.NUDGE_TASK_TYPES
+
+# A plugin task is matched by PREFIX, not by name: the namespace is open, so
+# there is no fixed list to put in an IN clause. It refuses every cron start
+# and every manual batch start (get_queue_blocking_task ORs in 'plugin.%'), so
+# a wedged one locks the catalogue out exactly the way a wedged sweep did, and
+# reclaim cannot help because reclaim needs the worker to DIE.
+NUDGE_TASK_TYPE_PATTERNS = [
+    prefix + '%' for prefix in task_types.NUDGE_TASK_TYPE_PREFIXES
+]
 
 
 _WEDGED_MAIN_TASKS = """
@@ -782,7 +833,7 @@ _WEDGED_MAIN_TASKS = """
            EXTRACT(EPOCH FROM (NOW() - t.timestamp)) AS silent_seconds
     FROM task_status AS t
     WHERE t.status='{running}' AND t.parent_task_id IS NULL AND t.func IS NOT NULL
-      AND t.task_type IN ({types})
+      AND (t.task_type IN ({types}) OR t.task_type LIKE ANY(%s))
       AND t.timestamp < NOW() - make_interval(secs => %s)
       AND EXISTS (SELECT 1 FROM pg_stat_activity AS a
                   WHERE a.datname = current_database()
@@ -809,7 +860,10 @@ def terminate_wedged_worker_backends(cur, task_id):
 
 
 def wedged_main_tasks(cur, silent_seconds):
-    cur.execute(_WEDGED_MAIN_TASKS, (silent_seconds, WORKER_LISTEN_SUFFIX))
+    cur.execute(
+        _WEDGED_MAIN_TASKS,
+        (NUDGE_TASK_TYPE_PATTERNS, silent_seconds, WORKER_LISTEN_SUFFIX),
+    )
     return [
         {
             'task_id': row[0], 'task_type': row[1],

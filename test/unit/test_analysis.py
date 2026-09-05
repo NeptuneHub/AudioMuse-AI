@@ -86,6 +86,8 @@ def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
 
 def _union_harness(monkeypatch, phase_results):
     import tasks.analysis.main as analysis
+    import tasks.task_run as task_run
+    from taskqueue import TaskCancelled
 
     servers = [
         {'server_id': f's{i}', 'name': name, 'is_default': i == 0}
@@ -102,20 +104,25 @@ def _union_harness(monkeypatch, phase_results):
     monkeypatch.setattr(
         analysis, '_albums_per_server', lambda servers, n: [[] for _ in servers]
     )
-    monkeypatch.setattr(
-        analysis,
-        'save_task_status',
-        lambda task_id, task_type, status, **kwargs: saved.append(
-            (status, kwargs.get('details') or {})
-        ),
-    )
+
+    def _record(task_id, task_type, status, **kwargs):
+        saved.append((status, kwargs.get('details') or {}))
+        return True
+
+    monkeypatch.setattr(analysis, 'save_task_status', _record)
+    monkeypatch.setattr(task_run, 'save_task_status', _record)
     by_id = {f's{i}': status for i, (_, status) in enumerate(phase_results)}
-    monkeypatch.setattr(
-        analysis,
-        'run_analysis_server_task',
-        lambda *a, server_id=None, **k: {'status': by_id[server_id]},
-    )
-    return analysis.run_analysis_task(0, 5), saved
+
+    def phase(*a, server_id=None, **k):
+        if by_id[server_id] == 'REVOKED':
+            raise TaskCancelled(f'{server_id} was revoked')
+        return {'status': by_id[server_id]}
+
+    monkeypatch.setattr(analysis, 'run_analysis_server_task', phase)
+    try:
+        return analysis.run_analysis_task(0, 5), saved
+    except Exception as exc:
+        return exc, saved
 
 
 def test_union_analysis_succeeds_when_only_some_servers_fail(monkeypatch):
@@ -125,36 +132,51 @@ def test_union_analysis_succeeds_when_only_some_servers_fail(monkeypatch):
 
     assert result['status'] == 'SUCCESS'
     assert result['failed_servers'] == ['Jellyfin']
-    status, details = saved[-1]
-    assert status == 'SUCCESS'
-    assert 'error' not in details
-    assert 'Jellyfin' in details['message']
+    assert 'Jellyfin' in result['message'], (
+        'the queue writes the recap from the returned message, so the failed '
+        'server has to be named there, not on a row the task wrote itself'
+    )
+    assert all(status == 'RUNNING' for status, _ in saved), (
+        'a task never writes its own terminal row any more'
+    )
+    assert 'error' not in saved[-1][1]
 
 
 def test_union_analysis_fails_only_when_every_server_fails(monkeypatch):
     from error.error_dictionary import ERR_ANALYSIS_SERVER_FAILED
+    from error.error_manager import AudioMuseError
 
     result, saved = _union_harness(
         monkeypatch, [('Jellyfin', 'FAIL'), ('Plex', 'FAIL')]
     )
 
-    assert result['status'] == 'FAIL'
+    assert isinstance(result, AudioMuseError), (
+        'nothing was analysed, so the run raises and the queue writes FAIL and '
+        'decides the retry; a returned dict would have been recorded as SUCCESS'
+    )
+    assert result.code == ERR_ANALYSIS_SERVER_FAILED
     status, details = saved[-1]
-    assert status == 'FAIL'
-    assert details['error']['error_code'] == ERR_ANALYSIS_SERVER_FAILED
-    assert details['error']['error_code'] != 9999
+    assert status == 'RUNNING'
+    assert details['error']['error_code'] == ERR_ANALYSIS_SERVER_FAILED, (
+        'the structured error is recorded on the last progress write so the '
+        'terminal row the queue merges over it keeps the error code'
+    )
 
 
 def test_union_analysis_treats_a_wiped_parent_row_as_revoked(monkeypatch):
     import tasks.analysis.main as analysis
+    from taskqueue import TaskCancelled
 
     servers = [
         {'server_id': 's0', 'name': 'A', 'is_default': True},
         {'server_id': 's1', 'name': 'B', 'is_default': False},
     ]
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
-    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
-    monkeypatch.setattr(analysis, 'get_task_statuses', lambda ids: {})
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'union-1')
+    monkeypatch.setattr(
+        analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
+    )
+    monkeypatch.setattr('tasks.task_run._read_task_statuses', lambda _conn, ids: {})
     monkeypatch.setattr(
         analysis, '_albums_per_server', lambda servers, n: [[] for _ in servers]
     )
@@ -165,9 +187,9 @@ def test_union_analysis_treats_a_wiped_parent_row_as_revoked(monkeypatch):
         lambda *a, server_id=None, **k: ran.append(server_id) or {'status': 'SUCCESS'},
     )
 
-    result = analysis.run_analysis_task(0, 5)
+    with pytest.raises(TaskCancelled):
+        analysis.run_analysis_task(0, 5)
 
-    assert result['status'] == 'REVOKED'
     assert ran == [], "no phase may run after the cancel wiped the row"
 
 
@@ -223,10 +245,14 @@ def test_dequeued_index_rebuild_with_wiped_parent_does_no_build(monkeypatch):
 
 
 def test_union_analysis_stops_when_a_phase_is_revoked(monkeypatch):
+    from taskqueue import TaskCancelled
+
     result, _ = _union_harness(monkeypatch, [('Jellyfin', 'REVOKED'), ('Plex', 'SUCCESS')])
 
-    assert result['status'] == 'REVOKED'
-    assert result['servers_completed'] == 1
+    assert isinstance(result, TaskCancelled), (
+        'a phase that notices the cancel raises, and the union lets it through '
+        'so the queue writes REVOKED once; there is no second phase to run'
+    )
 
 
 def test_run_analysis_task_skips_when_no_enabled_server_matches_scope(monkeypatch):
@@ -252,7 +278,10 @@ def test_run_analysis_task_skips_when_no_enabled_server_matches_scope(monkeypatc
     assert result['status'] == 'SKIPPED'
     assert 'default' in result['message']
     assert not server_runs
-    assert statuses == ['SUCCESS']
+    assert statuses == [], (
+        'the queue writes the terminal row from the returned message; a task that '
+        "wrote its own used to win the race and veto the queue's verdict"
+    )
 
 
 def test_enabled_analysis_servers_registry_failure_keeps_config_default(monkeypatch):
@@ -297,6 +326,7 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
     import tasks.analysis.album as analysis
     import tasks.analysis.helper as helper
     import tasks.analysis.song as song
+    import tasks.task_run as task_run
     import tasks.clap_analyzer as clap
 
     registry = importlib.import_module('tasks.mediaserver.registry')
@@ -306,7 +336,7 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
         taskqueue, 'current_task_id', lambda: job.id if job is not None else None
     )
     monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
-    monkeypatch.setattr(helper, 'save_task_status', lambda *args, **kwargs: None)
+    monkeypatch.setattr(task_run, 'save_task_status', lambda *args, **kwargs: None)
     monkeypatch.setattr(analysis, 'get_tracks_from_album', lambda album_id: album_tracks)
     monkeypatch.setattr(
         analysis, 'download_track',
@@ -765,6 +795,11 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
         'get_task_statuses',
         lambda ids: status_calls.append(list(ids)) or {i: 'RUNNING' for i in ids if i},
     )
+    cancel_reads = []
+    monkeypatch.setattr(
+        'tasks.task_run._read_task_statuses',
+        lambda _conn, ids: cancel_reads.append(list(ids)) or {i: 'RUNNING' for i in ids},
+    )
     monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 10_000_000)
 
     def forbidden(task_id):
@@ -778,9 +813,11 @@ def test_revocation_is_checked_once_per_album_not_once_per_track(monkeypatch, tm
     )
 
     assert result['status'] == 'SUCCESS'
-    assert len(status_calls) == 2
-    assert status_calls[0] == ['parent1']
-    assert status_calls[1] == ['job-1', 'parent1']
+    assert status_calls == [['parent1']], 'the pre-flight parent check reads once'
+    assert cancel_reads == [['job-1', 'parent1']], (
+        'the shared cancel check is throttled to ANALYSIS_MONITOR_DB_INTERVAL, so '
+        'four tracks cost one read of the album row and its parent, not four'
+    )
 
 
 class _AnalysisClock:
@@ -818,6 +855,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
     import tasks.clap_analyzer as clap
+    import tasks.task_run as task_run
 
     registry = importlib.import_module('tasks.mediaserver.registry')
 
@@ -843,7 +881,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
             sibling_ended.append(args[0])
 
     monkeypatch.setattr(analysis, 'save_task_status', _record_status)
-    monkeypatch.setattr(helper, 'save_task_status', _record_status)
+    monkeypatch.setattr(task_run, 'save_task_status', _record_status)
     monkeypatch.setattr(analysis, 'clean_temp', lambda *args, **kwargs: None)
     monkeypatch.setattr(analysis, 'get_recent_albums', lambda limit: albums)
     monkeypatch.setattr(
@@ -998,9 +1036,14 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
         monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
         monkeypatch.setattr(analysis.time, 'sleep', lambda *a, **k: None)
 
-    result = analysis._run_analysis_server_task_impl(
-        0, 5, server_id='srv-def', task_id='parent-1'
-    )
+    from error.error_manager import AudioMuseError
+
+    try:
+        result = analysis._run_analysis_server_task_impl(
+            0, 5, server_id='srv-def', task_id='parent-1'
+        )
+    except AudioMuseError as exc:
+        result = {'status': 'FAIL', 'message': str(exc)}
     return result, enqueued
 
 
@@ -1167,6 +1210,43 @@ def test_retry_adopts_previous_attempts_running_album_instead_of_duplicating(mon
     assert result['message'] == 'Albums 1/1'
 
 
+def test_the_monitor_lists_the_live_children_inside_the_reap_transaction(monkeypatch):
+    from unittest.mock import MagicMock
+    import tasks.analysis.main as analysis
+    from tasks import recovery
+
+    db = MagicMock()
+    monkeypatch.setattr(analysis, 'get_db', lambda: db)
+    seen = []
+
+    def spy(parent_task_id, prefix=None, conn=None):
+        seen.append(conn)
+        return recovery.child_marks(parent_task_id, prefix=prefix, conn=conn)
+
+    monkeypatch.setattr(analysis, 'child_marks', spy)
+    clock = _AnalysisClock(step_minutes=30)
+    monkeypatch.setattr(analysis, 'time', clock)
+    monkeypatch.setattr(analysis, 'ANALYSIS_MONITOR_DB_INTERVAL', 0)
+    wedged, cancelled = [], []
+    _run_parent_phase(
+        monkeypatch,
+        [{'Id': 'al0', 'Name': 'Album 0'}],
+        {'al0': [{'Id': 'p0', 'Name': 't'}]},
+        {},
+        child_rows=[],
+        wedged=wedged,
+        cancelled=cancelled,
+    )
+
+    assert seen and all(conn is db for conn in seen), (
+        'the reap and the list of live children are one transaction: listing on '
+        'its own connection resolves get_db(), the SAME Flask connection the reap '
+        'is open on, and COMMITS it, so the rollback the monitor promises on a '
+        'later failure undoes nothing while the restored counters forget the '
+        'albums the committed reap already deleted'
+    )
+
+
 class TestAnalysisStallValve:
     @staticmethod
     def _drive(monkeypatch, step_minutes):
@@ -1329,7 +1409,7 @@ class TestAnalysisStallValve:
             'the whole library instead of ending; the parent keeps its own row '
             'fresh while it waits, so the wedged-main nudge never sees it either'
         )
-        assert result['message'].startswith('Albums '), (
+        assert 'Albums ' in result['message'], (
             'the run has to finish and report what it did analyse, not hang'
         )
         assert clock.sleeps < 2000
@@ -2726,12 +2806,18 @@ def test_a_run_cancelled_during_the_album_phases_never_reaches_the_index_rebuild
         {'server_id': 'a', 'name': 'A', 'is_default': True},
         {'server_id': 'b', 'name': 'B', 'is_default': False},
     ]
+    from taskqueue import TaskCancelled
+
     statuses = {'value': 'RUNNING'}
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
-    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'union-2')
     monkeypatch.setattr(analysis, 'save_task_status', lambda *a, **k: None)
     monkeypatch.setattr(
-        analysis, 'get_task_statuses', lambda ids: {i: statuses['value'] for i in ids}
+        analysis, 'get_task_statuses', lambda ids: {i: 'RUNNING' for i in ids}
+    )
+    monkeypatch.setattr(
+        'tasks.task_run._read_task_statuses',
+        lambda _conn, ids: {i: statuses['value'] for i in ids},
     )
     monkeypatch.setattr(
         analysis, '_albums_per_server', lambda servers_, limit: [[], []]
@@ -2748,9 +2834,8 @@ def test_a_run_cancelled_during_the_album_phases_never_reaches_the_index_rebuild
 
     monkeypatch.setattr(analysis, '_run_all_index_builds', forbidden)
 
-    result = analysis.run_analysis_task(0, 5)
-
-    assert result['status'] == 'REVOKED'
+    with pytest.raises(TaskCancelled):
+        analysis.run_analysis_task(0, 5)
 
 
 def test_a_live_run_is_not_blocked_by_the_terminal_guard(monkeypatch):

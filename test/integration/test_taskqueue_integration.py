@@ -758,7 +758,232 @@ class TestAWedgedMainTaskIsNotLeftHoldingTheQueue:
         )
 
 
-class TestAttemptsCountsWorkerDeathsNotClaims:
+    def test_a_wedged_plugin_task_is_nudged_even_though_its_name_is_open_ended(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'wedged-plugin-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+            task_type='plugin.demo.sync',
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['wedged-plugin-1'], (
+                'get_queue_blocking_task ORs in plugin.%, so a live plugin task '
+                'refuses every cron start and every manual batch start. Nothing '
+                'watched it before: it is absent from NUDGE_TASK_TYPES because '
+                'the namespace is open, and reclaim needs the worker to DIE'
+            )
+        finally:
+            holder.close()
+
+    def test_the_prefix_match_does_not_catch_a_task_type_nobody_watches(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'planner-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+            task_type='provider_migration_planner',
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == [], (
+                'the planner holds no admission index and refuses no start, and '
+                'session_discard cancels a live one rather than blocking on it, '
+                'so cancelling it from here would end a job nothing is waiting on'
+            )
+        finally:
+            holder.close()
+
+
+class TestARetryWaitsAndAWorkerDeathDoesNot:
+    def _claim_and_hold(self, shared_pg_dsn, task_id, worker_id='w1'):
+        holder = _fresh(shared_pg_dsn, worker_id)
+        with holder.cursor() as cur:
+            claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=worker_id)
+            if claimed is not None:
+                sql.hold(cur, task_id)
+        holder.commit()
+        return holder, claimed
+
+    def _next_run_at(self, conn, task_id):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT next_run_at, next_run_at > NOW() FROM task_status WHERE task_id = %s",
+                (task_id,),
+            )
+            return cur.fetchone()
+
+    def test_a_delayed_row_is_not_claimable_before_its_time_and_is_after(
+        self, queue_db, shared_pg_dsn
+    ):
+        _enqueue(queue_db, 'delayed-1', max_attempts=3)
+        holder, claimed = self._claim_and_hold(shared_pg_dsn, 'delayed-1')
+        assert claimed is not None
+        with holder.cursor() as cur:
+            sql.release(cur, 'delayed-1')
+            status = sql.requeue_or_fail(
+                cur, 'delayed-1', time.time(), {'message': 'raised'}, delay_seconds=3600,
+            )
+        holder.commit()
+        holder.close()
+        assert status == config.TASK_STATUS_NEW
+
+        scheduled, in_future = self._next_run_at(queue_db, 'delayed-1')
+        assert scheduled is not None and in_future
+
+        too_early = _fresh(shared_pg_dsn, 'w2')
+        try:
+            with too_early.cursor() as cur:
+                assert sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w2') is None, (
+                    'a retry that fires the instant the row is back is the same '
+                    'deterministic failure three times in a row; the wait is the point'
+                )
+            too_early.commit()
+            with queue_db.cursor() as cur:
+                cur.execute(
+                    "UPDATE task_status SET next_run_at = NOW() - interval '1 second' "
+                    "WHERE task_id = %s",
+                    ('delayed-1',),
+                )
+            queue_db.commit()
+            with too_early.cursor() as cur:
+                claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w2')
+            too_early.commit()
+            assert claimed is not None and claimed['task_id'] == 'delayed-1'
+            assert claimed['attempts'] == 1
+        finally:
+            too_early.close()
+
+    def test_a_worker_death_reclaim_is_never_delayed(self, queue_db, shared_pg_dsn):
+        from taskqueue import maintenance
+
+        _enqueue(queue_db, 'dies-1', max_attempts=3)
+        holder, _claimed = self._claim_and_hold(shared_pg_dsn, 'dies-1')
+        with holder.cursor() as cur:
+            sql.release(cur, 'dies-1')
+            sql.requeue_or_fail(
+                cur, 'dies-1', time.time(), {'message': 'raised'}, delay_seconds=3600,
+            )
+        holder.commit()
+        holder.close()
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET next_run_at = NOW() - interval '1 second' "
+                "WHERE task_id = %s",
+                ('dies-1',),
+            )
+        queue_db.commit()
+
+        dead, claimed = self._claim_and_hold(shared_pg_dsn, 'dies-1', worker_id='dead')
+        assert claimed is not None
+        dead.close()
+        _age_row(queue_db, 'dies-1')
+        conn = _fresh(shared_pg_dsn)
+        try:
+            maintenance.reclaim_orphans(conn)
+        finally:
+            conn.close()
+
+        scheduled, _in_future = self._next_run_at(queue_db, 'dies-1')
+        status, attempts, _max, _func, _payload, _worker = _row(queue_db, 'dies-1')
+        assert status == config.TASK_STATUS_NEW
+        assert attempts == 2
+        assert scheduled is None, (
+            'a task whose worker died resumes at once, as it always has; the backoff '
+            'is for a task that raised, and reclaim passes no delay'
+        )
+
+    def test_the_uncharged_requeue_clears_a_stale_delay(self, queue_db, shared_pg_dsn):
+        _enqueue(queue_db, 'blip-1', max_attempts=3)
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET status = %s, worker_id = 'w1', "
+                "next_run_at = NOW() + interval '1 hour' WHERE task_id = %s",
+                (config.TASK_STATUS_RUNNING, 'blip-1'),
+            )
+            assert sql.requeue_uncharged(cur, 'blip-1', worker_id='w1')
+        queue_db.commit()
+
+        scheduled, _in_future = self._next_run_at(queue_db, 'blip-1')
+        assert scheduled is None
+
+    def test_worker_deaths_and_raises_spend_one_budget(self, queue_db, shared_pg_dsn):
+        from taskqueue import maintenance
+
+        _enqueue(queue_db, 'budget-1', max_attempts=3)
+        for _death in (1, 2):
+            dead, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='dead')
+            assert claimed is not None
+            dead.close()
+            _age_row(queue_db, 'budget-1')
+            conn = _fresh(shared_pg_dsn)
+            try:
+                maintenance.reclaim_orphans(conn)
+            finally:
+                conn.close()
+
+        holder, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='w3')
+        assert claimed is not None and claimed['attempts'] == 2
+        with holder.cursor() as cur:
+            sql.release(cur, 'budget-1')
+            third = sql.requeue_or_fail(
+                cur, 'budget-1', time.time(), {'message': 'raised'}, delay_seconds=0,
+            )
+        holder.commit()
+        holder.close()
+        assert third == config.TASK_STATUS_NEW, 'the third bad ending still earns a restart'
+
+        holder, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='w4')
+        assert claimed is not None and claimed['attempts'] == 3
+        with holder.cursor() as cur:
+            sql.release(cur, 'budget-1')
+            fourth = sql.requeue_or_fail(
+                cur, 'budget-1', time.time(), {'message': 'raised again'}, delay_seconds=0,
+            )
+        holder.commit()
+        holder.close()
+        assert fourth == config.TASK_STATUS_FAIL, (
+            'two worker deaths and two raises are four bad endings on ONE counter; '
+            'nobody may quietly give application errors a budget of their own'
+        )
+
+
+class TestTheSchemaUpgradeAddsTheNewestColumn:
+    def test_an_install_at_the_previous_revision_gets_next_run_at_on_boot(
+        self, queue_db
+    ):
+        with queue_db.cursor() as cur:
+            cur.execute("ALTER TABLE task_status DROP COLUMN next_run_at")
+        queue_db.commit()
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'task_status' AND column_name = 'shared_payload'"
+            )
+            assert cur.fetchone() is not None, 'the previous revision already had this'
+
+        with queue_db.cursor() as cur:
+            sql.ensure_schema(cur)
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'task_status' AND column_name = 'next_run_at'"
+            )
+            assert cur.fetchone() is not None, (
+                'ensure_schema runs the ALTER block only when the probed column is '
+                'absent; every existing install has shared_payload, so a probe left '
+                'pointing at it never adds next_run_at and the first claim after the '
+                'upgrade raises UndefinedColumn'
+            )
+        _enqueue(queue_db, 'upgraded-1')
+        with queue_db.cursor() as cur:
+            claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w1')
+        queue_db.commit()
+        assert claimed is not None and claimed['task_id'] == 'upgraded-1'
+
+
+class TestAttemptsCountsWorkerDeathsAndRaisesNotClaims:
     def test_a_requeue_and_reclaim_burns_one_attempt_per_death(
         self, queue_db, shared_pg_dsn
     ):

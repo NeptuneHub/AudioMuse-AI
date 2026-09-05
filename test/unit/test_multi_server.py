@@ -1402,66 +1402,68 @@ class TestAlignmentQueuedTwiceIsNotAnError:
 class TestSweepAlignment:
     def test_dequeued_single_sweep_honours_wiped_row_before_any_work(self, monkeypatch):
         from tasks import multiserver_sync as sync
+        from tasks import task_run
+        from taskqueue import TaskCancelled
 
         close = MagicMock()
 
-        def cancelled():
-            raise sync.SweepCancelled()
+        def cancelled(force=False):
+            raise TaskCancelled('wiped-sweep has no task_status row any more')
 
         reporter_factory = MagicMock()
         get_server = MagicMock()
         sweep_one = MagicMock()
         provider_fetch = MagicMock()
-        monkeypatch.setattr(sync, '_make_cancel_check', lambda _task_id: (cancelled, close))
-        monkeypatch.setattr(sync, '_make_reporter', reporter_factory)
+        monkeypatch.setattr(task_run, 'make_cancel_check', lambda *a, **k: (cancelled, close))
+        monkeypatch.setattr(task_run, 'make_task_reporter', reporter_factory)
         monkeypatch.setattr(sync.registry, 'get_server', get_server)
         monkeypatch.setattr(sync, '_sweep_one', sweep_one)
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', provider_fetch)
         db = MagicMock()
 
-        result = sync.sweep_server('server-1', task_id='wiped-sweep', conn=db)
+        with pytest.raises(TaskCancelled):
+            sync.sweep_server('server-1', task_id='wiped-sweep', conn=db)
 
-        assert result == {'server_id': 'server-1', 'cancelled': True}
         reporter_factory.assert_not_called()
         get_server.assert_not_called()
         sweep_one.assert_not_called()
         provider_fetch.assert_not_called()
         db.cursor.assert_not_called()
         db.commit.assert_not_called()
-        db.rollback.assert_not_called()
         close.assert_called_once_with()
 
     def test_dequeued_recovery_sweep_honours_wiped_row_before_any_work(self, monkeypatch):
         from tasks import multiserver_sync as sync
+        from tasks import task_run
+        from taskqueue import TaskCancelled
 
         close = MagicMock()
 
-        def cancelled():
-            raise sync.SweepCancelled()
+        def cancelled(force=False):
+            raise TaskCancelled('wiped-recovery-replacement was revoked')
 
         reporter_factory = MagicMock()
         list_servers = MagicMock()
         sweep_one = MagicMock()
         provider_fetch = MagicMock()
-        monkeypatch.setattr(sync, '_make_cancel_check', lambda _task_id: (cancelled, close))
-        monkeypatch.setattr(sync, '_make_reporter', reporter_factory)
+        monkeypatch.setattr(task_run, 'make_cancel_check', lambda *a, **k: (cancelled, close))
+        monkeypatch.setattr(task_run, 'make_task_reporter', reporter_factory)
         monkeypatch.setattr(sync.registry, 'list_servers', list_servers)
         monkeypatch.setattr(sync, '_sweep_one', sweep_one)
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', provider_fetch)
         db = MagicMock()
 
-        result = sync.sweep_all_secondary_servers(
-            task_id='wiped-recovery-replacement', conn=db, server_ids=['server-1']
-        )
+        with pytest.raises(TaskCancelled):
+            sync.sweep_all_secondary_servers(
+                task_id='wiped-recovery-replacement', conn=db, server_ids=['server-1']
+            )
 
-        assert result == []
         reporter_factory.assert_not_called()
         list_servers.assert_not_called()
         sweep_one.assert_not_called()
         provider_fetch.assert_not_called()
         db.cursor.assert_not_called()
         db.commit.assert_not_called()
-        db.rollback.assert_not_called()
         close.assert_called_once_with()
 
     def test_iter_unmapped_local_rows_keyset_pagination(self):
@@ -1506,7 +1508,6 @@ class TestSweepAlignment:
 
     def test_sweep_all_isolates_per_server_failures(self, monkeypatch):
         from tasks import multiserver_sync as sync
-        import config
 
         servers = [
             {'server_id': 's1', 'name': 'One', 'server_type': 'navidrome', 'creds': {},
@@ -1514,18 +1515,19 @@ class TestSweepAlignment:
             {'server_id': 's2', 'name': 'Two', 'server_type': 'plex', 'creds': {},
              'music_libraries': '', 'is_default': False, 'enabled': True},
         ]
+        from tasks import task_run
+
         monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
         reports = []
         monkeypatch.setattr(
-            sync, '_make_reporter',
-            lambda task_id, label: (
-                lambda message, progress, task_state=None: reports.append(
-                    (message, progress, task_state)
-                )
+            task_run, 'make_task_reporter',
+            lambda task_id, task_type, initial, **kwargs: (
+                lambda message, progress, **k: reports.append((message, progress))
             ),
         )
         monkeypatch.setattr(
-            sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
+            task_run, 'make_cancel_check',
+            lambda *a, **k: (lambda force=False: None, lambda: None),
         )
 
         def fake_sweep(server, db, report, base, span, cancel, task_id=None,
@@ -1537,16 +1539,44 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_sweep_one', fake_sweep)
         db = MagicMock()
 
-        results = sync.sweep_all_secondary_servers(task_id='tid', conn=db)
+        result = sync.sweep_all_secondary_servers(task_id='tid', conn=db)
 
-        assert results == [
-            {'server_id': 's1', 'error': 'sweep failed'},
-            {'server_id': 's2', 'matched': 3},
-        ]
+        assert result['servers'] == [{'server_id': 's2', 'matched': 3}]
+        assert result['failed_servers'] == ['One'], (
+            'one provider being down must not fail the alignment the other got; '
+            'the queue records SUCCESS from this summary and the failed server is '
+            'named in its message'
+        )
+        assert 'One' in result['message']
         db.rollback.assert_called_once()
-        assert reports[-1][2] == config.TASK_STATUS_SUCCESS
         assert reports[-1][1] == 100
         db.close.assert_not_called()
+
+    def test_sweep_all_raises_when_every_server_fails(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+        from tasks import task_run
+
+        servers = [
+            {'server_id': 's1', 'name': 'One', 'server_type': 'navidrome', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+        ]
+        monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
+        monkeypatch.setattr(
+            task_run, 'make_task_reporter',
+            lambda *a, **k: (lambda message, progress, **kw: None),
+        )
+        monkeypatch.setattr(
+            task_run, 'make_cancel_check',
+            lambda *a, **k: (lambda force=False: None, lambda: None),
+        )
+
+        def fake_sweep(*_a, **_k):
+            raise RuntimeError('provider down')
+
+        monkeypatch.setattr(sync, '_sweep_one', fake_sweep)
+
+        with pytest.raises(RuntimeError, match='every selected server'):
+            sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
 
     def test_aligned_server_is_noop_without_fetch(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -1585,24 +1615,24 @@ class TestSweepAlignment:
 
     def test_sweep_all_reports_first_analysis_message_on_empty_catalogue(self, monkeypatch):
         from tasks import multiserver_sync as sync
-        import config
 
         servers = [
             {'server_id': 's1', 'name': 'One', 'server_type': 'navidrome', 'creds': {},
              'music_libraries': '', 'is_default': False, 'enabled': True},
         ]
+        from tasks import task_run
+
         monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
         reports = []
         monkeypatch.setattr(
-            sync, '_make_reporter',
-            lambda task_id, label: (
-                lambda message, progress, task_state=None: reports.append(
-                    (message, progress, task_state)
-                )
+            task_run, 'make_task_reporter',
+            lambda task_id, task_type, initial, **kwargs: (
+                lambda message, progress, **k: reports.append((message, progress))
             ),
         )
         monkeypatch.setattr(
-            sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
+            task_run, 'make_cancel_check',
+            lambda *a, **k: (lambda force=False: None, lambda: None),
         )
         monkeypatch.setattr(
             sync, '_sweep_one',
@@ -1613,11 +1643,84 @@ class TestSweepAlignment:
             },
         )
 
-        results = sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
+        result = sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
 
-        assert len(results) == 1
-        assert reports[-1][2] == config.TASK_STATUS_SUCCESS
+        assert len(result['servers']) == 1
+        assert 'Nothing analyzed yet' in result['message'], (
+            'the recap the queue writes is the message the sweep returns'
+        )
         assert 'Nothing analyzed yet' in reports[-1][0]
+
+    def test_sweep_all_names_the_failed_servers_even_when_the_rest_were_empty(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+        from tasks import task_run
+
+        servers = [
+            {'server_id': 's1', 'name': 'One', 'server_type': 'navidrome', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+            {'server_id': 's2', 'name': 'Two', 'server_type': 'navidrome', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+        ]
+        monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
+        monkeypatch.setattr(
+            task_run, 'make_task_reporter',
+            lambda *a, **k: (lambda message, progress, **kw: None),
+        )
+        monkeypatch.setattr(
+            task_run, 'make_cancel_check',
+            lambda *a, **k: (lambda force=False: None, lambda: None),
+        )
+
+        def fake_sweep(server, db, report, base, span, cancel, task_id=None,
+                       full_refresh=False):
+            if server['server_id'] == 's1':
+                raise RuntimeError('provider down')
+            return {
+                'server_id': server['server_id'], 'matched': 0, 'aligned': True,
+                'empty_catalogue': True, 'tier_counts': {},
+            }
+
+        monkeypatch.setattr(sync, '_sweep_one', fake_sweep)
+
+        result = sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
+
+        assert result['failed_servers'] == ['One']
+        assert 'Nothing analyzed yet' in result['message']
+        assert 'Failed: One' in result['message'], (
+            'the recap must not read as a clean no-op when a server was down; the '
+            'empty-catalogue wording used to drop the failed list entirely'
+        )
+
+    def test_sweep_all_lets_a_declared_permanent_failure_through(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+        from tasks import task_run
+        from taskqueue import TaskFailed
+
+        servers = [
+            {'server_id': 's1', 'name': 'One', 'server_type': 'navidrome', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+            {'server_id': 's2', 'name': 'Two', 'server_type': 'navidrome', 'creds': {},
+             'music_libraries': '', 'is_default': False, 'enabled': True},
+        ]
+        monkeypatch.setattr(sync.registry, 'list_servers', lambda conn=None: servers)
+        monkeypatch.setattr(
+            task_run, 'make_task_reporter',
+            lambda *a, **k: (lambda message, progress, **kw: None),
+        )
+        monkeypatch.setattr(
+            task_run, 'make_cancel_check',
+            lambda *a, **k: (lambda force=False: None, lambda: None),
+        )
+
+        def fake_sweep(*_a, **_k):
+            raise TaskFailed('unsupported media-server type')
+
+        monkeypatch.setattr(sync, '_sweep_one', fake_sweep)
+
+        with pytest.raises(TaskFailed):
+            sync.sweep_all_secondary_servers(task_id='tid', conn=MagicMock())
 
     def test_unmapped_rows_matched_and_written(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -2042,15 +2145,16 @@ class TestSweepAlignment:
         monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
 
         saved = []
-        import database
+        from tasks import task_run
         monkeypatch.setattr(
-            database, 'save_task_status',
+            task_run, 'save_task_status',
             lambda task_id, task_type, status, **kwargs: saved.append(
                 (task_id, status, kwargs)
             ),
         )
         monkeypatch.setattr(
-            sync, '_make_cancel_check', lambda task_id: (lambda: None, lambda: None)
+            task_run, 'make_cancel_check',
+            lambda *a, **k: (lambda force=False: None, lambda: None),
         )
         monkeypatch.setattr(
             sync.registry, 'get_server',
@@ -2074,15 +2178,60 @@ class TestSweepAlignment:
             'srv-1', task_id='sweep-1', conn=MagicMock(), parent_task_id='migration-1',
         )
 
-        assert [status for _tid, status, _kw in saved] == [
-            config.TASK_STATUS_STARTED,
-            config.TASK_STATUS_PROGRESS,
-            config.TASK_STATUS_SUCCESS,
-        ]
+        assert len(saved) == 4, 'opening write, start line, the sweep line, the final line'
+        assert all(status == config.TASK_STATUS_RUNNING for _tid, status, _kw in saved), (
+            'the reporter narrates and only narrates; the SUCCESS row is written by '
+            'the queue from what sweep_server returns'
+        )
         assert all(task_id == 'sweep-1' for task_id, _status, _kw in saved)
         assert [kw.get('parent_task_id') for _tid, _status, kw in saved] == [
-            'migration-1', 'migration-1', 'migration-1',
+            'migration-1', 'migration-1', 'migration-1', 'migration-1',
         ]
+
+    def test_a_sweep_queued_by_a_migration_outlives_its_finished_parent(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+        from tasks import task_run
+        import config
+
+        fake_flask_app = types.ModuleType('flask_app')
+        fake_flask_app.app = Flask('sweep-after-migration')
+        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+        monkeypatch.setattr(task_run, 'save_task_status', lambda *a, **k: True)
+        monkeypatch.setattr(task_run, '_open_check_connection', lambda: object())
+        monkeypatch.setattr(
+            task_run, '_read_task_statuses',
+            lambda _conn, _ids: {
+                'sweep-1': config.TASK_STATUS_RUNNING,
+                'migration-1': config.TASK_STATUS_SUCCESS,
+            },
+        )
+        monkeypatch.setattr(
+            sync.registry, 'get_server',
+            lambda server_id, conn=None: {
+                'server_id': server_id, 'name': 'Nav', 'server_type': 'navidrome',
+                'creds': {}, 'music_libraries': '',
+            },
+        )
+        monkeypatch.setattr(
+            sync, '_sweep_one',
+            lambda server, db, report, base, span, cancel, task_id=None,
+            full_refresh=False: {
+                'server_id': server['server_id'], 'matched': 2, 'unmapped': 3,
+                'tier_counts': {},
+            },
+        )
+
+        result = sync.sweep_server(
+            'srv-1', task_id='sweep-1', conn=MagicMock(), parent_task_id='migration-1',
+        )
+
+        assert result['matched'] == 2, (
+            'the migration queues this alignment BEFORE it publishes its restart and '
+            'finishes, so by the time a restarted worker claims it the parent row is '
+            'SUCCESS; a sweep that treated a finished parent as a cancel would revoke '
+            'itself on its first line and the artist ids the swap cleared would never '
+            'be rebuilt, with nothing but an INFO line to say so'
+        )
 
     def test_root_sweep_reports_a_null_parent_so_it_stays_its_own_root(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -2092,21 +2241,22 @@ class TestSweepAlignment:
         monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
 
         saved = []
-        import database
+        from tasks import task_run
         monkeypatch.setattr(
-            database, 'save_task_status',
+            task_run, 'save_task_status',
             lambda task_id, task_type, status, **kwargs: saved.append(kwargs),
         )
 
-        report = sync._make_reporter('sweep-1', 'srv-1')
+        report = task_run.make_task_reporter(
+            'sweep-1', sync.SWEEP_TASK_TYPE, 'Starting alignment...', prefix='Sweep-srv-1',
+        )
         report('Aligning...', 40)
 
-        assert len(saved) == 1
-        assert saved[0].get('parent_task_id') is None
-        assert saved[0]['progress'] == 40
-        assert saved[0]['details'] == {
-            'status_message': 'Aligning...', 'message': 'Aligning...',
-        }
+        assert len(saved) == 2, 'the opening write, then the progress line'
+        assert saved[-1].get('parent_task_id') is None
+        assert saved[-1]['progress'] == 40
+        assert saved[-1]['details']['message'] == 'Aligning...'
+        assert saved[-1]['details']['status_message'] == 'Aligning...'
 
     def test_enqueue_server_alignment_queues_nothing_without_a_server(self, monkeypatch):
         from tasks import multiserver_sync as sync

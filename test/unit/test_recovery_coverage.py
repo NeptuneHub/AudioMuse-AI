@@ -36,15 +36,16 @@ import pathlib
 
 import pytest
 
+import task_types
 from tasks import recovery
 from taskqueue import sql
 
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
-CHILD_TASK_TYPES = (
-    'album_analysis', 'clustering_batch', 'index_rebuild', 'server_sweep',
-)
+CHILD_TASK_TYPES = task_types.CHILD_TASK_TYPES
+
+EVERY_TASK_TYPE = task_types.NAMES + task_types.PREFIXES
 
 
 class TestTheRecoveryTableIsComplete:
@@ -59,6 +60,15 @@ class TestTheRecoveryTableIsComplete:
     @pytest.mark.parametrize('task_type', CHILD_TASK_TYPES)
     def test_every_child_task_type_is_listed(self, task_type):
         assert task_type in recovery.RECOVERY
+
+    @pytest.mark.parametrize('task_type', EVERY_TASK_TYPE)
+    def test_every_task_type_the_registry_knows_is_listed(self, task_type):
+        assert task_type in recovery.RECOVERY, (
+            f'{task_type} is a real task type the queue can hold and it declares '
+            'no stance on anything. This is how plugin tasks and the migration '
+            'planner went unwatched: the completeness check only ever looked at '
+            'a hand-written list that neither of them was on'
+        )
 
     @pytest.mark.parametrize('task_type', sorted(recovery.RECOVERY))
     def test_every_task_answers_every_scenario(self, task_type):
@@ -82,8 +92,7 @@ class TestTheRecoveryTableIsComplete:
                 )
 
     def test_the_table_lists_nothing_that_is_not_a_real_task_type(self):
-        known = set(sql.MAIN_TASK_TYPES) | set(CHILD_TASK_TYPES)
-        assert set(recovery.RECOVERY) <= known
+        assert set(recovery.RECOVERY) <= set(EVERY_TASK_TYPE)
 
 
 def _imports_row_heartbeat(relative_path):
@@ -298,3 +307,84 @@ class TestTheSlowStepBudget:
             'the parent measures the WHOLE run with'
         )
         assert budget == 60 * recovery._MAX_SLOW_STEP_WINDOWS
+
+
+class TestTheTwoRetryEnginesOutsideTheQueueAreNamed:
+    @pytest.mark.parametrize('engine', ['cron_retry', 'provider_migration_restart_handshake'])
+    def test_each_says_what_it_retries_and_why_the_queue_does_not(self, engine):
+        reason = recovery.OUTSIDE_THE_QUEUE[engine]
+
+        assert 'retr' in reason.lower() or 'wait' in reason.lower()
+        assert len(reason) > 80, (
+            "these two used to read as gaps in the queue's retry; a one-word entry "
+            'would read that way again'
+        )
+
+    def test_nothing_else_claims_to_be_a_retry_engine(self):
+        assert set(recovery.OUTSIDE_THE_QUEUE) == {
+            'cron_retry', 'provider_migration_restart_handshake',
+        }
+
+
+class TestObserveAnswersMovedOrGaveUp:
+    def test_a_changed_signature_is_moved_and_nothing_is_given_up(self):
+        clock = _Clock()
+        supervisor, ended = _supervisor(clock)
+
+        assert supervisor.observe([('a', 'RUNNING', '10', '', 'album')]) == (True, None)
+        assert ended == []
+
+    def test_an_unchanged_signature_inside_the_window_is_waiting(self):
+        clock = _Clock()
+        supervisor, ended = _supervisor(clock, timeout_minutes=60)
+        marks = [('a', 'RUNNING', '10', '', 'album')]
+        supervisor.observe(marks)
+        clock.advance_minutes(30)
+
+        assert supervisor.observe(marks) == (False, None)
+        assert ended == []
+
+    def test_an_expired_window_with_live_children_gives_up_and_says_so(self):
+        clock = _Clock()
+        supervisor, ended = _supervisor(clock, timeout_minutes=60)
+        marks = [('a', 'RUNNING', '10', '', 'album')]
+        supervisor.observe(marks)
+        clock.advance_minutes(61)
+
+        moved, gave_up = supervisor.observe(marks)
+
+        assert moved is False
+        assert gave_up == (1, 61.0), (
+            'the caller reports the give-up from this tuple; it used to have to infer '
+            'movement from the valve clock instead, a 0.6-second probe that any '
+            'restart() inside observe would silently break'
+        )
+        assert ended == ['a']
+
+    def test_an_expired_window_with_nothing_live_is_still_waiting(self):
+        clock = _Clock()
+        supervisor, ended = _supervisor(clock, timeout_minutes=60)
+        supervisor.observe([])
+        clock.advance_minutes(61)
+
+        assert supervisor.observe([]) == (False, None)
+        assert ended == []
+
+
+class TestChildMarksReadOnTheCallersConnection:
+    def test_the_connection_handed_in_is_the_one_the_queue_reads_on(self, monkeypatch):
+        import taskqueue
+
+        seen = []
+        monkeypatch.setattr(
+            taskqueue, 'live_children',
+            lambda parent_task_id, conn=None: seen.append(conn) or [],
+        )
+        sentinel = object()
+
+        assert recovery.child_marks('parent-1', conn=sentinel) == ()
+        assert seen == [sentinel], (
+            'without a connection the queue resolves get_db(), the SAME Flask '
+            'connection a parent has its reap open on, and commits it under the '
+            'parent; the rollback the parent promises then undoes nothing'
+        )

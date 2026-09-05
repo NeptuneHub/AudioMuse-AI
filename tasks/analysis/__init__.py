@@ -34,7 +34,7 @@ _HOMES = {
     'clean_temp': 'main',
     'analyze_album_task': 'album',
     '_analyze_album_task_impl': 'album',
-    '_record_album_failure_row': 'album',
+    '_record_album_error_on_row': 'album',
     'TrackNotAnalyzable': 'album',
     'rebuild_all_indexes_task': 'index',
     'sigmoid': 'song',

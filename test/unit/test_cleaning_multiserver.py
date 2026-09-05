@@ -106,11 +106,12 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     monkeypatch.setattr(db_module, 'get_db', lambda: get_db_cm)
     monkeypatch.setattr(db_module, 'get_task_info_from_db', lambda _task_id: task_info)
     monkeypatch.setattr(task_run_module, 'get_task_info_from_db', lambda _task_id: task_info)
-    monkeypatch.setattr(
-        db_module, 'save_task_status',
-        lambda task_id, task_type, status, progress=None, details=None:
-        statuses.append((status, progress, details)),
-    )
+    def _record_status(task_id, task_type, status, progress=None, details=None, **_kwargs):
+        statuses.append((status, progress, details))
+        return True
+
+    monkeypatch.setattr(db_module, 'save_task_status', _record_status)
+    monkeypatch.setattr(task_run_module, 'save_task_status', _record_status)
 
     monkeypatch.setattr(
         taskqueue, 'current_task_id',
@@ -157,7 +158,11 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
         lambda db, server_id, count: counts.append((server_id, count)),
     )
 
-    result = cleaning.identify_and_clean_orphaned_albums_task(clean_catalogue)
+    try:
+        result = cleaning.identify_and_clean_orphaned_albums_task(clean_catalogue)
+    except cleaning.CleaningIncomplete as exc:
+        summary = (statuses[-1][2] or {}).get('final_summary_details') or {}
+        result = {'status': 'FAIL', 'message': str(exc), **summary}
     return result, statuses, pruned_calls
 
 
@@ -230,7 +235,11 @@ class TestCleaningSkipsUnreadableServers:
         assert 'One' in result['failed_servers']
         assert pruned == [('s2', ['n1'])]
         assert result['unbound_mappings'] == 3
-        assert statuses[-1][0] == config.TASK_STATUS_FAILURE
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING, (
+            'the task narrates the summary on its last progress write and then '
+            "raises; FAIL itself is the queue's row to write, and its retry"
+        )
+        assert 'One' in statuses[-1][2]['final_summary_details']['failed_servers']
 
     def test_zero_tracks_skips_that_server_and_reports_no_orphans(self, monkeypatch):
         result, statuses, pruned = _run_cleaning(
@@ -269,7 +278,7 @@ class TestCleaningOrphanHandling:
         assert result['deleted_count'] == 0
         assert result['unbound_mappings'] == 0
         assert pruned == [('s1', ['j1', 'j2']), ('s2', ['n1'])]
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING
 
     def test_tracks_on_no_server_are_deleted_when_view_is_complete(self, monkeypatch):
         result, statuses, pruned = _run_cleaning(
@@ -297,7 +306,7 @@ class TestCleaningOrphanHandling:
             for t in album['tracks']
         }
         assert reported == {'fp_3', 'fp_4'}
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING
 
     def test_index_rebuild_runs_inline_before_a_cleaning_run_completes(self, monkeypatch):
         rebuilds = []
@@ -384,4 +393,4 @@ class TestCleaningLegacyFallback:
         assert result['orphaned_tracks_count'] == 0
         assert result['unbound_mappings'] == 0
         assert pruned == []
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING

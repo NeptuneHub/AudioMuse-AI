@@ -1604,29 +1604,43 @@ def test_clustering_batch_parent_check_and_enqueue_share_the_cancel_lock(monkeyp
     ) is True
 
 
+def _revoked_result(fn, **kwargs):
+    from taskqueue import TaskCancelled
+
+    try:
+        return fn(**kwargs)
+    except TaskCancelled:
+        return {'status': 'REVOKED'}
+
+
 def test_batch_start_racing_the_cancel_wipe_never_recreates_a_child_row(monkeypatch):
     import sys
     import types
     from contextlib import nullcontext
     from flask import Flask
     import tasks.clustering as clustering
+    import tasks.task_run as task_run
 
     fake_flask_app = types.ModuleType('flask_app')
     fake_flask_app.app = Flask('cancelled-batch-start')
     monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
     job = Mock(id='parent-1_s0_batch_0', meta={})
     monkeypatch.setattr(clustering.taskqueue, 'current_task_id', lambda: job.id)
-    parent_reads = iter([{'status': 'RUNNING'}, None])
     monkeypatch.setattr(
-        clustering, 'get_task_info_from_db', lambda _task_id: next(parent_reads)
+        clustering, 'get_task_info_from_db', lambda _task_id: {'status': 'RUNNING'}
     )
+    monkeypatch.setattr(task_run, '_read_task_statuses', lambda _conn, _ids: {})
     monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
     writes = []
     monkeypatch.setattr(
         clustering, 'save_task_status', lambda *a, **k: writes.append((a, k))
     )
+    monkeypatch.setattr(
+        task_run, 'save_task_status', lambda *a, **k: writes.append((a, k))
+    )
 
-    result = clustering.run_clustering_batch_task(
+    result = _revoked_result(
+        clustering.run_clustering_batch_task,
         batch_id_str='Batch_0',
         start_run_idx=0,
         num_iterations_in_batch=1,
@@ -1651,4 +1665,102 @@ def test_batch_start_racing_the_cancel_wipe_never_recreates_a_child_row(monkeypa
     )
 
     assert result['status'] == 'REVOKED'
-    assert writes == []
+    assert writes == [], (
+        'the cancel wiped both rows between the claim and the first write; the '
+        'shared cancel check runs BEFORE the opening write, so nothing recreates '
+        'a child row for a parent that is gone'
+    )
+
+
+def _batch_kwargs():
+    return dict(
+        batch_id_str='Batch_0',
+        start_run_idx=0,
+        num_iterations_in_batch=1,
+        genre_to_lightweight_track_data_map_json='{}',
+        target_songs_per_genre=1,
+        sampling_percentage_change_per_run=0.1,
+        clustering_method='kmeans',
+        active_mood_labels_for_batch=[],
+        num_clusters_min_max_tuple=(2, 3),
+        dbscan_params_ranges_dict={},
+        gmm_params_ranges_dict={},
+        spectral_params_ranges_dict={},
+        pca_params_ranges_dict={'components_min': 2, 'components_max': 3},
+        max_songs_per_cluster=50,
+        parent_task_id='parent-1',
+        score_weights_dict={},
+        elite_solutions_params_list_json='[]',
+        exploitation_probability=0.0,
+        mutation_config_json='{}',
+        initial_subset_track_ids_json='[]',
+        enable_clustering_embeddings_param=True,
+    )
+
+
+def _live_batch_harness(monkeypatch):
+    import sys
+    import types
+    from contextlib import nullcontext
+    from flask import Flask
+    import tasks.clustering as clustering
+    import tasks.task_run as task_run
+
+    fake_flask_app = types.ModuleType('flask_app')
+    fake_flask_app.app = Flask('live-batch')
+    monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+    monkeypatch.setattr(clustering.taskqueue, 'current_task_id', lambda: 'parent-1_s0_batch_0')
+    monkeypatch.setattr(
+        clustering, 'get_task_info_from_db', lambda _task_id: {'status': 'RUNNING'}
+    )
+    monkeypatch.setattr(task_run, '_open_check_connection', lambda: object())
+    monkeypatch.setattr(
+        task_run, '_read_task_statuses',
+        lambda _conn, ids: {task_id: 'RUNNING' for task_id in ids},
+    )
+    monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
+    monkeypatch.setattr(clustering, 'row_heartbeat', lambda *a, **k: nullcontext())
+    return clustering, task_run
+
+
+def test_a_batch_whose_opening_write_fails_raises_that_error_not_an_unbound_name(monkeypatch):
+    import pytest
+
+    clustering, task_run = _live_batch_harness(monkeypatch)
+
+    def _db_gone(*_a, **_k):
+        raise RuntimeError('db gone')
+
+    monkeypatch.setattr(task_run, 'save_task_status', _db_gone)
+
+    with pytest.raises(RuntimeError, match='db gone'):
+        clustering.run_clustering_batch_task(**_batch_kwargs())
+
+
+def test_a_batch_returns_its_best_result_so_the_queue_row_carries_it(monkeypatch):
+    clustering, task_run = _live_batch_harness(monkeypatch)
+    writes = []
+    monkeypatch.setattr(
+        task_run, 'save_task_status', lambda *a, **k: writes.append(k) or True
+    )
+    monkeypatch.setattr(
+        clustering, '_get_stratified_song_subset', lambda *a, **k: [{'item_id': 'song-1'}]
+    )
+    best = {'fitness_score': 1.5, 'parameters': {'method': 'kmeans'}, 'named_playlists': {}}
+    monkeypatch.setattr(
+        clustering, '_perform_single_clustering_iteration', lambda **k: dict(best)
+    )
+
+    result = clustering.run_clustering_batch_task(**_batch_kwargs())
+
+    assert result['status'] == 'SUCCESS'
+    assert result['iterations_completed_in_batch'] == 1
+    assert result['full_best_result_from_batch']['fitness_score'] == 1.5
+    assert result['final_subset_track_ids'] == ['song-1']
+    assert all(
+        'full_best_result_from_batch' not in (k.get('details') or {}) for k in writes
+    ), (
+        'the winning result rides the dict the batch RETURNS, which the queue writes '
+        'on the terminal row with a retry on a fresh connection; a progress write '
+        'whose return value nobody checks is not a carrier for the whole batch'
+    )

@@ -39,7 +39,7 @@ Main Features:
   an in-flight control action for the same reason reclaim does. The cancel is a
   NOTIFY, and reaching stop_hard needs the worker's listener thread to run Python:
   native code holding the GIL never gets there, so a row still silent at
-  _ESCALATE_AFTER x the limit has ignored it (the notify kills a worker that can
+  QUEUE_WEDGED_ESCALATE_FACTOR x the limit has ignored it (the notify kills a worker that can
   hear it within seconds) and its worker's BACKENDS are terminated instead. That
   drops the connection holding the advisory lock, which is what actually frees the
   queue, and the worker dies on its next statement. The escalation is decided from
@@ -272,8 +272,6 @@ def fail_stale_inline_rows(conn):
     return failed
 
 
-_ESCALATE_AFTER = 2.0
-
 
 def nudge_wedged_main_tasks(conn):
     minutes = config.QUEUE_WEDGED_MAIN_TASK_MINUTES
@@ -288,7 +286,7 @@ def nudge_wedged_main_tasks(conn):
             )
             return []
         wedged = sql.wedged_main_tasks(cur, minutes * 60)
-        escalate_after = minutes * 60 * _ESCALATE_AFTER
+        escalate_after = minutes * 60 * config.QUEUE_WEDGED_ESCALATE_FACTOR
         terminated = {}
         for task in wedged:
             task_id = task['task_id']
@@ -302,7 +300,7 @@ def nudge_wedged_main_tasks(conn):
             "backend(s) %s were terminated: a worker that can hear the cancel dies "
             "within seconds, and terminating the backend releases the advisory lock "
             "reclaim needs whether the worker can hear anything or not.",
-            task_id, minutes * _ESCALATE_AFTER, pids or 'none found',
+            task_id, minutes * config.QUEUE_WEDGED_ESCALATE_FACTOR, pids or 'none found',
         )
     for task in wedged:
         resumes = (task['attempts'] or 0) + 1 <= (task['max_attempts'] or 0)

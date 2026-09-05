@@ -108,11 +108,14 @@ def _run_clustering(monkeypatch, servers, results_by_server, fail_persist_for=()
     monkeypatch.setattr(clustering.taskqueue, 'current_task_id', lambda: None)
     monkeypatch.setattr(clustering, 'get_task_info_from_db', lambda task_id: None)
     monkeypatch.setattr(clustering, 'error_manager', MagicMock())
-    monkeypatch.setattr(
-        clustering, 'save_task_status',
-        lambda task_id, task_type, status, progress=None, details=None:
-        statuses.append((status, progress, details)),
-    )
+    from tasks import task_run
+
+    def _record_status(task_id, task_type, status, progress=None, details=None, **_kwargs):
+        statuses.append((status, progress, details))
+        return True
+
+    monkeypatch.setattr(clustering, 'save_task_status', _record_status)
+    monkeypatch.setattr(task_run, 'save_task_status', _record_status)
     monkeypatch.setattr(
         clustering, 'prune_playlist_rows_for_missing_servers',
         lambda server_ids: events.append(('prune', list(server_ids))),
@@ -227,7 +230,13 @@ class TestRevokeAndFailure:
                 's3': ('success', _payload(['Jazz_automatic'])),
             },
         )
-        assert result['status'] == 'REVOKED'
+        from taskqueue import TaskCancelled
+
+        assert isinstance(_raised, TaskCancelled), (
+            'a revoked server phase raises, so the queue writes REVOKED once and '
+            'the servers after it never run'
+        )
+        assert result is None
         assert [(e[0], e[1]) for e in _persists(events)] == [('persist', 's1')]
         assert ('cluster', 's3') not in [(e[0], e[1]) for e in events]
 
@@ -255,7 +264,10 @@ class TestRevokeAndFailure:
         assert result['status'] == 'SUCCESS'
         assert [(e[0], e[1]) for e in _persists(events)] == [('persist', 's2')]
         final_details = statuses[-1][2]
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING, (
+            'the last write narrates the per-server outcome; SUCCESS is the '
+            "queue's row, written from the dict the task returns"
+        )
         assert final_details['per_server'][0]['status'] == 'skipped'
         assert final_details['per_server'][1]['status'] == 'success'
 

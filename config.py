@@ -620,15 +620,30 @@ QUEUE_SECRET_KWARGS = (
     'mistral_api_key_param',
 )
 
-# Worker-death restarts, then the task fails for good. The ONLY retry knob: a task
-# that fails on its own merits is never retried, whatever the number here.
-# It counts WORKER DEATHS, not claims. The counter used to be incremented by the
-# claim itself, so the first, healthy claim already spent one: a long root task
-# that had merely been restarted twice was failed for good on the third restart,
-# and a FAIL row is unreachable afterwards because the claim only looks at NEW
-# rows and the reclaim only at RUNNING ones. That is one of the two ways a main
-# task could "never get re-enqueued".
+# How many times a task may be attempted before it fails for good. ONE counter
+# covers a worker death AND a task that raised - a media-server 502, an LLM
+# timeout, a deadlock, a job child the kernel killed for memory - which is what
+# every comparable queue does. A task that raises taskqueue.TaskFailed is
+# never retried; everything else is. The wedged-main nudge spends from this same
+# budget: it ends the worker and reclaim then charges the attempt.
+# It counts ATTEMPTS THAT ENDED BADLY, not claims. The counter used to be
+# incremented by the claim itself, so the first, healthy claim already spent one:
+# a long root task that had merely been restarted twice was failed for good on
+# the third restart, and a FAIL row is unreachable afterwards because the claim
+# only looks at NEW rows and the reclaim only at RUNNING ones.
 QUEUE_MAX_ATTEMPTS = max(1, int(os.getenv('QUEUE_MAX_ATTEMPTS', '3')))
+# The wait before a task that raised is attempted again: doubles per attempt
+# from the base, capped at the max, with a small jitter so a burst of failures
+# does not retry in lockstep. Worker-death reclaim is NOT delayed by this - a
+# task whose worker died resumes at once, as it always has. Sized for overnight
+# batch work, where a few minutes of waiting is nothing and a media server that
+# is down for two of them is the case the retry exists for.
+QUEUE_RETRY_BASE_SECONDS = float(os.getenv('QUEUE_RETRY_BASE_SECONDS', '30'))
+QUEUE_RETRY_MAX_SECONDS = float(os.getenv('QUEUE_RETRY_MAX_SECONDS', '600'))
+# How often a running task re-reads its own row, and its parent's, to notice it
+# was cancelled. Every task shares one cancel check (tasks.task_run) and this is
+# its only cadence.
+QUEUE_CANCEL_CHECK_SECONDS = float(os.getenv('QUEUE_CANCEL_CHECK_SECONDS', '2'))
 # A main task whose worker process is ALIVE but whose row has not changed for this
 # long is wedged, not working: reclaim deliberately will not touch it, because its
 # advisory lock is still held, so it would block every other main task forever.
@@ -637,6 +652,14 @@ QUEUE_MAX_ATTEMPTS = max(1, int(os.getenv('QUEUE_MAX_ATTEMPTS', '3')))
 # from its persisted progress rather than being thrown away. Well above any silence
 # a healthy run has (clustering's AI naming phase is the longest). 0 disables it.
 QUEUE_WEDGED_MAIN_TASK_MINUTES = int(os.environ.get("QUEUE_WEDGED_MAIN_TASK_MINUTES", "180")) # Minutes a RUNNING main task row may stay unchanged while its worker is still alive before maintenance restarts that worker
+# A wedged task that has ignored the cancel for this many multiples of the limit
+# above has provably not run Python since (a worker that can hear the NOTIFY
+# dies within seconds), so maintenance terminates its database backends instead,
+# which drops the advisory lock that is holding the queue. A global timing ratio,
+# deliberately not a per-task-type property.
+QUEUE_WEDGED_ESCALATE_FACTOR = max(
+    1.0, float(os.getenv('QUEUE_WEDGED_ESCALATE_FACTOR', '2'))
+)
 # Jobs a worker runs before recycling itself, bounding native-extension leaks the
 # same way the queue worker's max_jobs did.
 QUEUE_MAX_JOBS = int(os.getenv('QUEUE_MAX_JOBS', '50'))

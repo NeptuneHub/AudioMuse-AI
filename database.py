@@ -38,6 +38,7 @@ from psycopg2 import sql
 from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
+import task_types
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +76,9 @@ GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 # sonic_fingerprint is deliberately NOT here: a running fingerprint blocked an
 # analysis or clustering start on main, and quietly excluding it here let the two
 # run concurrently over the same catalogue.
-SELF_MANAGED_TASK_TYPES = (
-    'server_sweep', 'alchemy_radio', 'worker_control',
-    'provider_migration_planner',
-)
+SELF_MANAGED_TASK_TYPES = task_types.SELF_MANAGED_TASK_TYPES
 
-SELF_MANAGED_TASK_TYPE_PREFIXES = ('plugin.',)
+SELF_MANAGED_TASK_TYPE_PREFIXES = task_types.SELF_MANAGED_TASK_TYPE_PREFIXES
 
 # Rows that must never refuse a batch start. A restart handshake, the inline radio
 # and the migration PLANNER are machinery, not work that touches the catalogue.
@@ -88,11 +86,9 @@ SELF_MANAGED_TASK_TYPE_PREFIXES = ('plugin.',)
 # write the mappings a cleaning or a migration rewrites, so they must still block.
 # The starts used to pass an empty tuple, which excluded NOTHING, so a restart
 # handshake in flight answered 409 to a cleaning the user had just asked for.
-NON_BLOCKING_TASK_TYPES = (
-    'worker_control', 'alchemy_radio', 'provider_migration_planner',
-)
+NON_BLOCKING_TASK_TYPES = task_types.NON_BLOCKING_TASK_TYPES
 
-INLINE_FLASK_TASK_TYPES = ('alchemy_radio',)
+INLINE_FLASK_TASK_TYPES = task_types.INLINE_FLASK_TASK_TYPES
 
 USERS_PASSWORD_CHANGED_AT_DDL = (
     "ALTER TABLE IF EXISTS audiomuse_users "
@@ -405,7 +401,7 @@ def save_task_status(
                               WHEN EXCLUDED.status = ANY(%s) THEN NULL
                               ELSE task_status.payload
                           END
-            WHERE task_status.status IS DISTINCT FROM %s
+            WHERE COALESCE(task_status.status, '') <> ALL(%s)
             RETURNING parent_task_id
         """,
             (
@@ -429,7 +425,7 @@ def save_task_status(
                 current_unix_time,
                 _TERMINAL_STATUSES,
                 _TERMINAL_STATUSES,
-                TASK_STATUS_REVOKED,
+                _TERMINAL_STATUSES,
             ),
         )
         written = cur.rowcount > 0
@@ -456,8 +452,9 @@ def save_task_status(
 
     if not written:
         logger.info(
-            "Discarded the %s report for task %s (parent %s): the row is REVOKED, or "
-            "it does not exist and its parent is missing or already terminal.",
+            "Discarded the %s report for task %s (parent %s): the row is already "
+            "terminal, or it does not exist and its parent is missing or terminal. A "
+            "terminal row is the queue's verdict and no later report may regress it.",
             status, task_id, parent_task_id,
         )
         return False

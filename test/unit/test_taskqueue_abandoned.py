@@ -163,7 +163,22 @@ class TestOnlyALostConnectionHandsTheRowBack:
         assert instance._abandoned == ['task-1']
         assert finalized == []
 
-    def test_a_task_that_failed_on_its_own_merits_is_never_remembered(
+    @staticmethod
+    def _charged_requeue(monkeypatch, instance):
+        charged = []
+        monkeypatch.setattr(
+            worker_mod.sql, 'current_row',
+            lambda _cur, _task_id: _running_row(instance.identity),
+        )
+        monkeypatch.setattr(
+            worker_mod.sql, 'requeue_or_fail',
+            lambda _cur, task_id, _now, _details, delay_seconds=None: (
+                charged.append((task_id, delay_seconds)) or config.TASK_STATUS_NEW
+            ),
+        )
+        return charged
+
+    def test_a_task_that_failed_on_its_own_merits_is_retried_with_an_attempt_charged(
         self, monkeypatch, ran
     ):
         instance = _worker()
@@ -172,12 +187,126 @@ class TestOnlyALostConnectionHandsTheRowBack:
         monkeypatch.setattr(
             instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
         )
+        charged = self._charged_requeue(monkeypatch, instance)
         ran['func'] = _raising(ValueError('the album has no tracks'))
 
         instance.run_job(_job('task-1'))
 
-        assert instance._abandoned == []
+        assert instance._abandoned == [], (
+            'it is not a lost connection, so it gets none of the free passes'
+        )
+        assert finalized == [], (
+            'attempt 1 of 3 is not the last one, so the queue requeues instead of '
+            'writing the terminal row'
+        )
+        assert [task_id for task_id, _delay in charged] == ['task-1']
+        assert charged[0][1] > 0, 'a retry waits; a deterministic failure must not spin'
+
+    def test_the_last_allowed_attempt_fails_the_row_for_good(self, monkeypatch, ran):
+        instance = _worker()
+        monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
+        finalized = []
+        monkeypatch.setattr(
+            instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
+        )
+        charged = self._charged_requeue(monkeypatch, instance)
+        ran['func'] = _raising(ValueError('still no tracks'))
+        job = _job('task-1')
+        job['attempts'] = job['max_attempts']
+
+        instance.run_job(job)
+
+        assert charged == []
         assert finalized == [config.TASK_STATUS_FAIL]
+
+    def test_a_permanent_failure_is_never_retried(self, monkeypatch, ran):
+        from taskqueue import TaskFailed
+
+        instance = _worker()
+        monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
+        finalized = []
+        monkeypatch.setattr(
+            instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
+        )
+        charged = self._charged_requeue(monkeypatch, instance)
+        ran['func'] = _raising(TaskFailed('this server type is not supported'))
+
+        instance.run_job(_job('task-1'))
+
+        assert charged == [], (
+            'TaskFailed is the one thing a task may say that means "no retry can fix '
+            'this"; retrying it would only spend the budget a real failure needs'
+        )
+        assert finalized == [config.TASK_STATUS_FAIL]
+
+    def test_a_cooperative_cancel_revokes_the_row_and_charges_nothing(
+        self, monkeypatch, ran
+    ):
+        from taskqueue import TaskCancelled
+
+        instance = _worker()
+        monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
+        finalized = []
+        monkeypatch.setattr(
+            instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
+        )
+        charged = self._charged_requeue(monkeypatch, instance)
+        ran['func'] = _raising(TaskCancelled('task-1 was revoked'))
+
+        instance.run_job(_job('task-1'))
+
+        assert charged == []
+        assert finalized == [config.TASK_STATUS_REVOKED]
+
+    def test_a_zero_attempt_budget_fails_on_the_first_error(self, monkeypatch, ran):
+        instance = _worker()
+        monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
+        finalized = []
+        monkeypatch.setattr(
+            instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
+        )
+        charged = self._charged_requeue(monkeypatch, instance)
+        ran['func'] = _raising(ValueError('planner blew up'))
+        job = _job('task-1')
+        job['max_attempts'] = 0
+
+        instance.run_job(job)
+
+        assert charged == [], (
+            'the migration planner is enqueued with max_attempts=0 on purpose: a dry '
+            'run that silently re-ran would hold the session claimed an extra attempt'
+        )
+        assert finalized == [config.TASK_STATUS_FAIL]
+
+    def test_the_retry_is_requeued_only_after_the_hold_is_dropped(
+        self, monkeypatch, ran
+    ):
+        instance = _worker()
+        monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
+        monkeypatch.setattr(instance, 'finalize', lambda *a, **k: None)
+        held_at_requeue = []
+        monkeypatch.setattr(
+            worker_mod.sql, 'current_row',
+            lambda _cur, _task_id: _running_row(instance.identity),
+        )
+
+        def requeue(_cur, task_id, _now, _details, delay_seconds=None):
+            held_at_requeue.append((instance._held_task_id, instance._held_attempts))
+            return config.TASK_STATUS_NEW
+
+        monkeypatch.setattr(worker_mod.sql, 'requeue_or_fail', requeue)
+        ran['func'] = _raising(ValueError('boom'))
+        instance._held_task_id = 'task-1'
+        instance._held_attempts = 0
+
+        instance.run_job(_job('task-1'))
+
+        assert held_at_requeue == [(None, None)], (
+            'requeue_or_fail publishes the same reclaim notice a maintenance reclaim '
+            'does, and on_reclaimed ends a worker whose held task and attempt match '
+            'it; requeueing while still holding would make the worker end itself '
+            'on every retry'
+        )
 
     def test_a_task_that_succeeded_is_never_remembered(self, monkeypatch, ran):
         instance = _worker()
@@ -202,15 +331,13 @@ class TestOnlyALostConnectionHandsTheRowBack:
 
         assert instance._abandoned == ['task-1']
 
-    def test_a_statement_timeout_fails_the_row_instead_of_handing_it_back(
+    def test_a_statement_timeout_is_charged_and_bounded_never_free(
         self, monkeypatch, ran
     ):
         instance = _worker()
         monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
-        finalized = []
-        monkeypatch.setattr(
-            instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
-        )
+        monkeypatch.setattr(instance, 'finalize', lambda *a, **k: None)
+        charged = self._charged_requeue(monkeypatch, instance)
         ran['func'] = _raising(
             psycopg2.errors.QueryCanceled(
                 'canceling statement due to statement timeout'
@@ -219,24 +346,25 @@ class TestOnlyALostConnectionHandsTheRowBack:
 
         instance.run_job(_job('task-1'))
 
-        assert instance._abandoned == []
-        assert finalized == [config.TASK_STATUS_FAIL]
+        assert instance._abandoned == [], (
+            'psycopg2 puts QueryCanceled under OperationalError, and treating it as a '
+            'lost connection once requeued it forever with no attempt charged and no '
+            'sleep. It is not a lost connection: it takes the charged, bounded, '
+            'backed-off path like any other failure'
+        )
+        assert [task_id for task_id, _delay in charged] == ['task-1']
 
-    def test_a_deadlock_fails_the_row_instead_of_handing_it_back(
-        self, monkeypatch, ran
-    ):
+    def test_a_deadlock_is_charged_and_bounded_never_free(self, monkeypatch, ran):
         instance = _worker()
         monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
-        finalized = []
-        monkeypatch.setattr(
-            instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
-        )
+        monkeypatch.setattr(instance, 'finalize', lambda *a, **k: None)
+        charged = self._charged_requeue(monkeypatch, instance)
         ran['func'] = _raising(psycopg2.errors.DeadlockDetected('deadlock detected'))
 
         instance.run_job(_job('task-1'))
 
         assert instance._abandoned == []
-        assert finalized == [config.TASK_STATUS_FAIL]
+        assert [task_id for task_id, _delay in charged] == ['task-1']
 
     def test_a_terminal_outcome_gives_the_row_its_free_retries_back(
         self, monkeypatch, ran

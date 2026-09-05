@@ -54,6 +54,11 @@ Main Features:
   parent dying mid-pass cannot lose a finished batch or double-count a launch.
 * Genre-stratified sampling and per-server calibration
   (_calibrate_cluster_params) auto-tune every algorithm via quick probes.
+* Progress goes through the one shared reporter and cancellation through the
+  one shared cancel check (tasks.task_run); the queue writes the terminal row
+  from what the task returns or raises. The parent hands the reporter a live
+  view of its resume state so every progress write carries it, which is what
+  lets a crashed parent resume with the winning result.
 """
 
 from collections import defaultdict
@@ -94,17 +99,18 @@ from config import (
     CLUSTERING_STALL_TIMEOUT_MINUTES,
     CLUSTERING_MAX_STALL_GIVE_UPS,
     QUEUE_WEDGED_MAIN_TASK_MINUTES,
-    TASK_STATUS_STARTED,
-    TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
 
 from error import error_manager
-from error.error_dictionary import ERR_CLUSTERING_FAILED, ERR_DB_CONNECTION
+from error.error_dictionary import ERR_CLUSTERING_FAILED
 
-from .recovery import ChildDrainSupervisor, row_heartbeat, slow_step_budget_minutes
+from .recovery import (
+    ChildDrainSupervisor, child_marks, row_heartbeat, slow_step_budget_minutes,
+)
+from .task_run import TaskCancelled, cancel_guard, make_task_reporter
 
 from database import (
     save_task_status,
@@ -116,7 +122,6 @@ from database import (
     get_child_tasks_from_db,
     get_recent_playlist_names,
     main_task_start_lock,
-    MAX_LOG_ENTRIES_STORED,
 )
 
 from sanitization import sanitize_for_json
@@ -214,210 +219,160 @@ def run_clustering_batch_task(
     logger.info(f"Starting clustering batch task {current_task_id} (Batch: {batch_id_str})")
 
     with app.app_context():
-        def _log_and_update(message, progress, details=None, state=TASK_STATUS_PROGRESS):
-            logger.info(f"[ClusteringBatchTask-{current_task_id}] {message}")
-            db_details = {
-                "batch_id": batch_id_str,
-                "start_run_idx": start_run_idx,
-                "num_iterations_in_batch": num_iterations_in_batch,
-                "message": message,
-                "status_message": message,
-                **(details or {}),
-            }
-
-            def write_if_parent_live():
-                if claimed_task_id:
-                    parent = get_task_info_from_db(parent_task_id)
-                    if parent is None or parent.get('status') in (
-                        TASK_STATUS_SUCCESS,
-                        TASK_STATUS_FAILURE,
-                        TASK_STATUS_REVOKED,
-                    ):
-                        logger.info(
-                            "Suppressing batch status write for %s because parent %s "
-                            "is missing or terminal.",
-                            current_task_id, parent_task_id,
-                        )
-                        return False
-                return save_task_status(
-                    current_task_id,
-                    "clustering_batch",
-                    state,
-                    parent_task_id=parent_task_id,
-                    sub_type_identifier=batch_id_str,
-                    progress=progress,
-                    details=db_details,
-                )
-
-            return write_if_parent_live()
-
-        try:
-            parent_task_info = get_task_info_from_db(parent_task_id)
-            if claimed_task_id and (
-                parent_task_info is None
-                or parent_task_info.get('status')
-                in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]
-            ):
-                logger.info(
-                    "Clustering batch %s will not start because parent %s is "
-                    "missing or terminal.",
-                    current_task_id, parent_task_id,
-                )
-                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
-            if not _log_and_update("Batch started.", 0):
-                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
-            genre_to_lightweight_track_data_map = json.loads(
-                genre_to_lightweight_track_data_map_json
+        parent_task_info = get_task_info_from_db(parent_task_id)
+        if claimed_task_id and (
+            parent_task_info is None
+            or parent_task_info.get('status')
+            in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]
+        ):
+            logger.info(
+                "Clustering batch %s will not start because parent %s is "
+                "missing or terminal.",
+                current_task_id, parent_task_id,
             )
-            elite_solutions_params_list = json.loads(elite_solutions_params_list_json)
-            mutation_config = json.loads(mutation_config_json)
-            current_sampled_track_ids = json.loads(initial_subset_track_ids_json)
+            return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
+        with cancel_guard(claimed_task_id, parent_task_id) as cancel:
+            cancel(force=True)
+            report = make_task_reporter(
+                current_task_id, "clustering_batch", "Batch started.",
+                parent_task_id=parent_task_id, sub_type_identifier=batch_id_str,
+                base_details={
+                    "batch_id": batch_id_str,
+                    "start_run_idx": start_run_idx,
+                    "num_iterations_in_batch": num_iterations_in_batch,
+                },
+                prefix=f"ClusteringBatchTask-{current_task_id}",
+            )
 
-            best_result_in_batch = None
-            best_score_in_batch = -1.0
-            best_rank_in_batch = (-1, -1.0)
-            iterations_completed = 0
-            tracks_cache = {}
+            def _log_and_update(message, progress, details=None):
+                return report(message, progress, **(details or {}))
 
-            for i in range(num_iterations_in_batch):
-                current_run_global_idx = start_run_idx + i
+            try:
+                genre_to_lightweight_track_data_map = json.loads(
+                    genre_to_lightweight_track_data_map_json
+                )
+                elite_solutions_params_list = json.loads(elite_solutions_params_list_json)
+                mutation_config = json.loads(mutation_config_json)
+                current_sampled_track_ids = json.loads(initial_subset_track_ids_json)
 
-                if claimed_task_id:
-                    task_info = get_task_info_from_db(current_task_id)
-                    parent_task_info = get_task_info_from_db(parent_task_id)
+                best_result_in_batch = None
+                best_score_in_batch = -1.0
+                best_rank_in_batch = (-1, -1.0)
+                iterations_completed = 0
+                tracks_cache = {}
+
+                for i in range(num_iterations_in_batch):
+                    current_run_global_idx = start_run_idx + i
+
+                    cancel()
+
+                    previous_subset_ids = set(current_sampled_track_ids)
+                    percentage_change = sampling_percentage_change_per_run
+                    current_subset_lightweight_data = _get_stratified_song_subset(
+                        genre_to_lightweight_track_data_map,
+                        target_songs_per_genre,
+                        prev_ids=current_sampled_track_ids,
+                        percent_change=percentage_change,
+                    )
+                    item_ids_for_iteration = [t['item_id'] for t in current_subset_lightweight_data]
+                    current_sampled_track_ids = list(item_ids_for_iteration)
+                    retained_count = len(previous_subset_ids & set(current_sampled_track_ids))
+                    logger.info(
+                        "[Batch-%s] Sampling run %d: %d/%d tracks retained; %d changed.",
+                        current_task_id,
+                        current_run_global_idx,
+                        retained_count,
+                        len(current_sampled_track_ids),
+                        len(current_sampled_track_ids) - retained_count,
+                    )
+
+                    if not item_ids_for_iteration:
+                        logger.warning(
+                            f"No songs in subset for iteration {current_run_global_idx}. Skipping."
+                        )
+                        continue
+
+                    iteration_step = (
+                        f"iteration {current_run_global_idx} "
+                        f"({clustering_method} over {len(item_ids_for_iteration)} songs)"
+                    )
+                    with row_heartbeat(
+                        claimed_task_id,
+                        iteration_step,
+                        every_minutes=CLUSTERING_STALL_TIMEOUT_MINUTES,
+                        stop_after_minutes=slow_step_budget_minutes(
+                            CLUSTERING_STALL_TIMEOUT_MINUTES
+                        ),
+                    ):
+                        iteration_result = _perform_single_clustering_iteration(
+                            run_idx=current_run_global_idx,
+                            item_ids_for_subset=item_ids_for_iteration,
+                            clustering_method=clustering_method,
+                            num_clusters_min_max=num_clusters_min_max_tuple,
+                            dbscan_params_ranges=dbscan_params_ranges_dict,
+                            gmm_params_ranges=gmm_params_ranges_dict,
+                            spectral_params_ranges=spectral_params_ranges_dict,
+                            pca_params_ranges=pca_params_ranges_dict,
+                            active_mood_labels=active_mood_labels_for_batch,
+                            max_songs_per_cluster=max_songs_per_cluster,
+                            log_prefix=f"[Batch-{current_task_id}]",
+                            elite_solutions_params_list=elite_solutions_params_list,
+                            exploitation_probability=exploitation_probability,
+                            mutation_config=mutation_config,
+                            score_weights=score_weights_dict,
+                            enable_clustering_embeddings=enable_clustering_embeddings_param,
+                            tracks_cache=tracks_cache,
+                        )
+                    iterations_completed += 1
+
+                    iteration_rank = (
+                        _viable_playlists(iteration_result, top_n_clustering_playlist_param),
+                        (iteration_result or {}).get("fitness_score", -1.0),
+                    )
                     if (
-                        task_info is None
-                        or task_info.get('status') == TASK_STATUS_REVOKED
-                        or parent_task_info is None
-                        or parent_task_info.get('status')
-                        in [TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED, TASK_STATUS_FAILURE]
+                        iteration_result
+                        and iteration_result.get("parameters")
+                        and iteration_rank > best_rank_in_batch
                     ):
-                        logger.info(
-                            "Stopping batch %s due to missing/terminal cancellation "
-                            "state; no task row will be recreated.",
-                            current_task_id,
-                        )
-                        return {"status": "REVOKED", "message": "Batch task revoked."}
+                        best_rank_in_batch = iteration_rank
+                        best_score_in_batch = iteration_result["fitness_score"]
+                        best_result_in_batch = iteration_result
 
-                previous_subset_ids = set(current_sampled_track_ids)
-                percentage_change = sampling_percentage_change_per_run
-                current_subset_lightweight_data = _get_stratified_song_subset(
-                    genre_to_lightweight_track_data_map,
-                    target_songs_per_genre,
-                    prev_ids=current_sampled_track_ids,
-                    percent_change=percentage_change,
-                )
-                item_ids_for_iteration = [t['item_id'] for t in current_subset_lightweight_data]
-                current_sampled_track_ids = list(item_ids_for_iteration)
-                retained_count = len(previous_subset_ids & set(current_sampled_track_ids))
-                logger.info(
-                    "[Batch-%s] Sampling run %d: %d/%d tracks retained; %d changed.",
-                    current_task_id,
-                    current_run_global_idx,
-                    retained_count,
-                    len(current_sampled_track_ids),
-                    len(current_sampled_track_ids) - retained_count,
-                )
-
-                if not item_ids_for_iteration:
-                    logger.warning(
-                        f"No songs in subset for iteration {current_run_global_idx}. Skipping."
+                    progress = int(100 * (i + 1) / num_iterations_in_batch)
+                    _log_and_update(
+                        f"Iteration {current_run_global_idx} complete. Batch best score: {best_score_in_batch:.2f}",
+                        progress,
                     )
-                    continue
 
-                iteration_step = (
-                    f"iteration {current_run_global_idx} "
-                    f"({clustering_method} over {len(item_ids_for_iteration)} songs)"
-                )
-                with row_heartbeat(
-                    claimed_task_id,
-                    iteration_step,
-                    every_minutes=CLUSTERING_STALL_TIMEOUT_MINUTES,
-                    stop_after_minutes=slow_step_budget_minutes(
-                        CLUSTERING_STALL_TIMEOUT_MINUTES
-                    ),
-                ):
-                    iteration_result = _perform_single_clustering_iteration(
-                        run_idx=current_run_global_idx,
-                        item_ids_for_subset=item_ids_for_iteration,
-                        clustering_method=clustering_method,
-                        num_clusters_min_max=num_clusters_min_max_tuple,
-                        dbscan_params_ranges=dbscan_params_ranges_dict,
-                        gmm_params_ranges=gmm_params_ranges_dict,
-                        spectral_params_ranges=spectral_params_ranges_dict,
-                        pca_params_ranges=pca_params_ranges_dict,
-                        active_mood_labels=active_mood_labels_for_batch,
-                        max_songs_per_cluster=max_songs_per_cluster,
-                        log_prefix=f"[Batch-{current_task_id}]",
-                        elite_solutions_params_list=elite_solutions_params_list,
-                        exploitation_probability=exploitation_probability,
-                        mutation_config=mutation_config,
-                        score_weights=score_weights_dict,
-                        enable_clustering_embeddings=enable_clustering_embeddings_param,
-                        tracks_cache=tracks_cache,
-                    )
-                iterations_completed += 1
+                if best_result_in_batch:
+                    best_result_in_batch = sanitize_for_json(best_result_in_batch)
 
-                iteration_rank = (
-                    _viable_playlists(iteration_result, top_n_clustering_playlist_param),
-                    (iteration_result or {}).get("fitness_score", -1.0),
-                )
-                if (
-                    iteration_result
-                    and iteration_result.get("parameters")
-                    and iteration_rank > best_rank_in_batch
-                ):
-                    best_rank_in_batch = iteration_rank
-                    best_score_in_batch = iteration_result["fitness_score"]
-                    best_result_in_batch = iteration_result
-
-                progress = int(100 * (i + 1) / num_iterations_in_batch)
+                message = f"Batch complete. Best score: {best_score_in_batch:.2f}"
                 _log_and_update(
-                    f"Iteration {current_run_global_idx} complete. Batch best score: {best_score_in_batch:.2f}",
-                    progress,
+                    message, 100,
+                    details={
+                        "best_score_in_batch": best_score_in_batch,
+                        "iterations_completed_in_batch": iterations_completed,
+                    },
                 )
+                return {
+                    "status": "SUCCESS",
+                    "message": message,
+                    "best_score_in_batch": best_score_in_batch,
+                    "iterations_completed_in_batch": iterations_completed,
+                    "full_best_result_from_batch": best_result_in_batch,
+                    "final_subset_track_ids": current_sampled_track_ids,
+                }
 
-            if best_result_in_batch:
-                best_result_in_batch = sanitize_for_json(best_result_in_batch)
-
-            final_details = {
-                "best_score_in_batch": best_score_in_batch,
-                "iterations_completed_in_batch": iterations_completed,
-                "full_best_result_from_batch": best_result_in_batch,
-                "final_subset_track_ids": current_sampled_track_ids,
-            }
-            if not _log_and_update(
-                f"Batch complete. Best score: {best_score_in_batch:.2f}",
-                100,
-                details=final_details,
-                state=TASK_STATUS_SUCCESS,
-            ):
-                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
-            return {
-                "status": "SUCCESS",
-                "iterations_completed_in_batch": iterations_completed,
-                "best_result_from_batch": best_result_in_batch,
-                "final_subset_track_ids": current_sampled_track_ids,
-            }
-
-        except OperationalError as e:
-            logger.exception(
-                "Database connection error during clustering batch %s; leaving the "
-                "row for the queue to requeue rather than failing it here.",
-                batch_id_str,
-            )
-            error_manager.record(ERR_DB_CONNECTION, str(e))
-            raise
-        except Exception as e:
-            logger.exception(f"Clustering batch {batch_id_str} failed")
-            err = error_manager.record(
-                error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e)
-            )
-            if not _log_and_update(
-                f"Batch failed: {e}", 100, details={"error": err}, state=TASK_STATUS_FAILURE
-            ):
-                return {"status": "REVOKED", "message": _PARENT_CANCELLED_MESSAGE}
-            return {"status": TASK_STATUS_FAILURE, "message": str(e)}
+            except (OperationalError, TaskCancelled):
+                raise
+            except Exception as e:
+                logger.exception(f"Clustering batch {batch_id_str} failed")
+                err = error_manager.record(
+                    error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e)
+                )
+                _log_and_update(f"Batch failed: {e}", report.state['progress'], details={"error": err})
+                raise
 
 
 def run_clustering_task(
@@ -539,7 +494,6 @@ def run_clustering_task(
             "stale_batches": 0,
             "batches_launched": 0,
             "server_idx": 0,
-            "log": [],
         }
         resume_from = _resumable_progress(task_info, num_clustering_runs)
         if resume_from:
@@ -551,53 +505,30 @@ def run_clustering_task(
                 resume_from.get("runs_completed", 0), num_clustering_runs,
             )
 
-        def _log_and_update(
-            message, progress, details_to_add_or_update=None, task_state=TASK_STATUS_PROGRESS
-        ):
-            logger.info(f"[MainClusteringTask-{current_task_id}] {message}")
-            if details_to_add_or_update:
-                _main_task_accumulated_details.update(details_to_add_or_update)
-
-            _main_task_accumulated_details["status_message"] = message
-            _main_task_accumulated_details["message"] = message
-            run_log = _main_task_accumulated_details["log"]
-            run_log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
-            if len(run_log) > MAX_LOG_ENTRIES_STORED:
-                del run_log[:-MAX_LOG_ENTRIES_STORED]
-
+        def _persistable_state():
             details_for_db = _main_task_accumulated_details.copy()
             details_for_db.pop('last_subset_ids', None)
+            details_for_db.pop('message', None)
+            details_for_db.pop('status_message', None)
             if details_for_db.get('best_result') is not None:
                 details_for_db['best_result'] = _persistable_best_result(
                     details_for_db['best_result']
                 )
+            return details_for_db
 
-            def write_if_still_claimed():
-                if claimed_task_id:
-                    own = get_task_info_from_db(current_task_id)
-                    if own is None or own.get('status') == TASK_STATUS_REVOKED:
-                        logger.info(
-                            "Suppressing main clustering status write for %s: its "
-                            "claim is gone, so the run was cancelled.",
-                            current_task_id,
-                        )
-                        return False
-                return save_task_status(
-                    current_task_id,
-                    "main_clustering",
-                    task_state,
-                    progress=progress,
-                    details=details_for_db,
-                )
+        progress_reporter = make_task_reporter(
+            current_task_id, "main_clustering",
+            f"Initializing clustering process ({clustering_method})...",
+            prefix=f"MainClusteringTask-{current_task_id}",
+            details_source=_persistable_state,
+        )
 
-            return write_if_still_claimed()
+        def _log_and_update(message, progress, details_to_add_or_update=None):
+            if details_to_add_or_update:
+                _main_task_accumulated_details.update(details_to_add_or_update)
+            return progress_reporter(message, progress)
 
         try:
-            _log_and_update(
-                f"Initializing clustering process ({clustering_method})...",
-                0,
-                task_state=TASK_STATUS_STARTED,
-            )
 
             target_servers = registry.servers_for_scope(output_server_scope)
             if not target_servers:
@@ -691,6 +622,8 @@ def run_clustering_task(
                         enable_clustering_embeddings_param,
                         auto_calibration_param,
                     )
+                except (TaskCancelled, OperationalError):
+                    raise
                 except Exception as exc:
                     logger.exception(
                         "Clustering failed on server '%s'; continuing with the "
@@ -702,7 +635,7 @@ def run_clustering_task(
                     continue
 
                 if status == 'revoked':
-                    return {"status": "REVOKED", "message": "Main clustering task revoked."}
+                    raise TaskCancelled("main clustering task revoked")
                 if status != 'success':
                     per_server_summary.append(
                         {'server': server_name, 'status': status, 'reason': payload}
@@ -764,7 +697,6 @@ def run_clustering_task(
             logger.info(f"[MainClusteringTask-{current_task_id}] {final_message}")
 
             final_db_summary = {
-                "status_message": final_message,
                 "running_parameters": initial_params,
                 "best_score": best_score_overall,
                 "best_params": best_params_overall,
@@ -772,23 +704,16 @@ def run_clustering_task(
                     s.get('playlists_created', 0) for s in successes
                 ),
                 "per_server": per_server_summary,
-                "log": _main_task_accumulated_details.get("log", [])[-MAX_LOG_ENTRIES_STORED:],
             }
+            _main_task_accumulated_details.update({
+                "best_result": None, "elite_solutions": [], "last_subset_ids": [],
+            })
+            _log_and_update(final_message, 100, details_to_add_or_update=final_db_summary)
 
+            return {"status": "SUCCESS", "message": final_message, **final_db_summary}
 
-            save_task_status(
-                current_task_id,
-                "main_clustering",
-                TASK_STATUS_SUCCESS,
-                progress=100,
-                details=final_db_summary,
-            )
-
-            return {
-                "status": "SUCCESS",
-                "message": f"Playlists created per server. Best score: {best_score_overall:.2f}",
-            }
-
+        except (TaskCancelled, OperationalError):
+            raise
         except Exception as e:
             logger.critical("FATAL ERROR in main clustering task", exc_info=True)
             err = error_manager.record(
@@ -796,18 +721,17 @@ def run_clustering_task(
             )
             _log_and_update(
                 f"Task failed: {e}",
-                100,
+                progress_reporter.state['progress'],
                 details_to_add_or_update={"error": err},
-                task_state=TASK_STATUS_FAILURE,
             )
             raise
 
 
 def _make_server_reporter(log_and_update, server_label, base_progress, span):
-    def report(message, local_pct, task_state=TASK_STATUS_PROGRESS):
+    def report(message, local_pct):
         scoped = f"[{server_label}] {message}" if server_label else message
         pct = base_progress + (max(0.0, min(100.0, float(local_pct))) / 100.0) * span
-        return log_and_update(scoped, pct, task_state=task_state)
+        return log_and_update(scoped, pct)
 
     return report
 
@@ -968,14 +892,16 @@ def _calibrate_cluster_params(
         return safe_min, safe_max, percentile
 
 
-def _run_claim_is_gone(claimed_task_id, task_id):
-    if not claimed_task_id:
-        return False
-    info = get_task_info_from_db(task_id)
-    return info is None or info.get('status') == TASK_STATUS_REVOKED
+def _cluster_one_server(target_server, state, report, claimed_task_id, current_task_id,
+                        *args, **kwargs):
+    with cancel_guard(claimed_task_id) as cancel:
+        return _cluster_one_server_impl(
+            target_server, state, report, claimed_task_id, current_task_id,
+            *args, cancel=cancel, **kwargs,
+        )
 
 
-def _cluster_one_server(
+def _cluster_one_server_impl(
     target_server,
     state,
     report,
@@ -1019,7 +945,9 @@ def _cluster_one_server(
     top_n_clustering_playlist_param,
     enable_clustering_embeddings_param,
     auto_calibration_param,
+    cancel=None,
 ):
+    cancel = cancel or (lambda force=False: None)
     server_name = target_server['name'] if target_server else 'default server'
     report("Fetching lightweight track data for stratification...", 1)
     db = get_db()
@@ -1181,23 +1109,21 @@ def _cluster_one_server(
     )
 
     while True:
-        task_info = get_task_info_from_db(current_task_id)
-        if claimed_task_id and (
-            task_info is None or task_info.get('status') == TASK_STATUS_REVOKED
-        ):
-            report("Task revoked, stopping.", local_pct, task_state=TASK_STATUS_REVOKED)
-            return 'revoked', None
+        cancel()
 
         _absorb_finished_batches(state, current_task_id, persist_progress)
 
         try:
-            live_marks = _live_batches(state, current_task_id)
+            live_marks = child_marks(
+                current_task_id,
+                prefix=(state.get("job_prefix") or current_task_id) + "_batch_",
+            )
         except Exception:
             logger.exception("Could not list the live clustering batches; retrying")
             supervisor.restart()
             time.sleep(3)
             continue
-        live = [job_id for job_id, _progress, _beat, _status in live_marks]
+        live = [mark[0] for mark in live_marks]
 
         failed_batch_count = state.get("failed_batches", 0)
         if failed_batch_count >= CLUSTERING_MAX_FAILED_BATCHES and not stop_launching:
@@ -1255,8 +1181,7 @@ def _cluster_one_server(
             )
             if not launched:
                 _rollback_quietly(launch_conn)
-                report("Task revoked before the next batch could start.", local_pct,
-                       task_state=TASK_STATUS_REVOKED)
+                report("Task revoked before the next batch could start.", local_pct)
                 return 'revoked', None
             state["batches_launched"] = next_batch_to_launch + 1
             if not persist_progress(
@@ -1278,20 +1203,20 @@ def _cluster_one_server(
             if num_clustering_runs > 0
             else 5
         )
-        progress_signature = (
-            state["runs_completed"], state["best_score"], tuple(sorted(live_marks)),
-            next_batch_to_launch, stop_launching,
+        moved, gave_up = supervisor.observe(
+            live_marks,
+            extras=(
+                state["runs_completed"], state["best_score"],
+                next_batch_to_launch, stop_launching,
+            ),
         )
-        if supervisor.moved(progress_signature):
+        if moved:
             report(
                 f"Progress: {state['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(live)}. Best score: {state['best_score']:.2f}",
                 local_pct,
             )
-        elif live and supervisor.expired():
-            abandoned, stalled_minutes = supervisor.give_up(
-                [(job_id, status) for job_id, _progress, _beat, status in live_marks],
-                [job_id for job_id, _progress, _beat, _status in live_marks],
-            )
+        elif gave_up is not None:
+            abandoned, stalled_minutes = gave_up
             if supervisor.exhausted():
                 stop_launching = True
             report(
@@ -1379,12 +1304,7 @@ def _cluster_one_server(
         90,
     )
 
-    if _run_claim_is_gone(claimed_task_id, current_task_id):
-        logger.info(
-            "Clustering %s was cancelled before naming; no playlist is created.",
-            current_task_id,
-        )
-        return 'revoked', None
+    cancel(force=True)
 
     previous_playlist_names = _previous_names_for_naming(
         target_server['server_id'] if target_server else None
@@ -1409,13 +1329,7 @@ def _cluster_one_server(
             previous_playlist_names=previous_playlist_names,
         )
 
-        if _run_claim_is_gone(claimed_task_id, current_task_id):
-            logger.info(
-                "Clustering %s was cancelled before playlist creation; the server is "
-                "left untouched.",
-                current_task_id,
-            )
-            return 'revoked', None
+        cancel(force=True)
 
         tail_step[0] = (
             f"creating {len(final_playlists_with_details)} playlists on {server_name}"
@@ -1653,20 +1567,6 @@ def _absorb_finished_batches(state_dict, parent_task_id, persist):
         _discard_reap(db, state_dict, snapshot)
         return 0
     return absorbed
-
-
-def _live_batches(state_dict, parent_task_id):
-    mine = (state_dict.get("job_prefix") or parent_task_id) + "_batch_"
-    return [
-        (
-            str(child.get('task_id')),
-            child.get('progress'),
-            str(child.get('beat_at') or ''),
-            str(child.get('status') or ''),
-        )
-        for child in taskqueue.live_children(parent_task_id)
-        if str(child.get('task_id') or '').startswith(mine)
-    ]
 
 
 def _launch_batch_job(

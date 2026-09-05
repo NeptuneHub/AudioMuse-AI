@@ -23,6 +23,10 @@ Main Features:
 * request_cancel / request_cancel_all publish the real-time stop signal
 * current_task_id tells a running task which row is its own
 * reap_finished_children deletes finished children and returns their outcomes
+* task_statuses is the one read a running task makes to learn whether it, or its
+  parent, was cancelled; tasks.task_run builds the shared cancel check on it
+* TaskFailed / TaskCancelled are the two things a task may raise to steer the
+  queue's verdict: never retry, and revoked. Everything else it raises is retried
 A root enqueue clears the FINISHED rows before inserting itself (the whole
 retention policy); it never touches NEW or RUNNING rows.
 """
@@ -31,6 +35,8 @@ import importlib
 import logging
 
 import queue_names
+
+from .errors import TaskCancelled, TaskFailed  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +219,10 @@ def reap_finished_children(parent_task_id, conn=None):
 
 def live_children(parent_task_id, conn=None):
     return _with_cursor(lambda sql, cur: sql.live_children(cur, parent_task_id), conn)
+
+
+def task_statuses(task_ids, conn=None):
+    return _with_cursor(lambda sql, cur: sql.task_statuses(cur, task_ids), conn)
 
 
 def worker_snapshot(conn=None):

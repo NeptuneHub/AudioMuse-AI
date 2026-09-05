@@ -933,31 +933,36 @@ def run_plugin_task(
                 'status': row.get('status'),
                 'message': 'Plugin task is already terminal.',
             }
+        from tasks.task_run import TaskFailed, cancel_guard
+
         try:
+            module = importlib.import_module(module_path)
+        except ModuleNotFoundError:
+            recovery = PluginManager()
+            recovery.setup_namespace()
+            recovery.sync(role=None)
+            recovery.ensure_requirements(role=None)
+            importlib.invalidate_caches()
             try:
                 module = importlib.import_module(module_path)
-            except ModuleNotFoundError:
-                recovery = PluginManager()
-                recovery.setup_namespace()
-                recovery.sync(role=None)
-                recovery.ensure_requirements(role=None)
-                importlib.invalidate_caches()
-                module = importlib.import_module(module_path)
+            except ModuleNotFoundError as exc:
+                raise TaskFailed(
+                    f"plugin module {module_path} is not installed on this worker even "
+                    "after a re-sync; no retry can change that"
+                ) from exc
+        try:
             func = getattr(module, fn_name)
+        except AttributeError as exc:
+            raise TaskFailed(
+                f"plugin module {module_path} has no function {fn_name}; no retry "
+                "can change that"
+            ) from exc
+        with cancel_guard(task_id) as cancel:
+            cancel(force=True)
             result = _run_per_server(func, server_scope, args, kwargs)
-            if row:
-                database.save_task_status(
-                    task_id, row['task_type'], config.TASK_STATUS_SUCCESS, progress=100,
-                    details={'message': 'Plugin task completed successfully.'},
-                )
-            return result
-        except Exception as exc:
-            if row:
-                database.save_task_status(
-                    task_id, row['task_type'], config.TASK_STATUS_FAILURE,
-                    details={'error': str(exc)},
-                )
-            raise
+        summary = dict(result) if isinstance(result, dict) else {}
+        summary.setdefault('message', 'Plugin task completed successfully.')
+        return summary
 
 
 def _run_per_server(func, server_scope, args, kwargs):
