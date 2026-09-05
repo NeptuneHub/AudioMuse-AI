@@ -2150,6 +2150,13 @@ def job_status(task_id):
                 status:
                   type: string
                   enum: [NEW, RUNNING, SUCCESS, FAIL, REVOKED]
+                message:
+                  type: string
+                  nullable: true
+                  description: |
+                    The task's own progress line. NEW after RUNNING is the
+                    worker restart the migration itself requests: the row is
+                    requeued uncharged and resumes on the fresh worker.
                 result:
                   nullable: true
                 error:
@@ -2199,6 +2206,7 @@ def job_status(task_id):
             {
                 'id': task_id,
                 'status': status,
+                'message': details.get('status_message') or details.get('message'),
                 'result': (
                     details.get('final_summary_details')
                     or details.get('result')

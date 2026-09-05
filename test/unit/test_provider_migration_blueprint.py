@@ -1022,3 +1022,33 @@ class TestSessionDiscard:
         assert resp.status_code == 503
         cancel.assert_not_called()
         db.commit.assert_not_called()
+
+
+class TestJobStatusCarriesTheTasksOwnLine:
+    def test_the_progress_line_rides_along_with_the_queue_status(self, client, monkeypatch):
+        import json
+
+        import database
+
+        monkeypatch.setattr(
+            database, 'get_task_info_from_db',
+            lambda task_id: {
+                'task_id': task_id,
+                'status': 'NEW',
+                'details': json.dumps({
+                    'status_message': (
+                        'Provider migration complete: 3 tracks repointed; waiting '
+                        'for the workers to acknowledge their restart.'
+                    ),
+                }),
+            },
+        )
+
+        payload = client.get('/api/migration/status/mig-1').get_json()
+
+        assert payload['status'] == 'NEW'
+        assert payload['message'].startswith('Provider migration complete'), (
+            'the page shows the raw queue status, and NEW after RUNNING is the '
+            "worker restart the migration itself requested; only the row's own "
+            'line says so, so it rides along'
+        )

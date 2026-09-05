@@ -66,7 +66,7 @@ def _conn(recorder, rows=None):
 
 
 class _Listener:
-    def __init__(self, monkeypatch, rows=None, connect_error=None):
+    def __init__(self, monkeypatch, rows=None, connect_error=None, patch_execute=True):
         self.listener = control.ControlListener()
         self.recorder = _Recorder()
         self.executed = []
@@ -82,7 +82,8 @@ class _Listener:
             return True
 
         monkeypatch.setattr(self.listener, 'connect', connect)
-        monkeypatch.setattr(self.listener, '_execute', execute)
+        if patch_execute:
+            monkeypatch.setattr(self.listener, '_execute', execute)
         monkeypatch.setattr(
             self.listener,
             '_record_ack',
@@ -260,49 +261,73 @@ class TestTheControlResultRefusesAMismatchedAction:
 
 
 class TestADeliberateRestartNeverChargesAWorkerLossAttempt:
-    def _harness(self, monkeypatch, execute_ok=True):
-        harness = _Listener(monkeypatch)
-        monkeypatch.setattr(harness.listener, '_execute', lambda action: execute_ok)
-        harness.requeued = []
+    def _harness(self, monkeypatch, stop_ok=True):
+        import restart_manager
+
+        harness = _Listener(monkeypatch, patch_execute=False)
+        harness.order = []
+        monkeypatch.setattr(
+            restart_manager, 'stop_supervisor_workers',
+            lambda: harness.order.append('stop') or stop_ok,
+        )
+        monkeypatch.setattr(
+            restart_manager, 'start_supervisor_workers',
+            lambda: harness.order.append('start') or True,
+        )
+        monkeypatch.setattr(
+            harness.listener, '_dispatch_plugin_sync',
+            lambda: harness.order.append('plugin-sync') or True,
+        )
         monkeypatch.setattr(
             harness.listener, '_requeue_tasks_of_stopped_workers',
-            lambda conn: harness.requeued.append(conn),
+            lambda conn: harness.order.append('requeue'),
         )
         return harness
 
-    def test_a_successful_restart_requeues_its_workers_tasks_itself(self, monkeypatch):
+    def test_a_successful_restart_requeues_between_the_stop_and_the_start(
+        self, monkeypatch
+    ):
         harness = self._harness(monkeypatch)
 
         harness.deliver(control.ACTION_RESTART, 'req-1')
 
-        assert len(harness.requeued) == 1, (
+        assert harness.order == ['stop', 'requeue', 'start'], (
             'a wizard save is a deliberate restart, not a crash: leaving the tasks '
-            'to the charged reclaim meant three saves during a long run failed it'
+            'to the charged reclaim meant three saves during a long run failed it. '
+            'And the requeue must land BEFORE the fresh workers claim anything: '
+            'after one supervisorctl restart it landed once they were already '
+            'claiming, so the migration root it requeued sat NEW behind the '
+            'alignment that root had itself queued'
         )
+        assert harness.acks == [('req-1', control.ACTION_RESTART, True)]
 
     def test_a_stop_requeues_too_so_start_resumes_at_zero_cost(self, monkeypatch):
         harness = self._harness(monkeypatch)
 
         harness.deliver(control.ACTION_STOP, 'req-2')
 
-        assert len(harness.requeued) == 1
+        assert harness.order == ['stop', 'requeue']
 
-    def test_a_failed_action_leaves_the_tasks_to_the_charged_reclaim(self, monkeypatch):
-        harness = self._harness(monkeypatch, execute_ok=False)
+    def test_a_failed_stop_leaves_the_tasks_to_the_charged_reclaim_and_still_starts(
+        self, monkeypatch
+    ):
+        harness = self._harness(monkeypatch, stop_ok=False)
 
         harness.deliver(control.ACTION_RESTART, 'req-3')
 
-        assert harness.requeued == [], (
+        assert harness.order == ['stop', 'start'], (
             'the workers may still be running; only the advisory-lock reclaim may '
-            'decide their fate'
+            'decide their fate, and the start still runs so a half-stopped fleet '
+            'is never left down'
         )
+        assert harness.acks == [('req-3', control.ACTION_RESTART, False)]
 
     def test_a_plugin_sync_does_not_touch_the_queue(self, monkeypatch):
         harness = self._harness(monkeypatch)
 
         harness.deliver(control.ACTION_PLUGIN_SYNC, 'req-4')
 
-        assert harness.requeued == []
+        assert harness.order == ['plugin-sync']
 
     def test_the_requeue_itself_never_increments_attempts(self):
         statement = ' '.join(sql._REQUEUE_UNCHARGED.split())

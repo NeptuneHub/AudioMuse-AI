@@ -1573,7 +1573,8 @@
             try {
                 const res = await jsonFetch(statusUrl);
                 const s = res.status || 'unknown';
-                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
+                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong>' +
+                    (res.message ? ' - ' + esc(res.message) : '') + '</div>';
                 if (AudioMuseTaskStatus.isSuccess(s)) {
                     const r = res.result || {};
                     const indexNote = r.index_rebuild_needed

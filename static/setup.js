@@ -316,6 +316,9 @@ function renderNavidromeAuthModeSelector(initialMode) {
         optLabel.style.marginBottom = '0.35rem';
         var input = document.createElement('input');
         input.type = 'radio';
+        input.style.width = 'auto';
+        input.style.flex = '0 0 auto';
+        input.style.margin = '0';
         input.name = 'navidrome_auth_mode';
         input.value = value;
         input.checked = (initialMode === value);
