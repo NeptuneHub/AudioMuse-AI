@@ -306,7 +306,8 @@ def for_each_server_in_scope(scope, step, *, on_server=None, cancel=None):
             raise
         except Exception:
             logger.exception(
-                "%s failed on %s; continuing with the remaining servers", scope, name
+                "The step failed on %s (scope %s); continuing with the remaining servers",
+                name, scope,
             )
             failed.append(name)
     return servers, results, failed
