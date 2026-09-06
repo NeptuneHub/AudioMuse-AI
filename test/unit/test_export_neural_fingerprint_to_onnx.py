@@ -69,8 +69,9 @@ def test_checkpoint_config_matches_the_runtime_front_end(export_module):
 
 
 def test_missing_config_key_is_a_loud_error(export_module):
+    broken = _SAMPLE_CONFIG.replace('EMB_SZ: 128', 'EMBED: 128')
     with pytest.raises(SystemExit, match='EMB_SZ'):
-        export_module.parse_checkpoint_config(_SAMPLE_CONFIG.replace('EMB_SZ: 128', 'EMBED: 128'))
+        export_module.parse_checkpoint_config(broken)
 
 
 def test_default_output_is_the_model_the_runtime_loads(export_module):

@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 import types
+import urllib.error
 import urllib.request
 
 import pytest
@@ -75,7 +76,8 @@ def _insecure():
 
 def test_certificate_is_created_once_names_the_host_and_keeps_its_key_private(tmp_path):
     cert_path, key_path = tls_listener.ensure_certificate(str(tmp_path))
-    assert os.path.isfile(cert_path) and os.path.isfile(key_path)
+    assert os.path.isfile(cert_path)
+    assert os.path.isfile(key_path)
     from cryptography import x509
 
     certificate = x509.load_pem_x509_certificate(open(cert_path, 'rb').read())
@@ -97,7 +99,7 @@ def test_one_port_answers_http_and_https_and_reports_the_real_client(dual_server
         assert response.read() == b'ok from 127.0.0.1'
     with urllib.request.urlopen(f'https://127.0.0.1:{port}/', context=_insecure(), timeout=10) as response:
         assert response.read() == b'ok from 127.0.0.1'
-    with pytest.raises(Exception):
+    with pytest.raises(urllib.error.URLError):
         urllib.request.urlopen(f'https://127.0.0.1:{port}/', timeout=10)
     connection = http.client.HTTPSConnection('127.0.0.1', port, context=_insecure(), timeout=10)
     for _ in range(3):
@@ -119,7 +121,8 @@ def test_a_client_whose_first_byte_arrives_late_is_still_served_as_http(dual_ser
             break
         reply += part
     raw.close()
-    assert reply.startswith(b'HTTP/1.') and b' 200 ' in reply.split(b'\r\n')[0]
+    assert reply.startswith(b'HTTP/1.')
+    assert b' 200 ' in reply.split(b'\r\n')[0]
     assert b'ok from 127.0.0.1' in reply
 
 
@@ -138,7 +141,10 @@ def test_disabled_https_passes_everything_through_and_a_bad_certificate_is_repor
     monkeypatch.setattr(config, 'FLASK_HTTPS_CERT_DIR', str(broken))
     assert tls_listener.prepare_tls() is False
     status = tls_listener.https_status()
-    assert status['enabled'] is True and status['running'] is False and status['port'] == 0 and status['error']
+    assert status['enabled'] is True
+    assert status['running'] is False
+    assert status['port'] == 0
+    assert status['error']
     with urllib.request.urlopen(f'http://127.0.0.1:{dual_server}/', timeout=10) as response:
         assert response.read() == b'ok from 127.0.0.1'
 
@@ -146,7 +152,8 @@ def test_disabled_https_passes_everything_through_and_a_bad_certificate_is_repor
 def test_the_relay_pair_is_a_tcp_pair_that_accepts_the_options_servers_set():
     inner, outer = tls_listener.loopback_pair()
     try:
-        assert inner.family == socket.AF_INET and outer.family == socket.AF_INET
+        assert inner.family == socket.AF_INET
+        assert outer.family == socket.AF_INET
         inner.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         inner.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         outer.sendall(b'GET / HTTP/1.1\r\n')
@@ -172,7 +179,8 @@ def test_the_gunicorn_hook_adopts_the_inherited_sockets_without_moving_the_port(
     module.post_worker_init(types.SimpleNamespace(sockets=[listener]))
     try:
         assert isinstance(listener.sock, tls_listener.DualProtocolListener)
-        assert listener.sock.fileno() == fd and listener.sock.getsockname()[1] == port
+        assert listener.sock.fileno() == fd
+        assert listener.sock.getsockname()[1] == port
         assert tls_listener.https_status()['running'] is True
         assert tls_listener.adopt_listener(listener.sock) is listener.sock
     finally:
@@ -190,9 +198,12 @@ def test_waitress_serves_on_a_dual_protocol_socket_bound_to_the_http_port(monkey
     monkeypatch.setattr(tls_listener, 'dual_listener', lambda host, port: bound)
     try:
         service_roles.serve_flask()
-        assert seen['sockets'] == [bound] and 'host' not in seen and 'port' not in seen
+        assert seen['sockets'] == [bound]
+        assert 'host' not in seen
+        assert 'port' not in seen
         assert seen['threads'] == service_roles.FLASK_THREADS
-        assert isinstance(bound, tls_listener.DualProtocolListener) and bound.getsockname()[0] == '127.0.0.1'
+        assert isinstance(bound, tls_listener.DualProtocolListener)
+        assert bound.getsockname()[0] == '127.0.0.1'
         assert tls_listener.https_status()['running'] is True
     finally:
         bound.close()

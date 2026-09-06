@@ -74,18 +74,21 @@ def test_the_pack_keeps_track_order_and_one_list_per_cell(library):
     lengths = [int(n) for n in nfi._STATE['lengths']]
     assert lengths == [tracks[k].shape[0] for k in sorted(tracks)]
     codes = nfi._STATE['codes']
-    assert codes.shape == (sum(lengths), nf.CODE_BYTES) and codes.dtype == np.uint8
+    assert codes.shape == (sum(lengths), nf.CODE_BYTES)
+    assert codes.dtype == np.uint8
     starts = nfi._STATE['starts']
     assert np.array_equal(codes[starts[1]:starts[1] + lengths[1]], nf.encode_codes(tracks['fp_0001']))
     legacy_codes = codes[starts[0]:starts[0] + lengths[0]]
     assert np.mean(legacy_codes == nf.encode_codes(tracks['fp_0000'])) > 0.9
     bounds = nfi._STATE['cell_bounds']
-    assert bounds[0] == 0 and bounds[-1] == sum(lengths)
+    assert bounds[0] == 0
+    assert bounds[-1] == sum(lengths)
     assert nfi._STATE['centroids'].shape[1] == nf.DIM
     assert np.array_equal(np.sort(np.asarray(nfi._STATE['cell_rows'])), np.arange(sum(lengths)))
     assert nfi._cached_count(paths) == 40
     status = nfi.get_status()
-    assert status['loaded'] is True and status['tracks'] == 40
+    assert status['loaded'] is True
+    assert status['tracks'] == 40
 
 
 def test_a_noisy_slice_is_found_at_its_offset_and_flagged(monkeypatch, library):
@@ -99,7 +102,8 @@ def test_a_noisy_slice_is_found_at_its_offset_and_flagged(monkeypatch, library):
     assert rows[0]['item_id'] == 'fp_0017'
     assert rows[0]['offset_seconds'] == pytest.approx(start * nf.HOP_SECONDS, abs=0.01)
     assert rows[0]['score'] > 0.7
-    assert rows[0]['identified'] is True and rows[0]['lead'] > 0.4
+    assert rows[0]['identified'] is True
+    assert rows[0]['lead'] > 0.4
     assert all(row['identified'] is False and row['lead'] is None for row in rows[1:])
     assert len(rows) == 10
 
@@ -108,7 +112,8 @@ def test_random_vectors_match_nothing_confidently_and_a_short_clip_is_refused(mo
     _tracks, rng, _paths = library
     _serve(monkeypatch, _unit(rng, (30, nf.DIM)))
     rows = nfi.identify(np.zeros(8000 * 16, dtype=np.float32), 8000, 5)
-    assert rows and not any(row['identified'] for row in rows)
+    assert rows
+    assert not any(row['identified'] for row in rows)
     assert rows[0]['score'] < config.NEURAL_FINGERPRINT_MIN_SCORE
     _serve(monkeypatch, _unit(rng, (1, nf.DIM)))
     with pytest.raises(ValueError, match='too short'):

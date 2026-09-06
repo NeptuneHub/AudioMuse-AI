@@ -43,7 +43,8 @@ def test_sub_fingerprint_count_follows_the_fpcalc_framing():
 
 def test_a_clip_too_short_for_one_window_yields_no_fingerprint():
     ints, rel = cf.fingerprint(np.zeros(cf.SAMPLE_RATE * 2, dtype=np.float32), cf.SAMPLE_RATE)
-    assert ints is None and rel is None
+    assert ints is None
+    assert rel is None
 
 
 def test_quantize_is_gray_coded_with_classifier_zero_on_top():

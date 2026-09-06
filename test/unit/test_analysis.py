@@ -1090,7 +1090,8 @@ def test_a_track_without_its_neural_fingerprint_gets_its_album_enqueued_only_whe
     }
 
     result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, dict(work_map))
-    assert result['status'] == 'SUCCESS' and enqueued == []
+    assert result['status'] == 'SUCCESS'
+    assert enqueued == []
 
     result, enqueued = _run_parent_phase(
         monkeypatch, albums, tracks_by_album, dict(work_map), neural_available=True

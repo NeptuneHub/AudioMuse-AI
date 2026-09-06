@@ -36,7 +36,8 @@ from tasks import chromaprint_identify as ci
 def test_split_planes_keeps_every_bit():
     values = np.array([0, 1, 0xFFFF, 0x10000, 0xDEADBEEF, 0xFFFFFFFF], dtype=np.uint32)
     lo, hi = ci.split_planes(values)
-    assert lo.dtype == np.uint16 and hi.dtype == np.uint16
+    assert lo.dtype == np.uint16
+    assert hi.dtype == np.uint16
     back = lo.astype(np.uint32) | (hi.astype(np.uint32) << np.uint32(16))
     assert np.array_equal(back, values)
 
@@ -60,8 +61,10 @@ def test_strided_score_uses_every_nth_query_frame_and_stays_a_rate():
     q_lo, q_hi = ci.split_planes(query)
     exact, off = ci.score_rows(lo[None, :], hi[None, :], q_lo, q_hi)
     strided, off4 = ci.score_rows(lo[None, :], hi[None, :], q_lo, q_hi, stride=4)
-    assert exact[0] == 0.0 and off[0] == 100
-    assert strided[0] == 0.0 and off4[0] == 100
+    assert exact[0] == 0.0
+    assert off[0] == 100
+    assert strided[0] == 0.0
+    assert off4[0] == 100
     other = rng.integers(0, 2 ** 32, size=201, dtype=np.uint64).astype(np.uint32)
     o_lo, o_hi = ci.split_planes(other)
     unrelated, _ = ci.score_rows(lo[None, :], hi[None, :], o_lo, o_hi, stride=4)
@@ -140,7 +143,8 @@ def test_frames_near_the_clip_majority_value_are_left_out_and_a_noise_clip_is_re
     query = np.concatenate([noise[:40], music, noise[40:]])
     kept = ci.informative_positions(query)
     assert 100 <= kept.size <= 120
-    assert kept.min() >= 30 and kept.max() < 170
+    assert kept.min() >= 30
+    assert kept.max() < 170
     assert ci.informative_positions(noise).size < 8
     _synthetic_library(monkeypatch, n_tracks=20)
     _fake_fpcalc(monkeypatch, noise)
@@ -167,7 +171,8 @@ def test_noise_frames_around_a_true_segment_do_not_stop_the_track_from_being_fou
     rows = ci.identify(np.zeros(48000 * 25, dtype=np.float32), 48000, 5)
     assert rows[0]['item_id'] == 'fp_00021'
     assert rows[0]['offset_seconds'] == pytest.approx(10 * ci.HOP_SECONDS, abs=0.2)
-    assert seen and all(n is not None and 100 <= n <= 121 for n in seen)
+    assert seen
+    assert all(n is not None and 100 <= n <= 121 for n in seen)
 
 
 def test_a_duplicate_of_the_best_track_shares_the_flag_and_the_lead_skips_it(monkeypatch):
@@ -181,9 +186,12 @@ def test_a_duplicate_of_the_best_track_shares_the_flag_and_the_lead_skips_it(mon
     monkeypatch.setattr(ci.config, 'RECORDING_SEARCH_IDENTIFY_SPEEDS', '')
     rows = ci.identify(np.zeros(48000 * 25, dtype=np.float32), 48000, 5)
     assert {rows[0]['item_id'], rows[1]['item_id']} == {'fp_00042', 'fp_00300'}
-    assert rows[0]['identified'] is True and rows[1]['identified'] is True
-    assert rows[0]['lead'] == rows[1]['lead'] and rows[0]['lead'] > 5
-    assert rows[2]['identified'] is False and rows[2]['lead'] is None
+    assert rows[0]['identified'] is True
+    assert rows[1]['identified'] is True
+    assert rows[0]['lead'] == rows[1]['lead']
+    assert rows[0]['lead'] > 5
+    assert rows[2]['identified'] is False
+    assert rows[2]['lead'] is None
 
 
 def test_a_close_runner_up_that_is_a_different_recording_withholds_the_flag(monkeypatch):
@@ -203,7 +211,8 @@ def test_a_close_runner_up_that_is_a_different_recording_withholds_the_flag(monk
     assert not any(row['identified'] for row in rows)
     monkeypatch.setattr(ci.config, 'RECORDING_SEARCH_IDENTIFY_LEAD', 0.0)
     rows = ci.identify(np.zeros(48000 * 25, dtype=np.float32), 48000, 5)
-    assert rows[0]['identified'] is True and rows[1]['identified'] is False
+    assert rows[0]['identified'] is True
+    assert rows[1]['identified'] is False
 
 
 def test_a_clip_of_a_track_not_in_the_library_flags_nothing(monkeypatch):

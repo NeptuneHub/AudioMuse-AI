@@ -63,7 +63,8 @@ def test_patches_are_half_second_apart_scaled_and_peak_normalised():
     expected = 1 + (5 * nf.SAMPLE_RATE - nf.SEGMENT_SAMPLES) // nf.HOP_SAMPLES
     assert patches.shape == (expected, nf.N_MELS, nf.SEGMENT_FRAMES, 1)
     assert patches.dtype == np.float32
-    assert patches.min() >= -1.0 and patches.max() <= 1.0
+    assert patches.min() >= -1.0
+    assert patches.max() <= 1.0
     assert np.allclose(patches.reshape(expected, -1).max(axis=1), 1.0)
     assert nf.mel_patches(np.zeros(4000, dtype=np.float32), 8000) is None
     assert nf.segment_starts(8000).tolist() == [0]
@@ -89,7 +90,8 @@ def test_blob_round_trip_and_rejection_of_foreign_bytes(codebook):
     assert blob[:4] == nf.BLOB_MAGIC
     assert len(blob) == nf._HEADER.size + 7 * nf.CODE_BYTES
     codes = nf.decode_blob(blob)
-    assert codes.shape == (7, nf.CODE_BYTES) and codes.dtype == np.uint8
+    assert codes.shape == (7, nf.CODE_BYTES)
+    assert codes.dtype == np.uint8
     assert np.array_equal(codes, nf.encode_codes(seven, book))
     back = nf.decode_blob_f32(blob)
     assert back.shape == (7, nf.DIM)

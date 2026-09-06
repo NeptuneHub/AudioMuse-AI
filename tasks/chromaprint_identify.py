@@ -443,44 +443,53 @@ def _query_variants(audio, sr):
         yield f'speed {factor}', resample_audio(clip, sr, int(round(sr * factor)))
 
 
+def _variant_z(label, scores, offsets, top, sample):
+    mu, sd = _null_stats(scores[sample])
+    if not np.isfinite(sd) or sd <= 0:
+        return None
+    z = (mu - scores[top]) / sd
+    z = np.where(np.isfinite(z), z, -np.inf)
+    top1 = float(z.max()) if z.size else -np.inf
+    return top1, label, z, offsets[top]
+
+
+def _better(chosen, candidate):
+    if candidate is None:
+        return chosen
+    if chosen is None or candidate[0] > chosen[0]:
+        return candidate
+    return chosen
+
+
 def _select_variant(audio, sr, top, sample, scores, offsets, min_len, threads):
     from tasks.chromaprint import fingerprint_audio
 
     subset = np.concatenate([top, sample])
-    chosen = None
-    speed_audio = {}
 
-    def consider(label, variant):
-        nonlocal chosen
+    def scored(label, variant):
         if variant is None:
-            s, o = scores, offsets
-        else:
-            query = fingerprint_audio(variant, sr)
-            if query is None or query.size < min_len:
-                return
-            positions = informative_positions(query)
-            if positions.size < min_len:
-                return
-            q_lo, q_hi = split_planes(query)
-            s, o, _n = _scan(subset, q_lo, q_hi, threads, positions=positions)
-        mu, sd = _null_stats(s[sample])
-        if not np.isfinite(sd) or sd <= 0:
-            return
-        z = (mu - s[top]) / sd
-        z = np.where(np.isfinite(z), z, -np.inf)
-        top1 = float(z.max()) if z.size else -np.inf
-        if chosen is None or top1 > chosen[0]:
-            chosen = (top1, label, z, o[top])
+            return _variant_z(label, scores, offsets, top, sample)
+        query = fingerprint_audio(variant, sr)
+        if query is None or query.size < min_len:
+            return None
+        positions = informative_positions(query)
+        if positions.size < min_len:
+            return None
+        q_lo, q_hi = split_planes(query)
+        s, o, _n = _scan(subset, q_lo, q_hi, threads, positions=positions)
+        return _variant_z(label, s, o, top, sample)
 
-    consider('as recorded', None)
+    chosen = scored('as recorded', None)
+    speed_audio = {}
     for label, variant in _query_variants(audio, sr):
         if label.startswith('speed'):
             speed_audio[label] = variant
-        consider(label, variant)
-    if chosen is not None and chosen[1] in speed_audio:
-        speed_label = chosen[1]
-        for phase_label, shifted in _phase_shifts(speed_audio[speed_label], sr):
-            consider(f'{speed_label}, {phase_label}', shifted)
+        chosen = _better(chosen, scored(label, variant))
+    if chosen is None or chosen[1] not in speed_audio:
+        return chosen
+    speed_label = chosen[1]
+    for phase_label, shifted in _phase_shifts(speed_audio[speed_label], sr):
+        chosen = _better(chosen, scored(f'{speed_label}, {phase_label}', shifted))
     return chosen
 
 

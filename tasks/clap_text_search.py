@@ -225,7 +225,7 @@ def search_by_text(
 
             text_embedding = get_text_embedding(query_text)
         if text_embedding is None:
-            logger.error(f"Failed to generate text embedding for: {query_text}")
+            logger.error("Failed to generate the text embedding for a %d-character query", len(query_text))
             return []
 
         if steering:
@@ -239,11 +239,11 @@ def search_by_text(
                 )
 
         results = search_by_embedding(text_embedding, limit=limit)
-        logger.info(f"Text search '{query_text}': found {len(results)} results via CLAP index")
+        logger.info("Text search (%d characters): found %d results via CLAP index", len(query_text), len(results))
         return results
 
     except Exception:
-        logger.exception(f"Text search failed for '{query_text}'")
+        logger.exception("Text search failed for a %d-character query", len(query_text))
         return []
 
 

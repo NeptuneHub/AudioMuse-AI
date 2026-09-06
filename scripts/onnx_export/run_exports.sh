@@ -124,12 +124,12 @@ NFP_CKPT_DIR=/tmp/nmfp-triplet
 NFP_VENV="${REPO_ROOT}/.venv-tfexport"
 NFP_PYTHON="${NEURAL_FP_PYTHON:-python3.11}"
 
-if [ -f "${NFP_OUT}" ]; then
+if [[ -f "${NFP_OUT}" ]]; then
     echo "==> ${NFP_OUT} already exists, skipping neural fingerprint export."
 elif ! command -v "${NFP_PYTHON}" >/dev/null 2>&1; then
     echo "==> ${NFP_PYTHON} not found, skipping neural fingerprint export (set NEURAL_FP_PYTHON=/path/to/python3.11)."
 else
-    if [ ! -x "${NFP_VENV}/bin/python" ]; then
+    if [[ ! -x "${NFP_VENV}/bin/python" ]]; then
         echo "==> Creating ${NFP_VENV} with ${NFP_PYTHON}..."
         "${NFP_PYTHON}" -m venv "${NFP_VENV}"
     fi
@@ -142,15 +142,15 @@ else
         'numpy==1.24.3' \
         'protobuf>=4.25,<5'
 
-    if [ ! -d "${NFP_SRC}/.git" ]; then
+    if [[ ! -d "${NFP_SRC}/.git" ]]; then
         echo "==> Cloning neural-music-fp to ${NFP_SRC}..."
         git clone --quiet https://github.com/raraz15/neural-music-fp "${NFP_SRC}"
     fi
     git -C "${NFP_SRC}" checkout --quiet "${NFP_COMMIT}"
 
-    if [ ! -f "${NFP_CKPT_DIR}/config.yaml" ]; then
+    if [[ ! -f "${NFP_CKPT_DIR}/config.yaml" ]]; then
         echo "==> Downloading the nmfp-triplet checkpoint to ${NFP_CKPT_ZIP}..."
-        curl -L -o "${NFP_CKPT_ZIP}" "${NFP_CKPT_URL}"
+        curl --proto '=https' --proto-redir '=https' --tlsv1.2 -L -o "${NFP_CKPT_ZIP}" "${NFP_CKPT_URL}"
         unzip -o -q "${NFP_CKPT_ZIP}" -d "$(dirname "${NFP_CKPT_DIR}")"
     fi
 
@@ -170,9 +170,9 @@ fi
 #    NEURAL_FP_DSN points at such a database (read only), in the project venv.
 # ---------------------------------------------------------------------------
 NFP_PQ_OUT=neural_fingerprint_pq.npz
-if [ -f "${NFP_PQ_OUT}" ]; then
+if [[ -f "${NFP_PQ_OUT}" ]]; then
     echo "==> ${NFP_PQ_OUT} already exists, skipping codebook training."
-elif [ -z "${NEURAL_FP_DSN:-}" ]; then
+elif [[ -z "${NEURAL_FP_DSN:-}" ]]; then
     echo "==> NEURAL_FP_DSN not set, skipping codebook training (needs a database with neural fingerprints)."
 else
     echo "==> Training the neural fingerprint codebook -> ${NFP_PQ_OUT}..."

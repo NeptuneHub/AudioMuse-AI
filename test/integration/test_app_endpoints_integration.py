@@ -45,6 +45,8 @@ _SCORE_DDL = (
 )
 _EMBEDDING_DDL = (
     "CREATE TABLE embedding (item_id TEXT PRIMARY KEY, embedding BYTEA, "
+    "poincare_embedding BYTEA, hyperbolic_radius DOUBLE PRECISION, "
+    "neural_fingerprint BYTEA, "
     "FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
 )
 

@@ -108,11 +108,14 @@ def _render_page(bp_mod, monkeypatch, status):
 
 def test_the_page_carries_the_built_in_https_port_or_zero_and_the_start_error(bp_mod, monkeypatch):
     running = _render_page(bp_mod, monkeypatch, {'enabled': True, 'running': True, 'port': 8443, 'error': None})
-    assert running['https_port'] == 8443 and running['https_error'] == ''
+    assert running['https_port'] == 8443
+    assert running['https_error'] == ''
     disabled = _render_page(bp_mod, monkeypatch, {'enabled': False, 'running': False, 'port': 0, 'error': 'disabled by FLASK_HTTPS_PORT'})
-    assert disabled['https_port'] == 0 and disabled['https_error'] == 'disabled by FLASK_HTTPS_PORT'
+    assert disabled['https_port'] == 0
+    assert disabled['https_error'] == 'disabled by FLASK_HTTPS_PORT'
     failed = _render_page(bp_mod, monkeypatch, {'enabled': True, 'running': False, 'port': 8443, 'error': 'address already in use'})
-    assert failed['https_port'] == 8443 and failed['https_error'] == 'address already in use'
+    assert failed['https_port'] == 8443
+    assert failed['https_error'] == 'address already in use'
 
 
 def test_missing_clip_answers_400(client):

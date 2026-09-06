@@ -62,14 +62,19 @@ MODE_LABELS = {
 
 _SILENCE_RMS = 1e-5
 _COPY_CHUNK_BYTES = 1024 * 1024
-_SUFFIX_RE = re.compile(r'[^A-Za-z0-9.]')
+_SUFFIXES = {
+    ext: ext for ext in (
+        '.webm', '.weba', '.ogg', '.oga', '.opus', '.mp3', '.m4a', '.mp4', '.aac', '.wav', '.flac',
+        '.wma', '.caf', '.aiff', '.aif', '.3gp', '.amr', '.mkv', '.mka',
+    )
+}
 
 _TIMER = IdleUnloadTimer()
 
 
 def _safe_suffix(filename):
-    suffix = _SUFFIX_RE.sub('', os.path.splitext(filename or '')[1])[:8]
-    return suffix if suffix.startswith('.') and len(suffix) > 1 else '.bin'
+    extension = re.sub(r'[^a-z0-9.]', '', os.path.splitext(filename or '')[1].lower())
+    return _SUFFIXES.get(extension, '.bin')
 
 
 def _write_clip(clip, handle):

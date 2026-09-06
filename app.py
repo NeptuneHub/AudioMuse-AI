@@ -1451,7 +1451,7 @@ if __name__ == '__main__':
     from tls_listener import adopt_listener, prepare_tls
 
     prepare_tls()
-    _server = make_server('0.0.0.0', 8000, app, threaded=True)
+    _server = make_server('0.0.0.0', 8000, app, threaded=True)  # nosec B104 - a self-hosted server must be reachable
     _server.socket = adopt_listener(_server.socket)
     logger.info('Serving HTTP and HTTPS on 0.0.0.0:8000')
     _server.serve_forever()

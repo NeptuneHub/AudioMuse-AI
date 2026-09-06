@@ -182,6 +182,7 @@ def prepare_tls():
     try:
         cert_path, key_path = ensure_certificate(config.FLASK_HTTPS_CERT_DIR)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert_path, key_path)
     except Exception as exc:
         _STATE['error'] = str(exc)
@@ -209,88 +210,115 @@ def https_status():
         }
 
 
-def _relay(context, raw, inner, addr):
-    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
-    tls = context.wrap_bio(incoming, outgoing, server_side=True)
-    raw.setblocking(False)
-    inner.setblocking(False)
-    to_client, to_app = bytearray(), bytearray()
-    handshaken = client_done = app_done = False
-    inner_write_closed = raw_write_closed = False
-    try:
+class _TlsRelay:
+    def __init__(self, context, raw, inner, addr):
+        self.raw, self.inner, self.addr = raw, inner, addr
+        self.incoming, self.outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+        self.tls = context.wrap_bio(self.incoming, self.outgoing, server_side=True)
+        self.to_client, self.to_app = bytearray(), bytearray()
+        self.handshaken = self.client_done = self.app_done = False
+        self.inner_write_closed = self.raw_write_closed = False
+
+    def _handshake(self):
+        if self.handshaken:
+            return
+        try:
+            self.tls.do_handshake()
+            self.handshaken = True
+        except ssl.SSLWantReadError:
+            pass
+
+    def _decrypt_client_bytes(self):
+        if not self.handshaken or self.client_done:
+            return
         while True:
-            if not handshaken:
-                try:
-                    tls.do_handshake()
-                    handshaken = True
-                except ssl.SSLWantReadError:
-                    pass
-            if handshaken and not client_done:
-                while True:
-                    try:
-                        chunk = tls.read(_CHUNK)
-                    except ssl.SSLWantReadError:
-                        break
-                    except ssl.SSLZeroReturnError:
-                        client_done = True
-                        break
-                    if not chunk:
-                        client_done = True
-                        break
-                    to_app += chunk
-            to_client += outgoing.read()
-            if client_done and not to_app and not inner_write_closed:
-                inner.shutdown(socket.SHUT_WR)
-                inner_write_closed = True
-            if app_done and not to_client and not raw_write_closed:
-                raw.shutdown(socket.SHUT_WR)
-                raw_write_closed = True
-            readers = []
-            if not client_done:
-                readers.append(raw)
-            if handshaken and not app_done:
-                readers.append(inner)
-            writers = []
-            if to_client:
-                writers.append(raw)
-            if to_app:
-                writers.append(inner)
-            if not readers and not writers:
-                break
-            ready_r, ready_w, _ = select.select(readers, writers, [], RELAY_IDLE_SECONDS)
-            if not ready_r and not ready_w:
-                break
-            if raw in ready_r:
-                data = raw.recv(_CHUNK)
-                if data:
-                    incoming.write(data)
-                else:
-                    incoming.write_eof()
-                    client_done = True
-            if inner in ready_r:
-                data = inner.recv(_CHUNK)
-                if data:
-                    tls.write(data)
-                else:
-                    app_done = True
-                    try:
-                        tls.unwrap()
-                    except ssl.SSLError:
-                        pass
-            if raw in ready_w and to_client:
-                sent = raw.send(bytes(to_client[:_CHUNK]))
-                del to_client[:sent]
-            if inner in ready_w and to_app:
-                sent = inner.send(bytes(to_app[:_CHUNK]))
-                del to_app[:sent]
-    except (OSError, ssl.SSLError) as exc:
-        logger.debug('TLS relay with %s ended: %s', addr, exc)
-    finally:
-        for sock in (raw, inner):
             try:
-                sock.close()
-            except OSError:
+                chunk = self.tls.read(_CHUNK)
+            except ssl.SSLWantReadError:
+                return
+            except ssl.SSLZeroReturnError:
+                self.client_done = True
+                return
+            if not chunk:
+                self.client_done = True
+                return
+            self.to_app += chunk
+
+    def _close_finished_directions(self):
+        if self.client_done and not self.to_app and not self.inner_write_closed:
+            self.inner.shutdown(socket.SHUT_WR)
+            self.inner_write_closed = True
+        if self.app_done and not self.to_client and not self.raw_write_closed:
+            self.raw.shutdown(socket.SHUT_WR)
+            self.raw_write_closed = True
+
+    def _wait(self):
+        readers = [sock for sock, wanted in (
+            (self.raw, not self.client_done), (self.inner, self.handshaken and not self.app_done),
+        ) if wanted]
+        writers = [sock for sock, wanted in ((self.raw, bool(self.to_client)), (self.inner, bool(self.to_app))) if wanted]
+        if not readers and not writers:
+            return None, None
+        ready_r, ready_w, _ = select.select(readers, writers, [], RELAY_IDLE_SECONDS)
+        if not ready_r and not ready_w:
+            return None, None
+        return ready_r, ready_w
+
+    def _read_client(self):
+        data = self.raw.recv(_CHUNK)
+        if data:
+            self.incoming.write(data)
+            return
+        self.incoming.write_eof()
+        self.client_done = True
+
+    def _read_app(self):
+        data = self.inner.recv(_CHUNK)
+        if data:
+            self.tls.write(data)
+            return
+        self.app_done = True
+        try:
+            self.tls.unwrap()
+        except ssl.SSLError:
+            pass
+
+    def _step(self):
+        self._handshake()
+        self._decrypt_client_bytes()
+        self.to_client += self.outgoing.read()
+        self._close_finished_directions()
+        ready_r, ready_w = self._wait()
+        if ready_r is None:
+            return False
+        if self.raw in ready_r:
+            self._read_client()
+        if self.inner in ready_r:
+            self._read_app()
+        if self.raw in ready_w and self.to_client:
+            del self.to_client[:self.raw.send(bytes(self.to_client[:_CHUNK]))]
+        if self.inner in ready_w and self.to_app:
+            del self.to_app[:self.inner.send(bytes(self.to_app[:_CHUNK]))]
+        return True
+
+    def run(self):
+        self.raw.setblocking(False)
+        self.inner.setblocking(False)
+        try:
+            while self._step():
                 pass
+        except OSError as exc:
+            logger.debug('TLS relay with %s ended: %s', self.addr, exc)
+        finally:
+            for sock in (self.raw, self.inner):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+
+def _relay(context, raw, inner, addr):
+    _TlsRelay(context, raw, inner, addr).run()
 
 
 def loopback_pair():

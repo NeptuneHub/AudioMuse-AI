@@ -115,8 +115,9 @@ def test_decode_clip_accepts_a_stream_and_never_needs_the_bytes_in_memory(monkey
 def test_decode_clip_refuses_a_stream_past_the_upload_ceiling_while_copying(monkeypatch):
     monkeypatch.setattr(rsm.config, 'RECORDING_SEARCH_MAX_UPLOAD_MB', 0)
     monkeypatch.setattr(rsm, '_COPY_CHUNK_BYTES', 1024)
+    stream = io.BytesIO(_wav_bytes(1.0))
     with pytest.raises(ValueError, match='larger than 0 MB'):
-        rsm.decode_clip(io.BytesIO(_wav_bytes(1.0)), 'clip.wav')
+        rsm.decode_clip(stream, 'clip.wav')
 
 
 def test_safe_suffix_keeps_only_a_short_alphanumeric_extension():
@@ -149,8 +150,10 @@ def test_each_mode_runs_only_its_own_searcher_and_returns_its_rows(monkeypatch):
     payload = rsm.run_recording_search(b'x', 'c.wav', 'neural', 10)
     assert calls == ['neural']
     assert [row['item_id'] for row in payload['results']] == ['c']
-    assert payload['mode'] == 'neural' and payload['count'] == 1
-    assert payload['clip_seconds'] == 1.0 and payload['transcript'] is None
+    assert payload['mode'] == 'neural'
+    assert payload['count'] == 1
+    assert payload['clip_seconds'] == 1.0
+    assert payload['transcript'] is None
     assert 'sources' not in payload
 
 
