@@ -757,10 +757,7 @@ def _dispatch_cron_row(db, r):
             lambda job_id=job_id, server_scope=server_scope, task_type=task_type, queue=queue, cron_task=cron_task: taskqueue.enqueue(
                 'plugin.manager.run_plugin_task',
                 args=(cron_task['dotted'],),
-                kwargs={
-                    'server_scope': server_scope,
-                    'task_claim_required': True,
-                },
+                kwargs={'server_scope': server_scope},
                 task_id=job_id,
                 task_type=task_type,
                 queue=queue,

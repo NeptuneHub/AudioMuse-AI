@@ -21,7 +21,11 @@ a near-leaf module (imports only leaves) under the MAX_CHAIN cap.
 
 Main Features:
 * ensure_schema adds the queue columns, indexes and the one-time migration
-* insert_job / claim / finish_child / requeue_or_fail move a row through its life
+* insert_job / claim / finish_task / requeue_or_fail move a row through its life
+* end_child is the one statement a parent ends its own child with when it gives
+  up on it: guarded by parent_task_id, and accepting a NEW child as well as a
+  RUNNING one, because a give-up victim may never have been claimed. It clears
+  the job columns like finish_task does, so a terminal child is never runnable
 * hold / try_hold / release are the advisory-lock liveness primitives
 * reap_children deletes finished children; notify_* publish to workers/Flask
 * blob_tables_autovacuum_cannot_reach / vacuum_table sweep the tables whose dead
@@ -784,6 +788,25 @@ def finish_task(cur, task_id, status, details, now, worker_id=None):
     )
     row = cur.fetchone()
     return row[0] if row else None
+
+
+_END_CHILD = f"""
+    UPDATE task_status
+    SET status = %s, progress = 100, details = %s,
+        end_time = COALESCE(end_time, %s), timestamp = NOW(),
+        func = NULL, payload = NULL,
+        shared_token = NULL, shared_payload = NULL
+    WHERE task_id = %s AND parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
+    RETURNING task_id
+"""
+
+
+def end_child(cur, task_id, parent_task_id, status, details, now):
+    cur.execute(
+        _END_CHILD,
+        (status, json.dumps(details, default=str), now, task_id, parent_task_id),
+    )
+    return cur.fetchone() is not None
 
 
 _REAP_CHILDREN = f"""

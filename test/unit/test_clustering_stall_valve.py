@@ -253,13 +253,15 @@ def _drive(
             db.commit()
         return accepted
 
-    def save_status(task_id, task_type, status, **kwargs):
-        run.revoked.append((task_id, status, kwargs.get('details', {})))
+    def end_child(task_id, parent_task_id, status, message):
+        assert parent_task_id == 'main'
+        run.revoked.append((task_id, status, {'message': message}))
+        queue.request_cancel(task_id)
         return True
 
     monkeypatch.setattr(clustering, 'time', clock)
     monkeypatch.setattr(clustering, 'get_db', lambda: db)
-    monkeypatch.setattr(clustering, 'save_task_status', save_status)
+    monkeypatch.setattr(clustering.taskqueue, 'end_child', end_child)
     monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
     monkeypatch.setattr(
         clustering, 'get_task_info_from_db', lambda _task_id: parent_row,

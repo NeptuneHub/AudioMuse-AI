@@ -1098,3 +1098,53 @@ class TestTheClaimConnectionIsWatchedWhileAJobRuns:
             listener._pump()
 
         assert ticks == [1, 1]
+
+
+class TestASpentRestartBudgetIsSaidOutLoud:
+    def test_the_last_failure_logs_that_no_restart_is_left(self, monkeypatch, ran, caplog):
+        import logging
+
+        instance = _worker()
+        monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
+        finalized = []
+        monkeypatch.setattr(
+            instance, 'finalize', lambda job, status, *a, **k: finalized.append(status)
+        )
+        ran['func'] = _raising(ValueError('the media server keeps answering 502'))
+        job = _job('task-1')
+        job['attempts'] = 3
+
+        with caplog.at_level(logging.ERROR, logger='taskqueue.worker'):
+            instance.run_job(job)
+
+        assert finalized == [config.TASK_STATUS_FAIL]
+        assert any(
+            'no restart left of 3' in record.getMessage() and record.levelno == logging.ERROR
+            for record in caplog.records
+        ), (
+            'a retry says how long until the next attempt; the attempt that spends '
+            'the last restart said nothing but "raised" and "Finished", so an operator '
+            'reading the log could not tell a final failure from a retried one'
+        )
+
+    def test_a_retry_still_says_when_it_runs_again(self, monkeypatch, ran, caplog):
+        import logging
+
+        instance = _worker()
+        monkeypatch.setattr(instance, 'hydrate_config', lambda: None)
+        monkeypatch.setattr(instance, 'finalize', lambda *a, **k: None)
+        monkeypatch.setattr(
+            worker_mod.sql, 'current_row',
+            lambda _cur, _task_id: _running_row(instance.identity),
+        )
+        monkeypatch.setattr(
+            worker_mod.sql, 'requeue_or_fail',
+            lambda *a, **k: config.TASK_STATUS_NEW,
+        )
+        ran['func'] = _raising(ValueError('502'))
+
+        with caplog.at_level(logging.WARNING, logger='taskqueue.worker'):
+            instance.run_job(_job('task-1'))
+
+        assert any('restart 1 of 3 runs in' in r.getMessage() for r in caplog.records)
+        assert not any('no restart left' in r.getMessage() for r in caplog.records)

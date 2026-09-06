@@ -138,6 +138,7 @@ class TestRenamingAStatusInConfigMovesEveryStatement:
             renamed._REQUEUE_OR_FAIL,
             renamed._PUT_SHARED,
             renamed._LIVE_CHILDREN,
+            renamed._END_CHILD,
             renamed.TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD,
         ):
             assert "IN ('QUEUED','BUSY')" in statement
@@ -237,6 +238,17 @@ class TestTheShippedPredicatesKeepTheirExactText:
 
     def test_the_terminal_write_still_requires_a_running_row(self):
         assert "AND status = 'RUNNING'" in sql._FINISH_TASK
+
+    def test_the_parent_verdict_ends_a_queued_or_running_child_of_its_own(self):
+        assert "status IN ('NEW','RUNNING')" in sql._END_CHILD, (
+            'a give-up victim may never have been claimed, so the parent must be '
+            'able to end a NEW child as well as a RUNNING one'
+        )
+        assert 'parent_task_id = %s' in sql._END_CHILD, (
+            'a parent may end only its own child; without the guard any caller '
+            'could write a terminal row on any live row'
+        )
+        assert 'func = NULL, payload = NULL' in sql._END_CHILD
 
     def test_the_uncharged_requeue_still_moves_running_back_to_new(self):
         assert "SET status='NEW'" in sql._REQUEUE_UNCHARGED

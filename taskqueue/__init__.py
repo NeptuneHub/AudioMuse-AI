@@ -25,6 +25,10 @@ Main Features:
 * request_cancel / request_cancel_all publish the real-time stop signal
 * current_task_id tells a running task which row is its own
 * reap_finished_children deletes finished children and returns their outcomes
+* end_child is how a parent ends a child it gave up on: the queue writes the
+  child's terminal row, guarded by the parent's own id, and publishes the cancel
+  in the same transaction, so the row and the signal land together or not at
+  all. It is the ONE terminal row a task may write, and it is never its own
 * task_statuses is the one read a running task makes to learn whether it, or its
   parent, was cancelled; tasks.task_run builds the shared cancel check on it
 * TaskFailed / TaskCancelled are the two things a task may raise to steer the
@@ -35,6 +39,7 @@ retention policy); it never touches NEW or RUNNING rows.
 
 import importlib
 import logging
+import time
 
 import queue_names
 import task_types
@@ -220,6 +225,24 @@ def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAU
 
 def reap_finished_children(parent_task_id, conn=None):
     return _with_cursor(lambda sql, cur: sql.reap_children(cur, parent_task_id), conn)
+
+
+def end_child(task_id, parent_task_id, status, message, conn=None):
+    import config
+
+    if status not in (config.TASK_STATUS_FAIL, config.TASK_STATUS_REVOKED):
+        raise ValueError(f"a parent may end its child as FAIL or REVOKED, not {status!r}")
+    if not parent_task_id:
+        raise ValueError('end_child needs the parent that owns the child')
+
+    def _end(sql, cur):
+        ended = sql.end_child(
+            cur, task_id, parent_task_id, status, {'message': message}, time.time(),
+        )
+        sql.notify_cancel(cur, str(task_id))
+        return ended
+
+    return _with_cursor(_end, conn)
 
 
 def live_children(parent_task_id, conn=None):

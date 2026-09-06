@@ -481,6 +481,8 @@ class Worker:
         else:
             self._uncharged.pop(task_id, None)
         verdict = retry.decide(job, outcome)
+        if outcome == retry.FAIL_RETRYABLE and verdict != retry.RETRY:
+            _log_retry_verdict(job, summary, config.TASK_STATUS_FAIL, 0.0)
         try:
             with self._claim_txn:
                 if outcome is not None and verdict != retry.RETRY:

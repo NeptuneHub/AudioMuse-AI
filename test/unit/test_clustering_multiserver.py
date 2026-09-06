@@ -114,7 +114,6 @@ def _run_clustering(monkeypatch, servers, results_by_server, fail_persist_for=()
         statuses.append((status, progress, details))
         return True
 
-    monkeypatch.setattr(clustering, 'save_task_status', _record_status)
     monkeypatch.setattr(task_run, 'save_task_status', _record_status)
     monkeypatch.setattr(
         clustering, 'prune_playlist_rows_for_missing_servers',
