@@ -42,6 +42,7 @@ import config
 
 _DEFAULTS = (
     ('RADIUS_INSTRUMENTATION', False, 'RADIUS_INSTRUMENTATION', 'True', True),
+    ('FLASK_BUILTIN_HTTPS', True, 'FLASK_BUILTIN_HTTPS', 'false', False),
 )
 
 

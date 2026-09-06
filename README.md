@@ -34,6 +34,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 * **Lyrics Search**: search your library by theme, story or meaning, like love songs, not just the sound.
+* **Search by Recording**: record 20 seconds of whatever is playing around you, or upload a clip, and get the songs in your library that sound like it, from the MusiCNN, DCLAP and lyrics indexes, identify the exact recording from the fingerprints the duplicate detector already stored, or fuse all of them by rank agreement. Browsers only allow the microphone on HTTPS or localhost, so the same port 8000 also answers HTTPS with a self-signed certificate: the record button opens `https://<your address>:8000`, you accept the browser warning once, and nothing changes in your deployment.
 
 > **Lyrics language support:** the Lyrics Search feature works only with the **72 languages** listed below.
 >

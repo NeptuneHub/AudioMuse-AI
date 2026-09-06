@@ -16,6 +16,9 @@ Manages its own warm-up and idle unload of the text model to bound worker RSS.
 Main Features:
 * build_and_store / load / refresh of the CLAP embedding cache and its IVF index.
 * search_by_text: embed the query and return ranked nearest songs.
+* search_by_embedding: the same ranked lookup for a caller that already holds a
+  512-value CLAP vector (an audio clip embedded by the DCLAP tower, a steered
+  query); search_by_text is a thin wrapper over it.
 * warmup_text_search_model with an idle-unload timer, plus a persisted top-queries
   table (ensure_text_search_queries_table) used to pre-warm popular searches.
 """
@@ -235,30 +238,32 @@ def search_by_text(
                     ", ".join(f"{t['direction']} {t['term']} x{t['weight']}" for t in applied),
                 )
 
-        from config import MAX_SONGS_PER_ARTIST
+        results = search_by_embedding(text_embedding, limit=limit)
+        logger.info(f"Text search '{query_text}': found {len(results)} results via CLAP index")
+        return results
 
-        artist_cap = (
-            MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-        )
-        if limit >= 1000:
-            artist_cap = 0
-        fetch_size = overfetch_size(limit)
+    except Exception:
+        logger.exception(f"Text search failed for '{query_text}'")
+        return []
 
-        if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
-            results = _query_clap_index(text_embedding, fetch_size, limit, artist_cap)
-            logger.info(
-                f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})"
-            )
-            return results
 
+def search_by_embedding(embedding, limit: Optional[int] = None) -> List[Dict]:
+    from config import CLAP_SEARCH_DEFAULT_LIMIT, MAX_SONGS_PER_ARTIST
+
+    if limit is None:
+        limit = CLAP_SEARCH_DEFAULT_LIMIT
+    if embedding is None:
+        return []
+    if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
         logger.error(
             "CLAP index went unloaded between the entry guard and the query; returning no results."
         )
         return []
 
-    except Exception:
-        logger.exception(f"Text search failed for '{query_text}'")
-        return []
+    artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+    if limit >= 1000:
+        artist_cap = 0
+    return _query_clap_index(embedding, overfetch_size(limit), limit, artist_cap)
 
 
 def get_cache_stats() -> Dict:

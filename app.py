@@ -1118,6 +1118,7 @@ def _register_blueprints(flask_app):
     from app_sync import sync_bp
     from app_music_servers import music_servers_bp
     from app_hyperbolic import hyperbolic_bp
+    from app_recording_search import recording_search_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
     flask_app.register_blueprint(external_bp, url_prefix='/external')
@@ -1125,7 +1126,7 @@ def _register_blueprints(flask_app):
         clustering_bp, analysis_bp, cron_bp, ivf_bp, sonic_fingerprint_bp, path_bp,
         alchemy_bp, map_bp, artist_similarity_bp, clap_search_bp, lyrics_search_bp,
         sem_grove_bp, backup_bp, migration_bp, dashboard_bp, users_bp, sync_bp,
-        music_servers_bp, hyperbolic_bp,
+        music_servers_bp, hyperbolic_bp, recording_search_bp,
     ):
         flask_app.register_blueprint(blueprint)
 
@@ -1438,4 +1439,12 @@ else:
     logger.info('Running as a queue worker: skipping index loading, the event listener and the cron thread.')
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=8000)
+    from werkzeug.serving import make_server
+
+    from tls_listener import adopt_listener, prepare_tls
+
+    prepare_tls()
+    _server = make_server('0.0.0.0', 8000, app, threaded=True)
+    _server.socket = adopt_listener(_server.socket)
+    logger.info('Serving HTTP and HTTPS on 0.0.0.0:8000')
+    _server.serve_forever()

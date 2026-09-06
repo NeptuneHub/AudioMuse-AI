@@ -12,7 +12,9 @@ Walks the repo (skipping build and vendored dirs) and imports each module to
 catch syntax and import-time errors that the unit suite would otherwise miss.
 
 Main Features:
-* Discovers all package/module names under the repo root
+* Discovers all package/module names under the repo root; a file whose name
+  is not an importable identifier (gunicorn.conf.py, read by gunicorn itself)
+  is left out
 * Each module imports cleanly, tolerating a reached database connection
 * Missing optional deps (cuml/cupy/ivf/faiss/tensorflow) skip rather than fail
 """
@@ -57,7 +59,7 @@ def _discover_modules():
                 parts = parts[:-1]
             else:
                 parts[-1] = parts[-1][:-3]
-            if parts:
+            if parts and all(part.isidentifier() for part in parts):
                 modules.append(".".join(parts))
     return sorted(set(modules))
 

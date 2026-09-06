@@ -35,6 +35,7 @@ Each chapter follows the same structure:
 14. [Instant Playlist (Chat)](#14-instant-playlist-chat)
 15. [Database Cleaning](#15-database-cleaning)
 16. [Scheduled Tasks (Cron)](#16-scheduled-tasks-cron)
+17. [Search by Recording](#17-search-by-recording)
 
 ---
 
@@ -2198,3 +2199,231 @@ Cron reuses the defaults of the tasks it starts:
 - `CRON_RETRY_INTERVAL_MINUTES`: how often the cron thread re-attempts blocked
   scheduled runs.
 - `TZ`: the timezone the expressions are evaluated in.
+
+---
+
+## 17. Search by Recording
+
+Search by Recording turns a few seconds of audio captured outside the library
+(a phone recording of what is playing in a room, an uploaded file) into a query
+for the indexes the analysis already built.
+
+### 17.1. Functional Analysis (High-Level)
+
+**Workflow**
+
+1. The user opens **Search by Recording** and picks a tab: **MusiCNN**,
+   **DCLAP**, **Lyrics (GTE)**, **Identify (Chromaprint)** or **Combined**.
+2. They either click **Record** (the browser records
+   `RECORDING_SEARCH_RECORD_SECONDS` seconds from the microphone and stops by
+   itself) or upload a clip.
+3. **Search** returns the songs of the selected server ordered by similarity
+   to the clip, with the same result rows and the same "create a playlist"
+   button as the other search pages.
+
+**Important behaviours**
+
+- In-page recording uses the browser microphone, which every browser allows
+  only over HTTPS or on localhost. On a plain-HTTP LAN address the page says
+  so and offers what still works: **Record with the phone app** (a file input
+  with `capture`, which opens the system recorder on Android; on an iPhone
+  record with Voice Memos, save to Files and upload), opening the app over
+  HTTPS or as localhost, or trusting the address in the browser
+  (`chrome://flags/#unsafely-treat-insecure-origin-as-secure` in Chrome and
+  Edge, `media.devices.insecure.enabled` plus
+  `media.getusermedia.insecure.enabled` in Firefox). No server-side code can
+  lift this: it is the browser's own policy.
+- Uploads go up to `RECORDING_SEARCH_MAX_UPLOAD_MB` (1 GB). The file is
+  streamed to disk and only its first minute is decoded, so a big file costs
+  transfer time, not memory.
+- The MusiCNN and DCLAP tabs answer "what sounds like this". The Lyrics tab
+  transcribes the clip with Whisper and answers "what is sung like this", so it
+  needs words in the clip.
+- The Identify tab answers "which exact recording is this" rather than "what
+  sounds like this". It reuses the chromaprint fingerprints the duplicate
+  detector already stored for every analysed track, so it needs no new analysis
+  and no backfill, and it is the one search that survives a phone recording
+  whose music sits below the microphone noise. It covers the first two minutes
+  of each track, the length fpcalc fingerprinted.
+- The Combined tab never adds similarity scores across spaces. It fuses the
+  rankings by rank agreement, the identification counting double, reports for
+  every song the rank it got in each index and how many indexes returned it,
+  and pins a song the identifier is confident about to the top.
+- The page is per server: results are filtered and id-translated to the server
+  selected in the sidebar.
+- Practical advice for recordings: hold the phone close to a full-range source
+  in a quiet room. A quiet, band-limited or noisy capture lands in the right
+  region of the library but not on the exact song's neighbourhood. A clip below
+  `RECORDING_SEARCH_QUIET_LEVEL_DB` is answered with a warning that says so:
+  on a real phone recording at -45 dBFS the music sat below the microphone's
+  own noise from 200 Hz up, and no model, denoiser or channel correction could
+  recover the song from it.
+
+### 17.2. Technical Analysis (Algorithm-Level)
+
+1. **Decode.** The upload is streamed to a temporary file (refused past
+   `RECORDING_SEARCH_MAX_UPLOAD_MB` while copying, so it never sits in RAM) and
+   decoded at its native rate by the analysis loader (librosa, then the PyAV
+   fallback that handles the browser's webm/opus). The loader never decodes
+   more than `AUDIO_LOAD_TIMEOUT` seconds; the result is then cut to
+   `RECORDING_SEARCH_MAX_CLIP_SECONDS`.
+2. **Level.** The clip is RMS-normalised to `RECORDING_SEARCH_TARGET_LEVEL_DB`.
+   The mel front ends have no per-clip normalisation, so a recording that is
+   12 dB too quiet lands far from its own song; level is the one degradation
+   the query side can undo exactly.
+3. **One vector per index.** MusiCNN: resample to 16 kHz, the analysis
+   spectrogram patches and the same ONNX sessions, mean-pooled to 200 values.
+   DCLAP: `analyze_audio_file` on the native audio, the same 10 s windows and
+   5 s hop, mean-pooled and unit-normalised to 512 values. Lyrics: resample to
+   16 kHz, Silero VAD, Whisper-small, then the sanitised transcript is embedded
+   by gte-multilingual-base through the lyrics text search.
+4. **One ranked list per index.** Each vector queries its disk-paged IVF index
+   through the same shaping every page uses (content dedup, per-artist cap,
+   near-duplicate window).
+5. **Identify: chromaprint alignment.** The clip is fingerprinted with the
+   same fpcalc the duplicate detector uses (one 32-bit value every 0.124 s)
+   and slid across every stored fingerprint. The score at each offset is a
+   weighted bit error rate: the 32 per-bit weights are log-likelihood ratios
+   measured on 80 tracks degraded to the profile of a real phone recording
+   (the coarse Gray bit of each filter flips 24%, the fine bit 36%, filter 15
+   carries almost nothing). The scan has two stages: every track is first
+   scored with every fourth query frame on a thread pool, the top 2 percent
+   become the candidate pool, and the pool plus a random sample of 1000
+   tracks get the exact score. Query frames within 7 bits of the clip's
+   bitwise-majority value are left out of every scan: stationary noise
+   fingerprints to a tight family of values (98 percent of a pure-noise
+   clip's frames sit within 8 bits of it, 3 to 12 percent of a music clip's),
+   library tracks with long noise-like passages hold the same family, and
+   without the mask a noise-dominated recording was confidently matched to
+   sound-effect tracks; a clip left with too few frames is refused as too
+   noisy. The sample gives the null mean and deviation behind the z
+   statistic, and the best candidate counts as identified when its z clears
+   the extreme a random library of the scanned size would produce
+   (`sqrt(2 ln N)`) by `RECORDING_SEARCH_IDENTIFY_MARGIN` AND it leads the
+   next different recording by `RECORDING_SEARCH_IDENTIFY_LEAD` standard
+   deviations, where "different" means the aligned stored windows disagree
+   on more than 20 percent of the weighted bits, so a duplicate of the best
+   track in the library shares the flag instead of blocking it. The top
+   `RECORDING_SEARCH_IDENTIFY_RERANK` candidates and the null sample are then
+   re-scored with the clip fingerprinted at four phases of one hop, because
+   the clip's frames sit at a random fraction of a hop from the reference
+   frames, and at the `RECORDING_SEARCH_IDENTIFY_SPEEDS` playback factors,
+   because a source one percent fast or slow triples a clean clip's error
+   rate; the winning speed is then refined over its own four phases. One
+   variant is kept for every candidate, the one whose best candidate is most
+   extreme against its own null; keeping each candidate's best variant was
+   measured to favour random tracks (the true song fell from rank 1 to 8).
+   Measured against the studio original, the reference phone recording runs
+   1.1 percent fast and not even uniformly, which is why the half-percent
+   speed steps and the phase refinement took its lead over the runner-up from
+   0.5 to 1.2 standard deviations. Measured and rejected: adding MusiCNN or
+   DCLAP similarity to the chromaprint score lowers the rank-1 rate on every
+   degradation profile of a 43-song test set, per-class chroma gain or noise
+   corrections raise the error rate even when fitted on the original, the
+   per-bit flip pattern of a real recording is too unstable (its two halves
+   correlate 0.19) to learn channel-specific weights from, soft-decision bits
+   weighted by the query's distance to the quantiser thresholds score no
+   better than unweighted bits (rank-1 21 to 30 percent against 49 percent
+   for the learned weights on the phone profile), and piecewise alignment
+   that lets each part of the clip drift by 2 percent never beats the speed
+   variants (67 against 50 percent on clips played 1 percent fast). The stored
+   fingerprints cover the first 120 seconds of each track, so a clip taken
+   later in a song cannot be identified from the data the library holds. The
+   stored fingerprints are packed once into two uint16 planes in raw files
+   under `IVF_DISK_CACHE_DIR`, rebuilt when the table's count changes,
+   memory-mapped at query time and released by the same idle timer as the
+   models. Measured on the owner's phone recording of "By the Way", a clip
+   whose embeddings ranked the song 90,803rd: rank 1 of 200,453 at z 5.4,
+   leading the next different recording by 1.3 standard deviations, flagged
+   identified. On 30 library songs degraded three ways (the phone noise
+   profile, the same played 1 percent fast, the same with a wandering speed)
+   the production path finds the song first in 70, 50 and 53 percent of the
+   queries, flags 50, 47 and 43 percent, and flags a wrong song in 0, 3 and
+   0 percent (one query of 90); before the noise-frame mask and the lead
+   rule the wrong-flag rates were 57, 52 and 43 percent.
+6. **Combined: reciprocal rank fusion.** For every song,
+   `score = sum over the lists holding it of w / (k + rank)` with
+   `k = RECORDING_SEARCH_RRF_K` and `w = 2` for the identify list, 1 otherwise.
+   Two indexes agreeing on rank 20 give 2/80, more than one index's rank 1
+   (1/61), which is the intended agreement rule. Ties break on how many
+   indexes returned the song, then on its best rank. A confident
+   identification is pinned first. An index that cannot answer (disabled, not
+   built, no words recognised) is reported as a warning and the others are
+   fused.
+7. **Models in the web process.** The MusiCNN sessions and the DCLAP audio
+   tower are loaded on the page's warmup call, Whisper on first use, the
+   chromaprint pack is built in a background thread by the warmup call, and
+   all of them are released after `RECORDING_SEARCH_WARMUP_DURATION` seconds
+   without a query, the same idle-unload pattern as the text-search models.
+
+Measured before building it, on 50 songs against a real 198k-track corpus: a
+clean random 20 s slice retrieves the same neighbourhood as the whole song
+(its median overlap equals a genuinely similar song's), a level error of
+-12 dB alone costs two thirds of that overlap, and a phone in front of a small
+speaker in a noisy room is beyond what the current models recover.
+
+### 17.3. The Record Button on a Plain-HTTP Address
+
+Browsers hand the microphone (`getUserMedia`, `MediaRecorder`) only to pages
+on HTTPS or on localhost; on `http://192.168.x.x:8000` the API does not even
+exist, in Chrome, Safari, Firefox alike, and no script can lift that. A
+self-hosted app is reached exactly that way, and a second port would have to
+be published in every container deployment, so the one port the app already
+binds answers both protocols (`tls_listener.py`). The first byte of a new
+connection tells a TLS handshake (0x16) from an HTTP request line: an HTTP
+connection is handed to the server untouched; a TLS one is terminated in the
+web process, with a self-signed certificate it creates once into
+`FLASK_HTTPS_CERT_DIR`, on one relay thread that moves bytes between the
+client and a local socket pair, and the server reads plain HTTP from the
+pair's other end with the real client address. Gunicorn, waitress and
+werkzeug therefore need no TLS support of their own: the gunicorn worker hook
+in `gunicorn.conf.py` (read by gunicorn on its own) swaps the accept of the
+sockets the worker inherited, the native builds bind a dual-protocol socket
+for waitress, and `app.run` does the same for the development server. On an
+insecure page the record button opens `https://<same host>:8000/recording_search`;
+the browser warns once about the certificate (Chrome: Advanced, Proceed;
+Safari: Show Details, visit this website; Firefox: Advanced, Accept the Risk)
+and recording works on every later visit. That one warning is the only user
+step: a certificate a browser trusts silently needs a domain name and a
+public or private certificate authority, which a raw LAN address cannot have.
+The page shows the address, the warning steps, and the reason if HTTPS is
+not available. Health probes, reverse proxies and `http://localhost:8000` are
+untouched; behind the relay Flask sees the request as plain HTTP.
+
+### 17.4. Environment Variable Configuration
+
+- `FLASK_BUILTIN_HTTPS` (true): answer HTTPS on the HTTP port; false switches
+  the relay off and every connection passes through untouched.
+- `FLASK_HTTPS_CERT_DIR` (data dir `tls/`, `/app/tls` in containers): where
+  the self-signed certificate and key are kept, so the browser exception
+  survives restarts.
+
+- `RECORDING_SEARCH_DEFAULT_N_RESULTS` (100): results when the caller sends no
+  count, and the value the page's count box starts on.
+- `RECORDING_SEARCH_RECORD_SECONDS` (20): browser recording length.
+- `RECORDING_SEARCH_MAX_CLIP_SECONDS` (60): longer uploads are cut to this.
+- `RECORDING_SEARCH_MAX_UPLOAD_MB` (1024): upload ceiling.
+- `RECORDING_SEARCH_TARGET_LEVEL_DB` (-14): RMS level the clip is normalised to.
+- `RECORDING_SEARCH_QUIET_LEVEL_DB` (-30): a clip recorded below this level is
+  flagged as too quiet to give reliable results.
+- `RECORDING_SEARCH_RRF_K` (60): the fusion constant.
+- `RECORDING_SEARCH_WARMUP_DURATION` (300): idle seconds before the audio
+  models and the chromaprint pack unload from the web process.
+- `RECORDING_SEARCH_IDENTIFY_MARGIN` (0.25): standard deviations above the
+  random-library extreme the best candidate needs to count as identified.
+- `RECORDING_SEARCH_IDENTIFY_RERANK` (100): candidates re-scored at the
+  sub-hop phases and playback speeds.
+- `RECORDING_SEARCH_IDENTIFY_THREADS` (0): scan threads, 0 = up to four
+  bounded by the usable CPUs.
+- `RECORDING_SEARCH_IDENTIFY_MIN_SECONDS` (8): shortest clip the identifier
+  accepts.
+- `RECORDING_SEARCH_IDENTIFY_SPEEDS` (0.98,0.99,0.995,1.005,1.01,1.02):
+  playback-speed factors the re-rank also tries, because a source one percent
+  fast or slow triples the error rate of a clean clip; the winning speed is
+  refined over the sub-hop phases.
+- `RECORDING_SEARCH_IDENTIFY_LEAD` (1.2): standard deviations the best
+  candidate must lead the next different recording by to count as identified.
+  Measured on 87 full-library queries of degraded clips (30 songs, three
+  phone-like degradations): without the rule 12 of the 34 wrong top
+  candidates carried the flag, at 1.2 none does, and 46 of the 53 right ones
+  keep it; the margin above adds nothing once the lead rule is on.

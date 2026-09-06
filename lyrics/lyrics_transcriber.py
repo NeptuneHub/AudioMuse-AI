@@ -1134,6 +1134,27 @@ def _load_lyrics_source_flags() -> Tuple[bool, bool]:
         return True, True
 
 
+def transcribe_clip(audio: np.ndarray, sr: int) -> str:
+    if audio is None or len(audio) == 0 or not sr:
+        return ''
+    clip = np.asarray(audio, dtype=np.float32)
+    if sr != DEFAULT_SAMPLE_RATE:
+        if librosa is None:
+            raise RuntimeError('librosa is required to resample audio.')
+        clip = librosa.resample(clip, orig_sr=sr, target_sr=DEFAULT_SAMPLE_RATE)
+        sr = DEFAULT_SAMPLE_RATE
+    clip, _used_seconds = _clip_audio(clip, sr)
+    clip = _apply_vad(clip, sr, vocal_prior=True)
+    if len(clip) == 0:
+        return ''
+    transcription = _transcribe(clip, sr)
+    raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
+    asr_lang = (transcription.get('language') or '').strip().lower()
+    if _asr_should_drop(raw_text, len(raw_text), asr_lang, _asr_confidence(transcription)):
+        return ''
+    return raw_text
+
+
 def analyze_lyrics(
     audio: Optional[np.ndarray] = None,
     sr: Optional[int] = None,

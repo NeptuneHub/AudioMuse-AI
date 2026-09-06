@@ -14,6 +14,9 @@ and OOM-to-CPU retry, the CLAP and lyrics stages, and the DB writes that store
 each result under the canonical catalogue id.
 
 Main Features:
+* musicnn_embedding_for_audio: the MusiCNN embedding of an in-memory 16 kHz
+  clip through the same patches and sessions analysis uses; None when the clip
+  is too short for one patch, RuntimeError when inference itself fails.
 * analyze_track / robust_load_audio_with_fallback: decode a file and produce the
   MusiCNN moods + embedding; a track that yields no audio at all returns None,
   while one whose packets are only partly corrupt returns however much decoded
@@ -481,6 +484,19 @@ def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessi
                 cleanup_cuda_memory(force=True)
             except Exception as cleanup_error:
                 logger.warning(f"Error during cleanup: {cleanup_error}")
+
+
+def musicnn_embedding_for_audio(audio, sr, mood_labels_list, model_paths, onnx_sessions=None,
+                                name='clip'):
+    final_patches = _patches_for_track(audio, sr, name)
+    if final_patches is None:
+        return None
+    embedding, _moods = _run_musicnn_models(
+        final_patches, mood_labels_list, model_paths, onnx_sessions, name
+    )
+    if embedding is None:
+        raise RuntimeError(f"MusiCNN inference failed for {name}")
+    return embedding
 
 
 class AudioNotDecodableError(RuntimeError):

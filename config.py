@@ -271,6 +271,25 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'LYRICS_AXES_DEFAULT_LIMIT',
     'LYRICS_TEXT_DEFAULT_LIMIT',
     'SEM_GROVE_DEFAULT_LIMIT',
+    # Search by Recording: the page's own knobs, env-only like the defaults above.
+    'RECORDING_SEARCH_DEFAULT_N_RESULTS',
+    'RECORDING_SEARCH_RECORD_SECONDS',
+    'RECORDING_SEARCH_MAX_CLIP_SECONDS',
+    'RECORDING_SEARCH_MAX_UPLOAD_MB',
+    'RECORDING_SEARCH_TARGET_LEVEL_DB',
+    'RECORDING_SEARCH_QUIET_LEVEL_DB',
+    'RECORDING_SEARCH_RRF_K',
+    'RECORDING_SEARCH_WARMUP_DURATION',
+    'RECORDING_SEARCH_IDENTIFY_MARGIN',
+    'RECORDING_SEARCH_IDENTIFY_RERANK',
+    'RECORDING_SEARCH_IDENTIFY_THREADS',
+    'RECORDING_SEARCH_IDENTIFY_MIN_SECONDS',
+    'RECORDING_SEARCH_IDENTIFY_SPEEDS',
+    'RECORDING_SEARCH_IDENTIFY_LEAD',
+    # Built-in HTTPS is process-level plumbing, set from the environment like the
+    # HTTP bind, never from the wizard.
+    'FLASK_BUILTIN_HTTPS',
+    'FLASK_HTTPS_CERT_DIR',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
@@ -550,6 +569,13 @@ AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
 # only point the readiness poll at a port Flask never answers on.
 FLASK_BIND_PORT = 8000
 FLASK_LOCAL_URL = f"http://127.0.0.1:{FLASK_BIND_PORT}/"
+# Browsers hand the microphone only to pages on HTTPS or localhost, and a self-hosted
+# app is reached as http://<ip>:8000, so the SAME port also answers HTTPS: the first
+# byte of a connection tells a TLS handshake from an HTTP request, TLS is terminated
+# in the web process with a self-signed certificate it generates once into
+# FLASK_HTTPS_CERT_DIR, and the Search by Recording page sends its record button to
+# https://<host>:8000. No extra port, nothing to publish. false switches it off.
+FLASK_BUILTIN_HTTPS = os.environ.get("FLASK_BUILTIN_HTTPS", "true").lower() == "true"
 # How long that wait may take before giving up and continuing anyway.
 FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "180"))
 # Web process idle heap trim: seconds of quiet before freed heap returns to the
@@ -1193,6 +1219,64 @@ CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_D
 # limit. Mirrors the value the CLAP search page ships in its own input box.
 CLAP_SEARCH_DEFAULT_LIMIT = int(os.environ.get("CLAP_SEARCH_DEFAULT_LIMIT", "50"))
 
+# --- Search by Recording ---
+# Result count when /api/recording_search/search is called without one; also the
+# value the page's count box starts on.
+RECORDING_SEARCH_DEFAULT_N_RESULTS = int(os.environ.get("RECORDING_SEARCH_DEFAULT_N_RESULTS", "100"))
+# Seconds the browser records before it stops by itself.
+RECORDING_SEARCH_RECORD_SECONDS = int(os.environ.get("RECORDING_SEARCH_RECORD_SECONDS", "20"))
+# An uploaded clip longer than this is cut to its first seconds before embedding.
+RECORDING_SEARCH_MAX_CLIP_SECONDS = int(os.environ.get("RECORDING_SEARCH_MAX_CLIP_SECONDS", "60"))
+# Upload size ceiling for one clip. The upload is streamed to a temporary file and
+# only the first RECORDING_SEARCH_MAX_CLIP_SECONDS are embedded, so a big file costs
+# transfer time and disk, never RAM.
+RECORDING_SEARCH_MAX_UPLOAD_MB = int(os.environ.get("RECORDING_SEARCH_MAX_UPLOAD_MB", "1024"))
+# RMS level (dBFS) every clip is normalised to before embedding. The mel front ends
+# carry no per-clip normalisation, so a quiet recording lands far from its own song;
+# -14 dBFS is the median level of an analysed library.
+RECORDING_SEARCH_TARGET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_TARGET_LEVEL_DB", "-14.0"))
+# A clip whose RMS level (dBFS, before normalisation) is below this is flagged as too
+# quiet: measured on a real phone recording at -45 dBFS the music sat 2 to 9 dB below
+# the microphone's own noise from 200 Hz up and no model could recognise it.
+RECORDING_SEARCH_QUIET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_QUIET_LEVEL_DB", "-30.0"))
+# Reciprocal rank fusion constant for the combined tab: score = sum 1/(k + rank).
+# 60 is the value from Cormack, Clarke and Buettcher (SIGIR 2009).
+RECORDING_SEARCH_RRF_K = int(os.environ.get("RECORDING_SEARCH_RRF_K", "60"))
+# Seconds the audio towers (MusiCNN, DCLAP, Whisper) stay loaded in the web process
+# after the last recording search before they are unloaded to free RAM.
+RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_DURATION", "300"))
+# Identify tab (exact recording from the chromaprints the duplicate detector already
+# stored). A candidate counts as identified when its weighted bit error rate sits this
+# many standard deviations beyond the best a random library of the scanned size would
+# produce (sqrt(2 ln N) for N scanned tracks). Measured on 87 full-library queries:
+# once the lead rule below is on, raising this from 0.25 to 1.0 removes no false
+# flag and only loses true ones, so it stays a sanity floor.
+RECORDING_SEARCH_IDENTIFY_MARGIN = float(os.environ.get("RECORDING_SEARCH_IDENTIFY_MARGIN", "0.25"))
+# Candidates re-scored with the clip fingerprinted at four phases of one chromaprint hop.
+RECORDING_SEARCH_IDENTIFY_RERANK = int(os.environ.get("RECORDING_SEARCH_IDENTIFY_RERANK", "100"))
+# Threads for the fingerprint scan; 0 = up to four, bounded by the usable CPU count.
+RECORDING_SEARCH_IDENTIFY_THREADS = int(os.environ.get("RECORDING_SEARCH_IDENTIFY_THREADS", "0"))
+# A clip shorter than this cannot be identified: fewer sub-fingerprints than the noise
+# of a random alignment can hide.
+RECORDING_SEARCH_IDENTIFY_MIN_SECONDS = float(os.environ.get("RECORDING_SEARCH_IDENTIFY_MIN_SECONDS", "8"))
+# Playback-speed factors tried on the top candidates besides the recorded speed. A
+# source one percent fast or slow (radio, TV, a re-encoded stream) triples the
+# chromaprint error rate of a clean clip, so the re-rank also tries these; the
+# half-percent steps matter because a real phone recording measured 1.1 percent
+# fast scored best at 1.005 (z 5.2 against 4.8 at the recorded speed and 4.6 at
+# 1.01). The winning speed is then refined over the sub-hop phases.
+RECORDING_SEARCH_IDENTIFY_SPEEDS = os.environ.get("RECORDING_SEARCH_IDENTIFY_SPEEDS", "0.98,0.99,0.995,1.005,1.01,1.02")
+
+# Besides clearing the margin above, the best candidate must lead the next DIFFERENT
+# recording (duplicates of itself in the library are skipped) by this many standard
+# deviations to count as identified. Library tracks with long noise-like passages
+# (sound effects, ambient intros) score well against noise-dominated recordings and
+# arrive in dense groups; a genuine identification stands alone. Measured on 87
+# full-library queries of degraded clips: without it 12 of 34 wrong top candidates
+# were flagged, at 1.0 one was (its lead 1.06), at 1.2 none, while 46 of the 53 right
+# top candidates still clear it (their leads start at 1.32).
+RECORDING_SEARCH_IDENTIFY_LEAD = float(os.environ.get("RECORDING_SEARCH_IDENTIFY_LEAD", "1.2"))
+
 # Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
 # loaded after last use. Auto-unloads after this idle period to free RAM.
 LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "300"))
@@ -1240,6 +1324,15 @@ elif os.path.isdir("/app"):
 else:
     _ivf_disk_cache_default = os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache")
 IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or _ivf_disk_cache_default
+# Where the self-signed certificate of the built-in HTTPS lives; same placement
+# rule as the IVF cache so a native build keeps it across restarts.
+if APP_DATA_DIR:
+    _https_cert_dir_default = os.path.join(APP_DATA_DIR, "tls")
+elif os.path.isdir("/app"):
+    _https_cert_dir_default = "/app/tls"
+else:
+    _https_cert_dir_default = os.path.join(tempfile.gettempdir(), "audiomuse_tls")
+FLASK_HTTPS_CERT_DIR = os.environ.get("FLASK_HTTPS_CERT_DIR", "") or _https_cert_dir_default
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
