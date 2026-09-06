@@ -258,7 +258,6 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.album.get_tracks_from_album')
     @patch('tasks.analysis.album.comprehensive_memory_cleanup')
     @patch('tasks.task_run.save_task_status')
-    @patch('tasks.task_run.get_task_info_from_db')
     @patch('tasks.analysis.album.taskqueue.current_task_id')
     @patch('tasks.analysis.helper.get_db')
     @patch('tasks.clap_analyzer.unload_clap_model')
@@ -269,7 +268,6 @@ class TestAnalyzeAlbumMemoryCleanup:
         mock_clap_unload,
         mock_get_db,
         mock_get_job,
-        mock_get_task_info,
         mock_save_task,
         mock_memory_cleanup,
         mock_get_tracks,
@@ -297,7 +295,6 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.song.cleanup_onnx_session')
     @patch('tasks.analysis.album.cleanup_cuda_memory')
     @patch('tasks.task_run.save_task_status')
-    @patch('tasks.task_run.get_task_info_from_db')
     @patch('tasks.analysis.album.taskqueue.current_task_id')
     @patch('tasks.analysis.song.save_track_analysis_and_embedding')
     @patch('tasks.analysis.album.os.remove')
@@ -306,7 +303,6 @@ class TestAnalyzeAlbumMemoryCleanup:
         mock_remove,
         mock_save_track,
         mock_get_job,
-        mock_get_task_info,
         mock_save_task,
         mock_cuda_cleanup,
         mock_session_cleanup,

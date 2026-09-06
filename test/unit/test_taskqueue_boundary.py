@@ -63,6 +63,10 @@ _PUBLIC_API = frozenset((
     'current_task_id', 'set_current_task_id', 'resolve_func',
     'reap_finished_children', 'live_children', 'task_statuses', 'worker_snapshot',
     'queue_backlog',
+    # The one terminal row a task may write is its child's, when it gives up on
+    # it; the queue writes it, guarded by the parent's id, and cancels the child
+    # in the same transaction.
+    'end_child',
     # Cancel has to be ordered against a Start, and which key does that is the
     # queue's business, not a blueprint's - so it is exposed here rather than
     # letting app_helper reach into taskqueue.sql for the lock id.

@@ -93,7 +93,6 @@ from config import (
     REBUILD_INDEX_BATCH_SIZE,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
-    TASK_STATUS_REVOKED,
 )
 
 from ..mediaserver import (
@@ -104,11 +103,7 @@ from ..mediaserver import (
 )
 
 from flask_app import app
-from database import (
-    get_db,
-    save_task_status,
-    get_task_statuses,
-)
+from database import get_db
 from psycopg2 import InterfaceError, OperationalError
 
 from error import error_manager
@@ -300,30 +295,23 @@ def _run_analysis_server_task_impl(
     albums_total=None,
 ):
     from ..clap_analyzer import is_clap_available
-    from ..task_run import task_run_prologue, terminal_skip
+    from ..task_run import task_run_prologue
 
     with app.app_context():
         if num_recent_albums < 0:
             logger.warning("num_recent_albums is negative, treating as 0 (all albums).")
             num_recent_albums = 0
 
-        claimed_task_id, current_task_id, task_info = task_run_prologue(task_id)
-        skip = terminal_skip(
-            current_task_id, claimed_task_id, task_info,
-            revoked_message="Task was cancelled before execution.",
-            terminal_message="Task already in terminal state.",
+        claimed_task_id, current_task_id = task_run_prologue(task_id)
+        cancel, close_cancel = make_cancel_check(
+            claimed_task_id, every_seconds=ANALYSIS_MONITOR_DB_INTERVAL,
         )
-        if skip is not None:
-            return skip
-
+        cancel(force=True)
         log_and_update_main = make_task_reporter(
             current_task_id, "main_analysis",
             "Starting main analysis process...",
             prefix=f"MainAnalysisTask-{current_task_id}",
             progress_base=progress_base, progress_span=progress_span,
-        )
-        cancel, close_cancel = make_cancel_check(
-            claimed_task_id, every_seconds=ANALYSIS_MONITOR_DB_INTERVAL,
         )
         try:
             carried_over_tracks = _carried_over_tracks(current_task_id)
@@ -411,7 +399,6 @@ def _run_analysis_server_task_impl(
             live_child_marks = [()]
             monitor_read_ok = [True]
             stop_dispatch = [False]
-            child_types = {}
             adopted_albums = set()
             for child in (inflight_children or ()):
                 if not child['sub_type_identifier']:
@@ -507,13 +494,9 @@ def _run_analysis_server_task_impl(
                     last_rebuild_count = albums_completed
 
             def _end_child(job_id, message):
-                child_type = child_types.get(job_id) or 'album_analysis'
-                save_task_status(
-                    job_id, child_type, TASK_STATUS_FAILURE, progress=100,
-                    parent_task_id=current_task_id, details={'message': message},
+                return taskqueue.end_child(
+                    job_id, current_task_id, TASK_STATUS_FAILURE, message
                 )
-                taskqueue.request_cancel(job_id)
-                return True
 
             supervisor = ChildDrainSupervisor(
                 current_task_id, _end_child,
@@ -526,8 +509,6 @@ def _run_analysis_server_task_impl(
                     supervisor.restart()
                     return
                 marks = live_child_marks[0]
-                child_types.clear()
-                child_types.update({mark[0]: mark[4] for mark in marks})
                 _moved, gave_up = supervisor.observe(marks, pending_ids=active_jobs)
                 if gave_up is None:
                     return
@@ -771,39 +752,13 @@ def _enabled_analysis_servers(server_scope):
             return [None]
 
 
-def _run_already_finished(task_id, *, require_claim=False):
-    with app.app_context():
-        try:
-            statuses = get_task_statuses([task_id])
-        except Exception:
-            logger.exception("Could not read the run's own status; assuming it is live")
-            return None
-    status = statuses.get(task_id)
-    if require_claim and task_id not in statuses:
-        logger.info(
-            "Analysis %s has no live DB claim; treating the dequeued queue job as revoked.",
-            task_id,
-        )
-        return TASK_STATUS_REVOKED
-    if status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
-        logger.info(
-            "Analysis %s is already %s; refusing to run. A cancelled, failed or "
-            "completed task must never restart, even if something requeued its job.",
-            task_id, status,
-        )
-        return status
-    return None
-
-
 def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     claimed_task_id = taskqueue.current_task_id()
     parent_id = claimed_task_id or str(uuid.uuid4())
 
-    already = _run_already_finished(parent_id, require_claim=claimed_task_id is not None)
-    if already:
-        return {'status': already, 'message': 'Task already in terminal state.'}
-
-    servers = _enabled_analysis_servers(server_scope)
+    with cancel_guard(claimed_task_id) as cancel:
+        cancel(force=True)
+        servers = _enabled_analysis_servers(server_scope)
     if not servers:
         message = f"No enabled server matches scope '{server_scope}'; analysis skipped."
         logger.warning(message)

@@ -27,6 +27,8 @@ from unittest.mock import MagicMock, patch
 
 import time
 
+import pytest
+
 
 def _make_cron_row(task_type='sonic_fingerprint'):
     return {
@@ -156,17 +158,18 @@ def test_sonic_fingerprint_task_skips_on_empty_results():
 
 def test_dequeued_sonic_task_with_wiped_claim_does_no_work():
     import taskqueue
+    from taskqueue import TaskCancelled
     from tasks.sonic_fingerprint_manager import run_sonic_fingerprint_task
 
     with (
         patch.object(taskqueue, 'current_task_id', return_value='sonic-cancelled'),
-        patch('tasks.task_run.get_task_info_from_db', return_value=None),
-        patch('database.save_task_status') as save,
+        patch('tasks.task_run._read_task_statuses', return_value={}),
+        patch('tasks.task_run.save_task_status') as save,
         patch('tasks.mediaserver.registry.servers_for_scope') as servers,
     ):
-        result = run_sonic_fingerprint_task(server_scope='all')
+        with pytest.raises(TaskCancelled):
+            run_sonic_fingerprint_task(server_scope='all')
 
-    assert result['status'] == 'REVOKED'
     save.assert_not_called()
     servers.assert_not_called()
 
@@ -421,10 +424,10 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
     assert queue.called
     kwargs = queue.call_args.kwargs
     assert kwargs['args'] == ('audiomuse_plugins.demo.tasks.sync',)
-    assert kwargs['kwargs'] == {
-        'server_scope': 'all',
-        'task_claim_required': True,
-    }
+    assert kwargs['kwargs'] == {'server_scope': 'all'}, (
+        'the shared cancel check enforces the live claim for every task now; '
+        'the old task_claim_required flag is no longer written into a payload'
+    )
 
 
 def _cron_api_client():

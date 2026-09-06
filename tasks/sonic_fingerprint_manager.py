@@ -48,23 +48,12 @@ def run_sonic_fingerprint_task(server_scope="all"):
 
     with app.app_context():
         from .task_run import (
-            task_run_prologue, terminal_skip, cancel_guard, make_task_reporter,
+            task_run_prologue, cancel_guard, make_task_reporter,
             for_each_server_in_scope,
         )
         from .recovery import row_heartbeat, slow_step_budget_minutes
 
-        claimed_task_id, task_id, task_info = task_run_prologue()
-        skip = terminal_skip(
-            task_id, claimed_task_id, task_info,
-            revoked_message="Sonic fingerprint was cancelled before execution.",
-            terminal_message="Sonic fingerprint task is already terminal.",
-        )
-        if skip is not None:
-            return skip
-        report = make_task_reporter(
-            task_id, 'sonic_fingerprint', "Building the sonic fingerprint playlist...",
-            prefix=f"SonicFingerprint-{task_id}",
-        )
+        claimed_task_id, task_id = task_run_prologue()
         created = [0]
         current = ['resolving the server scope']
 
@@ -113,6 +102,10 @@ def run_sonic_fingerprint_task(server_scope="all"):
 
         with cancel_guard(claimed_task_id) as cancel:
             cancel(force=True)
+            report = make_task_reporter(
+                task_id, 'sonic_fingerprint', "Building the sonic fingerprint playlist...",
+                prefix=f"SonicFingerprint-{task_id}",
+            )
             servers, _results, failed = for_each_server_in_scope(
                 server_scope, build, on_server=on_server, cancel=cancel,
             )

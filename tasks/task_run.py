@@ -13,30 +13,38 @@ and decides every retry; the task returns a summary or raises. A task never
 writes SUCCESS, FAIL or REVOKED on its own row. It raises TaskFailed for an
 error no retry can fix, TaskCancelled from its cancel check, and anything else
 for a failure the queue should try again. The message it wants on the dashboard
-recap goes in the dict it returns.
+recap goes in the dict it returns. The one terminal row a task writes is its
+own child's, through taskqueue.end_child, when it gives up on that child.
 
 Before this module held them, every task carried its own copy of the three
 things below and they drifted: seven progress reporters, four cancellation
 mechanisms of which four tasks had none past their first line, and a sweep that
 caught every exception, wrote FAILURE itself and returned normally, so the
-queue recorded SUCCESS and never retried it.
+queue recorded SUCCESS and never retried it. A fifth copy survived longer: a
+pre-check, hand-written in six places, that read the row before any work to
+refuse a run whose row was gone or terminal, next to a cancel check that
+already answers exactly that. The pre-check is gone; the first forced cancel
+check is the one place a task learns its row is dead.
 
 Main Features:
-* task_run_prologue / terminal_skip: resolve the claimed id and refuse to rerun
-  a row that is already terminal, before any work
+* task_run_prologue: resolve the claimed id and the id to report under. It
+  reads no row; the cancel check does that
 * make_cancel_check / cancel_guard: the ONE cooperative cancellation. It reads
   the task's own row and its parent's on a dedicated autocommit connection,
   throttled to QUEUE_CANCEL_CHECK_SECONDS, and raises TaskCancelled. A read
-  that fails never cancels: a database blip is not a cancel. cancel_guard is
-  the form to reach for; make_cancel_check is the same check for a body that
-  already owns a finally block for other cleanup (the album task, the analysis
-  phase), where a second with-block would only re-indent hundreds of lines.
-  A parent is passed only by a supervised child (an album, a batch) that has
-  nothing to report to once its parent is over. A task that merely carries
-  lineage on its row, like the alignment a migration queues, watches its own
-  row alone: its parent finishes first by design. A task whose OWN row is
-  already terminal stops too: a parent that gave up on it wrote that row, so
-  there is nothing left to report and the queue will not accept a verdict
+  that fails never cancels: a database blip is not a cancel. Every task calls
+  it once with force=True BEFORE its first report, so a row a cancel wiped or
+  a parent finished is never written to again and never does a line of work.
+  cancel_guard is the form to reach for; make_cancel_check is the same check
+  for a body that already owns a finally block for other cleanup (the album
+  task, the analysis phase), where a second with-block would only re-indent
+  hundreds of lines. A parent is passed only by a supervised child (an album,
+  a batch) that has nothing to report to once its parent is over. A task that
+  merely carries lineage on its row, like the alignment a migration queues,
+  watches its own row alone: its parent finishes first by design. A task whose
+  OWN row is already terminal stops too: a parent that gave up on it wrote
+  that row, so there is nothing left to report and the queue will not accept
+  a verdict
 * make_task_reporter: the ONE progress reporter. It writes RUNNING and only
   RUNNING; a terminal state handed to it is logged as an error and downgraded,
   because that row belongs to the queue. It keeps the capped log, the
@@ -46,7 +54,12 @@ Main Features:
   land: the failure a child records on its row before it raises
 * for_each_server_in_scope: the shared per-server loop for a task that runs
   the same step against every server and reports which ones failed. A
-  TaskFailed raised by the step is the task's own verdict and passes through
+  TaskFailed raised by the step is the task's own verdict and passes through,
+  and so does a lost database connection, OperationalError or InterfaceError
+  alike: psycopg2 reports a connection closed under the caller as the latter,
+  and swallowing it as one server's failure would march the loop over every
+  remaining server on a dead connection and cost the task a charged attempt
+  where the worker has an uncharged path for exactly this
 """
 
 import logging
@@ -59,18 +72,14 @@ from taskqueue import TaskCancelled, TaskFailed
 from config import (
     QUEUE_CANCEL_CHECK_SECONDS,
     TASK_STATUS_RUNNING,
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
-    TASK_STATUS_REVOKED,
     TASK_STATUS_TERMINAL,
 )
 from database import (
     MAX_LOG_ENTRIES_STORED,
     connect_raw,
-    get_task_info_from_db,
     save_task_status,
 )
-from psycopg2 import OperationalError
+from psycopg2 import InterfaceError, OperationalError
 
 from error import error_manager
 from error.error_dictionary import ERR_DB_CONNECTION
@@ -79,7 +88,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = (
     'TaskCancelled', 'TaskFailed',
-    'task_run_prologue', 'terminal_skip',
+    'task_run_prologue',
     'make_cancel_check', 'cancel_guard',
     'make_task_reporter', 'for_each_server_in_scope',
 )
@@ -87,38 +96,7 @@ __all__ = (
 
 def task_run_prologue(current_task_id=None):
     claimed_task_id = taskqueue.current_task_id()
-    task_id = current_task_id or claimed_task_id or str(uuid.uuid4())
-    return claimed_task_id, task_id, get_task_info_from_db(task_id)
-
-
-def terminal_skip(
-    task_id,
-    claimed_task_id,
-    task_info,
-    *,
-    revoked_message,
-    terminal_message,
-    terminal_details=None,
-):
-    if claimed_task_id and task_info is None:
-        logger.info(
-            "Task %s has no live DB claim; treating it as revoked.", task_id
-        )
-        return {"status": TASK_STATUS_REVOKED, "message": revoked_message}
-    if task_info and task_info.get('status') in (
-        TASK_STATUS_SUCCESS,
-        TASK_STATUS_FAILURE,
-        TASK_STATUS_REVOKED,
-    ):
-        logger.info(
-            "Task %s is already terminal (%s); skipping.",
-            task_id, task_info.get('status'),
-        )
-        result = {"status": task_info.get('status'), "message": terminal_message}
-        if terminal_details is not None:
-            result["details"] = terminal_details(task_info)
-        return result
-    return None
+    return claimed_task_id, current_task_id or claimed_task_id or str(uuid.uuid4())
 
 
 def _open_check_connection():
@@ -302,7 +280,7 @@ def for_each_server_in_scope(scope, step, *, on_server=None, cancel=None):
         try:
             with registry.bind(server):
                 results.append(step(server, name))
-        except (TaskCancelled, TaskFailed, OperationalError):
+        except (TaskCancelled, TaskFailed, OperationalError, InterfaceError):
             raise
         except Exception:
             logger.exception(

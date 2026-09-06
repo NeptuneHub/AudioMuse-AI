@@ -105,7 +105,7 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     from tasks import task_run as task_run_module
     monkeypatch.setattr(db_module, 'get_db', lambda: get_db_cm)
     monkeypatch.setattr(db_module, 'get_task_info_from_db', lambda _task_id: task_info)
-    monkeypatch.setattr(task_run_module, 'get_task_info_from_db', lambda _task_id: task_info)
+
     def _record_status(task_id, task_type, status, progress=None, details=None, **_kwargs):
         statuses.append((status, progress, details))
         return True
@@ -213,21 +213,30 @@ class TestCleaningRefreshesTrackCounts:
 
 
 def test_dequeued_cleaning_with_wiped_claim_stops_before_writing(monkeypatch):
+    import pytest
+    from taskqueue import TaskCancelled
+
     job = MagicMock(id='cleaning-cancelled')
+    monkeypatch.setattr('tasks.task_run._read_task_statuses', lambda _conn, ids: {})
+    counts = []
+    servers = [_server('s1', 'One', default=True)]
 
-    result, statuses, pruned = _run_cleaning(
-        monkeypatch,
-        servers=[_server('s1', 'One', default=True)],
-        tracks_by_server={'s1': [{'id': 'a1'}]},
-        reverse_by_server={'s1': {'a1': 'fp_1'}},
-        db_track_ids={'fp_1'},
-        current_job=job,
-        task_info=None,
+    with pytest.raises(TaskCancelled):
+        _run_cleaning(
+            monkeypatch,
+            servers=servers,
+            tracks_by_server={'s1': [{'id': 'a1'}]},
+            reverse_by_server={'s1': {'a1': 'fp_1'}},
+            db_track_ids={'fp_1'},
+            current_job=job,
+            task_info=None,
+            stored_counts=counts,
+        )
+
+    assert counts == [], (
+        'the shared cancel check is forced once before the first report, so a '
+        'row the cancel wiped fetches nothing, prunes nothing and writes nothing'
     )
-
-    assert result['status'] == config.TASK_STATUS_REVOKED
-    assert statuses == []
-    assert pruned == []
 
 
 class TestCleaningSkipsUnreadableServers:

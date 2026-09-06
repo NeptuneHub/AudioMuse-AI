@@ -20,6 +20,8 @@ Main Features:
 * A second live main task is refused by the unique index, and a sweep still fits
 * A cancelled row cannot be claimed, and a claimed row cannot be claimed twice
 * A finished root keeps one recap row with no func and no payload
+* A parent ends its own live child, NEW or RUNNING, through end_child, never
+  another parent's, and a child already terminal is not ended twice
 * A fan-out stores its shared body once, counted on the driver, not on a stand-in
 * The backlog counts only NEW rows and drops a row the moment it is claimed
 * The worker table lists every worker that has a live connection, claim or
@@ -538,6 +540,86 @@ class TestChildrenAreReapedByTheirParent:
             assert sql.reap_children(cur, 'parent-1') == []
             assert [c['task_id'] for c in sql.live_children(cur, 'parent-1')] == ['kid-1']
         queue_db.commit()
+
+
+class TestAParentEndsTheChildItGaveUpOn:
+    def test_a_queued_child_is_ended_and_the_reap_returns_the_parents_message(
+        self, queue_db
+    ):
+        import taskqueue
+
+        _enqueue(queue_db, 'parent-1', task_type='main_analysis')
+        _enqueue(queue_db, 'kid-1', task_type='album_analysis', parent_task_id='parent-1')
+
+        ended = taskqueue.end_child(
+            'kid-1', 'parent-1', config.TASK_STATUS_FAIL, 'the parent gave up',
+            conn=queue_db,
+        )
+        queue_db.commit()
+
+        assert ended is True
+        status, _attempts, _max, func, payload, _worker = _row(queue_db, 'kid-1')
+        assert status == config.TASK_STATUS_FAIL, (
+            'a give-up victim may never have been claimed, so a NEW child must be '
+            'endable; finish_task only accepts a RUNNING row bound to a worker'
+        )
+        assert func is None, 'a terminal child is never runnable'
+        assert payload is None, 'a terminal child is never runnable'
+        with queue_db.cursor() as cur:
+            reaped = sql.reap_children(cur, 'parent-1')
+        queue_db.commit()
+        assert [(r['task_id'], r['details']['message']) for r in reaped] == [
+            ('kid-1', 'the parent gave up')
+        ]
+
+    def test_a_running_child_is_ended_too(self, queue_db):
+        _enqueue(queue_db, 'parent-1', task_type='main_clustering', queue=sql.QUEUE_HIGH)
+        _enqueue(queue_db, 'kid-1', task_type='clustering_batch', parent_task_id='parent-1')
+        with queue_db.cursor() as cur:
+            claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w-kid')
+            assert claimed['task_id'] == 'kid-1'
+            ended = sql.end_child(
+                cur, 'kid-1', 'parent-1', config.TASK_STATUS_REVOKED,
+                {'message': 'stalled'}, time.time(),
+            )
+        queue_db.commit()
+
+        assert ended is True
+        assert _row(queue_db, 'kid-1')[0] == config.TASK_STATUS_REVOKED
+
+    def test_another_parents_child_cannot_be_ended(self, queue_db):
+        _enqueue(queue_db, 'parent-1', task_type='main_analysis')
+        _enqueue(queue_db, 'sweep-1', task_type='server_sweep')
+        _enqueue(queue_db, 'kid-1', task_type='album_analysis', parent_task_id='parent-1')
+
+        with queue_db.cursor() as cur:
+            ended = sql.end_child(
+                cur, 'kid-1', 'sweep-1', config.TASK_STATUS_FAIL, {'message': 'x'}, 1.0,
+            )
+        queue_db.commit()
+
+        assert ended is False
+        assert _row(queue_db, 'kid-1')[0] == config.TASK_STATUS_NEW
+
+    def test_a_child_that_is_already_terminal_is_not_ended_twice(self, queue_db):
+        _enqueue(queue_db, 'parent-1', task_type='main_analysis')
+        _enqueue(queue_db, 'kid-1', task_type='album_analysis', parent_task_id='parent-1')
+        with queue_db.cursor() as cur:
+            first = sql.end_child(
+                cur, 'kid-1', 'parent-1', config.TASK_STATUS_FAIL,
+                {'message': 'first verdict'}, 1.0,
+            )
+            second = sql.end_child(
+                cur, 'kid-1', 'parent-1', config.TASK_STATUS_REVOKED,
+                {'message': 'second verdict'}, 2.0,
+            )
+            reaped = sql.reap_children(cur, 'parent-1')
+        queue_db.commit()
+
+        assert (first, second) == (True, False)
+        assert [(r['status'], r['details']['message']) for r in reaped] == [
+            (config.TASK_STATUS_FAIL, 'first verdict')
+        ], 'the first verdict stands; a later give-up cannot rewrite it'
 
 
 class TestReclaimWaitsOutTheGracePeriod:

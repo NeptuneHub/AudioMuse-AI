@@ -113,7 +113,6 @@ from .recovery import (
 from .task_run import TaskCancelled, cancel_guard, make_task_reporter
 
 from database import (
-    save_task_status,
     get_task_info_from_db,
     get_db,
     coerce_db_details,
@@ -457,17 +456,9 @@ def run_clustering_task(
         initial_params["num_clusters_max"] = spectral_n_clusters_max
 
     with app.app_context():
-        from .task_run import terminal_skip
-
+        with cancel_guard(claimed_task_id) as cancel:
+            cancel(force=True)
         task_info = get_task_info_from_db(current_task_id)
-        skip = terminal_skip(
-            current_task_id, claimed_task_id, task_info,
-            revoked_message="Task was cancelled before execution.",
-            terminal_message="Task already in terminal state.",
-            terminal_details=lambda info: json.loads(info.get('details', '{}')),
-        )
-        if skip is not None:
-            return skip
 
         _main_task_accumulated_details = {
             "total_runs": num_clustering_runs,
@@ -1372,12 +1363,7 @@ def _calculate_target_songs_per_genre(genre_map, percentile, min_songs):
 
 def _revoke_batch(job_id, parent_task_id, message):
     try:
-        save_task_status(
-            job_id, 'clustering_batch', TASK_STATUS_REVOKED, progress=100,
-            parent_task_id=parent_task_id, details={'message': message},
-        )
-        taskqueue.request_cancel(job_id)
-        return True
+        return taskqueue.end_child(job_id, parent_task_id, TASK_STATUS_REVOKED, message)
     except Exception:
         logger.exception("Could not cancel the clustering batch %s", job_id)
         return False
