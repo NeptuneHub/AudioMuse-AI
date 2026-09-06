@@ -1531,10 +1531,9 @@ def test_batches_from_an_earlier_server_phase_are_revoked_not_left_to_fail(monke
 
     revoked = []
     monkeypatch.setattr(
-        clustering, 'save_task_status',
-        lambda job_id, *_a, **_k: revoked.append(job_id),
+        clustering.taskqueue, 'end_child',
+        lambda job_id, parent_task_id, status, message: revoked.append(job_id) or True,
     )
-    monkeypatch.setattr(clustering.taskqueue, 'request_cancel', lambda _job_id: None)
     monkeypatch.setattr(
         clustering.taskqueue, 'live_children',
         lambda _parent: [
@@ -1632,9 +1631,6 @@ def test_batch_start_racing_the_cancel_wipe_never_recreates_a_child_row(monkeypa
     monkeypatch.setattr(task_run, '_read_task_statuses', lambda _conn, _ids: {})
     monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
     writes = []
-    monkeypatch.setattr(
-        clustering, 'save_task_status', lambda *a, **k: writes.append((a, k))
-    )
     monkeypatch.setattr(
         task_run, 'save_task_status', lambda *a, **k: writes.append((a, k))
     )

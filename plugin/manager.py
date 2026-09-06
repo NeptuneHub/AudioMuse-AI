@@ -23,6 +23,10 @@ Main Features:
   cancel check between servers and a row_heartbeat around each call: the plugin
   function is one opaque call that writes no row, and without the heartbeat a
   legitimately long one looked wedged to the nudge and was killed at the limit.
+  The same cancel check is forced once before the plugin module is even
+  imported, so a row a cancel wiped or a parent finished imports nothing; it
+  used to have a hand-rolled copy of that check, and ``task_claim_required``
+  stays in the signature only because rows queued before the change carry it.
 """
 
 import contextlib
@@ -913,33 +917,14 @@ def run_plugin_task(
 ):
     from flask_app import app
     import taskqueue
+    from taskqueue import TaskFailed
+    from tasks.task_run import cancel_guard
 
     plugin_manager.setup_namespace()
     module_path, _, fn_name = dotted.rpartition('.')
     task_id = taskqueue.current_task_id()
-    with app.app_context():
-        row = database.get_task_info_from_db(task_id) if task_id else None
-        if task_claim_required and row is None:
-            logger.info(
-                "Cron plugin task %s lost its DB claim; treating it as revoked.",
-                task_id,
-            )
-            return {
-                'status': config.TASK_STATUS_REVOKED,
-                'message': 'Plugin task was cancelled before execution.',
-            }
-        if row and row.get('status') in (
-            config.TASK_STATUS_SUCCESS,
-            config.TASK_STATUS_FAILURE,
-            config.TASK_STATUS_REVOKED,
-        ):
-            return {
-                'status': row.get('status'),
-                'message': 'Plugin task is already terminal.',
-            }
-        from taskqueue import TaskFailed
-        from tasks.task_run import cancel_guard
-
+    with app.app_context(), cancel_guard(task_id) as cancel:
+        cancel(force=True)
         try:
             module = importlib.import_module(module_path)
         except ModuleNotFoundError:
@@ -962,11 +947,9 @@ def run_plugin_task(
                 f"plugin module {module_path} has no function {fn_name}; no retry "
                 "can change that"
             ) from exc
-        with cancel_guard(task_id) as cancel:
-            cancel(force=True)
-            result = _run_per_server(
-                func, server_scope, args, kwargs, cancel=cancel, task_id=task_id,
-            )
+        result = _run_per_server(
+            func, server_scope, args, kwargs, cancel=cancel, task_id=task_id,
+        )
         summary = dict(result) if isinstance(result, dict) else {}
         summary.setdefault('message', 'Plugin task completed successfully.')
         return summary

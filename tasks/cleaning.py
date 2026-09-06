@@ -83,26 +83,19 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
     )
 
     from .task_run import (
-        TaskCancelled, task_run_prologue, terminal_skip, cancel_guard, make_task_reporter,
+        TaskCancelled, task_run_prologue, cancel_guard, make_task_reporter,
     )
 
     with app.app_context():
-        claimed_task_id, current_task_id, task_info = task_run_prologue()
-        skip = terminal_skip(
-            current_task_id, claimed_task_id, task_info,
-            revoked_message="Library cleanup was cancelled before execution.",
-            terminal_message="Library cleanup is already terminal.",
-        )
-        if skip is not None:
-            return skip
-        log_and_update_main = make_task_reporter(
-            current_task_id, "cleaning", STARTING_MESSAGE,
-            prefix=f"CleaningTask-{current_task_id}",
-        )
+        claimed_task_id, current_task_id = task_run_prologue()
 
         with cancel_guard(claimed_task_id) as cancel:
+            cancel(force=True)
+            log_and_update_main = make_task_reporter(
+                current_task_id, "cleaning", STARTING_MESSAGE,
+                prefix=f"CleaningTask-{current_task_id}",
+            )
             try:
-                cancel(force=True)
                 log_and_update_main(STARTING_MESSAGE, 5)
 
                 servers = registry.servers_for_scope('all')

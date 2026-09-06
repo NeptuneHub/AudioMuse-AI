@@ -141,10 +141,11 @@ class TestCronTaskFallback:
 
 def test_dequeued_cron_plugin_with_wiped_claim_does_not_import_plugin(monkeypatch):
     import taskqueue
+    from taskqueue import TaskCancelled
 
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-cancelled')
     monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
-    monkeypatch.setattr(database, 'get_task_info_from_db', lambda _task_id: None)
+    monkeypatch.setattr('tasks.task_run._read_task_statuses', lambda _conn, ids: {})
     import_module = pytest.MonkeyPatch()
     try:
         import_module.setattr(
@@ -154,15 +155,14 @@ def test_dequeued_cron_plugin_with_wiped_claim_does_not_import_plugin(monkeypatc
                 AssertionError('cancelled plugin must not be imported')
             ),
         )
-        result = manager.run_plugin_task(
-            'audiomuse_plugins.demo.tasks.daily',
-            server_scope='all',
-            task_claim_required=True,
-        )
+        with pytest.raises(TaskCancelled):
+            manager.run_plugin_task(
+                'audiomuse_plugins.demo.tasks.daily',
+                server_scope='all',
+                task_claim_required=True,
+            )
     finally:
         import_module.undo()
-
-    assert result['status'] == config.TASK_STATUS_REVOKED
 
 
 class TestRequirementPinning:
@@ -1156,10 +1156,6 @@ def test_a_plugin_whose_entry_point_is_gone_is_a_permanent_failure(monkeypatch):
 
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-gone')
     monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
-    monkeypatch.setattr(
-        database, 'get_task_info_from_db',
-        lambda _task_id: {'task_type': 'plugin.demo.daily', 'status': 'STARTED'},
-    )
     module = types.ModuleType('audiomuse_plugins.demo.tasks')
     monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)
 
@@ -1175,10 +1171,6 @@ def test_a_plugin_return_that_is_not_a_dict_is_not_stored_on_the_row(monkeypatch
 
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-scalar')
     monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
-    monkeypatch.setattr(
-        database, 'get_task_info_from_db',
-        lambda _task_id: {'task_type': 'plugin.demo.daily', 'status': 'STARTED'},
-    )
     module = types.ModuleType('audiomuse_plugins.demo.tasks')
     module.daily = lambda *a, **k: datetime.datetime(2026, 9, 5)
     monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)
@@ -1202,10 +1194,6 @@ def test_a_successful_plugin_run_records_a_one_line_recap(monkeypatch):
 
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-ok')
     monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
-    monkeypatch.setattr(
-        database, 'get_task_info_from_db',
-        lambda _task_id: {'task_type': 'plugin.demo.daily', 'status': 'STARTED'},
-    )
     module = types.ModuleType('audiomuse_plugins.demo.tasks')
     module.daily = lambda *a, **k: {'ok': True}
     monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)

@@ -397,7 +397,8 @@ RECOVERY = {
         CHILD_WORKER_DIED: handled(_RECLAIM + ' for each album_analysis child'),
         CHILD_NEVER_RETURNS: handled(
             'ChildDrainSupervisor.observe on ANALYSIS_STALL_TIMEOUT_MINUTES fails '
-            'the albums a worker holds, or every live album when none is running; '
+            'the albums a worker holds, or every live album when none is running, '
+            'through taskqueue.end_child, the one terminal row a task may write; '
             'the ids it has launched but not yet read back are pending_ids, so a '
             'give-up can never miss an album the cached read had not shown yet. '
             'It ends a victim as FAILURE, not REVOKED, on purpose: the ordinary '
@@ -419,7 +420,8 @@ RECOVERY = {
         CHILD_NEVER_RETURNS: handled(
             'ChildDrainSupervisor.observe on CLUSTERING_STALL_TIMEOUT_MINUTES '
             'revokes the batches a worker holds, or every live batch when none is '
-            'running. It ends a victim as REVOKED, not FAILURE, on purpose: a '
+            'running, through taskqueue.end_child. It ends a victim as REVOKED, '
+            'not FAILURE, on purpose: a '
             'revoked batch is absorbed as failed AND stale, so it feeds '
             'CLUSTERING_MAX_FAILED_BATCHES and CLUSTERING_EARLY_STOP_BATCHES both'
         ),
