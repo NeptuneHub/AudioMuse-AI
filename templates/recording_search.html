@@ -131,23 +131,20 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Search by Recording</h1>
-        <p>Record {{ record_seconds }} seconds of whatever is playing around you, or upload a clip, and get the songs in your library that sound like it.</p>
+        <p>Record {{ record_seconds }} seconds of whatever is playing around you, or upload a clip, and find which song in your library it is.</p>
     </header>
 
     <div class="cache-stats">
-        <strong>MusiCNN</strong> {{ 'ready' if index_status.musicnn else 'not built yet' }} |
-        <strong>DCLAP</strong> {{ 'ready' if index_status.dclap else ('disabled' if not clap_enabled else 'not built yet') }} |
-        <strong>Lyrics (GTE)</strong> {{ 'ready' if index_status.lyrics else ('disabled' if not lyrics_enabled else 'not built yet') }} |
-        <strong>Identify</strong> {{ index_status.identify }}
+        <strong>Chromaprint</strong> {{ index_status.identify }} |
+        <strong>Neural fingerprint</strong> {{ index_status.neural }} |
+        <strong>Lyrics (GTE)</strong> {{ 'ready' if index_status.lyrics else ('disabled' if not lyrics_enabled else 'not built yet') }}
     </div>
 
     <div class="search-container">
         <div class="tabs" role="tablist">
-            <button type="button" class="tab-btn" data-mode="musicnn">MusiCNN</button>
-            <button type="button" class="tab-btn" data-mode="dclap">DCLAP</button>
+            <button type="button" class="tab-btn active" data-mode="identify">Chromaprint</button>
+            <button type="button" class="tab-btn" data-mode="neural">Neural fingerprint</button>
             <button type="button" class="tab-btn" data-mode="lyrics">Lyrics (GTE)</button>
-            <button type="button" class="tab-btn" data-mode="identify">Identify (Chromaprint)</button>
-            <button type="button" class="tab-btn active" data-mode="combined">Combined</button>
         </div>
         <p class="tab-help" id="tab-help"></p>
 
@@ -204,14 +201,11 @@ document.addEventListener('DOMContentLoaded', function () {
     const HTTPS_PORT = {{ https_port|int }};
     const HTTPS_ERROR = {{ https_error|tojson }};
     const HELP = {
-        musicnn: 'Sound only: the MusiCNN vector of the clip against the audio index, the same index Playlist from Similar Song uses.',
-        dclap: 'Sound only: the DCLAP vector of the clip against the index Text Search uses.',
-        lyrics: 'Words only: the clip is transcribed with Whisper and the words are searched in the lyrics index.',
-        identify: 'The exact recording: the clip is fingerprinted like the duplicate detector does and slid across the fingerprints already stored for every track. It is the one search that survives a noisy phone recording. The first two minutes of each track are covered.',
-        combined: 'Every ranking fused by rank agreement, the identification counting double: a song the identifier is sure about is pinned first, then songs that several indexes place around the same position.'
+        identify: 'The exact recording from the chromaprints the duplicate detector already stored: the clip is fingerprinted the same way and slid across every track. Only the first two minutes of each track are covered, so record early in the song.',
+        neural: 'The exact recording from the neural fingerprint the analysis stores for the whole track: every half second of the clip is matched to the same half second of every song, from any part of it. Needs a clip of at least a few seconds.',
+        lyrics: 'Words only: the clip is transcribed with Whisper and the words are searched in the lyrics index.'
     };
-    const MODE_LABELS = { musicnn: 'MusiCNN', dclap: 'DCLAP', lyrics: 'Lyrics (GTE)', identify: 'Identify (Chromaprint)', combined: 'Combined' };
-    const SOURCE_SHORT = { identify: 'C', musicnn: 'M', dclap: 'D', lyrics: 'L' };
+    const MODE_LABELS = { identify: 'Chromaprint', neural: 'Neural fingerprint', lyrics: 'Lyrics (GTE)' };
 
     function clock(seconds) {
         const s = Math.max(0, Math.round(seconds));
@@ -222,6 +216,12 @@ document.addEventListener('DOMContentLoaded', function () {
         if (typeof song.z !== 'number') return null;
         const text = `${song.identified ? 'IDENTIFIED at ' : 'at '}${clock(song.offset_seconds)} · z ${song.z.toFixed(1)}`;
         return { text, cls: song.identified ? 'badge-high' : (song.z >= 4 ? 'badge-medium' : 'badge-low') };
+    }
+
+    function neuralBadge(song) {
+        if (typeof song.score !== 'number') return null;
+        const text = `${song.identified ? 'IDENTIFIED at ' : 'at '}${clock(song.offset_seconds)} · match ${song.score.toFixed(2)}`;
+        return { text, cls: song.identified ? 'badge-high' : (song.score >= 0.4 ? 'badge-medium' : 'badge-low') };
     }
 
     const recordBtn = document.getElementById('record-btn');
@@ -241,10 +241,9 @@ document.addEventListener('DOMContentLoaded', function () {
     const playlistCreator = document.getElementById('playlist-creator');
     const playlistForm = document.getElementById('playlist-form');
 
-    let mode = 'combined';
+    let mode = 'identify';
     let currentClip = null;
     let currentResults = [];
-    let answeredSources = [];
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -420,7 +419,6 @@ document.addEventListener('DOMContentLoaded', function () {
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Search failed');
             currentResults = data.results || [];
-            answeredSources = data.sources || [];
             displayResults(data);
         } catch (error) {
             showError(error.message);
@@ -428,18 +426,6 @@ document.addEventListener('DOMContentLoaded', function () {
             searchBtn.disabled = false;
         }
     });
-
-    function agreementBadge(song) {
-        const ranks = song.ranks || {};
-        const parts = answeredSources.map(source => `${SOURCE_SHORT[source] || source}${ranks[source] ? '#' + ranks[source] : '-'}`);
-        const agree = song.agreement || 0;
-        const total = answeredSources.length || 1;
-        if (song.identified) {
-            return { text: `IDENTIFIED at ${clock(song.offset_seconds)} · ${parts.join(' ')}`, cls: 'badge-high' };
-        }
-        const cls = agree >= total ? 'badge-high' : (agree >= 2 ? 'badge-medium' : 'badge-low');
-        return { text: `${agree}/${total} agree ${parts.join(' ')}`, cls };
-    }
 
     function displayResults(data) {
         const results = data.results || [];
@@ -461,9 +447,12 @@ document.addEventListener('DOMContentLoaded', function () {
             summary += lead === null
                 ? ` · best candidate z ${results[0].z.toFixed(1)} (${results[0].variant || 'as recorded'})`
                 : ` · best candidate leads the next different recording by ${lead.toFixed(1)} sigma (${results[0].variant || 'as recorded'})`;
+        } else if (data.mode === 'neural' && typeof results[0].score === 'number') {
+            const lead = typeof results[0].lead === 'number' ? results[0].lead : null;
+            summary += ` · best candidate matches ${results[0].score.toFixed(2)}` + (lead === null ? '' : `, ${lead.toFixed(2)} ahead of the next song`);
         }
         resultCount.textContent = summary;
-        const metric = data.mode === 'combined' ? agreementBadge : (data.mode === 'identify' ? identifyBadge : songSimilarityBadge);
+        const metric = data.mode === 'neural' ? neuralBadge : (data.mode === 'identify' ? identifyBadge : songSimilarityBadge);
         resultsList.innerHTML = renderSongList(results, { metric });
         playlistCreator.classList.remove('hidden');
     }
@@ -502,7 +491,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    setMode('combined');
+    setMode('identify');
 });
 </script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>

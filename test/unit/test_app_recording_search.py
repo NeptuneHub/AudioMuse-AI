@@ -16,7 +16,7 @@ Main Features:
 * A successful search hands the clip to the manager as a stream (never read
   into memory by the blueprint), passes mode and count through, scopes the
   results to the requested count and reports the count
-* The mode defaults to combined and the count to the config default
+* The mode defaults to identify and the count to the config default
 * The warmup endpoint relays the manager status
 * The page hands the template the built-in HTTPS port, or zero when the
   listener is disabled, and the reason when it could not start
@@ -96,7 +96,7 @@ def _render_page(bp_mod, monkeypatch, status):
 
     captured = {}
     monkeypatch.setattr(tls_listener, 'https_status', lambda: status)
-    monkeypatch.setattr(rsm, 'get_index_status', lambda: {'musicnn': True, 'dclap': False, 'lyrics': False, 'identify': 'ready'})
+    monkeypatch.setattr(rsm, 'get_index_status', lambda: {'identify': 'ready', 'neural': 'not built yet', 'lyrics': False})
     monkeypatch.setattr(bp_mod, 'render_template', lambda name, **context: captured.update(context) or 'page')
     from flask import Flask
 
@@ -116,7 +116,7 @@ def test_the_page_carries_the_built_in_https_port_or_zero_and_the_start_error(bp
 
 
 def test_missing_clip_answers_400(client):
-    response = _post(client, {'mode': 'musicnn'})
+    response = _post(client, {'mode': 'identify'})
     assert response.status_code == 400
     assert 'clip' in response.get_json()['error']
 
@@ -127,7 +127,7 @@ def test_unknown_mode_answers_400(client):
 
 
 def test_bad_count_answers_400(client):
-    response = _post(client, {'clip': _clip(), 'mode': 'musicnn', 'n_results': 'ten'})
+    response = _post(client, {'clip': _clip(), 'mode': 'identify', 'n_results': 'ten'})
     assert response.status_code == 400
 
 
@@ -135,7 +135,7 @@ def test_oversized_clip_answers_413(client, monkeypatch):
     import config
 
     monkeypatch.setattr(config, 'RECORDING_SEARCH_MAX_UPLOAD_MB', 0)
-    response = _post(client, {'clip': _clip(), 'mode': 'musicnn'})
+    response = _post(client, {'clip': _clip(), 'mode': 'identify'})
     assert response.status_code == 413
 
 
@@ -144,7 +144,7 @@ def test_manager_value_error_answers_400_with_its_message(client, monkeypatch):
         raise ValueError('The clip is silent.')
 
     _patch_manager(monkeypatch, boom)
-    response = _post(client, {'clip': _clip(), 'mode': 'musicnn'})
+    response = _post(client, {'clip': _clip(), 'mode': 'identify'})
     assert response.status_code == 400
     assert response.get_json()['error'] == 'The clip is silent.'
 
@@ -154,7 +154,7 @@ def test_manager_runtime_error_answers_503(client, monkeypatch):
         raise RuntimeError('The DCLAP index is not loaded. Run analysis first.')
 
     _patch_manager(monkeypatch, boom)
-    response = _post(client, {'clip': _clip(), 'mode': 'dclap'})
+    response = _post(client, {'clip': _clip(), 'mode': 'neural'})
     assert response.status_code == 503
     assert 'not loaded' in response.get_json()['error']
 
@@ -164,7 +164,7 @@ def test_unexpected_error_answers_generic_500_without_detail(client, monkeypatch
         raise KeyError('secret-internal-detail')
 
     _patch_manager(monkeypatch, boom)
-    response = _post(client, {'clip': _clip(), 'mode': 'musicnn'})
+    response = _post(client, {'clip': _clip(), 'mode': 'identify'})
     assert response.status_code == 500
     assert 'secret' not in response.get_json()['error']
 
@@ -188,15 +188,15 @@ def test_success_passes_the_clip_through_scopes_results_and_reports_count(client
         }
 
     _patch_manager(monkeypatch, fake)
-    response = _post(client, {'clip': _clip('rec.webm'), 'mode': 'dclap', 'n_results': '1'})
+    response = _post(client, {'clip': _clip('rec.webm'), 'mode': 'neural', 'n_results': '1'})
     body = response.get_json()
     assert response.status_code == 200
-    assert seen == {'file_bytes': b'abc', 'filename': 'rec.webm', 'mode': 'dclap', 'n_results': 1}
+    assert seen == {'file_bytes': b'abc', 'filename': 'rec.webm', 'mode': 'neural', 'n_results': 1}
     assert body['count'] == 1
     assert [row['item_id'] for row in body['results']] == ['a']
 
 
-def test_mode_defaults_to_combined_and_count_to_the_config_default(client, monkeypatch):
+def test_mode_defaults_to_identify_and_count_to_the_config_default(client, monkeypatch):
     import config
 
     seen = {}
@@ -216,7 +216,7 @@ def test_mode_defaults_to_combined_and_count_to_the_config_default(client, monke
     _patch_manager(monkeypatch, fake)
     response = _post(client, {'clip': _clip('rec.webm')})
     assert response.status_code == 200
-    assert seen == {'mode': 'combined', 'n_results': config.RECORDING_SEARCH_DEFAULT_N_RESULTS}
+    assert seen == {'mode': 'identify', 'n_results': config.RECORDING_SEARCH_DEFAULT_N_RESULTS}
 
 
 def test_warmup_relays_the_manager_status(client, monkeypatch):
@@ -227,7 +227,7 @@ def test_warmup_relays_the_manager_status(client, monkeypatch):
         'warmup_recording_models',
         lambda include_lyrics=False: {
             'loaded': True,
-            'models': {'musicnn': True, 'whisper': include_lyrics},
+            'models': {'identify': True, 'neural': False, 'whisper': include_lyrics},
             'expiry_seconds': 300,
         },
     )

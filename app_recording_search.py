@@ -18,8 +18,9 @@ Main Features:
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
-* One mode per page tab: `musicnn`, `dclap`, `lyrics`, `identify` (the exact
-  recording, from the stored chromaprints) or `combined`.
+* One mode per page tab: `identify` (the exact recording, from the stored
+  chromaprints of the first two minutes), `neural` (the neural fingerprint
+  sequence, any part of a song) or `lyrics`.
 * The manager's ValueError (the clip is at fault) answers 400 and its
   RuntimeError (an index or model is unavailable) answers 503; everything else
   is a generic 500 with the detail only in the container log.
@@ -64,7 +65,7 @@ def recording_search_page():
         index_status = get_index_status()
     except Exception:
         logger.exception('Could not read the index status for the recording search page')
-        index_status = {'musicnn': False, 'dclap': False, 'lyrics': False, 'identify': 'not built yet'}
+        index_status = {'identify': 'not built yet', 'neural': 'not built yet', 'lyrics': False}
     https = https_status()
 
     return render_template(
@@ -105,8 +106,8 @@ def recording_search_api():
                 description: The audio clip (webm/opus from the browser recorder, or any audio file).
               mode:
                 type: string
-                enum: [musicnn, dclap, lyrics, identify, combined]
-                default: combined
+                enum: [identify, neural, lyrics]
+                default: identify
               n_results:
                 type: integer
                 minimum: 1
@@ -192,7 +193,7 @@ def recording_search_api():
     if upload is None:
         return jsonify({'error': 'Missing "clip" audio file.', 'results': []}), 400
 
-    mode = (request.form.get('mode') or 'combined').strip().lower()
+    mode = (request.form.get('mode') or 'identify').strip().lower()
     if mode not in MODES:
         return jsonify({'error': f'Unknown mode. Use one of: {", ".join(MODES)}.', 'results': []}), 400
 
@@ -247,7 +248,7 @@ def recording_search_warmup_api():
               lyrics:
                 type: boolean
                 default: false
-                description: Also preload Whisper for the lyrics and combined modes.
+                description: Also preload Whisper for the lyrics mode.
     responses:
       200:
         description: Which models are loaded and when they unload if idle.

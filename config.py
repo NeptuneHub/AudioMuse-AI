@@ -290,6 +290,12 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # HTTP bind, never from the wizard.
     'FLASK_BUILTIN_HTTPS',
     'FLASK_HTTPS_CERT_DIR',
+    # The neural fingerprint model is a file shipped with the image, not a setting.
+    'NEURAL_FINGERPRINT_MODEL_PATH',
+    'NEURAL_FINGERPRINT_CODEBOOK_PATH',
+    'NEURAL_FINGERPRINT_NPROBE',
+    'NEURAL_FINGERPRINT_MIN_SCORE',
+    'NEURAL_FINGERPRINT_MIN_LEAD',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
@@ -1158,6 +1164,36 @@ CLAP_SAE_CONCEPTS_PATH = os.environ.get(
 # A refinement may stack at most this many concepts; the paper steers one at a
 # time, so beyond a handful the edits start fighting each other.
 CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
+
+# Neural audio fingerprint (Search by Recording, identify from any part of a
+# song): the ONNX encoder exported from the neural music fingerprinter of Araz,
+# Serra and Bogdanov (ISMIR 2025, triplet checkpoint); it ships at the repository
+# root like the JSON files above (/app in the container image, the bundle root in
+# a native build). A missing file simply disables the analysis stage and the tab.
+# Runs on the CPU only.
+NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
+    "NEURAL_FINGERPRINT_MODEL_PATH",
+    os.path.join(_bundle_data_root(), "neural_fingerprint.onnx"),
+)
+# Product-quantisation codebook that turns each 128-number fingerprint vector into
+# 32 bytes (32 slices of 4 numbers, 256 centroids each), trained once on library
+# fingerprints (scripts/onnx_export/train_neural_fingerprint_codebook.py) and shipped
+# next to the model. Every stored blob carries the codebook's checksum: changing the
+# file invalidates the stored fingerprints, so keep the one the library was encoded with.
+NEURAL_FINGERPRINT_CODEBOOK_PATH = os.environ.get(
+    "NEURAL_FINGERPRINT_CODEBOOK_PATH",
+    os.path.join(_bundle_data_root(), "neural_fingerprint_pq.npz"),
+)
+# Coarse cells probed per query vector when the fingerprint index is searched
+# (the pack has about sqrt(rows) cells); more cells = better recall, slower query.
+NEURAL_FINGERPRINT_NPROBE = int(os.environ.get("NEURAL_FINGERPRINT_NPROBE", "12"))
+# The best track counts as identified when the clip's segments, aligned on it, reach
+# this mean cosine similarity AND lead the next track by this much. Measured on four
+# real phone recordings: scores 0.48 to 0.68, leads 0.33 to 0.51; on a synthetic
+# degradation harsher than a phone the wrong top candidates stayed below 0.26 with
+# leads under 0.09.
+NEURAL_FINGERPRINT_MIN_SCORE = float(os.environ.get("NEURAL_FINGERPRINT_MIN_SCORE", "0.4"))
+NEURAL_FINGERPRINT_MIN_LEAD = float(os.environ.get("NEURAL_FINGERPRINT_MIN_LEAD", "0.15"))
 # Strength grid (alpha). Each concept mask is L2 normalised, so alpha is a fixed
 # length step in latent space and means the same for every concept. The grid stops
 # at 5: beyond that the edit stops refining the query and starts replacing it, and

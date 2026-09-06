@@ -1333,6 +1333,13 @@ if not _is_worker:
         t = threading.Thread(target=_start_map_init_background, daemon=True)
         t.start()
 
+        # Neural fingerprints stored in the older int8 layout are re-encoded to the
+        # 32-byte product-quantised codes in the background; the search reads both
+        # layouts meanwhile, so nothing waits on it.
+        from tasks.neural_fingerprint import start_legacy_migration
+
+        start_legacy_migration()
+
         # The Hyperbolic Explorer tree cache is NOT loaded here: unlike the
         # indexes above it is a fully materialized Python object tree whose RSS
         # scales with catalogue size, so it lazy-loads on the first /hyperbolic

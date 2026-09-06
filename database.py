@@ -907,6 +907,43 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         cur.close()
 
 
+def save_neural_fingerprint(item_id, blob):
+    if not blob:
+        return False
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE embedding SET neural_fingerprint = %s WHERE item_id = %s",
+            (psycopg2.Binary(bytes(blob)), item_id),
+        )
+        saved = cur.rowcount > 0
+        conn.commit()
+        return saved
+    except Exception:
+        conn.rollback()
+        logger.exception(f"Error saving the neural fingerprint for {item_id}")
+        raise
+    finally:
+        cur.close()
+
+
+def get_ids_with_neural_fingerprint(item_ids):
+    ids = [str(i) for i in item_ids]
+    if not ids:
+        return set()
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT item_id FROM embedding WHERE item_id = ANY(%s) AND neural_fingerprint IS NOT NULL",
+            (ids,),
+        )
+        return {row[0] for row in cur.fetchall()}
+    finally:
+        cur.close()
+
+
 def set_hyperbolic_projection(item_id, poincare_embedding, hyperbolic_radius):
     if poincare_embedding is None or hyperbolic_radius is None:
         return
@@ -1678,6 +1715,7 @@ def init_db():
             )
             if not cur.fetchone()[0]:
                 cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
+            cur.execute("ALTER TABLE embedding ADD COLUMN IF NOT EXISTS neural_fingerprint BYTEA")
             cur.execute("DROP TABLE IF EXISTS voyager_index_data")
             cur.execute("DROP TABLE IF EXISTS clap_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_index_data")

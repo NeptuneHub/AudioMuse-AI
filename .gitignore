@@ -10,6 +10,7 @@ venv/
 .venv-macos/
 .venv-linux/
 .venv-windows/
+.venv-tfexport/
 env/
 
 # Linux native build inputs built fresh in CI (not committed; see .github/workflows/build-linux.yml)

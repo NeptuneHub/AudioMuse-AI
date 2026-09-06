@@ -242,14 +242,15 @@ class TrackPlan(NamedTuple):
     clap: bool
     lyrics: bool
     base: bool = False
+    neural: bool = False
 
     @property
     def any_stage(self):
-        return self.musicnn or self.clap or self.lyrics or self.base
+        return self.musicnn or self.clap or self.lyrics or self.base or self.neural
 
     @property
     def needs_audio(self):
-        return self.musicnn or self.clap or self.base
+        return self.musicnn or self.clap or self.base or self.neural
 
     def describe(self):
         wanted = [
@@ -259,6 +260,7 @@ class TrackPlan(NamedTuple):
                 ('CLAP', self.clap),
                 ('Lyrics', self.lyrics),
                 ('Base', self.base),
+                ('Neural fingerprint', self.neural),
             )
             if on
         ]
@@ -266,14 +268,24 @@ class TrackPlan(NamedTuple):
 
 
 def plan_track_stages(track_id, existing_ids, missing_clap_ids, missing_lyrics_ids,
-                      missing_base_ids, lyrics_enabled):
+                      missing_base_ids, lyrics_enabled, missing_neural_ids=frozenset()):
     musicnn = track_id not in existing_ids
     return TrackPlan(
         musicnn,
         track_id in missing_clap_ids,
         bool(lyrics_enabled) and track_id in missing_lyrics_ids,
         bool(not musicnn and track_id in missing_base_ids),
+        track_id in missing_neural_ids,
     )
+
+
+def get_missing_neural_ids(track_ids):
+    from database import get_ids_with_neural_fingerprint
+
+    ids = _str_ids(track_ids)
+    if not ids:
+        return set()
+    return set(ids) - get_ids_with_neural_fingerprint(ids)
 
 
 def replan_for_catalogue_row(plan, item_id):
@@ -282,6 +294,7 @@ def replan_for_catalogue_row(plan, item_id):
         plan.clap and bool(get_missing_ids_in_table('clap_embedding', [item_id])),
         plan.lyrics and bool(get_missing_ids_in_table('lyrics_embedding', [item_id])),
         bool(get_missing_base_ids([item_id])),
+        plan.neural and bool(get_missing_neural_ids([item_id])),
     )
 
 
@@ -355,7 +368,7 @@ def _prior_moods_for_lyrics(track_ids, existing_ids, missing_lyrics_ids, top_n_m
 
 
 def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
-    from .. import clap_analyzer
+    from .. import clap_analyzer, neural_fingerprint
 
     attach_catalog_item_ids(tracks)
     from .song import catalog_item_id
@@ -371,13 +384,17 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
     missing_lyrics_ids = (
         get_missing_ids_in_table('lyrics_embedding', track_ids) if lyrics_enabled else set()
     )
+    missing_neural_ids = (
+        get_missing_neural_ids(track_ids) if neural_fingerprint.is_available() else set()
+    )
     logger.info(
-        "Feature plan for album '%s': Base=%d, MusiCNN=%d, DCLAP=%d, Lyrics=%d of %d tracks.",
+        "Feature plan for album '%s': Base=%d, MusiCNN=%d, DCLAP=%d, Lyrics=%d, Neural fingerprint=%d of %d tracks.",
         album_name,
         len(missing_base_ids),
         len(tracks) - len(existing_ids),
         len(missing_clap_ids),
         len(missing_lyrics_ids),
+        len(missing_neural_ids),
         len(tracks),
     )
     clap_label_embeddings = _album_clap_label_embeddings(
@@ -388,7 +405,7 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
     )
     return (
         existing_ids, missing_clap_ids, missing_lyrics_ids, missing_base_ids,
-        clap_label_embeddings, prior_moods,
+        clap_label_embeddings, prior_moods, missing_neural_ids,
     )
 
 
@@ -445,13 +462,14 @@ def raise_album_failures(failed_tracks, map_flush_errors, total_tracks_in_album)
         raise RuntimeError(" | ".join(failure_reasons))
 
 
-def album_feature_needs(masks, done_bits, clap_available, lyrics_enabled):
+def album_feature_needs(masks, done_bits, clap_available, lyrics_enabled, neural_available=False):
     album_done = sum(1 for m in masks if m & done_bits == done_bits)
     needs_musicnn = any(not m & WORK_MUSICNN for m in masks)
     needs_clap = clap_available and any(not m & WORK_CLAP for m in masks)
     needs_lyrics = lyrics_enabled and any(not m & WORK_LYRICS for m in masks)
     needs_base = any(not m & WORK_BASE for m in masks)
-    return album_done, needs_musicnn, needs_clap, needs_lyrics, needs_base
+    needs_neural = neural_available and any(not m & WORK_NEURAL for m in masks)
+    return album_done, needs_musicnn, needs_clap, needs_lyrics, needs_base, needs_neural
 
 
 WORK_MUSICNN = 1
@@ -466,12 +484,16 @@ WORK_LYRICS = 4
 WORK_BASE = 8
 
 
-def work_done_bits(clap_available, lyrics_enabled):
+WORK_NEURAL = 16
+
+
+def work_done_bits(clap_available, lyrics_enabled, neural_available=False):
     return (
         WORK_MUSICNN
         | WORK_BASE
         | (WORK_CLAP if clap_available else 0)
         | (WORK_LYRICS if lyrics_enabled else 0)
+        | (WORK_NEURAL if neural_available else 0)
     )
 
 
@@ -486,7 +508,7 @@ _MUSICNN_ANALYZED = (
 )
 
 
-def _work_feature_parts(clap_available, lyrics_enabled, key_column):
+def _work_feature_parts(clap_available, lyrics_enabled, key_column, neural_available=False):
     selects, joins = [], []
     for enabled, table, alias in (
         (clap_available, 'clap_embedding', 'c'),
@@ -497,10 +519,13 @@ def _work_feature_parts(clap_available, lyrics_enabled, key_column):
             joins.append(f"LEFT JOIN {table} {alias} ON {alias}.item_id = {key_column}")
         else:
             selects.append("TRUE")
+    if neural_available:
+        selects.append("(e.neural_fingerprint IS NOT NULL)")
     return selects, " ".join(joins)
 
 
-def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_base):
+def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_base,
+                     has_neural=True):
     key = str(provider_id)
     mask = WORK_MUSICNN if has_musicnn else 0
     if has_clap:
@@ -509,6 +534,8 @@ def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, h
         mask |= WORK_LYRICS
     if has_base:
         mask |= WORK_BASE
+    if has_neural:
+        mask |= WORK_NEURAL
     work_map[key] = work_map.get(key, 0) | mask
 
 
@@ -519,15 +546,15 @@ def _work_map_scan(cur, sql, params, work_map, chunk_size):
         rows = cur.fetchall()
         if not rows:
             return
-        for provider_id, has_musicnn, has_clap, has_lyrics, has_base in rows:
-            _apply_work_bits(
-                work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_base
-            )
+        for row in rows:
+            _apply_work_bits(work_map, *row)
         last = str(rows[-1][0])
 
 
-def _work_sql(clap_available, lyrics_enabled):
-    mapped_selects, mapped_joins = _work_feature_parts(clap_available, lyrics_enabled, 'm.item_id')
+def _work_sql(clap_available, lyrics_enabled, neural_available=False):
+    mapped_selects, mapped_joins = _work_feature_parts(
+        clap_available, lyrics_enabled, 'm.item_id', neural_available
+    )
     mapped_sql = (
         "SELECT m.provider_track_id, "
         f"(e.item_id IS NOT NULL AND {_MUSICNN_ANALYZED}), "
@@ -538,7 +565,9 @@ def _work_sql(clap_available, lyrics_enabled):
         f"{mapped_joins} "
         "WHERE m.server_id = %s"
     )
-    legacy_selects, legacy_joins = _work_feature_parts(clap_available, lyrics_enabled, 's.item_id')
+    legacy_selects, legacy_joins = _work_feature_parts(
+        clap_available, lyrics_enabled, 's.item_id', neural_available
+    )
     legacy_sql = (
         f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)}, ({_BASE_ANALYZED}) "
         "FROM score s "
@@ -555,8 +584,9 @@ def _is_default_server(server_id):
     return server_id is None or str(server_id) == str(registry.get_default_server_id() or '')
 
 
-def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=20000):
-    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled)
+def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=20000,
+                         neural_available=False):
+    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled, neural_available)
     work_map = {}
     with get_db() as conn, conn.cursor() as cur:
         if server_id:
@@ -575,11 +605,12 @@ def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=2
     return work_map
 
 
-def album_work_masks(provider_ids, server_id, clap_available, lyrics_enabled):
+def album_work_masks(provider_ids, server_id, clap_available, lyrics_enabled,
+                     neural_available=False):
     ids = _str_ids(provider_ids)
     if not ids:
         return {}
-    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled)
+    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled, neural_available)
     work_map = {}
     with get_db() as conn, conn.cursor() as cur:
         if server_id:
@@ -791,12 +822,15 @@ def claim_new_canonical_id(resolver, minted_id, embedding, duration=None, finger
         candidate = mint_canonical_id(signature, taken)
 
 
-def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
+def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False,
+                               neural_available=False):
     parts = ["Base", "MusiCNN"]
     if clap_available:
         parts.append("CLAP")
     if lyrics_enabled:
         parts.append("Lyrics")
+    if neural_available:
+        parts.append("Neural fingerprint")
     if include_check_marks:
         return [f"{p}: OK" for p in parts]
     return parts

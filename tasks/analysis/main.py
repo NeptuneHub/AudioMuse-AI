@@ -85,6 +85,8 @@ from config import (
     TEMP_DIR,
     MAX_QUEUED_ANALYSIS_JOBS,
     LYRICS_ENABLED,
+    NEURAL_FINGERPRINT_MODEL_PATH,
+    NEURAL_FINGERPRINT_CODEBOOK_PATH,
     ANALYSIS_MONITOR_DB_INTERVAL,
     ANALYSIS_STALL_TIMEOUT_MINUTES,
     ANALYSIS_MAX_STALL_GIVE_UPS,
@@ -353,13 +355,22 @@ def _run_analysis_server_task_impl(
                 total_albums_to_check = len(all_albums)
                 reported_total = albums_total or total_albums_to_check
                 clap_available = is_clap_available()
+                from .. import neural_fingerprint
+
+                neural_available = neural_fingerprint.is_available()
+                if not neural_available:
+                    logger.info(
+                        "Neural fingerprint stage skipped: model %s or codebook %s is missing",
+                        NEURAL_FINGERPRINT_MODEL_PATH, NEURAL_FINGERPRINT_CODEBOOK_PATH,
+                    )
                 wm_server_id = server_id or registry.get_default_server_id()
                 opening_step[0] = (
                     f"scanning which of {total_albums_to_check} albums still need work"
                 )
                 try:
                     work_map = _ah.load_server_work_map(
-                        wm_server_id, clap_available, LYRICS_ENABLED
+                        wm_server_id, clap_available, LYRICS_ENABLED,
+                        neural_available=neural_available,
                     )
                     work_map_bulk_ok = True
                 except (OperationalError, InterfaceError):
@@ -372,7 +383,7 @@ def _run_analysis_server_task_impl(
                     )
                     work_map = {}
                     work_map_bulk_ok = False
-            done_bits = _ah.work_done_bits(clap_available, LYRICS_ENABLED)
+            done_bits = _ah.work_done_bits(clap_available, LYRICS_ENABLED, neural_available)
             logger.info(
                 "Work map for this server: %d provider tracks already known%s.",
                 len(work_map),
@@ -594,7 +605,8 @@ def _run_analysis_server_task_impl(
                 else:
                     try:
                         am = _ah.album_work_masks(
-                            ids, wm_server_id, clap_available, LYRICS_ENABLED
+                            ids, wm_server_id, clap_available, LYRICS_ENABLED,
+                            neural_available=neural_available,
                         )
                     except (OperationalError, InterfaceError):
                         raise
@@ -613,14 +625,17 @@ def _run_analysis_server_task_impl(
                     needs_clap_analysis,
                     needs_lyrics_analysis,
                     needs_base_analysis,
-                ) = _ah.album_feature_needs(masks, done_bits, clap_available, LYRICS_ENABLED)
+                    _needs_neural_analysis,
+                ) = _ah.album_feature_needs(
+                    masks, done_bits, clap_available, LYRICS_ENABLED, neural_available
+                )
                 songs_seen += len(tracks)
                 songs_done += album_done
 
                 if album_done == len(tracks):
                     albums_skipped += 1
                     status_parts = _ah.build_feature_status_parts(
-                        clap_available, LYRICS_ENABLED
+                        clap_available, LYRICS_ENABLED, neural_available=neural_available
                     )
                     logger.info(
                         f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {len(tracks)} tracks already analyzed ({' + '.join(status_parts)})."

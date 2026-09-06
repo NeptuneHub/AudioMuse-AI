@@ -6,12 +6,9 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Recording search manager: clip decoding, level normalisation and rank fusion.
+"""Recording search manager: clip decoding, level normalisation and the three modes.
 
 Main Features:
-* fuse_by_rank: two indexes agreeing on a mid rank beat one index's top hit, a
-  track missing from a list gets no contribution there, a duplicate inside one
-  list counts once, space-specific scores are dropped, the limit trims
 * normalize_level brings the RMS to the target and rejects silence
 * a clip below RECORDING_SEARCH_QUIET_LEVEL_DB is reported with its level and a
   warning that tells the user to record closer and louder
@@ -19,12 +16,11 @@ Main Features:
   stream, trims it to RECORDING_SEARCH_MAX_CLIP_SECONDS, rejects bytes that are
   not audio, and refuses a stream past RECORDING_SEARCH_MAX_UPLOAD_MB while
   copying it
-* run_recording_search: combined mode records a skipped index as a warning and
-  fuses the rest, fails only when every index is unavailable, single mode
-  re-raises, an unknown mode is rejected before decoding
-* combined mode pins a confident chromaprint identification first, copies its
-  ber, z, offset and flag onto the fused row, and the identify list weighs
-  double in the fusion
+* run_recording_search runs exactly the mode asked for, returns its rows with
+  titles attached, re-raises when that index is unavailable, rejects an unknown
+  mode before decoding, and reports the transcript the lyrics mode heard
+* the neural rows keep score, votes, offset, identified and lead, and the
+  index status names each pack's state
 """
 
 import io
@@ -41,46 +37,6 @@ def _rows(*ids):
         {'item_id': i, 'title': f't-{i}', 'author': f'a-{i}', 'album': '', 'similarity': 0.5}
         for i in ids
     ]
-
-
-def test_two_indexes_agreeing_on_a_mid_rank_beat_one_index_top_hit():
-    fused = rsm.fuse_by_rank({'musicnn': _rows('x', 'y', 'z'), 'dclap': _rows('w', 'y', 'v')}, k=60)
-    assert fused[0]['item_id'] == 'y'
-    assert fused[0]['agreement'] == 2
-    assert fused[0]['ranks'] == {'musicnn': 2, 'dclap': 2}
-    assert fused[0]['rrf_score'] == pytest.approx(2 / 62, abs=1e-6)
-
-
-def test_track_missing_from_a_list_gets_no_contribution_there():
-    fused = rsm.fuse_by_rank({'musicnn': _rows('x'), 'dclap': _rows('q')}, k=60)
-    by_id = {entry['item_id']: entry for entry in fused}
-    assert by_id['x']['ranks'] == {'musicnn': 1}
-    assert by_id['x']['agreement'] == 1
-    assert 'dclap' not in by_id['x']['similarity_by_source']
-
-
-def test_duplicate_within_one_list_counts_once():
-    fused = rsm.fuse_by_rank({'musicnn': _rows('x', 'x')}, k=60)
-    assert len(fused) == 1
-    assert fused[0]['rrf_score'] == pytest.approx(1 / 61, abs=1e-6)
-
-
-def test_fused_rows_drop_space_specific_scores_and_keep_metadata():
-    fused = rsm.fuse_by_rank({'musicnn': _rows('x')}, k=60)
-    assert 'similarity' not in fused[0]
-    assert 'distance' not in fused[0]
-    assert fused[0]['title'] == 't-x'
-    assert fused[0]['similarity_by_source'] == {'musicnn': 0.5}
-
-
-def test_limit_trims_the_fused_output():
-    fused = rsm.fuse_by_rank({'musicnn': _rows('a', 'b', 'c')}, k=60, limit=2)
-    assert [entry['item_id'] for entry in fused] == ['a', 'b']
-
-
-def test_rows_without_item_id_are_ignored():
-    fused = rsm.fuse_by_rank({'musicnn': [{'title': 'no id'}] + _rows('a')}, k=60)
-    assert [entry['item_id'] for entry in fused] == ['a']
 
 
 def test_normalize_level_brings_rms_to_target():
@@ -108,14 +64,14 @@ def test_run_recording_search_reports_the_clip_level_and_warns_when_too_quiet(mo
     monkeypatch.setattr(rsm.config, 'RECORDING_SEARCH_QUIET_LEVEL_DB', -30.0)
     quiet = (0.001 * np.sin(np.linspace(0, 400 * np.pi, 16000))).astype(np.float32)
     monkeypatch.setattr(rsm, 'decode_clip', lambda clip, filename: (quiet, 16000))
-    monkeypatch.setattr(rsm, '_SEARCHERS', {'musicnn': lambda audio, sr, n: (_rows('a'), None)})
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'musicnn', 10)
+    monkeypatch.setattr(rsm, '_SEARCHERS', {'identify': lambda audio, sr, n: (_rows('a'), None)})
+    payload = rsm.run_recording_search(b'x', 'c.wav', 'identify', 10)
     assert payload['clip_level_db'] == pytest.approx(-63.0, abs=0.5)
     assert len(payload['warnings']) == 1
     assert 'very quiet' in payload['warnings'][0]
     loud = (0.2 * np.sin(np.linspace(0, 400 * np.pi, 16000))).astype(np.float32)
     monkeypatch.setattr(rsm, 'decode_clip', lambda clip, filename: (loud, 16000))
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'musicnn', 10)
+    payload = rsm.run_recording_search(b'x', 'c.wav', 'identify', 10)
     assert payload['warnings'] == []
 
 
@@ -176,76 +132,42 @@ def _fake_pipeline(monkeypatch, searchers):
     )
     monkeypatch.setattr(rsm, 'normalize_level', lambda audio, target_db=None: audio)
     monkeypatch.setattr(rsm, '_SEARCHERS', searchers)
-    monkeypatch.setattr(rsm, 'SOURCES', tuple(searchers))
 
 
-def test_a_confident_identification_is_pinned_first_in_combined_mode_and_annotated(monkeypatch):
+def test_each_mode_runs_only_its_own_searcher_and_returns_its_rows(monkeypatch):
+    calls = []
+
     def identify(audio, sr, n):
-        rows = _rows('song', 'other')
-        rows[0].update({'ber': 0.34, 'z': 6.1, 'offset_seconds': 7.2, 'identified': True})
-        rows[1].update({'ber': 0.41, 'z': 3.9, 'offset_seconds': 50.0, 'identified': False})
-        return rows, None
-
-    def musicnn(audio, sr, n):
-        return _rows('a', 'b', 'song'), None
-
-    def dclap(audio, sr, n):
+        calls.append('identify')
         return _rows('a', 'b'), None
 
-    _fake_pipeline(monkeypatch, {'identify': identify, 'musicnn': musicnn, 'dclap': dclap})
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'combined', 10)
-    first = payload['results'][0]
-    assert first['item_id'] == 'song'
-    assert first['identified'] is True
-    assert first['offset_seconds'] == 7.2
-    assert first['ranks'] == {'identify': 1, 'musicnn': 3}
-    assert [row['item_id'] for row in payload['results'][1:3]] == ['a', 'b']
+    def neural(audio, sr, n):
+        calls.append('neural')
+        return _rows('c'), None
+
+    _fake_pipeline(monkeypatch, {'identify': identify, 'neural': neural})
+    payload = rsm.run_recording_search(b'x', 'c.wav', 'neural', 10)
+    assert calls == ['neural']
+    assert [row['item_id'] for row in payload['results']] == ['c']
+    assert payload['mode'] == 'neural' and payload['count'] == 1
+    assert payload['clip_seconds'] == 1.0 and payload['transcript'] is None
+    assert 'sources' not in payload
 
 
-def test_the_identify_list_weighs_double_in_the_fusion():
-    fused = rsm.fuse_by_rank({'identify': _rows('x'), 'musicnn': _rows('y')}, k=60, weights={'identify': 2.0})
-    by_id = {entry['item_id']: entry for entry in fused}
-    assert by_id['x']['rrf_score'] == pytest.approx(2 / 61, abs=1e-6)
-    assert by_id['y']['rrf_score'] == pytest.approx(1 / 61, abs=1e-6)
-
-
-def test_combined_mode_reports_an_unavailable_index_as_a_warning_and_fuses_the_rest(monkeypatch):
-    def musicnn(audio, sr, n):
-        return _rows('x', 'y'), None
-
-    def dclap(audio, sr, n):
-        raise RuntimeError('The DCLAP index is not loaded. Run analysis first.')
-
-    def lyrics(audio, sr, n):
-        return _rows('y'), 'some words'
-
-    _fake_pipeline(monkeypatch, {'musicnn': musicnn, 'dclap': dclap, 'lyrics': lyrics})
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'combined', 10)
-    assert payload['sources'] == ['lyrics', 'musicnn']
-    assert payload['warnings'] == [
-        'DCLAP skipped: The DCLAP index is not loaded. Run analysis first.'
-    ]
+def test_the_lyrics_mode_reports_what_whisper_heard(monkeypatch):
+    _fake_pipeline(monkeypatch, {'lyrics': lambda audio, sr, n: (_rows('y'), 'some words')})
+    payload = rsm.run_recording_search(b'x', 'c.wav', 'lyrics', 10)
     assert payload['transcript'] == 'some words'
     assert payload['results'][0]['item_id'] == 'y'
-    assert payload['count'] == 2
 
 
-def test_single_mode_raises_when_its_index_is_unavailable(monkeypatch):
-    def dclap(audio, sr, n):
-        raise RuntimeError('down')
-
-    _fake_pipeline(monkeypatch, {'dclap': dclap})
-    with pytest.raises(RuntimeError):
-        rsm.run_recording_search(b'x', 'c.wav', 'dclap', 10)
-
-
-def test_combined_mode_fails_only_when_every_index_is_unavailable(monkeypatch):
+def test_a_mode_whose_index_is_unavailable_raises(monkeypatch):
     def down(audio, sr, n):
         raise RuntimeError('down')
 
-    _fake_pipeline(monkeypatch, {'musicnn': down, 'dclap': down, 'lyrics': down})
+    _fake_pipeline(monkeypatch, {'neural': down})
     with pytest.raises(RuntimeError):
-        rsm.run_recording_search(b'x', 'c.wav', 'combined', 10)
+        rsm.run_recording_search(b'x', 'c.wav', 'neural', 10)
 
 
 def test_unknown_mode_is_rejected_before_decoding(monkeypatch):
@@ -254,14 +176,45 @@ def test_unknown_mode_is_rejected_before_decoding(monkeypatch):
 
     monkeypatch.setattr(rsm, 'decode_clip', never)
     with pytest.raises(ValueError):
-        rsm.run_recording_search(b'x', 'c.wav', 'bogus', 10)
+        rsm.run_recording_search(b'x', 'c.wav', 'combined', 10)
+    with pytest.raises(ValueError):
+        rsm.run_recording_search(b'x', 'c.wav', 'musicnn', 10)
 
 
-def test_single_mode_returns_the_index_rows_untouched(monkeypatch):
-    rows = _rows('a', 'b')
-    _fake_pipeline(monkeypatch, {'musicnn': lambda audio, sr, n: (rows, None)})
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'musicnn', 10)
-    assert payload['results'] == rows
-    assert payload['mode'] == 'musicnn'
-    assert payload['clip_seconds'] == 1.0
-    assert payload['sources'] == ['musicnn']
+def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):
+    from tasks import neural_fingerprint_index
+
+    hits = [
+        {'item_id': 'song', 'score': 0.81, 'votes': 30.5, 'offset_seconds': 95.5, 'identified': True, 'lead': 0.4},
+        {'item_id': 'ghost', 'score': 0.41, 'votes': 3.0, 'offset_seconds': 1.0, 'identified': False, 'lead': None},
+    ]
+    monkeypatch.setattr(neural_fingerprint_index, 'identify', lambda audio, sr, n: hits)
+    monkeypatch.setattr(
+        rsm, '_fetch_track_metadata',
+        lambda ids: {'song': {'title': 'Song', 'author': 'Band', 'album': 'LP'}},
+    )
+    rows, transcript = rsm.search_neural(np.ones(16000, dtype=np.float32), 16000, 5)
+    assert transcript is None
+    assert rows == [
+        {
+            'item_id': 'song', 'score': 0.81, 'votes': 30.5, 'offset_seconds': 95.5, 'identified': True,
+            'lead': 0.4, 'title': 'Song', 'author': 'Band', 'album': 'LP',
+        }
+    ]
+
+
+def test_index_status_names_each_pack_state(monkeypatch):
+    from tasks import chromaprint_identify, neural_fingerprint_index
+    import tasks.lyrics_manager as lyrics_manager
+
+    monkeypatch.setattr(
+        chromaprint_identify, 'get_status',
+        lambda: {'available': True, 'loaded': False, 'building': True, 'tracks': 0, 'error': None},
+    )
+    monkeypatch.setattr(
+        neural_fingerprint_index, 'get_status',
+        lambda: {'available': False, 'loaded': False, 'building': False, 'tracks': 0, 'error': None},
+    )
+    monkeypatch.setattr(lyrics_manager, 'get_cache_stats', lambda: {'index_loaded': True})
+    monkeypatch.setattr(rsm.config, 'LYRICS_ENABLED', True)
+    assert rsm.get_index_status() == {'identify': 'building', 'neural': 'needs the model file', 'lyrics': True}

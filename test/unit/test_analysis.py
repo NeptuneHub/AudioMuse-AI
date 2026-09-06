@@ -864,7 +864,8 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                       baseline_read_error=None, status_calls=None,
                       expired_but_db_terminal=False, child_rows=None,
                       extra_jobs=None, wedged=None, cancelled=None,
-                      all_live_new=False, wedge_forever=False, busy_sibling=None):
+                      all_live_new=False, wedge_forever=False, busy_sibling=None,
+                      neural_available=False):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -904,6 +905,9 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
     monkeypatch.setattr(analysis, 'LYRICS_ENABLED', False)
     monkeypatch.setattr(clap, 'is_clap_available', lambda: False)
+    import tasks.neural_fingerprint as neural_fp
+
+    monkeypatch.setattr(neural_fp, 'is_available', lambda: neural_available)
     monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 'srv-def')
     monkeypatch.setattr(
         helper, 'load_server_work_map', lambda *args, **kwargs: work_map
@@ -1115,6 +1119,29 @@ def test_settled_library_enqueues_nothing_and_never_queries_per_album(monkeypatc
     assert result['status'] == 'SUCCESS'
     assert enqueued == []
     assert result['message'] == 'Albums 3/3'
+
+
+def test_a_track_without_its_neural_fingerprint_gets_its_album_enqueued_only_when_the_model_exists(monkeypatch):
+    import tasks.analysis.helper as helper
+
+    albums = [{'Id': 'al0', 'Name': 'Album 0'}]
+    tracks_by_album = {'al0': [{'Id': 'done', 'Name': 't'}, {'Id': 'no-neural', 'Name': 't'}]}
+    work_map = {
+        'done': helper.WORK_MUSICNN | helper.WORK_BASE | helper.WORK_NEURAL,
+        'no-neural': helper.WORK_MUSICNN | helper.WORK_BASE,
+    }
+
+    result, enqueued = _run_parent_phase(monkeypatch, albums, tracks_by_album, dict(work_map))
+    assert result['status'] == 'SUCCESS' and enqueued == []
+
+    result, enqueued = _run_parent_phase(
+        monkeypatch, albums, tracks_by_album, dict(work_map), neural_available=True
+    )
+    assert result['status'] == 'SUCCESS'
+    assert [args[0] for args in enqueued] == ['al0']
+    assert helper.work_done_bits(False, False, True) == (
+        helper.WORK_MUSICNN | helper.WORK_BASE | helper.WORK_NEURAL
+    )
 
 
 def test_album_with_one_unanalyzed_track_is_still_enqueued(monkeypatch):
@@ -1479,7 +1506,7 @@ def test_unknown_catalogue_track_requires_real_musicnn_analysis():
         missing_lyrics_ids={'provider-new'},
         missing_base_ids=set(),
         lyrics_enabled=True,
-    ) == (True, True, True, False)
+    ) == (True, True, True, False, False)
 
 
 class TestFindOnnxName:
