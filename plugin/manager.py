@@ -24,9 +24,10 @@ Main Features:
   function is one opaque call that writes no row, and without the heartbeat a
   legitimately long one looked wedged to the nudge and was killed at the limit.
   The same cancel check is forced once before the plugin module is even
-  imported, so a row a cancel wiped or a parent finished imports nothing; it
-  used to have a hand-rolled copy of that check, and ``task_claim_required``
-  stays in the signature only because rows queued before the change carry it.
+  imported, so a row a cancel wiped or a parent finished imports nothing. It
+  used to have a hand-rolled copy of that check behind a ``task_claim_required``
+  kwarg; the kwarg is dropped from the stored payload of a row queued before
+  the change and stays a reserved name a plugin task may not declare.
 """
 
 import contextlib
@@ -912,14 +913,13 @@ class PluginManager:
 plugin_manager = PluginManager()
 
 
-def run_plugin_task(
-    dotted, *args, server_scope=None, task_claim_required=False, **kwargs
-):
+def run_plugin_task(dotted, *args, server_scope=None, **kwargs):
     from flask_app import app
     import taskqueue
     from taskqueue import TaskFailed
     from tasks.task_run import cancel_guard
 
+    kwargs.pop('task_claim_required', None)
     plugin_manager.setup_namespace()
     module_path, _, fn_name = dotted.rpartition('.')
     task_id = taskqueue.current_task_id()

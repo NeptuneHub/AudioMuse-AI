@@ -1187,6 +1187,32 @@ def test_a_plugin_return_that_is_not_a_dict_is_not_stored_on_the_row(monkeypatch
     )
 
 
+def test_a_row_queued_with_the_old_claim_flag_never_hands_it_to_the_plugin(monkeypatch):
+    import types
+
+    import taskqueue
+
+    monkeypatch.setattr(taskqueue, 'current_task_id', lambda: 'plugin-old-row')
+    monkeypatch.setattr(manager.plugin_manager, 'setup_namespace', lambda: None)
+    module = types.ModuleType('audiomuse_plugins.demo.tasks')
+    module.daily = lambda *a, **k: {'ok': True}
+    monkeypatch.setattr(manager.importlib, 'import_module', lambda _name: module)
+    seen = {}
+    monkeypatch.setattr(
+        manager, '_run_per_server',
+        lambda func, scope, args, kwargs, **_: seen.update({'kwargs': kwargs}) or {'ok': True},
+    )
+
+    manager.run_plugin_task(
+        'audiomuse_plugins.demo.tasks.daily', server_scope='all', task_claim_required=True,
+    )
+
+    assert seen['kwargs'] == {}, (
+        'a row queued before the flag was retired still carries it in its payload; '
+        'the plugin function must not receive an argument it never declared'
+    )
+
+
 def test_a_successful_plugin_run_records_a_one_line_recap(monkeypatch):
     import types
 

@@ -563,7 +563,8 @@ class TestAParentEndsTheChildItGaveUpOn:
             'a give-up victim may never have been claimed, so a NEW child must be '
             'endable; finish_task only accepts a RUNNING row bound to a worker'
         )
-        assert func is None and payload is None, 'a terminal child is never runnable'
+        assert func is None, 'a terminal child is never runnable'
+        assert payload is None, 'a terminal child is never runnable'
         with queue_db.cursor() as cur:
             reaped = sql.reap_children(cur, 'parent-1')
         queue_db.commit()

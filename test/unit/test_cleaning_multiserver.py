@@ -219,11 +219,12 @@ def test_dequeued_cleaning_with_wiped_claim_stops_before_writing(monkeypatch):
     job = MagicMock(id='cleaning-cancelled')
     monkeypatch.setattr('tasks.task_run._read_task_statuses', lambda _conn, ids: {})
     counts = []
+    servers = [_server('s1', 'One', default=True)]
 
     with pytest.raises(TaskCancelled):
         _run_cleaning(
             monkeypatch,
-            servers=[_server('s1', 'One', default=True)],
+            servers=servers,
             tracks_by_server={'s1': [{'id': 'a1'}]},
             reverse_by_server={'s1': {'a1': 'fp_1'}},
             db_track_ids={'fp_1'},

@@ -424,10 +424,10 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
     assert queue.called
     kwargs = queue.call_args.kwargs
     assert kwargs['args'] == ('audiomuse_plugins.demo.tasks.sync',)
-    assert kwargs['kwargs'] == {
-        'server_scope': 'all',
-        'task_claim_required': True,
-    }
+    assert kwargs['kwargs'] == {'server_scope': 'all'}, (
+        'the shared cancel check enforces the live claim for every task now; '
+        'the old task_claim_required flag is no longer written into a payload'
+    )
 
 
 def _cron_api_client():
