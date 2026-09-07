@@ -78,6 +78,7 @@ HOP_SAMPLES = 4000
 HOP_SECONDS = HOP_SAMPLES / SAMPLE_RATE
 DIM = 128
 DYNAMIC_RANGE_DB = 80.0
+LABEL = 'neural fingerprint'
 PQ_SUBSPACES = 32
 PQ_CENTROIDS = 256
 PQ_SUBDIM = DIM // PQ_SUBSPACES
@@ -119,8 +120,8 @@ def _session():
                 )
             session = create_onnx_session(
                 config.NEURAL_FINGERPRINT_MODEL_PATH,
-                provider_options=resolve_providers(label='neural fingerprint'),
-                label='neural fingerprint',
+                provider_options=resolve_providers(label=LABEL),
+                label=LABEL,
             )
             _STATE['session'] = session
             _STATE['input'] = session.get_inputs()[0].name
@@ -143,7 +144,7 @@ def unload_session():
         return False
     from tasks.memory_utils import cleanup_onnx_session
 
-    cleanup_onnx_session(session, 'neural fingerprint')
+    cleanup_onnx_session(session, LABEL)
     return True
 
 

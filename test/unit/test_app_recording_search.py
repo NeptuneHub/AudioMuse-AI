@@ -18,9 +18,11 @@ Main Features:
   to the requested count and reports the count
 * The count defaults to the config default
 * The by_track endpoint answers 400 without a song, with a bad count or an
-  unknown song, passes the canonical id through, echoes the song id as it was
-  sent (never the canonical one), scopes the results and maps the manager
-  errors like the clip search
+  unknown song, passes the canonical id through, scopes the results and maps
+  the manager errors like the clip search
+* No response of this API ever carries an internal canonical id: results are
+  translated to the selected server's ids and the echoed song id goes through
+  provider_echo_id, even when the caller sent a canonical id
 * The warmup endpoint relays the manager status
 * The page hands the template the built-in HTTPS port, or zero when the
   listener is disabled, and the reason when it could not start
@@ -256,6 +258,46 @@ def test_by_track_passes_the_canonical_id_and_scopes_the_results(client, monkeyp
     assert body['item_id'] == '42'
     assert body['count'] == 1
     assert [row['item_id'] for row in body['results']] == ['a']
+
+
+def _translating_scope(monkeypatch):
+    import app_server_context
+
+    def scope(rows, requested_n=None, id_key='item_id', translate=True):
+        kept = []
+        for row in rows:
+            if str(row[id_key]).startswith('fp_'):
+                row = dict(row, **{id_key: row[id_key][3:].upper()})
+            kept.append(row)
+        return kept[:requested_n] if requested_n else kept
+
+    monkeypatch.setattr(app_server_context, 'scope_results', scope)
+    monkeypatch.setattr(app_server_context, 'provider_echo_id', lambda raw_id: raw_id[3:].upper() if str(raw_id).startswith('fp_') else raw_id)
+
+
+def test_no_response_of_this_api_ever_carries_a_canonical_id(client, monkeypatch):
+    import app_server_context
+    import tasks.recording_search_manager as rsm
+
+    _translating_scope(monkeypatch)
+    monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda raw_id, data=None: raw_id if str(raw_id).startswith('fp_') else f'fp_{raw_id}')
+    rows = [
+        {'item_id': 'fp_a', 'title': 'A', 'author': 'x', 'score': 0.9, 'identified': True, 'lead': 0.5, 'offset_seconds': 1.0},
+        {'item_id': 'fp_b', 'title': 'B', 'author': 'y', 'score': 0.8, 'identified': False, 'lead': None, 'offset_seconds': 0.0},
+    ]
+    monkeypatch.setattr(rsm, 'search_by_track', lambda item_id, n_results: {'item_id': item_id, 'results': [dict(r) for r in rows], 'count': 2})
+    _patch_manager(monkeypatch, lambda clip, filename, n_results: {'clip_seconds': 20.0, 'clip_level_db': -14.0, 'results': [dict(r) for r in rows], 'count': 2})
+
+    for sent in ('42', 'fp_42'):
+        response = _post_track(client, {'item_id': sent})
+        assert response.status_code == 200
+        assert 'fp_' not in response.get_data(as_text=True)
+        assert response.get_json()['item_id'] == '42'
+        assert [row['item_id'] for row in response.get_json()['results']] == ['A', 'B']
+    response = _post(client, {'clip': _clip('rec.webm')})
+    assert response.status_code == 200
+    assert 'fp_' not in response.get_data(as_text=True)
+    assert [row['item_id'] for row in response.get_json()['results']] == ['A', 'B']
 
 
 def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypatch):

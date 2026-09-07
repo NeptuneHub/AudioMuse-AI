@@ -351,7 +351,7 @@ def _delete_parts(conn):
     cur = conn.cursor()
     try:
         cur.execute(
-            f"DELETE FROM {DIR_TABLE} WHERE name LIKE %s ESCAPE '\\'",
+            "DELETE FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
             (_PART_PREFIX.replace('_', r'\_') + '%',),
         )
     finally:

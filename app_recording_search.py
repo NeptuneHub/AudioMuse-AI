@@ -242,7 +242,7 @@ def recording_search_by_track_api():
               properties:
                 item_id:
                   type: string
-                  description: The song as it was sent.
+                  description: The song, as an id of the selected server (never an internal id).
                 count:
                   type: integer
                 results:
@@ -287,7 +287,7 @@ def recording_search_by_track_api():
             {'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}
         ), 500
 
-    payload['item_id'] = item_id
+    payload['item_id'] = app_server_context.provider_echo_id(item_id)
     attach_song_features(payload['results'])
     payload['results'] = app_server_context.scope_results(
         payload['results'], n_results, id_key='item_id'
