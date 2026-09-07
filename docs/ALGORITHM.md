@@ -2220,62 +2220,52 @@ Cron reuses the defaults of the tasks it starts:
 ## 17. Search by Recording
 
 Search by Recording turns a few seconds of audio captured outside the library
-(a phone recording of what is playing in a room, an uploaded file) into a query
-for the indexes the analysis already built.
+(a phone recording of what is playing in a room, an uploaded file) into the
+question "which song is this, and where in it": the clip's neural fingerprint
+is aligned on the fingerprint sequences the analysis stores for every track.
 
 ### 17.1. Functional Analysis (High-Level)
 
 **Workflow**
 
-1. The user opens **Search by Recording** and picks a tab: **Chromaprint**,
-   **Neural fingerprint** or **Lyrics (GTE)**.
-2. They either click **Record** (the browser records
-   `RECORDING_SEARCH_RECORD_SECONDS` seconds from the microphone and stops by
-   itself) or upload a clip.
-3. **Search** returns the songs of the selected server, the best match first,
-   with the same result rows and the same "create a playlist" button as the
-   other search pages.
+1. The user opens **Search by Recording** and either clicks **Record** (the
+   browser records `RECORDING_SEARCH_RECORD_SECONDS` seconds from the
+   microphone and stops by itself) or uploads a clip.
+2. **Search** returns the songs of the selected server, the best match first,
+   each with its match score (the badge turns green when the match is
+   certain), with the same result rows and the same "create a playlist"
+   button as the other search pages.
 
 **Important behaviours**
 
 - In-page recording uses the browser microphone, which every browser allows
-  only over HTTPS or on localhost. On a plain-HTTP LAN address the page says
-  so and offers what still works: **Record with the phone app** (a file input
-  with `capture`, which opens the system recorder on Android; on an iPhone
-  record with Voice Memos, save to Files and upload), opening the app over
-  HTTPS or as localhost, or trusting the address in the browser
-  (`chrome://flags/#unsafely-treat-insecure-origin-as-secure` in Chrome and
-  Edge, `media.devices.insecure.enabled` plus
-  `media.getusermedia.insecure.enabled` in Firefox). No server-side code can
-  lift this: it is the browser's own policy.
-- Uploads go up to `RECORDING_SEARCH_MAX_UPLOAD_MB` (1 GB). The file is
-  streamed to disk and only its first minute is decoded, so a big file costs
-  transfer time, not memory.
-- The Chromaprint tab answers "which exact recording is this" from the
-  chromaprint fingerprints the duplicate detector already stored for every
-  analysed track: no new analysis, but only the first two minutes of each
-  track, the length fpcalc fingerprinted, and about a minute of recording for
-  a phone clip.
-- The Neural fingerprint tab answers the same question from the neural
-  fingerprint the analysis stores for the whole track (the
-  **neural-fingerprint** stage; a library analysed before it exists is
-  re-analysed for that stage alone, one track at a time, on the next
-  analysis run). It works from any part of the song and from a short phone
-  recording, because its encoder was trained on exactly that degradation.
-- The Lyrics tab transcribes the clip with Whisper and answers "what is sung
-  like this", so it needs words in the clip.
-- The MusiCNN and DCLAP similarity tabs and the rank-fusion tab were removed:
-  measured on a real phone recording, its own song ranked 90,803rd in those
-  spaces, and fusing them into the fingerprint ranking only diluted it.
+  only over HTTPS or on localhost; section 17.3 explains how the record
+  button gets there on a plain-HTTP LAN address. No server-side code can
+  lift the policy: it is the browser's own.
+- Uploads go up to `RECORDING_SEARCH_MAX_UPLOAD_MB` (1 GB) and any container
+  PyAV decodes is accepted, a video included, of which the sound track is
+  used. The file is streamed to disk and only its first minute is decoded,
+  so a big file costs transfer time, not memory.
+- The match comes from the neural fingerprint the analysis stores for the
+  whole track (the **neural-fingerprint** stage; a library analysed before it
+  exists is re-analysed for that stage alone, one track at a time, on the
+  next analysis run). It works from any part of the song and from a short
+  phone recording, because its encoder was trained on exactly that
+  degradation.
+- Three other modes were built, measured and removed: MusiCNN and DCLAP
+  similarity (a real phone recording ranked its own song 90,803rd in those
+  spaces), a chromaprint alignment over the duplicate detector's fingerprints
+  (only the first two minutes of each track exist there, and it needed a
+  minute of recording for a phone clip), and a Whisper transcript searched in
+  the lyrics index (needs words in the clip). The neural fingerprint
+  identified every real phone clip they failed on.
 - The page is per server: results are filtered and id-translated to the server
   selected in the sidebar.
 - Practical advice for recordings: hold the phone close to a full-range source
-  in a quiet room. A quiet, band-limited or noisy capture lands in the right
-  region of the library but not on the exact song's neighbourhood. A clip below
-  `RECORDING_SEARCH_QUIET_LEVEL_DB` is answered with a warning that says so:
-  on a real phone recording at -45 dBFS the music sat below the microphone's
-  own noise from 200 Hz up, and no model, denoiser or channel correction could
-  recover the song from it.
+  in a quiet room. On a real phone recording at -45 dBFS the music sat below
+  the microphone's own noise from 200 Hz up, and no model, denoiser or
+  channel correction could recover the song from it; the level normalisation
+  cannot rescue that either.
 
 ### 17.2. Technical Analysis (Algorithm-Level)
 
@@ -2289,10 +2279,7 @@ for the indexes the analysis already built.
    The mel front ends have no per-clip normalisation, so a recording that is
    12 dB too quiet lands far from its own song; level is the one degradation
    the query side can undo exactly.
-3. **Lyrics.** Resample to 16 kHz, Silero VAD, Whisper-small, then the
-   sanitised transcript is embedded by gte-multilingual-base through the
-   lyrics text search, with the same shaping every page uses.
-4. **Neural fingerprint.** The encoder is the neural music fingerprinter of
+3. **Neural fingerprint.** The encoder is the neural music fingerprinter of
    Araz, Serra and Bogdanov (ISMIR 2025, the NAFP architecture of Chang et
    al. trained with real room impulse responses, microphone responses and
    background noise, triplet loss), exported once from its TensorFlow
@@ -2356,72 +2343,22 @@ for the indexes the analysis already built.
    audio to fingerprint (10 to 25 s per track, so a 200k library is weeks of
    analysis on one worker), 14 KB per track in the database, and the pack on
    disk is the same size again, read cell by cell.
-5. **Chromaprint alignment.** The clip is fingerprinted with the
-   same fpcalc the duplicate detector uses (one 32-bit value every 0.124 s)
-   and slid across every stored fingerprint. The score at each offset is a
-   weighted bit error rate: the 32 per-bit weights are log-likelihood ratios
-   measured on 80 tracks degraded to the profile of a real phone recording
-   (the coarse Gray bit of each filter flips 24%, the fine bit 36%, filter 15
-   carries almost nothing). The scan has two stages: every track is first
-   scored with every fourth query frame on a thread pool, the top 2 percent
-   become the candidate pool, and the pool plus a random sample of 1000
-   tracks get the exact score. Query frames within 7 bits of the clip's
-   bitwise-majority value are left out of every scan: stationary noise
-   fingerprints to a tight family of values (98 percent of a pure-noise
-   clip's frames sit within 8 bits of it, 3 to 12 percent of a music clip's),
-   library tracks with long noise-like passages hold the same family, and
-   without the mask a noise-dominated recording was confidently matched to
-   sound-effect tracks; a clip left with too few frames is refused as too
-   noisy. The sample gives the null mean and deviation behind the z
-   statistic, and the best candidate counts as identified when its z clears
-   the extreme a random library of the scanned size would produce
-   (`sqrt(2 ln N)`) by `RECORDING_SEARCH_IDENTIFY_MARGIN` AND it leads the
-   next different recording by `RECORDING_SEARCH_IDENTIFY_LEAD` standard
-   deviations, where "different" means the aligned stored windows disagree
-   on more than 20 percent of the weighted bits, so a duplicate of the best
-   track in the library shares the flag instead of blocking it. The top
-   `RECORDING_SEARCH_IDENTIFY_RERANK` candidates and the null sample are then
-   re-scored with the clip fingerprinted at four phases of one hop, because
-   the clip's frames sit at a random fraction of a hop from the reference
-   frames, and at the `RECORDING_SEARCH_IDENTIFY_SPEEDS` playback factors,
-   because a source one percent fast or slow triples a clean clip's error
-   rate; the winning speed is then refined over its own four phases. One
-   variant is kept for every candidate, the one whose best candidate is most
-   extreme against its own null; keeping each candidate's best variant was
-   measured to favour random tracks (the true song fell from rank 1 to 8).
-   Measured against the studio original, the reference phone recording runs
-   1.1 percent fast and not even uniformly, which is why the half-percent
-   speed steps and the phase refinement took its lead over the runner-up from
-   0.5 to 1.2 standard deviations. Measured and rejected: adding MusiCNN or
-   DCLAP similarity to the chromaprint score lowers the rank-1 rate on every
-   degradation profile of a 43-song test set, per-class chroma gain or noise
-   corrections raise the error rate even when fitted on the original, the
-   per-bit flip pattern of a real recording is too unstable (its two halves
-   correlate 0.19) to learn channel-specific weights from, soft-decision bits
-   weighted by the query's distance to the quantiser thresholds score no
-   better than unweighted bits (rank-1 21 to 30 percent against 49 percent
-   for the learned weights on the phone profile), and piecewise alignment
-   that lets each part of the clip drift by 2 percent never beats the speed
-   variants (67 against 50 percent on clips played 1 percent fast). The stored
-   fingerprints cover the first 120 seconds of each track, so a clip taken
-   later in a song cannot be identified from the data the library holds. The
-   stored fingerprints are packed once into two uint16 planes in raw files
-   under `IVF_DISK_CACHE_DIR`, rebuilt when the table's count changes,
-   memory-mapped at query time and released by the same idle timer as the
-   models. Measured on the owner's phone recording of "By the Way", a clip
-   whose embeddings ranked the song 90,803rd: rank 1 of 200,453 at z 5.4,
-   leading the next different recording by 1.3 standard deviations, flagged
-   identified. On 30 library songs degraded three ways (the phone noise
-   profile, the same played 1 percent fast, the same with a wandering speed)
-   the production path finds the song first in 70, 50 and 53 percent of the
-   queries, flags 50, 47 and 43 percent, and flags a wrong song in 0, 3 and
-   0 percent (one query of 90); before the noise-frame mask and the lead
-   rule the wrong-flag rates were 57, 52 and 43 percent.
-6. **Models in the web process.** The chromaprint and neural fingerprint
-   packs are built in background threads by the page's warmup call, Whisper
-   and the fingerprint encoder load on first use, and all of them are
-   released after `RECORDING_SEARCH_WARMUP_DURATION` seconds without a
-   query, the same idle-unload pattern as the text-search models.
+4. **The chromaprint alternative, measured and removed.** Before the neural
+   fingerprint, the clip was fingerprinted with the duplicate detector's
+   fpcalc and slid across the stored chromaprints with learned per-bit
+   weights, a noise-frame mask, playback-speed and sub-hop phase variants and
+   a lead rule over the next different recording. It reached rank 1 of
+   200,453 on the reference phone clip and found the song first in 50 to 70
+   percent of degraded library queries, but the stored fingerprints cover
+   only the first 120 seconds of each track, a phone clip needed close to a
+   minute, and a clip from the end of "Back in Black" could never match. The
+   neural fingerprint identified all of those clips at 10 to 20 seconds, so
+   the chromaprint path was retired rather than kept as a second tab.
+5. **The index in the web process.** The neural fingerprint pack is built in
+   a background thread by the page's warmup call, the encoder loads on first
+   use, and both are released after `RECORDING_SEARCH_WARMUP_DURATION`
+   seconds without a query, the same idle-unload pattern as the text-search
+   models.
 
 Measured before building it, on 50 songs against a real 198k-track corpus: a
 clean random 20 s slice retrieves the same neighbourhood as the whole song
@@ -2453,9 +2390,28 @@ Safari: Show Details, visit this website; Firefox: Advanced, Accept the Risk)
 and recording works on every later visit. That one warning is the only user
 step: a certificate a browser trusts silently needs a domain name and a
 public or private certificate authority, which a raw LAN address cannot have.
-The page shows the address, the warning steps, and the reason if HTTPS is
-not available. Health probes, reverse proxies and `http://localhost:8000` are
-untouched; behind the relay Flask sees the request as plain HTTP.
+Health probes, reverse proxies and `http://localhost:8000` are untouched;
+behind the relay Flask sees the request as plain HTTP.
+
+Two things make this hold outside the developer's machine. Gunicorn reads
+`./gunicorn.conf.py` only when started from `/app`, so the image also sets
+`GUNICORN_CMD_ARGS="--config /app/gunicorn.conf.py"`; without the hook a TLS
+connection reaching a plain gunicorn hangs until its timeout, which is what a
+record button that "does nothing" looked like. The certificate needs the
+`cryptography` package (now a pinned requirement; the `openssl` binary is the
+fallback) and a writable `FLASK_HTTPS_CERT_DIR`; when that directory cannot
+be written the certificate goes to the temp directory with a warning, so
+HTTPS still runs and only the browser warning returns after a restart.
+
+The record button never fails silently. Every failure of the record flow,
+from a missing API to a refused permission or a recorder that delivered
+nothing, lands in a red box with the exception name and message, and when
+HTTPS is not running the button raises the server's reason (the hook that
+never ran, the certificate that could not be created) instead of doing
+nothing. The notice lists the alternatives: uploading a clip recorded with
+the phone (a video is fine, its sound track is used), Chrome's
+`chrome://flags/#unsafely-treat-insecure-origin-as-secure` for that one
+address, a reverse proxy, or `http://localhost:8000` on the server itself.
 
 ### 17.4. Environment Variable Configuration
 
@@ -2482,26 +2438,5 @@ untouched; behind the relay Flask sees the request as plain HTTP.
 - `RECORDING_SEARCH_MAX_CLIP_SECONDS` (60): longer uploads are cut to this.
 - `RECORDING_SEARCH_MAX_UPLOAD_MB` (1024): upload ceiling.
 - `RECORDING_SEARCH_TARGET_LEVEL_DB` (-14): RMS level the clip is normalised to.
-- `RECORDING_SEARCH_QUIET_LEVEL_DB` (-30): a clip recorded below this level is
-  flagged as too quiet to give reliable results.
-- `RECORDING_SEARCH_RRF_K` (60): the fusion constant.
-- `RECORDING_SEARCH_WARMUP_DURATION` (300): idle seconds before the audio
-  models and the chromaprint pack unload from the web process.
-- `RECORDING_SEARCH_IDENTIFY_MARGIN` (0.25): standard deviations above the
-  random-library extreme the best candidate needs to count as identified.
-- `RECORDING_SEARCH_IDENTIFY_RERANK` (100): candidates re-scored at the
-  sub-hop phases and playback speeds.
-- `RECORDING_SEARCH_IDENTIFY_THREADS` (0): scan threads, 0 = up to four
-  bounded by the usable CPUs.
-- `RECORDING_SEARCH_IDENTIFY_MIN_SECONDS` (8): shortest clip the identifier
-  accepts.
-- `RECORDING_SEARCH_IDENTIFY_SPEEDS` (0.98,0.99,0.995,1.005,1.01,1.02):
-  playback-speed factors the re-rank also tries, because a source one percent
-  fast or slow triples the error rate of a clean clip; the winning speed is
-  refined over the sub-hop phases.
-- `RECORDING_SEARCH_IDENTIFY_LEAD` (1.2): standard deviations the best
-  candidate must lead the next different recording by to count as identified.
-  Measured on 87 full-library queries of degraded clips (30 songs, three
-  phone-like degradations): without the rule 12 of the 34 wrong top
-  candidates carried the flag, at 1.2 none does, and 46 of the 53 right ones
-  keep it; the margin above adds nothing once the lead rule is on.
+- `RECORDING_SEARCH_WARMUP_DURATION` (300): idle seconds before the neural
+  fingerprint pack and its encoder session unload from the web process.

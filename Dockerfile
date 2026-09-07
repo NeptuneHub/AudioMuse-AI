@@ -507,7 +507,8 @@ ENV LANG=C.UTF-8 \
     IVF_DISK_CACHE_DIR=/app/ivf_cache \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_DISABLE_XET=1 \
-    HF_XET_DISABLE=1
+    HF_XET_DISABLE=1 \
+    GUNICORN_CMD_ARGS="--config /app/gunicorn.conf.py"
 
 # Note: bundled HuggingFace models (RoBERTa, ...) load with
 # local_files_only=True per call. The gte/whisper/silero ONNX bundles are

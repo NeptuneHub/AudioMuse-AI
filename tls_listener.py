@@ -46,6 +46,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import tempfile
 import threading
 
 import config
@@ -62,7 +63,12 @@ _COMMON_NAME = 'AudioMuse-AI'
 _TLS_HANDSHAKE = 0x16
 _CHUNK = 65536
 _LOCK = threading.Lock()
-_STATE = {'prepared': False, 'context': None, 'error': None}
+_STATE = {'prepared': False, 'context': None, 'error': None, 'adopted': 0, 'cert_dir': None}
+_NOT_PREPARED = (
+    'the web server never ran the HTTPS hook: gunicorn did not load gunicorn.conf.py '
+    '(start it from /app or set GUNICORN_CMD_ARGS="--config /app/gunicorn.conf.py"), '
+    'or the server entry point is not one of gunicorn, waitress or app.py'
+)
 
 
 def _host_addresses():
@@ -170,6 +176,24 @@ def ensure_certificate(directory):
     return cert_path, key_path
 
 
+def writable_cert_dir():
+    wanted = config.FLASK_HTTPS_CERT_DIR
+    try:
+        os.makedirs(wanted, exist_ok=True)
+        if os.access(wanted, os.W_OK):
+            return wanted
+        raise PermissionError(f'{wanted} is not writable')
+    except OSError as exc:
+        fallback = os.path.join(tempfile.gettempdir(), 'audiomuse_tls')
+        logger.warning(
+            'The HTTPS certificate cannot be stored in %s (%s); using %s instead, so the browser warning '
+            'returns after every restart. Set FLASK_HTTPS_CERT_DIR to a writable directory to keep it.',
+            wanted, exc, fallback,
+        )
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+
 def prepare_tls():
     with _LOCK:
         if _STATE['prepared']:
@@ -180,7 +204,8 @@ def prepare_tls():
         logger.info('Built-in HTTPS disabled (FLASK_BUILTIN_HTTPS=false)')
         return False
     try:
-        cert_path, key_path = ensure_certificate(config.FLASK_HTTPS_CERT_DIR)
+        directory = writable_cert_dir()
+        cert_path, key_path = ensure_certificate(directory)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert_path, key_path)
@@ -190,23 +215,33 @@ def prepare_tls():
         return False
     with _LOCK:
         _STATE['context'] = context
-    logger.info('HTTPS answers on the HTTP port %s with the self-signed certificate in %s', config.FLASK_BIND_PORT, config.FLASK_HTTPS_CERT_DIR)
+        _STATE['cert_dir'] = directory
+    logger.info('HTTPS answers on the HTTP port %s with the self-signed certificate in %s', config.FLASK_BIND_PORT, directory)
     return True
 
 
 def reset_tls():
     with _LOCK:
-        _STATE.update({'prepared': False, 'context': None, 'error': None})
+        _STATE.update({'prepared': False, 'context': None, 'error': None, 'cert_dir': None})
 
 
 def https_status():
     with _LOCK:
         running = _STATE['context'] is not None
+        if running or not config.FLASK_BUILTIN_HTTPS:
+            reason = None if running else 'disabled by FLASK_BUILTIN_HTTPS'
+        elif not _STATE['prepared']:
+            reason = _NOT_PREPARED
+        else:
+            reason = _STATE['error']
         return {
             'enabled': bool(config.FLASK_BUILTIN_HTTPS),
             'running': running,
             'port': int(config.FLASK_BIND_PORT) if running else 0,
-            'error': _STATE['error'] if _STATE['prepared'] and not running else None,
+            'error': reason,
+            'prepared': bool(_STATE['prepared']),
+            'adopted': int(_STATE['adopted']),
+            'cert_dir': _STATE['cert_dir'],
         }
 
 
@@ -337,29 +372,42 @@ def loopback_pair():
     return inner, outer
 
 
+def _starts_with_tls(conn):
+    conn.settimeout(SNIFF_TIMEOUT)
+    try:
+        head = conn.recv(1, socket.MSG_PEEK)
+    except OSError:
+        head = b''
+    conn.settimeout(None)
+    return head[:1] == bytes([_TLS_HANDSHAKE])
+
+
 class DualProtocolListener(socket.socket):
     def accept(self):
         conn, addr = super().accept()
+        if not _starts_with_tls(conn):
+            return conn, addr
         context = _STATE['context']
-        if context is None:
-            return conn, addr
-        conn.settimeout(SNIFF_TIMEOUT)
-        try:
-            head = conn.recv(1, socket.MSG_PEEK)
-        except OSError:
-            head = b''
-        conn.settimeout(None)
-        if head[:1] != bytes([_TLS_HANDSHAKE]):
-            return conn, addr
         inner, outer = loopback_pair()
+        if context is None:
+            logger.warning('Refused a TLS connection from %s: built-in HTTPS is not running (%s)', addr, https_status()['error'])
+            conn.close()
+            outer.close()
+            return inner, addr
         threading.Thread(target=_relay, args=(context, conn, outer, addr), name='tls-relay', daemon=True).start()
         return inner, addr
+
+
+def _count_adopted():
+    with _LOCK:
+        _STATE['adopted'] += 1
 
 
 def adopt_listener(sock):
     if isinstance(sock, DualProtocolListener):
         return sock
     family, kind, proto = sock.family, sock.type, sock.proto
+    _count_adopted()
     return DualProtocolListener(family, kind, proto, fileno=sock.detach())
 
 
@@ -370,4 +418,5 @@ def dual_listener(host=FLASK_BIND_HOST, port=None, backlog=1024):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
     sock.listen(backlog)
+    _count_adopted()
     return sock

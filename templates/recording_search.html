@@ -43,38 +43,6 @@
         margin-top: 1rem;
     }
 
-    .tabs {
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: 1rem;
-        border-bottom: 2px solid var(--border-color);
-        flex-wrap: wrap;
-    }
-    .tab-btn {
-        padding: 0.6rem 1.2rem;
-        background: transparent;
-        border: none;
-        border-bottom: 3px solid transparent;
-        font-size: 1rem;
-        font-weight: 500;
-        cursor: pointer;
-        color: var(--text-muted);
-        transition: all 0.2s;
-    }
-    .tab-btn.active {
-        color: var(--color-primary);
-        border-bottom-color: var(--color-primary);
-        font-weight: 600;
-    }
-    .tab-btn:hover { color: var(--color-primary); }
-
-    .tab-help {
-        color: var(--text-muted);
-        font-size: 0.9rem;
-        margin: 0 0 1.25rem;
-        min-height: 2.4em;
-    }
-
     .capture-row {
         display: flex;
         align-items: center;
@@ -94,17 +62,12 @@
     }
 
     .clip-info,
-    .transcript-box,
     .warning-message {
         background: var(--bg-code);
         padding: 0.75rem 1rem;
         border-radius: 8px;
         margin-bottom: 1rem;
         font-size: 0.9rem;
-    }
-
-    .transcript-box {
-        font-style: italic;
     }
 
     .warning-message {
@@ -124,6 +87,11 @@
         padding: 0 0.3rem;
         border-radius: 4px;
     }
+
+    .capture-error {
+        margin-top: 0;
+        margin-bottom: 1rem;
+    }
 </style>
 {% endblock %}
 
@@ -135,27 +103,18 @@
     </header>
 
     <div class="cache-stats">
-        <strong>Chromaprint</strong> {{ index_status.identify }} |
-        <strong>Neural fingerprint</strong> {{ index_status.neural }} |
-        <strong>Lyrics (GTE)</strong> {{ 'ready' if index_status.lyrics else ('disabled' if not lyrics_enabled else 'not built yet') }}
+        <strong>Neural fingerprint index</strong> {{ index_status.neural }}
     </div>
 
     <div class="search-container">
-        <div class="tabs" role="tablist">
-            <button type="button" class="tab-btn active" data-mode="identify">Chromaprint</button>
-            <button type="button" class="tab-btn" data-mode="neural">Neural fingerprint</button>
-            <button type="button" class="tab-btn" data-mode="lyrics">Lyrics (GTE)</button>
-        </div>
-        <p class="tab-help" id="tab-help"></p>
-
         <div class="capture-row">
             <button type="button" class="btn btn-primary" id="record-btn">Record {{ record_seconds }} s</button>
             <span class="countdown" id="countdown" aria-live="polite"></span>
-            <label class="btn btn-primary file-btn">Record with the phone app<input type="file" id="phone-record" accept="audio/*" capture></label>
             <span class="capture-or">or</span>
             <label class="btn btn-ghost file-btn">Upload a clip<input type="file" id="clip-file" accept="audio/*,video/*"></label>
         </div>
         <div id="mic-notice" class="warning-message mic-notice hidden"></div>
+        <div id="capture-error" class="error-message capture-error hidden" role="alert"></div>
         <div id="clip-info" class="clip-info hidden"></div>
 
         <div class="param-group">
@@ -163,7 +122,7 @@
                 <label for="n-results">Number of results:</label>
                 <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="n-results-help">
                     <span class="info-icon"></span>
-                    <span class="tooltip-text" id="n-results-help">How many songs to return, most similar to the clip first.</span>
+                    <span class="tooltip-text" id="n-results-help">How many songs to return, best match first.</span>
                 </button>
             </div>
             <input type="number" id="n-results" name="n_results" value="{{ n_results_default }}" min="{{ n_results_default|min_bound(1) }}" max="{{ n_results_default|max_bound(200) }}">
@@ -176,8 +135,6 @@
 <section id="results-container" class="hidden">
     <h2>Results</h2>
     <div id="result-count" style="margin-bottom: 1rem; font-weight: 600;"></div>
-    <div id="transcript" class="transcript-box hidden"></div>
-    <div id="warnings"></div>
     <div id="results-list"></div>
 </section>
 
@@ -200,48 +157,26 @@ document.addEventListener('DOMContentLoaded', function () {
     const DEFAULT_RESULTS = {{ n_results_default }};
     const HTTPS_PORT = {{ https_port|int }};
     const HTTPS_ERROR = {{ https_error|tojson }};
-    const HELP = {
-        identify: 'The exact recording from the chromaprints the duplicate detector already stored: the clip is fingerprinted the same way and slid across every track. Only the first two minutes of each track are covered, so record early in the song.',
-        neural: 'The exact recording from the neural fingerprint the analysis stores for the whole track: every half second of the clip is matched to the same half second of every song, from any part of it. Needs a clip of at least a few seconds.',
-        lyrics: 'Words only: the clip is transcribed with Whisper and the words are searched in the lyrics index.'
-    };
-    const MODE_LABELS = { identify: 'Chromaprint', neural: 'Neural fingerprint', lyrics: 'Lyrics (GTE)' };
-
-    function clock(seconds) {
-        const s = Math.max(0, Math.round(seconds));
-        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    }
-
-    function identifyBadge(song) {
-        if (typeof song.z !== 'number') return null;
-        const text = `${song.identified ? 'IDENTIFIED at ' : 'at '}${clock(song.offset_seconds)} · z ${song.z.toFixed(1)}`;
-        return { text, cls: song.identified ? 'badge-high' : (song.z >= 4 ? 'badge-medium' : 'badge-low') };
-    }
 
     function neuralBadge(song) {
         if (typeof song.score !== 'number') return null;
-        const text = `${song.identified ? 'IDENTIFIED at ' : 'at '}${clock(song.offset_seconds)} · match ${song.score.toFixed(2)}`;
-        return { text, cls: song.identified ? 'badge-high' : (song.score >= 0.4 ? 'badge-medium' : 'badge-low') };
+        return { text: song.score.toFixed(2), cls: song.identified ? 'badge-high' : (song.score >= 0.4 ? 'badge-medium' : 'badge-low') };
     }
 
     const recordBtn = document.getElementById('record-btn');
     const countdownEl = document.getElementById('countdown');
     const clipFile = document.getElementById('clip-file');
-    const phoneRecord = document.getElementById('phone-record');
     const micNotice = document.getElementById('mic-notice');
+    const captureError = document.getElementById('capture-error');
     const clipInfo = document.getElementById('clip-info');
     const nResults = document.getElementById('n-results');
     const searchBtn = document.getElementById('search-btn');
-    const tabHelp = document.getElementById('tab-help');
     const resultsContainer = document.getElementById('results-container');
     const resultsList = document.getElementById('results-list');
     const resultCount = document.getElementById('result-count');
-    const transcriptEl = document.getElementById('transcript');
-    const warningsEl = document.getElementById('warnings');
     const playlistCreator = document.getElementById('playlist-creator');
     const playlistForm = document.getElementById('playlist-form');
 
-    let mode = 'identify';
     let currentClip = null;
     let currentResults = [];
 
@@ -251,35 +186,16 @@ document.addEventListener('DOMContentLoaded', function () {
         return div.innerHTML;
     }
 
-    async function warmup(withLyrics) {
+    async function warmup() {
         try {
-            await fetch("{{ url_for('recording_search_bp.recording_search_warmup_api') }}", {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lyrics: !!withLyrics })
-            });
+            await fetch("{{ url_for('recording_search_bp.recording_search_warmup_api') }}", { method: 'POST' });
         } catch (error) {
             console.error('Warmup failed:', error);
         }
     }
 
-    function setMode(next) {
-        mode = next;
-        document.querySelectorAll('.tab-btn').forEach(button => {
-            button.classList.toggle('active', button.dataset.mode === next);
-        });
-        tabHelp.textContent = HELP[next];
-        warmup(next === 'lyrics');
-    }
-
-    document.querySelectorAll('.tab-btn').forEach(button => {
-        button.addEventListener('click', () => setMode(button.dataset.mode));
-    });
-
     function resetResults() {
         resultCount.textContent = '';
-        transcriptEl.classList.add('hidden');
-        warningsEl.innerHTML = '';
         playlistCreator.classList.add('hidden');
     }
 
@@ -296,42 +212,51 @@ document.addEventListener('DOMContentLoaded', function () {
         searchBtn.disabled = false;
     }
 
-    function takeFile(input, label) {
-        const file = input.files && input.files[0];
+    clipFile.addEventListener('change', () => {
+        const file = clipFile.files && clipFile.files[0];
+        clipFile.value = '';
         if (!file) return;
+        clearCaptureError();
         if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
             showError(`The file is larger than ${MAX_UPLOAD_MB} MB.`);
             return;
         }
-        setClip(file, file.name, label);
+        setClip(file, file.name, 'Uploaded clip');
+    });
+
+    class RecordingBlocked extends Error {
+        constructor(message) {
+            super(message);
+            this.name = 'RecordingBlocked';
+        }
     }
-
-    clipFile.addEventListener('change', () => takeFile(clipFile, 'Uploaded clip'));
-    phoneRecord.addEventListener('change', () => takeFile(phoneRecord, 'Phone recording'));
-
-    const micAvailable = !!(window.isSecureContext && navigator.mediaDevices
-        && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
 
     const onHttps = window.location.protocol === 'https:';
     const secureUrl = (!onHttps && HTTPS_PORT > 0 && !HTTPS_ERROR)
         ? `https://${window.location.hostname}:${HTTPS_PORT}${window.location.pathname}${window.location.search}`
         : '';
 
+    function micAvailable() {
+        return !!(window.isSecureContext && navigator.mediaDevices
+            && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    }
+
     function micHelp() {
         const origin = escapeHtml(window.location.origin);
-        if (onHttps) {
-            return 'This browser offers no microphone recorder on this page. Use "Record with the phone app" or upload a clip.';
+        if (window.isSecureContext) {
+            return 'This browser offers no microphone recorder on this page. Upload a clip instead: a recording or a video made with the phone works.';
         }
         let text = `Browsers hand the microphone only to pages on HTTPS or localhost, and this page is on <code>${origin}</code>. `;
         if (secureUrl) {
             text += `<strong>Click Record</strong>: AudioMuse-AI opens the same page as <code>${escapeHtml(secureUrl)}</code>, its own HTTPS on the same port. `
                 + `The certificate is self-signed, so the browser warns once: Chrome and Edge, <em>Advanced</em> then <em>Proceed</em>; Safari, <em>Show Details</em> then <em>visit this website</em>; Firefox, <em>Advanced</em> then <em>Accept the Risk</em>. `
                 + `Recording then works on every later visit. `;
-        } else if (HTTPS_ERROR) {
-            text += `Built-in HTTPS is not available (${escapeHtml(HTTPS_ERROR)}); check the container logs. `;
+        } else {
+            text += `<strong>AudioMuse-AI's own HTTPS is not running: ${escapeHtml(HTTPS_ERROR || 'unknown reason')}.</strong> `;
         }
-        text += `Other ways: "Record with the phone app" opens the system recorder (on an iPhone record with Voice Memos, save it to Files and upload it); a reverse proxy with HTTPS; `
-            + `or <code>http://localhost:${escapeHtml(window.location.port || '80')}</code> on the machine that runs AudioMuse-AI.`;
+        text += 'Other ways: upload a clip recorded with the phone (a video is fine, its sound is used); '
+            + `Chrome and Edge on a computer can trust this address once: open <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>, add <code>${origin}</code>, relaunch; `
+            + `a reverse proxy with HTTPS; or <code>http://localhost:${escapeHtml(window.location.port || '80')}</code> on the machine that runs AudioMuse-AI.`;
         return text;
     }
 
@@ -340,35 +265,46 @@ document.addEventListener('DOMContentLoaded', function () {
         micNotice.classList.remove('hidden');
     }
 
-    if (!micAvailable) {
+    function showCaptureError(title, error) {
+        const name = (error && error.name) || 'Error';
+        const message = (error && error.message) || String(error);
+        captureError.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(name)}: ${escapeHtml(message)}`;
+        captureError.classList.remove('hidden');
+    }
+
+    function clearCaptureError() {
+        captureError.classList.add('hidden');
+        captureError.innerHTML = '';
+    }
+
+    if (!micAvailable()) {
         showMicNotice();
         if (secureUrl) {
             recordBtn.textContent = `Record ${RECORD_SECONDS} s (secure page)`;
         }
     }
 
-    recordBtn.addEventListener('click', async () => {
-        if (!micAvailable) {
+    async function startRecording() {
+        clearCaptureError();
+        if (!window.isSecureContext) {
             showMicNotice();
             if (secureUrl) {
                 window.location.assign(secureUrl);
+                return;
             }
-            return;
+            throw new RecordingBlocked(`The browser hides the microphone on ${window.location.origin} because the page is not on HTTPS or localhost, `
+                + `and AudioMuse-AI's own HTTPS is not running: ${HTTPS_ERROR || 'unknown reason'}. The notice above lists the ways around it.`);
         }
-        let stream;
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
-            });
-        } catch (error) {
-            if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
-                showMicNotice();
-                micNotice.innerHTML += ` <strong>The browser answered:</strong> ${escapeHtml(error.message || error.name)}.`;
-            } else {
-                showError(`Microphone access failed: ${error.message || error.name}`);
-            }
-            return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new RecordingBlocked('navigator.mediaDevices.getUserMedia does not exist in this browser, so it cannot record here. Upload a clip instead.');
         }
+        if (!window.MediaRecorder) {
+            throw new RecordingBlocked('MediaRecorder does not exist in this browser, so it cannot record here '
+                + '(an older iPhone enables it under Settings, Safari, Advanced, Experimental Features). Upload a clip instead.');
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
+        });
         micNotice.classList.add('hidden');
         const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
             .find(type => MediaRecorder.isTypeSupported(type)) || '';
@@ -377,12 +313,19 @@ document.addEventListener('DOMContentLoaded', function () {
         recorder.addEventListener('dataavailable', event => {
             if (event.data && event.data.size) chunks.push(event.data);
         });
+        recorder.addEventListener('error', event => {
+            showCaptureError('The recorder stopped with an error', event.error || new Error('MediaRecorder error'));
+        });
         recorder.addEventListener('stop', () => {
             stream.getTracks().forEach(track => track.stop());
             const type = recorder.mimeType || mimeType || 'audio/webm';
             const ext = type.includes('mp4') ? 'mp4' : (type.includes('ogg') ? 'ogg' : 'webm');
             recordBtn.disabled = false;
             countdownEl.textContent = '';
+            if (!chunks.length) {
+                showCaptureError('The recorder produced no audio', new Error(`MediaRecorder (${type}) delivered no data in ${RECORD_SECONDS} s`));
+                return;
+            }
             setClip(new Blob(chunks, { type }), `recording.${ext}`, 'Recorded clip');
         });
         recordBtn.disabled = true;
@@ -398,6 +341,20 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (recorder.state !== 'inactive') recorder.stop();
             }
         }, 1000);
+    }
+
+    recordBtn.addEventListener('click', async () => {
+        try {
+            await startRecording();
+        } catch (error) {
+            recordBtn.disabled = false;
+            countdownEl.textContent = '';
+            let title = 'Recording could not start';
+            if (error && error.name === 'NotAllowedError') title = 'The browser refused the microphone (permission denied or dismissed)';
+            if (error && error.name === 'NotFoundError') title = 'No microphone was found';
+            if (error && error.name === 'NotReadableError') title = 'The microphone is busy or blocked by the system';
+            showCaptureError(title, error);
+        }
     });
 
     searchBtn.addEventListener('click', async () => {
@@ -409,7 +366,6 @@ document.addEventListener('DOMContentLoaded', function () {
         searchBtn.disabled = true;
         const form = new FormData();
         form.append('clip', currentClip.blob, currentClip.name);
-        form.append('mode', mode);
         form.append('n_results', String(limit));
         try {
             const response = await fetch("{{ url_for('recording_search_bp.recording_search_api') }}", {
@@ -429,31 +385,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function displayResults(data) {
         const results = data.results || [];
-        if (data.transcript) {
-            transcriptEl.textContent = `Heard: "${data.transcript}"`;
-            transcriptEl.classList.remove('hidden');
-        }
-        warningsEl.innerHTML = (data.warnings || [])
-            .map(text => `<div class="warning-message">${escapeHtml(text)}</div>`)
-            .join('');
         if (!results.length) {
             resultsList.innerHTML = '<p>No results for this clip.</p>';
             resultCount.textContent = '';
             return;
         }
-        let summary = `${results.length} songs for a ${data.clip_seconds}s clip (${MODE_LABELS[data.mode] || data.mode})`;
-        if (data.mode === 'identify' && typeof results[0].z === 'number') {
-            const lead = typeof results[0].lead === 'number' ? results[0].lead : null;
-            summary += lead === null
-                ? ` · best candidate z ${results[0].z.toFixed(1)} (${results[0].variant || 'as recorded'})`
-                : ` · best candidate leads the next different recording by ${lead.toFixed(1)} sigma (${results[0].variant || 'as recorded'})`;
-        } else if (data.mode === 'neural' && typeof results[0].score === 'number') {
-            const lead = typeof results[0].lead === 'number' ? results[0].lead : null;
-            summary += ` · best candidate matches ${results[0].score.toFixed(2)}` + (lead === null ? '' : `, ${lead.toFixed(2)} ahead of the next song`);
-        }
-        resultCount.textContent = summary;
-        const metric = data.mode === 'neural' ? neuralBadge : (data.mode === 'identify' ? identifyBadge : songSimilarityBadge);
-        resultsList.innerHTML = renderSongList(results, { metric });
+        resultCount.textContent = `${results.length} songs for a ${data.clip_seconds}s clip`;
+        resultsList.innerHTML = renderSongList(results, { metric: neuralBadge });
         playlistCreator.classList.remove('hidden');
     }
 
@@ -491,7 +429,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    setMode('identify');
+    warmup();
 });
 </script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>

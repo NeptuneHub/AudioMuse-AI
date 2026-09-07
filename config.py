@@ -277,15 +277,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'RECORDING_SEARCH_MAX_CLIP_SECONDS',
     'RECORDING_SEARCH_MAX_UPLOAD_MB',
     'RECORDING_SEARCH_TARGET_LEVEL_DB',
-    'RECORDING_SEARCH_QUIET_LEVEL_DB',
-    'RECORDING_SEARCH_RRF_K',
     'RECORDING_SEARCH_WARMUP_DURATION',
-    'RECORDING_SEARCH_IDENTIFY_MARGIN',
-    'RECORDING_SEARCH_IDENTIFY_RERANK',
-    'RECORDING_SEARCH_IDENTIFY_THREADS',
-    'RECORDING_SEARCH_IDENTIFY_MIN_SECONDS',
-    'RECORDING_SEARCH_IDENTIFY_SPEEDS',
-    'RECORDING_SEARCH_IDENTIFY_LEAD',
     # Built-in HTTPS is process-level plumbing, set from the environment like the
     # HTTP bind, never from the wizard.
     'FLASK_BUILTIN_HTTPS',
@@ -1271,47 +1263,9 @@ RECORDING_SEARCH_MAX_UPLOAD_MB = int(os.environ.get("RECORDING_SEARCH_MAX_UPLOAD
 # carry no per-clip normalisation, so a quiet recording lands far from its own song;
 # -14 dBFS is the median level of an analysed library.
 RECORDING_SEARCH_TARGET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_TARGET_LEVEL_DB", "-14.0"))
-# A clip whose RMS level (dBFS, before normalisation) is below this is flagged as too
-# quiet: measured on a real phone recording at -45 dBFS the music sat 2 to 9 dB below
-# the microphone's own noise from 200 Hz up and no model could recognise it.
-RECORDING_SEARCH_QUIET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_QUIET_LEVEL_DB", "-30.0"))
-# Reciprocal rank fusion constant for the combined tab: score = sum 1/(k + rank).
-# 60 is the value from Cormack, Clarke and Buettcher (SIGIR 2009).
-RECORDING_SEARCH_RRF_K = int(os.environ.get("RECORDING_SEARCH_RRF_K", "60"))
-# Seconds the audio towers (MusiCNN, DCLAP, Whisper) stay loaded in the web process
-# after the last recording search before they are unloaded to free RAM.
+# Seconds the neural fingerprint pack and its encoder session stay loaded in the web
+# process after the last recording search before they are unloaded to free RAM.
 RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_DURATION", "300"))
-# Identify tab (exact recording from the chromaprints the duplicate detector already
-# stored). A candidate counts as identified when its weighted bit error rate sits this
-# many standard deviations beyond the best a random library of the scanned size would
-# produce (sqrt(2 ln N) for N scanned tracks). Measured on 87 full-library queries:
-# once the lead rule below is on, raising this from 0.25 to 1.0 removes no false
-# flag and only loses true ones, so it stays a sanity floor.
-RECORDING_SEARCH_IDENTIFY_MARGIN = float(os.environ.get("RECORDING_SEARCH_IDENTIFY_MARGIN", "0.25"))
-# Candidates re-scored with the clip fingerprinted at four phases of one chromaprint hop.
-RECORDING_SEARCH_IDENTIFY_RERANK = int(os.environ.get("RECORDING_SEARCH_IDENTIFY_RERANK", "100"))
-# Threads for the fingerprint scan; 0 = up to four, bounded by the usable CPU count.
-RECORDING_SEARCH_IDENTIFY_THREADS = int(os.environ.get("RECORDING_SEARCH_IDENTIFY_THREADS", "0"))
-# A clip shorter than this cannot be identified: fewer sub-fingerprints than the noise
-# of a random alignment can hide.
-RECORDING_SEARCH_IDENTIFY_MIN_SECONDS = float(os.environ.get("RECORDING_SEARCH_IDENTIFY_MIN_SECONDS", "8"))
-# Playback-speed factors tried on the top candidates besides the recorded speed. A
-# source one percent fast or slow (radio, TV, a re-encoded stream) triples the
-# chromaprint error rate of a clean clip, so the re-rank also tries these; the
-# half-percent steps matter because a real phone recording measured 1.1 percent
-# fast scored best at 1.005 (z 5.2 against 4.8 at the recorded speed and 4.6 at
-# 1.01). The winning speed is then refined over the sub-hop phases.
-RECORDING_SEARCH_IDENTIFY_SPEEDS = os.environ.get("RECORDING_SEARCH_IDENTIFY_SPEEDS", "0.98,0.99,0.995,1.005,1.01,1.02")
-
-# Besides clearing the margin above, the best candidate must lead the next DIFFERENT
-# recording (duplicates of itself in the library are skipped) by this many standard
-# deviations to count as identified. Library tracks with long noise-like passages
-# (sound effects, ambient intros) score well against noise-dominated recordings and
-# arrive in dense groups; a genuine identification stands alone. Measured on 87
-# full-library queries of degraded clips: without it 12 of 34 wrong top candidates
-# were flagged, at 1.0 one was (its lead 1.06), at 1.2 none, while 46 of the 53 right
-# top candidates still clear it (their leads start at 1.32).
-RECORDING_SEARCH_IDENTIFY_LEAD = float(os.environ.get("RECORDING_SEARCH_IDENTIFY_LEAD", "1.2"))
 
 # Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
 # loaded after last use. Auto-unloads after this idle period to free RAM.

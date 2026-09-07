@@ -106,7 +106,13 @@ def test_one_port_answers_http_and_https_and_reports_the_real_client(dual_server
         connection.request('GET', '/')
         assert connection.getresponse().read() == b'ok from 127.0.0.1'
     connection.close()
-    assert tls_listener.https_status() == {'enabled': True, 'running': True, 'port': int(config.FLASK_BIND_PORT), 'error': None}
+    status = tls_listener.https_status()
+    assert status['enabled'] is True
+    assert status['running'] is True
+    assert status['port'] == int(config.FLASK_BIND_PORT)
+    assert status['error'] is None
+    assert status['prepared'] is True
+    assert status['cert_dir'] == config.FLASK_HTTPS_CERT_DIR
 
 
 def test_a_client_whose_first_byte_arrives_late_is_still_served_as_http(dual_server):
@@ -129,9 +135,21 @@ def test_a_client_whose_first_byte_arrives_late_is_still_served_as_http(dual_ser
 def test_disabled_https_passes_everything_through_and_a_bad_certificate_is_reported(monkeypatch, dual_server, tmp_path):
     monkeypatch.setattr(config, 'FLASK_BUILTIN_HTTPS', False)
     assert tls_listener.prepare_tls() is False
-    assert tls_listener.https_status() == {'enabled': False, 'running': False, 'port': 0, 'error': 'disabled by FLASK_BUILTIN_HTTPS'}
+    disabled = tls_listener.https_status()
+    assert disabled['enabled'] is False
+    assert disabled['running'] is False
+    assert disabled['port'] == 0
+    assert disabled['error'] == 'disabled by FLASK_BUILTIN_HTTPS'
     with urllib.request.urlopen(f'http://127.0.0.1:{dual_server}/', timeout=10) as response:
         assert response.read() == b'ok from 127.0.0.1'
+    refused = socket.create_connection(('127.0.0.1', dual_server), timeout=10)
+    refused.sendall(bytes([0x16, 0x03, 0x01, 0x00, 0x05]) + b'hello')
+    try:
+        answer = refused.recv(16)
+    except ConnectionResetError:
+        answer = b''
+    assert answer == b''
+    refused.close()
     tls_listener.reset_tls()
     monkeypatch.setattr(config, 'FLASK_BUILTIN_HTTPS', True)
     broken = tmp_path / 'broken'
@@ -147,6 +165,33 @@ def test_disabled_https_passes_everything_through_and_a_bad_certificate_is_repor
     assert status['error']
     with urllib.request.urlopen(f'http://127.0.0.1:{dual_server}/', timeout=10) as response:
         assert response.read() == b'ok from 127.0.0.1'
+
+
+def test_status_before_the_hook_names_the_missing_hook_and_counts_adopted_listeners():
+    before = tls_listener.https_status()
+    assert before['running'] is False
+    assert before['prepared'] is False
+    assert 'gunicorn.conf.py' in before['error']
+    adopted = before['adopted']
+    listener = tls_listener.dual_listener('127.0.0.1', 0)
+    try:
+        assert tls_listener.https_status()['adopted'] == adopted + 1
+    finally:
+        listener.close()
+
+
+def test_an_unwritable_certificate_directory_falls_back_to_the_temp_dir(monkeypatch, tmp_path):
+    blocker = tmp_path / 'not-a-directory'
+    blocker.write_text('a file where the directory should be')
+    monkeypatch.setattr(config, 'FLASK_HTTPS_CERT_DIR', str(blocker))
+    fallback = tls_listener.writable_cert_dir()
+    assert fallback != str(blocker)
+    assert os.path.isdir(fallback)
+    assert tls_listener.prepare_tls() is True
+    status = tls_listener.https_status()
+    assert status['running'] is True
+    assert status['cert_dir'] == fallback
+    assert os.path.isfile(os.path.join(fallback, tls_listener.CERT_FILE))
 
 
 def test_the_relay_pair_is_a_tcp_pair_that_accepts_the_options_servers_set():

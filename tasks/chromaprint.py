@@ -20,19 +20,13 @@ Main Features:
 * chromaprints_agree: three-state comparison (True agree / False disagree / None abstain); None
   whenever either side is missing or undecodable, so a caller can fall through to its existing
   verdict. Symmetric, so the streaming and batch dedup paths reach the same answer.
-* decode_fingerprint / fingerprint_audio: the stored blob back as the raw uint32 sequence, and
-  the same fpcalc run on an in-memory clip, for the identification search that slides a
-  recording across every stored fingerprint (tasks.chromaprint_identify).
 """
 
 import logging
-import os
 import subprocess
-import tempfile
 import zlib
 
 import numpy as np
-import soundfile as sf
 
 from config import (
     CHROMAPRINT_MATCH_THRESHOLD,
@@ -128,26 +122,6 @@ def _decode(blob):
     except Exception:
         return None
     return arr if arr.size else None
-
-
-def decode_fingerprint(blob):
-    return _decode(blob)
-
-
-def fingerprint_audio(audio, sample_rate):
-    if not is_available():
-        return None
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-    try:
-        tmp.close()
-        sf.write(tmp.name, np.asarray(audio, dtype=np.float32), int(sample_rate), subtype='PCM_16')
-        blob = compute(tmp.name)
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            logger.warning("Could not remove the temporary clip %s", tmp.name)
-    return _decode(blob) if blob else None
 
 
 def _best_match_fraction(a, b):

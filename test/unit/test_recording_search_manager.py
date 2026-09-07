@@ -6,21 +6,19 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Recording search manager: clip decoding, level normalisation and the three modes.
+"""Recording search manager: clip decoding, level normalisation and the neural search.
 
 Main Features:
-* normalize_level brings the RMS to the target and rejects silence
-* a clip below RECORDING_SEARCH_QUIET_LEVEL_DB is reported with its level and a
-  warning that tells the user to record closer and louder
+* normalize_level brings the RMS to the target and rejects silence, and the
+  level before the gain travels with the results
 * decode_clip decodes a real WAV through the analysis loader from bytes or a
   stream, trims it to RECORDING_SEARCH_MAX_CLIP_SECONDS, rejects bytes that are
   not audio, and refuses a stream past RECORDING_SEARCH_MAX_UPLOAD_MB while
   copying it
-* run_recording_search runs exactly the mode asked for, returns its rows with
-  titles attached, re-raises when that index is unavailable, rejects an unknown
-  mode before decoding, and reports the transcript the lyrics mode heard
-* the neural rows keep score, votes, offset, identified and lead, and the
-  index status names each pack's state
+* run_recording_search returns the neural rows with titles attached and the
+  clip's length and level, and re-raises when the index is unavailable
+* the neural rows keep score, votes, offset, identified and lead, warmup
+  starts the pack loading, and the index status names the pack's state
 """
 
 import io
@@ -34,7 +32,7 @@ from tasks import recording_search_manager as rsm
 
 def _rows(*ids):
     return [
-        {'item_id': i, 'title': f't-{i}', 'author': f'a-{i}', 'album': '', 'similarity': 0.5}
+        {'item_id': i, 'title': f't-{i}', 'author': f'a-{i}', 'album': '', 'score': 0.5}
         for i in ids
     ]
 
@@ -52,27 +50,13 @@ def test_normalize_level_rejects_silence():
         rsm.normalize_level(np.zeros(1000, dtype=np.float32))
 
 
-def test_quiet_clip_warning_fires_below_the_threshold_and_names_the_level(monkeypatch):
-    monkeypatch.setattr(rsm.config, 'RECORDING_SEARCH_QUIET_LEVEL_DB', -30.0)
-    assert rsm.quiet_clip_warning(-20.0) is None
-    warning = rsm.quiet_clip_warning(-44.8)
-    assert '-45 dBFS' in warning
-    assert 'record again' in warning
-
-
-def test_run_recording_search_reports_the_clip_level_and_warns_when_too_quiet(monkeypatch):
-    monkeypatch.setattr(rsm.config, 'RECORDING_SEARCH_QUIET_LEVEL_DB', -30.0)
+def test_run_recording_search_reports_the_clip_level_before_the_gain(monkeypatch):
     quiet = (0.001 * np.sin(np.linspace(0, 400 * np.pi, 16000))).astype(np.float32)
     monkeypatch.setattr(rsm, 'decode_clip', lambda clip, filename: (quiet, 16000))
-    monkeypatch.setattr(rsm, '_SEARCHERS', {'identify': lambda audio, sr, n: (_rows('a'), None)})
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'identify', 10)
+    monkeypatch.setattr(rsm, 'search_neural', lambda audio, sr, n: _rows('a'))
+    payload = rsm.run_recording_search(b'x', 'c.wav', 10)
     assert payload['clip_level_db'] == pytest.approx(-63.0, abs=0.5)
-    assert len(payload['warnings']) == 1
-    assert 'very quiet' in payload['warnings'][0]
-    loud = (0.2 * np.sin(np.linspace(0, 400 * np.pi, 16000))).astype(np.float32)
-    monkeypatch.setattr(rsm, 'decode_clip', lambda clip, filename: (loud, 16000))
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'identify', 10)
-    assert payload['warnings'] == []
+    assert 'warnings' not in payload
 
 
 def _wav_bytes(seconds, sr=16000):
@@ -120,68 +104,55 @@ def test_decode_clip_refuses_a_stream_past_the_upload_ceiling_while_copying(monk
         rsm.decode_clip(stream, 'clip.wav')
 
 
-def test_safe_suffix_keeps_only_a_short_alphanumeric_extension():
+def test_safe_suffix_keeps_only_a_known_alphanumeric_extension():
     assert rsm._safe_suffix('rec.webm') == '.webm'
     assert rsm._safe_suffix('a b/c d.mp3!') == '.mp3'
+    assert rsm._safe_suffix('IMG_0001.MOV') == '.mov'
     assert rsm._safe_suffix('noext') == '.bin'
     assert rsm._safe_suffix(None) == '.bin'
 
 
-def _fake_pipeline(monkeypatch, searchers):
+def _fake_pipeline(monkeypatch, searcher):
     monkeypatch.setattr(
         rsm, 'decode_clip', lambda file_bytes, filename: (np.ones(16000, dtype=np.float32), 16000)
     )
     monkeypatch.setattr(rsm, 'normalize_level', lambda audio, target_db=None: audio)
-    monkeypatch.setattr(rsm, '_SEARCHERS', searchers)
+    monkeypatch.setattr(rsm, 'search_neural', searcher)
 
 
-def test_each_mode_runs_only_its_own_searcher_and_returns_its_rows(monkeypatch):
-    calls = []
-
-    def identify(audio, sr, n):
-        calls.append('identify')
-        return _rows('a', 'b'), None
+def test_run_recording_search_returns_the_neural_rows_with_the_clip_length(monkeypatch):
+    seen = {}
 
     def neural(audio, sr, n):
-        calls.append('neural')
-        return _rows('c'), None
+        seen.update(sr=sr, n=n, samples=int(audio.shape[0]))
+        return _rows('c', 'd')
 
-    _fake_pipeline(monkeypatch, {'identify': identify, 'neural': neural})
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'neural', 10)
-    assert calls == ['neural']
-    assert [row['item_id'] for row in payload['results']] == ['c']
-    assert payload['mode'] == 'neural'
-    assert payload['count'] == 1
+    _fake_pipeline(monkeypatch, neural)
+    payload = rsm.run_recording_search(b'x', 'c.wav', 10)
+    assert seen == {'sr': 16000, 'n': 10, 'samples': 16000}
+    assert [row['item_id'] for row in payload['results']] == ['c', 'd']
+    assert payload['count'] == 2
     assert payload['clip_seconds'] == 1.0
-    assert payload['transcript'] is None
-    assert 'sources' not in payload
+    assert 'mode' not in payload
+    assert 'transcript' not in payload
 
 
-def test_the_lyrics_mode_reports_what_whisper_heard(monkeypatch):
-    _fake_pipeline(monkeypatch, {'lyrics': lambda audio, sr, n: (_rows('y'), 'some words')})
-    payload = rsm.run_recording_search(b'x', 'c.wav', 'lyrics', 10)
-    assert payload['transcript'] == 'some words'
-    assert payload['results'][0]['item_id'] == 'y'
+def test_the_count_defaults_to_the_config_value_and_never_drops_below_one(monkeypatch):
+    seen = []
+    _fake_pipeline(monkeypatch, lambda audio, sr, n: seen.append(n) or [])
+    monkeypatch.setattr(rsm.config, 'RECORDING_SEARCH_DEFAULT_N_RESULTS', 42)
+    rsm.run_recording_search(b'x', 'c.wav')
+    rsm.run_recording_search(b'x', 'c.wav', 0)
+    assert seen == [42, 1]
 
 
-def test_a_mode_whose_index_is_unavailable_raises(monkeypatch):
+def test_an_unavailable_index_raises(monkeypatch):
     def down(audio, sr, n):
         raise RuntimeError('down')
 
-    _fake_pipeline(monkeypatch, {'neural': down})
+    _fake_pipeline(monkeypatch, down)
     with pytest.raises(RuntimeError):
-        rsm.run_recording_search(b'x', 'c.wav', 'neural', 10)
-
-
-def test_unknown_mode_is_rejected_before_decoding(monkeypatch):
-    def never(file_bytes, filename):
-        raise AssertionError('decode_clip must not run for an unknown mode')
-
-    monkeypatch.setattr(rsm, 'decode_clip', never)
-    with pytest.raises(ValueError):
-        rsm.run_recording_search(b'x', 'c.wav', 'combined', 10)
-    with pytest.raises(ValueError):
-        rsm.run_recording_search(b'x', 'c.wav', 'musicnn', 10)
+        rsm.run_recording_search(b'x', 'c.wav', 10)
 
 
 def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):
@@ -196,8 +167,7 @@ def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):
         rsm, '_fetch_track_metadata',
         lambda ids: {'song': {'title': 'Song', 'author': 'Band', 'album': 'LP'}},
     )
-    rows, transcript = rsm.search_neural(np.ones(16000, dtype=np.float32), 16000, 5)
-    assert transcript is None
+    rows = rsm.search_neural(np.ones(16000, dtype=np.float32), 16000, 5)
     assert rows == [
         {
             'item_id': 'song', 'score': 0.81, 'votes': 30.5, 'offset_seconds': 95.5, 'identified': True,
@@ -206,18 +176,32 @@ def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):
     ]
 
 
-def test_index_status_names_each_pack_state(monkeypatch):
-    from tasks import chromaprint_identify, neural_fingerprint_index
-    import tasks.lyrics_manager as lyrics_manager
+def test_warmup_starts_the_pack_when_it_is_available_but_not_loaded(monkeypatch):
+    from tasks import neural_fingerprint_index
 
-    monkeypatch.setattr(
-        chromaprint_identify, 'get_status',
-        lambda: {'available': True, 'loaded': False, 'building': True, 'tracks': 0, 'error': None},
-    )
+    started = []
     monkeypatch.setattr(
         neural_fingerprint_index, 'get_status',
-        lambda: {'available': False, 'loaded': False, 'building': False, 'tracks': 0, 'error': None},
+        lambda: {'available': True, 'loaded': False, 'building': False, 'tracks': 0, 'error': None},
     )
-    monkeypatch.setattr(lyrics_manager, 'get_cache_stats', lambda: {'index_loaded': True})
-    monkeypatch.setattr(rsm.config, 'LYRICS_ENABLED', True)
-    assert rsm.get_index_status() == {'identify': 'building', 'neural': 'needs the model file', 'lyrics': True}
+    monkeypatch.setattr(neural_fingerprint_index, 'start_background_load', lambda: started.append(True))
+    monkeypatch.setattr(rsm._TIMER, 'arm', lambda duration, callback: True)
+    status = rsm.warmup_recording_models()
+    assert started == [True]
+    assert status['loaded'] is False
+    assert status['models'] == {'neural': False}
+    assert status['expiry_seconds'] == rsm.config.RECORDING_SEARCH_WARMUP_DURATION
+
+
+def test_index_status_names_the_pack_state(monkeypatch):
+    from tasks import neural_fingerprint_index
+
+    states = [
+        ({'available': False, 'loaded': False, 'building': False}, 'needs the model file'),
+        ({'available': True, 'loaded': False, 'building': True}, 'building'),
+        ({'available': True, 'loaded': False, 'building': False}, 'not built yet'),
+        ({'available': True, 'loaded': True, 'building': False}, 'ready'),
+    ]
+    for status, expected in states:
+        monkeypatch.setattr(neural_fingerprint_index, 'get_status', lambda status=status: status)
+        assert rsm.get_index_status() == {'neural': expected}

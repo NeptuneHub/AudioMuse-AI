@@ -35,5 +35,6 @@ langdetect==1.0.9
 PyJWT==2.13.0
 argon2-cffi==25.1.0
 gunicorn==25.3.0
+cryptography==50.0.0
 zstandard==0.25.0
 wn==0.13.0
