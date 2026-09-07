@@ -227,7 +227,7 @@ def recording_search_by_track_api():
             properties:
               item_id:
                 type: string
-                description: The song, as an id of the selected server.
+                description: The song, as an id of the selected server. A playlist made from the results should start with it, since the results leave it out.
               n_results:
                 type: integer
                 minimum: 1
@@ -242,6 +242,7 @@ def recording_search_by_track_api():
               properties:
                 item_id:
                   type: string
+                  description: The song as it was sent.
                 count:
                   type: integer
                 results:
@@ -286,6 +287,7 @@ def recording_search_by_track_api():
             {'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}
         ), 500
 
+    payload['item_id'] = item_id
     attach_song_features(payload['results'])
     payload['results'] = app_server_context.scope_results(
         payload['results'], n_results, id_key='item_id'

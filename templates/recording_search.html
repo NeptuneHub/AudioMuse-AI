@@ -249,6 +249,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let currentClip = null;
     let selectedSong = null;
     let currentResults = [];
+    let currentSeedId = null;
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -545,7 +546,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const response = await fetch("{{ url_for('recording_search_bp.recording_search_api') }}", { method: 'POST', body: form });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Search failed');
-        return { data, summary: `${(data.results || []).length} songs for a ${data.clip_seconds}s clip` };
+        return { data, seedId: null, summary: `${(data.results || []).length} songs for a ${data.clip_seconds}s clip` };
     }
 
     async function searchBySong(limit) {
@@ -556,7 +557,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Search failed');
-        return { data, summary: `${(data.results || []).length} songs for "${selectedSong.title || 'this song'}"` };
+        return { data, seedId: selectedSong.item_id, summary: `${(data.results || []).length} songs for "${selectedSong.title || 'this song'}"` };
     }
 
     searchBtn.addEventListener('click', async () => {
@@ -567,8 +568,9 @@ document.addEventListener('DOMContentLoaded', function () {
         resetResults();
         searchBtn.disabled = true;
         try {
-            const { data, summary } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
+            const { data, seedId, summary } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
             currentResults = data.results || [];
+            currentSeedId = seedId;
             displayResults(currentResults, summary);
         } catch (error) {
             showError(error.message);
@@ -603,7 +605,8 @@ document.addEventListener('DOMContentLoaded', function () {
             playlistStatusDiv.className = 'status-error';
             return;
         }
-        const trackIds = currentResults.map(r => r.item_id);
+        const trackIds = currentResults.map(r => r.item_id).filter(id => id !== currentSeedId);
+        if (currentSeedId) trackIds.unshift(currentSeedId);
         playlistStatusDiv.textContent = 'Creating playlist...';
         try {
             const response = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", {

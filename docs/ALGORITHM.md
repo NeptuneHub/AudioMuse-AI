@@ -2240,7 +2240,9 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    certain), with the same result rows and the same "create a playlist"
    button as the other search pages. The song tab leaves the chosen song
    itself out, so what comes back are its other recordings: duplicates,
-   remasters, the same take on a compilation.
+   remasters, the same take on a compilation; a playlist made from them
+   starts with the chosen song, like the similar-song page does with its
+   seed. On the recording tab the best match is already the first result.
 
 **Important behaviours**
 

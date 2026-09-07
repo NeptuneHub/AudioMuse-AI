@@ -18,8 +18,9 @@ Main Features:
   to the requested count and reports the count
 * The count defaults to the config default
 * The by_track endpoint answers 400 without a song, with a bad count or an
-  unknown song, passes the canonical id through, scopes the results and maps
-  the manager errors like the clip search
+  unknown song, passes the canonical id through, echoes the song id as it was
+  sent (never the canonical one), scopes the results and maps the manager
+  errors like the clip search
 * The warmup endpoint relays the manager status
 * The page hands the template the built-in HTTPS port, or zero when the
   listener is disabled, and the reason when it could not start
@@ -252,6 +253,7 @@ def test_by_track_passes_the_canonical_id_and_scopes_the_results(client, monkeyp
     body = response.get_json()
     assert response.status_code == 200
     assert seen == {'item_id': 'fp_42', 'n_results': 1}
+    assert body['item_id'] == '42'
     assert body['count'] == 1
     assert [row['item_id'] for row in body['results']] == ['a']
 
