@@ -2284,7 +2284,9 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    al. trained with real room impulse responses, microphone responses and
    background noise, triplet loss), exported once from its TensorFlow
    checkpoint to `neural_fingerprint.onnx` at the repository root (17.2
-   million parameters, 71 MB) and run on the CPU. The export is
+   million parameters, 71 MB) and run through the same ONNX provider chain as
+   MusiCNN and CLAP, CUDA on the GPU images and the CPU everywhere else. The
+   export is
    `scripts/onnx_export/export_neural_fingerprint_to_onnx.py`, driven by
    `run_exports.sh` next to it, which clones the source, downloads the
    checkpoint from Zenodo and checks the graph against TensorFlow. The

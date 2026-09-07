@@ -31,5 +31,5 @@ GPU-accelerated clustering is also available through RAPIDS cuML. It can give a 
 - GMM stays on CPU, there is no cuML implementation for it
 - Spectral clustering runs on cuML only with `assign_labels='kmeans'` and a `nearest_neighbors` / `precomputed` affinity (what the clustering search uses); any other combination falls back to scikit-learn
 - GPU clustering is disabled by default (`USE_GPU_CLUSTERING=false`)
-- The GPU is also used by the audio analysis models (ONNX inference)
+- The GPU is also used by the audio analysis models (ONNX inference: MusiCNN, CLAP and the neural fingerprint encoder of Search by Recording)
 - The index build and the similarity queries are not GPU accelerated; they are IO bound rather than compute bound, see [ALGORITHM](ALGORITHM.md#4-similarity-indexes-disk-paged-ivf)

@@ -1161,8 +1161,9 @@ CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
 # song): the ONNX encoder exported from the neural music fingerprinter of Araz,
 # Serra and Bogdanov (ISMIR 2025, triplet checkpoint); it ships at the repository
 # root like the JSON files above (/app in the container image, the bundle root in
-# a native build). A missing file simply disables the analysis stage and the tab.
-# Runs on the CPU only.
+# a native build). A missing file simply disables the analysis stage and the page.
+# Runs through the same ONNX provider chain as MusiCNN and CLAP: CUDA on the GPU
+# images, the CPU everywhere else.
 NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
     "NEURAL_FINGERPRINT_MODEL_PATH",
     os.path.join(_bundle_data_root(), "neural_fingerprint.onnx"),

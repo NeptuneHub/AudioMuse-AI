@@ -27,8 +27,10 @@ Main Features:
   (n_fft 1024, hop 256, 160 to 4000 Hz, Slaney mel, magnitude, dB relative to
   the segment's own maximum, floored at -80 dB and scaled to [-1, 1]) that
   matches the reference essentia front end to 2e-4 on all 33 frames
-* embed_patches runs the ONNX model on the CPU in batches; fingerprint_audio
-  chains both and is what the analysis stage and the search share
+* embed_patches runs the ONNX model in batches through the same provider
+  chain as MusiCNN and CLAP (CUDA where the image has it, the CPU otherwise);
+  fingerprint_audio chains both and is what the analysis stage and the search
+  share
 * product quantisation: every 128-vector is stored as 32 bytes, one byte per
   slice of four numbers, against a codebook of 256 centroids per slice that
   ships next to the model (neural_fingerprint_pq.npz, trained once on library
@@ -107,7 +109,7 @@ def _filterbank():
 
 
 def _session():
-    from tasks.onnx_utils import create_onnx_session
+    from tasks.onnx_utils import create_onnx_session, resolve_providers
 
     with _LOCK:
         if _STATE['session'] is None:
@@ -117,7 +119,7 @@ def _session():
                 )
             session = create_onnx_session(
                 config.NEURAL_FINGERPRINT_MODEL_PATH,
-                provider_options=[('CPUExecutionProvider', {})],
+                provider_options=resolve_providers(label='neural fingerprint'),
                 label='neural fingerprint',
             )
             _STATE['session'] = session

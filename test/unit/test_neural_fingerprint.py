@@ -140,6 +140,34 @@ def test_availability_needs_the_model_and_the_codebook(monkeypatch, tmp_path):
     assert nf.is_available() is False
 
 
+def test_the_session_comes_from_the_shared_provider_chain(monkeypatch, tmp_path):
+    from tasks import onnx_utils
+
+    seen = {}
+
+    class FakeSession:
+        def get_inputs(self):
+            return [type('Input', (), {'name': 'mel'})()]
+
+    monkeypatch.setattr(onnx_utils, 'resolve_providers', lambda **kw: seen.update(chain=kw) or [('FakeProvider', {})])
+    monkeypatch.setattr(
+        onnx_utils, 'create_onnx_session',
+        lambda path, provider_options=None, label=None, **kw: seen.update(path=path, providers=provider_options) or FakeSession(),
+    )
+    (tmp_path / 'model.onnx').write_bytes(b'x')
+    (tmp_path / 'book.npz').write_bytes(b'x')
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', str(tmp_path / 'model.onnx'))
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CODEBOOK_PATH', str(tmp_path / 'book.npz'))
+    for key in ('session', 'input'):
+        monkeypatch.setitem(nf._STATE, key, None)
+    session, input_name = nf._session()
+    assert isinstance(session, FakeSession)
+    assert input_name == 'mel'
+    assert seen['path'] == str(tmp_path / 'model.onnx')
+    assert seen['providers'] == [('FakeProvider', {})]
+    assert seen['chain'] == {'label': 'neural fingerprint'}
+
+
 def test_fingerprint_track_encodes_the_sequence_and_unloads_per_song(monkeypatch, codebook):
     calls = []
 
