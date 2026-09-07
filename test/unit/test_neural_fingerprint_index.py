@@ -26,7 +26,8 @@ Main Features:
   the shared availability mask, cached per server and build and dropped by
   invalidate_availability_cache; the mask is skipped only for a lone default
   server whose ids are all legacy
-* the pack is released by unload and the status reports the state
+* the pack is released by unload and the status reports the state; the
+  loaded build lists its tracks for the song picker, none when unloaded
 """
 
 import numpy as np
@@ -255,6 +256,15 @@ def test_a_server_scope_votes_only_over_that_servers_tracks_and_the_mask_is_cach
     assert builds == ['without', 'with', 'with']
     nfi.invalidate_availability_cache()
     assert nfi._AVAILABILITY_CACHE == {}
+
+
+def test_the_loaded_build_lists_its_tracks_for_the_song_picker_and_nothing_when_unloaded(library):
+    tracks, *_rest = library
+    listed = nfi.get_indexed_item_ids()
+    assert listed == set(tracks)
+    assert all(isinstance(item_id, str) for item_id in listed)
+    nfi.unload()
+    assert nfi.get_indexed_item_ids() == set()
 
 
 def test_the_mask_is_skipped_only_for_a_lone_default_server_over_legacy_ids(monkeypatch, library):

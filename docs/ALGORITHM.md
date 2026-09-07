@@ -2232,7 +2232,9 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    **Search by Recording** they either click **Record** (the browser records
    `RECORDING_SEARCH_RECORD_SECONDS` seconds from the microphone and stops
    by itself) or upload a clip. On **Search by Song** they pick a song of
-   the library with the same picker as the similar-song page.
+   the library with the same picker as the similar-song page, which here
+   offers only the songs in the neural fingerprint index that the selected
+   server has, the way the lyrics page's picker offers only SemGrove songs.
 2. **Search** returns the songs of the selected server, the best match first,
    each with its match score (the badge turns green when the match is
    certain), with the same result rows and the same "create a playlist"

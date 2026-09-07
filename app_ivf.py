@@ -162,6 +162,21 @@ def similarity_page():
     )
 
 
+def _sem_grove_item_ids():
+    from tasks.sem_grove_manager import get_sem_grove_item_ids
+
+    return get_sem_grove_item_ids()
+
+
+def _neural_fingerprint_item_ids():
+    from tasks.neural_fingerprint_index import get_indexed_item_ids
+
+    return get_indexed_item_ids()
+
+
+_AUTOCOMPLETE_INDEX_IDS = {'sem_grove': _sem_grove_item_ids, 'neural': _neural_fingerprint_item_ids}
+
+
 @ivf_bp.route('/api/search_tracks', methods=['GET'])
 def search_tracks_endpoint():
     """
@@ -185,6 +200,12 @@ def search_tracks_endpoint():
         description: (Legacy) Partial or full name of the artist. Used as fallback when search_query is absent.
         schema:
           type: string
+      - name: index
+        in: query
+        description: Restrict the suggestions to the songs of one loaded index. 'musicnn' (default) offers every analysed song of the selected server; 'sem_grove' and 'neural' offer only the songs in the SemGrove or the neural fingerprint index, and nothing while that index is not loaded.
+        schema:
+          type: string
+          enum: ['musicnn', 'sem_grove', 'neural']
     responses:
       200:
         description: A list of matching tracks.
@@ -220,19 +241,17 @@ def search_tracks_endpoint():
     if len(search_query) < 1:
         return jsonify([])
 
-    # Optional index filter: 'musicnn' (default) or 'sem_grove'
+    # Optional index filter: 'musicnn' (default), 'sem_grove' or 'neural'
     index_param = request.args.get('index', 'musicnn', type=str).strip().lower()
     item_id_filter = None
-    if index_param == 'sem_grove':
+    if index_param in _AUTOCOMPLETE_INDEX_IDS:
         try:
-            from tasks.sem_grove_manager import get_sem_grove_item_ids
-
-            item_id_filter = get_sem_grove_item_ids()
+            item_id_filter = _AUTOCOMPLETE_INDEX_IDS[index_param]()
             if not item_id_filter:
                 # Index not loaded yet - don't fall back to showing all songs
                 return jsonify([])
         except Exception as e:
-            logger.warning(f"Could not load SemGrove item IDs for autocomplete filter: {e}")
+            logger.warning(f"Could not load {index_param} item IDs for autocomplete filter: {e}")
             return jsonify([])
 
     # Pagination: start / end (0-based). Defaults to first 20 results.

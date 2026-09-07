@@ -61,6 +61,9 @@ Main Features:
   tracks through the shared availability mask (tasks.index_availability),
   cached per server and build for 30 s and dropped by
   invalidate_availability_cache when the mappings change
+* get_indexed_item_ids lists the tracks of the loaded build for the song
+  picker of the Search by Song tab, the way the SemGrove index feeds the
+  lyrics picker, so only songs the index knows are offered
 """
 
 import glob
@@ -565,6 +568,13 @@ def _open_pack(paths):
 
 def is_loaded():
     return _STATE['codes'] is not None
+
+
+def get_indexed_item_ids():
+    with _LOCK:
+        if not is_loaded():
+            return set()
+        return set(_STATE['ids'].tolist())
 
 
 def _local_pack_for(conn):

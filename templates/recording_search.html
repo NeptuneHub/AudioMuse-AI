@@ -375,7 +375,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         suggestTimer = setTimeout(async () => {
             try {
-                const params = new URLSearchParams({ search_query: query, start: 0, end: SUGGESTIONS });
+                const params = new URLSearchParams({ search_query: query, start: 0, end: SUGGESTIONS, index: 'neural' });
                 const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
                 showSuggestions(await response.json());
             } catch (error) {
