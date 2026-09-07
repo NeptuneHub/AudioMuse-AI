@@ -19,6 +19,9 @@ Main Features:
   clip's length and level, and re-raises when the index is unavailable
 * the neural rows keep score, votes, offset, identified and lead, warmup
   starts the pack loading, and the index status names the pack's state
+* search_by_track aligns up to three windows of a song's stored codes on the
+  index with the song itself excluded, keeps the best score per song, and
+  refuses a song without a fingerprint
 """
 
 import io
@@ -155,6 +158,58 @@ def test_an_unavailable_index_raises(monkeypatch):
         rsm.run_recording_search(b'x', 'c.wav', 10)
 
 
+def test_query_windows_cover_a_long_song_three_times_and_a_short_one_once():
+    short = np.zeros((30, 128), dtype=np.float32)
+    assert [w.shape[0] for w in rsm.query_windows(short)] == [30]
+    long = np.arange(400, dtype=np.float32)[:, None].repeat(128, axis=1)
+    windows = rsm.query_windows(long)
+    assert [w.shape[0] for w in windows] == [40, 40, 40]
+    assert [int(w[0, 0]) for w in windows] == [60, 180, 300]
+    tight = np.arange(50, dtype=np.float32)[:, None].repeat(128, axis=1)
+    assert [int(w[0, 0]) for w in rsm.query_windows(tight)] == [0, 5, 10]
+
+
+def test_search_by_track_aligns_windows_of_the_stored_fingerprint_and_leaves_the_song_out(monkeypatch):
+    from tasks import neural_fingerprint as nf
+    from tasks import neural_fingerprint_index
+
+    rng = np.random.default_rng(3)
+    vectors = rng.standard_normal((200, nf.DIM)).astype(np.float32)
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    monkeypatch.setattr(rsm, '_stored_fingerprint', lambda item_id: nf.encode_blob(vectors) if item_id == 'song' else None)
+    calls = []
+
+    def identify_vectors(window, n_results, exclude_ids=()):
+        calls.append((window.shape, n_results, tuple(exclude_ids)))
+        score = 0.5 + 0.1 * len(calls)
+        return [
+            {'item_id': 'copy', 'score': score, 'votes': 9.0, 'offset_seconds': 1.0, 'identified': True, 'lead': 0.2},
+            {'item_id': 'other', 'score': 0.3, 'votes': 2.0, 'offset_seconds': 5.0, 'identified': False, 'lead': None},
+        ]
+
+    monkeypatch.setattr(neural_fingerprint_index, 'identify_vectors', identify_vectors)
+    monkeypatch.setattr(
+        rsm, '_fetch_track_metadata',
+        lambda ids: {i: {'title': i.title(), 'author': 'Band', 'album': ''} for i in ids},
+    )
+    monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_MIN_SCORE', 0.4)
+    monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_MIN_LEAD', 0.15)
+    payload = rsm.search_by_track('song', 5)
+    assert [c[0] for c in calls] == [(40, nf.DIM)] * 3
+    assert all(c[1] == 5 and c[2] == ('song',) for c in calls)
+    assert payload['item_id'] == 'song'
+    assert [row['item_id'] for row in payload['results']] == ['copy', 'other']
+    assert payload['results'][0]['score'] == pytest.approx(0.8)
+    assert payload['results'][0]['identified'] is True
+    assert payload['results'][0]['lead'] == pytest.approx(0.5)
+    assert payload['results'][1]['identified'] is False
+    assert payload['results'][1]['lead'] is None
+    assert payload['results'][0]['title'] == 'Copy'
+    assert payload['count'] == 2
+    with pytest.raises(ValueError, match='no neural fingerprint'):
+        rsm.search_by_track('missing', 5)
+
+
 def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):
     from tasks import neural_fingerprint_index
 
@@ -176,8 +231,8 @@ def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):
     ]
 
 
-def test_warmup_starts_the_pack_when_it_is_available_but_not_loaded(monkeypatch):
-    from tasks import neural_fingerprint_index
+def test_warmup_starts_the_pack_when_it_is_available_but_not_loaded_and_preloads_the_encoder(monkeypatch):
+    from tasks import neural_fingerprint, neural_fingerprint_index
 
     started = []
     monkeypatch.setattr(
@@ -185,12 +240,23 @@ def test_warmup_starts_the_pack_when_it_is_available_but_not_loaded(monkeypatch)
         lambda: {'available': True, 'loaded': False, 'building': False, 'tracks': 0, 'error': None},
     )
     monkeypatch.setattr(neural_fingerprint_index, 'start_background_load', lambda: started.append(True))
+    monkeypatch.setattr(neural_fingerprint, 'warm_session', lambda: started.append('encoder') or True)
     monkeypatch.setattr(rsm._TIMER, 'arm', lambda duration, callback: True)
     status = rsm.warmup_recording_models()
-    assert started == [True]
+    assert started == [True, 'encoder']
     assert status['loaded'] is False
-    assert status['models'] == {'neural': False}
+    assert status['models'] == {'neural': False, 'encoder': True}
     assert status['expiry_seconds'] == rsm.config.RECORDING_SEARCH_WARMUP_DURATION
+
+
+def test_the_idle_timer_releases_only_the_encoder(monkeypatch):
+    from tasks import neural_fingerprint, neural_fingerprint_index
+
+    released = []
+    monkeypatch.setattr(neural_fingerprint, 'unload_session', lambda: released.append('encoder') or True)
+    monkeypatch.setattr(neural_fingerprint_index, 'unload', lambda: released.append('index') or True)
+    rsm._unload_expired()
+    assert released == ['encoder']
 
 
 def test_index_status_names_the_pack_state(monkeypatch):

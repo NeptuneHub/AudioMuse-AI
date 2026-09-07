@@ -43,6 +43,36 @@
         margin-top: 1rem;
     }
 
+    .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.25rem;
+        border-bottom: 2px solid var(--border-color);
+        flex-wrap: wrap;
+    }
+
+    .tab-btn {
+        padding: 0.6rem 1.2rem;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: var(--text-muted);
+        transition: all 0.2s;
+    }
+
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+        font-weight: 600;
+    }
+
+    .tab-btn:hover {
+        color: var(--color-primary);
+    }
+
     .capture-row {
         display: flex;
         align-items: center;
@@ -103,6 +133,10 @@
         margin-top: 0;
         margin-bottom: 1rem;
     }
+
+    #song-panel .autocomplete-container {
+        margin-bottom: 1rem;
+    }
 </style>
 {% endblock %}
 
@@ -110,7 +144,7 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Search by Recording</h1>
-        <p>Record {{ record_seconds }} seconds of whatever is playing around you, or upload a clip, and find which song in your library it is.</p>
+        <p>Record {{ record_seconds }} seconds of whatever is playing around you, upload a clip, or pick a song from your library, and find which songs in your library it is.</p>
     </header>
 
     <div class="cache-stats">
@@ -118,15 +152,32 @@
     </div>
 
     <div class="search-container">
-        <div class="capture-row">
-            <button type="button" class="btn btn-primary" id="record-btn">Record {{ record_seconds }} s</button>
-            <span class="countdown" id="countdown" aria-live="polite"></span>
-            <span class="capture-or">or</span>
-            <label class="btn btn-ghost file-btn">Upload a clip<input type="file" id="clip-file" accept="audio/*,video/*"></label>
+        <div class="tabs" role="tablist">
+            <button type="button" class="tab-btn active" data-mode="recording" role="tab" aria-selected="true">Search by Recording</button>
+            <button type="button" class="tab-btn" data-mode="song" role="tab" aria-selected="false">Search by Song</button>
         </div>
-        <div id="mic-notice" class="warning-message mic-notice hidden"></div>
-        <div id="capture-error" class="error-message capture-error hidden" role="alert"></div>
-        <div id="clip-info" class="clip-info hidden"></div>
+
+        <div id="recording-panel">
+            <div class="capture-row">
+                <button type="button" class="btn btn-primary" id="record-btn">Record {{ record_seconds }} s</button>
+                <span class="countdown" id="countdown" aria-live="polite"></span>
+                <span class="capture-or">or</span>
+                <label class="btn btn-ghost file-btn">Upload a clip<input type="file" id="clip-file" accept="audio/*,video/*"></label>
+            </div>
+            <div id="mic-notice" class="warning-message mic-notice hidden"></div>
+            <div id="capture-error" class="error-message capture-error hidden" role="alert"></div>
+            <div id="clip-info" class="clip-info hidden"></div>
+        </div>
+
+        <div id="song-panel" class="hidden">
+            <div class="autocomplete-container">
+                <label for="song-query">Song, artist or album name:</label>
+                <input type="text" id="song-query" placeholder="Start typing..." autocomplete="off"
+                       role="combobox" aria-expanded="false" aria-controls="song-suggestions" aria-autocomplete="list">
+                <div id="song-suggestions" class="autocomplete-results hidden" role="listbox" aria-label="Song suggestions"></div>
+            </div>
+            <div id="song-selected" class="clip-info hidden"></div>
+        </div>
 
         <div class="param-group">
             <div class="label-with-tooltip">
@@ -168,6 +219,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const DEFAULT_RESULTS = {{ n_results_default }};
     const HTTPS_PORT = {{ https_port|int }};
     const HTTPS_ERROR = {{ https_error|tojson }};
+    const SUGGESTIONS = 20;
 
     function neuralBadge(song) {
         if (typeof song.score !== 'number') return null;
@@ -187,8 +239,15 @@ document.addEventListener('DOMContentLoaded', function () {
     const resultCount = document.getElementById('result-count');
     const playlistCreator = document.getElementById('playlist-creator');
     const playlistForm = document.getElementById('playlist-form');
+    const recordingPanel = document.getElementById('recording-panel');
+    const songPanel = document.getElementById('song-panel');
+    const songQuery = document.getElementById('song-query');
+    const songSuggestions = document.getElementById('song-suggestions');
+    const songSelected = document.getElementById('song-selected');
 
+    let mode = 'recording';
     let currentClip = null;
+    let selectedSong = null;
     let currentResults = [];
 
     function escapeHtml(text) {
@@ -216,11 +275,31 @@ document.addEventListener('DOMContentLoaded', function () {
         resetResults();
     }
 
+    function refreshSearchButton() {
+        searchBtn.disabled = mode === 'recording' ? !currentClip : !selectedSong;
+    }
+
+    function setMode(next) {
+        mode = next;
+        document.querySelectorAll('.tab-btn').forEach(button => {
+            const active = button.dataset.mode === next;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        recordingPanel.classList.toggle('hidden', next !== 'recording');
+        songPanel.classList.toggle('hidden', next !== 'song');
+        refreshSearchButton();
+    }
+
+    document.querySelectorAll('.tab-btn').forEach(button => {
+        button.addEventListener('click', () => setMode(button.dataset.mode));
+    });
+
     function setClip(blob, name, label) {
         currentClip = { blob, name };
         clipInfo.textContent = `${label}: ${name} (${Math.round(blob.size / 1024)} KB)`;
         clipInfo.classList.remove('hidden');
-        searchBtn.disabled = false;
+        refreshSearchButton();
     }
 
     clipFile.addEventListener('change', () => {
@@ -233,6 +312,97 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
         setClip(file, file.name, 'Uploaded clip');
+    });
+
+    let suggestTimer = null;
+    let activeSuggestion = -1;
+
+    function hideSuggestions() {
+        songSuggestions.classList.add('hidden');
+        songQuery.setAttribute('aria-expanded', 'false');
+        songQuery.removeAttribute('aria-activedescendant');
+        activeSuggestion = -1;
+    }
+
+    function selectSong(track) {
+        selectedSong = track;
+        songSelected.textContent = `Selected: ${track.title || 'Unknown'}, ${track.author || 'Unknown'}${track.album ? ` (${track.album})` : ''}`;
+        songSelected.classList.remove('hidden');
+        songQuery.value = `${track.title || ''}${track.author ? ` - ${track.author}` : ''}`;
+        hideSuggestions();
+        refreshSearchButton();
+    }
+
+    function showSuggestions(tracks) {
+        songSuggestions.innerHTML = '';
+        activeSuggestion = -1;
+        if (!tracks.length) {
+            songSuggestions.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
+        }
+        tracks.forEach((track, index) => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+            item.setAttribute('role', 'option');
+            item.id = `song-option-${index}`;
+            item.innerHTML = `<div class="title">${escapeHtml(track.title || 'N/A')}</div>`
+                + `<div class="artist">${escapeHtml(track.author || 'N/A')}</div>`
+                + `<div class="album">Album: ${escapeHtml(track.album || 'Unknown')}</div>`;
+            item.addEventListener('click', () => selectSong(track));
+            songSuggestions.appendChild(item);
+        });
+        songSuggestions.classList.remove('hidden');
+        songQuery.setAttribute('aria-expanded', 'true');
+    }
+
+    function highlightSuggestion(index) {
+        const options = songSuggestions.querySelectorAll('[role="option"]');
+        if (!options.length) return;
+        activeSuggestion = ((index % options.length) + options.length) % options.length;
+        options.forEach((option, i) => option.classList.toggle('active', i === activeSuggestion));
+        options[activeSuggestion].scrollIntoView({ block: 'nearest' });
+        songQuery.setAttribute('aria-activedescendant', options[activeSuggestion].id);
+    }
+
+    songQuery.addEventListener('input', () => {
+        clearTimeout(suggestTimer);
+        selectedSong = null;
+        songSelected.classList.add('hidden');
+        refreshSearchButton();
+        const query = songQuery.value.trim();
+        if (!query) {
+            hideSuggestions();
+            return;
+        }
+        suggestTimer = setTimeout(async () => {
+            try {
+                const params = new URLSearchParams({ search_query: query, start: 0, end: SUGGESTIONS });
+                const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
+                showSuggestions(await response.json());
+            } catch (error) {
+                console.error('Song search failed:', error);
+                hideSuggestions();
+            }
+        }, 300);
+    });
+
+    songQuery.addEventListener('keydown', event => {
+        const open = !songSuggestions.classList.contains('hidden');
+        if (event.key === 'ArrowDown' && open) {
+            event.preventDefault();
+            highlightSuggestion(activeSuggestion + 1);
+        } else if (event.key === 'ArrowUp' && open) {
+            event.preventDefault();
+            highlightSuggestion(activeSuggestion - 1);
+        } else if (event.key === 'Enter' && open && activeSuggestion >= 0) {
+            event.preventDefault();
+            songSuggestions.querySelectorAll('[role="option"]')[activeSuggestion].click();
+        } else if (event.key === 'Escape') {
+            hideSuggestions();
+        }
+    });
+
+    document.addEventListener('click', event => {
+        if (!songSuggestions.contains(event.target) && event.target !== songQuery) hideSuggestions();
     });
 
     class RecordingBlocked extends Error {
@@ -368,40 +538,52 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    searchBtn.addEventListener('click', async () => {
-        if (!currentClip) return;
-        const limit = Math.max(1, parseInt(nResults.value, 10) || DEFAULT_RESULTS);
-        resultsContainer.classList.remove('hidden');
-        resultsList.innerHTML = '<div class="loading-spinner">Listening to the clip...</div>';
-        resetResults();
-        searchBtn.disabled = true;
+    async function searchByClip(limit) {
         const form = new FormData();
         form.append('clip', currentClip.blob, currentClip.name);
         form.append('n_results', String(limit));
+        const response = await fetch("{{ url_for('recording_search_bp.recording_search_api') }}", { method: 'POST', body: form });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Search failed');
+        return { data, summary: `${(data.results || []).length} songs for a ${data.clip_seconds}s clip` };
+    }
+
+    async function searchBySong(limit) {
+        const response = await fetch("{{ url_for('recording_search_bp.recording_search_by_track_api') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Search failed');
+        return { data, summary: `${(data.results || []).length} songs for "${selectedSong.title || 'this song'}"` };
+    }
+
+    searchBtn.addEventListener('click', async () => {
+        if (mode === 'recording' ? !currentClip : !selectedSong) return;
+        const limit = Math.max(1, parseInt(nResults.value, 10) || DEFAULT_RESULTS);
+        resultsContainer.classList.remove('hidden');
+        resultsList.innerHTML = `<div class="loading-spinner">${mode === 'recording' ? 'Listening to the clip...' : 'Comparing the song...'}</div>`;
+        resetResults();
+        searchBtn.disabled = true;
         try {
-            const response = await fetch("{{ url_for('recording_search_bp.recording_search_api') }}", {
-                method: 'POST',
-                body: form
-            });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Search failed');
+            const { data, summary } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
             currentResults = data.results || [];
-            displayResults(data);
+            displayResults(currentResults, summary);
         } catch (error) {
             showError(error.message);
         } finally {
-            searchBtn.disabled = false;
+            refreshSearchButton();
         }
     });
 
-    function displayResults(data) {
-        const results = data.results || [];
+    function displayResults(results, summary) {
         if (!results.length) {
-            resultsList.innerHTML = '<p>No results for this clip.</p>';
+            resultsList.innerHTML = '<p>No results.</p>';
             resultCount.textContent = '';
             return;
         }
-        resultCount.textContent = `${results.length} songs for a ${data.clip_seconds}s clip`;
+        resultCount.textContent = summary;
         resultsList.innerHTML = renderSongList(results, { metric: neuralBadge });
         playlistCreator.classList.remove('hidden');
     }
@@ -440,6 +622,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
+    setMode('recording');
     warmup();
 });
 </script>

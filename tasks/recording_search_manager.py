@@ -29,10 +29,17 @@ Main Features:
 * search_neural aligns the clip's fingerprint sequence on the stored sequences
   and returns rows with score, votes, offset_seconds, identified and lead plus
   the track's title, author and album.
-* run_recording_search is the entry point. ValueError means the clip is at
-  fault, RuntimeError means the index or the model is unavailable.
-* warmup_recording_models starts the pack loading in the web process and arms
-  the idle timer that releases the pack and the encoder session after
+* run_recording_search is the entry point for a clip. ValueError means the
+  clip is at fault, RuntimeError means the index or the model is unavailable.
+* search_by_track is the entry point for a library song: its stored
+  fingerprint is cut into up to three 20-second windows (a fifth, half and
+  four fifths of the way in), each is aligned on every other track, and the
+  best score per song is kept, so the other recordings of that song (copies,
+  remasters, compilations) come out first without the song finding itself.
+  No audio is decoded and no model runs.
+* warmup_recording_models maps the index when it is not (normally a no-op,
+  Flask maps it at startup and keeps it), preloads the encoder session and
+  arms the idle timer that releases that session, and only it, after
   RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
 """
 
@@ -128,20 +135,19 @@ def normalize_level(audio, target_db=None):
 
 
 def _unload_expired():
-    from tasks import neural_fingerprint, neural_fingerprint_index
+    from tasks import neural_fingerprint
 
     with _TIMER.lock():
-        neural_fingerprint_index.unload()
         neural_fingerprint.unload_session()
     logger.info(
-        'Recording search index unloaded after %ss idle', config.RECORDING_SEARCH_WARMUP_DURATION
+        'Recording search encoder unloaded after %ss idle', config.RECORDING_SEARCH_WARMUP_DURATION
     )
 
 
 def _arm_idle_unload():
     duration = config.RECORDING_SEARCH_WARMUP_DURATION
     if _TIMER.arm(duration, _unload_expired):
-        logger.info('Recording search index loaded; idle unload in %ss', duration)
+        logger.info('Recording search encoder loaded; idle unload in %ss', duration)
 
 
 def _fetch_track_metadata(item_ids):
@@ -188,6 +194,68 @@ def search_neural(audio, sr, n_results):
     return _rows_with_metadata(neural_fingerprint_index.identify(audio, sr, n_results))
 
 
+_WINDOW_ROWS = 40
+_WINDOW_POSITIONS = (0.2, 0.5, 0.8)
+
+
+def _stored_fingerprint(item_id):
+    from database import get_db
+
+    cur = get_db().cursor()
+    try:
+        cur.execute('SELECT neural_fingerprint FROM embedding WHERE item_id = %s', (item_id,))
+        row = cur.fetchone()
+        return bytes(row[0]) if row and row[0] is not None else None
+    finally:
+        cur.close()
+
+
+def query_windows(vectors):
+    n = int(vectors.shape[0])
+    if n <= _WINDOW_ROWS:
+        return [vectors]
+    starts = sorted({min(n - _WINDOW_ROWS, max(0, int(round(position * n)) - _WINDOW_ROWS // 2)) for position in _WINDOW_POSITIONS})
+    return [vectors[start:start + _WINDOW_ROWS] for start in starts]
+
+
+def _flag_best(rows):
+    for row in rows:
+        row['identified'] = False
+        row['lead'] = None
+    if not rows:
+        return rows
+    lead = rows[0]['score'] - rows[1]['score'] if len(rows) > 1 else float('inf')
+    rows[0]['identified'] = bool(
+        rows[0]['score'] >= float(config.NEURAL_FINGERPRINT_MIN_SCORE)
+        and lead >= float(config.NEURAL_FINGERPRINT_MIN_LEAD)
+    )
+    rows[0]['lead'] = round(float(lead), 3) if np.isfinite(lead) else None
+    return rows
+
+
+def search_by_track(item_id, n_results=None):
+    from tasks import neural_fingerprint, neural_fingerprint_index
+
+    if n_results is None:
+        n_results = config.RECORDING_SEARCH_DEFAULT_N_RESULTS
+    n_results = max(1, int(n_results))
+    blob = _stored_fingerprint(item_id)
+    if blob is None:
+        raise ValueError('This song has no neural fingerprint yet; the next analysis run computes it.')
+    codes = neural_fingerprint.decode_blob(blob)
+    if codes is None or codes.shape[0] < 2:
+        raise ValueError('The stored fingerprint of this song is unreadable; re-analyse it.')
+    vectors = neural_fingerprint.decode_codes(codes)
+    best = {}
+    for window in query_windows(vectors):
+        for row in neural_fingerprint_index.identify_vectors(window, n_results, exclude_ids=(item_id,)):
+            current = best.get(row['item_id'])
+            if current is None or row['score'] > current['score']:
+                best[row['item_id']] = dict(row)
+    rows = _flag_best(sorted(best.values(), key=lambda row: -row['score'])[:n_results])
+    return {'item_id': item_id, 'results': _rows_with_metadata(rows), 'count': len(rows)}
+
+
 def run_recording_search(clip, filename, n_results=None):
     if n_results is None:
         n_results = config.RECORDING_SEARCH_DEFAULT_N_RESULTS
@@ -206,16 +274,21 @@ def run_recording_search(clip, filename, n_results=None):
 
 
 def warmup_recording_models():
-    from tasks import neural_fingerprint_index
+    from tasks import neural_fingerprint, neural_fingerprint_index
 
     with _TIMER.lock():
         status = neural_fingerprint_index.get_status()
         if status['available'] and not status['loaded']:
             neural_fingerprint_index.start_background_load()
+        try:
+            encoder = neural_fingerprint.warm_session()
+        except Exception:
+            logger.exception('Neural fingerprint encoder warmup failed')
+            encoder = False
         _arm_idle_unload()
     return {
         'loaded': bool(status['loaded']),
-        'models': {'neural': bool(status['loaded'])},
+        'models': {'neural': bool(status['loaded']), 'encoder': bool(encoder)},
         'expiry_seconds': config.RECORDING_SEARCH_WARMUP_DURATION,
     }
 

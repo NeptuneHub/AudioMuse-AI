@@ -20,7 +20,12 @@ Main Features:
   codes file as a prefix
 * a noisy slice of one track is found at rank one at its offset and flagged;
   a track appended later is found the same way; random vectors match nothing
-  confidently; a clip shorter than two segments is refused
+  confidently; a clip shorter than two segments is refused; excluded ids
+  leave the vote so a song does not find itself
+* a request scoped to a server votes only over that server's tracks through
+  the shared availability mask, cached per server and build and dropped by
+  invalidate_availability_cache; the mask is skipped only for a lone default
+  server whose ids are all legacy
 * the pack is released by unload and the status reports the state
 """
 
@@ -205,6 +210,69 @@ def test_an_appended_build_reuses_the_previous_codes_and_finds_the_new_track(mon
     assert rows[0]['identified'] is True
     nfi._prune_local('build-two')
     assert nfi._local_builds() == ['build-two']
+
+
+def test_identify_vectors_can_leave_the_source_track_out(library):
+    tracks, _rng, *_rest = library
+    query = tracks['fp_0017'][10:40]
+    with_self = nfi.identify_vectors(query, 5)
+    assert with_self[0]['item_id'] == 'fp_0017'
+    without = nfi.identify_vectors(query, 5, exclude_ids=('fp_0017',))
+    assert without
+    assert 'fp_0017' not in [row['item_id'] for row in without]
+    assert without[0]['score'] < with_self[0]['score']
+    with pytest.raises(ValueError, match='too short'):
+        nfi.identify_vectors(query[:1], 5)
+
+
+def test_a_server_scope_votes_only_over_that_servers_tracks_and_the_mask_is_cached_per_server(monkeypatch, library):
+    tracks, _rng, *_rest = library
+    builds = []
+
+    def mask(server_id, item_ids, conn_factory):
+        builds.append(server_id)
+        return np.array([server_id == 'with' or item_id != 'fp_0017' for item_id in item_ids], dtype=np.bool_)
+
+    monkeypatch.setattr(nfi, 'build_availability_mask', mask)
+    monkeypatch.setattr(nfi, '_mask_unneeded', lambda server_id: False)
+    nfi.invalidate_availability_cache()
+    query = tracks['fp_0017'][10:40]
+    monkeypatch.setattr(nfi, 'active_availability_scope', lambda: 'without')
+    rows = nfi.identify_vectors(query, 5)
+    assert rows
+    assert 'fp_0017' not in [row['item_id'] for row in rows]
+    nfi.identify_vectors(query, 5)
+    assert builds == ['without']
+    monkeypatch.setattr(nfi, 'active_availability_scope', lambda: 'with')
+    assert nfi.identify_vectors(query, 5)[0]['item_id'] == 'fp_0017'
+    assert 'fp_0017' not in [row['item_id'] for row in nfi.identify_vectors(query, 5, exclude_ids=('fp_0017',))]
+    assert builds == ['without', 'with']
+    nfi.invalidate_availability_cache('with')
+    nfi.identify_vectors(query, 5)
+    assert builds == ['without', 'with', 'with']
+    monkeypatch.setattr(nfi, 'active_availability_scope', lambda: None)
+    nfi.identify_vectors(query, 5)
+    assert builds == ['without', 'with', 'with']
+    nfi.invalidate_availability_cache()
+    assert nfi._AVAILABILITY_CACHE == {}
+
+
+def test_the_mask_is_skipped_only_for_a_lone_default_server_over_legacy_ids(monkeypatch, library):
+    from tasks.mediaserver import registry
+
+    monkeypatch.setattr(registry, 'get_default_server_id', lambda: 'main')
+    monkeypatch.setattr(registry, 'has_secondary_servers', lambda: False)
+    nfi._CANONICAL.clear()
+    assert nfi._has_canonical_ids() is True
+    assert nfi._mask_unneeded('main') is False
+    monkeypatch.setitem(nfi._STATE, 'ids', np.array(['legacy-1', 'legacy-2']))
+    nfi._CANONICAL.clear()
+    assert nfi._has_canonical_ids() is False
+    assert nfi._mask_unneeded('main') is True
+    assert nfi._mask_unneeded('other') is False
+    monkeypatch.setattr(registry, 'has_secondary_servers', lambda: True)
+    assert nfi._mask_unneeded('main') is False
+    nfi._CANONICAL.clear()
 
 
 def test_random_vectors_match_nothing_confidently_and_a_short_clip_is_refused(monkeypatch, library):

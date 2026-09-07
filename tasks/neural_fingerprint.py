@@ -127,6 +127,13 @@ def _session():
         return _STATE['session'], _STATE['input']
 
 
+def warm_session():
+    if not is_available():
+        return False
+    _session()
+    return True
+
+
 def unload_session():
     with _LOCK:
         session = _STATE['session']

@@ -282,6 +282,11 @@ def prune_stale_mappings(db, server_id, present_ids, refused=None):
                 invalidate_hyperbolic_availability(server_id)
             except Exception:
                 logger.debug("Hyperbolic availability-cache invalidation failed", exc_info=True)
+            try:
+                from tasks.neural_fingerprint_index import invalidate_availability_cache as invalidate_neural_availability
+                invalidate_neural_availability(server_id)
+            except Exception:
+                logger.debug("Neural fingerprint availability-cache invalidation failed", exc_info=True)
         return removed
     finally:
         cur.close()

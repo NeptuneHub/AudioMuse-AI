@@ -44,14 +44,23 @@ Main Features:
   previous local order is a prefix of the new one, rewritten otherwise; parts
   merged into one cell list) and memory-maps them under a build-id-keyed
   name, so a reload on the index-reload event prepares the next build while
-  the current one serves and swaps at the end; the idle timer only drops the
-  mapping, the synced files stay and count as ready
+  the current one serves and swaps at the end; the pack then stays mapped for
+  the life of the process like the other indexes (the recording search's
+  idle timer releases only the encoder session)
 * Search: each query segment fetches its nearest rows from
   NEURAL_FINGERPRINT_NPROBE cells, every neighbour votes for (track, offset)
   with its similarity, votes within one hop are pooled, and the best
   candidates are verified by the mean cosine between the whole clip and the
   track at that offset; rows carry item_id, score, votes, offset_seconds,
-  identified and lead
+  identified and lead. identify embeds a clip first; identify_vectors takes
+  a fingerprint sequence directly and can leave given tracks out, which is
+  how a stored song is searched for its other recordings without finding
+  itself
+* Per-server scope like every other index: the index holds the union of all
+  servers, and a request scoped to a server votes only over that server's
+  tracks through the shared availability mask (tasks.index_availability),
+  cached per server and build for 30 s and dropped by
+  invalidate_availability_cache when the mappings change
 """
 
 import glob
@@ -68,7 +77,7 @@ import numpy as np
 
 import config
 from tasks import ivf_quant
-from tasks.idle_unload import IdleUnloadTimer
+from tasks.index_availability import active_availability_scope, build_availability_mask
 from tasks.neural_fingerprint import (
     CODE_BYTES, DIM, HOP_SAMPLES, HOP_SECONDS, PQ_SUBDIM, PQ_SUBSPACES, codebook, decode_blob, decode_codes,
     fingerprint_audio, is_available,
@@ -95,7 +104,10 @@ _IMBALANCE = 10.0
 _PART_MAGIC = b'NFPP'
 _PART_HEADER = struct.Struct('<4sHIQQ')
 _SUBSPACE_INDEX = np.arange(PQ_SUBSPACES)[None, :]
-_TIMER = IdleUnloadTimer()
+_AVAILABILITY_CACHE = {}
+_AVAILABILITY_CACHE_LOCK = threading.Lock()
+_AVAILABILITY_CACHE_TTL = 30.0
+_CANONICAL = {}
 _LOCK = threading.RLock()
 _STATE = {
     'codes': None, 'starts': None, 'lengths': None, 'ids': None, 'centroids': None,
@@ -678,11 +690,6 @@ def get_status():
         }
 
 
-def _arm_idle_unload():
-    if _TIMER.arm(config.RECORDING_SEARCH_WARMUP_DURATION, unload):
-        logger.info('Neural fingerprint pack in use; idle unload in %ss', config.RECORDING_SEARCH_WARMUP_DURATION)
-
-
 def _probe_rows(query, nprobe):
     centroids = _STATE['centroids']
     cells = np.argsort(-(centroids @ query))[:nprobe]
@@ -700,14 +707,15 @@ def _row_scores(query, rows):
     return dots / (np.sqrt(norms[_SUBSPACE_INDEX, picked].sum(axis=1)) + 1e-9)
 
 
-def _vote(query_vectors, nprobe):
+def _vote(query_vectors, nprobe, allowed=None):
     starts = _STATE['starts']
     votes = {}
     for qi, query in enumerate(query_vectors):
-        rows = _probe_rows(query, nprobe)
+        rows = np.sort(_probe_rows(query, nprobe))
+        if allowed is not None:
+            rows = rows[allowed[np.searchsorted(starts, rows, side='right') - 1]]
         if not rows.size:
             continue
-        rows = np.sort(rows)
         sims = _row_scores(query, rows)
         top = np.argpartition(-sims, min(_TOP_K, sims.size - 1))[:_TOP_K] if sims.size > _TOP_K else np.arange(sims.size)
         tracks = np.searchsorted(starts, rows[top], side='right') - 1
@@ -747,11 +755,80 @@ def identify(audio, sr, n_results):
     query_vectors = fingerprint_audio(audio, sr, HOP_SAMPLES)
     if query_vectors is None or query_vectors.shape[0] < 2:
         raise ValueError('The clip is too short to fingerprint: at least two seconds are needed.')
-    with _TIMER.lock():
-        _arm_idle_unload()
+    return identify_vectors(query_vectors, n_results)
+
+
+def invalidate_availability_cache(server_id=None):
+    with _AVAILABILITY_CACHE_LOCK:
+        if server_id is None:
+            _AVAILABILITY_CACHE.clear()
+            return
+        for key in [key for key in _AVAILABILITY_CACHE if key[0] == str(server_id)]:
+            _AVAILABILITY_CACHE.pop(key, None)
+
+
+def _has_canonical_ids():
+    from tasks.simhash import is_fingerprint_id
+
+    build_id = _STATE['build_id']
+    if build_id not in _CANONICAL:
+        _CANONICAL.clear()
+        _CANONICAL[build_id] = any(is_fingerprint_id(str(item_id)) for item_id in _STATE['ids'])
+    return _CANONICAL[build_id]
+
+
+def _mask_unneeded(server_id):
+    try:
+        from tasks.mediaserver import registry
+
+        return bool(
+            server_id == str(registry.get_default_server_id() or '')
+            and not registry.has_secondary_servers()
+            and not _has_canonical_ids()
+        )
+    except Exception:
+        logger.debug('Single-server availability fast path failed.', exc_info=True)
+        return False
+
+
+def _availability_mask():
+    server_id = active_availability_scope()
+    if server_id is None or _mask_unneeded(server_id):
+        return None
+    from database import get_db
+
+    key = (server_id, _STATE['build_id'])
+    now = time.monotonic()
+    with _AVAILABILITY_CACHE_LOCK:
+        cached = _AVAILABILITY_CACHE.get(key)
+        if cached is not None and now - cached[0] < _AVAILABILITY_CACHE_TTL:
+            return cached[1]
+    mask = build_availability_mask(server_id, _STATE['ids'], get_db)
+    with _AVAILABILITY_CACHE_LOCK:
+        stale = [k for k, v in _AVAILABILITY_CACHE.items() if k[1] != key[1] or now - v[0] >= _AVAILABILITY_CACHE_TTL]
+        for old in stale:
+            _AVAILABILITY_CACHE.pop(old, None)
+        _AVAILABILITY_CACHE[key] = (now, mask)
+    return mask
+
+
+def _allowed_tracks(exclude_ids):
+    allowed = _availability_mask()
+    if not exclude_ids:
+        return allowed
+    allowed = np.ones(_STATE['ids'].size, dtype=np.bool_) if allowed is None else allowed.copy()
+    allowed[np.isin(_STATE['ids'], list(exclude_ids))] = False
+    return allowed
+
+
+def identify_vectors(query_vectors, n_results, exclude_ids=()):
+    ensure_loaded()
+    query_vectors = np.ascontiguousarray(query_vectors, dtype=np.float32)
+    if query_vectors.ndim != 2 or query_vectors.shape[0] < 2:
+        raise ValueError('The query is too short to identify: at least two segments are needed.')
     started = time.time()
     nprobe = max(1, int(config.NEURAL_FINGERPRINT_NPROBE))
-    pooled = _vote(query_vectors, nprobe)
+    pooled = _vote(query_vectors, nprobe, _allowed_tracks(exclude_ids))
     ranked = sorted(pooled.items(), key=lambda kv: -kv[1][0])[:max(int(n_results), _VERIFY)]
     scored = []
     for track, (votes, offset) in ranked:

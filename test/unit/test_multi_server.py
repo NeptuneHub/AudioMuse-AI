@@ -2368,7 +2368,7 @@ class TestSweepAlignment:
         ) == 0
         assert refused == [(10, 100)]
 
-    def test_a_real_prune_invalidates_both_the_paged_ivf_and_hyperbolic_masks(self, monkeypatch):
+    def test_a_real_prune_invalidates_the_paged_ivf_hyperbolic_and_neural_masks(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         cursor = MagicMock()
@@ -2389,13 +2389,20 @@ class TestSweepAlignment:
             lambda server_id=None: hyperbolic_calls.append(server_id),
         )
 
+        neural_calls = []
+        monkeypatch.setattr(
+            "tasks.neural_fingerprint_index.invalidate_availability_cache",
+            lambda server_id=None: neural_calls.append(server_id),
+        )
+
         removed = sync.prune_stale_mappings(db, 's1', {'a', 'b'})
 
         assert removed == 1
         assert paged_calls == ['s1']
         assert hyperbolic_calls == ['s1']
+        assert neural_calls == ['s1']
 
-    def test_a_noop_prune_invalidates_neither_mask(self, monkeypatch):
+    def test_a_noop_prune_invalidates_no_mask(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         cursor = MagicMock()
@@ -2416,11 +2423,18 @@ class TestSweepAlignment:
             lambda server_id=None: hyperbolic_calls.append(server_id),
         )
 
+        neural_calls = []
+        monkeypatch.setattr(
+            "tasks.neural_fingerprint_index.invalidate_availability_cache",
+            lambda server_id=None: neural_calls.append(server_id),
+        )
+
         removed = sync.prune_stale_mappings(db, 's1', {'a', 'b'})
 
         assert removed == 0
         assert paged_calls == []
         assert hyperbolic_calls == []
+        assert neural_calls == []
 
 
 class TestFirstRunSetupWizardServerApi:

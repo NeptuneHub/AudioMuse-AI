@@ -2228,13 +2228,17 @@ is aligned on the fingerprint sequences the analysis stores for every track.
 
 **Workflow**
 
-1. The user opens **Search by Recording** and either clicks **Record** (the
-   browser records `RECORDING_SEARCH_RECORD_SECONDS` seconds from the
-   microphone and stops by itself) or uploads a clip.
+1. The user opens **Search by Recording** and picks one of two tabs. On
+   **Search by Recording** they either click **Record** (the browser records
+   `RECORDING_SEARCH_RECORD_SECONDS` seconds from the microphone and stops
+   by itself) or upload a clip. On **Search by Song** they pick a song of
+   the library with the same picker as the similar-song page.
 2. **Search** returns the songs of the selected server, the best match first,
    each with its match score (the badge turns green when the match is
    certain), with the same result rows and the same "create a playlist"
-   button as the other search pages.
+   button as the other search pages. The song tab leaves the chosen song
+   itself out, so what comes back are its other recordings: duplicates,
+   remasters, the same take on a compilation.
 
 **Important behaviours**
 
@@ -2336,8 +2340,10 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    index-reload event it prepares the next build while the current one keeps
    answering, reusing the codes it already holds when the previous track
    order is a prefix of the new one and fetching only the new tracks' blobs,
-   then swaps. The idle timer releases the mapping; the next use maps the
-   same files again after one small read of the build id. Measured on 13,043
+   then swaps. Like every other index it holds the union of all servers: a
+   request scoped to a server votes only over that server's tracks through
+   the shared availability mask, cached per server and build for 30 s and
+   dropped when the mappings change. Measured on 13,043
    real tracks (6.1 million rows, 2,470 cells): a full build takes 43 s (19 s
    for the centroids, 22 s to assign the rows, which the worker does on the
    GPU through cupy on the GPU images and on the CPU elsewhere, in blocks of
@@ -2384,7 +2390,14 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    audio to fingerprint (10 to 25 s per track, so a 200k library is weeks of
    analysis on one worker), 14 KB per track in the database, and the pack on
    disk is the same size again, read cell by cell.
-4. **The chromaprint alternative, measured and removed.** Before the neural
+4. **Search by Song.** No audio is decoded and no model runs: the chosen
+   song's stored codes are decoded through the codebook, cut into up to
+   three 20-second windows (a fifth, half and four fifths of the way in, so
+   an edit that shares only part of the recording still matches), each
+   window is aligned on the index exactly like a clip with the source track
+   excluded from the vote, and the best score per song is kept. The
+   identified flag and the lead are recomputed on the merged list.
+5. **The chromaprint alternative, measured and removed.** Before the neural
    fingerprint, the clip was fingerprinted with the duplicate detector's
    fpcalc and slid across the stored chromaprints with learned per-bit
    weights, a noise-frame mask, playback-speed and sub-hop phase variants and
@@ -2395,15 +2408,14 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    minute, and a clip from the end of "Back in Black" could never match. The
    neural fingerprint identified all of those clips at 10 to 20 seconds, so
    the chromaprint path was retired rather than kept as a second tab.
-5. **The index in the web process.** Flask syncs and maps the stored build
+6. **The index in the web process.** Flask syncs and maps the stored build
    at startup like the other indexes ("Neural fingerprint index loaded at
-   startup", or "not found" until the analysis has built it once), the
-   page's warmup call maps it again when the idle timer released it (syncing
-   first when the worker published a newer build), the encoder loads on
-   first use, and the mapping and the encoder are released after
+   startup", or "not found" until the analysis has built it once) and keeps
+   it mapped for the life of the process; only the reload event replaces it.
+   The page's warmup call preloads the encoder session so the first search
+   does not pay its load, and that session alone is released after
    `RECORDING_SEARCH_WARMUP_DURATION` seconds without a query, the same
-   idle-unload pattern as the text-search models; the synced files stay, so
-   the page reports the index as ready while it is idle.
+   idle-unload pattern as the text-search models.
 
 Measured before building it, on 50 songs against a real 198k-track corpus: a
 clean random 20 s slice retrieves the same neighbourhood as the whole song

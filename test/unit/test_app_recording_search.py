@@ -17,6 +17,9 @@ Main Features:
   into memory by the blueprint), passes the count through, scopes the results
   to the requested count and reports the count
 * The count defaults to the config default
+* The by_track endpoint answers 400 without a song, with a bad count or an
+  unknown song, passes the canonical id through, scopes the results and maps
+  the manager errors like the clip search
 * The warmup endpoint relays the manager status
 * The page hands the template the built-in HTTPS port, or zero when the
   listener is disabled, and the reason when it could not start
@@ -205,6 +208,78 @@ def test_count_defaults_to_the_config_default(client, monkeypatch):
     response = _post(client, {'clip': _clip('rec.webm')})
     assert response.status_code == 200
     assert seen == {'n_results': config.RECORDING_SEARCH_DEFAULT_N_RESULTS}
+
+
+def _post_track(client, body):
+    return client.post('/api/recording_search/by_track', json=body)
+
+
+def test_by_track_answers_400_without_a_song_or_with_an_unknown_one(client, monkeypatch):
+    import app_server_context
+
+    assert _post_track(client, {}).status_code == 400
+    assert _post_track(client, {'item_id': 'x', 'n_results': 'ten'}).status_code == 400
+
+    def unknown(raw_id, data=None):
+        raise ValueError('unknown song')
+
+    monkeypatch.setattr(app_server_context, 'resolve_input_item_id', unknown)
+    response = _post_track(client, {'item_id': 'x'})
+    assert response.status_code == 400
+    assert response.get_json()['error'] == 'unknown song'
+
+
+def test_by_track_passes_the_canonical_id_and_scopes_the_results(client, monkeypatch):
+    import app_server_context
+    import tasks.recording_search_manager as rsm
+
+    seen = {}
+    monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda raw_id, data=None: f'fp_{raw_id}')
+
+    def fake(item_id, n_results):
+        seen.update(item_id=item_id, n_results=n_results)
+        return {
+            'item_id': item_id,
+            'results': [
+                {'item_id': 'a', 'title': 'A', 'author': 'x', 'score': 0.9},
+                {'item_id': 'b', 'title': 'B', 'author': 'y', 'score': 0.8},
+            ],
+            'count': 2,
+        }
+
+    monkeypatch.setattr(rsm, 'search_by_track', fake)
+    response = _post_track(client, {'item_id': '42', 'n_results': 1})
+    body = response.get_json()
+    assert response.status_code == 200
+    assert seen == {'item_id': 'fp_42', 'n_results': 1}
+    assert body['count'] == 1
+    assert [row['item_id'] for row in body['results']] == ['a']
+
+
+def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypatch):
+    import tasks.recording_search_manager as rsm
+
+    def rejected(item_id, n_results):
+        raise ValueError('This song has no neural fingerprint yet.')
+
+    monkeypatch.setattr(rsm, 'search_by_track', rejected)
+    response = _post_track(client, {'item_id': 'x'})
+    assert response.status_code == 400
+    assert 'no neural fingerprint' in response.get_json()['error']
+
+    def down(item_id, n_results):
+        raise RuntimeError('No neural fingerprint index is built yet.')
+
+    monkeypatch.setattr(rsm, 'search_by_track', down)
+    assert _post_track(client, {'item_id': 'x'}).status_code == 503
+
+    def boom(item_id, n_results):
+        raise KeyError('secret')
+
+    monkeypatch.setattr(rsm, 'search_by_track', boom)
+    response = _post_track(client, {'item_id': 'x'})
+    assert response.status_code == 500
+    assert 'secret' not in response.get_json()['error']
 
 
 def test_warmup_relays_the_manager_status(client, monkeypatch):

@@ -15,7 +15,9 @@ on the sequences the analysis stored.
 
 Main Features:
 * Routes: `/recording_search` page, `/api/recording_search/search` (multipart:
-  the clip and a result count) and `/api/recording_search/warmup`.
+  the clip and a result count), `/api/recording_search/by_track` (JSON: a
+  library song's id and a result count, for the other recordings of that
+  song) and `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
@@ -195,6 +197,91 @@ def recording_search_api():
         return jsonify({'error': str(exc), 'results': []}), 503
     except Exception:
         logger.exception('Recording search failed')
+        return jsonify(
+            {'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}
+        ), 500
+
+    attach_song_features(payload['results'])
+    payload['results'] = app_server_context.scope_results(
+        payload['results'], n_results, id_key='item_id'
+    )
+    payload['count'] = len(payload['results'])
+    return jsonify(payload)
+
+
+@recording_search_bp.route('/api/recording_search/by_track', methods=['POST'])
+def recording_search_by_track_api():
+    """
+    Find the other recordings of a library song.
+    ---
+    tags:
+      - Recording Search
+    summary: Align windows of a stored song's neural fingerprint on every other track and return the best matches.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [item_id]
+            properties:
+              item_id:
+                type: string
+                description: The song, as an id of the selected server.
+              n_results:
+                type: integer
+                minimum: 1
+                default: 100
+    responses:
+      200:
+        description: Ranked songs, best match first, the source song left out.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                item_id:
+                  type: string
+                count:
+                  type: integer
+                results:
+                  type: array
+                  items:
+                    type: object
+      400:
+        description: Missing or unknown song, bad count, or a song without a fingerprint.
+      503:
+        description: The neural fingerprint index is not available yet.
+      500:
+        description: Internal error during the search.
+    """
+    from config import RECORDING_SEARCH_DEFAULT_N_RESULTS
+    from tasks.recording_search_manager import search_by_track
+    from app_helper import attach_song_features
+
+    data = request.get_json(silent=True) or {}
+    item_id = str(data.get('item_id') or '').strip()
+    if not item_id:
+        return jsonify({'error': 'Missing "item_id".', 'results': []}), 400
+    try:
+        n_results = max(1, int(data.get('n_results', RECORDING_SEARCH_DEFAULT_N_RESULTS)))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid "n_results" value.', 'results': []}), 400
+    try:
+        canonical_id = app_server_context.resolve_input_item_id(item_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'results': []}), 400
+
+    try:
+        payload = search_by_track(canonical_id, n_results)
+    except ValueError as exc:
+        logger.warning('Recording search by track rejected %s: %s', item_id, exc)
+        return jsonify({'error': str(exc), 'results': []}), 400
+    except RuntimeError as exc:
+        logger.warning('Recording search by track unavailable: %s', exc)
+        return jsonify({'error': str(exc), 'results': []}), 503
+    except Exception:
+        logger.exception('Recording search by track failed')
         return jsonify(
             {'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}
         ), 500

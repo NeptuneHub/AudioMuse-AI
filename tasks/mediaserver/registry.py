@@ -465,6 +465,11 @@ def delete_server(server_id, conn=None):
             invalidate_availability_cache(server_id)
         except Exception:
             logger.debug("Availability-cache invalidation failed", exc_info=True)
+        try:
+            from tasks.neural_fingerprint_index import invalidate_availability_cache as invalidate_neural_availability
+            invalidate_neural_availability(server_id)
+        except Exception:
+            logger.debug("Neural fingerprint availability-cache invalidation failed", exc_info=True)
         return True
     except Exception:
         _rollback(db)
@@ -904,6 +909,11 @@ def upsert_track_maps(server_id, mapping, conn=None):
         invalidate_availability_cache(server_id)
     except Exception:
         logger.debug("Availability-cache invalidation failed", exc_info=True)
+    try:
+        from tasks.neural_fingerprint_index import invalidate_availability_cache as invalidate_neural_availability
+        invalidate_neural_availability(server_id)
+    except Exception:
+        logger.debug("Neural fingerprint availability-cache invalidation failed", exc_info=True)
     return written
 
 
