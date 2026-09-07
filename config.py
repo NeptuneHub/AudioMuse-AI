@@ -286,6 +286,8 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'NEURAL_FINGERPRINT_MODEL_PATH',
     'NEURAL_FINGERPRINT_CODEBOOK_PATH',
     'NEURAL_FINGERPRINT_NPROBE',
+    'NEURAL_FINGERPRINT_TRAIN_ROWS',
+    'NEURAL_FINGERPRINT_RETRAIN_GROWTH',
     'NEURAL_FINGERPRINT_MIN_SCORE',
     'NEURAL_FINGERPRINT_MIN_LEAD',
 }
@@ -1178,8 +1180,16 @@ NEURAL_FINGERPRINT_CODEBOOK_PATH = os.environ.get(
     os.path.join(_bundle_data_root(), "neural_fingerprint_pq.npz"),
 )
 # Coarse cells probed per query vector when the fingerprint index is searched
-# (the pack has about sqrt(rows) cells); more cells = better recall, slower query.
+# (the index has about sqrt(rows) cells); more cells = better recall, slower query.
 NEURAL_FINGERPRINT_NPROBE = int(os.environ.get("NEURAL_FINGERPRINT_NPROBE", "12"))
+# Rows the k-means that places the cells is trained on, sampled 100 per track from
+# random tracks. Every track contributes hundreds of rows, so the cap the other indexes
+# use for whole-track vectors would mean training on the full library; 200k rows is
+# about 25 per cell at the 8192-cell maximum and is what the build time was tuned on.
+NEURAL_FINGERPRINT_TRAIN_ROWS = int(os.environ.get("NEURAL_FINGERPRINT_TRAIN_ROWS", "200000"))
+# The worker appends new tracks to the existing cells; the centroids are retrained
+# (a full rebuild) once the library has grown this many times since they were trained.
+NEURAL_FINGERPRINT_RETRAIN_GROWTH = float(os.environ.get("NEURAL_FINGERPRINT_RETRAIN_GROWTH", "4.0"))
 # The best track counts as identified when the clip's segments, aligned on it, reach
 # this mean cosine similarity AND lead the next track by this much. Measured on four
 # real phone recordings: scores 0.48 to 0.68, leads 0.33 to 0.51; on a synthetic

@@ -96,6 +96,7 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
     from ..artist_gmm_manager import build_and_store_artist_index
     from ..hyperbolic_manager import backfill_hyperbolic_columns, build_hyperbolic_tree_cache
     from ..hyperbolic_index import build_and_store_hyperbolic_index
+    from ..neural_fingerprint_index import build_and_store_neural_fingerprint_index
 
     def _build_hyperbolic():
         backfill_hyperbolic_columns()
@@ -121,6 +122,8 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
          lambda: build_and_store_artist_projection('artist_map'), False),
         ("Hyperbolic Explorer projections rebuilt", "Building hyperbolic projections...",
          _build_hyperbolic, False),
+        ("Neural fingerprint index rebuilt", "Building neural fingerprint index...",
+         lambda: build_and_store_neural_fingerprint_index(get_db()), False),
     )
     span = max(0, progress_end - progress_start)
 

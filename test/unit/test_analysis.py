@@ -3595,6 +3595,9 @@ def test_index_builds_recycle_the_db_connection_between_steps(monkeypatch):
     monkeypatch.setattr(
         "tasks.hyperbolic_index.build_and_store_hyperbolic_index", stub("hyper_index")
     )
+    monkeypatch.setattr(
+        "tasks.neural_fingerprint_index.build_and_store_neural_fingerprint_index", stub("neural")
+    )
 
     monkeypatch.setattr(index, "get_db", lambda: object())
     monkeypatch.setattr(index, "close_db", lambda: order.append("close_db"))
@@ -3608,7 +3611,7 @@ def test_index_builds_recycle_the_db_connection_between_steps(monkeypatch):
     closes = [entry for entry in order if entry == "close_db"]
     assert builds, "no build step ran"
     # one recycle per STEP (the hyperbolic step runs three builds itself)
-    assert len(closes) == 9
+    assert len(closes) == 10
     # and every step is followed by a recycle, never two builds back to back
     assert order[-1] == "close_db"
 
@@ -3717,6 +3720,9 @@ def test_index_builds_end_with_a_database_checkpoint(monkeypatch):
     monkeypatch.setattr(
         "tasks.hyperbolic_index.build_and_store_hyperbolic_index", stub("hyper_index")
     )
+    monkeypatch.setattr(
+        "tasks.neural_fingerprint_index.build_and_store_neural_fingerprint_index", stub("neural")
+    )
     monkeypatch.setattr(index, "get_db", lambda: object())
     monkeypatch.setattr(index, "close_db", lambda: order.append("close_db"))
     monkeypatch.setattr(index, "_checkpoint_postgres", lambda: order.append("checkpoint"))
@@ -3726,9 +3732,9 @@ def test_index_builds_end_with_a_database_checkpoint(monkeypatch):
     index._run_all_index_builds()
 
     assert order[-1] == "checkpoint"
-    # 8 single builds + the hyperbolic step's three internal builds
-    assert sum(1 for e in order if e.startswith("build:")) == 11
-    assert order.count("close_db") == 9
+    # 9 single builds + the hyperbolic step's three internal builds
+    assert sum(1 for e in order if e.startswith("build:")) == 12
+    assert order.count("close_db") == 10
 
 
 def test_union_analysis_where_every_server_refused_the_credentials_is_never_retried(

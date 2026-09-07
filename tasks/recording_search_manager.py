@@ -223,11 +223,13 @@ def warmup_recording_models():
 def _pack_state(status, missing_reason):
     if not status['available']:
         return missing_reason
-    if status['loaded']:
+    if status['loaded'] or status.get('synced'):
         return 'ready'
     if status['building']:
-        return 'building'
-    return 'not built yet'
+        return 'loading'
+    if status.get('error'):
+        return status['error']
+    return 'not loaded yet'
 
 
 def get_index_status():

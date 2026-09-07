@@ -139,9 +139,18 @@ def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_
         if abs(cosine - expected_cosine) > TOLERANCE:
             failures.append(f'mean-vector cosine {i}-{j} {cosine:.4f}, expected {expected_cosine}')
 
-    paths = {'codes': str(tmp_path / 'rows.u8'), 'cells': str(tmp_path / 'cells.i32'), 'meta': str(tmp_path / 'meta.npz')}
+    codes = {name: nf.decode_blob(blob) for name, blob in blobs}
+    sample = nfi.training_sample(iter(codes.items()), 20000, np.random.default_rng(0))
+    centroids = nfi.train_centroids(sample, nfi._cell_count(sum(int(c.shape[0]) for c in codes.values())))
+    ids, lengths, labels = nfi.label_tracks(iter(codes.items()), centroids)
+    part_blob, counts = nfi.pack_part(labels, centroids.shape[0], 0)
+    directory = nfi.unpack_directory(
+        nfi.pack_directory('test-build', nf.codebook()[1], centroids, ids, lengths, counts, 1, len(ids))
+    )
+    monkeypatch.setattr(config, 'IVF_DISK_CACHE_DIR', str(tmp_path))
+    paths = nfi._paths('test-build')
     nfi.unload()
-    nfi.build_pack_from_rows(iter(blobs), paths, len(blobs))
+    nfi.write_local_pack(paths, directory, [nfi.unpack_part(part_blob)], lambda wanted: ((i, codes[i]) for i in wanted))
     nfi._open_pack(paths)
     monkeypatch.setattr(nfi, 'ensure_loaded', lambda: True)
     try:

@@ -198,8 +198,10 @@ def test_index_status_names_the_pack_state(monkeypatch):
 
     states = [
         ({'available': False, 'loaded': False, 'building': False}, 'needs the model file'),
-        ({'available': True, 'loaded': False, 'building': True}, 'building'),
-        ({'available': True, 'loaded': False, 'building': False}, 'not built yet'),
+        ({'available': True, 'loaded': False, 'building': True}, 'loading'),
+        ({'available': True, 'loaded': False, 'building': False}, 'not loaded yet'),
+        ({'available': True, 'loaded': False, 'building': False, 'error': 'No index yet'}, 'No index yet'),
+        ({'available': True, 'loaded': False, 'building': False, 'synced': True}, 'ready'),
         ({'available': True, 'loaded': True, 'building': False}, 'ready'),
     ]
     for status, expected in states:

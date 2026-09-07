@@ -1058,14 +1058,24 @@ def listen_for_index_reloads():
                     logger.exception("Hyperbolic Poincare index reload failed")
                     hyper_index_success = False
 
+                try:
+                    from tasks.neural_fingerprint_index import reload_from_db
+
+                    logger.info("Reloading the neural fingerprint index...")
+                    neural_success = reload_from_db()
+                except Exception:
+                    logger.exception("Neural fingerprint index reload failed")
+                    neural_success = False
+
                 logger.info(
                     "In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP %s, "
-                    "Lyrics %s, SemGrove %s, Hyperbolic %s, Poincare %s",
+                    "Lyrics %s, SemGrove %s, Hyperbolic %s, Poincare %s, Neural fingerprint %s",
                     'OK' if clap_success else 'X',
                     'OK' if lyrics_success else 'X',
                     'OK' if sg_success else 'X',
                     'OK' if hyper_success else 'X',
                     'OK' if hyper_index_success else 'X',
+                    'OK' if neural_success else 'X',
                 )
             except Exception:
                 logger.exception("Error reloading indexes/maps from background listener")
@@ -1261,6 +1271,18 @@ if not _is_worker:
                 )
         except Exception as e:
             logger.debug(f"Hyperbolic Poincare index not loaded at startup: {e}")
+        # Sync and map the neural fingerprint index the worker stored, so Search by
+        # Recording answers at once; a library that has not built it yet says so.
+        try:
+            from tasks.neural_fingerprint_index import load_at_startup as load_neural_fingerprint_index
+
+            neural_tracks = load_neural_fingerprint_index()
+            if neural_tracks:
+                logger.info("Neural fingerprint index loaded at startup (%d tracks).", neural_tracks)
+            else:
+                logger.info("Neural fingerprint index not found at startup (the analysis builds it).")
+        except Exception:
+            logger.exception("Neural fingerprint index not loaded at startup")
 
         # Every load above streams a large directory blob out of Postgres and
         # discards it once unpacked. Those frees land in the allocator's free
@@ -1299,9 +1321,12 @@ if not _is_worker:
                 lyrics = _lyrics_stats()
                 sg = _sg_stats()
                 hyper = get_hyperbolic_index_stats()
+                from tasks.neural_fingerprint_index import get_status as neural_fingerprint_status
+
+                neural = neural_fingerprint_status()
                 logger.info(
                     "Startup index profile: audio=%d artist=%d map=%d artist_proj=%d clap=%d "
-                    "lyrics=%d semgrove=%d hyper=%d",
+                    "lyrics=%d semgrove=%d hyper=%d neural_fingerprint=%d",
                     audio,
                     artist,
                     map_proj,
@@ -1310,6 +1335,7 @@ if not _is_worker:
                     lyrics.get('song_count', 0),
                     sg.get('song_count', 0),
                     hyper.get('song_count', 0),
+                    neural.get('tracks', 0),
                 )
             except Exception:
                 logger.exception("Startup index profile logging failed")

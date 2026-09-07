@@ -2311,11 +2311,50 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    threshold). Fingerprints stored in the earlier int8 layout are re-encoded
    in the background when the web process starts, in batches behind a
    Postgres advisory lock, and the search reads both layouts meanwhile. The
-   web process packs every stored sequence into raw files under
-   `IVF_DISK_CACHE_DIR` (code rows in track order, k-means cells with about
-   sqrt(N) centroids, one row list per cell), rebuilt when the number of
-   fingerprinted tracks changes or the pack layout is older, and released by
-   the idle timer. A query is embedded the same way; each of its vectors reads
+   index over those codes follows the lifecycle of the other similarity
+   indexes: the worker builds it at the rebuild points of the analysis run
+   (every `REBUILD_INDEX_BATCH_SIZE` albums and at the end), stores it in
+   `ivf_dir` and publishes the index-reload event, and the web process only
+   syncs local files from what was stored. Only the structure goes to the
+   table, about 4 bytes per row: the centroids as int8, the track order and
+   lengths, and the rows of each cell; the codes stay in their blobs instead
+   of being copied into cells. Two things differ from the other indexes,
+   both because one track is 450 rows rather than one. The k-means that
+   places the cells (about sqrt(rows) of them, at most 8192) is trained on
+   at most `NEURAL_FINGERPRINT_TRAIN_ROWS` rows sampled 100 per track from
+   random tracks, since the cap the other indexes use for whole-track
+   vectors would mean training on the entire library. And a rebuild appends
+   instead of starting over: fingerprints never change and the library only
+   grows, so the worker keeps the centroids, reads only the tracks
+   fingerprinted since the last build, assigns their rows and stores one more
+   part; the centroids are retrained from scratch when the library has grown
+   `NEURAL_FINGERPRINT_RETRAIN_GROWTH` times since they were trained, when
+   more than a tenth of the indexed tracks are gone, when the largest cell
+   holds more than ten times the average, or when the codebook changed. The
+   web process keeps its pack under `IVF_DISK_CACHE_DIR` keyed by build id
+   (codes in track order, the merged cell lists, the metadata); on the
+   index-reload event it prepares the next build while the current one keeps
+   answering, reusing the codes it already holds when the previous track
+   order is a prefix of the new one and fetching only the new tracks' blobs,
+   then swaps. The idle timer releases the mapping; the next use maps the
+   same files again after one small read of the build id. Measured on 13,043
+   real tracks (6.1 million rows, 2,470 cells): a full build takes 43 s (19 s
+   for the centroids, 22 s to assign the rows, which the worker does on the
+   GPU through cupy on the GPU images and on the CPU elsewhere, in blocks of
+   65,536 rows across tracks because per-track matrices ran five times
+   slower), the table holds 28 MB (4.6 bytes per row, about 430 MB at 200k
+   tracks), the web process syncs its 219 MB pack in 5 s, an append of 1,000
+   tracks takes 11 s in the worker and 3 s in the web process, and centroids
+   trained on the first 30 percent of the tracks with the rest appended gave
+   the same ranks and scores as a full build on 28 queries, eight of them the
+   real phone recordings. On the CPU the assignment costs about 1.9 s per
+   65,536 rows at 8,192 cells, so a from-scratch build of a 200k library is
+   about 45 minutes there, paid only when the centroids are retrained; with
+   the fourfold rule the largest retrain during a backfill to 200k happens
+   near 64k tracks and takes about 8 minutes. A query is embedded the same
+   way and scored against the probed rows through the codebook's lookup
+   tables (32 additions per row instead of a 128-wide dot product, seven
+   times faster at the same result); each of its vectors reads
    `NEURAL_FINGERPRINT_NPROBE` cells, the rows they hold are decoded through
    the codebook and vote for (track, offset), votes within one hop are
    pooled, and the twenty best tracks are
@@ -2356,11 +2395,15 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    minute, and a clip from the end of "Back in Black" could never match. The
    neural fingerprint identified all of those clips at 10 to 20 seconds, so
    the chromaprint path was retired rather than kept as a second tab.
-5. **The index in the web process.** The neural fingerprint pack is built in
-   a background thread by the page's warmup call, the encoder loads on first
-   use, and both are released after `RECORDING_SEARCH_WARMUP_DURATION`
-   seconds without a query, the same idle-unload pattern as the text-search
-   models.
+5. **The index in the web process.** Flask syncs and maps the stored build
+   at startup like the other indexes ("Neural fingerprint index loaded at
+   startup", or "not found" until the analysis has built it once), the
+   page's warmup call maps it again when the idle timer released it (syncing
+   first when the worker published a newer build), the encoder loads on
+   first use, and the mapping and the encoder are released after
+   `RECORDING_SEARCH_WARMUP_DURATION` seconds without a query, the same
+   idle-unload pattern as the text-search models; the synced files stay, so
+   the page reports the index as ready while it is idle.
 
 Measured before building it, on 50 songs against a real 198k-track corpus: a
 clean random 20 s slice retrieves the same neighbourhood as the whole song
@@ -2425,6 +2468,11 @@ address, a reverse proxy, or `http://localhost:8000` on the server itself.
   the one the library was analysed with, a different file makes the stored
   blobs unreadable.
 - `NEURAL_FINGERPRINT_NPROBE` (12): cells read per query vector.
+- `NEURAL_FINGERPRINT_TRAIN_ROWS` (200000): rows the k-means that places the
+  cells is trained on, sampled 100 per track from random tracks.
+- `NEURAL_FINGERPRINT_RETRAIN_GROWTH` (4): the worker appends new tracks to
+  the existing cells until the library has grown this many times since the
+  centroids were trained, then rebuilds from scratch.
 - `NEURAL_FINGERPRINT_MIN_SCORE` and `NEURAL_FINGERPRINT_MIN_LEAD`: the mean
   cosine the best track must reach at its alignment, and its lead over the
   next track, to count as identified.
