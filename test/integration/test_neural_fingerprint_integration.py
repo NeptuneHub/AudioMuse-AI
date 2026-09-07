@@ -24,7 +24,6 @@ Main Features:
   other songs are not flagged.
 """
 
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -73,8 +72,7 @@ def _matching_bytes(codes_row, expected_hex):
 @pytest.mark.integration
 def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_slice(monkeypatch, tmp_path):
     project_root = Path(__file__).resolve().parents[2]
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    monkeypatch.syspath_prepend(str(project_root))
     try:
         import onnxruntime
     except Exception as exc:  # pragma: no cover

@@ -305,8 +305,9 @@ class _TlsRelay:
         self.raw.setblocking(False)
         self.inner.setblocking(False)
         try:
-            while self._step():
-                pass
+            running = True
+            while running:
+                running = self._step()
         except OSError as exc:
             logger.debug('TLS relay with %s ended: %s', self.addr, exc)
         finally:

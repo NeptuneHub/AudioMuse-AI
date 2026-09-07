@@ -159,13 +159,13 @@
         <div id="clip-info" class="clip-info hidden"></div>
 
         <div class="param-group">
-            <label for="n-results" class="label-with-tooltip">
-                Number of results:
-                <span class="info-tooltip" role="button" tabindex="0" aria-label="Help" aria-describedby="n-results-help">
+            <div class="label-with-tooltip">
+                <label for="n-results">Number of results:</label>
+                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="n-results-help">
                     <span class="info-icon"></span>
                     <span class="tooltip-text" id="n-results-help">How many songs to return, most similar to the clip first.</span>
-                </span>
-            </label>
+                </button>
+            </div>
             <input type="number" id="n-results" name="n_results" value="{{ n_results_default }}" min="{{ n_results_default|min_bound(1) }}" max="{{ n_results_default|max_bound(200) }}">
         </div>
 

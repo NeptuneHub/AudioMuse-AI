@@ -1255,6 +1255,16 @@ tbody tr:hover {
     vertical-align: middle;
 }
 
+/* A real <button> as the tooltip trigger: keyboard-reachable without tabindex */
+button.info-tooltip {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    line-height: 0;
+}
+
 .info-icon {
     display: inline-flex;
     align-items: center;
