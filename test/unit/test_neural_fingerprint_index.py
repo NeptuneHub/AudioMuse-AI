@@ -195,6 +195,42 @@ def test_the_directory_round_trips_with_int8_centroids(codebook):
     assert directory['quantizer'].coarse.shape == quantizer.coarse.shape
 
 
+def test_a_directory_of_an_older_layout_triggers_a_rebuild_and_a_clear_message_instead_of_a_crash(monkeypatch, codebook, tmp_path):
+    import io
+
+    import database
+
+    tracks, rng = codebook
+    buffer = io.BytesIO()
+    np.savez(
+        buffer, format=np.int64(nfi.FORMAT - 1), build_id=np.asarray('old-build'), codebook_id=np.uint32(nf.codebook()[1]),
+        centroids=np.zeros((4, nf.DIM), dtype=np.int8), ids=np.asarray(['a'], dtype=str), lengths=np.asarray([3]),
+        cell_sizes=np.asarray([3, 0, 0, 0]), parts=np.int64(1), trained_tracks=np.int64(1),
+    )
+    old = nfi.unpack_directory(buffer.getvalue())
+    assert old['format'] == nfi.FORMAT - 1
+    assert old['build_id'] == 'old-build'
+    assert 'layout' in nfi.needs_full_build(old, ['a'], nf.codebook()[1])
+
+    class Conn:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(database, 'connect_raw', lambda **kw: Conn())
+    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: 'old-build')
+    monkeypatch.setattr(nfi, '_load_directory', lambda conn: old)
+    nfi.unload()
+    with pytest.raises(RuntimeError, match='older version'):
+        nfi.ensure_loaded()
+    assert 'older version' in nfi.get_status()['error']
+    assert nfi.reload_from_db() is False
+    (tmp_path / 'cache').mkdir(exist_ok=True)
+    stale = tmp_path / 'cache' / 'neural_fingerprint.old-build.rows.u8'
+    stale.write_bytes(b'x')
+    nfi._prune_local('another-build')
+    assert not stale.exists()
+
+
 def test_the_full_build_decision_names_its_reason(monkeypatch, codebook):
     tracks, rng = codebook
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_RETRAIN_GROWTH', 4.0)

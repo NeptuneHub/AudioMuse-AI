@@ -341,6 +341,9 @@ def _decode_i8(vectors):
 
 def unpack_directory(blob):
     with np.load(io.BytesIO(bytes(blob)), allow_pickle=False) as data:
+        layout = int(data['format']) if 'format' in data.files else 0
+        if layout != FORMAT:
+            return {'format': layout, 'build_id': str(data['build_id']) if 'build_id' in data.files else ''}
         quantizer = Quantizer(
             _decode_i8(data['coarse']), _decode_i8(data['centroids']), data['group_offsets'].astype(np.int64),
         )
@@ -644,14 +647,25 @@ def _local_meta(build_id):
 
 
 def _prune_local(keep_build_id):
-    for build_id in _local_builds():
-        if build_id == keep_build_id:
+    for path in glob.glob(os.path.join(config.IVF_DISK_CACHE_DIR, f'{_FILE_PREFIX}.*')):
+        pieces = os.path.basename(path).split('.')
+        if len(pieces) > 1 and pieces[1] == keep_build_id:
             continue
-        for path in glob.glob(os.path.join(config.IVF_DISK_CACHE_DIR, f'{_FILE_PREFIX}.{build_id}.*')):
-            try:
-                os.remove(path)
-            except OSError:
-                logger.debug('Could not remove %s yet', path)
+        try:
+            os.remove(path)
+        except OSError:
+            logger.debug('Could not remove %s yet', path)
+
+
+OLDER_LAYOUT = 'The neural fingerprint index was built by an older version; the next analysis run rebuilds it.'
+
+
+def _current_layout(directory, build_id):
+    if directory is None or directory['build_id'] != build_id:
+        raise RuntimeError('The neural fingerprint index is being written; try again in a minute.')
+    if directory['format'] != FORMAT:
+        raise RuntimeError(OLDER_LAYOUT)
+    return directory
 
 
 def _reusable_parts(previous, directory, ids, lengths):
@@ -877,9 +891,7 @@ def _local_pack_for(conn):
         raise RuntimeError('No neural fingerprint index is built yet. Run the analysis, which builds it.')
     if _local_meta(build_id) is not None:
         return _paths(build_id)
-    directory = _load_directory(conn)
-    if directory is None or directory['build_id'] != build_id:
-        raise RuntimeError('The neural fingerprint index is being written; try again in a minute.')
+    directory = _current_layout(_load_directory(conn), build_id)
     if directory['codebook_id'] != codebook()[1]:
         raise RuntimeError('The neural fingerprint index was built with another codebook; rebuild the indexes.')
     return _sync_from_db(conn, directory)
@@ -931,8 +943,10 @@ def reload_from_db():
             if is_loaded() and _STATE['pack'].build_id == build_id:
                 return True
         if _local_meta(build_id) is None:
-            directory = _load_directory(conn)
-            if directory is None or directory['build_id'] != build_id:
+            try:
+                directory = _current_layout(_load_directory(conn), build_id)
+            except RuntimeError as exc:
+                logger.info('Neural fingerprint index not reloaded: %s', exc)
                 return False
             _sync_from_db(conn, directory)
         with _LOCK:
