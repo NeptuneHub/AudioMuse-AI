@@ -290,6 +290,8 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'NEURAL_FINGERPRINT_RETRAIN_GROWTH',
     'NEURAL_FINGERPRINT_MIN_SCORE',
     'NEURAL_FINGERPRINT_MIN_LEAD',
+    'NEURAL_FINGERPRINT_INDEX_STRIDE',
+    'NEURAL_FINGERPRINT_QUERY_THREADS',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
@@ -1186,10 +1188,19 @@ NEURAL_FINGERPRINT_CODEBOOK_PATH = os.environ.get(
 # (the index has about sqrt(rows) cells); more cells = better recall, slower query.
 NEURAL_FINGERPRINT_NPROBE = int(os.environ.get("NEURAL_FINGERPRINT_NPROBE", "12"))
 # Rows the k-means that places the cells is trained on, sampled 100 per track from
-# random tracks. Every track contributes hundreds of rows, so the cap the other indexes
-# use for whole-track vectors would mean training on the full library; 200k rows is
-# about 25 per cell at the 8192-cell maximum and is what the build time was tuned on.
+# random tracks, and never fewer than 20 per cell (a million tracks gets about 22k
+# cells, so about 440k rows). Every track contributes hundreds of rows, so the cap the
+# other indexes use for whole-track vectors would mean training on the full library.
 NEURAL_FINGERPRINT_TRAIN_ROWS = int(os.environ.get("NEURAL_FINGERPRINT_TRAIN_ROWS", "200000"))
+# Index every n-th stored half-second row of a track: 1 indexes them all, 2 indexes
+# one per second, which halves the local pack (about 19 GB per million tracks at 1)
+# and the query work, at a recall cost on degraded clips that must be measured on
+# real recordings first. The stored fingerprints keep every row and the alignment
+# check reads them all whatever the stride. Changing it triggers a full rebuild.
+NEURAL_FINGERPRINT_INDEX_STRIDE = int(os.environ.get("NEURAL_FINGERPRINT_INDEX_STRIDE", "1"))
+# Threads that score a clip's segments in parallel in the web process; 0 = one per
+# CPU core, at most 8.
+NEURAL_FINGERPRINT_QUERY_THREADS = int(os.environ.get("NEURAL_FINGERPRINT_QUERY_THREADS", "0"))
 # The worker appends new tracks to the existing cells; the centroids are retrained
 # (a full rebuild) once the library has grown this many times since they were trained.
 NEURAL_FINGERPRINT_RETRAIN_GROWTH = float(os.environ.get("NEURAL_FINGERPRINT_RETRAIN_GROWTH", "4.0"))

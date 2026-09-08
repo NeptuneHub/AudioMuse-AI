@@ -141,11 +141,11 @@ def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_
 
     codes = {name: nf.decode_blob(blob) for name, blob in blobs}
     sample = nfi.training_sample(iter(codes.items()), 20000, np.random.default_rng(0))
-    centroids = nfi.train_centroids(sample, nfi._cell_count(sum(int(c.shape[0]) for c in codes.values())))
-    ids, lengths, labels = nfi.label_tracks(iter(codes.items()), centroids)
-    part_blob, counts = nfi.pack_part(labels, centroids.shape[0], 0)
+    quantizer = nfi.train_quantizer(sample, nfi._cell_count(sum(int(c.shape[0]) for c in codes.values())))
+    ids, lengths, labels = next(iter(nfi.label_tracks(iter(codes.items()), quantizer)))
+    part_blob, counts = nfi.pack_part(labels, quantizer.n_cells, 0)
     directory = nfi.unpack_directory(
-        nfi.pack_directory('test-build', nf.codebook()[1], centroids, ids, lengths, counts, 1, len(ids))
+        nfi.pack_directory('test-build', nf.codebook()[1], quantizer, ids, lengths, counts, 1, len(ids))
     )
     monkeypatch.setattr(config, 'IVF_DISK_CACHE_DIR', str(tmp_path))
     paths = nfi._paths('test-build')
@@ -153,6 +153,7 @@ def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_
     nfi.write_local_pack(paths, directory, [nfi.unpack_part(part_blob)], lambda wanted: ((i, codes[i]) for i in wanted))
     nfi._open_pack(paths)
     monkeypatch.setattr(nfi, 'ensure_loaded', lambda: True)
+    monkeypatch.setattr(nfi, '_candidate_codes', lambda wanted: {i: codes[i] for i in wanted if i in codes})
     try:
         audio, sr = audios[QUERY_SONG]
         rows = nfi.identify(_noisy_slice(audio, sr), sr, len(EXPECTED))

@@ -2327,42 +2327,59 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    was stored. Only the structure goes to the
    table, about 4 bytes per row: the centroids as int8, the track order and
    lengths, and the rows of each cell; the codes stay in their blobs instead
-   of being copied into cells. Two things differ from the other indexes,
-   both because one track is 450 rows rather than one. The k-means that
-   places the cells (about sqrt(rows) of them, at most 8192) is trained on
-   at most `NEURAL_FINGERPRINT_TRAIN_ROWS` rows sampled 100 per track from
-   random tracks, since the cap the other indexes use for whole-track
-   vectors would mean training on the entire library. And a rebuild appends
-   instead of starting over: fingerprints never change and the library only
-   grows, so the worker keeps the centroids, reads only the tracks
-   fingerprinted since the last build, assigns their rows and stores one more
-   part; the centroids are retrained from scratch when the library has grown
-   `NEURAL_FINGERPRINT_RETRAIN_GROWTH` times since they were trained, when
+   of being copied into cells. Everything is sized for millions of tracks,
+   because one track is 450 rows rather than one. The index holds every
+   `NEURAL_FINGERPRINT_INDEX_STRIDE`-th stored row of a track (1, every half
+   second, by default; 2 halves the pack and the query work at a recall cost
+   on degraded clips that has to be measured on real recordings first; the
+   blobs keep every row and the alignment check reads them all). The cells,
+   about sqrt(rows) of them and at most 65536, are placed by a two-level
+   k-means trained on at least `NEURAL_FINGERPRINT_TRAIN_ROWS` rows and 20 per
+   cell, sampled 100 per track from random tracks: above 64 cells they are
+   grouped under sqrt(cells) coarse centroids and a row goes to the nearest
+   cell of its nearest group, so assigning a million tracks costs about 300
+   dot products per row instead of tens of thousands (minutes rather than
+   hours), while a query still ranks the flat cell list exactly. The rows
+   are labelled and stored in parts of at most 8M rows, cut at track
+   boundaries, so the worker never holds more than one part. A rebuild
+   appends instead of starting over: fingerprints never change and the
+   library only grows, so the worker keeps the quantizer, reads only the
+   tracks fingerprinted since the last build, assigns their rows and stores
+   more parts; the quantizer is retrained from scratch when the library has
+   grown `NEURAL_FINGERPRINT_RETRAIN_GROWTH` times since it was trained, when
    more than a tenth of the indexed tracks are gone, when the largest cell
-   holds more than ten times the average, or when the codebook changed. The
-   web process keeps its pack under `IVF_DISK_CACHE_DIR` keyed by build id.
-   That pack is ephemeral (re-synced from Postgres at every start, never
-   persisted) and laid out for the query, not for the sync: the codes are
-   stored BY CELL, so a query segment reads its `NEURAL_FINGERPRINT_NPROBE`
-   cells as contiguous runs instead of hundreds of thousands of scattered
-   32-byte rows, which is what keeps a cold query at a million tracks in
-   seconds rather than hours; beside every slab position sit the track, the
-   row id and the inverse norm of the decoded vector (so scoring is one
-   lookup per byte and a multiply), and the slab position of every row
-   serves the alignment check. The sync streams the blobs in track order and
-   scatters 2M-row chunks: sorted by position, the rows of one cell form one
-   contiguous run, so the writes are large and sequential and RAM stays
-   bounded whatever the library size. On the index-reload event it prepares
-   the next build while the current one keeps answering: when the previous
-   pack is a prefix of the new build under the same centroids (an append),
-   every cell's old run is copied block-wise and only the new tracks' blobs
-   are fetched; the files are then mapped into one immutable pack that is
-   swapped by a single reference assignment, so a query that started before
-   the swap keeps a consistent view. At start the sync and the mapping run in
-   the background so a large library never delays the web server. A track whose fingerprint row
-   is gone since the build (Cleaning removed it) is written into the pack as
-   dead rows and masked out of every vote, the song picker and the count
-   until the next full build drops it. Like every other index it holds the union of all servers: a
+   holds more than ten times the average, or when the codebook or the stride
+   changed. The web process keeps its pack under `IVF_DISK_CACHE_DIR` keyed
+   by build id. That pack is ephemeral (re-synced from Postgres at every
+   start, never persisted) and laid out for the query, not for the sync: the
+   codes are stored BY CELL, so a query segment reads its
+   `NEURAL_FINGERPRINT_NPROBE` cells as contiguous runs instead of hundreds
+   of thousands of scattered 32-byte rows, which is what keeps a cold query
+   at a million tracks in seconds rather than hours; beside every slab
+   position sit the track, the offset in the track and the inverse norm of
+   the decoded vector (so scoring is one lookup per byte and a multiply), 40
+   bytes per indexed row in all, about 19 GB per million tracks at stride 1.
+   The sync works one part at a time: the part's positions follow from its
+   cell runs and the cells already filled, its tracks' blobs stream in
+   2M-row chunks that are sorted by position and written as contiguous runs
+   (the rows of one cell in a chunk are always one run), so RAM stays in the
+   hundreds of megabytes whatever the library size. On the index-reload event
+   it prepares the next build while the current one keeps answering: when
+   the previous pack is a prefix of the new build under the same quantizer
+   (an append), every cell's old run is copied block-wise and only the new
+   parts' blobs are fetched; the files are then mapped into one immutable
+   pack that is swapped by a single reference assignment, so a query that
+   started before the swap keeps a consistent view. At start the sync and the
+   mapping run in the background so a large library never delays the web
+   server. A track whose fingerprint row is gone since the build (Cleaning
+   removed it) is written into the pack as dead rows and masked out of every
+   vote and the count until the next full build drops it. A query scores its
+   segments in parallel threads (`NEURAL_FINGERPRINT_QUERY_THREADS`, one per
+   core by default): every third segment votes first and, when one track
+   already leads the runner-up fourfold with enough votes, the rest of the
+   voting is skipped; the best candidates are then verified against their own
+   blobs, fetched in one query, so the pack needs no row-to-position map.
+   Like every other index it holds the union of all servers: a
    request scoped to a server votes only over that server's tracks through
    the shared availability mask, cached per server and build for 30 s and
    dropped when the mappings change. Measured on 13,043
@@ -2515,13 +2532,20 @@ address, a reverse proxy, or `http://localhost:8000` on the server itself.
   blobs unreadable.
 - `NEURAL_FINGERPRINT_NPROBE` (12): cells read per query vector.
 - `NEURAL_FINGERPRINT_TRAIN_ROWS` (200000): rows the k-means that places the
-  cells is trained on, sampled 100 per track from random tracks.
+  cells is trained on, sampled 100 per track from random tracks, never fewer
+  than 20 per cell.
 - `NEURAL_FINGERPRINT_RETRAIN_GROWTH` (4): the worker appends new tracks to
   the existing cells until the library has grown this many times since the
   centroids were trained, then rebuilds from scratch.
 - `NEURAL_FINGERPRINT_MIN_SCORE` and `NEURAL_FINGERPRINT_MIN_LEAD`: the mean
   cosine the best track must reach at its alignment, and its lead over the
   next track, to count as identified.
+- `NEURAL_FINGERPRINT_INDEX_STRIDE` (1): index every n-th stored half-second
+  row; 2 halves the local pack and the query work and must be measured on
+  real recordings first, since it costs recall on degraded clips. Changing it
+  triggers a full rebuild.
+- `NEURAL_FINGERPRINT_QUERY_THREADS` (0 = one per core, at most 8): threads
+  scoring a clip's segments in parallel in the web process.
 - `FLASK_BUILTIN_HTTPS` (true): answer HTTPS on the HTTP port; false switches
   the relay off and every connection passes through untouched.
 - `FLASK_HTTPS_CERT_DIR` (data dir `tls/`, `/app/tls` in containers): where
