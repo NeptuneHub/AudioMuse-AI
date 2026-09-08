@@ -39,12 +39,8 @@ Main Features:
   the decoded vectors renormalised, and the codebook's checksum travels in
   every blob so a blob and a codebook that do not belong together are refused
 * encode_blob / decode_blob: the code sequence behind a small header (magic
-  NFP2, dimension, count, slices, codebook id), 14 KB per average track
-  instead of the 52 KB of the int8 NFP1 format that came before it; a legacy
-  int8 blob still decodes by being re-encoded on the fly, and
-  migrate_legacy_fingerprints rewrites every legacy row of the embedding table
-  at Flask startup, in batches behind an advisory lock, so two web processes
-  never do the work twice
+  NFP2, dimension, count, slices, codebook id), 14 KB per average track; a
+  blob with another magic, dimension, slice count or codebook is refused
 * the session is created once per process and released by unload_session,
   so the analysis worker can drop it between songs when
   PER_SONG_MODEL_RELOAD is set
@@ -58,11 +54,9 @@ import zlib
 
 import numpy as np
 import librosa
-import psycopg2
 from numpy.lib.stride_tricks import sliding_window_view
 
 import config
-from tasks import ivf_quant
 
 logger = logging.getLogger(__name__)
 
@@ -84,19 +78,25 @@ PQ_CENTROIDS = 256
 PQ_SUBDIM = DIM // PQ_SUBSPACES
 CODE_BYTES = PQ_SUBSPACES
 BLOB_MAGIC = b'NFP2'
-LEGACY_MAGIC = b'NFP1'
 _AMIN = 1e-5
 _HEADER = struct.Struct('<4sHIBI')
-_LEGACY_HEADER = struct.Struct('<4sHIB')
+HEADER_BYTES = _HEADER.size
 _BATCH = 128
 _ENCODE_BATCH = 2048
-_MIGRATION_BATCH = 200
-_MIGRATION_LOCK_KEY = 'neural_fingerprint_migration'
 _LOCK = threading.Lock()
 _STATE = {'session': None, 'input': None, 'filterbank': None, 'codebook': None, 'codebook_id': None, 'codebook_bias': None}
 
 
+DISABLED_MESSAGE = 'Neural fingerprint search is disabled. Set NEURAL_FINGERPRINT_ENABLED=true in config.'
+
+
+def is_enabled():
+    return bool(config.NEURAL_FINGERPRINT_ENABLED)
+
+
 def is_available():
+    if not is_enabled():
+        return False
     paths = (config.NEURAL_FINGERPRINT_MODEL_PATH, config.NEURAL_FINGERPRINT_CODEBOOK_PATH)
     return all(bool(path) and os.path.isfile(path) for path in paths)
 
@@ -297,28 +297,8 @@ def encode_blob(vectors):
     return _HEADER.pack(BLOB_MAGIC, DIM, int(codes.shape[0]), PQ_SUBSPACES, book_id) + codes.tobytes()
 
 
-def decode_legacy_blob(blob):
-    raw = bytes(blob)
-    if len(raw) < _LEGACY_HEADER.size:
-        return None
-    magic, dim, count, code = _LEGACY_HEADER.unpack_from(raw)
-    if magic != LEGACY_MAGIC or dim != DIM or code != ivf_quant.DTYPE_I8:
-        return None
-    body = np.frombuffer(raw, dtype=np.int8, offset=_LEGACY_HEADER.size)
-    if body.size != count * dim:
-        return None
-    return body.reshape(count, dim).astype(np.float32) / ivf_quant.I8_SCALE
-
-
-def is_legacy_blob(blob):
-    return bytes(blob[:4]) == LEGACY_MAGIC
-
-
 def decode_blob(blob):
     raw = bytes(blob)
-    if is_legacy_blob(raw):
-        vectors = decode_legacy_blob(raw)
-        return None if vectors is None else encode_codes(vectors)
     if len(raw) < _HEADER.size:
         return None
     magic, dim, count, subspaces, book_id = _HEADER.unpack_from(raw)
@@ -345,13 +325,6 @@ def decode_blob_f32(blob):
     return decode_codes(codes)
 
 
-def migrate_blob(blob):
-    vectors = decode_legacy_blob(blob)
-    if vectors is None:
-        return None
-    return encode_blob(vectors)
-
-
 def fingerprint_track(audio, sr, track_name=''):
     vectors = fingerprint_audio(audio, sr)
     if vectors is None:
@@ -360,68 +333,3 @@ def fingerprint_track(audio, sr, track_name=''):
     if config.PER_SONG_MODEL_RELOAD:
         unload_session()
     return encode_blob(vectors)
-
-
-def migrate_legacy_fingerprints(conn=None, batch_size=_MIGRATION_BATCH):
-    from database import connect_raw
-
-    own_connection = conn is None
-    if own_connection:
-        conn = connect_raw(application_name='neural_fingerprint_migration')
-    try:
-        cur = conn.cursor()
-        cur.execute('SELECT pg_try_advisory_lock(hashtext(%s))', (_MIGRATION_LOCK_KEY,))
-        if not cur.fetchone()[0]:
-            logger.info('Neural fingerprint migration already running in another web process; skipping here')
-            return 0
-        try:
-            migrated = 0
-            last_id = ''
-            while True:
-                cur.execute(
-                    'SELECT item_id, neural_fingerprint FROM embedding '
-                    'WHERE item_id > %s AND substring(neural_fingerprint from 1 for 4) = %s '
-                    'ORDER BY item_id LIMIT %s',
-                    (last_id, psycopg2.Binary(LEGACY_MAGIC), int(batch_size)),
-                )
-                rows = cur.fetchall()
-                if not rows:
-                    break
-                for item_id, blob in rows:
-                    last_id = item_id
-                    fresh = migrate_blob(bytes(blob))
-                    if fresh is None:
-                        logger.error('Neural fingerprint of %s is unreadable and stays in the legacy format', item_id)
-                        continue
-                    cur.execute(
-                        'UPDATE embedding SET neural_fingerprint = %s '
-                        'WHERE item_id = %s AND substring(neural_fingerprint from 1 for 4) = %s',
-                        (psycopg2.Binary(fresh), item_id, psycopg2.Binary(LEGACY_MAGIC)),
-                    )
-                    migrated += cur.rowcount
-                conn.commit()
-                logger.info('Neural fingerprint migration: %d tracks re-encoded to %d-byte codes so far', migrated, CODE_BYTES)
-            return migrated
-        finally:
-            cur.execute('SELECT pg_advisory_unlock(hashtext(%s))', (_MIGRATION_LOCK_KEY,))
-            conn.commit()
-            cur.close()
-    finally:
-        if own_connection:
-            conn.close()
-
-
-def start_legacy_migration():
-    if not is_available():
-        logger.info('Neural fingerprint model or codebook missing; legacy fingerprints are left as they are')
-        return False
-
-    def _run():
-        try:
-            migrated = migrate_legacy_fingerprints()
-            logger.info('Neural fingerprint migration finished: %d tracks re-encoded', migrated)
-        except Exception:
-            logger.exception('Neural fingerprint migration failed; it resumes at the next start')
-
-    threading.Thread(target=_run, name='neural-fingerprint-migration', daemon=True).start()
-    return True

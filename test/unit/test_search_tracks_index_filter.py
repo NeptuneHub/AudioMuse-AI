@@ -11,10 +11,11 @@
 Main Features:
 * Without an index parameter every analysed song of the selected server is
   searched (no id filter reaches the backend)
-* index=neural restricts the search to the tracks of the loaded neural
-  fingerprint index and answers an empty list while that index is not loaded,
-  never falling back to every song
-* index=sem_grove does the same with the SemGrove index
+* index=neural restricts the search to the songs that carry a neural
+  fingerprint through a database-side clause (never a list of ids, which at a
+  million songs would be shipped on every keystroke) and answers an empty
+  list while that index is not loaded, never falling back to every song
+* index=sem_grove filters on the SemGrove index's id set
 * A filter that fails to load answers an empty list, not an error
 """
 
@@ -49,20 +50,22 @@ def test_without_an_index_parameter_no_id_filter_reaches_the_backend(client):
     assert backend['kwargs']['item_id_filter'] is None
 
 
-def test_index_neural_searches_only_the_tracks_of_the_loaded_neural_index(client, monkeypatch):
+def test_index_neural_filters_in_the_database_and_never_ships_an_id_list(client, monkeypatch):
     from tasks import neural_fingerprint_index
 
-    monkeypatch.setattr(neural_fingerprint_index, 'get_indexed_item_ids', lambda: {'fp_a', 'fp_b'})
+    monkeypatch.setattr(neural_fingerprint_index, 'picker_where', lambda: neural_fingerprint_index.PICKER_WHERE)
     backend = {}
     response = _search(client, backend, index='neural')
     assert response.status_code == 200
-    assert backend['kwargs']['item_id_filter'] == {'fp_a', 'fp_b'}
+    assert backend['kwargs']['item_id_filter'] is None
+    assert backend['kwargs']['extra_where'] == neural_fingerprint_index.PICKER_WHERE
+    assert 'neural_fingerprint IS NOT NULL' in backend['kwargs']['extra_where'][0]
 
 
 def test_index_neural_answers_nothing_while_the_neural_index_is_not_loaded(client, monkeypatch):
     from tasks import neural_fingerprint_index
 
-    monkeypatch.setattr(neural_fingerprint_index, 'get_indexed_item_ids', lambda: set())
+    monkeypatch.setattr(neural_fingerprint_index, 'picker_where', lambda: None)
     backend = {}
     response = _search(client, backend, index='neural')
     assert response.status_code == 200
@@ -86,7 +89,7 @@ def test_a_filter_that_fails_to_load_answers_an_empty_list(client, monkeypatch):
     def broken():
         raise RuntimeError('pack unreadable')
 
-    monkeypatch.setattr(neural_fingerprint_index, 'get_indexed_item_ids', broken)
+    monkeypatch.setattr(neural_fingerprint_index, 'picker_where', broken)
     backend = {}
     response = _search(client, backend, index='neural')
     assert response.status_code == 200

@@ -158,6 +158,14 @@ def test_an_unavailable_index_raises(monkeypatch):
         rsm.run_recording_search(b'x', 'c.wav', 10)
 
 
+def test_a_disabled_feature_reports_it_and_warms_nothing(monkeypatch):
+    monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_ENABLED', False)
+    assert rsm.get_index_status() == {'neural': 'disabled (NEURAL_FINGERPRINT_ENABLED=false)'}
+    status = rsm.warmup_recording_models()
+    assert status['loaded'] is False
+    assert status['models'] == {'neural': False, 'encoder': False}
+
+
 def test_query_windows_cover_a_long_song_three_times_and_a_short_one_once():
     short = np.zeros((30, 128), dtype=np.float32)
     assert [w.shape[0] for w in rsm.query_windows(short)] == [30]

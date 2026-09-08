@@ -166,6 +166,48 @@
         color: var(--text-main, #333);
         border: 1px solid var(--border-color, #ccc);
     }
+    .ml-model-list {
+        margin-top: 1rem;
+        border: 1px solid var(--border-color, #e0e0e0);
+        border-radius: 10px;
+        background: var(--bg-input, #fff);
+    }
+    .ml-model-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.85rem 1rem;
+        border-top: 1px solid var(--border-color, #eee);
+    }
+    .ml-model-row:first-child {
+        border-top: none;
+    }
+    .ml-model-row .label-with-tooltip {
+        margin-bottom: 0.15rem;
+        font-weight: 600;
+        cursor: default;
+    }
+    .ml-model-role {
+        display: block;
+        font-size: 0.85rem;
+        color: var(--text-muted, #666);
+    }
+    .ml-model-state {
+        display: block;
+        margin-top: 0.2rem;
+        font-size: 0.7rem;
+        text-align: center;
+        color: var(--text-muted, #888);
+    }
+    .ml-model-switch {
+        flex: 0 0 auto;
+        text-align: center;
+    }
+    .ml-model-row.is-locked .ml-model-role,
+    .ml-model-row.is-locked .label-with-tooltip {
+        opacity: 0.6;
+    }
 </style>
 {% endblock %}
 
@@ -353,6 +395,108 @@
                         </span>
                     </label>
                     <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token" autocomplete="new-password">
+                </div>
+            </section>
+
+            <section class="section" id="ml-models-section">
+                <h2>Machine Learning Models</h2>
+                <p class="subtitle" style="margin-top:0.75rem;">Choose the models that run during analysis. Turning a model off also turns off every feature that depends on it: hover the name to see which ones.</p>
+                <div class="ml-model-list">
+                    <div class="ml-model-row is-locked" data-model="musicnn">
+                        <div class="ml-model-info">
+                            <span class="label-with-tooltip">
+                                MusiCNN
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Always on. The core audio model behind Clustering, Playlist from Similar Song, Artist Similarity, Song Path, Song Alchemy, Music Map, Sonic Fingerprint, Hyperbolic Explorer and Instant Playlist.</span>
+                                </span>
+                            </span>
+                            <small class="ml-model-role">Audio embeddings, mood and genre tags</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch" title="MusiCNN is always on">
+                                <input type="checkbox" id="ml-model-musicnn" checked disabled>
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span class="ml-model-state">Always on</span>
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-model="clap">
+                        <div class="ml-model-info">
+                            <label for="ml-model-clap" class="label-with-tooltip">
+                                DCLAP
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Text Search (DCLAP), the Dashboard mood chart and Instant Playlist requests that describe a sound. Off: the Text Search page is hidden and analysis runs faster.</span>
+                                </span>
+                            </label>
+                            <small class="ml-model-role">Find songs by describing their sound</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="ml-model-clap" data-flag="CLAP_ENABLED">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <input type="hidden" id="CLAP_ENABLED" name="CLAP_ENABLED" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-model="lyrics">
+                        <div class="ml-model-info">
+                            <label for="ml-model-lyrics" class="label-with-tooltip">
+                                GTE Lyrics
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Lyrics Search, SemGrove, the lyrics space of Song Path and Instant Playlist requests about what a song is about. Off: no lyrics are fetched, transcribed or embedded and the Lyrics Search page is hidden.</span>
+                                </span>
+                            </label>
+                            <small class="ml-model-role">Find songs by the meaning of their lyrics</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="ml-model-lyrics" data-flag="LYRICS_ENABLED">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <input type="hidden" id="LYRICS_ENABLED" name="LYRICS_ENABLED" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-model="whisper">
+                        <div class="ml-model-info">
+                            <label for="ml-model-whisper" class="label-with-tooltip">
+                                Whisper ASR
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Transcribes the songs whose lyrics neither the music server nor the Lyrics API slots provide, so they still show up in Lyrics Search. Off: those songs count as instrumental. Needs GTE Lyrics.</span>
+                                </span>
+                            </label>
+                            <small class="ml-model-role">Transcribe lyrics when none are found</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="ml-model-whisper" data-flag="LYRICS_ASR_ENABLE">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <input type="hidden" id="LYRICS_ASR_ENABLE" name="LYRICS_ASR_ENABLE" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-model="neural-fingerprint">
+                        <div class="ml-model-info">
+                            <label for="ml-model-neural-fingerprint" class="label-with-tooltip">
+                                Neural Fingerprint
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Search by Recording: identify a song from a microphone clip or an uploaded snippet. Off: analysis skips the fingerprint and the page says it is disabled.</span>
+                                </span>
+                            </label>
+                            <small class="ml-model-role">Identify a song from a recording</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="ml-model-neural-fingerprint" data-flag="NEURAL_FINGERPRINT_ENABLED">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <input type="hidden" id="NEURAL_FINGERPRINT_ENABLED" name="NEURAL_FINGERPRINT_ENABLED" value="true">
+                        </div>
+                    </div>
                 </div>
             </section>
 

@@ -139,7 +139,7 @@ app.add_template_filter(_max_bound_filter, 'max_bound')
 
 @app.context_processor
 def inject_globals():
-    from config import CLAP_ENABLED, LYRICS_ENABLED
+    from config import CLAP_ENABLED, LYRICS_ENABLED, NEURAL_FINGERPRINT_ENABLED
 
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
@@ -183,6 +183,7 @@ def inject_globals():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         lyrics_enabled=LYRICS_ENABLED,
+        neural_enabled=NEURAL_FINGERPRINT_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
@@ -1271,14 +1272,18 @@ if not _is_worker:
                 )
         except Exception as e:
             logger.debug(f"Hyperbolic Poincare index not loaded at startup: {e}")
-        # Sync and map the neural fingerprint index the worker stored, so Search by
-        # Recording answers at once; a library that has not built it yet says so.
+        # Sync and map the neural fingerprint index the worker stored, in the
+        # background: its local pack streams gigabytes of codes out of Postgres on a
+        # large library, which must never hold the web server's start (gunicorn kills
+        # a worker that takes longer than its timeout to boot). The page reports
+        # "loading" until it is mapped; a library that has not built it yet says so.
         try:
             from tasks.neural_fingerprint_index import load_at_startup as load_neural_fingerprint_index
 
-            neural_tracks = load_neural_fingerprint_index()
-            if neural_tracks:
-                logger.info("Neural fingerprint index loaded at startup (%d tracks).", neural_tracks)
+            if load_neural_fingerprint_index():
+                logger.info("Neural fingerprint index found; syncing and mapping it in the background.")
+            elif not config.NEURAL_FINGERPRINT_ENABLED:
+                logger.info("Neural fingerprint disabled (NEURAL_FINGERPRINT_ENABLED=false); Search by Recording is off.")
             else:
                 logger.info("Neural fingerprint index not found at startup (the analysis builds it).")
         except Exception:
@@ -1358,13 +1363,6 @@ if not _is_worker:
 
         t = threading.Thread(target=_start_map_init_background, daemon=True)
         t.start()
-
-        # Neural fingerprints stored in the older int8 layout are re-encoded to the
-        # 32-byte product-quantised codes in the background; the search reads both
-        # layouts meanwhile, so nothing waits on it.
-        from tasks.neural_fingerprint import start_legacy_migration
-
-        start_legacy_migration()
 
         # The Hyperbolic Explorer tree cache is NOT loaded here: unlike the
         # indexes above it is a fully materialized Python object tree whose RSS

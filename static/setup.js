@@ -429,7 +429,7 @@ var ADVANCED_SECTIONS = [
         items: [
             'NUM_RECENT_ALBUMS', 'TOP_N_MOODS', 'ANALYSIS_MONITOR_DB_INTERVAL',
             'ANALYSIS_STALL_TIMEOUT_MINUTES', 'ANALYSIS_MAX_STALL_GIVE_UPS',
-            'CLAP_ENABLED', 'CLAP_PYTHON_MULTITHREADS', 'PER_SONG_MODEL_RELOAD',
+            'CLAP_PYTHON_MULTITHREADS', 'PER_SONG_MODEL_RELOAD',
             'MUSICNN_BATCH_SIZE'
         ]
     },
@@ -549,7 +549,7 @@ var ADVANCED_SECTIONS = [
     {
         title: 'Lyrics & SemGrove Search',
         items: [
-            'LYRICS_ENABLED', 'LYRICS_API_ENABLE', 'LYRICS_ASR_ENABLE', 'LYRICS_MUSICNN_SKIP',
+            'LYRICS_API_ENABLE', 'LYRICS_MUSICNN_SKIP',
             'MUSICSERVER_LYRICS_TIMEOUT', 'VAD_VOICE_RECOGNITION', 'LYRICS_ASR_BEAM_SIZE',
             'LYRICS_ASR_MIN_AVG_LOGPROB', 'LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB',
             'LYRICS_MIN_CHARS_FOR_EMBEDDING', 'LYRICS_TEXT_MAX_COMPRESSION_RATIO',
@@ -595,6 +595,74 @@ var ADVANCED_SECTIONS = [
     }
 ];
 var ADVANCED_OTHER_TITLE = 'Other parameters';
+
+var ML_MODEL_FLAGS = ['CLAP_ENABLED', 'LYRICS_ENABLED', 'LYRICS_ASR_ENABLE', 'NEURAL_FINGERPRINT_ENABLED'];
+
+function normalizeFlagValue(raw, fallback) {
+    var text = String(raw === undefined || raw === null ? '' : raw).trim().toLowerCase();
+    if (text === '1' || text === 'true' || text === 'yes' || text === 'on') {
+        return 'true';
+    }
+    if (text === '0' || text === 'false' || text === 'no' || text === 'off') {
+        return 'false';
+    }
+    return fallback;
+}
+
+function modelSwitchFor(flag) {
+    return document.querySelector('#ml-models-section input[type="checkbox"][data-flag="' + flag + '"]');
+}
+
+function updateModelSwitchDependencies() {
+    var lyrics = modelSwitchFor('LYRICS_ENABLED');
+    var whisper = modelSwitchFor('LYRICS_ASR_ENABLE');
+    if (!lyrics || !whisper) {
+        return;
+    }
+    var lyricsOn = lyrics.checked;
+    whisper.disabled = !lyricsOn;
+    var row = whisper.closest('.ml-model-row');
+    if (row) {
+        row.classList.toggle('is-locked', !lyricsOn);
+    }
+}
+
+function renderModelSwitches(fields) {
+    var byName = {};
+    (fields || []).forEach(function(field) {
+        if (field && field.name) {
+            byName[field.name] = field;
+        }
+    });
+    ML_MODEL_FLAGS.forEach(function(flag) {
+        var hidden = document.getElementById(flag);
+        var checkbox = modelSwitchFor(flag);
+        if (!hidden || !checkbox) {
+            return;
+        }
+        var field = byName[flag];
+        var fallback = field ? normalizeFlagValue(field.default, 'true') : 'true';
+        var current = field ? normalizeFlagValue(field.value, fallback) : fallback;
+        hidden.value = current;
+        hidden.dataset.originalValue = current;
+        checkbox.checked = current === 'true';
+    });
+    updateModelSwitchDependencies();
+}
+
+ML_MODEL_FLAGS.forEach(function(flag) {
+    var checkbox = modelSwitchFor(flag);
+    if (!checkbox) {
+        return;
+    }
+    checkbox.addEventListener('change', function() {
+        var hidden = document.getElementById(flag);
+        if (hidden) {
+            hidden.value = checkbox.checked ? 'true' : 'false';
+        }
+        updateModelSwitchDependencies();
+    });
+});
 
 function buildAdvancedFieldRow(field) {
     var secret = false;
@@ -755,7 +823,9 @@ function loadSetupData() {
             }
         }
         var visibleAdvancedData = Array.isArray(advancedData)
-            ? advancedData.filter(function(f) { return f && f.name !== 'MUSIC_LIBRARIES'; })
+            ? advancedData.filter(function(f) {
+                return f && f.name !== 'MUSIC_LIBRARIES' && ML_MODEL_FLAGS.indexOf(f.name) === -1;
+            })
             : advancedData;
         currentSelectedLibraries = splitLibraryList(data.music_libraries);
         originalValues = {};
@@ -774,6 +844,7 @@ function loadSetupData() {
         serverValues = basicData; // keep the full current server-related values
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
+        renderModelSwitches(advancedData);
         populateLyricsApiFields(data.lyrics_api_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`

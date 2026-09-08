@@ -508,7 +508,7 @@ _MUSICNN_ANALYZED = (
 )
 
 
-def _work_feature_parts(clap_available, lyrics_enabled, key_column, neural_available=False):
+def _work_feature_parts(clap_available, lyrics_enabled, key_column):
     selects, joins = [], []
     for enabled, table, alias in (
         (clap_available, 'clap_embedding', 'c'),
@@ -519,9 +519,14 @@ def _work_feature_parts(clap_available, lyrics_enabled, key_column, neural_avail
             joins.append(f"LEFT JOIN {table} {alias} ON {alias}.item_id = {key_column}")
         else:
             selects.append("TRUE")
-    if neural_available:
-        selects.append("(e.neural_fingerprint IS NOT NULL)")
     return selects, " ".join(joins)
+
+
+def _work_tail_selects(neural_available):
+    tail = f"({_BASE_ANALYZED})"
+    if neural_available:
+        tail += ", (e.neural_fingerprint IS NOT NULL)"
+    return tail
 
 
 def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_base,
@@ -552,24 +557,21 @@ def _work_map_scan(cur, sql, params, work_map, chunk_size):
 
 
 def _work_sql(clap_available, lyrics_enabled, neural_available=False):
-    mapped_selects, mapped_joins = _work_feature_parts(
-        clap_available, lyrics_enabled, 'm.item_id', neural_available
-    )
+    tail = _work_tail_selects(neural_available)
+    mapped_selects, mapped_joins = _work_feature_parts(clap_available, lyrics_enabled, 'm.item_id')
     mapped_sql = (
         "SELECT m.provider_track_id, "
         f"(e.item_id IS NOT NULL AND {_MUSICNN_ANALYZED}), "
-        f"{', '.join(mapped_selects)}, ({_BASE_ANALYZED}) "
+        f"{', '.join(mapped_selects)}, {tail} "
         "FROM track_server_map m "
         "JOIN score s ON s.item_id = m.item_id "
         "LEFT JOIN embedding e ON e.item_id = m.item_id "
         f"{mapped_joins} "
         "WHERE m.server_id = %s"
     )
-    legacy_selects, legacy_joins = _work_feature_parts(
-        clap_available, lyrics_enabled, 's.item_id', neural_available
-    )
+    legacy_selects, legacy_joins = _work_feature_parts(clap_available, lyrics_enabled, 's.item_id')
     legacy_sql = (
-        f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)}, ({_BASE_ANALYZED}) "
+        f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)}, {tail} "
         "FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         f"{legacy_joins} "

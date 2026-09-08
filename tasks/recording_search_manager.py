@@ -218,21 +218,6 @@ def query_windows(vectors):
     return [vectors[start:start + _WINDOW_ROWS] for start in starts]
 
 
-def _flag_best(rows):
-    for row in rows:
-        row['identified'] = False
-        row['lead'] = None
-    if not rows:
-        return rows
-    lead = rows[0]['score'] - rows[1]['score'] if len(rows) > 1 else float('inf')
-    rows[0]['identified'] = bool(
-        rows[0]['score'] >= float(config.NEURAL_FINGERPRINT_MIN_SCORE)
-        and lead >= float(config.NEURAL_FINGERPRINT_MIN_LEAD)
-    )
-    rows[0]['lead'] = round(float(lead), 3) if np.isfinite(lead) else None
-    return rows
-
-
 def search_by_track(item_id, n_results=None):
     from tasks import neural_fingerprint, neural_fingerprint_index
 
@@ -252,8 +237,9 @@ def search_by_track(item_id, n_results=None):
             current = best.get(row['item_id'])
             if current is None or row['score'] > current['score']:
                 best[row['item_id']] = dict(row)
-    rows = _flag_best(sorted(best.values(), key=lambda row: -row['score'])[:n_results])
-    return {'item_id': item_id, 'results': _rows_with_metadata(rows), 'count': len(rows)}
+    ranked = neural_fingerprint_index.flag_identified(sorted(best.values(), key=lambda row: -row['score']))
+    rows = _rows_with_metadata(ranked[:n_results])
+    return {'item_id': item_id, 'results': rows, 'count': len(rows)}
 
 
 def run_recording_search(clip, filename, n_results=None):
@@ -276,6 +262,8 @@ def run_recording_search(clip, filename, n_results=None):
 def warmup_recording_models():
     from tasks import neural_fingerprint, neural_fingerprint_index
 
+    if not neural_fingerprint.is_enabled():
+        return {'loaded': False, 'models': {'neural': False, 'encoder': False}, 'expiry_seconds': config.RECORDING_SEARCH_WARMUP_DURATION}
     with _TIMER.lock():
         status = neural_fingerprint_index.get_status()
         if status['available'] and not status['loaded']:
@@ -306,6 +294,8 @@ def _pack_state(status, missing_reason):
 
 
 def get_index_status():
-    from tasks import neural_fingerprint_index
+    from tasks import neural_fingerprint, neural_fingerprint_index
 
+    if not neural_fingerprint.is_enabled():
+        return {'neural': 'disabled (NEURAL_FINGERPRINT_ENABLED=false)'}
     return {'neural': _pack_state(neural_fingerprint_index.get_status(), 'needs the model file')}

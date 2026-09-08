@@ -1166,6 +1166,9 @@ CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
 # a native build). A missing file simply disables the analysis stage and the page.
 # Runs through the same ONNX provider chain as MusiCNN and CLAP: CUDA on the GPU
 # images, the CPU everywhere else.
+# Master switch like CLAP_ENABLED: false skips the neural fingerprint stage of the
+# analysis and its index build, and the Search by Recording page says it is off.
+NEURAL_FINGERPRINT_ENABLED = os.environ.get("NEURAL_FINGERPRINT_ENABLED", "true").lower() == "true"
 NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
     "NEURAL_FINGERPRINT_MODEL_PATH",
     os.path.join(_bundle_data_root(), "neural_fingerprint.onnx"),

@@ -20,8 +20,11 @@ Main Features:
   server also keeps every legacy, non-fingerprint id)
 * build_availability_mask returns the same set as a bool array aligned to an
   ordered id list, for indexes that address candidates by position
+* invalidate_availability_caches drops the cached masks of every index that
+  keeps one, so a mapping change reaches all of them from one call
 """
 
+import importlib
 import logging
 
 import numpy as np
@@ -102,3 +105,14 @@ def build_availability_mask(server_id, item_ids, conn_factory):
     ids = list(item_ids)
     available = _fetch_available(server_id, ids, conn_factory)
     return np.fromiter((i in available for i in ids), dtype=np.bool_, count=len(ids))
+
+
+_MASK_OWNERS = ('tasks.paged_ivf', 'tasks.hyperbolic_index', 'tasks.neural_fingerprint_index')
+
+
+def invalidate_availability_caches(server_id=None):
+    for module_name in _MASK_OWNERS:
+        try:
+            importlib.import_module(module_name).invalidate_availability_cache(server_id)
+        except Exception:
+            logger.debug("Availability-cache invalidation failed for %s", module_name, exc_info=True)

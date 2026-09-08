@@ -2316,14 +2316,15 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    recordings stay identified at 0.46 to 0.66 instead of 0.48 to 0.68, the
    best wrong candidate stays below 0.32, and 32 bytes is the smallest size
    that keeps that margin (16 bytes puts the hardest clip on the 0.40
-   threshold). Fingerprints stored in the earlier int8 layout are re-encoded
-   in the background when the web process starts, in batches behind a
-   Postgres advisory lock, and the search reads both layouts meanwhile. The
+   threshold). The
    index over those codes follows the lifecycle of the other similarity
    indexes: the worker builds it at the rebuild points of the analysis run
    (every `REBUILD_INDEX_BATCH_SIZE` albums and at the end), stores it in
-   `ivf_dir` and publishes the index-reload event, and the web process only
-   syncs local files from what was stored. Only the structure goes to the
+   `ivf_dir` in one transaction it commits itself (so a web process syncing
+   at any moment sees the previous build complete or the new one complete,
+   never a directory whose parts are half written), publishes the
+   index-reload event, and the web process only syncs local files from what
+   was stored. Only the structure goes to the
    table, about 4 bytes per row: the centroids as int8, the track order and
    lengths, and the rows of each cell; the codes stay in their blobs instead
    of being copied into cells. Two things differ from the other indexes,
@@ -2339,12 +2340,29 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    `NEURAL_FINGERPRINT_RETRAIN_GROWTH` times since they were trained, when
    more than a tenth of the indexed tracks are gone, when the largest cell
    holds more than ten times the average, or when the codebook changed. The
-   web process keeps its pack under `IVF_DISK_CACHE_DIR` keyed by build id
-   (codes in track order, the merged cell lists, the metadata); on the
-   index-reload event it prepares the next build while the current one keeps
-   answering, reusing the codes it already holds when the previous track
-   order is a prefix of the new one and fetching only the new tracks' blobs,
-   then swaps. Like every other index it holds the union of all servers: a
+   web process keeps its pack under `IVF_DISK_CACHE_DIR` keyed by build id.
+   That pack is ephemeral (re-synced from Postgres at every start, never
+   persisted) and laid out for the query, not for the sync: the codes are
+   stored BY CELL, so a query segment reads its `NEURAL_FINGERPRINT_NPROBE`
+   cells as contiguous runs instead of hundreds of thousands of scattered
+   32-byte rows, which is what keeps a cold query at a million tracks in
+   seconds rather than hours; beside every slab position sit the track, the
+   row id and the inverse norm of the decoded vector (so scoring is one
+   lookup per byte and a multiply), and the slab position of every row
+   serves the alignment check. The sync streams the blobs in track order and
+   scatters 2M-row chunks: sorted by position, the rows of one cell form one
+   contiguous run, so the writes are large and sequential and RAM stays
+   bounded whatever the library size. On the index-reload event it prepares
+   the next build while the current one keeps answering: when the previous
+   pack is a prefix of the new build under the same centroids (an append),
+   every cell's old run is copied block-wise and only the new tracks' blobs
+   are fetched; the files are then mapped into one immutable pack that is
+   swapped by a single reference assignment, so a query that started before
+   the swap keeps a consistent view. At start the sync and the mapping run in
+   the background so a large library never delays the web server. A track whose fingerprint row
+   is gone since the build (Cleaning removed it) is written into the pack as
+   dead rows and masked out of every vote, the song picker and the count
+   until the next full build drops it. Like every other index it holds the union of all servers: a
    request scoped to a server votes only over that server's tracks through
    the shared availability mask, cached per server and build for 30 s and
    dropped when the mappings change. Measured on 13,043
@@ -2435,17 +2453,23 @@ exist, in Chrome, Safari, Firefox alike, and no script can lift that. A
 self-hosted app is reached exactly that way, and a second port would have to
 be published in every container deployment, so the one port the app already
 binds answers both protocols (`tls_listener.py`). The first byte of a new
-connection tells a TLS handshake (0x16) from an HTTP request line: an HTTP
+connection tells a TLS handshake (0x16) from an HTTP request line; a sniffing
+thread waits for it on a selector, up to two seconds and for every pending
+connection at once, so an idle browser preconnect never holds the server's
+accept loop, which only pops connections already sorted. An HTTP
 connection is handed to the server untouched; a TLS one is terminated in the
 web process, with a self-signed certificate it creates once into
 `FLASK_HTTPS_CERT_DIR`, on one relay thread that moves bytes between the
-client and a local socket pair, and the server reads plain HTTP from the
+client and a local socket pair, keeping at most a megabyte in flight per
+direction (a client sending faster than the app reads is simply not read
+from until the app catches up), and the server reads plain HTTP from the
 pair's other end with the real client address. Gunicorn, waitress and
 werkzeug therefore need no TLS support of their own: the gunicorn worker hook
 in `gunicorn.conf.py` (read by gunicorn on its own) swaps the accept of the
 sockets the worker inherited, the native builds bind a dual-protocol socket
 for waitress, and `app.run` does the same for the development server. On an
-insecure page the record button opens `https://<same host>:8000/recording_search`;
+insecure page the record button opens `https://<same host>:<same port>/recording_search`
+(the port the browser reached, so a container port published as 8080:8000 works);
 the browser warns once about the certificate (Chrome: Advanced, Proceed;
 Safari: Show Details, visit this website; Firefox: Advanced, Accept the Risk)
 and recording works on every later visit. That one warning is the only user
@@ -2476,6 +2500,12 @@ address, a reverse proxy, or `http://localhost:8000` on the server itself.
 
 ### 17.4. Environment Variable Configuration
 
+- `NEURAL_FINGERPRINT_ENABLED` (true): the master switch, like `CLAP_ENABLED`.
+  False skips the fingerprint stage of the analysis and the index build, the
+  web process neither loads nor reloads the index, the Search by Recording
+  entry leaves the menu the way Text Search and Lyrics Search do with their
+  flags (the page itself, opened by its address, says the feature is
+  disabled), and the three API routes answer 503.
 - `NEURAL_FINGERPRINT_MODEL_PATH` (`neural_fingerprint.onnx` at the repository
   root, `/app` in the image): the fingerprint encoder; a missing file
   disables the analysis stage and the tab.

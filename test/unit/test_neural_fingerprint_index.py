@@ -15,9 +15,15 @@ Main Features:
 * the full-build decision names its reason: no index, layout or codebook
   change, too many tracks gone, the library grown past the retrain factor,
   unbalanced cells; otherwise the build appends
-* a local pack written from a directory and its parts keeps track order and
-  one list per cell; a second build appends new tracks by reusing the previous
-  codes file as a prefix
+* a local pack written from a directory and its parts stores the codes by
+  cell, with the row id, the track and the inverse norm beside every slab
+  position and the slab position of every row, so the track order is
+  recoverable; a second build under the same centroids appends new tracks by
+  copying every cell's previous run and fetching only the new blobs
+* the builder commits its own transaction and rolls back on failure, so a
+  web process never sees a half-written build
+* the loaded build offers the song picker a database-side filter, none when
+  unloaded
 * a noisy slice of one track is found at rank one at its offset and flagged;
   a track appended later is found the same way; random vectors match nothing
   confidently; a clip shorter than two segments is refused; excluded ids
@@ -26,8 +32,12 @@ Main Features:
   the shared availability mask, cached per server and build and dropped by
   invalidate_availability_cache; the mask is skipped only for a lone default
   server whose ids are all legacy
-* the pack is released by unload and the status reports the state; the
-  loaded build lists its tracks for the song picker, none when unloaded
+* the pack is released by unload and the status reports the state
+* a track whose fingerprint row is gone since the build is written as dead
+  rows, never voted, left out of the count, and stays dead when the next
+  pack reuses the previous cells as a prefix
+* the startup load hands the sync to a background thread and returns None
+  when the feature is off, the model is missing or no build is stored
 """
 
 import numpy as np
@@ -144,24 +154,66 @@ def test_the_full_build_decision_names_its_reason(monkeypatch, codebook):
     assert 'layout' in nfi.needs_full_build(stale, ids, book_id)
 
 
-def test_the_pack_keeps_track_order_and_one_list_per_cell(library):
+def test_the_pack_stores_the_codes_by_cell_with_the_track_order_recoverable(library):
     tracks, _rng, codes, centroids, directory, paths = library
-    assert [str(i) for i in nfi._STATE['ids']] == sorted(tracks)
-    lengths = [int(n) for n in nfi._STATE['lengths']]
+    pack = nfi._STATE['pack']
+    assert [str(i) for i in pack.ids] == sorted(tracks)
+    lengths = [int(n) for n in pack.lengths]
     assert lengths == [tracks[k].shape[0] for k in sorted(tracks)]
-    stored = nfi._STATE['codes']
-    assert stored.shape == (sum(lengths), nf.CODE_BYTES)
-    starts = nfi._STATE['starts']
-    assert np.array_equal(stored[starts[1]:starts[1] + lengths[1]], codes['fp_0001'])
-    bounds = nfi._STATE['cell_bounds']
+    n_rows = sum(lengths)
+    assert pack.slab.shape == (n_rows, nf.CODE_BYTES)
+    rows = np.asarray(pack.row)
+    assert np.array_equal(np.sort(rows), np.arange(n_rows))
+    assert np.array_equal(rows[np.asarray(pack.pos)], np.arange(n_rows))
+    start = int(pack.starts[1])
+    assert np.array_equal(pack.slab[np.asarray(pack.pos[start:start + lengths[1]])], codes['fp_0001'])
+    bounds = pack.cell_bounds
     assert bounds[0] == 0
-    assert bounds[-1] == sum(lengths)
-    assert np.array_equal(np.sort(np.asarray(nfi._STATE['cell_rows'])), np.arange(sum(lengths)))
-    assert nfi._STATE['build_id'] == 'build-one'
+    assert bounds[-1] == n_rows
+    _ids, _lengths, labels = nfi.label_tracks(iter(codes.items()), centroids)
+    by_position = labels[rows]
+    assert (np.diff(by_position) >= 0).all()
+    assert np.array_equal(np.bincount(by_position, minlength=bounds.size - 1), np.diff(bounds))
+    assert np.array_equal(np.asarray(pack.track), np.searchsorted(pack.starts, rows, side='right') - 1)
+    book = nf.codebook()[0]
+    raw = book[np.arange(nf.PQ_SUBSPACES)[None, :], np.asarray(pack.slab[:7])].reshape(7, nf.DIM)
+    assert np.allclose(np.asarray(pack.norm[:7]).astype(np.float32), 1.0 / np.linalg.norm(raw, axis=1), rtol=2e-3)
+    assert pack.build_id == 'build-one'
     assert nfi._local_builds() == ['build-one']
     status = nfi.get_status()
     assert status['loaded'] is True
     assert status['tracks'] == 40
+
+
+def test_the_builder_commits_its_own_transaction_and_rolls_back_on_failure(monkeypatch, codebook):
+    class Conn:
+        def __init__(self):
+            self.commits = 0
+            self.rollbacks = 0
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    built = []
+    monkeypatch.setattr(nfi, '_fingerprinted_tracks', lambda conn: ['fp_0001'])
+    monkeypatch.setattr(nfi, '_load_directory', lambda conn: None)
+    monkeypatch.setattr(nfi, '_full_build', lambda conn, ids, book_id, reason: built.append(reason))
+    conn = Conn()
+    assert nfi.build_and_store_neural_fingerprint_index(conn) is True
+    assert built == ['no index yet']
+    assert (conn.commits, conn.rollbacks) == (1, 0)
+
+    def boom(conn, ids, book_id, reason):
+        raise RuntimeError('disk full')
+
+    monkeypatch.setattr(nfi, '_full_build', boom)
+    failing = Conn()
+    with pytest.raises(RuntimeError, match='disk full'):
+        nfi.build_and_store_neural_fingerprint_index(failing)
+    assert (failing.commits, failing.rollbacks) == (0, 1)
 
 
 def test_a_noisy_slice_is_found_at_its_offset_and_flagged(monkeypatch, library):
@@ -202,7 +254,7 @@ def test_an_appended_build_reuses_the_previous_codes_and_finds_the_new_track(mon
     nfi.write_local_pack(new_paths, second, [first_part, nfi.unpack_part(part_blob)], codes_iter, paths, nfi._local_meta('build-one'))
     assert fetched == ids
     nfi._open_pack(new_paths)
-    assert nfi._STATE['ids'].size == 44
+    assert nfi._STATE['pack'].ids.size == 44
     query = new_tracks['fp_0042'][5:35] + 0.03 * rng.standard_normal((30, nf.DIM)).astype(np.float32)
     _serve(monkeypatch, query / np.linalg.norm(query, axis=1, keepdims=True))
     rows = nfi.identify(np.zeros(8000 * 16, dtype=np.float32), 8000, 5)
@@ -235,7 +287,7 @@ def test_a_server_scope_votes_only_over_that_servers_tracks_and_the_mask_is_cach
         return np.array([server_id == 'with' or item_id != 'fp_0017' for item_id in item_ids], dtype=np.bool_)
 
     monkeypatch.setattr(nfi, 'build_availability_mask', mask)
-    monkeypatch.setattr(nfi, '_mask_unneeded', lambda server_id: False)
+    monkeypatch.setattr(nfi, '_mask_unneeded', lambda pack, server_id: False)
     nfi.invalidate_availability_cache()
     query = tracks['fp_0017'][10:40]
     monkeypatch.setattr(nfi, 'active_availability_scope', lambda: 'without')
@@ -258,13 +310,21 @@ def test_a_server_scope_votes_only_over_that_servers_tracks_and_the_mask_is_cach
     assert nfi._AVAILABILITY_CACHE == {}
 
 
-def test_the_loaded_build_lists_its_tracks_for_the_song_picker_and_nothing_when_unloaded(library):
-    tracks, *_rest = library
-    listed = nfi.get_indexed_item_ids()
-    assert listed == set(tracks)
-    assert all(isinstance(item_id, str) for item_id in listed)
+def test_a_disabled_feature_builds_loads_and_reloads_nothing(monkeypatch):
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', False)
+    assert nfi.build_and_store_neural_fingerprint_index(None) is False
+    assert nfi.load_at_startup() is None
+    assert nfi.reload_from_db() is False
+
+
+def test_the_loaded_build_offers_a_database_side_picker_filter_and_none_when_unloaded(library):
+    where = nfi.picker_where()
+    assert where is not None
+    assert 'neural_fingerprint IS NOT NULL' in where[0]
+    assert 'score.item_id' in where[0]
+    assert where[1] == ()
     nfi.unload()
-    assert nfi.get_indexed_item_ids() == set()
+    assert nfi.picker_where() is None
 
 
 def test_the_mask_is_skipped_only_for_a_lone_default_server_over_legacy_ids(monkeypatch, library):
@@ -272,16 +332,16 @@ def test_the_mask_is_skipped_only_for_a_lone_default_server_over_legacy_ids(monk
 
     monkeypatch.setattr(registry, 'get_default_server_id', lambda: 'main')
     monkeypatch.setattr(registry, 'has_secondary_servers', lambda: False)
+    pack = nfi._STATE['pack']
     nfi._CANONICAL.clear()
-    assert nfi._has_canonical_ids() is True
-    assert nfi._mask_unneeded('main') is False
-    monkeypatch.setitem(nfi._STATE, 'ids', np.array(['legacy-1', 'legacy-2']))
-    nfi._CANONICAL.clear()
-    assert nfi._has_canonical_ids() is False
-    assert nfi._mask_unneeded('main') is True
-    assert nfi._mask_unneeded('other') is False
+    assert nfi._has_canonical_ids(pack) is True
+    assert nfi._mask_unneeded(pack, 'main') is False
+    legacy = pack._replace(ids=np.array(['legacy-1', 'legacy-2']), build_id='legacy-build')
+    assert nfi._has_canonical_ids(legacy) is False
+    assert nfi._mask_unneeded(legacy, 'main') is True
+    assert nfi._mask_unneeded(legacy, 'other') is False
     monkeypatch.setattr(registry, 'has_secondary_servers', lambda: True)
-    assert nfi._mask_unneeded('main') is False
+    assert nfi._mask_unneeded(legacy, 'main') is False
     nfi._CANONICAL.clear()
 
 
@@ -297,7 +357,39 @@ def test_random_vectors_match_nothing_confidently_and_a_short_clip_is_refused(mo
         nfi.identify(np.zeros(8000, dtype=np.float32), 8000, 5)
 
 
-def test_startup_load_maps_the_stored_build_and_says_when_there_is_none(monkeypatch, library):
+def test_a_track_gone_since_the_build_is_written_dead_masked_and_uncounted(library):
+    tracks, _rng, codes, centroids, directory, paths = library
+    gone = 'fp_0017'
+    gone_index = sorted(tracks).index(gone)
+    part = nfi.unpack_part(nfi.pack_part(nfi.label_tracks(iter(codes.items()), centroids)[2], centroids.shape[0], 0)[0])
+    second = dict(directory, build_id='build-two')
+    second_paths = nfi._paths('build-two')
+    nfi.write_local_pack(
+        second_paths, second, [part], lambda wanted: ((i, None if i == gone else codes[i]) for i in wanted)
+    )
+    nfi._open_pack(second_paths)
+    assert nfi._STATE['pack'].dead.tolist() == [gone_index]
+    assert nfi.get_status()['tracks'] == 39
+    rows = nfi.identify_vectors(tracks[gone][10:40], 5)
+    assert rows
+    assert gone not in [row['item_id'] for row in rows]
+    fetched = []
+
+    def codes_iter(wanted):
+        fetched.extend(wanted)
+        return ((i, codes[i]) for i in wanted)
+
+    third_paths = nfi._paths('build-three')
+    nfi.write_local_pack(
+        third_paths, dict(second, build_id='build-three'), [part], codes_iter, second_paths, nfi._local_meta('build-two')
+    )
+    assert fetched == []
+    nfi._open_pack(third_paths)
+    assert nfi._STATE['pack'].dead.tolist() == [gone_index]
+    assert gone not in [row['item_id'] for row in nfi.identify_vectors(tracks[gone][10:40], 5)]
+
+
+def test_startup_load_maps_the_stored_build_in_the_background_and_says_when_there_is_none(monkeypatch, library):
     import database
 
     class Conn:
@@ -306,11 +398,17 @@ def test_startup_load_maps_the_stored_build_and_says_when_there_is_none(monkeypa
 
     monkeypatch.setattr(database, 'connect_raw', lambda **kw: Conn())
     monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: None)
-    assert nfi.load_at_startup() == 0
+    assert nfi.load_at_startup() is None
     monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: 'build-one')
-    assert nfi.load_at_startup() == 40
+    assert nfi.load_at_startup() is None
+    nfi.unload()
+    monkeypatch.setattr(nfi, 'ensure_loaded', lambda: nfi._open_pack(nfi._paths('build-one')) or True)
+    thread = nfi.load_at_startup()
+    thread.join(10)
+    assert not thread.is_alive()
+    assert nfi.get_status()['tracks'] == 40
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', '/nowhere/model.onnx')
-    assert nfi.load_at_startup() == 0
+    assert nfi.load_at_startup() is None
 
 
 def test_unload_releases_the_pack_and_a_missing_model_is_a_runtime_error(monkeypatch, library):

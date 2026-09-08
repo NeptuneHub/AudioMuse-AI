@@ -147,6 +147,12 @@
         <p>Record {{ record_seconds }} seconds of whatever is playing around you, upload a clip, or pick a song from your library, and find which songs in your library it is.</p>
     </header>
 
+    {% if not neural_enabled %}
+    <div class="error-message">
+        <strong>Search by Recording is disabled.</strong>
+        <p>To enable it, set <code>NEURAL_FINGERPRINT_ENABLED=true</code> in your environment and run the analysis: it computes the neural fingerprint of every song and builds the index.</p>
+    </div>
+    {% else %}
     <div class="cache-stats">
         <strong>Neural fingerprint index</strong> {{ index_status.neural }}
     </div>
@@ -414,8 +420,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     const onHttps = window.location.protocol === 'https:';
+    const samePort = window.location.port || '80';
     const secureUrl = (!onHttps && HTTPS_PORT > 0 && !HTTPS_ERROR)
-        ? `https://${window.location.hostname}:${HTTPS_PORT}${window.location.pathname}${window.location.search}`
+        ? `https://${window.location.hostname}:${samePort}${window.location.pathname}${window.location.search}`
         : '';
 
     function micAvailable() {
@@ -629,5 +636,6 @@ document.addEventListener('DOMContentLoaded', function () {
     warmup();
 });
 </script>
+{% endif %}
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
 {% endblock %}

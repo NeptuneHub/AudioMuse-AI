@@ -15,6 +15,10 @@ Main Features:
 * one bound port answers a plain HTTP request and an HTTPS request alike,
   the app sees the real client address, and a client that sends its first
   byte late is still served as HTTP
+* a connection that sends nothing never delays the next client, because the
+  first byte is awaited off the accept loop
+* the relay stops reading a side once a megabyte waits for the other side,
+  and reads it again when the buffer drains
 * with built-in HTTPS disabled the listener hands every connection through
   untouched and the status says why; a certificate failure is reported, not
   raised
@@ -115,7 +119,8 @@ def test_one_port_answers_http_and_https_and_reports_the_real_client(dual_server
     assert status['cert_dir'] == config.FLASK_HTTPS_CERT_DIR
 
 
-def test_a_client_whose_first_byte_arrives_late_is_still_served_as_http(dual_server):
+def test_a_client_whose_first_byte_arrives_late_is_still_served_as_http(dual_server, monkeypatch):
+    monkeypatch.setattr(tls_listener, 'SNIFF_TIMEOUT', 0.3)
     tls_listener.prepare_tls()
     raw = socket.create_connection(('127.0.0.1', dual_server), timeout=10)
     time.sleep(tls_listener.SNIFF_TIMEOUT * 2)
@@ -130,6 +135,47 @@ def test_a_client_whose_first_byte_arrives_late_is_still_served_as_http(dual_ser
     assert reply.startswith(b'HTTP/1.')
     assert b' 200 ' in reply.split(b'\r\n')[0]
     assert b'ok from 127.0.0.1' in reply
+
+
+def test_an_idle_connection_never_delays_the_next_client(dual_server):
+    tls_listener.prepare_tls()
+    idle = [socket.create_connection(('127.0.0.1', dual_server), timeout=10) for _ in range(5)]
+    try:
+        started = time.monotonic()
+        with urllib.request.urlopen(f'http://127.0.0.1:{dual_server}/', timeout=10) as response:
+            assert response.read() == b'ok from 127.0.0.1'
+        with urllib.request.urlopen(f'https://127.0.0.1:{dual_server}/', context=_insecure(), timeout=10) as response:
+            assert response.read() == b'ok from 127.0.0.1'
+        assert time.monotonic() - started < tls_listener.SNIFF_TIMEOUT / 2
+    finally:
+        for sock in idle:
+            sock.close()
+
+
+def test_the_relay_stops_reading_a_side_whose_buffer_is_full():
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    raw, raw_peer = tls_listener.loopback_pair()
+    inner, inner_peer = tls_listener.loopback_pair()
+    try:
+        relay = tls_listener._TlsRelay(context, raw, inner, ('127.0.0.1', 1))
+        relay.handshaken = True
+        readers, writers = relay._interest()
+        assert readers == [raw, inner]
+        assert writers == []
+        relay.to_app = bytearray(tls_listener._HIGH_WATER)
+        readers, writers = relay._interest()
+        assert readers == [inner]
+        assert writers == [inner]
+        relay.to_app = bytearray()
+        relay.to_client = bytearray(tls_listener._HIGH_WATER)
+        readers, writers = relay._interest()
+        assert readers == [raw]
+        assert writers == [raw]
+        relay.to_client = bytearray()
+        assert relay._interest() == ([raw, inner], [])
+    finally:
+        for sock in (raw, raw_peer, inner, inner_peer):
+            sock.close()
 
 
 def test_disabled_https_passes_everything_through_and_a_bad_certificate_is_reported(monkeypatch, dual_server, tmp_path):
@@ -224,7 +270,8 @@ def test_the_gunicorn_hook_adopts_the_inherited_sockets_without_moving_the_port(
     module.post_worker_init(types.SimpleNamespace(sockets=[listener]))
     try:
         assert isinstance(listener.sock, tls_listener.DualProtocolListener)
-        assert listener.sock.fileno() == fd
+        assert socket.socket.fileno(listener.sock) == fd
+        assert listener.sock.fileno() != fd
         assert listener.sock.getsockname()[1] == port
         assert tls_listener.https_status()['running'] is True
         assert tls_listener.adopt_listener(listener.sock) is listener.sock

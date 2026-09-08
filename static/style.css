@@ -1599,6 +1599,10 @@ html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }
     outline: 2px solid var(--color-primary);
     outline-offset: 2px;
 }
+.toggle-switch input:disabled + .toggle-slider {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
 body.dark-mode .toggle-slider,
 html.dark-mode body .toggle-slider {
     background-color: #4B5563;

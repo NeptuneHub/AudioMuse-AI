@@ -25,12 +25,20 @@ Main Features:
   binary; an existing pair is reused so the browser exception stays valid
 * prepare_tls loads that certificate once per process; a failure is logged and
   reported through https_status, and HTTP keeps serving
-* DualProtocolListener is a listening socket whose accept() peeks the first
-  byte for at most SNIFF_TIMEOUT and, for TLS, returns the app's end of a
-  loopback TCP pair (a Unix pair refuses the TCP options waitress sets on
-  every connection) with the real client address, while a daemon thread
-  relays bytes between the client and the pair; everything else is returned
-  untouched
+* DualProtocolListener is a listening socket with its own sniffing thread:
+  that thread accepts every connection, waits up to SNIFF_TIMEOUT for its
+  first byte on a selector (never one connection at a time, so an idle
+  browser preconnect delays nobody), hands an HTTP connection to the server
+  untouched and, for TLS, hands over the app's end of a loopback TCP pair (a
+  Unix pair refuses the TCP options waitress sets on every connection) with
+  the real client address while a daemon thread relays bytes between the
+  client and the pair; the server's accept() only pops the next sniffed
+  connection, and fileno() is a wake-up descriptor that becomes readable
+  exactly when one is ready, so gunicorn, waitress and werkzeug keep their
+  own select loops unchanged
+* the relay keeps at most _HIGH_WATER bytes in flight per direction: a client
+  sending faster than the app reads is simply not read from until the app
+  catches up, so a large upload costs no memory beyond that
 * dual_listener binds one for waitress, adopt_listener turns the socket
   gunicorn or werkzeug already bound into one (the descriptor moves, the port
   does not), and https_status tells the page whether HTTPS answers on the
@@ -38,16 +46,20 @@ Main Features:
 """
 
 import datetime
+import errno
 import ipaddress
 import logging
 import os
+import queue
 import select
+import selectors
 import shutil
 import socket
 import ssl
 import subprocess
 import tempfile
 import threading
+import time
 
 import config
 from service_roles import FLASK_BIND_HOST
@@ -56,12 +68,13 @@ logger = logging.getLogger(__name__)
 
 CERT_FILE = 'audiomuse-https.crt'
 KEY_FILE = 'audiomuse-https.key'
-SNIFF_TIMEOUT = 0.25
+SNIFF_TIMEOUT = 2.0
 RELAY_IDLE_SECONDS = 300.0
 _VALID_DAYS = 3650
 _COMMON_NAME = 'AudioMuse-AI'
 _TLS_HANDSHAKE = 0x16
 _CHUNK = 65536
+_HIGH_WATER = 1 << 20
 _LOCK = threading.Lock()
 _STATE = {'prepared': False, 'context': None, 'error': None, 'adopted': 0, 'cert_dir': None}
 _NOT_PREPARED = (
@@ -287,11 +300,16 @@ class _TlsRelay:
             self.raw.shutdown(socket.SHUT_WR)
             self.raw_write_closed = True
 
-    def _wait(self):
+    def _interest(self):
         readers = [sock for sock, wanted in (
-            (self.raw, not self.client_done), (self.inner, self.handshaken and not self.app_done),
+            (self.raw, not self.client_done and len(self.to_app) < _HIGH_WATER),
+            (self.inner, self.handshaken and not self.app_done and len(self.to_client) < _HIGH_WATER),
         ) if wanted]
         writers = [sock for sock, wanted in ((self.raw, bool(self.to_client)), (self.inner, bool(self.to_app))) if wanted]
+        return readers, writers
+
+    def _wait(self):
+        readers, writers = self._interest()
         if not readers and not writers:
             return None, None
         ready_r, ready_w, _ = select.select(readers, writers, [], RELAY_IDLE_SECONDS)
@@ -372,30 +390,120 @@ def loopback_pair():
     return inner, outer
 
 
-def _starts_with_tls(conn):
-    conn.settimeout(SNIFF_TIMEOUT)
-    try:
-        head = conn.recv(1, socket.MSG_PEEK)
-    except OSError:
-        head = b''
-    conn.settimeout(None)
+def _is_tls(head):
     return head[:1] == bytes([_TLS_HANDSHAKE])
 
 
+def _not_ready():
+    return BlockingIOError(errno.EWOULDBLOCK, 'no sniffed connection is ready yet')
+
+
 class DualProtocolListener(socket.socket):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ready = queue.SimpleQueue()
+        self._wake_r, self._wake_w = socket.socketpair()
+        self._wake_w.setblocking(False)
+        self._sniffer = None
+
+    def fileno(self):
+        return self._wake_r.fileno()
+
+    def start(self):
+        if self._sniffer is None:
+            socket.socket.setblocking(self, False)
+            self._sniffer = threading.Thread(target=self._sniff_loop, name='tls-sniff', daemon=True)
+            self._sniffer.start()
+        return self
+
     def accept(self):
-        conn, addr = super().accept()
-        if not _starts_with_tls(conn):
-            return conn, addr
+        self._wake_r.settimeout(self.gettimeout())
+        try:
+            self._wake_r.recv(1)
+        except (BlockingIOError, InterruptedError):
+            raise _not_ready() from None
+        try:
+            return self._ready.get_nowait()
+        except queue.Empty:
+            raise _not_ready() from None
+
+    def close(self):
+        super().close()
+        for end in (self._wake_r, self._wake_w):
+            try:
+                end.close()
+            except OSError:
+                pass
+
+    def _sniff_loop(self):
+        selector = selectors.DefaultSelector()
+        pending = {}
+        try:
+            selector.register(socket.socket.fileno(self), selectors.EVENT_READ, data=None)
+            while True:
+                timeout = None
+                if pending:
+                    timeout = max(0.0, min(deadline for deadline, _addr in pending.values()) - time.monotonic())
+                events = selector.select(timeout)
+                now = time.monotonic()
+                for key, _mask in events:
+                    if key.data is None:
+                        self._take_one(selector, pending, now)
+                        continue
+                    conn = key.fileobj
+                    try:
+                        head = conn.recv(1, socket.MSG_PEEK)
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except OSError:
+                        head = b''
+                    self._settle(selector, pending, conn, head)
+                for conn, (deadline, _addr) in list(pending.items()):
+                    if deadline <= now:
+                        self._settle(selector, pending, conn, b'')
+        except (OSError, ValueError):
+            logger.debug('The dual-protocol listener stopped sniffing', exc_info=True)
+        finally:
+            for conn in pending:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+            selector.close()
+
+    def _take_one(self, selector, pending, now):
+        try:
+            conn, addr = socket.socket.accept(self)
+        except (BlockingIOError, InterruptedError, ConnectionAbortedError):
+            return
+        conn.setblocking(False)
+        pending[conn] = (now + SNIFF_TIMEOUT, addr)
+        selector.register(conn, selectors.EVENT_READ, data=addr)
+
+    def _settle(self, selector, pending, conn, head):
+        _deadline, addr = pending.pop(conn)
+        selector.unregister(conn)
+        conn.setblocking(True)
+        if not _is_tls(head):
+            self._hand(conn, addr)
+            return
         context = _STATE['context']
         inner, outer = loopback_pair()
         if context is None:
             logger.warning('Refused a TLS connection from %s: built-in HTTPS is not running (%s)', addr, https_status()['error'])
             conn.close()
             outer.close()
-            return inner, addr
+            self._hand(inner, addr)
+            return
         threading.Thread(target=_relay, args=(context, conn, outer, addr), name='tls-relay', daemon=True).start()
-        return inner, addr
+        self._hand(inner, addr)
+
+    def _hand(self, sock, addr):
+        self._ready.put((sock, addr))
+        try:
+            self._wake_w.send(b'x')
+        except OSError:
+            logger.debug('The dual-protocol listener could not signal a ready connection', exc_info=True)
 
 
 def _count_adopted():
@@ -408,7 +516,7 @@ def adopt_listener(sock):
         return sock
     family, kind, proto = sock.family, sock.type, sock.proto
     _count_adopted()
-    return DualProtocolListener(family, kind, proto, fileno=sock.detach())
+    return DualProtocolListener(family, kind, proto, fileno=sock.detach()).start()
 
 
 def dual_listener(host=FLASK_BIND_HOST, port=None, backlog=1024):
@@ -419,4 +527,4 @@ def dual_listener(host=FLASK_BIND_HOST, port=None, backlog=1024):
     sock.bind((host, port))
     sock.listen(backlog)
     _count_adopted()
-    return sock
+    return sock.start()

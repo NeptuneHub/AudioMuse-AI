@@ -24,6 +24,8 @@ Main Features:
   translated to the selected server's ids and the echoed song id goes through
   provider_echo_id, even when the caller sent a canonical id
 * The warmup endpoint relays the manager status
+* With NEURAL_FINGERPRINT_ENABLED false every route answers 503 naming the
+  flag and the page is told the feature is disabled
 * The page hands the template the built-in HTTPS port, or zero when the
   listener is disabled, and the reason when it could not start
 """
@@ -324,6 +326,35 @@ def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypat
     response = _post_track(client, {'item_id': 'x'})
     assert response.status_code == 500
     assert 'secret' not in response.get_json()['error']
+
+
+def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(client, bp_mod, monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', False)
+    for response in (
+        _post(client, {'clip': _clip()}),
+        _post_track(client, {'item_id': 'x'}),
+        client.post('/api/recording_search/warmup'),
+    ):
+        assert response.status_code == 503
+        assert 'NEURAL_FINGERPRINT_ENABLED' in response.get_json()['error']
+    page = _render_page(bp_mod, monkeypatch, {'enabled': True, 'running': True, 'port': 8443, 'error': None})
+    assert page['neural_enabled'] is False
+
+
+def test_the_secure_page_keeps_the_port_the_browser_used():
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    start = source.index('const secureUrl')
+    secure = source[start:source.index("        : '';", start)]
+    assert "const samePort = window.location.port || '80';" in source
+    assert 'window.location.hostname' in secure
+    assert '${samePort}' in secure
+    assert 'HTTPS_PORT}' not in secure
 
 
 def test_warmup_relays_the_manager_status(client, monkeypatch):

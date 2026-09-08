@@ -824,6 +824,27 @@ class TestServerWorkMap:
         assert 'clap_embedding' not in sql
         assert 'lyrics_embedding' not in sql
 
+    def test_the_neural_column_follows_base_so_each_bit_lands_on_its_own_stage(self, monkeypatch):
+        import tasks.analysis.helper as helper
+
+        cur, executed = self._cursor({'mapped': [[
+            ('p-no-neural', True, True, True, True, False),
+            ('p-no-base', True, True, True, False, True),
+        ]]})
+        self._patch_db(monkeypatch, cur)
+
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: False)
+        work_map = helper.load_server_work_map('srv', True, True, neural_available=True)
+
+        assert work_map['p-no-neural'] & helper.WORK_BASE
+        assert not work_map['p-no-neural'] & helper.WORK_NEURAL
+        assert not work_map['p-no-base'] & helper.WORK_BASE
+        assert work_map['p-no-base'] & helper.WORK_NEURAL
+        sql = executed[0][0]
+        assert sql.index('s.scale IS NOT NULL') < sql.index('e.neural_fingerprint IS NOT NULL')
+        helper.load_server_work_map('srv', True, True)
+        assert 'neural_fingerprint' not in executed[-1][0]
+
     def test_album_work_masks_is_a_bounded_per_album_query(self, monkeypatch):
         import tasks.analysis.helper as helper
 

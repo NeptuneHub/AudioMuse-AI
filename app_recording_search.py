@@ -56,6 +56,7 @@ def recording_search_page():
         APP_VERSION,
         CLAP_ENABLED,
         LYRICS_ENABLED,
+        NEURAL_FINGERPRINT_ENABLED,
         RECORDING_SEARCH_DEFAULT_N_RESULTS,
         RECORDING_SEARCH_MAX_UPLOAD_MB,
         RECORDING_SEARCH_RECORD_SECONDS,
@@ -77,6 +78,7 @@ def recording_search_page():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         lyrics_enabled=LYRICS_ENABLED,
+        neural_enabled=NEURAL_FINGERPRINT_ENABLED,
         index_status=index_status,
         n_results_default=RECORDING_SEARCH_DEFAULT_N_RESULTS,
         record_seconds=RECORDING_SEARCH_RECORD_SECONDS,
@@ -84,6 +86,53 @@ def recording_search_page():
         https_port=https['port'] if https['enabled'] else 0,
         https_error=https['error'] or '',
     )
+
+
+def _disabled_response():
+    from tasks.neural_fingerprint import DISABLED_MESSAGE, is_enabled
+
+    if is_enabled():
+        return None
+    return jsonify({'error': DISABLED_MESSAGE, 'results': []}), 503
+
+
+def _requested_count(raw):
+    from config import RECORDING_SEARCH_DEFAULT_N_RESULTS
+
+    try:
+        return max(1, int(RECORDING_SEARCH_DEFAULT_N_RESULTS if raw is None else raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _bad_count():
+    return jsonify({'error': 'Invalid "n_results" value.', 'results': []}), 400
+
+
+def _run_search(search, label):
+    try:
+        return search(), None
+    except ValueError as exc:
+        logger.warning('%s rejected the request: %s', label, exc)
+        return None, (jsonify({'error': str(exc), 'results': []}), 400)
+    except RuntimeError as exc:
+        logger.warning('%s unavailable: %s', label, exc)
+        return None, (jsonify({'error': str(exc), 'results': []}), 503)
+    except Exception:
+        logger.exception('%s failed', label)
+        return None, (
+            jsonify({'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}),
+            500,
+        )
+
+
+def _scoped_response(payload, n_results):
+    from app_helper import attach_song_features
+
+    attach_song_features(payload['results'])
+    payload['results'] = app_server_context.scope_results(payload['results'], n_results, id_key='item_id')
+    payload['count'] = len(payload['results'])
+    return jsonify(payload)
 
 
 @recording_search_bp.route('/api/recording_search/search', methods=['POST'])
@@ -162,10 +211,11 @@ def recording_search_api():
       500:
         description: Internal error during the search.
     """
-    from config import RECORDING_SEARCH_DEFAULT_N_RESULTS, RECORDING_SEARCH_MAX_UPLOAD_MB
+    from config import RECORDING_SEARCH_MAX_UPLOAD_MB
     from tasks.recording_search_manager import run_recording_search
-    from app_helper import attach_song_features
 
+    if disabled := _disabled_response():
+        return disabled
     try:
         app_server_context.resolve_request_server_id()
     except ValueError:
@@ -176,10 +226,9 @@ def recording_search_api():
     if upload is None:
         return jsonify({'error': 'Missing "clip" audio file.', 'results': []}), 400
 
-    try:
-        n_results = max(1, int(request.form.get('n_results', RECORDING_SEARCH_DEFAULT_N_RESULTS)))
-    except (TypeError, ValueError):
-        return jsonify({'error': 'Invalid "n_results" value.', 'results': []}), 400
+    n_results = _requested_count(request.form.get('n_results'))
+    if n_results is None:
+        return _bad_count()
 
     limit_bytes = RECORDING_SEARCH_MAX_UPLOAD_MB * 1024 * 1024
     if request.content_length and request.content_length > limit_bytes:
@@ -187,26 +236,12 @@ def recording_search_api():
             {'error': f'The clip is larger than {RECORDING_SEARCH_MAX_UPLOAD_MB} MB.', 'results': []}
         ), 413
 
-    try:
-        payload = run_recording_search(upload.stream, upload.filename, n_results)
-    except ValueError as exc:
-        logger.warning('Recording search rejected the clip: %s', exc)
-        return jsonify({'error': str(exc), 'results': []}), 400
-    except RuntimeError as exc:
-        logger.warning('Recording search unavailable: %s', exc)
-        return jsonify({'error': str(exc), 'results': []}), 503
-    except Exception:
-        logger.exception('Recording search failed')
-        return jsonify(
-            {'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}
-        ), 500
-
-    attach_song_features(payload['results'])
-    payload['results'] = app_server_context.scope_results(
-        payload['results'], n_results, id_key='item_id'
+    payload, failure = _run_search(
+        lambda: run_recording_search(upload.stream, upload.filename, n_results), 'Recording search'
     )
-    payload['count'] = len(payload['results'])
-    return jsonify(payload)
+    if failure is not None:
+        return failure
+    return _scoped_response(payload, n_results)
 
 
 @recording_search_bp.route('/api/recording_search/by_track', methods=['POST'])
@@ -256,44 +291,27 @@ def recording_search_by_track_api():
       500:
         description: Internal error during the search.
     """
-    from config import RECORDING_SEARCH_DEFAULT_N_RESULTS
     from tasks.recording_search_manager import search_by_track
-    from app_helper import attach_song_features
 
+    if disabled := _disabled_response():
+        return disabled
     data = request.get_json(silent=True) or {}
     item_id = str(data.get('item_id') or '').strip()
     if not item_id:
         return jsonify({'error': 'Missing "item_id".', 'results': []}), 400
-    try:
-        n_results = max(1, int(data.get('n_results', RECORDING_SEARCH_DEFAULT_N_RESULTS)))
-    except (TypeError, ValueError):
-        return jsonify({'error': 'Invalid "n_results" value.', 'results': []}), 400
+    n_results = _requested_count(data.get('n_results'))
+    if n_results is None:
+        return _bad_count()
     try:
         canonical_id = app_server_context.resolve_input_item_id(item_id)
     except ValueError as exc:
         return jsonify({'error': str(exc), 'results': []}), 400
 
-    try:
-        payload = search_by_track(canonical_id, n_results)
-    except ValueError as exc:
-        logger.warning('Recording search by track rejected %s: %s', item_id, exc)
-        return jsonify({'error': str(exc), 'results': []}), 400
-    except RuntimeError as exc:
-        logger.warning('Recording search by track unavailable: %s', exc)
-        return jsonify({'error': str(exc), 'results': []}), 503
-    except Exception:
-        logger.exception('Recording search by track failed')
-        return jsonify(
-            {'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}
-        ), 500
-
+    payload, failure = _run_search(lambda: search_by_track(canonical_id, n_results), 'Recording search by track')
+    if failure is not None:
+        return failure
     payload['item_id'] = app_server_context.provider_echo_id(item_id)
-    attach_song_features(payload['results'])
-    payload['results'] = app_server_context.scope_results(
-        payload['results'], n_results, id_key='item_id'
-    )
-    payload['count'] = len(payload['results'])
-    return jsonify(payload)
+    return _scoped_response(payload, n_results)
 
 
 @recording_search_bp.route('/api/recording_search/warmup', methods=['POST'])
@@ -321,6 +339,8 @@ def recording_search_warmup_api():
       500:
         description: Warmup failed.
     """
+    if disabled := _disabled_response():
+        return disabled
     from tasks.recording_search_manager import warmup_recording_models
 
     try:

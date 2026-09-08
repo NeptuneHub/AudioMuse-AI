@@ -85,6 +85,7 @@ from config import (
     TEMP_DIR,
     MAX_QUEUED_ANALYSIS_JOBS,
     LYRICS_ENABLED,
+    NEURAL_FINGERPRINT_ENABLED,
     NEURAL_FINGERPRINT_MODEL_PATH,
     NEURAL_FINGERPRINT_CODEBOOK_PATH,
     ANALYSIS_MONITOR_DB_INTERVAL,
@@ -346,7 +347,9 @@ def _run_analysis_server_task_impl(
                 from .. import neural_fingerprint
 
                 neural_available = neural_fingerprint.is_available()
-                if not neural_available:
+                if not NEURAL_FINGERPRINT_ENABLED:
+                    logger.info("Neural fingerprint stage skipped: NEURAL_FINGERPRINT_ENABLED is false")
+                elif not neural_available:
                     logger.info(
                         "Neural fingerprint stage skipped: model %s or codebook %s is missing",
                         NEURAL_FINGERPRINT_MODEL_PATH, NEURAL_FINGERPRINT_CODEBOOK_PATH,
@@ -403,6 +406,7 @@ def _run_analysis_server_task_impl(
             albums_needing_clap = 0
             albums_needing_lyrics = 0
             albums_needing_base = 0
+            albums_needing_neural = 0
             songs_seen = 0
             songs_done = 0
             last_monitor_db_check = float('-inf')
@@ -606,7 +610,7 @@ def _run_analysis_server_task_impl(
                     needs_clap_analysis,
                     needs_lyrics_analysis,
                     needs_base_analysis,
-                    _needs_neural_analysis,
+                    needs_neural_analysis,
                 ) = _ah.album_feature_needs(
                     masks, done_bits, clap_available, LYRICS_ENABLED, neural_available
                 )
@@ -640,6 +644,7 @@ def _run_analysis_server_task_impl(
                 albums_needing_clap += int(needs_clap_analysis)
                 albums_needing_lyrics += int(needs_lyrics_analysis)
                 albums_needing_base += int(needs_base_analysis)
+                albums_needing_neural += int(needs_neural_analysis)
                 report_progress()
 
             if (
@@ -689,11 +694,11 @@ def _run_analysis_server_task_impl(
             logger.info(
                 "Phase complete. Albums: %d launched, %d skipped of %d, %d failed. "
                 "Songs: %d sent for analysis, %d already analyzed of %d. "
-                "Feature albums: Base %d, MusiCNN %d, DCLAP %d, Lyrics %d.",
+                "Feature albums: Base %d, MusiCNN %d, DCLAP %d, Lyrics %d, Neural fingerprint %d.",
                 albums_launched, albums_skipped, total_albums_to_check, failed_count,
                 songs_seen - songs_done, songs_done, songs_seen,
                 albums_needing_base, albums_needing_musicnn,
-                albums_needing_clap, albums_needing_lyrics,
+                albums_needing_clap, albums_needing_lyrics, albums_needing_neural,
             )
             final_message, phase_status, final_kwargs = _phase_outcome(
                 albums_offset + albums_skipped + albums_completed + albums_work_check_failed,
