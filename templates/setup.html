@@ -406,10 +406,10 @@
                         <div class="ml-model-info">
                             <span class="label-with-tooltip">
                                 MusiCNN
-                                <span class="info-tooltip" tabindex="0">
+                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-musicnn-help">
                                     <span class="info-icon"></span>
-                                    <span class="tooltip-text">Always on. The core audio model behind Clustering, Playlist from Similar Song, Artist Similarity, Song Path, Song Alchemy, Music Map, Sonic Fingerprint, Hyperbolic Explorer and Instant Playlist.</span>
-                                </span>
+                                    <span class="tooltip-text" id="ml-model-musicnn-help">Always on. The core audio model behind Clustering, Playlist from Similar Song, Artist Similarity, Song Path, Song Alchemy, Music Map, Sonic Fingerprint, Hyperbolic Explorer and Instant Playlist.</span>
+                                </button>
                             </span>
                             <small class="ml-model-role">Audio embeddings, mood and genre tags</small>
                         </div>
@@ -417,6 +417,7 @@
                             <label class="toggle-switch" title="MusiCNN is always on">
                                 <input type="checkbox" id="ml-model-musicnn" checked disabled>
                                 <span class="toggle-slider"></span>
+                                <span class="sr-only">MusiCNN is always on</span>
                             </label>
                             <span class="ml-model-state">Always on</span>
                         </div>
@@ -425,10 +426,10 @@
                         <div class="ml-model-info">
                             <label for="ml-model-clap" class="label-with-tooltip">
                                 DCLAP
-                                <span class="info-tooltip" tabindex="0">
+                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-clap-help">
                                     <span class="info-icon"></span>
-                                    <span class="tooltip-text">Text Search (DCLAP), the Dashboard mood chart and Instant Playlist requests that describe a sound. Off: the Text Search page is hidden and analysis runs faster.</span>
-                                </span>
+                                    <span class="tooltip-text" id="ml-model-clap-help">Text Search (DCLAP), the Dashboard mood chart and Instant Playlist requests that describe a sound. Off: the Text Search page is hidden and analysis runs faster.</span>
+                                </button>
                             </label>
                             <small class="ml-model-role">Find songs by describing their sound</small>
                         </div>
@@ -436,6 +437,7 @@
                             <label class="toggle-switch">
                                 <input type="checkbox" id="ml-model-clap" data-flag="CLAP_ENABLED">
                                 <span class="toggle-slider"></span>
+                                <span class="sr-only">DCLAP on or off</span>
                             </label>
                             <input type="hidden" id="CLAP_ENABLED" name="CLAP_ENABLED" value="true">
                         </div>
@@ -444,10 +446,10 @@
                         <div class="ml-model-info">
                             <label for="ml-model-lyrics" class="label-with-tooltip">
                                 GTE Lyrics
-                                <span class="info-tooltip" tabindex="0">
+                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-lyrics-help">
                                     <span class="info-icon"></span>
-                                    <span class="tooltip-text">Lyrics Search, SemGrove, the lyrics space of Song Path and Instant Playlist requests about what a song is about. Off: no lyrics are fetched, transcribed or embedded and the Lyrics Search page is hidden.</span>
-                                </span>
+                                    <span class="tooltip-text" id="ml-model-lyrics-help">Lyrics Search, SemGrove, the lyrics space of Song Path and Instant Playlist requests about what a song is about. Off: no lyrics are fetched, transcribed or embedded and the Lyrics Search page is hidden.</span>
+                                </button>
                             </label>
                             <small class="ml-model-role">Find songs by the meaning of their lyrics</small>
                         </div>
@@ -455,6 +457,7 @@
                             <label class="toggle-switch">
                                 <input type="checkbox" id="ml-model-lyrics" data-flag="LYRICS_ENABLED">
                                 <span class="toggle-slider"></span>
+                                <span class="sr-only">GTE Lyrics on or off</span>
                             </label>
                             <input type="hidden" id="LYRICS_ENABLED" name="LYRICS_ENABLED" value="true">
                         </div>
@@ -463,10 +466,10 @@
                         <div class="ml-model-info">
                             <label for="ml-model-whisper" class="label-with-tooltip">
                                 Whisper ASR
-                                <span class="info-tooltip" tabindex="0">
+                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-whisper-help">
                                     <span class="info-icon"></span>
-                                    <span class="tooltip-text">Transcribes the songs whose lyrics neither the music server nor the Lyrics API slots provide, so they still show up in Lyrics Search. Off: those songs count as instrumental. Needs GTE Lyrics.</span>
-                                </span>
+                                    <span class="tooltip-text" id="ml-model-whisper-help">Transcribes the songs whose lyrics neither the music server nor the Lyrics API slots provide, so they still show up in Lyrics Search. Off: those songs count as instrumental. Needs GTE Lyrics.</span>
+                                </button>
                             </label>
                             <small class="ml-model-role">Transcribe lyrics when none are found</small>
                         </div>
@@ -474,6 +477,7 @@
                             <label class="toggle-switch">
                                 <input type="checkbox" id="ml-model-whisper" data-flag="LYRICS_ASR_ENABLE">
                                 <span class="toggle-slider"></span>
+                                <span class="sr-only">Whisper ASR on or off</span>
                             </label>
                             <input type="hidden" id="LYRICS_ASR_ENABLE" name="LYRICS_ASR_ENABLE" value="true">
                         </div>
@@ -482,10 +486,10 @@
                         <div class="ml-model-info">
                             <label for="ml-model-neural-fingerprint" class="label-with-tooltip">
                                 Neural Fingerprint
-                                <span class="info-tooltip" tabindex="0">
+                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-neural-fingerprint-help">
                                     <span class="info-icon"></span>
-                                    <span class="tooltip-text">Search by Recording: identify a song from a microphone clip or an uploaded snippet. Off: analysis skips the fingerprint and the page says it is disabled.</span>
-                                </span>
+                                    <span class="tooltip-text" id="ml-model-neural-fingerprint-help">Search by Recording: identify a song from a microphone clip or an uploaded snippet. Off: analysis skips the fingerprint and the page says it is disabled.</span>
+                                </button>
                             </label>
                             <small class="ml-model-role">Identify a song from a recording</small>
                         </div>
@@ -493,6 +497,7 @@
                             <label class="toggle-switch">
                                 <input type="checkbox" id="ml-model-neural-fingerprint" data-flag="NEURAL_FINGERPRINT_ENABLED">
                                 <span class="toggle-slider"></span>
+                                <span class="sr-only">Neural Fingerprint on or off</span>
                             </label>
                             <input type="hidden" id="NEURAL_FINGERPRINT_ENABLED" name="NEURAL_FINGERPRINT_ENABLED" value="true">
                         </div>

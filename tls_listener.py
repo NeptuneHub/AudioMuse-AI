@@ -394,6 +394,12 @@ def _is_tls(head):
     return head[:1] == bytes([_TLS_HANDSHAKE])
 
 
+def _sniff_wait(pending):
+    if not pending:
+        return None
+    return max(0.0, min(deadline for deadline, _addr in pending.values()) - time.monotonic())
+
+
 def _not_ready():
     return BlockingIOError(errno.EWOULDBLOCK, 'no sniffed connection is ready yet')
 
@@ -441,26 +447,11 @@ class DualProtocolListener(socket.socket):
         try:
             selector.register(socket.socket.fileno(self), selectors.EVENT_READ, data=None)
             while True:
-                timeout = None
-                if pending:
-                    timeout = max(0.0, min(deadline for deadline, _addr in pending.values()) - time.monotonic())
-                events = selector.select(timeout)
+                events = selector.select(_sniff_wait(pending))
                 now = time.monotonic()
                 for key, _mask in events:
-                    if key.data is None:
-                        self._take_one(selector, pending, now)
-                        continue
-                    conn = key.fileobj
-                    try:
-                        head = conn.recv(1, socket.MSG_PEEK)
-                    except (BlockingIOError, InterruptedError):
-                        continue
-                    except OSError:
-                        head = b''
-                    self._settle(selector, pending, conn, head)
-                for conn, (deadline, _addr) in list(pending.items()):
-                    if deadline <= now:
-                        self._settle(selector, pending, conn, b'')
+                    self._service(selector, pending, key, now)
+                self._expire(selector, pending, now)
         except (OSError, ValueError):
             logger.debug('The dual-protocol listener stopped sniffing', exc_info=True)
         finally:
@@ -470,6 +461,24 @@ class DualProtocolListener(socket.socket):
                 except OSError:
                     pass
             selector.close()
+
+    def _service(self, selector, pending, key, now):
+        if key.data is None:
+            self._take_one(selector, pending, now)
+            return
+        conn = key.fileobj
+        try:
+            head = conn.recv(1, socket.MSG_PEEK)
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError:
+            head = b''
+        self._settle(selector, pending, conn, head)
+
+    def _expire(self, selector, pending, now):
+        expired = [conn for conn, (deadline, _addr) in pending.items() if deadline <= now]
+        for conn in expired:
+            self._settle(selector, pending, conn, b'')
 
     def _take_one(self, selector, pending, now):
         try:

@@ -86,6 +86,11 @@ Main Features:
   identify_vectors takes a fingerprint sequence directly and can leave given
   tracks out, which is how a stored song is searched for its other recordings
   without finding itself
+* IndexUnavailable is the one exception whose text may reach a user: it
+  carries the curated "not built yet", "being prepared", "older version" and
+  similar messages, and ensure_loaded wraps any other failure of the sync
+  into it with a generic text, so an internal id or a library error never
+  leaves the container log
 * Per-server scope like every other index: the index holds the union of all
   servers, and a request scoped to a server votes only over that server's
   tracks through the shared availability mask (tasks.index_availability),
@@ -162,6 +167,13 @@ _AVAILABILITY_CACHE_TTL = 30.0
 _CANONICAL = {}
 _LOCK = threading.RLock()
 _STATE = {'pack': None, 'building': False, 'error': None, 'gpu': None, 'executor': None}
+
+
+class IndexUnavailable(RuntimeError):
+    pass
+
+
+SYNC_FAILED = 'The neural fingerprint index could not be prepared; check the container logs.'
 
 
 class Quantizer(NamedTuple):
@@ -662,9 +674,9 @@ OLDER_LAYOUT = 'The neural fingerprint index was built by an older version; the 
 
 def _current_layout(directory, build_id):
     if directory is None or directory['build_id'] != build_id:
-        raise RuntimeError('The neural fingerprint index is being written; try again in a minute.')
+        raise IndexUnavailable('The neural fingerprint index is being written; try again in a minute.')
     if directory['format'] != FORMAT:
-        raise RuntimeError(OLDER_LAYOUT)
+        raise IndexUnavailable(OLDER_LAYOUT)
     return directory
 
 
@@ -806,7 +818,7 @@ def _fill_pack(files, directory, ids, lengths, bounds, part_at, codes_iter, keep
 
 
 def _release(files):
-    for handle in list(files.values()):
+    for handle in files.values():
         handle.flush()
     files.clear()
 
@@ -877,7 +889,7 @@ def is_loaded():
 def _current_pack():
     pack = _STATE['pack']
     if pack is None:
-        raise RuntimeError('The neural fingerprint index is not loaded.')
+        raise IndexUnavailable('The neural fingerprint index is not loaded.')
     return pack
 
 
@@ -888,13 +900,18 @@ def picker_where():
 def _local_pack_for(conn):
     build_id = _stored_build_id(conn)
     if build_id is None:
-        raise RuntimeError('No neural fingerprint index is built yet. Run the analysis, which builds it.')
+        raise IndexUnavailable('No neural fingerprint index is built yet. Run the analysis, which builds it.')
     if _local_meta(build_id) is not None:
         return _paths(build_id)
     directory = _current_layout(_load_directory(conn), build_id)
     if directory['codebook_id'] != codebook()[1]:
-        raise RuntimeError('The neural fingerprint index was built with another codebook; rebuild the indexes.')
+        raise IndexUnavailable('The neural fingerprint index was built with another codebook; rebuild the indexes.')
     return _sync_from_db(conn, directory)
+
+
+def _record_load_error(message):
+    with _LOCK:
+        _STATE['error'] = message
 
 
 def ensure_loaded():
@@ -904,7 +921,7 @@ def ensure_loaded():
         if is_loaded():
             return True
         if _STATE['building']:
-            raise RuntimeError('The neural fingerprint index is being prepared; try again in a minute.')
+            raise IndexUnavailable('The neural fingerprint index is being prepared; try again in a minute.')
         _STATE['building'] = True
         _STATE['error'] = None
     try:
@@ -918,11 +935,14 @@ def ensure_loaded():
         _prune_local(pack.build_id)
         logger.info('Neural fingerprint pack loaded: %d tracks (build %s)', pack.live_tracks, pack.build_id)
         return True
-    except Exception as exc:
-        with _LOCK:
-            _STATE['error'] = str(exc)
-        logger.exception('Neural fingerprint pack could not be loaded')
+    except IndexUnavailable as exc:
+        _record_load_error(str(exc))
+        logger.warning('Neural fingerprint pack not loaded: %s', exc)
         raise
+    except Exception as exc:
+        _record_load_error(SYNC_FAILED)
+        logger.exception('Neural fingerprint pack could not be loaded')
+        raise IndexUnavailable(SYNC_FAILED) from exc
     finally:
         with _LOCK:
             _STATE['building'] = False
@@ -1151,7 +1171,7 @@ def _verify(codes, query_vectors, offset_index, stride):
 
 def identify(audio, sr, n_results):
     if not is_available():
-        raise RuntimeError('The neural fingerprint model is not available here.')
+        raise IndexUnavailable('The neural fingerprint model is not available here.')
     ensure_loaded()
     query_vectors = fingerprint_audio(audio, sr, HOP_SAMPLES)
     if query_vectors is None or query_vectors.shape[0] < 2:

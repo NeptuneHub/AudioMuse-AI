@@ -21,9 +21,10 @@ Main Features:
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
-* The manager's ValueError (the clip is at fault) answers 400 and its
-  RuntimeError (the index or the model is unavailable) answers 503; everything
-  else is a generic 500 with the detail only in the container log.
+* The manager's ValueError (the clip is at fault) answers 400 and the index's
+  IndexUnavailable (the index or the model is not ready, with a curated
+  message) answers 503; everything else, any other RuntimeError included, is
+  a generic 500 with the detail only in the container log.
 * Results are scoped and id-translated to the selected server like every other
   per-server search page.
 * The page carries the built-in HTTPS state so the record button can open the
@@ -110,12 +111,14 @@ def _bad_count():
 
 
 def _run_search(search, label):
+    from tasks.neural_fingerprint_index import IndexUnavailable
+
     try:
         return search(), None
     except ValueError as exc:
         logger.warning('%s rejected the request: %s', label, exc)
         return None, (jsonify({'error': str(exc), 'results': []}), 400)
-    except RuntimeError as exc:
+    except IndexUnavailable as exc:
         logger.warning('%s unavailable: %s', label, exc)
         return None, (jsonify({'error': str(exc), 'results': []}), 503)
     except Exception:

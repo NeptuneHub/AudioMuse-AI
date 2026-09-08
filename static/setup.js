@@ -621,10 +621,7 @@ function updateModelSwitchDependencies() {
     }
     var lyricsOn = lyrics.checked;
     whisper.disabled = !lyricsOn;
-    var row = whisper.closest('.ml-model-row');
-    if (row) {
-        row.classList.toggle('is-locked', !lyricsOn);
-    }
+    whisper.closest('.ml-model-row')?.classList.toggle('is-locked', !lyricsOn);
 }
 
 function renderModelSwitches(fields) {
@@ -824,7 +821,7 @@ function loadSetupData() {
         }
         var visibleAdvancedData = Array.isArray(advancedData)
             ? advancedData.filter(function(f) {
-                return f && f.name !== 'MUSIC_LIBRARIES' && ML_MODEL_FLAGS.indexOf(f.name) === -1;
+                return f && f.name !== 'MUSIC_LIBRARIES' && !ML_MODEL_FLAGS.includes(f.name);
             })
             : advancedData;
         currentSelectedLibraries = splitLibraryList(data.music_libraries);

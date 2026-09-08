@@ -110,7 +110,7 @@ def test_each_model_name_carries_a_tooltip_naming_the_features_it_powers():
     section = _section(_template())
     for model, features in FEATURES_PER_MODEL.items():
         info, _switch = _row(section, model)
-        tooltip = re.search(r'<span class="tooltip-text">(.*?)</span>', info, re.DOTALL)
+        tooltip = re.search(r'<span class="tooltip-text"[^>]*>(.*?)</span>', info, re.DOTALL)
         assert tooltip, model + ' has no tooltip'
         for feature in features:
             assert feature in tooltip.group(1), '%s tooltip does not name %s' % (model, feature)
@@ -128,7 +128,7 @@ def test_the_flags_are_no_longer_rendered_in_the_advanced_list():
     load = source[source.index('function loadSetupData'):source.index('function saveCurrentServerValues')]
     filter_match = re.search(r'visibleAdvancedData = (.*?);', load, re.DOTALL)
     assert filter_match
-    assert 'ML_MODEL_FLAGS.indexOf(f.name) === -1' in filter_match.group(1)
+    assert '!ML_MODEL_FLAGS.includes(f.name)' in filter_match.group(1)
     assert 'renderModelSwitches(advancedData)' in load
 
 

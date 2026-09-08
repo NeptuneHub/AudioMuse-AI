@@ -11,8 +11,9 @@
 Main Features:
 * A request without a clip or with a bad count answers 400
 * A clip over RECORDING_SEARCH_MAX_UPLOAD_MB answers 413
-* The manager's ValueError answers 400 with its message, RuntimeError 503,
-  any other exception a generic 500 that carries no internal detail
+* The manager's ValueError answers 400 with its message, the index's
+  IndexUnavailable 503 with its message, any other exception (a plain
+  RuntimeError included) a generic 500 that carries no internal detail
 * A successful search hands the clip to the manager as a stream (never read
   into memory by the blueprint), passes the count through, scopes the results
   to the requested count and reports the count
@@ -156,14 +157,25 @@ def test_manager_value_error_answers_400_with_its_message(client, monkeypatch):
     assert response.get_json()['error'] == 'The clip is silent.'
 
 
-def test_manager_runtime_error_answers_503(client, monkeypatch):
-    def boom(*args, **kwargs):
-        raise RuntimeError('No neural fingerprints are stored yet. Run analysis first.')
+def test_index_unavailable_answers_503_with_its_message_and_a_plain_runtime_error_stays_generic(client, monkeypatch):
+    from tasks.neural_fingerprint_index import IndexUnavailable
 
-    _patch_manager(monkeypatch, boom)
+    def not_ready(*args, **kwargs):
+        raise IndexUnavailable('No neural fingerprints are stored yet. Run analysis first.')
+
+    _patch_manager(monkeypatch, not_ready)
     response = _post(client, {'clip': _clip()})
     assert response.status_code == 503
     assert 'Run analysis first' in response.get_json()['error']
+
+    def internal(*args, **kwargs):
+        raise RuntimeError('The fingerprint of fp_secret no longer matches the index')
+
+    _patch_manager(monkeypatch, internal)
+    response = _post(client, {'clip': _clip()})
+    assert response.status_code == 500
+    assert 'fp_secret' not in response.get_json()['error']
+    assert 'container logs' in response.get_json()['error']
 
 
 def test_unexpected_error_answers_generic_500_without_detail(client, monkeypatch):
@@ -313,8 +325,10 @@ def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypat
     assert response.status_code == 400
     assert 'no neural fingerprint' in response.get_json()['error']
 
+    from tasks.neural_fingerprint_index import IndexUnavailable
+
     def down(item_id, n_results):
-        raise RuntimeError('No neural fingerprint index is built yet.')
+        raise IndexUnavailable('No neural fingerprint index is built yet.')
 
     monkeypatch.setattr(rsm, 'search_by_track', down)
     assert _post_track(client, {'item_id': 'x'}).status_code == 503

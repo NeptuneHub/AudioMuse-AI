@@ -30,7 +30,8 @@ Main Features:
   and returns rows with score, votes, offset_seconds, identified and lead plus
   the track's title, author and album.
 * run_recording_search is the entry point for a clip. ValueError means the
-  clip is at fault, RuntimeError means the index or the model is unavailable.
+  clip is at fault, neural_fingerprint_index.IndexUnavailable means the index
+  or the model is not ready (its text is safe to show).
 * search_by_track is the entry point for a library song: its stored
   fingerprint is cut into up to three 20-second windows (a fifth, half and
   four fifths of the way in), each is aligned on every other track, and the
