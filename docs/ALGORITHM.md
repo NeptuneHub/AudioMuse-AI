@@ -2475,15 +2475,20 @@ werkzeug therefore need no TLS support of their own: the gunicorn worker hook
 in `gunicorn.conf.py` (read by gunicorn on its own) swaps the accept of the
 sockets the worker inherited, the native builds bind a dual-protocol socket
 for waitress, and `app.run` does the same for the development server. On an
-insecure page the record button opens `https://<same host>:<same port>/recording_search`
-(the port the browser reached, so a container port published as 8080:8000 works);
-the browser warns once about the certificate (Chrome: Advanced, Proceed;
-Safari: Show Details, visit this website; Firefox: Advanced, Accept the Risk)
-and recording works on every later visit. That one warning is the only user
+insecure page a short notice gives the same page's HTTPS address on the same
+host and port (the port the browser reached, so a container port published as
+8080:8000 works); the browser warns once about the certificate and recording
+works on every later visit. That one warning is the only user
 step: a certificate a browser trusts silently needs a domain name and a
 public or private certificate authority, which a raw LAN address cannot have.
 Health probes, reverse proxies and `http://localhost:8000` are untouched;
-behind the relay Flask sees the request as plain HTTP.
+behind the relay Flask sees the request as plain HTTP. A reverse proxy that
+terminates TLS (Traefik, an ingress with a Let's Encrypt certificate) keeps
+speaking plain HTTP to port 8000 as before: its connections start with a
+request line, so they are passed through and the built-in certificate never
+enters the picture, and the page, served on the proxy's HTTPS, records
+directly. A proxy that serves plain HTTP cannot expose the same-port HTTPS
+behind it; there HTTPS belongs on the proxy.
 
 Two things make this hold outside the developer's machine. Gunicorn reads
 `./gunicorn.conf.py` only when started from `/app`, so the image also sets

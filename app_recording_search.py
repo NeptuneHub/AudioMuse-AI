@@ -27,8 +27,9 @@ Main Features:
   a generic 500 with the detail only in the container log.
 * Results are scoped and id-translated to the selected server like every other
   per-server search page.
-* The page carries the built-in HTTPS state so the record button can open the
-  secure page on a plain-HTTP address, or say why it cannot.
+* The page carries the built-in HTTPS state so that, on a plain-HTTP address,
+  a short notice can give the same page's HTTPS address (self-signed
+  certificate, one browser warning) or say why the built-in HTTPS is off.
 """
 
 from flask import Blueprint, render_template, request, jsonify

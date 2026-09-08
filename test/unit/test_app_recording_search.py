@@ -360,18 +360,21 @@ def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(clie
     assert page['neural_enabled'] is False
 
 
-def test_the_secure_page_keeps_the_port_the_browser_used():
+def test_an_insecure_page_shows_a_short_https_notice_with_the_same_port_and_never_redirects():
     import os
 
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
     with open(path, encoding='utf-8') as handle:
         source = handle.read()
-    start = source.index('const secureUrl')
-    secure = source[start:source.index("        : '';", start)]
+    secure = source[source.index('const secureUrl'):source.index(';', source.index('const secureUrl'))]
     assert "const samePort = window.location.port || '80';" in source
     assert 'window.location.hostname' in secure
     assert '${samePort}' in secure
     assert 'HTTPS_PORT}' not in secure
+    assert 'location.assign(' not in source
+    assert 'Most browsers allow recording only on HTTPS' in source
+    assert 'self-signed certificate, accept the browser warning once' in source
+    assert 'chrome://flags' not in source
 
 
 def test_warmup_relays_the_manager_status(client, monkeypatch):

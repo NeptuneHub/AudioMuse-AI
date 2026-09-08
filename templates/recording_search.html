@@ -428,11 +428,8 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    const onHttps = window.location.protocol === 'https:';
     const samePort = window.location.port || '80';
-    const secureUrl = (!onHttps && HTTPS_PORT > 0 && !HTTPS_ERROR)
-        ? `https://${window.location.hostname}:${samePort}${window.location.pathname}${window.location.search}`
-        : '';
+    const secureUrl = `https://${window.location.hostname}:${samePort}${window.location.pathname}${window.location.search}`;
 
     function micAvailable() {
         return !!(window.isSecureContext && navigator.mediaDevices
@@ -440,22 +437,14 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function micHelp() {
-        const origin = escapeHtml(window.location.origin);
         if (window.isSecureContext) {
-            return 'This browser offers no microphone recorder on this page. Upload a clip instead: a recording or a video made with the phone works.';
+            return 'This browser has no microphone recorder on this page: upload a clip instead.';
         }
-        let text = `Browsers hand the microphone only to pages on HTTPS or localhost, and this page is on <code>${origin}</code>. `;
-        if (secureUrl) {
-            text += `<strong>Click Record</strong>: AudioMuse-AI opens the same page as <code>${escapeHtml(secureUrl)}</code>, its own HTTPS on the same port. `
-                + `The certificate is self-signed, so the browser warns once: Chrome and Edge, <em>Advanced</em> then <em>Proceed</em>; Safari, <em>Show Details</em> then <em>visit this website</em>; Firefox, <em>Advanced</em> then <em>Accept the Risk</em>. `
-                + `Recording then works on every later visit. `;
-        } else {
-            text += `<strong>AudioMuse-AI's own HTTPS is not running: ${escapeHtml(HTTPS_ERROR || 'unknown reason')}.</strong> `;
+        if (HTTPS_PORT > 0 && !HTTPS_ERROR) {
+            return `Most browsers allow recording only on HTTPS. Reopen this page as <a href="${escapeHtml(secureUrl)}">${escapeHtml(secureUrl)}</a>: `
+                + 'AudioMuse-AI uses a self-signed certificate, accept the browser warning once.';
         }
-        text += 'Other ways: upload a clip recorded with the phone (a video is fine, its sound is used); '
-            + `Chrome and Edge on a computer can trust this address once: open <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>, add <code>${origin}</code>, relaunch; `
-            + `a reverse proxy with HTTPS; or <code>http://localhost:${escapeHtml(window.location.port || '80')}</code> on the machine that runs AudioMuse-AI.`;
-        return text;
+        return `Most browsers allow recording only on HTTPS. Reopen this page over HTTPS (built-in HTTPS: ${escapeHtml(HTTPS_ERROR || 'not running')}).`;
     }
 
     function showMicNotice() {
@@ -477,21 +466,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (!micAvailable()) {
         showMicNotice();
-        if (secureUrl) {
-            recordBtn.textContent = `Record ${RECORD_SECONDS} s (secure page)`;
-        }
     }
 
     async function startRecording() {
         clearCaptureError();
         if (!window.isSecureContext) {
             showMicNotice();
-            if (secureUrl) {
-                window.location.assign(secureUrl);
-                return;
-            }
-            throw new RecordingBlocked(`The browser hides the microphone on ${window.location.origin} because the page is not on HTTPS or localhost, `
-                + `and AudioMuse-AI's own HTTPS is not running: ${HTTPS_ERROR || 'unknown reason'}. The notice above lists the ways around it.`);
+            throw new RecordingBlocked('Recording needs HTTPS on this browser; see the notice above.');
         }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             throw new RecordingBlocked('navigator.mediaDevices.getUserMedia does not exist in this browser, so it cannot record here. Upload a clip instead.');
