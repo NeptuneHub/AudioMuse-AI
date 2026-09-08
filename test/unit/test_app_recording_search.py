@@ -99,13 +99,16 @@ def _patch_manager(monkeypatch, func):
     monkeypatch.setattr(rsm, 'run_recording_search', func)
 
 
+_INDEX_SUMMARY = {'loaded': True, 'song_count': 12, 'cells': 3, 'cache_mb': 0.5, 'state': 'ready'}
+
+
 def _render_page(bp_mod, monkeypatch, status):
     import tls_listener
     import tasks.recording_search_manager as rsm
 
     captured = {}
     monkeypatch.setattr(tls_listener, 'https_status', lambda: status)
-    monkeypatch.setattr(rsm, 'get_index_status', lambda: {'neural': 'ready'})
+    monkeypatch.setattr(rsm, 'get_index_status', lambda: _INDEX_SUMMARY)
     monkeypatch.setattr(bp_mod, 'render_template', lambda name, **context: captured.update(context) or 'page')
     from flask import Flask
 
@@ -119,7 +122,7 @@ def test_the_page_carries_the_built_in_https_port_or_zero_and_the_start_error(bp
     running = _render_page(bp_mod, monkeypatch, {'enabled': True, 'running': True, 'port': 8443, 'error': None})
     assert running['https_port'] == 8443
     assert running['https_error'] == ''
-    assert running['index_status'] == {'neural': 'ready'}
+    assert running['index_status'] == _INDEX_SUMMARY
     disabled = _render_page(bp_mod, monkeypatch, {'enabled': False, 'running': False, 'port': 0, 'error': 'disabled by FLASK_HTTPS_PORT'})
     assert disabled['https_port'] == 0
     assert disabled['https_error'] == 'disabled by FLASK_HTTPS_PORT'

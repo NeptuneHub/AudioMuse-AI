@@ -6,38 +6,41 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Neural fingerprint index: built by the worker, stored in ivf_dir, synced by Flask.
+"""Neural fingerprint index: built by the worker into ivf_dir and ivf_cell, paged by Flask.
 
 Every analysed track stores one 32-byte code per half second in
 embedding.neural_fingerprint (tasks.neural_fingerprint). This index follows the
-lifecycle of the other similarity indexes: the worker builds it at the rebuild
-points of the analysis run, stores it in the ivf_dir table in one transaction it
-commits itself, and publishes the index-reload event; the web process never
-builds anything, it only syncs local files from what the worker stored and
-memory-maps them. Only the structure goes to the table (about 4 bytes per row:
-the cell centroids as int8, the track order and lengths, the rows of each cell);
-the codes stay in their blobs. Everything is sized for a library of millions of
-tracks: no step on either side holds more than one part (at most _PART_ROWS
-rows) or one training sample in memory at a time.
+lifecycle and the storage of the other similarity indexes: the worker builds
+it at the rebuild points of the analysis run, in one transaction it commits
+itself, stores the directory in ivf_dir and the cells in ivf_cell, and
+publishes the index-reload event; the web process loads the directory at
+startup (a few megabytes, seconds at any library size, blocking like every
+other index load) and reads the cells a query probes from ivf_cell on demand,
+keeping them in a RAM cache bounded by NEURAL_FINGERPRINT_CACHE_MB that is
+dropped when the recording search has been idle. Nothing is copied to local
+disk and no step on either side holds more than one part or one training
+sample in memory.
 
 Main Features:
 * index rows: every NEURAL_FINGERPRINT_INDEX_STRIDE-th stored row of a track,
   at most _MAX_TRACK_ROWS of them (index_rows); the blobs keep every row and
-  the alignment check reads them, so the stride only trades pack size and
+  the alignment check reads them, so the stride only trades index size and
   query work against recall on degraded clips
 * two-level quantizer (train_quantizer): about sqrt(rows) cells, at most
   _MAX_CELLS, trained on at least _TRAIN_ROWS_PER_CELL rows per cell sampled
   100 per track from random tracks; past _SINGLE_LEVEL_CELLS the cells are
   grouped under sqrt(cells) coarse centroids and a row is assigned to the
   nearest cell of its nearest group, so assigning a million tracks costs
-  minutes instead of the hours a flat search over tens of thousands of cells
-  would take; a query still ranks the flat cell list exactly
-* build_and_store_neural_fingerprint_index: full build or append, written as
-  parts of at most _PART_ROWS rows (label_tracks yields them at track
-  boundaries), each stored as it is labelled. A full build retrains the
-  quantizer and rewrites every part; an append keeps the quantizer, labels
-  only the tracks fingerprinted since the last build and adds parts. The
-  quantizer is retrained when the library has grown
+  minutes instead of hours; a query still ranks the flat cell list exactly
+* build_and_store_neural_fingerprint_index: full build or append, in parts of
+  at most _PART_ROWS rows cut at track boundaries (label_tracks yields them
+  with their codes). Every part writes one ivf_cell row per cell under the
+  index name neural_fingerprint_index/p<part>: the cell's codes, then the
+  track index, the offset in the track and the inverse norm of the decoded
+  vector, 40 bytes per row (pack_cell / unpack_cell). A full build retrains
+  the quantizer and replaces every part; an append keeps the quantizer,
+  labels only the tracks fingerprinted since the last build and adds parts.
+  The quantizer is retrained when the library has grown
   NEURAL_FINGERPRINT_RETRAIN_GROWTH times since it was trained, when more than
   a tenth of the indexed tracks are gone, when the largest cell holds more
   than ten times the average, or when the codebook, the stride or the layout
@@ -47,73 +50,55 @@ Main Features:
   sizes, part count, the library size the quantizer was trained on; a tiny
   neural_fingerprint_index__build row carries the build id alone so a
   freshness check costs one small read
-* part blobs (neural_fingerprint_index__part<n>): the rows of that part
-  grouped by cell, as local indices plus the part's row offset
-* Flask side, the local pack (ephemeral, under IVF_DISK_CACHE_DIR, re-synced
-  from Postgres at every start, never persisted): the codes ordered BY CELL
-  (slab.u8) with, per slab position, the track (track.u32), the offset in the
-  track (offset.u16) and the inverse norm of the decoded vector (norm.f16),
-  40 bytes per indexed row. A query segment therefore reads its
-  NEURAL_FINGERPRINT_NPROBE cells as contiguous runs and scores them with one
-  table lookup per byte and a multiply. write_local_pack processes one part
-  at a time: the part's positions are derived from its cell runs and the
-  cells already filled, its tracks' blobs stream in 2M-row chunks that are
-  sorted by position and written as contiguous runs, so RAM stays in the
-  hundreds of megabytes whatever the library size. When the previous local
-  pack is a prefix of the new build under the same quantizer (an append),
-  every cell's old run is copied block-wise and only the new parts' blobs are
-  fetched
-* load_at_startup starts the sync and the mapping in the background when
-  Flask boots (a large library's pack must never hold the web server's
-  start); ensure_loaded syncs when the stored build id differs from the local
-  one and memory-maps the files into ONE immutable Pack swapped by a single
-  reference assignment, so a query that started before a reload keeps its own
-  consistent pack
-* a track whose fingerprint row is gone since the build (cleaning deleted it)
-  is written into the local pack as dead rows and masked out of every vote
-  and the track count; the next full build drops it for good
-* Search: the clip's segments are scored in parallel threads
-  (NEURAL_FINGERPRINT_QUERY_THREADS, 0 = one per core); every third segment
+* Flask side: load_at_startup and ensure_loaded read the directory into ONE
+  immutable Pack swapped by a single reference assignment; reload_from_db
+  swaps to a new build on the index-reload event and drops the old build's
+  cached cells; a directory of an older layout or another codebook is
+  reported as IndexUnavailable with a message that is safe to show
+* Search: each pass first lists the cells its segments probe, fetches the
+  ones not cached in one query (every part of each cell, concatenated), then
+  scores the segments in parallel threads (NEURAL_FINGERPRINT_QUERY_THREADS,
+  0 = one per core) through the codebook lookup table; every third segment
   votes first and, when one track already leads the runner-up by
-  _EARLY_EXIT_RATIO with at least _EARLY_EXIT_VOTES, the rest of the voting
-  is skipped. Every neighbour votes for (track, offset) with its similarity,
-  votes within one hop are pooled, and the best candidates are verified by the
-  mean cosine between the whole clip and the track at that offset, read from
-  the candidates' blobs in one query so the pack needs no row-to-position
-  map. Rows carry item_id, score, votes, offset_seconds, identified and lead,
-  the last two set by flag_identified over the full candidate list (the
-  search-by-song merge reuses it). identify embeds a clip first;
-  identify_vectors takes a fingerprint sequence directly and can leave given
-  tracks out, which is how a stored song is searched for its other recordings
-  without finding itself
+  _EARLY_EXIT_RATIO with at least _EARLY_EXIT_VOTES, the rest is skipped.
+  Every neighbour votes for (track, offset) with its similarity, votes within
+  one hop are pooled, and the best candidates are verified by the mean cosine
+  between the whole clip and the track at that offset, read from the
+  candidates' blobs in one query; a track deleted since the build has no blob
+  and therefore never comes back. Rows carry item_id, score, votes,
+  offset_seconds, identified and lead, the last two set by flag_identified
+  over the full candidate list (the search-by-song merge reuses it). identify
+  embeds a clip first; identify_vectors takes a fingerprint sequence directly
+  and can leave given tracks out, which is how a stored song is searched for
+  its other recordings without finding itself
 * IndexUnavailable is the one exception whose text may reach a user: it
   carries the curated "not built yet", "being prepared", "older version" and
-  similar messages, and ensure_loaded wraps any other failure of the sync
-  into it with a generic text, so an internal id or a library error never
-  leaves the container log
+  similar messages, and any other failure of a load is wrapped into it with a
+  generic text, so an internal id or a library error never leaves the log
 * Per-server scope like every other index: the index holds the union of all
   servers, and a request scoped to a server votes only over that server's
   tracks through the shared availability mask (tasks.index_availability),
   cached per server and build for 30 s and dropped by
   invalidate_availability_cache when the mappings change
 * picker_where gives the song picker of the Search by Song tab a server-side
-  filter (songs that have a fingerprint) once the pack is loaded, and None
+  filter (songs that have a fingerprint) once the index is loaded, and None
   before, so the picker never ships a list of every indexed id per keystroke
 """
 
-import glob
 import io
 import logging
 import math
 import os
-import struct
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
 import numpy as np
+import psycopg2
+from psycopg2.extras import execute_values
 
 import config
 from tasks import ivf_quant
@@ -128,12 +113,11 @@ logger = logging.getLogger(__name__)
 
 INDEX_NAME = 'neural_fingerprint_index'
 DIR_TABLE = 'ivf_dir'
+CELL_TABLE = 'ivf_cell'
 _DIR_NAME = f'{INDEX_NAME}__ivf_dir'
 _BUILD_NAME = f'{INDEX_NAME}__build'
-_PART_PREFIX = f'{INDEX_NAME}__part'
-_FILE_PREFIX = 'neural_fingerprint'
-FORMAT = 4
-_PACK_FORMAT = 5
+_CELL_NAMESPACE = f'{INDEX_NAME}/p'
+FORMAT = 5
 _MAX_CELLS = 65536
 _SINGLE_LEVEL_CELLS = 64
 _MIN_TRAIN_ROWS = 2000
@@ -143,8 +127,10 @@ _MAX_TRACK_ROWS = 65535
 _ASSIGN_BATCH = 65536
 _BLOB_CHUNK = 500
 _PART_ROWS = 1 << 23
-_SYNC_CHUNK_ROWS = 1 << 21
 _NORM_CHUNK_ROWS = 1 << 18
+_CELL_WRITE_BATCH = 256
+_CELL_FETCH_BATCH = 512
+_ROW_BYTES = CODE_BYTES + 4 + 2 + 2
 _TOP_K = 8
 _VERIFY = 20
 _FIRST_PASS_EVERY = 3
@@ -153,14 +139,13 @@ _EARLY_EXIT_VOTES = 3.0
 _MAX_QUERY_THREADS = 8
 _REMOVED_FRACTION = 0.1
 _IMBALANCE = 10.0
-_PART_MAGIC = b'NFPP'
-_PART_HEADER = struct.Struct('<4sHIQQ')
-_PACK_FILES = {'slab': 'slab.u8', 'track': 'track.u32', 'offset': 'offset.u16', 'norm': 'norm.f16', 'meta': 'meta.npz'}
 _SUBSPACE_OFFSETS = (np.arange(PQ_SUBSPACES, dtype=np.int32) * PQ_CENTROIDS)[None, :]
 PICKER_WHERE = (
     'EXISTS (SELECT 1 FROM embedding e WHERE e.item_id = score.item_id AND e.neural_fingerprint IS NOT NULL)',
     (),
 )
+OLDER_LAYOUT = 'The neural fingerprint index was built by an older version; the next analysis run rebuilds it.'
+LOAD_FAILED = 'The neural fingerprint index could not be loaded; check the container logs.'
 _AVAILABILITY_CACHE = {}
 _AVAILABILITY_CACHE_LOCK = threading.Lock()
 _AVAILABILITY_CACHE_TTL = 30.0
@@ -171,9 +156,6 @@ _STATE = {'pack': None, 'building': False, 'error': None, 'gpu': None, 'executor
 
 class IndexUnavailable(RuntimeError):
     pass
-
-
-SYNC_FAILED = 'The neural fingerprint index could not be prepared; check the container logs.'
 
 
 class Quantizer(NamedTuple):
@@ -192,16 +174,69 @@ class Pack(NamedTuple):
     lengths: np.ndarray
     centroids: np.ndarray
     cell_bounds: np.ndarray
-    dead: np.ndarray
     stride: int
-    slab: np.ndarray
-    track: np.ndarray
-    offset: np.ndarray
-    norm: np.ndarray
+    parts: int
+    codebook_id: int
 
     @property
     def live_tracks(self):
-        return int(self.ids.size - self.dead.size)
+        return int(self.ids.size)
+
+    @property
+    def n_cells(self):
+        return int(self.cell_bounds.size - 1)
+
+
+class _CellCache:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._entries = OrderedDict()
+        self._bytes = 0
+
+    def _limit(self):
+        return max(0, int(config.NEURAL_FINGERPRINT_CACHE_MB)) * 1024 * 1024
+
+    def get(self, key):
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._entries.move_to_end(key)
+            return entry[0]
+
+    def put(self, key, arrays):
+        size = sum(int(array.nbytes) for array in arrays)
+        with self._lock:
+            old = self._entries.pop(key, None)
+            if old is not None:
+                self._bytes -= old[1]
+            self._entries[key] = (arrays, size)
+            self._bytes += size
+            limit = self._limit()
+            while self._bytes > limit and self._entries:
+                _key, (_arrays, dropped) = self._entries.popitem(last=False)
+                self._bytes -= dropped
+
+    def drop(self, build_id=None):
+        with self._lock:
+            if build_id is None:
+                self._entries.clear()
+                self._bytes = 0
+                return
+            for key in [key for key in self._entries if key[0] != build_id]:
+                _arrays, size = self._entries.pop(key)
+                self._bytes -= size
+
+    def resident_mb(self):
+        with self._lock:
+            return round(self._bytes / (1024 * 1024), 1)
+
+    def __len__(self):
+        with self._lock:
+            return len(self._entries)
+
+
+_CELLS = _CellCache()
 
 
 def _stride():
@@ -300,32 +335,88 @@ def assign_cells(codes, quantizer):
     return labels
 
 
-def pack_part(labels, n_cells, row_offset):
+def _squared_norm_table():
+    return (2.0 * codebook()[2]).astype(np.float32).ravel()
+
+
+def _inverse_norms(block, squared):
+    out = np.empty(block.shape[0], dtype=np.float32)
+    for a in range(0, block.shape[0], _NORM_CHUNK_ROWS):
+        piece = block[a:a + _NORM_CHUNK_ROWS]
+        total = np.take(squared, piece.astype(np.int32) + _SUBSPACE_OFFSETS).sum(axis=1)
+        out[a:a + piece.shape[0]] = 1.0 / (np.sqrt(total) + 1e-9)
+    return out
+
+
+def pack_cell(codes, tracks, offsets, norms):
+    return (
+        np.ascontiguousarray(codes, dtype=np.uint8).tobytes()
+        + np.ascontiguousarray(tracks, dtype='<u4').tobytes()
+        + np.ascontiguousarray(offsets, dtype='<u2').tobytes()
+        + np.ascontiguousarray(norms, dtype='<f2').tobytes()
+    )
+
+
+def unpack_cell(blob):
+    raw = bytes(blob)
+    n, rest = divmod(len(raw), _ROW_BYTES)
+    if rest:
+        raise ValueError('not a neural fingerprint cell')
+    codes = np.frombuffer(raw, dtype=np.uint8, count=n * CODE_BYTES).reshape(n, CODE_BYTES)
+    tracks = np.frombuffer(raw, dtype='<u4', count=n, offset=n * CODE_BYTES)
+    offsets = np.frombuffer(raw, dtype='<u2', count=n, offset=n * (CODE_BYTES + 4))
+    norms = np.frombuffer(raw, dtype='<f2', count=n, offset=n * (CODE_BYTES + 6))
+    return codes, tracks, offsets, norms
+
+
+def _part_name(part):
+    return f'{_CELL_NAMESPACE}{part}'
+
+
+def part_cells(part, labels, codes, tracks, offsets, n_cells):
+    norms = _inverse_norms(codes, _squared_norm_table())
+    order = np.argsort(labels, kind='stable')
     counts = np.bincount(labels, minlength=n_cells).astype(np.int64)
-    bounds = np.concatenate(([0], np.cumsum(counts))).astype('<i8')
-    order = np.argsort(labels, kind='stable').astype('<i4')
-    header = _PART_HEADER.pack(_PART_MAGIC, 1, int(n_cells), int(labels.size), int(row_offset))
-    return header + bounds.tobytes() + order.tobytes(), counts
+    bounds = np.concatenate(([0], np.cumsum(counts)))
+    name = _part_name(part)
+    for cell in np.flatnonzero(counts):
+        picked = order[bounds[cell]:bounds[cell + 1]]
+        yield name, int(cell), pack_cell(codes[picked], tracks[picked], offsets[picked], norms[picked])
+    return counts
 
 
-def unpack_part(blob):
-    magic, version, n_cells, n_rows, row_offset = _PART_HEADER.unpack_from(blob)
-    if magic != _PART_MAGIC or version != 1:
-        raise ValueError('not a neural fingerprint index part')
-    offset = _PART_HEADER.size
-    bounds = np.frombuffer(blob, dtype='<i8', count=n_cells + 1, offset=offset)
-    offset += bounds.nbytes
-    order = np.frombuffer(blob, dtype='<i4', count=n_rows, offset=offset)
-    return {'n_cells': int(n_cells), 'n_rows': int(n_rows), 'row_offset': int(row_offset), 'bounds': bounds, 'order': order}
+def _write_cell_rows(conn, rows):
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            f"INSERT INTO {CELL_TABLE} (index_name, cell_id, cell_data) VALUES %s "
+            "ON CONFLICT (index_name, cell_id) DO UPDATE SET cell_data = EXCLUDED.cell_data",
+            [(name, cell, psycopg2.Binary(blob)) for name, cell, blob in rows],
+            page_size=len(rows),
+        )
 
 
-def part_positions(part, bounds, filled):
-    counts = np.diff(part['bounds'])
-    labels = np.repeat(np.arange(counts.size), counts)
-    dest = bounds[labels] + filled[labels] + (np.arange(part['n_rows'], dtype=np.int64) - part['bounds'][labels])
-    positions = np.empty(part['n_rows'], dtype=np.int64)
-    positions[part['order']] = dest
-    return positions
+def _store_part(conn, part, labels, codes, tracks, offsets, n_cells):
+    cells = part_cells(part, labels, codes, tracks, offsets, n_cells)
+    pending = []
+    while True:
+        try:
+            pending.append(next(cells))
+        except StopIteration as done:
+            if pending:
+                _write_cell_rows(conn, pending)
+            return done.value
+        if len(pending) >= _CELL_WRITE_BATCH:
+            _write_cell_rows(conn, pending)
+            pending = []
+
+
+def _delete_cells(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {CELL_TABLE} WHERE index_name LIKE %s ESCAPE '\\'",
+            (_CELL_NAMESPACE.replace('_', r'\_') + '%',),
+        )
 
 
 def _quantizer_blob_fields(quantizer):
@@ -360,7 +451,7 @@ def unpack_directory(blob):
             _decode_i8(data['coarse']), _decode_i8(data['centroids']), data['group_offsets'].astype(np.int64),
         )
         return {
-            'format': int(data['format']), 'build_id': str(data['build_id']), 'codebook_id': int(data['codebook_id']),
+            'format': layout, 'build_id': str(data['build_id']), 'codebook_id': int(data['codebook_id']),
             'stride': int(data['stride']), 'quantizer': quantizer, 'centroids': quantizer.cells,
             'ids': [str(i) for i in data['ids']], 'lengths': data['lengths'].astype(np.int64),
             'cell_sizes': data['cell_sizes'].astype(np.int64), 'parts': int(data['parts']),
@@ -427,11 +518,6 @@ def iter_codes(conn, ids):
         cur.close()
 
 
-def iter_index_rows(conn, ids):
-    for item_id, codes in iter_codes(conn, ids):
-        yield item_id, index_rows(codes)
-
-
 def training_sample(codes_iter, cap, rng):
     pieces, total = [], 0
     for _item_id, codes in codes_iter:
@@ -450,13 +536,15 @@ def training_sample(codes_iter, cap, rng):
 
 
 def label_tracks(codes_iter, quantizer, part_rows=_PART_ROWS):
-    ids, lengths, labels, pending = [], [], [], []
+    ids, lengths, labels, kept, pending = [], [], [], [], []
     pending_rows = chunk_rows = 0
 
     def flush():
         nonlocal pending, pending_rows
         if pending:
-            labels.append(assign_cells(np.concatenate(pending), quantizer))
+            block = np.concatenate(pending)
+            labels.append(assign_cells(block, quantizer))
+            kept.append(block)
             pending, pending_rows = [], 0
 
     for item_id, codes in codes_iter:
@@ -465,8 +553,8 @@ def label_tracks(codes_iter, quantizer, part_rows=_PART_ROWS):
             continue
         if chunk_rows and chunk_rows + codes.shape[0] > part_rows:
             flush()
-            yield ids, np.asarray(lengths, dtype=np.int64), np.concatenate(labels)
-            ids, lengths, labels, chunk_rows = [], [], [], 0
+            yield ids, np.asarray(lengths, dtype=np.int64), np.concatenate(labels), np.concatenate(kept)
+            ids, lengths, labels, kept, chunk_rows = [], [], [], [], 0
         ids.append(item_id)
         lengths.append(int(codes.shape[0]))
         pending.append(codes)
@@ -476,7 +564,7 @@ def label_tracks(codes_iter, quantizer, part_rows=_PART_ROWS):
             flush()
     flush()
     if ids:
-        yield ids, np.asarray(lengths, dtype=np.int64), np.concatenate(labels)
+        yield ids, np.asarray(lengths, dtype=np.int64), np.concatenate(labels), np.concatenate(kept)
 
 
 def _load_directory(conn):
@@ -494,40 +582,18 @@ def _store_directory(conn, directory_blob, build_id):
     store_segmented_blob(conn, DIR_TABLE, _BUILD_NAME, build_id.encode('ascii'))
 
 
-def _store_part(conn, index, blob):
-    store_segmented_blob(conn, DIR_TABLE, f'{_PART_PREFIX}{index}', blob)
-
-
-def _delete_parts(conn):
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "DELETE FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
-            (_PART_PREFIX.replace('_', r'\_') + '%',),
-        )
-    finally:
-        cur.close()
-
-
-def _load_part(conn, index):
-    blob = load_segmented_blob(conn, DIR_TABLE, f'{_PART_PREFIX}{index}')
-    if blob is None:
-        raise RuntimeError(f'Part {index} of the neural fingerprint index is missing; rebuild the indexes.')
-    return unpack_part(bytes(blob))
-
-
-def _store_labelled_parts(conn, chunks, n_cells, first_part, row_offset):
-    ids, lengths, cell_sizes, parts = [], [], np.zeros(n_cells, dtype=np.int64), first_part
-    for chunk_ids, chunk_lengths, labels in chunks:
-        part_blob, counts = pack_part(labels, n_cells, row_offset)
-        _store_part(conn, parts, part_blob)
+def _store_labelled_parts(conn, chunks, n_cells, first_part, first_track):
+    ids, lengths, cell_sizes, part, track = [], [], np.zeros(n_cells, dtype=np.int64), first_part, first_track
+    for chunk_ids, chunk_lengths, labels, codes in chunks:
+        tracks = np.repeat(np.arange(track, track + len(chunk_ids), dtype=np.uint32), chunk_lengths)
+        offsets = np.concatenate([np.arange(n, dtype=np.uint16) for n in chunk_lengths])
+        cell_sizes += _store_part(conn, part, labels, codes, tracks, offsets, n_cells)
         ids.extend(chunk_ids)
         lengths.append(chunk_lengths)
-        cell_sizes += counts
-        row_offset += int(labels.size)
-        parts += 1
+        part += 1
+        track += len(chunk_ids)
     joined = np.concatenate(lengths) if lengths else np.zeros(0, dtype=np.int64)
-    return ids, joined, cell_sizes, parts
+    return ids, joined, cell_sizes, part
 
 
 def _full_build(conn, ids, codebook_id, reason):
@@ -542,7 +608,7 @@ def _full_build(conn, ids, codebook_id, reason):
     sample_rows = int(sample.shape[0])
     del sample
     trained = time.time()
-    _delete_parts(conn)
+    _delete_cells(conn)
     kept_ids, lengths, cell_sizes, parts = _store_labelled_parts(
         conn, label_tracks(iter_codes(conn, ids), quantizer), quantizer.n_cells, 0, 0,
     )
@@ -571,7 +637,7 @@ def _incremental_build(conn, directory, ids):
     quantizer = directory['quantizer']
     kept_ids, lengths, cell_sizes, parts = _store_labelled_parts(
         conn, label_tracks(iter_codes(conn, new_ids), quantizer), quantizer.n_cells, directory['parts'],
-        int(directory['lengths'].sum()),
+        len(directory['ids']),
     )
     if not kept_ids:
         logger.info('Neural fingerprint index: the %d new tracks carry no usable fingerprint', len(new_ids))
@@ -622,54 +688,13 @@ def build_and_store_neural_fingerprint_index(db_conn, force_full=False):
         raise
 
 
-def _paths(build_id):
-    directory = config.IVF_DISK_CACHE_DIR
-    return {key: os.path.join(directory, f'{_FILE_PREFIX}.{build_id}.{name}') for key, name in _PACK_FILES.items()}
-
-
-def _local_builds():
-    pattern = os.path.join(config.IVF_DISK_CACHE_DIR, f'{_FILE_PREFIX}.*.{_PACK_FILES["meta"]}')
-    found = []
-    for path in glob.glob(pattern):
-        try:
-            with np.load(path, allow_pickle=False) as meta:
-                if int(meta['format']) == _PACK_FORMAT:
-                    found.append((os.path.getmtime(path), str(meta['build_id'])))
-        except Exception:
-            logger.exception('Unreadable neural fingerprint pack metadata %s', path)
-    return [build_id for _mtime, build_id in sorted(found)]
-
-
-def _dead_from(meta):
-    if 'dead' not in meta.files:
-        return np.zeros(0, dtype=np.int64)
-    return meta['dead'].astype(np.int64)
-
-
-def _local_meta(build_id):
-    paths = _paths(build_id)
-    if not all(os.path.exists(path) for path in paths.values()):
-        return None
-    with np.load(paths['meta'], allow_pickle=False) as meta:
-        return {
-            'ids': [str(i) for i in meta['ids']], 'lengths': meta['lengths'].astype(np.int64),
-            'dead': _dead_from(meta), 'centroids': meta['centroids'], 'cell_bounds': meta['cell_bounds'].astype(np.int64),
-            'stride': int(meta['stride']), 'parts': int(meta['parts']),
-        }
-
-
-def _prune_local(keep_build_id):
-    for path in glob.glob(os.path.join(config.IVF_DISK_CACHE_DIR, f'{_FILE_PREFIX}.*')):
-        pieces = os.path.basename(path).split('.')
-        if len(pieces) > 1 and pieces[1] == keep_build_id:
-            continue
-        try:
-            os.remove(path)
-        except OSError:
-            logger.debug('Could not remove %s yet', path)
-
-
-OLDER_LAYOUT = 'The neural fingerprint index was built by an older version; the next analysis run rebuilds it.'
+def _pack_from(directory):
+    bounds = np.concatenate(([0], np.cumsum(directory['cell_sizes']))).astype(np.int64)
+    return Pack(
+        build_id=directory['build_id'], ids=np.asarray(directory['ids'], dtype=str), lengths=directory['lengths'],
+        centroids=np.ascontiguousarray(directory['centroids'], dtype=np.float32), cell_bounds=bounds,
+        stride=int(directory['stride']), parts=int(directory['parts']), codebook_id=int(directory['codebook_id']),
+    )
 
 
 def _current_layout(directory, build_id):
@@ -677,209 +702,23 @@ def _current_layout(directory, build_id):
         raise IndexUnavailable('The neural fingerprint index is being written; try again in a minute.')
     if directory['format'] != FORMAT:
         raise IndexUnavailable(OLDER_LAYOUT)
+    if directory['codebook_id'] != codebook()[1]:
+        raise IndexUnavailable('The neural fingerprint index was built with another codebook; rebuild the indexes.')
     return directory
 
 
-def _reusable_parts(previous, directory, ids, lengths):
-    if previous is None or previous['stride'] != directory['stride']:
-        return 0
-    n = len(previous['ids'])
-    if n > len(ids) or previous['ids'] != ids[:n] or not np.array_equal(previous['lengths'], lengths[:n]):
-        return 0
-    if not np.array_equal(previous['centroids'], directory['centroids']):
-        return 0
-    if previous['cell_bounds'].size != directory['cell_sizes'].size + 1:
-        return 0
-    return int(previous['parts'])
+def _read_pack(conn):
+    build_id = _stored_build_id(conn)
+    if build_id is None:
+        raise IndexUnavailable('No neural fingerprint index is built yet. Run the analysis, which builds it.')
+    return _pack_from(_current_layout(_load_directory(conn), build_id))
 
 
-def _copy_cells(previous_paths, previous, bounds, files):
-    old_bounds = previous['cell_bounds']
-    kept_rows = int(previous['lengths'].sum())
-    old = _open_files(previous_paths, kept_rows, 'r')
-    for c in range(bounds.size - 1):
-        a, b = int(old_bounds[c]), int(old_bounds[c + 1])
-        if a == b:
-            continue
-        start = int(bounds[c])
-        for key in ('slab', 'track', 'offset', 'norm'):
-            files[key][start:start + (b - a)] = old[key][a:b]
-
-
-def _open_files(paths, n_rows, mode):
-    return {
-        'slab': np.memmap(paths['slab'], dtype=np.uint8, mode=mode, shape=(n_rows, CODE_BYTES)),
-        'track': np.memmap(paths['track'], dtype=np.uint32, mode=mode, shape=(n_rows,)),
-        'offset': np.memmap(paths['offset'], dtype=np.uint16, mode=mode, shape=(n_rows,)),
-        'norm': np.memmap(paths['norm'], dtype=np.float16, mode=mode, shape=(n_rows,)),
-    }
-
-
-def _squared_norm_table():
-    return (2.0 * codebook()[2]).astype(np.float32).ravel()
-
-
-def _inverse_norms(block, squared):
-    out = np.empty(block.shape[0], dtype=np.float32)
-    for a in range(0, block.shape[0], _NORM_CHUNK_ROWS):
-        piece = block[a:a + _NORM_CHUNK_ROWS]
-        total = np.take(squared, piece.astype(np.int32) + _SUBSPACE_OFFSETS).sum(axis=1)
-        out[a:a + piece.shape[0]] = 1.0 / (np.sqrt(total) + 1e-9)
-    return out
-
-
-def _scatter(files, positions, block, tracks, offsets, squared):
-    order = np.argsort(positions, kind='stable')
-    p_sorted = positions[order]
-    values = {
-        'slab': block[order], 'track': tracks[order], 'offset': offsets[order],
-        'norm': _inverse_norms(block, squared)[order],
-    }
-    breaks = np.flatnonzero(np.diff(p_sorted) != 1) + 1
-    for a, b in zip(np.concatenate(([0], breaks)), np.concatenate((breaks, [p_sorted.size]))):
-        start = int(p_sorted[a])
-        for key, array in values.items():
-            files[key][start:start + (b - a)] = array[a:b]
-
-
-class _PartWriter:
-    def __init__(self, files, positions, first_track, squared):
-        self.files, self.positions, self.squared = files, positions, squared
-        self.track = first_track
-        self.local = 0
-        self.pending, self.pending_tracks, self.pending_rows = [], [], 0
-        self.dead = []
-
-    def add(self, item_id, codes, expected):
-        if codes is None:
-            codes = np.zeros((expected, CODE_BYTES), dtype=np.uint8)
-            self.dead.append(self.track)
-        elif codes.shape[0] != expected:
-            raise RuntimeError(
-                f'The fingerprint of {item_id} no longer matches the index ({expected} rows expected); rebuild the indexes.'
-            )
-        self.pending.append(np.ascontiguousarray(codes, dtype=np.uint8))
-        self.pending_tracks.append((self.track, expected))
-        self.pending_rows += expected
-        self.track += 1
-        if self.pending_rows >= _SYNC_CHUNK_ROWS:
-            self.flush()
-
-    def flush(self):
-        if not self.pending:
-            return
-        tracks = np.concatenate([np.full(n, t, dtype=np.uint32) for t, n in self.pending_tracks])
-        offsets = np.concatenate([np.arange(n, dtype=np.uint16) for _t, n in self.pending_tracks])
-        block = np.concatenate(self.pending)
-        _scatter(self.files, self.positions[self.local:self.local + block.shape[0]], block, tracks, offsets, self.squared)
-        self.local += block.shape[0]
-        self.pending, self.pending_tracks, self.pending_rows = [], [], 0
-
-
-def _tracks_of_part(lengths, first_track, n_rows):
-    total, track = 0, first_track
-    while total < n_rows:
-        if track >= lengths.size:
-            raise RuntimeError('The neural fingerprint index parts hold more rows than the directory lists; rebuild the indexes.')
-        total += int(lengths[track])
-        track += 1
-    if total != n_rows:
-        raise RuntimeError('A neural fingerprint index part does not end on a track boundary; rebuild the indexes.')
-    return track
-
-
-def _fill_pack(files, directory, ids, lengths, bounds, part_at, codes_iter, keep_parts, previous_paths, previous):
-    n_rows = int(lengths.sum())
-    filled = np.zeros(bounds.size - 1, dtype=np.int64)
-    dead, track, next_row = [], 0, 0
-    if keep_parts:
-        _copy_cells(previous_paths, previous, bounds, files)
-        filled += np.diff(previous['cell_bounds'])
-        track, next_row = len(previous['ids']), int(previous['lengths'].sum())
-        dead = [int(index) for index in previous['dead']]
-    squared = _squared_norm_table()
-    for index in range(keep_parts, int(directory['parts'])):
-        part = part_at(index)
-        if part['row_offset'] != next_row or part['n_cells'] != filled.size:
-            raise RuntimeError(f'Part {index} of the neural fingerprint index does not follow the previous one; rebuild the indexes.')
-        last_track = _tracks_of_part(lengths, track, part['n_rows'])
-        writer = _PartWriter(files, part_positions(part, bounds, filled), track, squared)
-        for item_id, codes in zip(ids[track:last_track], (codes for _id, codes in codes_iter(ids[track:last_track]))):
-            writer.add(item_id, index_rows(codes), int(lengths[writer.track]))
-        writer.flush()
-        if writer.local != part['n_rows'] or writer.track != last_track:
-            raise RuntimeError(f'The blobs delivered {writer.local} rows for part {index} of {part["n_rows"]}; rebuild the indexes.')
-        dead.extend(writer.dead)
-        filled += np.diff(part['bounds'])
-        track, next_row = last_track, next_row + part['n_rows']
-    if track != len(ids) or next_row != n_rows:
-        raise RuntimeError(f'The neural fingerprint index parts cover {next_row} rows of {n_rows}; rebuild the indexes.')
-    return dead
-
-
-def _release(files):
-    for handle in files.values():
-        handle.flush()
-    files.clear()
-
-
-def write_local_pack(paths, directory, parts, codes_iter, previous_paths=None, previous=None):
-    os.makedirs(os.path.dirname(paths['slab']), exist_ok=True)
-    started = time.time()
-    part_at = parts.__getitem__ if isinstance(parts, (list, tuple)) else parts
-    ids, lengths = list(directory['ids']), directory['lengths'].astype(np.int64)
-    n_rows = int(lengths.sum())
-    if n_rows <= 0:
-        raise RuntimeError('The neural fingerprint index is empty; rebuild the indexes.')
-    bounds = np.concatenate(([0], np.cumsum(directory['cell_sizes']))).astype(np.int64)
-    if int(bounds[-1]) != n_rows:
-        raise RuntimeError(f'The neural fingerprint index cells hold {int(bounds[-1])} rows for {n_rows} stored; rebuild the indexes.')
-    tmp = {key: path + '.tmp' for key, path in paths.items()}
-    tmp['meta'] = paths['meta'] + '.tmp.npz'
-    keep_parts = _reusable_parts(previous, directory, ids, lengths) if previous_paths else 0
-    files = _open_files(tmp, n_rows, 'w+')
-    try:
-        dead = _fill_pack(files, directory, ids, lengths, bounds, part_at, codes_iter, keep_parts, previous_paths, previous)
-    finally:
-        _release(files)
-    np.savez(
-        tmp['meta'], lengths=lengths, ids=np.asarray(ids, dtype=str), centroids=directory['centroids'],
-        cell_bounds=bounds, build_id=np.asarray(directory['build_id']), codebook_id=np.uint32(directory['codebook_id']),
-        format=np.int64(_PACK_FORMAT), stride=np.int64(directory['stride']), parts=np.int64(directory['parts']),
-        dead=np.asarray(dead, dtype=np.int64),
-    )
-    for key in _PACK_FILES:
-        os.replace(tmp[key], paths[key])
-    logger.info(
-        'Neural fingerprint pack synced: %d tracks, %d rows, %d cells, %d parts reused of %d, '
-        '%d tracks gone since the build (masked until the next full build), %.0fs',
-        len(ids), n_rows, bounds.size - 1, keep_parts, int(directory['parts']), len(dead), time.time() - started,
-    )
-
-
-def _sync_from_db(conn, directory):
-    paths = _paths(directory['build_id'])
-    previous_id = next(iter(reversed(_local_builds())), None)
-    previous_paths = _paths(previous_id) if previous_id else None
-    previous = _local_meta(previous_id) if previous_id else None
-    write_local_pack(
-        paths, directory, lambda index: _load_part(conn, index), lambda ids: iter_codes(conn, ids),
-        previous_paths, previous,
-    )
-    return paths
-
-
-def _open_pack(paths):
-    with np.load(paths['meta'], allow_pickle=False) as meta:
-        lengths = meta['lengths'].astype(np.int64)
-        files = _open_files(paths, int(lengths.sum()), 'r')
-        pack = Pack(
-            build_id=str(meta['build_id']), ids=meta['ids'], lengths=lengths, centroids=meta['centroids'],
-            cell_bounds=meta['cell_bounds'].astype(np.int64), dead=_dead_from(meta), stride=int(meta['stride']),
-            slab=files['slab'], track=files['track'], offset=files['offset'], norm=files['norm'],
-        )
-    _STATE['pack'] = pack
-    return pack
+def _swap_pack(pack):
+    with _LOCK:
+        _STATE['pack'] = pack
+    _CELLS.drop(pack.build_id)
+    invalidate_availability_cache()
 
 
 def is_loaded():
@@ -895,18 +734,6 @@ def _current_pack():
 
 def picker_where():
     return PICKER_WHERE if is_loaded() else None
-
-
-def _local_pack_for(conn):
-    build_id = _stored_build_id(conn)
-    if build_id is None:
-        raise IndexUnavailable('No neural fingerprint index is built yet. Run the analysis, which builds it.')
-    if _local_meta(build_id) is not None:
-        return _paths(build_id)
-    directory = _current_layout(_load_directory(conn), build_id)
-    if directory['codebook_id'] != codebook()[1]:
-        raise IndexUnavailable('The neural fingerprint index was built with another codebook; rebuild the indexes.')
-    return _sync_from_db(conn, directory)
 
 
 def _record_load_error(message):
@@ -927,22 +754,23 @@ def ensure_loaded():
     try:
         conn = connect_raw(application_name='neural_fingerprint_index')
         try:
-            paths = _local_pack_for(conn)
+            pack = _read_pack(conn)
         finally:
             conn.close()
-        with _LOCK:
-            pack = _open_pack(paths)
-        _prune_local(pack.build_id)
-        logger.info('Neural fingerprint pack loaded: %d tracks (build %s)', pack.live_tracks, pack.build_id)
+        _swap_pack(pack)
+        logger.info(
+            'Neural fingerprint index loaded: %d tracks, %d cells, %d parts (build %s)',
+            pack.live_tracks, pack.n_cells, pack.parts, pack.build_id,
+        )
         return True
     except IndexUnavailable as exc:
         _record_load_error(str(exc))
-        logger.warning('Neural fingerprint pack not loaded: %s', exc)
+        logger.warning('Neural fingerprint index not loaded: %s', exc)
         raise
     except Exception as exc:
-        _record_load_error(SYNC_FAILED)
-        logger.exception('Neural fingerprint pack could not be loaded')
-        raise IndexUnavailable(SYNC_FAILED) from exc
+        _record_load_error(LOAD_FAILED)
+        logger.exception('Neural fingerprint index could not be loaded')
+        raise IndexUnavailable(LOAD_FAILED) from exc
     finally:
         with _LOCK:
             _STATE['building'] = False
@@ -962,39 +790,31 @@ def reload_from_db():
         with _LOCK:
             if is_loaded() and _STATE['pack'].build_id == build_id:
                 return True
-        if _local_meta(build_id) is None:
-            try:
-                directory = _current_layout(_load_directory(conn), build_id)
-            except RuntimeError as exc:
-                logger.info('Neural fingerprint index not reloaded: %s', exc)
-                return False
-            _sync_from_db(conn, directory)
-        with _LOCK:
-            if is_loaded():
-                _open_pack(_paths(build_id))
-                logger.info('Neural fingerprint pack swapped to build %s', build_id)
-        _prune_local(build_id)
-        return True
+        try:
+            pack = _read_pack(conn)
+        except IndexUnavailable as exc:
+            logger.info('Neural fingerprint index not reloaded: %s', exc)
+            return False
     finally:
         conn.close()
+    _swap_pack(pack)
+    logger.info('Neural fingerprint index swapped to build %s (%d tracks)', pack.build_id, pack.live_tracks)
+    return True
 
 
 def load_at_startup():
-    from database import connect_raw
-
     if not is_enabled():
         logger.info('Neural fingerprint index not loaded at startup: NEURAL_FINGERPRINT_ENABLED is false')
-        return None
+        return 0
     if not is_available():
         logger.info('Neural fingerprint index not loaded at startup: the model or the codebook is missing')
-        return None
-    conn = connect_raw(application_name='neural_fingerprint_index')
+        return 0
     try:
-        if _stored_build_id(conn) is None:
-            return None
-    finally:
-        conn.close()
-    return start_background_load()
+        ensure_loaded()
+    except IndexUnavailable:
+        return 0
+    with _LOCK:
+        return _STATE['pack'].live_tracks if is_loaded() else 0
 
 
 def start_background_load():
@@ -1017,7 +837,12 @@ def unload():
     with _LOCK:
         was_loaded = is_loaded()
         _STATE['pack'] = None
+    _CELLS.drop()
     return was_loaded
+
+
+def drop_cell_cache():
+    _CELLS.drop()
 
 
 def get_status():
@@ -1026,11 +851,81 @@ def get_status():
         return {
             'available': bool(is_available()),
             'loaded': pack is not None,
-            'synced': pack is not None or bool(_local_builds()),
             'building': bool(_STATE['building']),
             'tracks': pack.live_tracks if pack is not None else 0,
+            'cells': pack.n_cells if pack is not None else 0,
+            'parts': pack.parts if pack is not None else 0,
+            'cached_cells': len(_CELLS),
+            'cache_mb': _CELLS.resident_mb(),
             'error': _STATE['error'],
         }
+
+
+def _db_connection():
+    from flask import has_app_context
+
+    if has_app_context():
+        from database import get_db
+
+        return get_db(), False
+    from database import connect_raw
+
+    return connect_raw(application_name='neural_fingerprint_query'), True
+
+
+def _read_cell_rows(pack, cell_ids):
+    names = [_part_name(part) for part in range(pack.parts)]
+    conn, owned = _db_connection()
+    try:
+        rows = []
+        with conn.cursor() as cur:
+            for start in range(0, len(cell_ids), _CELL_FETCH_BATCH):
+                cur.execute(
+                    f"SELECT index_name, cell_id, cell_data FROM {CELL_TABLE} "
+                    "WHERE index_name = ANY(%s) AND cell_id = ANY(%s)",
+                    (names, list(cell_ids[start:start + _CELL_FETCH_BATCH])),
+                )
+                rows.extend(cur.fetchall())
+        return rows
+    finally:
+        if owned:
+            conn.close()
+
+
+def _empty_cell():
+    return (
+        np.zeros((0, CODE_BYTES), dtype=np.uint8), np.zeros(0, dtype=np.uint32),
+        np.zeros(0, dtype=np.uint16), np.zeros(0, dtype=np.float16),
+    )
+
+
+def _join_parts(parts):
+    parts.sort(key=lambda entry: entry[0])
+    pieces = [unpack_cell(blob) for _part, blob in parts]
+    if len(pieces) == 1:
+        return tuple(np.ascontiguousarray(array) for array in pieces[0])
+    return tuple(np.concatenate([piece[i] for piece in pieces]) for i in range(4))
+
+
+def _cells_for(pack, cell_ids):
+    found, missing = {}, []
+    for cell in cell_ids:
+        arrays = _CELLS.get((pack.build_id, cell))
+        if arrays is None:
+            missing.append(cell)
+        else:
+            found[cell] = arrays
+    if not missing:
+        return found
+    grouped = {cell: [] for cell in missing}
+    prefix = len(_CELL_NAMESPACE)
+    for name, cell, blob in _read_cell_rows(pack, missing):
+        grouped[int(cell)].append((int(name[prefix:]), blob))
+    for cell, parts in grouped.items():
+        arrays = _join_parts(parts) if parts else _empty_cell()
+        _CELLS.put((pack.build_id, cell), arrays)
+        found[cell] = arrays
+    return found
 
 
 def _query_threads():
@@ -1058,11 +953,10 @@ def _lookup_table(book, query):
     return np.einsum('sd,skd->sk', query.reshape(PQ_SUBSPACES, PQ_SUBDIM), book).astype(np.float32).ravel()
 
 
-def _cell_scores(pack, table, b0, b1, allowed):
-    codes = pack.slab[b0:b1]
-    tracks = np.asarray(pack.track[b0:b1])
-    offsets = np.asarray(pack.offset[b0:b1])
-    norms = np.asarray(pack.norm[b0:b1])
+def _cell_scores(arrays, table, allowed):
+    codes, tracks, offsets, norms = arrays
+    if not codes.shape[0]:
+        return None
     if allowed is not None:
         keep = allowed[tracks]
         if not keep.any():
@@ -1073,12 +967,11 @@ def _cell_scores(pack, table, b0, b1, allowed):
     return sims, tracks, offsets
 
 
-def _segment_votes(pack, book, query_vectors, qi, nprobe, allowed):
+def _segment_votes(pack, book, query_vectors, qi, probed, cells, allowed):
     table = _lookup_table(book, query_vectors[qi])
-    bounds = pack.cell_bounds
     pieces = []
-    for cell in _probe_cells(pack, query_vectors[qi], nprobe):
-        piece = _cell_scores(pack, table, int(bounds[cell]), int(bounds[cell + 1]), allowed)
+    for cell in probed:
+        piece = _cell_scores(cells[int(cell)], table, allowed)
         if piece is not None:
             pieces.append(piece)
     if not pieces:
@@ -1092,9 +985,13 @@ def _segment_votes(pack, book, query_vectors, qi, nprobe, allowed):
 
 
 def _score_segments(pack, book, query_vectors, segments, nprobe, allowed):
+    probed = {qi: _probe_cells(pack, query_vectors[qi], nprobe) for qi in segments}
+    cells = _cells_for(pack, sorted({int(cell) for cells in probed.values() for cell in cells}))
     if len(segments) > 1 and _query_threads() > 1:
-        return list(_executor().map(lambda qi: _segment_votes(pack, book, query_vectors, qi, nprobe, allowed), segments))
-    return [_segment_votes(pack, book, query_vectors, qi, nprobe, allowed) for qi in segments]
+        return list(_executor().map(
+            lambda qi: _segment_votes(pack, book, query_vectors, qi, probed[qi], cells, allowed), segments,
+        ))
+    return [_segment_votes(pack, book, query_vectors, qi, probed[qi], cells, allowed) for qi in segments]
 
 
 def _pool(votes):
@@ -1129,18 +1026,6 @@ def _vote(pack, book, query_vectors, nprobe, allowed=None):
         if _decided(pooled):
             return pooled, len(pass_segments)
     return _pool(votes), n
-
-
-def _db_connection():
-    from flask import has_app_context
-
-    if has_app_context():
-        from database import get_db
-
-        return get_db(), False
-    from database import connect_raw
-
-    return connect_raw(application_name='neural_fingerprint_verify'), True
 
 
 def _candidate_codes(item_ids):
@@ -1234,12 +1119,10 @@ def _availability_mask(pack):
 
 def _allowed_tracks(pack, exclude_ids):
     allowed = _availability_mask(pack)
-    if not exclude_ids and not pack.dead.size:
+    if not exclude_ids:
         return allowed
     allowed = np.ones(pack.ids.size, dtype=np.bool_) if allowed is None else allowed.copy()
-    allowed[pack.dead] = False
-    if exclude_ids:
-        allowed[np.isin(pack.ids, list(exclude_ids))] = False
+    allowed[np.isin(pack.ids, list(exclude_ids))] = False
     return allowed
 
 

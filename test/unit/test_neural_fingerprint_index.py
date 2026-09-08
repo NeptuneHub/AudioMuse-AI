@@ -6,30 +6,31 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Neural fingerprint index: quantizer, parts, directory, local pack and the vote-and-align search.
+"""Neural fingerprint index: quantizer, cells, directory, on-demand paging and the vote-and-align search.
 
 Main Features:
-* a part round-trips through its blob and the positions of two parts equal
-  the positions of one part over all rows
+* a cell round-trips through its blob and a part writes one row per non-empty
+  cell holding exactly that cell's rows
 * the two-level quantizer covers the asked cells with a coarse level of about
   sqrt(cells) groups, assigns rows to their nearest cell within the nearest
   group, and stays single-level under the small-library threshold
 * label_tracks splits the rows into parts at track boundaries under the row
-  budget
+  budget and hands each part its codes
 * the directory round-trips with int8 centroids, ids, lengths, cell sizes and
-  the stride
+  the stride; a directory of an older layout is reported, never a crash
 * the full-build decision names its reason: no index, layout, codebook or
   stride change, too many tracks gone, the library grown past the retrain
   factor, unbalanced cells; otherwise the build appends
-* a local pack written part by part stores the codes by cell with the track,
-  the offset and the inverse norm beside every position; a second build under
-  the same quantizer appends new tracks by copying every cell's previous run
-  and fetching only the new blobs
 * the builder commits its own transaction and rolls back on failure
+* a loaded index reads only the cells a query probes, keeps them in a RAM
+  cache that answers the next query without the database, is bounded by
+  NEURAL_FINGERPRINT_CACHE_MB, is dropped on demand and forgets the previous
+  build on a swap
 * a noisy slice of one track is found at rank one at its offset and flagged;
-  a track appended later is found the same way; random vectors match nothing
-  confidently; a clip shorter than two segments is refused; excluded ids
-  leave the vote so a song does not find itself
+  a track appended in a later part is found the same way; random vectors
+  match nothing confidently; a clip shorter than two segments is refused;
+  excluded ids leave the vote so a song does not find itself; a track whose
+  blob is gone can no longer come back
 * a clear match is decided by the first pass of segments and the rest is
   skipped; an unclear one votes with every segment
 * a stride of two indexes every other row and still finds the track at its
@@ -39,12 +40,9 @@ Main Features:
   invalidate_availability_cache; the mask is skipped only for a lone default
   server whose ids are all legacy
 * the loaded build offers the song picker a database-side filter, none when
-  unloaded; the pack is released by unload and the status reports the state
-* a track whose fingerprint row is gone since the build is written as dead
-  rows, never voted, left out of the count, and stays dead when the next pack
-  reuses the previous cells as a prefix
-* the startup load hands the sync to a background thread and returns None
-  when the feature is off, the model is missing or no build is stored
+  unloaded; the startup load is blocking and returns the track count, 0 when
+  the feature is off, the model is missing, nothing is stored or the stored
+  directory is unusable
 """
 
 import numpy as np
@@ -53,6 +51,8 @@ import pytest
 import config
 from tasks import neural_fingerprint as nf
 from tasks import neural_fingerprint_index as nfi
+
+_REAL_ENSURE_LOADED = nfi.ensure_loaded
 
 
 def _unit(rng, shape):
@@ -65,21 +65,45 @@ def _quantizer(codes, n_cells=16):
     return nfi.train_quantizer(sample, n_cells)
 
 
-def _parts(codes, quantizer, row_offset=0, part_rows=nfi._PART_ROWS):
-    ids, lengths, cell_sizes, parts = [], [], np.zeros(quantizer.n_cells, dtype=np.int64), []
-    for chunk_ids, chunk_lengths, labels in nfi.label_tracks(iter(codes.items()), quantizer, part_rows):
-        blob, counts = nfi.pack_part(labels, quantizer.n_cells, row_offset)
-        parts.append(nfi.unpack_part(blob))
+def _drain(generator):
+    items = []
+    while True:
+        try:
+            items.append(next(generator))
+        except StopIteration as done:
+            return items, done.value
+
+
+def _build_parts(codes, quantizer, first_part=0, first_track=0, part_rows=nfi._PART_ROWS):
+    ids, lengths, cell_sizes, rows = [], [], np.zeros(quantizer.n_cells, dtype=np.int64), []
+    part, track = first_part, first_track
+    for chunk_ids, chunk_lengths, labels, chunk_codes in nfi.label_tracks(iter(codes.items()), quantizer, part_rows):
+        tracks = np.repeat(np.arange(track, track + len(chunk_ids), dtype=np.uint32), chunk_lengths)
+        offsets = np.concatenate([np.arange(n, dtype=np.uint16) for n in chunk_lengths])
+        cell_rows, counts = _drain(nfi.part_cells(part, labels, chunk_codes, tracks, offsets, quantizer.n_cells))
+        rows.extend(cell_rows)
+        cell_sizes += counts
         ids.extend(chunk_ids)
         lengths.append(chunk_lengths)
-        cell_sizes += counts
-        row_offset += int(labels.size)
-    return ids, np.concatenate(lengths), cell_sizes, parts
+        part += 1
+        track += len(chunk_ids)
+    return ids, np.concatenate(lengths), cell_sizes, part, rows
 
 
 def _directory(build_id, quantizer, ids, lengths, cell_sizes, parts, trained_tracks):
     blob = nfi.pack_directory(build_id, nf.codebook()[1], quantizer, ids, lengths, cell_sizes, parts, trained_tracks)
     return nfi.unpack_directory(blob)
+
+
+def _serve_rows(monkeypatch, store, fetched=None):
+    def read_rows(pack, cell_ids):
+        wanted = set(int(cell) for cell in cell_ids)
+        names = {nfi._part_name(part) for part in range(pack.parts)}
+        if fetched is not None:
+            fetched.append(sorted(wanted))
+        return [(name, cell, blob) for (name, cell), blob in store.items() if cell in wanted and name in names]
+
+    monkeypatch.setattr(nfi, '_read_cell_rows', read_rows)
 
 
 @pytest.fixture
@@ -90,10 +114,10 @@ def codebook(monkeypatch, tmp_path):
     np.savez(tmp_path / 'pq.npz', codebook=book)
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CODEBOOK_PATH', str(tmp_path / 'pq.npz'))
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', __file__)
-    monkeypatch.setattr(config, 'IVF_DISK_CACHE_DIR', str(tmp_path / 'cache'))
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_NPROBE', 4)
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_INDEX_STRIDE', 1)
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_QUERY_THREADS', 2)
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CACHE_MB', 64)
     for key in ('codebook', 'codebook_id', 'codebook_bias'):
         monkeypatch.setitem(nf._STATE, key, None)
     return tracks, rng
@@ -104,15 +128,15 @@ def library(monkeypatch, codebook):
     tracks, rng = codebook
     codes = {item_id: nf.encode_codes(v) for item_id, v in tracks.items()}
     quantizer = _quantizer(codes)
-    ids, lengths, cell_sizes, parts = _parts(codes, quantizer)
-    directory = _directory('build-one', quantizer, ids, lengths, cell_sizes, len(parts), len(ids))
-    paths = nfi._paths('build-one')
-    nfi.write_local_pack(paths, directory, parts, lambda wanted: ((i, codes[i]) for i in wanted))
-    nfi.unload()
-    nfi._open_pack(paths)
-    monkeypatch.setattr(nfi, 'ensure_loaded', lambda: True)
+    ids, lengths, cell_sizes, parts, rows = _build_parts(codes, quantizer)
+    directory = _directory('build-one', quantizer, ids, lengths, cell_sizes, parts, len(ids))
+    store = {(name, cell): blob for name, cell, blob in rows}
+    _serve_rows(monkeypatch, store)
     monkeypatch.setattr(nfi, '_candidate_codes', lambda wanted: {i: codes[i] for i in wanted if i in codes})
-    yield tracks, rng, codes, quantizer, directory, paths, parts
+    nfi.unload()
+    nfi._swap_pack(nfi._pack_from(directory))
+    monkeypatch.setattr(nfi, 'ensure_loaded', lambda: True)
+    yield tracks, rng, codes, quantizer, directory, store
     nfi.unload()
 
 
@@ -120,26 +144,34 @@ def _serve(monkeypatch, vectors):
     monkeypatch.setattr(nfi, 'fingerprint_audio', lambda audio, sr, hop: vectors)
 
 
-def test_a_part_round_trips_and_two_parts_place_rows_like_one(codebook):
-    labels = np.random.default_rng(1).integers(0, 5, size=1000).astype(np.int32)
-    blob, counts = nfi.pack_part(labels, 5, 0)
-    part = nfi.unpack_part(blob)
-    assert part['n_rows'] == 1000
-    assert np.array_equal(np.diff(part['bounds']), counts)
-    assert np.array_equal(np.sort(part['order']), np.arange(1000))
-    assert all(labels[part['order'][part['bounds'][c]:part['bounds'][c + 1]]].tolist() == [c] * int(counts[c]) for c in range(5))
-    bounds = np.concatenate(([0], np.cumsum(counts)))
-    whole = nfi.part_positions(part, bounds, np.zeros(5, dtype=np.int64))
-    first = nfi.unpack_part(nfi.pack_part(labels[:600], 5, 0)[0])
-    second = nfi.unpack_part(nfi.pack_part(labels[600:], 5, 600)[0])
-    filled = np.zeros(5, dtype=np.int64)
-    positions = np.concatenate([nfi.part_positions(first, bounds, filled), nfi.part_positions(second, bounds, filled + np.diff(first['bounds']))])
-    assert np.array_equal(positions, whole)
-    assert np.array_equal(np.sort(whole), np.arange(1000))
-    by_position = labels[np.argsort(whole)]
-    assert (np.diff(by_position) >= 0).all()
+def test_a_cell_round_trips_and_a_part_writes_one_row_per_non_empty_cell(codebook):
+    tracks, rng = codebook
+    codes = nf.encode_codes(_unit(rng, (500, nf.DIM)))
+    labels = rng.integers(0, 6, size=500).astype(np.int32)
+    labels[labels == 3] = 4
+    tracks_of = rng.integers(0, 9, size=500).astype(np.uint32)
+    offsets = rng.integers(0, 400, size=500).astype(np.uint16)
+    blob = nfi.pack_cell(codes[:7], tracks_of[:7], offsets[:7], np.linspace(0.8, 1.2, 7, dtype=np.float32))
+    back_codes, back_tracks, back_offsets, back_norms = nfi.unpack_cell(blob)
+    assert np.array_equal(back_codes, codes[:7])
+    assert np.array_equal(back_tracks, tracks_of[:7])
+    assert np.array_equal(back_offsets, offsets[:7])
+    assert np.allclose(back_norms.astype(np.float32), np.linspace(0.8, 1.2, 7), atol=1e-3)
     with pytest.raises(ValueError):
-        nfi.unpack_part(b'XXXX' + blob[4:])
+        nfi.unpack_cell(blob[:-1])
+    rows, counts = _drain(nfi.part_cells(3, labels, codes, tracks_of, offsets, 6))
+    assert np.array_equal(counts, np.bincount(labels, minlength=6))
+    assert [cell for _name, cell, _blob in rows] == sorted(set(labels.tolist()))
+    assert all(name == 'neural_fingerprint_index/p3' for name, _cell, _blob in rows)
+    seen = 0
+    for _name, cell, cell_blob in rows:
+        cell_codes, cell_tracks, cell_offsets, _norms = nfi.unpack_cell(cell_blob)
+        picked = np.flatnonzero(labels == cell)
+        assert np.array_equal(cell_codes, codes[picked])
+        assert np.array_equal(cell_tracks, tracks_of[picked])
+        assert np.array_equal(cell_offsets, offsets[picked])
+        seen += picked.size
+    assert seen == 500
 
 
 def test_the_two_level_quantizer_covers_the_cells_and_assigns_within_the_nearest_group(codebook):
@@ -170,16 +202,20 @@ def test_label_tracks_splits_parts_at_track_boundaries_under_the_row_budget(libr
     tracks, _rng, codes, quantizer, *_rest = library
     chunks = list(nfi.label_tracks(iter(codes.items()), quantizer, part_rows=200))
     assert len(chunks) > 1
-    assert [i for ids, _lengths, _labels in chunks for i in ids] == sorted(tracks)
-    for ids, lengths, labels in chunks:
+    assert [i for ids, _lengths, _labels, _codes in chunks for i in ids] == sorted(tracks)
+    for ids, lengths, labels, chunk_codes in chunks:
         assert int(lengths.sum()) <= 200
         assert labels.size == int(lengths.sum())
+        assert chunk_codes.shape == (int(lengths.sum()), nf.CODE_BYTES)
         assert lengths.tolist() == [tracks[i].shape[0] for i in ids]
-    whole = np.concatenate([labels for _ids, _lengths, labels in chunks])
+        assert np.array_equal(chunk_codes, np.concatenate([codes[i] for i in ids]))
+    whole = np.concatenate([labels for _ids, _lengths, labels, _codes in chunks])
     assert np.array_equal(whole, next(iter(nfi.label_tracks(iter(codes.items()), quantizer)))[2])
 
 
-def test_the_directory_round_trips_with_int8_centroids(codebook):
+def test_the_directory_round_trips_with_int8_centroids_and_an_older_layout_is_reported(codebook):
+    import io
+
     tracks, rng = codebook
     quantizer = nfi.train_quantizer(_unit(rng, (300, nf.DIM)), 7)
     directory = _directory('b1', quantizer, ['a', 'b'], np.array([3, 4]), np.arange(7), 2, 9)
@@ -192,43 +228,11 @@ def test_the_directory_round_trips_with_int8_centroids(codebook):
     assert directory['codebook_id'] == nf.codebook()[1]
     assert np.einsum('ij,ij->i', directory['centroids'], quantizer.cells).min() > 0.999
     assert np.array_equal(directory['quantizer'].offsets, quantizer.offsets)
-    assert directory['quantizer'].coarse.shape == quantizer.coarse.shape
-
-
-def test_a_directory_of_an_older_layout_triggers_a_rebuild_and_a_clear_message_instead_of_a_crash(monkeypatch, codebook, tmp_path):
-    import io
-
-    import database
-
-    tracks, rng = codebook
     buffer = io.BytesIO()
-    np.savez(
-        buffer, format=np.int64(nfi.FORMAT - 1), build_id=np.asarray('old-build'), codebook_id=np.uint32(nf.codebook()[1]),
-        centroids=np.zeros((4, nf.DIM), dtype=np.int8), ids=np.asarray(['a'], dtype=str), lengths=np.asarray([3]),
-        cell_sizes=np.asarray([3, 0, 0, 0]), parts=np.int64(1), trained_tracks=np.int64(1),
-    )
+    np.savez(buffer, format=np.int64(nfi.FORMAT - 1), build_id=np.asarray('old-build'), centroids=np.zeros((4, nf.DIM), dtype=np.int8))
     old = nfi.unpack_directory(buffer.getvalue())
-    assert old['format'] == nfi.FORMAT - 1
-    assert old['build_id'] == 'old-build'
+    assert old == {'format': nfi.FORMAT - 1, 'build_id': 'old-build'}
     assert 'layout' in nfi.needs_full_build(old, ['a'], nf.codebook()[1])
-
-    class Conn:
-        def close(self):
-            pass
-
-    monkeypatch.setattr(database, 'connect_raw', lambda **kw: Conn())
-    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: 'old-build')
-    monkeypatch.setattr(nfi, '_load_directory', lambda conn: old)
-    nfi.unload()
-    with pytest.raises(RuntimeError, match='older version'):
-        nfi.ensure_loaded()
-    assert 'older version' in nfi.get_status()['error']
-    assert nfi.reload_from_db() is False
-    (tmp_path / 'cache').mkdir(exist_ok=True)
-    stale = tmp_path / 'cache' / 'neural_fingerprint.old-build.rows.u8'
-    stale.write_bytes(b'x')
-    nfi._prune_local('another-build')
-    assert not stale.exists()
 
 
 def test_the_full_build_decision_names_its_reason(monkeypatch, codebook):
@@ -249,42 +253,6 @@ def test_the_full_build_decision_names_its_reason(monkeypatch, codebook):
     assert 'largest cell' in nfi.needs_full_build(unbalanced, ids, book_id)
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_INDEX_STRIDE', 2)
     assert 'stride' in nfi.needs_full_build(directory, ids, book_id)
-    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_INDEX_STRIDE', 1)
-    assert 'layout' in nfi.needs_full_build(dict(directory, format=nfi.FORMAT - 1), ids, book_id)
-
-
-def test_the_pack_stores_the_codes_by_cell_with_track_offset_and_norm_beside_each_row(library):
-    tracks, _rng, codes, quantizer, directory, paths, parts = library
-    pack = nfi._STATE['pack']
-    assert [str(i) for i in pack.ids] == sorted(tracks)
-    lengths = [int(n) for n in pack.lengths]
-    assert lengths == [tracks[k].shape[0] for k in sorted(tracks)]
-    n_rows = sum(lengths)
-    assert pack.slab.shape == (n_rows, nf.CODE_BYTES)
-    tracks_at = np.asarray(pack.track)
-    offsets_at = np.asarray(pack.offset)
-    starts = np.concatenate(([0], np.cumsum(lengths)[:-1]))
-    rows = starts[tracks_at] + offsets_at
-    assert np.array_equal(np.sort(rows), np.arange(n_rows))
-    for position in np.random.default_rng(2).choice(n_rows, 200, replace=False):
-        item_id = sorted(tracks)[tracks_at[position]]
-        assert np.array_equal(pack.slab[position], codes[item_id][offsets_at[position]])
-    bounds = pack.cell_bounds
-    assert bounds[0] == 0
-    assert bounds[-1] == n_rows
-    labels = np.concatenate([labels for _ids, _lengths, labels in nfi.label_tracks(iter(codes.items()), quantizer)])
-    by_position = labels[rows]
-    assert (np.diff(by_position) >= 0).all()
-    assert np.array_equal(np.bincount(by_position, minlength=bounds.size - 1), np.diff(bounds))
-    book = nf.codebook()[0]
-    raw = book[np.arange(nf.PQ_SUBSPACES)[None, :], np.asarray(pack.slab[:7])].reshape(7, nf.DIM)
-    assert np.allclose(np.asarray(pack.norm[:7]).astype(np.float32), 1.0 / np.linalg.norm(raw, axis=1), rtol=2e-3)
-    assert pack.build_id == 'build-one'
-    assert pack.stride == 1
-    assert nfi._local_builds() == ['build-one']
-    status = nfi.get_status()
-    assert status['loaded'] is True
-    assert status['tracks'] == 40
 
 
 def test_the_builder_commits_its_own_transaction_and_rolls_back_on_failure(monkeypatch, codebook):
@@ -318,6 +286,49 @@ def test_the_builder_commits_its_own_transaction_and_rolls_back_on_failure(monke
     assert (failing.commits, failing.rollbacks) == (0, 1)
 
 
+def test_the_loaded_index_reads_probed_cells_on_demand_and_caches_them(monkeypatch, library):
+    tracks, _rng, codes, quantizer, directory, store = library
+    fetched = []
+    _serve_rows(monkeypatch, store, fetched)
+    nfi.drop_cell_cache()
+    query = tracks['fp_0017'][10:40]
+    rows = nfi.identify_vectors(query, 5)
+    assert rows[0]['item_id'] == 'fp_0017'
+    assert fetched
+    assert all(cells for cells in fetched)
+    assert set(cell for cells in fetched for cell in cells) < set(range(quantizer.n_cells))
+    status = nfi.get_status()
+    assert status['loaded'] is True
+    assert status['tracks'] == 40
+    assert status['cells'] == quantizer.n_cells
+    assert status['parts'] == 1
+    assert status['cached_cells'] == len(set(cell for cells in fetched for cell in cells))
+    assert status['cache_mb'] > 0
+    fetched.clear()
+    assert nfi.identify_vectors(query, 5)[0]['item_id'] == 'fp_0017'
+    assert fetched == []
+    nfi.drop_cell_cache()
+    assert nfi.get_status()['cached_cells'] == 0
+    assert nfi.get_status()['cache_mb'] == 0
+    nfi.identify_vectors(query, 5)
+    assert fetched
+    nfi._swap_pack(nfi._pack_from(dict(directory, build_id='build-two')))
+    assert nfi.get_status()['cached_cells'] == 0
+
+
+def test_the_cell_cache_is_bounded_by_the_configured_megabytes(monkeypatch, library):
+    tracks, *_rest = library
+    query = tracks['fp_0017'][10:40]
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CACHE_MB', 0)
+    nfi.drop_cell_cache()
+    assert nfi.identify_vectors(query, 5)[0]['item_id'] == 'fp_0017'
+    assert nfi.get_status()['cached_cells'] == 0
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CACHE_MB', 64)
+    nfi.identify_vectors(query, 5)
+    assert nfi.get_status()['cached_cells'] > 0
+    assert nfi.get_status()['cache_mb'] <= 64
+
+
 def test_a_noisy_slice_is_found_at_its_offset_and_flagged(monkeypatch, library):
     tracks, rng, *_rest = library
     source = tracks['fp_0017']
@@ -335,45 +346,35 @@ def test_a_noisy_slice_is_found_at_its_offset_and_flagged(monkeypatch, library):
     assert len(rows) == 10
 
 
-def test_an_appended_build_reuses_the_previous_cells_and_finds_the_new_track(monkeypatch, library):
-    tracks, rng, codes, quantizer, directory, paths, parts = library
+def test_an_appended_build_adds_parts_and_finds_the_new_track(monkeypatch, library):
+    tracks, rng, codes, quantizer, directory, store = library
     new_tracks = {f'fp_{i:04d}': _unit(rng, (50, nf.DIM)) for i in range(40, 44)}
     new_codes = {item_id: nf.encode_codes(v) for item_id, v in new_tracks.items()}
-    ids, lengths, cell_sizes, new_parts = _parts(new_codes, quantizer, row_offset=int(directory['lengths'].sum()))
+    ids, lengths, cell_sizes, parts, rows = _build_parts(new_codes, quantizer, first_part=directory['parts'], first_track=len(directory['ids']))
+    assert parts == 2
+    assert all(name == 'neural_fingerprint_index/p1' for name, _cell, _blob in rows)
+    store.update({(name, cell): blob for name, cell, blob in rows})
     second = _directory(
         'build-two', quantizer, directory['ids'] + ids, np.concatenate([directory['lengths'], lengths]),
-        directory['cell_sizes'] + cell_sizes, len(parts) + len(new_parts), directory['trained_tracks'],
+        directory['cell_sizes'] + cell_sizes, parts, directory['trained_tracks'],
     )
-    fetched = []
-
-    def codes_iter(wanted):
-        fetched.extend(wanted)
-        return ((i, new_codes[i]) for i in wanted)
-
-    new_paths = nfi._paths('build-two')
-    nfi.write_local_pack(new_paths, second, parts + new_parts, codes_iter, paths, nfi._local_meta('build-one'))
-    assert fetched == ids
-    nfi._open_pack(new_paths)
-    pack = nfi._STATE['pack']
-    assert pack.ids.size == 44
     every = {**codes, **new_codes}
     monkeypatch.setattr(nfi, '_candidate_codes', lambda wanted: {i: every[i] for i in wanted})
-    tracks_at = np.asarray(pack.track)
-    for position in (0, int(pack.slab.shape[0]) // 2, int(pack.slab.shape[0]) - 1):
-        item_id = str(pack.ids[tracks_at[position]])
-        assert np.array_equal(pack.slab[position], every[item_id][int(pack.offset[position])])
+    nfi._swap_pack(nfi._pack_from(second))
+    pack = nfi._STATE['pack']
+    assert pack.ids.size == 44
+    assert pack.parts == 2
     query = new_tracks['fp_0042'][5:35] + 0.03 * rng.standard_normal((30, nf.DIM)).astype(np.float32)
     _serve(monkeypatch, query / np.linalg.norm(query, axis=1, keepdims=True))
     rows = nfi.identify(np.zeros(8000 * 16, dtype=np.float32), 8000, 5)
     assert rows[0]['item_id'] == 'fp_0042'
     assert rows[0]['offset_seconds'] == pytest.approx(5 * nf.HOP_SECONDS, abs=0.01)
     assert rows[0]['identified'] is True
-    nfi._prune_local('build-two')
-    assert nfi._local_builds() == ['build-two']
+    assert nfi.identify_vectors(tracks['fp_0017'][10:40], 5)[0]['item_id'] == 'fp_0017'
 
 
-def test_identify_vectors_can_leave_the_source_track_out(library):
-    tracks, _rng, *_rest = library
+def test_identify_vectors_can_leave_the_source_track_out_and_a_track_without_a_blob_never_returns(monkeypatch, library):
+    tracks, _rng, codes, *_rest = library
     query = tracks['fp_0017'][10:40]
     with_self = nfi.identify_vectors(query, 5)
     assert with_self[0]['item_id'] == 'fp_0017'
@@ -383,6 +384,8 @@ def test_identify_vectors_can_leave_the_source_track_out(library):
     assert without[0]['score'] < with_self[0]['score']
     with pytest.raises(ValueError, match='too short'):
         nfi.identify_vectors(query[:1], 5)
+    monkeypatch.setattr(nfi, '_candidate_codes', lambda wanted: {i: codes[i] for i in wanted if i != 'fp_0017'})
+    assert 'fp_0017' not in [row['item_id'] for row in nfi.identify_vectors(query, 5)]
 
 
 def test_a_clear_match_is_decided_by_the_first_pass_and_an_unclear_one_votes_with_every_segment(monkeypatch, library):
@@ -390,9 +393,9 @@ def test_a_clear_match_is_decided_by_the_first_pass_and_an_unclear_one_votes_wit
     scored = []
     original = nfi._segment_votes
 
-    def counting(pack, book, query_vectors, qi, nprobe, allowed):
+    def counting(pack, book, query_vectors, qi, probed, cells, allowed):
         scored.append(qi)
-        return original(pack, book, query_vectors, qi, nprobe, allowed)
+        return original(pack, book, query_vectors, qi, probed, cells, allowed)
 
     monkeypatch.setattr(nfi, '_segment_votes', counting)
     query = tracks['fp_0017'][10:40]
@@ -410,24 +413,22 @@ def test_a_stride_of_two_indexes_every_other_row_and_still_finds_the_track(monke
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_INDEX_STRIDE', 2)
     codes = {item_id: nf.encode_codes(v) for item_id, v in tracks.items()}
     quantizer = _quantizer(codes)
-    ids, lengths, cell_sizes, parts = _parts(codes, quantizer)
+    ids, lengths, cell_sizes, parts, rows = _build_parts(codes, quantizer)
     assert lengths.tolist() == [(tracks[i].shape[0] + 1) // 2 for i in ids]
-    directory = _directory('build-stride', quantizer, ids, lengths, cell_sizes, len(parts), len(ids))
+    directory = _directory('build-stride', quantizer, ids, lengths, cell_sizes, parts, len(ids))
     assert directory['stride'] == 2
-    paths = nfi._paths('build-stride')
-    nfi.write_local_pack(paths, directory, parts, lambda wanted: ((i, codes[i]) for i in wanted))
-    nfi.unload()
-    pack = nfi._open_pack(paths)
-    assert pack.stride == 2
-    assert pack.slab.shape[0] == int(lengths.sum())
-    monkeypatch.setattr(nfi, 'ensure_loaded', lambda: True)
+    _serve_rows(monkeypatch, {(name, cell): blob for name, cell, blob in rows})
     monkeypatch.setattr(nfi, '_candidate_codes', lambda wanted: {i: codes[i] for i in wanted})
+    monkeypatch.setattr(nfi, 'ensure_loaded', lambda: True)
+    nfi.unload()
+    nfi._swap_pack(nfi._pack_from(directory))
     try:
+        assert nfi._STATE['pack'].stride == 2
         for start in (20, 21):
-            rows = nfi.identify_vectors(tracks['fp_0017'][start:start + 30], 5)
-            assert rows[0]['item_id'] == 'fp_0017'
-            assert rows[0]['offset_seconds'] == pytest.approx(start * nf.HOP_SECONDS, abs=0.01)
-            assert rows[0]['identified'] is True
+            found = nfi.identify_vectors(tracks['fp_0017'][start:start + 30], 5)
+            assert found[0]['item_id'] == 'fp_0017'
+            assert found[0]['offset_seconds'] == pytest.approx(start * nf.HOP_SECONDS, abs=0.01)
+            assert found[0]['identified'] is True
     finally:
         nfi.unload()
 
@@ -467,7 +468,7 @@ def test_a_server_scope_votes_only_over_that_servers_tracks_and_the_mask_is_cach
 def test_a_disabled_feature_builds_loads_and_reloads_nothing(monkeypatch):
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', False)
     assert nfi.build_and_store_neural_fingerprint_index(None) is False
-    assert nfi.load_at_startup() is None
+    assert nfi.load_at_startup() == 0
     assert nfi.reload_from_db() is False
 
 
@@ -510,60 +511,45 @@ def test_random_vectors_match_nothing_confidently_and_a_short_clip_is_refused(mo
         nfi.identify(np.zeros(8000, dtype=np.float32), 8000, 5)
 
 
-def test_a_track_gone_since_the_build_is_written_dead_masked_and_uncounted(library):
-    tracks, _rng, codes, quantizer, directory, paths, parts = library
-    gone = 'fp_0017'
-    gone_index = sorted(tracks).index(gone)
-    second = dict(directory, build_id='build-two')
-    second_paths = nfi._paths('build-two')
-    nfi.write_local_pack(second_paths, second, parts, lambda wanted: ((i, None if i == gone else codes[i]) for i in wanted))
-    nfi._open_pack(second_paths)
-    assert nfi._STATE['pack'].dead.tolist() == [gone_index]
-    assert nfi.get_status()['tracks'] == 39
-    rows = nfi.identify_vectors(tracks[gone][10:40], 5)
-    assert rows
-    assert gone not in [row['item_id'] for row in rows]
-    fetched = []
-
-    def codes_iter(wanted):
-        fetched.extend(wanted)
-        return ((i, codes[i]) for i in wanted)
-
-    third_paths = nfi._paths('build-three')
-    nfi.write_local_pack(third_paths, dict(second, build_id='build-three'), parts, codes_iter, second_paths, nfi._local_meta('build-two'))
-    assert fetched == []
-    nfi._open_pack(third_paths)
-    assert nfi._STATE['pack'].dead.tolist() == [gone_index]
-    assert gone not in [row['item_id'] for row in nfi.identify_vectors(tracks[gone][10:40], 5)]
-
-
-def test_startup_load_maps_the_stored_build_in_the_background_and_says_when_there_is_none(monkeypatch, library):
+def test_startup_load_is_blocking_returns_the_track_count_and_reports_an_unusable_directory(monkeypatch, library):
     import database
+
+    tracks, _rng, _codes, _quantizer, directory, _store = library
 
     class Conn:
         def close(self):
             pass
 
     monkeypatch.setattr(database, 'connect_raw', lambda **kw: Conn())
-    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: None)
-    assert nfi.load_at_startup() is None
-    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: 'build-one')
-    assert nfi.load_at_startup() is None
+    monkeypatch.setattr(nfi, 'ensure_loaded', _REAL_ENSURE_LOADED)
     nfi.unload()
-    monkeypatch.setattr(nfi, 'ensure_loaded', lambda: nfi._open_pack(nfi._paths('build-one')) or True)
-    thread = nfi.load_at_startup()
-    thread.join(10)
-    assert not thread.is_alive()
-    assert nfi.get_status()['tracks'] == 40
+    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: None)
+    assert nfi.load_at_startup() == 0
+    assert nfi.is_loaded() is False
+    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: 'build-one')
+    monkeypatch.setattr(nfi, '_load_directory', lambda conn: directory)
+    assert nfi.load_at_startup() == 40
+    assert nfi.is_loaded() is True
+    assert nfi.load_at_startup() == 40
+    nfi.unload()
+    monkeypatch.setattr(nfi, '_load_directory', lambda conn: {'format': nfi.FORMAT - 1, 'build_id': 'build-one'})
+    assert nfi.load_at_startup() == 0
+    assert 'older version' in nfi.get_status()['error']
+    with pytest.raises(nfi.IndexUnavailable, match='older version'):
+        nfi.ensure_loaded()
+    assert nfi.reload_from_db() is False
+    monkeypatch.setattr(nfi, '_load_directory', lambda conn: directory)
+    assert nfi.reload_from_db() is True
+    assert nfi._STATE['pack'].build_id == 'build-one'
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', '/nowhere/model.onnx')
-    assert nfi.load_at_startup() is None
+    assert nfi.load_at_startup() == 0
 
 
-def test_unload_releases_the_pack_and_a_missing_model_is_a_runtime_error(monkeypatch, library):
+def test_unload_releases_the_index_and_a_missing_model_is_unavailable(monkeypatch, library):
     assert nfi.unload() is True
     status = nfi.get_status()
     assert status['loaded'] is False
-    assert status['synced'] is True
+    assert status['tracks'] == 0
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', '/nowhere/model.onnx')
-    with pytest.raises(RuntimeError, match='not available'):
+    with pytest.raises(nfi.IndexUnavailable, match='not available'):
         nfi.identify(np.zeros(8000 * 4, dtype=np.float32), 8000, 5)

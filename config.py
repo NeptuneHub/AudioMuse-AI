@@ -292,6 +292,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'NEURAL_FINGERPRINT_MIN_LEAD',
     'NEURAL_FINGERPRINT_INDEX_STRIDE',
     'NEURAL_FINGERPRINT_QUERY_THREADS',
+    'NEURAL_FINGERPRINT_CACHE_MB',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
@@ -1201,6 +1202,12 @@ NEURAL_FINGERPRINT_INDEX_STRIDE = int(os.environ.get("NEURAL_FINGERPRINT_INDEX_S
 # Threads that score a clip's segments in parallel in the web process; 0 = one per
 # CPU core, at most 8.
 NEURAL_FINGERPRINT_QUERY_THREADS = int(os.environ.get("NEURAL_FINGERPRINT_QUERY_THREADS", "0"))
+# RAM (MB) the web process keeps for fingerprint cells read from the ivf_cell table on
+# demand, like IVF_GLOBAL_CACHE_MB for the other indexes; least recently used cells are
+# dropped past it, and the whole cache is dropped when the recording search has been
+# idle for RECORDING_SEARCH_WARMUP_DURATION seconds. A query touches a few hundred
+# cells; a cell is about 40 bytes per indexed half second of the tracks it holds.
+NEURAL_FINGERPRINT_CACHE_MB = int(os.environ.get("NEURAL_FINGERPRINT_CACHE_MB", "1024"))
 # The worker appends new tracks to the existing cells; the centroids are retrained
 # (a full rebuild) once the library has grown this many times since they were trained.
 NEURAL_FINGERPRINT_RETRAIN_GROWTH = float(os.environ.get("NEURAL_FINGERPRINT_RETRAIN_GROWTH", "4.0"))

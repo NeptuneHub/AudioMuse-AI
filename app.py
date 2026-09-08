@@ -1272,20 +1272,20 @@ if not _is_worker:
                 )
         except Exception as e:
             logger.debug(f"Hyperbolic Poincare index not loaded at startup: {e}")
-        # Sync and map the neural fingerprint index the worker stored, in the
-        # background: its local pack streams gigabytes of codes out of Postgres on a
-        # large library, which must never hold the web server's start (gunicorn kills
-        # a worker that takes longer than its timeout to boot). The page reports
-        # "loading" until it is mapped; a library that has not built it yet says so.
+        # Load the neural fingerprint index directory the worker stored, blocking
+        # like every other index load: it is a few megabytes at any library size,
+        # since the cells are read from ivf_cell per query. A library that has not
+        # built it yet, or whose stored index is unusable, is reported just above.
         try:
             from tasks.neural_fingerprint_index import load_at_startup as load_neural_fingerprint_index
 
-            if load_neural_fingerprint_index():
-                logger.info("Neural fingerprint index found; syncing and mapping it in the background.")
+            neural_tracks = load_neural_fingerprint_index()
+            if neural_tracks:
+                logger.info("Neural fingerprint index loaded at startup (%d tracks).", neural_tracks)
             elif not config.NEURAL_FINGERPRINT_ENABLED:
                 logger.info("Neural fingerprint disabled (NEURAL_FINGERPRINT_ENABLED=false); Search by Recording is off.")
             else:
-                logger.info("Neural fingerprint index not found at startup (the analysis builds it).")
+                logger.info("Neural fingerprint index not loaded at startup (not built yet, or the analysis must rebuild it).")
         except Exception:
             logger.exception("Neural fingerprint index not loaded at startup")
 

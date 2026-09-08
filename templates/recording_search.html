@@ -153,9 +153,18 @@
         <p>To enable it, set <code>NEURAL_FINGERPRINT_ENABLED=true</code> in your environment and run the analysis: it computes the neural fingerprint of every song and builds the index.</p>
     </div>
     {% else %}
+    {% if index_status.loaded %}
     <div class="cache-stats">
-        <strong>Neural fingerprint index</strong> {{ index_status.neural }}
+        <strong>Neural fingerprint index</strong> |
+        <strong>{{ index_status.song_count }}</strong> songs indexed |
+        {{ index_status.cells }} cells |
+        {{ index_status.cache_mb }} MB of cells in memory
     </div>
+    {% else %}
+    <div class="cache-stats">
+        <strong>Neural fingerprint index</strong> {{ index_status.state }}
+    </div>
+    {% endif %}
 
     <div class="search-container">
         <div class="tabs" role="tablist">

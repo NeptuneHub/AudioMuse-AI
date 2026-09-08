@@ -15,12 +15,12 @@ reusing the codes it already has, and a library grown past the retrain factor
 gets its centroids rebuilt from scratch.
 
 Main Features:
-* build -> ivf_dir holds the directory, the build id and part 0, committed by
-  the builder itself so another connection sees them at once
-* ensure_loaded syncs the local pack from the table and a slice of a track is
-  identified at its offset
+* build -> ivf_dir holds the directory and the build id, ivf_cell the cells of
+  part 0, committed by the builder itself so another connection sees them at once
+* ensure_loaded reads the directory and a slice of a track is identified at its
+  offset from cells paged out of the table
 * new tracks -> the next build appends part 1, keeps the build history, and
-  reload_from_db swaps the served pack to the new build
+  reload_from_db swaps the served directory to the new build
 * a library grown fourfold -> the next build retrains and goes back to one part
 """
 
@@ -45,6 +45,8 @@ _SCHEMA = (
     "CREATE TABLE embedding (item_id TEXT PRIMARY KEY, embedding BYTEA, neural_fingerprint BYTEA)",
     "CREATE TABLE ivf_dir (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, "
     "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE ivf_cell (index_name VARCHAR(255) NOT NULL, cell_id INTEGER NOT NULL, "
+    "cell_data BYTEA NOT NULL, PRIMARY KEY (index_name, cell_id))",
 )
 
 
@@ -77,6 +79,16 @@ def _names_seen_by_a_fresh_connection(dsn):
         other.close()
 
 
+def _cell_parts(dsn):
+    other = psycopg2.connect(dsn)
+    try:
+        with other.cursor() as cur:
+            cur.execute("SELECT DISTINCT index_name FROM ivf_cell WHERE index_name LIKE 'neural%%' ORDER BY index_name")
+            return [row[0] for row in cur.fetchall()]
+    finally:
+        other.close()
+
+
 def test_worker_build_web_sync_append_and_retrain(shared_pg_dsn, monkeypatch, tmp_path):
     if psycopg2 is None:
         pytest.skip('psycopg2 not importable')
@@ -105,6 +117,7 @@ def test_worker_build_web_sync_append_and_retrain(shared_pg_dsn, monkeypatch, tm
     try:
         with conn.cursor() as cur:
             cur.execute('DROP TABLE IF EXISTS ivf_dir')
+            cur.execute('DROP TABLE IF EXISTS ivf_cell')
             cur.execute('DROP TABLE IF EXISTS embedding CASCADE')
             for statement in _SCHEMA:
                 cur.execute(statement)
@@ -115,7 +128,7 @@ def test_worker_build_web_sync_append_and_retrain(shared_pg_dsn, monkeypatch, tm
         names = _names_seen_by_a_fresh_connection(shared_pg_dsn)
         assert 'neural_fingerprint_index__ivf_dir' in names
         assert 'neural_fingerprint_index__build' in names
-        assert 'neural_fingerprint_index__part0' in names
+        assert _cell_parts(shared_pg_dsn) == ['neural_fingerprint_index/p0']
         first = nfi._load_directory(conn)
         assert first['parts'] == 1
         assert first['ids'] == sorted(tracks)
@@ -137,16 +150,17 @@ def test_worker_build_web_sync_append_and_retrain(shared_pg_dsn, monkeypatch, tm
         assert second['parts'] == 2
         assert second['ids'] == sorted(tracks) + sorted(added)
         assert second['build_id'] != first['build_id']
-        assert 'neural_fingerprint_index__part1' in _names_seen_by_a_fresh_connection(shared_pg_dsn)
+        assert _cell_parts(shared_pg_dsn) == ['neural_fingerprint_index/p0', 'neural_fingerprint_index/p1']
         assert nfi.reload_from_db() is True
         assert nfi._STATE['pack'].build_id == second['build_id']
         assert nfi._STATE['pack'].ids.size == 36
+        assert nfi._STATE['pack'].parts == 2
         query = added['fp_0033'][3:25] + 0.03 * rng.standard_normal((22, nf.DIM)).astype(np.float32)
         nfi._TEST_QUERY = query / np.linalg.norm(query, axis=1, keepdims=True)
         rows = nfi.identify(np.zeros(8000 * 12, dtype=np.float32), 8000, 5)
         assert rows[0]['item_id'] == 'fp_0033'
         assert rows[0]['identified'] is True
-        assert nfi._local_builds() == [second['build_id']]
+        assert nfi.get_status()['cached_cells'] > 0
 
         grown = {f'fp_{i:04d}': _unit(rng, (30, nf.DIM)) for i in range(36, 130)}
         _insert(conn, nf, grown)
@@ -154,9 +168,10 @@ def test_worker_build_web_sync_append_and_retrain(shared_pg_dsn, monkeypatch, tm
         third = nfi._load_directory(conn)
         assert third['parts'] == 1
         assert third['trained_tracks'] == 130
-        assert 'neural_fingerprint_index__part1' not in _names_seen_by_a_fresh_connection(shared_pg_dsn)
+        assert _cell_parts(shared_pg_dsn) == ['neural_fingerprint_index/p0']
         assert nfi.reload_from_db() is True
         assert nfi._STATE['pack'].ids.size == 130
+        assert nfi.get_status()['cached_cells'] == 0
     finally:
         nfi.unload()
         conn.close()

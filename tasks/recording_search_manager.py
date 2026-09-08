@@ -136,12 +136,13 @@ def normalize_level(audio, target_db=None):
 
 
 def _unload_expired():
-    from tasks import neural_fingerprint
+    from tasks import neural_fingerprint, neural_fingerprint_index
 
     with _TIMER.lock():
         neural_fingerprint.unload_session()
+        neural_fingerprint_index.drop_cell_cache()
     logger.info(
-        'Recording search encoder unloaded after %ss idle', config.RECORDING_SEARCH_WARMUP_DURATION
+        'Recording search encoder and cell cache released after %ss idle', config.RECORDING_SEARCH_WARMUP_DURATION
     )
 
 
@@ -285,7 +286,7 @@ def warmup_recording_models():
 def _pack_state(status, missing_reason):
     if not status['available']:
         return missing_reason
-    if status['loaded'] or status.get('synced'):
+    if status['loaded']:
         return 'ready'
     if status['building']:
         return 'loading'
@@ -294,9 +295,16 @@ def _pack_state(status, missing_reason):
     return 'not loaded yet'
 
 
+def _index_summary(loaded=False, song_count=0, cells=0, cache_mb=0.0, state=''):
+    return {'loaded': bool(loaded), 'song_count': int(song_count), 'cells': int(cells), 'cache_mb': cache_mb, 'state': state}
+
+
 def get_index_status():
     from tasks import neural_fingerprint, neural_fingerprint_index
 
     if not neural_fingerprint.is_enabled():
-        return {'neural': 'disabled (NEURAL_FINGERPRINT_ENABLED=false)'}
-    return {'neural': _pack_state(neural_fingerprint_index.get_status(), 'needs the model file')}
+        return _index_summary(state='disabled (NEURAL_FINGERPRINT_ENABLED=false)')
+    status = neural_fingerprint_index.get_status()
+    return _index_summary(
+        status['loaded'], status['tracks'], status['cells'], status['cache_mb'], _pack_state(status, 'needs the model file'),
+    )

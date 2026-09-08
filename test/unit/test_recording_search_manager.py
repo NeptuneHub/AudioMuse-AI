@@ -160,7 +160,7 @@ def test_an_unavailable_index_raises(monkeypatch):
 
 def test_a_disabled_feature_reports_it_and_warms_nothing(monkeypatch):
     monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_ENABLED', False)
-    assert rsm.get_index_status() == {'neural': 'disabled (NEURAL_FINGERPRINT_ENABLED=false)'}
+    assert rsm.get_index_status() == rsm._index_summary(state='disabled (NEURAL_FINGERPRINT_ENABLED=false)')
     status = rsm.warmup_recording_models()
     assert status['loaded'] is False
     assert status['models'] == {'neural': False, 'encoder': False}
@@ -257,27 +257,33 @@ def test_warmup_starts_the_pack_when_it_is_available_but_not_loaded_and_preloads
     assert status['expiry_seconds'] == rsm.config.RECORDING_SEARCH_WARMUP_DURATION
 
 
-def test_the_idle_timer_releases_only_the_encoder(monkeypatch):
+def test_the_idle_timer_releases_the_encoder_and_the_cell_cache_but_not_the_index(monkeypatch):
     from tasks import neural_fingerprint, neural_fingerprint_index
 
     released = []
     monkeypatch.setattr(neural_fingerprint, 'unload_session', lambda: released.append('encoder') or True)
+    monkeypatch.setattr(neural_fingerprint_index, 'drop_cell_cache', lambda: released.append('cells'))
     monkeypatch.setattr(neural_fingerprint_index, 'unload', lambda: released.append('index') or True)
     rsm._unload_expired()
-    assert released == ['encoder']
+    assert released == ['encoder', 'cells']
 
 
-def test_index_status_names_the_pack_state(monkeypatch):
+def test_index_status_carries_the_counts_and_names_the_state(monkeypatch):
     from tasks import neural_fingerprint_index
 
+    base = {'tracks': 0, 'cells': 0, 'cache_mb': 0.0}
     states = [
         ({'available': False, 'loaded': False, 'building': False}, 'needs the model file'),
         ({'available': True, 'loaded': False, 'building': True}, 'loading'),
         ({'available': True, 'loaded': False, 'building': False}, 'not loaded yet'),
         ({'available': True, 'loaded': False, 'building': False, 'error': 'No index yet'}, 'No index yet'),
-        ({'available': True, 'loaded': False, 'building': False, 'synced': True}, 'ready'),
-        ({'available': True, 'loaded': True, 'building': False}, 'ready'),
     ]
     for status, expected in states:
-        monkeypatch.setattr(neural_fingerprint_index, 'get_status', lambda status=status: status)
-        assert rsm.get_index_status() == {'neural': expected}
+        monkeypatch.setattr(neural_fingerprint_index, 'get_status', lambda status=status: {**base, **status})
+        summary = rsm.get_index_status()
+        assert summary['state'] == expected
+        assert summary['loaded'] is False
+        assert summary['song_count'] == 0
+    loaded = {'available': True, 'loaded': True, 'building': False, 'tracks': 12345, 'cells': 111, 'cache_mb': 42.5}
+    monkeypatch.setattr(neural_fingerprint_index, 'get_status', lambda: loaded)
+    assert rsm.get_index_status() == {'loaded': True, 'song_count': 12345, 'cells': 111, 'cache_mb': 42.5, 'state': 'ready'}

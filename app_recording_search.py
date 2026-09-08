@@ -69,7 +69,7 @@ def recording_search_page():
         index_status = get_index_status()
     except Exception:
         logger.exception('Could not read the index status for the recording search page')
-        index_status = {'neural': 'not built yet'}
+        index_status = {'loaded': False, 'song_count': 0, 'cells': 0, 'cache_mb': 0.0, 'state': 'not built yet'}
     https = https_status()
 
     return render_template(
