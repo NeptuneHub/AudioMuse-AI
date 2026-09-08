@@ -98,10 +98,12 @@ def _directory(build_id, quantizer, ids, lengths, cell_sizes, parts, trained_tra
 def _serve_rows(monkeypatch, store, fetched=None):
     def read_rows(pack, cell_ids):
         wanted = set(int(cell) for cell in cell_ids)
-        names = {nfi._part_name(part) for part in range(pack.parts)}
         if fetched is not None:
             fetched.append(sorted(wanted))
-        return [(name, cell, blob) for (name, cell), blob in store.items() if cell in wanted and name in names]
+        return [
+            (name, cell, blob) for (name, cell), blob in store.items()
+            if cell in wanted and name.startswith(nfi._CELL_NAMESPACE)
+        ]
 
     monkeypatch.setattr(nfi, '_read_cell_rows', read_rows)
 
@@ -172,6 +174,26 @@ def test_a_cell_round_trips_and_a_part_writes_one_row_per_non_empty_cell(codeboo
         assert np.array_equal(cell_offsets, offsets[picked])
         seen += picked.size
     assert seen == 500
+
+
+def test_a_cell_slice_over_the_stored_value_cap_is_split_over_rows_the_reader_joins(monkeypatch, library):
+    tracks, _rng, codes, quantizer, directory, store = library
+    monkeypatch.setattr(config, 'IVF_MAX_PART_SIZE_MB', 0)
+    monkeypatch.setattr(nfi, '_rows_per_cell_row', lambda: 5)
+    ids, lengths, cell_sizes, parts, rows = _build_parts(codes, quantizer)
+    names = {name for name, _cell, _blob in rows}
+    assert 'neural_fingerprint_index/p0' in names
+    assert 'neural_fingerprint_index/p0.1' in names
+    for cell in range(quantizer.n_cells):
+        pieces = [nfi.unpack_cell(blob)[0].shape[0] for name, c, blob in rows if c == cell]
+        assert sum(pieces) == cell_sizes[cell]
+        assert all(piece <= 5 for piece in pieces)
+    split_store = {(name, cell): blob for name, cell, blob in rows}
+    _serve_rows(monkeypatch, split_store)
+    nfi.drop_cell_cache()
+    cells = nfi._cells_for(nfi._STATE['pack'], list(range(quantizer.n_cells)))
+    assert sum(arrays[0].shape[0] for arrays in cells.values()) == int(cell_sizes.sum())
+    assert nfi.identify_vectors(tracks['fp_0017'][10:40], 5)[0]['item_id'] == 'fp_0017'
 
 
 def test_the_two_level_quantizer_covers_the_cells_and_assigns_within_the_nearest_group(codebook):

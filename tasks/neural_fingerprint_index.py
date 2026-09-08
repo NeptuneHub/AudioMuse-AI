@@ -37,7 +37,10 @@ Main Features:
   with their codes). Every part writes one ivf_cell row per cell under the
   index name neural_fingerprint_index/p<part>: the cell's codes, then the
   track index, the offset in the track and the inverse norm of the decoded
-  vector, 40 bytes per row (pack_cell / unpack_cell). A full build retrains
+  vector, 40 bytes per row (pack_cell / unpack_cell); a slice larger than
+  IVF_MAX_PART_SIZE_MB is split over rows p<part>.1, p<part>.2 and so on, so
+  every stored value stays under the cap like the other indexes' cells, and
+  the reader concatenates whatever rows a cell has. A full build retrains
   the quantizer and replaces every part; an append keeps the quantizer,
   labels only the tracks fingerprinted since the last build and adds parts.
   The quantizer is retrained when the library has grown
@@ -369,8 +372,12 @@ def unpack_cell(blob):
     return codes, tracks, offsets, norms
 
 
-def _part_name(part):
-    return f'{_CELL_NAMESPACE}{part}'
+def _part_name(part, piece=0):
+    return f'{_CELL_NAMESPACE}{part}' if piece == 0 else f'{_CELL_NAMESPACE}{part}.{piece}'
+
+
+def _rows_per_cell_row():
+    return max(1, (int(config.IVF_MAX_PART_SIZE_MB) * 1024 * 1024) // _ROW_BYTES)
 
 
 def part_cells(part, labels, codes, tracks, offsets, n_cells):
@@ -378,10 +385,12 @@ def part_cells(part, labels, codes, tracks, offsets, n_cells):
     order = np.argsort(labels, kind='stable')
     counts = np.bincount(labels, minlength=n_cells).astype(np.int64)
     bounds = np.concatenate(([0], np.cumsum(counts)))
-    name = _part_name(part)
+    cap = _rows_per_cell_row()
     for cell in np.flatnonzero(counts):
-        picked = order[bounds[cell]:bounds[cell + 1]]
-        yield name, int(cell), pack_cell(codes[picked], tracks[picked], offsets[picked], norms[picked])
+        rows = order[bounds[cell]:bounds[cell + 1]]
+        for piece, start in enumerate(range(0, rows.size, cap)):
+            picked = rows[start:start + cap]
+            yield _part_name(part, piece), int(cell), pack_cell(codes[picked], tracks[picked], offsets[picked], norms[picked])
     return counts
 
 
@@ -874,7 +883,7 @@ def _db_connection():
 
 
 def _read_cell_rows(pack, cell_ids):
-    names = [_part_name(part) for part in range(pack.parts)]
+    pattern = _CELL_NAMESPACE.replace('_', r'\_') + '%'
     conn, owned = _db_connection()
     try:
         rows = []
@@ -882,8 +891,8 @@ def _read_cell_rows(pack, cell_ids):
             for start in range(0, len(cell_ids), _CELL_FETCH_BATCH):
                 cur.execute(
                     f"SELECT index_name, cell_id, cell_data FROM {CELL_TABLE} "
-                    "WHERE index_name = ANY(%s) AND cell_id = ANY(%s)",
-                    (names, list(cell_ids[start:start + _CELL_FETCH_BATCH])),
+                    "WHERE index_name LIKE %s ESCAPE '\\' AND cell_id = ANY(%s)",
+                    (pattern, list(cell_ids[start:start + _CELL_FETCH_BATCH])),
                 )
                 rows.extend(cur.fetchall())
         return rows
@@ -899,9 +908,8 @@ def _empty_cell():
     )
 
 
-def _join_parts(parts):
-    parts.sort(key=lambda entry: entry[0])
-    pieces = [unpack_cell(blob) for _part, blob in parts]
+def _join_rows(blobs):
+    pieces = [unpack_cell(blob) for blob in blobs]
     if len(pieces) == 1:
         return tuple(np.ascontiguousarray(array) for array in pieces[0])
     return tuple(np.concatenate([piece[i] for piece in pieces]) for i in range(4))
@@ -918,11 +926,10 @@ def _cells_for(pack, cell_ids):
     if not missing:
         return found
     grouped = {cell: [] for cell in missing}
-    prefix = len(_CELL_NAMESPACE)
-    for name, cell, blob in _read_cell_rows(pack, missing):
-        grouped[int(cell)].append((int(name[prefix:]), blob))
-    for cell, parts in grouped.items():
-        arrays = _join_parts(parts) if parts else _empty_cell()
+    for _name, cell, blob in _read_cell_rows(pack, missing):
+        grouped[int(cell)].append(blob)
+    for cell, blobs in grouped.items():
+        arrays = _join_rows(blobs) if blobs else _empty_cell()
         _CELLS.put((pack.build_id, cell), arrays)
         found[cell] = arrays
     return found
