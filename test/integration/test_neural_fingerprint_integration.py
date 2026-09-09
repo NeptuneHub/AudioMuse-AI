@@ -162,7 +162,7 @@ def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_
     monkeypatch.setattr(nfi, 'ensure_loaded', lambda: True)
     monkeypatch.setattr(
         nfi, '_read_cell_rows',
-        lambda pack, wanted: [(name, cell, blob) for (name, cell), blob in store.items() if cell in set(wanted)],
+        lambda wanted: [(name, cell, blob) for (name, cell), blob in store.items() if cell in set(wanted)],
     )
     monkeypatch.setattr(nfi, '_candidate_codes', lambda wanted: {i: codes[i] for i in wanted if i in codes})
     try:

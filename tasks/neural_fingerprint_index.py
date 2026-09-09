@@ -882,7 +882,7 @@ def _db_connection():
     return connect_raw(application_name='neural_fingerprint_query'), True
 
 
-def _read_cell_rows(pack, cell_ids):
+def _read_cell_rows(cell_ids):
     pattern = _CELL_NAMESPACE.replace('_', r'\_') + '%'
     conn, owned = _db_connection()
     try:
@@ -926,7 +926,7 @@ def _cells_for(pack, cell_ids):
     if not missing:
         return found
     grouped = {cell: [] for cell in missing}
-    for _name, cell, blob in _read_cell_rows(pack, missing):
+    for _name, cell, blob in _read_cell_rows(missing):
         grouped[int(cell)].append(blob)
     for cell, blobs in grouped.items():
         arrays = _join_rows(blobs) if blobs else _empty_cell()

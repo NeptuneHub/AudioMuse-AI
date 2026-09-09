@@ -96,7 +96,7 @@ def _directory(build_id, quantizer, ids, lengths, cell_sizes, parts, trained_tra
 
 
 def _serve_rows(monkeypatch, store, fetched=None):
-    def read_rows(pack, cell_ids):
+    def read_rows(cell_ids):
         wanted = set(int(cell) for cell in cell_ids)
         if fetched is not None:
             fetched.append(sorted(wanted))
