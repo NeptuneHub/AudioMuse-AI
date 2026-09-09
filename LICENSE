@@ -641,6 +641,33 @@ the following terms:
    - License: AGPLv3
    - Official Project: https://github.com/NeptuneHub/AudioMuse-AI-DCLAP
 
+4. NEURAL MUSIC FINGERPRINT MODEL (Neural Music FP):
+   - License: AGPLv3 (code and model weights)
+   - Official Project: https://github.com/raraz15/neural-music-fp
+
+5. AudioMuse-AI-SAE MODELS (sparse autoencoder over the DCLAP embedding):
+   - License: AGPLv3
+   - Official Project: https://github.com/NeptuneHub/AudioMuse-AI-SAE
+
+6. WHISPER SMALL MODEL (ONNX export of openai/whisper-small):
+   - License: MIT (code and model weights, as released by OpenAI); the
+     Hugging Face openai/whisper-small checkpoint used for the ONNX export
+     is tagged Apache 2.0
+   - Official Project: https://github.com/openai/whisper
+   - Model Checkpoint: https://huggingface.co/openai/whisper-small
+
+7. SILERO VAD MODEL (voice activity detection):
+   - License: MIT
+   - Official Project: https://github.com/snakers4/silero-vad
+
+8. GTE MULTILINGUAL BASE MODEL (INT8 ONNX export, lyrics text embedding):
+   - License: Apache 2.0
+   - Official Project: https://huggingface.co/Alibaba-NLP/gte-multilingual-base
+
+9. ROBERTA-BASE TOKENIZER (used by the LAION-CLAP text head):
+   - License: MIT
+   - Official Project: https://huggingface.co/FacebookAI/roberta-base
+
 To maintain a clear distinction between the open-source code and the 
 model weights, all machine learning models are treated as distinct assets. 
 While these models are pre-embedded within our containerized releases and 
@@ -655,6 +682,9 @@ the repository via dedicated model-only releases:
 
 or in AudioMuse-AI-DCLAP release:
 - https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases
+
+or in AudioMuse-AI-SAE release:
+- https://github.com/NeptuneHub/AudioMuse-AI-SAE/releases
 
 This naming convention allows users to clearly audit which restricted weights 
 are present within the combined software distribution.
