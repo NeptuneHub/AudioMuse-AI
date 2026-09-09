@@ -748,6 +748,25 @@ def test_config_import_infers_the_neural_flag_only_when_nothing_else_set_it():
     assert "globals()['NEURAL_FINGERPRINT_ENABLED'] = True" in block
 
 
+def test_every_config_key_the_native_launchers_hand_their_children_stays_env_only():
+    import re
+
+    import config
+
+    child_env = (Path(__file__).parents[2] / "native-build" / "native_common" / "child_env.py").read_text(
+        encoding="utf-8"
+    )
+    body = child_env[child_env.index("def build_child_env"):child_env.index("def embedded_postgres_parts")]
+    handed = {name for name in re.findall(r'"([A-Z_]+)":', body) if hasattr(config, name)}
+
+    assert handed, "no config key found in build_child_env"
+    pinned = sorted(handed - set(config.SETUP_BOOTSTRAP_EXCLUDED_KEYS))
+    assert pinned == [], (
+        "build_child_env sets these config keys per launch, so persisting them in app_config "
+        "would pin one install's paths on every later start: " + ", ".join(pinned)
+    )
+
+
 class TestNeuralFingerprintMemory:
     def setup_method(self):
         self.mgr = _mgr()

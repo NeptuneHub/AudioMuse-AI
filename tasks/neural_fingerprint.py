@@ -119,6 +119,8 @@ def _session():
 
     with _LOCK:
         if _STATE['session'] is None:
+            if not is_enabled():
+                raise RuntimeError(DISABLED_MESSAGE)
             if not is_available():
                 raise RuntimeError(
                     f'The neural fingerprint model is missing at {config.NEURAL_FINGERPRINT_MODEL_PATH}.'

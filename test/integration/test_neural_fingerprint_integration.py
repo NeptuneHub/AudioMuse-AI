@@ -100,6 +100,7 @@ def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_
             'neural fingerprint model or codebook missing: download both from the model release into model/ '
             f'or test/models/ ({config.NEURAL_FINGERPRINT_MODEL_PATH}, {config.NEURAL_FINGERPRINT_CODEBOOK_PATH})'
         )
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', True)
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', str(model_path))
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CODEBOOK_PATH', str(codebook_path))
     songs = [project_root / 'test' / 'songs' / name for name in EXPECTED]

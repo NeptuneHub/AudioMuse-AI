@@ -234,6 +234,28 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'GENRE_SUBGENRE_FILE',
     'PLUGINS_DIR',
     'IVF_DISK_CACHE_DIR',
+    # Locations the native launchers hand every child through the environment
+    # (native-build/native_common/child_env.py) from the install of THIS launch:
+    # the bundled model files, the application data and temp directories and the
+    # embedded database kind. A container reads the same keys from the image
+    # layout. Persisting one launch's answer would pin an old install directory
+    # after the application is moved or upgraded, with no wizard field to fix it.
+    'APP_DATA_DIR',
+    'DATABASE_TYPE',
+    'TEMP_DIR',
+    'EMBEDDING_MODEL_PATH',
+    'PREDICTION_MODEL_PATH',
+    'CLAP_AUDIO_MODEL_PATH',
+    'CLAP_TEXT_MODEL_PATH',
+    'CLAP_SAE_ENCODER_PATH',
+    'CLAP_SAE_MODEL_PATH',
+    'CLAP_SAE_CONCEPTS_PATH',
+    'LYRICS_MODEL_DIR',
+    'LYRICS_WHISPER_MODEL_DIR',
+    'LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR',
+    'CLAP_OTHER_FEATURES_CACHE_DIR',
+    'CLAP_OTHER_FEATURES_CACHE_FILE',
+    'FPCALC_BINARY',
     # The queue guard's task-type set is a correctness constant like the two
     # above it: a stale row from an older version would let a task type that has
     # since become blocking run in parallel with a catalogue job.

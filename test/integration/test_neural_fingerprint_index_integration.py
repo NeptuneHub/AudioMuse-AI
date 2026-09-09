@@ -101,6 +101,7 @@ def test_worker_build_web_sync_append_and_retrain(shared_pg_dsn, monkeypatch, tm
     tracks = {f'fp_{i:04d}': _unit(rng, (40 + i % 5, nf.DIM)) for i in range(30)}
     book = nf.train_codebook(np.concatenate(list(tracks.values())), iterations=8)
     np.savez(tmp_path / 'pq.npz', codebook=book)
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', True)
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CODEBOOK_PATH', str(tmp_path / 'pq.npz'))
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', __file__)
     monkeypatch.setattr(config, 'IVF_DISK_CACHE_DIR', str(tmp_path / 'cache'))
