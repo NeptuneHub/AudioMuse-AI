@@ -2513,7 +2513,17 @@ address, a reverse proxy, or `http://localhost:8000` on the server itself.
 
 ### 17.4. Environment Variable Configuration
 
-- `NEURAL_FINGERPRINT_ENABLED` (true): the master switch, like `CLAP_ENABLED`.
+- `NEURAL_FINGERPRINT_ENABLED` (false): the master switch, like `CLAP_ENABLED`,
+  off by default because the stage costs 10 to 25 s of CPU per track; an
+  installation turns it on from the Machine Learning Models switches of the
+  setup wizard, and a choice saved there survives upgrades because it lives in
+  `app_config` and wins over the default. Like every wizard parameter, the
+  flag is written to `app_config` on the first web start that lacks it (with
+  the environment value or the config default) and read from there
+  afterwards, so a changed default never flips an installation. A library
+  that already holds neural fingerprints counts as having chosen this one on:
+  config infers the flag at import and that first write stores it, so an
+  installation that used the feature keeps it.
   False skips the fingerprint stage of the analysis and the index build, the
   web process neither loads nor reloads the index, the Search by Recording
   entry leaves the menu the way Text Search and Lyrics Search do with their

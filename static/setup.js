@@ -638,7 +638,8 @@ function renderModelSwitches(fields) {
             return;
         }
         var field = byName[flag];
-        var fallback = field ? normalizeFlagValue(field.default, 'true') : 'true';
+        var shipped = normalizeFlagValue(hidden.defaultValue, 'true');
+        var fallback = field ? normalizeFlagValue(field.default, shipped) : shipped;
         var current = field ? normalizeFlagValue(field.value, fallback) : fallback;
         hidden.value = current;
         hidden.dataset.originalValue = current;

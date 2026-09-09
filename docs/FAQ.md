@@ -39,7 +39,7 @@ Find answers to common questions about setting up, configuring, and deploying Au
 
 > The time needed for the analysis really depends on your HW and how big your music collection is. For big collections (100k+ songs) or old HW, 1 week+ of analysis can be totally normal.
 >
-> If you want faster analysis, you can disable the text search functionality by setting `CLAP_ENABLED` to false. This will run only the Musicnn model, skipping the CLAP model. Setting `NEURAL_FINGERPRINT_ENABLED` to false skips the neural fingerprint of Search by Recording the same way.
+> If you want faster analysis, you can disable the text search functionality by setting `CLAP_ENABLED` to false. This will run only the Musicnn model, skipping the CLAP model. The neural fingerprint of Search by Recording is off by default for the same reason: turn it on from the Machine Learning Models switches of the setup wizard (or `NEURAL_FINGERPRINT_ENABLED=true`) only if you want that feature.
 >
 > Alternatives include running multiple worker containers in parallel (see the [ARCHITECTURE](ARCHITECTURE.md) page and deployment examples in the `deployment/` folder). GPU analysis is also supported but still experimental (see [GPU DEPLOYMENT](GPU.md)).
 >

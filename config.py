@@ -1171,9 +1171,16 @@ CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
 # analysis stage and the page.
 # Runs through the same ONNX provider chain as MusiCNN and CLAP: CUDA on the GPU
 # images, the CPU everywhere else.
-# Master switch like CLAP_ENABLED: false skips the neural fingerprint stage of the
-# analysis and its index build, and the Search by Recording page says it is off.
-NEURAL_FINGERPRINT_ENABLED = os.environ.get("NEURAL_FINGERPRINT_ENABLED", "true").lower() == "true"
+# Master switch like CLAP_ENABLED, OFF by default: the stage adds 10 to 25 s of CPU
+# per track, so an installation opts in from the setup wizard (Machine Learning
+# Models) or with this variable. Like every wizard parameter it is written to
+# app_config on the first web start that lacks it and read from there afterwards
+# (setup_manager.persist_missing_config_values), so an upgrade never flips a choice
+# already made; a library that already holds neural fingerprints counts as having
+# chosen this one on (_apply_db_overrides infers it before that write). False skips
+# the neural fingerprint stage of the analysis and its index build, and the Search by
+# Recording page says it is off.
+NEURAL_FINGERPRINT_ENABLED = os.environ.get("NEURAL_FINGERPRINT_ENABLED", "false").lower() == "true"
 NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
     "NEURAL_FINGERPRINT_MODEL_PATH", "/app/model/neural_fingerprint.onnx"
 )
@@ -1737,6 +1744,16 @@ def _apply_db_overrides():
             # Read the value from the db and override the variable
             if _key in globals():
                 globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+
+        # A library that already holds neural fingerprints ran the stage under the
+        # old default: it keeps Search by Recording on until its owner turns it off.
+        # Only an unset flag is inferred (no app_config row, no environment value);
+        # the web process writes every parameter still missing from app_config at
+        # startup (setup_manager.persist_missing_config_values), so this check runs
+        # only on the boots before that row exists, in the worker and in Flask alike.
+        if 'NEURAL_FINGERPRINT_ENABLED' not in _overrides and 'NEURAL_FINGERPRINT_ENABLED' not in os.environ:
+            if _setup_manager.neural_fingerprints_exist():
+                globals()['NEURAL_FINGERPRINT_ENABLED'] = True
 
         # Media-server settings live ONLY in the music_servers registry: project
         # its default row onto the module globals so every legacy config read

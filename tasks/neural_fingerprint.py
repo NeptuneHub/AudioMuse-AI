@@ -89,7 +89,10 @@ _LOCK = threading.Lock()
 _STATE = {'session': None, 'input': None, 'filterbank': None, 'codebook': None, 'codebook_id': None, 'codebook_bias': None}
 
 
-DISABLED_MESSAGE = 'Neural fingerprint search is disabled. Set NEURAL_FINGERPRINT_ENABLED=true in config.'
+DISABLED_MESSAGE = (
+    'Neural fingerprint search is disabled. Turn on Neural Fingerprint in the setup wizard '
+    '(Machine Learning Models) or set NEURAL_FINGERPRINT_ENABLED=true.'
+)
 
 
 def is_enabled():

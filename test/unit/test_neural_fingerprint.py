@@ -34,6 +34,11 @@ def _unit(rng, shape):
     return vectors / np.linalg.norm(vectors, axis=-1, keepdims=True)
 
 
+@pytest.fixture(autouse=True)
+def neural_fingerprint_on(monkeypatch):
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', True)
+
+
 @pytest.fixture
 def codebook(monkeypatch, tmp_path):
     rng = np.random.default_rng(7)

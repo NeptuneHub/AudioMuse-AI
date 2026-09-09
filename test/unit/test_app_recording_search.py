@@ -70,6 +70,13 @@ def client(bp_mod):
 
 
 @pytest.fixture(autouse=True)
+def neural_fingerprint_on(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', True)
+
+
+@pytest.fixture(autouse=True)
 def neutral_server_scope(monkeypatch):
     import app_helper
     import app_server_context

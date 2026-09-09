@@ -107,6 +107,11 @@ def _serve_rows(monkeypatch, store, fetched=None):
     monkeypatch.setattr(nfi, '_read_cell_rows', read_rows)
 
 
+@pytest.fixture(autouse=True)
+def neural_fingerprint_on(monkeypatch):
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', True)
+
+
 @pytest.fixture
 def codebook(monkeypatch, tmp_path):
     rng = np.random.default_rng(4)

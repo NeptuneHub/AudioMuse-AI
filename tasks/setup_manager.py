@@ -19,8 +19,10 @@ Main Features:
   reload in two flag reads, and the no-default-server warning fires once per
   process, not once per job.
 * Reads and writes typed config overrides (casting stored strings back to the
-  default's type) and can bootstrap the table from valid environment config
-  when it is empty.
+  default's type) and, at every web start, writes each persistable parameter
+  that has no row yet with the value the process runs with (environment or
+  config.py default), never rewriting an existing row, so from then on the
+  database is the only source of that value.
 * Removes database overrides that no longer correspond to persistable
   parameters in config.py, without rewriting values that are still valid.
 * Hashes secrets with Argon2, skips re-hashing values already hashed, treats
@@ -157,17 +159,6 @@ class SetupManager:
         except Exception:
             self.logger.warning("Unable to read setup config overrides from DB", exc_info=True)
             return {}
-
-    def is_config_table_empty(self):
-        try:
-            self.ensure_table()
-            with self.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(f"SELECT EXISTS (SELECT 1 FROM {DEFAULT_CONFIG_TABLE})")
-                    return not cur.fetchone()[0]
-        except Exception:
-            self.logger.warning("Unable to determine app_config state", exc_info=True)
-            return True
 
     def get_default_music_server(self):
         """The music_servers default row, the single source of truth for the
@@ -306,14 +297,51 @@ class SetupManager:
             config_module
         )
 
-    def bootstrap_env_config_if_empty(self, config_module):
-        if not self.is_config_table_empty():
-            return False
-        if not self.is_valid_env_config(config_module):
-            return False
+    def persist_missing_config_values(self, config_module):
         values = self._get_env_config_values(config_module)
-        self.save_config_values(values)
-        return True
+        if not values:
+            return {}
+        self.ensure_table()
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT key FROM {DEFAULT_CONFIG_TABLE}")
+                    saved = {row[0] for row in cur.fetchall()}
+                    missing = {key: values[key] for key in sorted(values) if key not in saved}
+                    for key, value in missing.items():
+                        cur.execute(
+                            f"INSERT INTO {DEFAULT_CONFIG_TABLE} (key, value) VALUES (%s, %s) "
+                            "ON CONFLICT (key) DO NOTHING",
+                            (key, self.format_value(value)),
+                        )
+                conn.commit()
+        except Exception:
+            self.logger.warning("Unable to persist the config parameters missing from app_config", exc_info=True)
+            raise
+        if missing:
+            self.logger.info(
+                "Saved %d config parameters that had no app_config row yet: %s",
+                len(missing), ", ".join(missing),
+            )
+        return missing
+
+    def neural_fingerprints_exist(self):
+        if self.database_url is None:
+            return False
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'embedding' AND column_name = 'neural_fingerprint')"
+                    )
+                    if cur.fetchone()[0] is not True:
+                        return False
+                    cur.execute("SELECT EXISTS (SELECT 1 FROM embedding WHERE neural_fingerprint IS NOT NULL)")
+                    return cur.fetchone()[0] is True
+        except Exception:
+            self.logger.warning("Unable to check the library for neural fingerprints", exc_info=True)
+            return False
 
     def prune_obsolete_config_values(self, config_module):
         config_values = self._get_env_config_values(config_module)

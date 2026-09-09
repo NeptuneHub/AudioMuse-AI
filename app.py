@@ -289,10 +289,13 @@ if not _is_worker:
         init_db()
         # Keep app_config aligned with the parameters that config.py still
         # accepts. Valid rows are never rewritten; only retired keys are
-        # removed. Run this before the optional empty-table bootstrap so a
-        # database containing only obsolete keys can be initialized cleanly.
+        # removed, then every parameter that has no row yet is written with
+        # the value this process runs with (environment or config.py default,
+        # SETUP_BOOTSTRAP_EXCLUDED_KEYS stay env-only). From the next start on
+        # the database is the only source of those values, so a changed
+        # default never flips a setting an installation already has.
         setup_manager.prune_obsolete_config_values(config)
-        setup_manager.bootstrap_env_config_if_empty(config)
+        setup_manager.persist_missing_config_values(config)
         # Bootstrap / reconcile the first admin account:
         #   - If audiomuse_users already has an admin, purge any legacy
         #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.

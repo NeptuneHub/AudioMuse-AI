@@ -157,3 +157,18 @@ def test_a_disabled_switch_is_greyed_out_by_the_shared_stylesheet():
     assert rule
     assert 'opacity' in rule.group(1)
     assert 'cursor: not-allowed' in rule.group(1)
+
+
+def test_neural_fingerprint_ships_off_in_config_and_the_wizard_agrees_until_a_saved_value_arrives():
+    config_source = _read('config.py')
+    assert 'os.environ.get("NEURAL_FINGERPRINT_ENABLED", "false")' in config_source
+    section = _section(_template())
+    _info, switch = _row(section, 'neural-fingerprint')
+    assert 'name="NEURAL_FINGERPRINT_ENABLED" value="false"' in switch
+    for flag in ('CLAP_ENABLED', 'LYRICS_ENABLED', 'LYRICS_ASR_ENABLE'):
+        assert 'name="%s" value="true"' % flag in section
+    source = _setup_js()
+    render = source[source.index('function renderModelSwitches'):source.index('function buildAdvancedFieldRow')]
+    assert "normalizeFlagValue(hidden.defaultValue, 'true')" in render
+    assert 'normalizeFlagValue(field.default, shipped)' in render
+    assert 'normalizeFlagValue(field.value, fallback)' in render

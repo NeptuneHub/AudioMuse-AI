@@ -669,18 +669,128 @@ class TestPruneObsoleteConfigValues:
         self.mgr.get_connection.assert_not_called()
 
 
-def test_flask_startup_prunes_config_after_schema_init_and_before_bootstrap():
+def test_flask_startup_prunes_config_after_schema_init_and_then_persists_every_missing_parameter():
     app_source = (Path(__file__).parents[2] / "app.py").read_text(encoding="utf-8")
 
     init_position = app_source.index("        init_db()")
     prune_position = app_source.index(
         "        setup_manager.prune_obsolete_config_values(config)"
     )
-    bootstrap_position = app_source.index(
-        "        setup_manager.bootstrap_env_config_if_empty(config)"
+    persist_position = app_source.index(
+        "        setup_manager.persist_missing_config_values(config)"
     )
 
-    assert init_position < prune_position < bootstrap_position
+    assert init_position < prune_position < persist_position
+    assert app_source.count("setup_manager.persist_missing_config_values(config)") == 1
+
+
+def test_config_import_infers_the_neural_flag_only_when_nothing_else_set_it():
+    source = (Path(__file__).parents[2] / "config.py").read_text(encoding="utf-8")
+    block = source[source.index("def _apply_db_overrides"):]
+
+    assert (
+        "'NEURAL_FINGERPRINT_ENABLED' not in _overrides and "
+        "'NEURAL_FINGERPRINT_ENABLED' not in os.environ"
+    ) in block
+    assert "_setup_manager.neural_fingerprints_exist()" in block
+    assert "globals()['NEURAL_FINGERPRINT_ENABLED'] = True" in block
+
+
+class TestNeuralFingerprintMemory:
+    def setup_method(self):
+        self.mgr = _mgr()
+        self.cursor = MagicMock()
+        self.cursor.__enter__.return_value = self.cursor
+        self.connection = MagicMock()
+        self.connection.__enter__.return_value = self.connection
+        self.connection.cursor.return_value = self.cursor
+        self.mgr.get_connection = MagicMock(return_value=self.connection)
+        self.mgr.ensure_table = MagicMock()
+
+    def test_a_library_without_the_fingerprint_column_has_none_and_the_table_is_not_queried(self):
+        self.cursor.fetchone.return_value = (False,)
+
+        assert self.mgr.neural_fingerprints_exist() is False
+        assert self.cursor.execute.call_count == 1
+
+    def test_fingerprints_exist_only_when_postgres_answers_a_real_true(self):
+        self.cursor.fetchone.side_effect = [(True,), (True,)]
+        assert self.mgr.neural_fingerprints_exist() is True
+
+        self.cursor.fetchone.side_effect = [(True,), (False,)]
+        assert self.mgr.neural_fingerprints_exist() is False
+
+        self.cursor.fetchone.side_effect = [(True,), (MagicMock(),)]
+        assert self.mgr.neural_fingerprints_exist() is False
+
+    def test_a_failing_query_counts_as_no_fingerprints(self):
+        self.cursor.execute.side_effect = RuntimeError("boom")
+
+        assert self.mgr.neural_fingerprints_exist() is False
+
+
+
+class TestPersistMissingConfigValues:
+    def setup_method(self):
+        self.mgr = _mgr()
+        self.cursor = MagicMock()
+        self.cursor.__enter__.return_value = self.cursor
+        self.connection = MagicMock()
+        self.connection.__enter__.return_value = self.connection
+        self.connection.cursor.return_value = self.cursor
+        self.mgr.get_connection = MagicMock(return_value=self.connection)
+        self.mgr.ensure_table = MagicMock()
+
+    def _inserts(self):
+        return [
+            call.args[1] for call in self.cursor.execute.call_args_list
+            if call.args[0].startswith("INSERT")
+        ]
+
+    def test_every_parameter_without_a_row_is_written_with_the_value_the_process_runs_with(self):
+        self.cursor.fetchall.return_value = [("LYRICS_ENABLED",), ("PLUGIN_REPOS",)]
+        cfg = _cfg(
+            CLAP_ENABLED=True, LYRICS_ENABLED=False, NEURAL_FINGERPRINT_ENABLED=True, TOP_N_MOODS=5,
+            SETUP_BOOTSTRAP_EXCLUDED_KEYS={"DATABASE_URL"}, DATABASE_URL="postgresql://x",
+        )
+
+        written = self.mgr.persist_missing_config_values(cfg)
+
+        assert written == {"CLAP_ENABLED": True, "NEURAL_FINGERPRINT_ENABLED": True, "TOP_N_MOODS": 5}
+        assert self._inserts() == [
+            ("CLAP_ENABLED", "True"), ("NEURAL_FINGERPRINT_ENABLED", "True"), ("TOP_N_MOODS", "5"),
+        ]
+        self.connection.commit.assert_called_once_with()
+
+    def test_existing_rows_are_never_rewritten_and_concurrent_starts_cannot_clobber_each_other(self):
+        self.cursor.fetchall.return_value = [("CLAP_ENABLED",), ("TOP_N_MOODS",)]
+        cfg = _cfg(CLAP_ENABLED=False, TOP_N_MOODS=9)
+
+        assert self.mgr.persist_missing_config_values(cfg) == {}
+
+        assert self._inserts() == []
+        insert_sql = [
+            call.args[0] for call in self.cursor.execute.call_args_list if "INSERT" in call.args[0]
+        ]
+        assert insert_sql == []
+        self.cursor.fetchall.return_value = []
+        self.mgr.persist_missing_config_values(cfg)
+        assert all("ON CONFLICT (key) DO NOTHING" in call.args[0] for call in self.cursor.execute.call_args_list
+                   if call.args[0].startswith("INSERT"))
+        assert not any("DO UPDATE" in call.args[0] for call in self.cursor.execute.call_args_list)
+
+    def test_a_database_failure_is_raised_not_swallowed_so_nothing_is_half_persisted(self):
+        self.cursor.execute.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            self.mgr.persist_missing_config_values(_cfg(CLAP_ENABLED=True))
+
+        self.connection.commit.assert_not_called()
+
+    def test_a_config_without_persistable_parameters_touches_nothing(self):
+        assert self.mgr.persist_missing_config_values(_cfg(lowercase="ignored")) == {}
+
+        self.mgr.get_connection.assert_not_called()
 
 
 class TestPlaceholderFieldsRejectAllServers:
@@ -865,6 +975,9 @@ class TestWorkerConfigHydration:
             def config_table_exists(self):
                 return False
 
+            def neural_fingerprints_exist(self):
+                return False
+
             def get_default_music_server(self):
                 return {
                     'server_type': 'jellyfin',
@@ -891,6 +1004,9 @@ class TestWorkerConfigHydration:
 
         class Unreachable:
             def config_table_exists(self):
+                return False
+
+            def neural_fingerprints_exist(self):
                 return False
 
             def get_default_music_server(self):

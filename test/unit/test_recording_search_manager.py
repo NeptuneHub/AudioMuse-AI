@@ -33,6 +33,11 @@ import pytest
 from tasks import recording_search_manager as rsm
 
 
+@pytest.fixture(autouse=True)
+def neural_fingerprint_on(monkeypatch):
+    monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_ENABLED', True)
+
+
 def _rows(*ids):
     return [
         {'item_id': i, 'title': f't-{i}', 'author': f'a-{i}', 'album': '', 'score': 0.5}
@@ -177,13 +182,17 @@ def test_query_windows_cover_a_long_song_three_times_and_a_short_one_once():
     assert [int(w[0, 0]) for w in rsm.query_windows(tight)] == [0, 5, 10]
 
 
-def test_search_by_track_aligns_windows_of_the_stored_fingerprint_and_leaves_the_song_out(monkeypatch):
+def test_search_by_track_aligns_windows_of_the_stored_fingerprint_and_leaves_the_song_out(monkeypatch, tmp_path):
     from tasks import neural_fingerprint as nf
     from tasks import neural_fingerprint_index
 
     rng = np.random.default_rng(3)
-    vectors = rng.standard_normal((200, nf.DIM)).astype(np.float32)
+    vectors = rng.standard_normal((600, nf.DIM)).astype(np.float32)
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    np.savez(tmp_path / 'pq.npz', codebook=nf.train_codebook(vectors, iterations=4))
+    monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_CODEBOOK_PATH', str(tmp_path / 'pq.npz'))
+    for key in ('codebook', 'codebook_id', 'codebook_bias'):
+        monkeypatch.setitem(nf._STATE, key, None)
     monkeypatch.setattr(rsm, '_stored_fingerprint', lambda item_id: nf.encode_blob(vectors) if item_id == 'song' else None)
     calls = []
 
