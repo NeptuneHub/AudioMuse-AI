@@ -36,7 +36,7 @@ sys.path.insert(0, _REPO_ROOT)
 
 
 def default_output() -> str:
-    return os.path.join(_REPO_ROOT, 'neural_fingerprint_pq.npz')
+    return os.path.join(_REPO_ROOT, 'model', 'neural_fingerprint_pq.npz')
 
 
 def sample_vectors(dsn: str, sample_rows: int, seed: int):
@@ -106,7 +106,7 @@ def train_neural_fingerprint_codebook(dsn: str, output_path: str, sample_rows: i
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dsn', required=True, help='Postgres DSN of a database with neural fingerprints (read only).')
-    parser.add_argument('--output', default=default_output(), help='Destination .npz path (default: the repository root).')
+    parser.add_argument('--output', default=default_output(), help='Destination .npz path (default: model/ in the repository).')
     parser.add_argument('--sample-rows', type=int, default=300000, help='Vectors to sample across the stored tracks.')
     parser.add_argument('--iterations', type=int, default=30, help='k-means iterations per slice.')
     parser.add_argument('--seed', type=int, default=0)

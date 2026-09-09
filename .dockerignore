@@ -69,9 +69,6 @@ model/
 # The SAE concept catalogue is small and ships in the repository; the two ONNX
 # graphs it refers to are downloaded into model/ by the Dockerfile.
 !dclap_sae_concepts.json
-# The neural fingerprint encoder ships at the repository root and is read from
-# /app/neural_fingerprint.onnx (config.NEURAL_FINGERPRINT_MODEL_PATH).
-!neural_fingerprint.onnx
 *.pt
 *.pth
 *.bin

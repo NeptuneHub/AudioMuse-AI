@@ -74,9 +74,9 @@ def test_missing_config_key_is_a_loud_error(export_module):
         export_module.parse_checkpoint_config(broken)
 
 
-def test_default_output_is_the_model_the_runtime_loads(export_module):
+def test_default_output_lands_in_the_git_ignored_model_directory(export_module):
     default = os.path.normcase(os.path.abspath(export_module.default_output()))
-    expected = os.path.join(os.path.dirname(config.__file__), 'neural_fingerprint.onnx')
+    expected = os.path.join(os.path.dirname(config.__file__), 'model', 'neural_fingerprint.onnx')
 
     assert default == os.path.normcase(os.path.abspath(expected))
 

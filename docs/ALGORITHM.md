@@ -2291,7 +2291,8 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    Araz, Serra and Bogdanov (ISMIR 2025, the NAFP architecture of Chang et
    al. trained with real room impulse responses, microphone responses and
    background noise, triplet loss), exported once from its TensorFlow
-   checkpoint to `neural_fingerprint.onnx` at the repository root (17.2
+   checkpoint to `neural_fingerprint.onnx`, published in the model release
+   and downloaded into the model directory next to the MusiCNN graphs (17.2
    million parameters, 71 MB) and run through the same ONNX provider chain as
    MusiCNN and CLAP, CUDA on the GPU images and the CPU everywhere else. The
    export is
@@ -2518,11 +2519,12 @@ address, a reverse proxy, or `http://localhost:8000` on the server itself.
   entry leaves the menu the way Text Search and Lyrics Search do with their
   flags (the page itself, opened by its address, says the feature is
   disabled), and the three API routes answer 503.
-- `NEURAL_FINGERPRINT_MODEL_PATH` (`neural_fingerprint.onnx` at the repository
-  root, `/app` in the image): the fingerprint encoder; a missing file
-  disables the analysis stage and the tab.
-- `NEURAL_FINGERPRINT_CODEBOOK_PATH` (`neural_fingerprint_pq.npz` next to the
-  model): the 32-byte codebook every stored fingerprint is encoded with; keep
+- `NEURAL_FINGERPRINT_MODEL_PATH` (`/app/model/neural_fingerprint.onnx`,
+  downloaded from the model release like the MusiCNN graphs; the native
+  builds point it at their bundled model directory): the fingerprint encoder;
+  a missing file disables the analysis stage and the tab.
+- `NEURAL_FINGERPRINT_CODEBOOK_PATH` (`/app/model/neural_fingerprint_pq.npz`,
+  next to the model): the 32-byte codebook every stored fingerprint is encoded with; keep
   the one the library was analysed with, a different file makes the stored
   blobs unreadable.
 - `NEURAL_FINGERPRINT_NPROBE` (12): cells read per query vector.

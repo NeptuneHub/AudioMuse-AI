@@ -32,8 +32,6 @@ datas = [
     (os.path.join(ROOT, "mood_centroids_real_080_clap.json"), "."),
     (os.path.join(ROOT, "genre_subgenre.json"), "."),
     (os.path.join(ROOT, "dclap_sae_concepts.json"), "."),
-    (os.path.join(ROOT, "neural_fingerprint.onnx"), "."),
-    (os.path.join(ROOT, "neural_fingerprint_pq.npz"), "."),
     # The plugins admin page lives in the blueprint's own template folder; without
     # this entry every native build 500s with TemplateNotFound on /plugins.
     (os.path.join(ROOT, "plugin", "templates"), os.path.join("plugin", "templates")),

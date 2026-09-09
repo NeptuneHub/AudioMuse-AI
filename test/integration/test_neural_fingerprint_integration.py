@@ -69,6 +69,13 @@ def _matching_bytes(codes_row, expected_hex):
     return int(np.sum(codes_row[:CODE_BYTES_CHECKED] == expected))
 
 
+def _model_file(configured, name, project_root):
+    for candidate in (configured, project_root / 'model' / name, project_root / 'test' / 'models' / name):
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    return None
+
+
 @pytest.mark.integration
 def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_slice(monkeypatch, tmp_path):
     project_root = Path(__file__).resolve().parents[2]
@@ -86,10 +93,15 @@ def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_
     from tasks import neural_fingerprint as nf
     from tasks import neural_fingerprint_index as nfi
 
-    model_path = Path(config.NEURAL_FINGERPRINT_MODEL_PATH)
-    codebook_path = Path(config.NEURAL_FINGERPRINT_CODEBOOK_PATH)
-    if not model_path.is_file() or not codebook_path.is_file():
-        pytest.skip(f'neural fingerprint model or codebook missing: {model_path}, {codebook_path}')
+    model_path = _model_file(config.NEURAL_FINGERPRINT_MODEL_PATH, 'neural_fingerprint.onnx', project_root)
+    codebook_path = _model_file(config.NEURAL_FINGERPRINT_CODEBOOK_PATH, 'neural_fingerprint_pq.npz', project_root)
+    if model_path is None or codebook_path is None:
+        pytest.skip(
+            'neural fingerprint model or codebook missing: download both from the model release into model/ '
+            f'or test/models/ ({config.NEURAL_FINGERPRINT_MODEL_PATH}, {config.NEURAL_FINGERPRINT_CODEBOOK_PATH})'
+        )
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', str(model_path))
+    monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CODEBOOK_PATH', str(codebook_path))
     songs = [project_root / 'test' / 'songs' / name for name in EXPECTED]
     missing = [path.name for path in songs if not path.is_file()]
     if missing:

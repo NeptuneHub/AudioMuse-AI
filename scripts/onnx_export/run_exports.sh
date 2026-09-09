@@ -2,17 +2,17 @@
 # One-time ONNX export for the lyrics pipeline and the neural fingerprint.
 #
 # Run this once (e.g. on WSL) with the project venv ACTIVATED. The resulting
-# files land in ./model/ (and the repository root for the fingerprint encoder)
-# and should be uploaded to a release / served as pre-built artifacts so the
-# Docker build does not have to re-export them.
+# files land in ./model/ (ignored by git) and should be uploaded to the model
+# release / served as pre-built artifacts so the Docker build does not have to
+# re-export them.
 #
 # Outputs:
 #   model/gte-multilingual-base-int8.onnx  (~325 MB) - lyrics embedding (INT8 ONNX)
 #   model/gte-multilingual-base/           (~5 MB)   - gte tokenizer files (no weights)
 #   model/whisper-small-onnx/              (~1.1 GB) - speech-to-text (multilingual)
-#   neural_fingerprint.onnx                (~71 MB)  - Search by Recording encoder (step 4,
+#   model/neural_fingerprint.onnx          (~71 MB)  - Search by Recording encoder (step 4,
 #                                                      needs a python3.11 for TensorFlow 2.13)
-#   neural_fingerprint_pq.npz              (~130 KB) - its 32-byte codebook (step 5, needs
+#   model/neural_fingerprint_pq.npz        (~130 KB) - its 32-byte codebook (step 5, needs
 #                                                      NEURAL_FP_DSN, trained ONCE)
 #
 # Usage:
@@ -108,14 +108,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4) raraz15/neural-music-fp triplet checkpoint -> neural_fingerprint.onnx
+# 4) raraz15/neural-music-fp triplet checkpoint -> model/neural_fingerprint.onnx
 #    The Search by Recording fingerprint encoder run by tasks/neural_fingerprint.py.
 #    Its TensorFlow 2.13 stack only ships for Python <= 3.11, so this step
 #    builds its own venv from NEURAL_FP_PYTHON (default: python3.11 on PATH)
 #    and is skipped with a message when no such interpreter exists. The
 #    checkpoint (~173 MB zip) comes from Zenodo record 15719945.
 # ---------------------------------------------------------------------------
-NFP_OUT=neural_fingerprint.onnx
+NFP_OUT=model/neural_fingerprint.onnx
 NFP_SRC=/tmp/neural-music-fp
 NFP_COMMIT=15c6f3bcdf6a6da1daddfe47a1ffa5a0d22deadc
 NFP_CKPT_URL="https://zenodo.org/records/15719945/files/nmfp-triplet.zip?download=1"
@@ -162,14 +162,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5) Neural fingerprint codebook -> neural_fingerprint_pq.npz (optional)
+# 5) Neural fingerprint codebook -> model/neural_fingerprint_pq.npz (optional)
 #    The product-quantisation codebook that stores each fingerprint vector as
 #    32 bytes. Trained once on the fingerprints of a library analysed with the
 #    stage; every stored blob carries its checksum, so it is never regenerated
 #    for a library that already holds fingerprints. Runs only when
 #    NEURAL_FP_DSN points at such a database (read only), in the project venv.
 # ---------------------------------------------------------------------------
-NFP_PQ_OUT=neural_fingerprint_pq.npz
+NFP_PQ_OUT=model/neural_fingerprint_pq.npz
 if [[ -f "${NFP_PQ_OUT}" ]]; then
     echo "==> ${NFP_PQ_OUT} already exists, skipping codebook training."
 elif [[ -z "${NEURAL_FP_DSN:-}" ]]; then

@@ -53,7 +53,7 @@ _CONFIG_KEYS = {
 
 
 def default_output() -> str:
-    return os.path.join(_REPO_ROOT, 'neural_fingerprint.onnx')
+    return os.path.join(_REPO_ROOT, 'model', 'neural_fingerprint.onnx')
 
 
 def parse_checkpoint_config(text: str) -> dict:
@@ -175,7 +175,7 @@ def main(argv=None) -> int:
         help='Directory holding the unzipped nmfp-triplet checkpoint (ckpt-100.* and config.yaml).',
     )
     parser.add_argument(
-        '--output', default=default_output(), help='Destination .onnx path (default: the repository root).'
+        '--output', default=default_output(), help='Destination .onnx path (default: model/ in the repository).'
     )
     parser.add_argument(
         '--frames',

@@ -1164,17 +1164,18 @@ CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
 
 # Neural audio fingerprint (Search by Recording, identify from any part of a
 # song): the ONNX encoder exported from the neural music fingerprinter of Araz,
-# Serra and Bogdanov (ISMIR 2025, triplet checkpoint); it ships at the repository
-# root like the JSON files above (/app in the container image, the bundle root in
-# a native build). A missing file simply disables the analysis stage and the page.
+# Serra and Bogdanov (ISMIR 2025, triplet checkpoint). Like the MusiCNN graphs it
+# is downloaded from the model release into /app/model by the Dockerfiles, and the
+# native builds ship it in their model directory and point this variable there
+# (native-build/native_common/child_env.py). A missing file simply disables the
+# analysis stage and the page.
 # Runs through the same ONNX provider chain as MusiCNN and CLAP: CUDA on the GPU
 # images, the CPU everywhere else.
 # Master switch like CLAP_ENABLED: false skips the neural fingerprint stage of the
 # analysis and its index build, and the Search by Recording page says it is off.
 NEURAL_FINGERPRINT_ENABLED = os.environ.get("NEURAL_FINGERPRINT_ENABLED", "true").lower() == "true"
 NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
-    "NEURAL_FINGERPRINT_MODEL_PATH",
-    os.path.join(_bundle_data_root(), "neural_fingerprint.onnx"),
+    "NEURAL_FINGERPRINT_MODEL_PATH", "/app/model/neural_fingerprint.onnx"
 )
 # Product-quantisation codebook that turns each 128-number fingerprint vector into
 # 32 bytes (32 slices of 4 numbers, 256 centroids each), trained once on library
@@ -1182,8 +1183,7 @@ NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
 # next to the model. Every stored blob carries the codebook's checksum: changing the
 # file invalidates the stored fingerprints, so keep the one the library was encoded with.
 NEURAL_FINGERPRINT_CODEBOOK_PATH = os.environ.get(
-    "NEURAL_FINGERPRINT_CODEBOOK_PATH",
-    os.path.join(_bundle_data_root(), "neural_fingerprint_pq.npz"),
+    "NEURAL_FINGERPRINT_CODEBOOK_PATH", "/app/model/neural_fingerprint_pq.npz"
 )
 # Coarse cells probed per query vector when the fingerprint index is searched
 # (the index has about sqrt(rows) cells); more cells = better recall, slower query.

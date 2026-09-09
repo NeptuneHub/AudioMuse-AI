@@ -15,8 +15,9 @@ checkpoint), the NAFP architecture of Chang et al. (ICASSP 2021) trained with
 real room impulse responses, microphone responses and background noise so
 that a second of a recording heard through a phone lands where the same
 second of the clean track lands. It was exported once from the TensorFlow
-checkpoint to neural_fingerprint.onnx at the repository root (17.2 million
-parameters, 71 MB; scripts/onnx_export/export_neural_fingerprint_to_onnx.py).
+checkpoint to neural_fingerprint.onnx (17.2 million parameters, 71 MB;
+scripts/onnx_export/export_neural_fingerprint_to_onnx.py), published in the
+model release and downloaded into the model directory like the MusiCNN graphs.
 The analysis stores the whole sequence for every track and the Search by
 Recording page finds which track, and where in it, a clip aligns with.
 
