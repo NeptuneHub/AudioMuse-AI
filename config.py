@@ -1737,13 +1737,29 @@ def _apply_db_overrides():
             _setup_manager.ensure_table()
             _overrides = _setup_manager.get_raw_overrides()
         _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        _unusable_rows = []
         for _key, _value in _overrides.items():
             # Skip any keys that are explicitly excluded from overrides (Postgres)
-            if _key in _excluded_override_keys:
+            if _key in _excluded_override_keys or _key not in globals():
+                continue
+            # A row may only replace a value it can be cast back to. A tuple or set
+            # constant, or the literal 'None' that str(None) leaves behind, would
+            # turn the global into a string (TASK_STATUS_LIVE as a string once broke
+            # every queue SQL at startup): such rows are ignored here and deleted by
+            # the web process in prune_obsolete_config_values.
+            if not _setup_manager.is_persistable_value(globals()[_key]) or (
+                globals()[_key] is None and _value == 'None'
+            ):
+                _unusable_rows.append(_key)
                 continue
             # Read the value from the db and override the variable
-            if _key in globals():
-                globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+            globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+        if _unusable_rows:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Ignoring %d app_config rows that cannot replace their config value: %s",
+                len(_unusable_rows), ", ".join(sorted(_unusable_rows)),
+            )
 
         # A library that already holds neural fingerprints ran the stage under the
         # old default: it keeps Search by Recording on until its owner turns it off.

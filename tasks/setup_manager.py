@@ -241,7 +241,7 @@ class SetupManager:
         for name, default_value in sorted(vars(config_module).items()):
             if not name.isupper() or name.startswith('_'):
                 continue
-            if name in excluded_keys:
+            if name in excluded_keys or not self.is_persistable_value(default_value):
                 continue
             values[name] = default_value
         return values
@@ -307,7 +307,10 @@ class SetupManager:
                 with conn.cursor() as cur:
                     cur.execute(f"SELECT key FROM {DEFAULT_CONFIG_TABLE}")
                     saved = {row[0] for row in cur.fetchall()}
-                    missing = {key: values[key] for key in sorted(values) if key not in saved}
+                    missing = {
+                        key: values[key] for key in sorted(values)
+                        if key not in saved and values[key] is not None
+                    }
                     for key, value in missing.items():
                         cur.execute(
                             f"INSERT INTO {DEFAULT_CONFIG_TABLE} (key, value) VALUES (%s, %s) "
@@ -366,6 +369,14 @@ class SetupManager:
                         (valid_keys,),
                     )
                     removed_keys = sorted(row[0] for row in cur.fetchall())
+                    unset_keys = sorted(key for key, value in config_values.items() if value is None)
+                    if unset_keys:
+                        cur.execute(
+                            f"DELETE FROM {DEFAULT_CONFIG_TABLE} "
+                            "WHERE key = ANY(%s) AND value = 'None' RETURNING key",
+                            (unset_keys,),
+                        )
+                        removed_keys.extend(sorted(row[0] for row in cur.fetchall()))
                 conn.commit()
         except Exception:
             self.logger.warning("Unable to prune obsolete setup config values", exc_info=True)
@@ -406,6 +417,16 @@ class SetupManager:
         if isinstance(value, (list, dict)):
             return json.dumps(value)
         return str(value)
+
+    def is_persistable_value(self, value):
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return True
+        if isinstance(value, (list, dict)):
+            try:
+                return self.cast_value(value, self.format_value(value)) == value
+            except Exception:
+                return False
+        return False
 
     def save_config_values(self, values):
         if not isinstance(values, dict):

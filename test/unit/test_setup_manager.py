@@ -684,6 +684,58 @@ def test_flask_startup_prunes_config_after_schema_init_and_then_persists_every_m
     assert app_source.count("setup_manager.persist_missing_config_values(config)") == 1
 
 
+def test_config_import_ignores_rows_that_cannot_replace_their_value_instead_of_turning_it_into_a_string():
+    source = (Path(__file__).parents[2] / "config.py").read_text(encoding="utf-8")
+    block = source[source.index("def _apply_db_overrides"):]
+
+    assert "if not _setup_manager.is_persistable_value(globals()[_key])" in block
+    assert "globals()[_key] is None and _value == 'None'" in block
+    assert block.index("is_persistable_value") < block.index("_setup_manager.cast_value(globals()[_key], _value)")
+
+
+class TestPruneRepairsLeftoverNoneRows:
+    def setup_method(self):
+        self.mgr = _mgr()
+        self.cursor = MagicMock()
+        self.cursor.__enter__.return_value = self.cursor
+        self.connection = MagicMock()
+        self.connection.__enter__.return_value = self.connection
+        self.connection.cursor.return_value = self.cursor
+        self.mgr.get_connection = MagicMock(return_value=self.connection)
+        self.mgr.ensure_table = MagicMock()
+
+    def test_the_literal_none_left_by_str_none_is_deleted_only_for_parameters_whose_default_is_none(self):
+        self.cursor.fetchall.side_effect = [[], [("HYPERBOLIC_RADIUS_SCALE",)]]
+
+        removed = self.mgr.prune_obsolete_config_values(
+            _cfg(HYPERBOLIC_RADIUS_SCALE=None, LYRICS_API_1_URL_TEMPLATE="", MAX_DISTANCE=0.5)
+        )
+
+        assert removed == ["HYPERBOLIC_RADIUS_SCALE"]
+        sql, params = self.cursor.execute.call_args_list[-1].args
+        assert "value = 'None'" in sql
+        assert params == (["HYPERBOLIC_RADIUS_SCALE"],)
+
+    def test_a_config_without_unset_parameters_runs_the_single_historic_delete(self):
+        self.cursor.fetchall.return_value = []
+
+        self.mgr.prune_obsolete_config_values(_cfg(MAX_DISTANCE=0.5))
+
+        assert self.cursor.execute.call_count == 1
+
+
+class TestPersistableValues:
+    def test_scalars_none_and_json_round_trippable_containers_are_persistable(self):
+        mgr = _mgr()
+        for value in (True, 0, 0.5, "", "text", None, ["a", 1], {"k": [1, 2]}):
+            assert mgr.is_persistable_value(value) is True, value
+
+    def test_tuples_sets_and_containers_that_json_reshapes_are_not(self):
+        mgr = _mgr()
+        for value in (("NEW", "RUNNING"), {".mp3"}, frozenset(), [("a", 1)], object()):
+            assert mgr.is_persistable_value(value) is False, value
+
+
 def test_config_import_infers_the_neural_flag_only_when_nothing_else_set_it():
     source = (Path(__file__).parents[2] / "config.py").read_text(encoding="utf-8")
     block = source[source.index("def _apply_db_overrides"):]
@@ -751,16 +803,34 @@ class TestPersistMissingConfigValues:
         self.cursor.fetchall.return_value = [("LYRICS_ENABLED",), ("PLUGIN_REPOS",)]
         cfg = _cfg(
             CLAP_ENABLED=True, LYRICS_ENABLED=False, NEURAL_FINGERPRINT_ENABLED=True, TOP_N_MOODS=5,
+            MOOD_LABELS=["rock", "pop"], LYRICS_API_1_URL_TEMPLATE="",
             SETUP_BOOTSTRAP_EXCLUDED_KEYS={"DATABASE_URL"}, DATABASE_URL="postgresql://x",
         )
 
         written = self.mgr.persist_missing_config_values(cfg)
 
-        assert written == {"CLAP_ENABLED": True, "NEURAL_FINGERPRINT_ENABLED": True, "TOP_N_MOODS": 5}
+        assert written == {
+            "CLAP_ENABLED": True, "LYRICS_API_1_URL_TEMPLATE": "", "MOOD_LABELS": ["rock", "pop"],
+            "NEURAL_FINGERPRINT_ENABLED": True, "TOP_N_MOODS": 5,
+        }
         assert self._inserts() == [
-            ("CLAP_ENABLED", "True"), ("NEURAL_FINGERPRINT_ENABLED", "True"), ("TOP_N_MOODS", "5"),
+            ("CLAP_ENABLED", "True"), ("LYRICS_API_1_URL_TEMPLATE", ""), ("MOOD_LABELS", '["rock", "pop"]'),
+            ("NEURAL_FINGERPRINT_ENABLED", "True"), ("TOP_N_MOODS", "5"),
         ]
         self.connection.commit.assert_called_once_with()
+
+    def test_constants_that_cannot_come_back_from_a_string_and_unset_values_are_never_written(self):
+        self.cursor.fetchall.return_value = []
+        cfg = _cfg(
+            TASK_STATUS_LIVE=("NEW", "RUNNING"), LYRICS_SUPPORTED_AUDIO_EXTENSIONS={".mp3"},
+            HYPERBOLIC_RADIUS_SCALE=None, MAX_DISTANCE=0.5,
+        )
+
+        written = self.mgr.persist_missing_config_values(cfg)
+
+        assert written == {"MAX_DISTANCE": 0.5}
+        assert self._inserts() == [("MAX_DISTANCE", "0.5")]
+        assert set(self.mgr._get_env_config_values(cfg)) == {"HYPERBOLIC_RADIUS_SCALE", "MAX_DISTANCE"}
 
     def test_existing_rows_are_never_rewritten_and_concurrent_starts_cannot_clobber_each_other(self):
         self.cursor.fetchall.return_value = [("CLAP_ENABLED",), ("TOP_N_MOODS",)]
