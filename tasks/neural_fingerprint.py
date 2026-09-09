@@ -29,8 +29,9 @@ Main Features:
   matches the reference essentia front end to 2e-4 on all 33 frames
 * embed_patches runs the ONNX model in batches through the same provider
   chain as MusiCNN and CLAP (CUDA where the image has it, the CPU otherwise);
-  fingerprint_audio chains both and is what the analysis stage and the search
-  share
+  fingerprint_audio chains both one batch of segments at a time, so a
+  one-hour recording costs the same transient memory as a three-minute song,
+  and is what the analysis stage and the search share
 * product quantisation: every 128-vector is stored as 32 bytes, one byte per
   slice of four numbers, against a codebook of 256 centroids per slice that
   ships next to the model (neural_fingerprint_pq.npz, trained once on library
@@ -154,7 +155,7 @@ def segment_starts(n_samples, hop=HOP_SAMPLES):
     return np.arange(0, n_samples - SEGMENT_SAMPLES + 1, hop, dtype=np.int64)
 
 
-def mel_patches(audio, sr, hop=HOP_SAMPLES):
+def _model_signal(audio, sr):
     from tasks.analysis import resample_audio
 
     signal = np.asarray(audio, dtype=np.float32)
@@ -162,10 +163,10 @@ def mel_patches(audio, sr, hop=HOP_SAMPLES):
         signal = signal.mean(axis=0)
     if int(sr) != SAMPLE_RATE:
         signal = np.asarray(resample_audio(signal, int(sr), SAMPLE_RATE), dtype=np.float32)
-    starts = segment_starts(signal.size, hop)
-    if not starts.size:
-        return None
-    padded = np.concatenate([signal, np.zeros(HOP_LENGTH, dtype=np.float32)])
+    return signal
+
+
+def _patches_at(padded, starts):
     windows = sliding_window_view(padded, SEGMENT_SAMPLES + HOP_LENGTH)[starts]
     spectrum = librosa.stft(
         windows, n_fft=N_FFT, hop_length=HOP_LENGTH, win_length=N_FFT, window='hann',
@@ -179,6 +180,18 @@ def mel_patches(audio, sr, hop=HOP_SAMPLES):
     return patches[:, :, :, None]
 
 
+def _padded(signal):
+    return np.concatenate([signal, np.zeros(HOP_LENGTH, dtype=np.float32)])
+
+
+def mel_patches(audio, sr, hop=HOP_SAMPLES):
+    signal = _model_signal(audio, sr)
+    starts = segment_starts(signal.size, hop)
+    if not starts.size:
+        return None
+    return _patches_at(_padded(signal), starts)
+
+
 def embed_patches(patches):
     session, input_name = _session()
     out = []
@@ -189,10 +202,14 @@ def embed_patches(patches):
 
 
 def fingerprint_audio(audio, sr, hop=HOP_SAMPLES):
-    patches = mel_patches(audio, sr, hop)
-    if patches is None:
+    signal = _model_signal(audio, sr)
+    starts = segment_starts(signal.size, hop)
+    if not starts.size:
         return None
-    return embed_patches(patches)
+    padded = _padded(signal)
+    return np.concatenate([
+        embed_patches(_patches_at(padded, starts[block:block + _BATCH])) for block in range(0, starts.size, _BATCH)
+    ])
 
 
 def codebook_id(book):

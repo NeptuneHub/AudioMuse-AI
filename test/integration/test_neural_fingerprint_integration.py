@@ -143,8 +143,7 @@ def test_real_neural_fingerprint_matches_recorded_values_and_identifies_a_noisy_
     sample = nfi.training_sample(iter(codes.items()), 20000, np.random.default_rng(0))
     quantizer = nfi.train_quantizer(sample, nfi._cell_count(sum(int(c.shape[0]) for c in codes.values())))
     ids, lengths, labels, part_codes = next(iter(nfi.label_tracks(iter(codes.items()), quantizer)))
-    tracks_of = np.repeat(np.arange(len(ids), dtype=np.uint32), lengths)
-    offsets = np.concatenate([np.arange(n, dtype=np.uint16) for n in lengths])
+    tracks_of, offsets = nfi.track_offset_arrays(0, lengths)
     cells = nfi.part_cells(0, labels, part_codes, tracks_of, offsets, quantizer.n_cells)
     store = {}
     while True:

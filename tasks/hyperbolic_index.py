@@ -114,13 +114,13 @@ import json
 import logging
 import re
 import threading
-import time
 from collections import OrderedDict
 
 import numpy as np
 
 import config
 from tasks import ivf_quant as quant
+from tasks.index_availability import AvailabilityCache, single_server_mask_unneeded
 
 logger = logging.getLogger(__name__)
 
@@ -413,25 +413,16 @@ def _index_for(server_id):
     return servers.get(server_id) or servers.get(_DEFAULT_SERVER_KEY)
 
 
-_AVAILABILITY_CACHE = {}
-_AVAILABILITY_CACHE_LOCK = threading.Lock()
-_AVAILABILITY_CACHE_TTL = 30.0
+_AVAILABILITY = AvailabilityCache()
 
 
 def _invalidate_availability():
-    with _AVAILABILITY_CACHE_LOCK:
-        _AVAILABILITY_CACHE.clear()
+    _AVAILABILITY.invalidate()
 
 
 def invalidate_availability_cache(server_id=None):
     """Invalidate cached per-server availability masks after mapping changes."""
-    with _AVAILABILITY_CACHE_LOCK:
-        if server_id is None:
-            _AVAILABILITY_CACHE.clear()
-            return
-        sid = str(server_id)
-        for key in [key for key in _AVAILABILITY_CACHE if key[1] == sid]:
-            _AVAILABILITY_CACHE.pop(key, None)
+    _AVAILABILITY.invalidate(server_id)
 
 
 def _any_fingerprint_id(item_ids):
@@ -441,18 +432,7 @@ def _any_fingerprint_id(item_ids):
 
 
 def _mask_unneeded(index, server):
-    try:
-        from tasks.mediaserver import registry
-
-        if (
-            server == str(registry.get_default_server_id() or '')
-            and not registry.has_secondary_servers()
-            and not index.get("has_canonical", False)
-        ):
-            return True
-    except Exception:
-        pass
-    return False
+    return single_server_mask_unneeded(server, index.get("has_canonical", False))
 
 
 def _server_available(index, server_id):
@@ -465,16 +445,7 @@ def _server_available(index, server_id):
         return None
     from database import get_db
 
-    key = (id(index), server)
-    now = time.monotonic()
-    with _AVAILABILITY_CACHE_LOCK:
-        cached = _AVAILABILITY_CACHE.get(key)
-        if cached is not None and now - cached[0] < _AVAILABILITY_CACHE_TTL:
-            return cached[1]
-    available = available_item_ids(server, index["item_ids"], get_db)
-    with _AVAILABILITY_CACHE_LOCK:
-        _AVAILABILITY_CACHE[key] = (now, available)
-    return available
+    return _AVAILABILITY.get(server, id(index), lambda: available_item_ids(server, index["item_ids"], get_db))
 
 
 def _cache_cell(key, vectors, item_ids):

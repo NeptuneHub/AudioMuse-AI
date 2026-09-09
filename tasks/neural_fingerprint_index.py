@@ -104,8 +104,11 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 import config
+from cpu_budget import usable_cpu_count
 from tasks import ivf_quant
-from tasks.index_availability import active_availability_scope, build_availability_mask
+from tasks.index_availability import (
+    AvailabilityCache, active_availability_scope, build_availability_mask, single_server_mask_unneeded,
+)
 from tasks.index_build_helpers import load_segmented_blob, store_segmented_blob
 from tasks.neural_fingerprint import (
     CODE_BYTES, DIM, HEADER_BYTES, HOP_SAMPLES, HOP_SECONDS, PQ_CENTROIDS, PQ_SUBDIM, PQ_SUBSPACES, codebook,
@@ -149,9 +152,7 @@ PICKER_WHERE = (
 )
 OLDER_LAYOUT = 'The neural fingerprint index was built by an older version; the next analysis run rebuilds it.'
 LOAD_FAILED = 'The neural fingerprint index could not be loaded; check the container logs.'
-_AVAILABILITY_CACHE = {}
-_AVAILABILITY_CACHE_LOCK = threading.Lock()
-_AVAILABILITY_CACHE_TTL = 30.0
+_AVAILABILITY = AvailabilityCache()
 _CANONICAL = {}
 _LOCK = threading.RLock()
 _STATE = {'pack': None, 'building': False, 'error': None, 'gpu': None, 'executor': None}
@@ -591,11 +592,17 @@ def _store_directory(conn, directory_blob, build_id):
     store_segmented_blob(conn, DIR_TABLE, _BUILD_NAME, build_id.encode('ascii'))
 
 
+def track_offset_arrays(first_track, lengths):
+    lengths = np.asarray(lengths, dtype=np.int64)
+    tracks = np.repeat(np.arange(first_track, first_track + lengths.size, dtype=np.uint32), lengths)
+    offsets = np.concatenate([np.arange(n, dtype=np.uint16) for n in lengths]) if lengths.size else np.zeros(0, dtype=np.uint16)
+    return tracks, offsets
+
+
 def _store_labelled_parts(conn, chunks, n_cells, first_part, first_track):
     ids, lengths, cell_sizes, part, track = [], [], np.zeros(n_cells, dtype=np.int64), first_part, first_track
     for chunk_ids, chunk_lengths, labels, codes in chunks:
-        tracks = np.repeat(np.arange(track, track + len(chunk_ids), dtype=np.uint32), chunk_lengths)
-        offsets = np.concatenate([np.arange(n, dtype=np.uint16) for n in chunk_lengths])
+        tracks, offsets = track_offset_arrays(track, chunk_lengths)
         cell_sizes += _store_part(conn, part, labels, codes, tracks, offsets, n_cells)
         ids.extend(chunk_ids)
         lengths.append(chunk_lengths)
@@ -938,14 +945,14 @@ def _cells_for(pack, cell_ids):
 def _query_threads():
     wanted = int(config.NEURAL_FINGERPRINT_QUERY_THREADS)
     if wanted <= 0:
-        wanted = os.cpu_count() or 1
+        wanted = usable_cpu_count() or os.cpu_count() or 1
     return max(1, min(_MAX_QUERY_THREADS, wanted))
 
 
 def _executor():
     with _LOCK:
         if _STATE['executor'] is None:
-            _STATE['executor'] = ThreadPoolExecutor(max_workers=_MAX_QUERY_THREADS, thread_name_prefix='neural-vote')
+            _STATE['executor'] = ThreadPoolExecutor(max_workers=_query_threads(), thread_name_prefix='neural-vote')
         return _STATE['executor']
 
 
@@ -1072,12 +1079,7 @@ def identify(audio, sr, n_results):
 
 
 def invalidate_availability_cache(server_id=None):
-    with _AVAILABILITY_CACHE_LOCK:
-        if server_id is None:
-            _AVAILABILITY_CACHE.clear()
-            return
-        for key in [key for key in _AVAILABILITY_CACHE if key[0] == str(server_id)]:
-            _AVAILABILITY_CACHE.pop(key, None)
+    _AVAILABILITY.invalidate(server_id)
 
 
 def _has_canonical_ids(pack):
@@ -1090,17 +1092,7 @@ def _has_canonical_ids(pack):
 
 
 def _mask_unneeded(pack, server_id):
-    try:
-        from tasks.mediaserver import registry
-
-        return bool(
-            server_id == str(registry.get_default_server_id() or '')
-            and not registry.has_secondary_servers()
-            and not _has_canonical_ids(pack)
-        )
-    except Exception:
-        logger.debug('Single-server availability fast path failed.', exc_info=True)
-        return False
+    return single_server_mask_unneeded(server_id, _has_canonical_ids(pack))
 
 
 def _availability_mask(pack):
@@ -1109,19 +1101,7 @@ def _availability_mask(pack):
         return None
     from database import get_db
 
-    key = (server_id, pack.build_id)
-    now = time.monotonic()
-    with _AVAILABILITY_CACHE_LOCK:
-        cached = _AVAILABILITY_CACHE.get(key)
-        if cached is not None and now - cached[0] < _AVAILABILITY_CACHE_TTL:
-            return cached[1]
-    mask = build_availability_mask(server_id, pack.ids, get_db)
-    with _AVAILABILITY_CACHE_LOCK:
-        stale = [k for k, v in _AVAILABILITY_CACHE.items() if k[1] != key[1] or now - v[0] >= _AVAILABILITY_CACHE_TTL]
-        for old in stale:
-            _AVAILABILITY_CACHE.pop(old, None)
-        _AVAILABILITY_CACHE[key] = (now, mask)
-    return mask
+    return _AVAILABILITY.get(server_id, pack.build_id, lambda: build_availability_mask(server_id, pack.ids, get_db))
 
 
 def _allowed_tracks(pack, exclude_ids):

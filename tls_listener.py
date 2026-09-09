@@ -35,7 +35,10 @@ Main Features:
   client and the pair; the server's accept() only pops the next sniffed
   connection, and fileno() is a wake-up descriptor that becomes readable
   exactly when one is ready, so gunicorn, waitress and werkzeug keep their
-  own select loops unchanged
+  own select loops unchanged; at most _MAX_PENDING connections wait for
+  their first byte at once (the oldest is handed over as HTTP past that),
+  which keeps the sniffer under the 512-descriptor limit of select on
+  Windows however many idle connections a burst opens
 * the relay keeps at most _HIGH_WATER bytes in flight per direction: a client
   sending faster than the app reads is simply not read from until the app
   catches up, so a large upload costs no memory beyond that
@@ -75,6 +78,7 @@ _COMMON_NAME = 'AudioMuse-AI'
 _TLS_HANDSHAKE = 0x16
 _CHUNK = 65536
 _HIGH_WATER = 1 << 20
+_MAX_PENDING = 256
 _LOCK = threading.Lock()
 _STATE = {'prepared': False, 'context': None, 'error': None, 'adopted': 0, 'cert_dir': None}
 _NOT_PREPARED = (
@@ -488,6 +492,8 @@ class DualProtocolListener(socket.socket):
         conn.setblocking(False)
         pending[conn] = (now + SNIFF_TIMEOUT, addr)
         selector.register(conn, selectors.EVENT_READ, data=addr)
+        if len(pending) > _MAX_PENDING:
+            self._settle(selector, pending, next(iter(pending)), b'')
 
     def _settle(self, selector, pending, conn, head):
         _deadline, addr = pending.pop(conn)

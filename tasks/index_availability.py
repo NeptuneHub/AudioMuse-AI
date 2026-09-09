@@ -22,10 +22,16 @@ Main Features:
   ordered id list, for indexes that address candidates by position
 * invalidate_availability_caches drops the cached masks of every index that
   keeps one, so a mapping change reaches all of them from one call
+* AvailabilityCache is the per-server, per-index-build memo with a 30 s life
+  that every index keeps in front of the mask builder, and
+  single_server_mask_unneeded the shared rule that skips the mask altogether
+  for a lone default server over legacy ids
 """
 
 import importlib
 import logging
+import threading
+import time
 
 import numpy as np
 
@@ -105,6 +111,53 @@ def build_availability_mask(server_id, item_ids, conn_factory):
     ids = list(item_ids)
     available = _fetch_available(server_id, ids, conn_factory)
     return np.fromiter((i in available for i in ids), dtype=np.bool_, count=len(ids))
+
+
+def single_server_mask_unneeded(server_id, has_canonical_ids):
+    try:
+        from tasks.mediaserver import registry
+
+        return bool(
+            str(server_id) == str(registry.get_default_server_id() or '')
+            and not registry.has_secondary_servers()
+            and not has_canonical_ids
+        )
+    except Exception:
+        logger.debug("Single-server availability fast path failed.", exc_info=True)
+        return False
+
+
+class AvailabilityCache:
+    def __init__(self, ttl_seconds=30.0):
+        self._ttl = float(ttl_seconds)
+        self._lock = threading.Lock()
+        self._entries = {}
+
+    def get(self, server_id, scope, build):
+        key = (str(server_id), scope)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._entries.get(key)
+            if cached is not None and now - cached[0] < self._ttl:
+                return cached[1]
+        value = build()
+        with self._lock:
+            for stale in [k for k, v in self._entries.items() if now - v[0] >= self._ttl]:
+                self._entries.pop(stale, None)
+            self._entries[key] = (now, value)
+        return value
+
+    def invalidate(self, server_id=None):
+        with self._lock:
+            if server_id is None:
+                self._entries.clear()
+                return
+            for key in [key for key in self._entries if key[0] == str(server_id)]:
+                self._entries.pop(key, None)
+
+    def __len__(self):
+        with self._lock:
+            return len(self._entries)
 
 
 _MASK_OWNERS = ('tasks.paged_ivf', 'tasks.hyperbolic_index', 'tasks.neural_fingerprint_index')

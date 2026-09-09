@@ -78,8 +78,7 @@ def _build_parts(codes, quantizer, first_part=0, first_track=0, part_rows=nfi._P
     ids, lengths, cell_sizes, rows = [], [], np.zeros(quantizer.n_cells, dtype=np.int64), []
     part, track = first_part, first_track
     for chunk_ids, chunk_lengths, labels, chunk_codes in nfi.label_tracks(iter(codes.items()), quantizer, part_rows):
-        tracks = np.repeat(np.arange(track, track + len(chunk_ids), dtype=np.uint32), chunk_lengths)
-        offsets = np.concatenate([np.arange(n, dtype=np.uint16) for n in chunk_lengths])
+        tracks, offsets = nfi.track_offset_arrays(track, chunk_lengths)
         cell_rows, counts = _drain(nfi.part_cells(part, labels, chunk_codes, tracks, offsets, quantizer.n_cells))
         rows.extend(cell_rows)
         cell_sizes += counts
@@ -484,7 +483,7 @@ def test_a_server_scope_votes_only_over_that_servers_tracks_and_the_mask_is_cach
     nfi.identify_vectors(query, 5)
     assert builds == ['without', 'with', 'with']
     nfi.invalidate_availability_cache()
-    assert nfi._AVAILABILITY_CACHE == {}
+    assert len(nfi._AVAILABILITY) == 0
 
 
 def test_a_disabled_feature_builds_loads_and_reloads_nothing(monkeypatch):
