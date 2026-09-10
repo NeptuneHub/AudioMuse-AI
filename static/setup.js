@@ -693,6 +693,29 @@ ML_MODEL_FLAGS.forEach(function(flag) {
     });
 });
 
+var modelDetailsToggles = Array.prototype.slice.call(
+    document.querySelectorAll('#ml-models-section .ml-model-details-toggle')
+);
+
+function setModelDetailsOpen(button, open) {
+    var panel = document.getElementById(button.getAttribute('aria-controls') || '');
+    if (!panel) {
+        return;
+    }
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    panel.hidden = !open;
+}
+
+modelDetailsToggles.forEach(function(button) {
+    button.addEventListener('click', function() {
+        var open = button.getAttribute('aria-expanded') === 'true';
+        modelDetailsToggles.forEach(function(other) {
+            setModelDetailsOpen(other, false);
+        });
+        setModelDetailsOpen(button, !open);
+    });
+});
+
 function buildAdvancedFieldRow(field) {
     var secret = false;
     if (field.secret) {

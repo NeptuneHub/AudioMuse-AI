@@ -12,15 +12,15 @@ There is no javascript runner in this repo, so the section that lets a user swit
 each analysis model on or off is pinned by reading the template and setup.js as
 sources: the section sits between Authentication and the advanced parameters, every
 switchable model carries the hidden input that submits its config flag, MusiCNN is
-shown as always on, each name has a tooltip that names the features the model
-powers, and the flags are removed from the advanced list so no value is rendered
-twice.
+shown as always on, the names carry no tooltip (the "What it does" list under each
+model replaced it), and the flags are removed from the advanced list so no value is
+rendered twice.
 
 Main Features:
 * The section is rendered under Authentication and before the advanced parameters
 * Every model flag is submitted through a hidden input that carries the flag name
 * MusiCNN is a checked, disabled switch with no flag to submit
-* Each model name carries a tooltip naming the features that depend on it
+* No model name carries a tooltip any more; the list under the model explains it
 * The flags are no longer listed in ADVANCED_SECTIONS nor rendered as leftovers
 * The Whisper switch is locked whenever the GTE Lyrics switch is off
 """
@@ -34,13 +34,7 @@ REPO_ROOT = os.path.normpath(
 
 MODEL_FLAGS = ('CLAP_ENABLED', 'LYRICS_ENABLED', 'LYRICS_ASR_ENABLE', 'NEURAL_FINGERPRINT_ENABLED')
 
-FEATURES_PER_MODEL = {
-    'musicnn': ('Clustering', 'Playlist from Similar Song', 'Song Path', 'Song Alchemy', 'Hyperbolic Explorer'),
-    'clap': ('Text Search',),
-    'lyrics': ('Lyrics Search',),
-    'whisper': ('Lyrics Search',),
-    'neural-fingerprint': ('Search by Recording',),
-}
+MODELS = ('musicnn', 'clap', 'lyrics', 'whisper', 'neural-fingerprint')
 
 
 def _read(rel_path):
@@ -106,14 +100,13 @@ def test_musicnn_is_a_checked_disabled_switch_with_no_flag():
     assert 'is-locked' in re.search(r'<div class="ml-model-row[^"]*" data-model="musicnn">', section).group(0)
 
 
-def test_each_model_name_carries_a_tooltip_naming_the_features_it_powers():
+def test_no_model_name_carries_a_tooltip_any_more():
     section = _section(_template())
-    for model, features in FEATURES_PER_MODEL.items():
+    for forbidden in ('info-tooltip', 'tooltip-text', 'info-icon', 'label-with-tooltip'):
+        assert forbidden not in section, forbidden + ' is still used in the Machine Learning Models section'
+    for model in MODELS:
         info, _switch = _row(section, model)
-        tooltip = re.search(r'<span class="tooltip-text"[^>]*>(.*?)</span>', info, re.DOTALL)
-        assert tooltip, model + ' has no tooltip'
-        for feature in features:
-            assert feature in tooltip.group(1), '%s tooltip does not name %s' % (model, feature)
+        assert re.search(r'class="ml-model-name">[A-Za-z ]+</(span|label)>', info), model + ' has no plain name'
 
 
 def test_the_flags_are_no_longer_rendered_in_the_advanced_list():

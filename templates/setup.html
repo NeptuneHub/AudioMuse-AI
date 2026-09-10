@@ -174,6 +174,7 @@
     }
     .ml-model-row {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
@@ -183,23 +184,14 @@
     .ml-model-row:first-child {
         border-top: none;
     }
-    .ml-model-row .label-with-tooltip {
+    .ml-model-name {
+        display: block;
         margin-bottom: 0.15rem;
         font-weight: 600;
         cursor: default;
     }
-    #setup-form button.info-tooltip {
-        width: auto;
-        padding: 0;
-        border: 0;
-        border-radius: 0;
-        background: none;
-        color: inherit;
-        font: inherit;
-        line-height: 0;
-    }
     .ml-model-info {
-        flex: 1 1 auto;
+        flex: 1 1 0;
         min-width: 0;
     }
     .ml-model-role {
@@ -251,6 +243,61 @@
     .ml-model-coverage-label {
         white-space: nowrap;
     }
+    #setup-form button.ml-model-details-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        width: auto;
+        margin: 0.5rem 0 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: none;
+        box-shadow: none;
+        color: var(--color-primary, #2563EB);
+        font-size: 0.8rem;
+        font-weight: 600;
+        line-height: 1.2;
+        cursor: pointer;
+    }
+    .ml-model-details-toggle::after {
+        content: "";
+        width: 6px;
+        height: 6px;
+        margin-top: -3px;
+        border-right: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: rotate(45deg);
+        transition: transform 0.2s;
+    }
+    .ml-model-details-toggle[aria-expanded="true"]::after {
+        margin-top: 3px;
+        transform: rotate(225deg);
+    }
+    .ml-model-details {
+        flex: 1 1 100%;
+        order: 3;
+        margin: -0.25rem 0 0.1rem;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        color: var(--text-main, #111);
+    }
+    .ml-model-details[hidden] {
+        display: none;
+    }
+    .ml-model-details ul {
+        margin: 0;
+        padding-left: 1.15rem;
+    }
+    .ml-model-details li {
+        margin-bottom: 0.3rem;
+    }
+    .ml-model-details li:last-child {
+        margin-bottom: 0;
+    }
+    .ml-model-details-note {
+        margin: 0.45rem 0 0;
+    }
     .ml-model-state {
         display: block;
         margin-top: 0.2rem;
@@ -263,7 +310,7 @@
         text-align: center;
     }
     .ml-model-row.is-locked .ml-model-role,
-    .ml-model-row.is-locked .label-with-tooltip {
+    .ml-model-row.is-locked .ml-model-name {
         opacity: 0.6;
     }
 </style>
@@ -458,22 +505,27 @@
 
             <section class="section" id="ml-models-section">
                 <h2>Machine Learning Models</h2>
-                <p class="subtitle" style="margin-top:0.75rem;">Choose the models that run during analysis. Turning a model off also turns off every feature that depends on it: hover the name to see which ones. The small bar under a model shows how much of your library that feature can find right now; it fills up as the analysis runs.</p>
+                <p class="subtitle" style="margin-top:0.75rem;">Choose the models that run during analysis. Turning a model off also turns off every feature that depends on it: open "What it does" under a model to see which pages use it and why. The small bar under a model shows how much of your library that feature can find right now; it fills up as the analysis runs.</p>
                 <div class="ml-model-list">
                     <div class="ml-model-row is-locked" data-model="musicnn">
                         <div class="ml-model-info">
-                            <span class="label-with-tooltip">
-                                MusiCNN
-                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-musicnn-help">
-                                    <span class="info-icon"></span>
-                                    <span class="tooltip-text" id="ml-model-musicnn-help">Always on. The core audio model behind Clustering, Playlist from Similar Song, Artist Similarity, Song Path, Song Alchemy, Music Map, Sonic Fingerprint, Hyperbolic Explorer and Instant Playlist.</span>
-                                </button>
-                            </span>
+                            <span class="ml-model-name">MusiCNN</span>
                             <small class="ml-model-role">Audio embeddings, mood and genre tags</small>
                             <div class="ml-model-coverage" data-coverage="musicnn" data-level="0" hidden>
                                 <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
+                            <button type="button" class="ml-model-details-toggle" aria-expanded="false" aria-controls="ml-model-musicnn-details">What it does</button>
+                        </div>
+                        <div class="ml-model-details" id="ml-model-musicnn-details" hidden>
+                            <ul>
+                                <li><strong>Playlist from Similar Song:</strong> takes the sound numbers of the song you pick and returns the songs whose numbers are closest.</li>
+                                <li><strong>Music Map:</strong> draws every song as a point, so songs that sound alike sit close together.</li>
+                                <li><strong>Song Path:</strong> builds a smooth route from one song to another through the same numbers.</li>
+                                <li><strong>Clustering:</strong> groups songs by their tags (rock, chill, female vocalist), tempo and energy, and puts those tag names into the playlist names.</li>
+                                <li><strong>Song Alchemy, Artist Similarity, Sonic Fingerprint, Hyperbolic Explorer:</strong> different ways to explore the same sound numbers.</li>
+                                <li><strong>Instant Playlist:</strong> the filters on genre, voice, tempo and key come from its tags.</li>
+                            </ul>
                         </div>
                         <div class="ml-model-switch">
                             <label class="toggle-switch" title="MusiCNN is always on">
@@ -486,18 +538,23 @@
                     </div>
                     <div class="ml-model-row" data-model="clap">
                         <div class="ml-model-info">
-                            <label for="ml-model-clap" class="label-with-tooltip">
-                                DCLAP
-                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-clap-help">
-                                    <span class="info-icon"></span>
-                                    <span class="tooltip-text" id="ml-model-clap-help">Text Search (DCLAP), the Dashboard mood chart and Instant Playlist requests that describe a sound. Off: the Text Search page is hidden and analysis runs faster.</span>
-                                </button>
-                            </label>
+                            <label for="ml-model-clap" class="ml-model-name">DCLAP</label>
                             <small class="ml-model-role">Find songs by describing their sound</small>
                             <div class="ml-model-coverage" data-coverage="clap" data-level="0" hidden>
                                 <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
+                            <button type="button" class="ml-model-details-toggle" aria-expanded="false" aria-controls="ml-model-clap-details">What it does</button>
+                        </div>
+                        <div class="ml-model-details" id="ml-model-clap-details" hidden>
+                            <ul>
+                                <li><strong>Text Search:</strong> the main use. You describe a sound in plain words, for example "pop song with a female vocalist", and it returns the songs that sound like that.</li>
+                                <li><strong>Mood scores:</strong> every song gets six scores (danceable, aggressive, happy, party, relaxed, sad). They appear as the mood pills next to songs on every result list.</li>
+                                <li><strong>Clustering:</strong> those scores shape the groups and add words like Happy or Danceable to the playlist names.</li>
+                                <li><strong>Dashboard:</strong> the Moods chart counts songs by their strongest mood score.</li>
+                                <li><strong>Instant Playlist:</strong> requests that describe a sound, such as "something dreamy with strings", go through it.</li>
+                            </ul>
+                            <p class="ml-model-details-note">We suggest keeping it on even if you never open Text Search: the mood scores feed the other pages, and new songs get none without it.</p>
                         </div>
                         <div class="ml-model-switch">
                             <label class="toggle-switch">
@@ -510,18 +567,22 @@
                     </div>
                     <div class="ml-model-row" data-model="lyrics">
                         <div class="ml-model-info">
-                            <label for="ml-model-lyrics" class="label-with-tooltip">
-                                GTE Lyrics
-                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-lyrics-help">
-                                    <span class="info-icon"></span>
-                                    <span class="tooltip-text" id="ml-model-lyrics-help">Lyrics Search, SemGrove, the lyrics space of Song Path and Instant Playlist requests about what a song is about. Off: no lyrics are fetched, transcribed or embedded and the Lyrics Search page is hidden.</span>
-                                </button>
-                            </label>
+                            <label for="ml-model-lyrics" class="ml-model-name">GTE Lyrics</label>
                             <small class="ml-model-role">Find songs by the meaning of their lyrics</small>
                             <div class="ml-model-coverage" data-coverage="lyrics" data-level="0" hidden>
                                 <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
+                            <button type="button" class="ml-model-details-toggle" aria-expanded="false" aria-controls="ml-model-lyrics-details">What it does</button>
+                        </div>
+                        <div class="ml-model-details" id="ml-model-lyrics-details" hidden>
+                            <ul>
+                                <li><strong>Lyrics Search, By Text:</strong> search by what a song is about, for example "a song about leaving home", in any language of your library.</li>
+                                <li><strong>Lyrics Search, By Axes:</strong> five sliders rate the story of the lyrics (setting, people, feeling, time, weight of the theme).</li>
+                                <li><strong>Lyrics Search, By Song (SemGrove):</strong> songs that sound alike and talk about the same things, mixing lyrics meaning (75 percent) with sound (25 percent).</li>
+                                <li><strong>Song Path:</strong> the lyrics option builds the route on that mixed index, so the topic stays close as well as the sound.</li>
+                                <li><strong>Instant Playlist:</strong> requests about the topic of a song.</li>
+                            </ul>
                         </div>
                         <div class="ml-model-switch">
                             <label class="toggle-switch">
@@ -534,14 +595,12 @@
                     </div>
                     <div class="ml-model-row" data-model="whisper">
                         <div class="ml-model-info">
-                            <label for="ml-model-whisper" class="label-with-tooltip">
-                                Whisper ASR
-                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-whisper-help">
-                                    <span class="info-icon"></span>
-                                    <span class="tooltip-text" id="ml-model-whisper-help">Transcribes the songs whose lyrics neither the music server nor the Lyrics API slots provide, so they still show up in Lyrics Search. Off: those songs count as instrumental. Needs GTE Lyrics.</span>
-                                </button>
-                            </label>
+                            <label for="ml-model-whisper" class="ml-model-name">Whisper ASR</label>
                             <small class="ml-model-role">Transcribe lyrics when none are found</small>
+                            <button type="button" class="ml-model-details-toggle" aria-expanded="false" aria-controls="ml-model-whisper-details">What it does</button>
+                        </div>
+                        <div class="ml-model-details" id="ml-model-whisper-details" hidden>
+                            <p class="ml-model-details-note">A fallback: if a song has no lyrics on the music server and none from the configured Lyrics API, Whisper transcribes them from the audio. The song can then still be found in Lyrics Search.</p>
                         </div>
                         <div class="ml-model-switch">
                             <label class="toggle-switch">
@@ -554,18 +613,19 @@
                     </div>
                     <div class="ml-model-row" data-model="neural-fingerprint">
                         <div class="ml-model-info">
-                            <label for="ml-model-neural-fingerprint" class="label-with-tooltip">
-                                Neural Fingerprint
-                                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="ml-model-neural-fingerprint-help">
-                                    <span class="info-icon"></span>
-                                    <span class="tooltip-text" id="ml-model-neural-fingerprint-help">Search by Recording: identify a song from a microphone clip or an uploaded snippet. Off: analysis skips the fingerprint and the page says it is disabled.</span>
-                                </button>
-                            </label>
+                            <label for="ml-model-neural-fingerprint" class="ml-model-name">Neural Fingerprint</label>
                             <small class="ml-model-role">Identify a song from a recording</small>
                             <div class="ml-model-coverage" data-coverage="neural-fingerprint" data-level="0" hidden>
                                 <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
+                            <button type="button" class="ml-model-details-toggle" aria-expanded="false" aria-controls="ml-model-neural-fingerprint-details">What it does</button>
+                        </div>
+                        <div class="ml-model-details" id="ml-model-neural-fingerprint-details" hidden>
+                            <ul>
+                                <li><strong>Search by Recording:</strong> record about 20 seconds with the phone, or upload a clip, and it tells you which song it is and where in the song you are. It works through room noise and a poor microphone.</li>
+                                <li><strong>Search by Song:</strong> pick a song from your library and it lists the other versions of it first (copies, remasters, compilation editions), then the closest candidates.</li>
+                            </ul>
                         </div>
                         <div class="ml-model-switch">
                             <label class="toggle-switch">
