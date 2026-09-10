@@ -19,8 +19,13 @@ Main Features:
 * store, load, length and completeness of a segmented ivf_dir blob work
 * re-storing a name deletes only its own segments, a look-alike row survives
 * the segmented index-table store works the same way
-* the shared old-scheme signature-id predicate keeps its escaped underscore, so
-  a provider id that merely starts with fp is not taken for a fingerprint id
+* every table lives in a private schema that is dropped again afterwards, so
+  the shared session database is left as it was found
+* the old-scheme signature predicate, the canonicalize scheme predicates, the
+  catalogue canonical-id probe, the fingerprint index load, the analysis
+  legacy work scan and the two partial-index predicates init_db creates on
+  score all keep their escaped underscore, so a provider id that merely starts
+  with fp is never taken for a fingerprint id
 """
 
 import json
@@ -49,7 +54,13 @@ _INDEX_DDL = (
     "index_data BYTEA, id_map_json TEXT, embedding_dimension INTEGER, "
     "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
 )
-_SCORE_DDL = "CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY)"
+_SCORE_DDL = (
+    "CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, duration DOUBLE PRECISION, "
+    "tempo REAL, energy REAL, key TEXT, scale TEXT, mood_vector TEXT, other_features TEXT)"
+)
+_EMBEDDING_DDL = "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY)"
+_MAP_DDL = "CREATE TABLE IF NOT EXISTS track_server_map (item_id TEXT, match_tier TEXT)"
+_SCHEMA = "like_escape_test"
 _NAME = "clap_index__ivf_dir"
 _LOOKALIKE = "clap_index__ivf_dirX1_2"
 _TWO_PARTS = 1024 * 1024 + 1024
@@ -57,17 +68,40 @@ _TWO_PARTS = 1024 * 1024 + 1024
 
 @pytest.fixture
 def off_db(shared_pg_dsn):
-    conn = psycopg2.connect(shared_pg_dsn, options="-c standard_conforming_strings=off")
+    admin = psycopg2.connect(shared_pg_dsn)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {_SCHEMA}")
+    conn = psycopg2.connect(
+        shared_pg_dsn, options=f"-c search_path={_SCHEMA} -c standard_conforming_strings=off"
+    )
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS ivf_dir")
-        cur.execute("DROP TABLE IF EXISTS escape_index")
-        cur.execute("DROP TABLE IF EXISTS score")
-        cur.execute(_DIR_DDL)
-        cur.execute(_INDEX_DDL)
-        cur.execute(_SCORE_DDL)
+        for ddl in (_DIR_DDL, _INDEX_DDL, _SCORE_DDL, _EMBEDDING_DDL, _MAP_DDL):
+            cur.execute(ddl)
     yield conn
     conn.close()
+    with admin.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_SCHEMA} CASCADE")
+    admin.close()
+
+
+def _ids():
+    from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+
+    tail = "0" * (CANONICAL_ID_LEN - len(CURRENT_ID_HEAD))
+    return CURRENT_ID_HEAD + tail, "fpX" + CURRENT_ID_HEAD[3:] + tail, "fp_0" + tail
+
+
+def _insert_scores(conn, ids):
+    with conn.cursor() as cur:
+        for item_id in ids:
+            cur.execute(
+                "INSERT INTO score (item_id, duration, tempo, energy, key, scale, mood_vector, other_features) "
+                "VALUES (%s, 1.0, 120, 0.5, 'C', 'major', 'm', 'o')",
+                (item_id,),
+            )
 
 
 def _names(conn, table, column):
@@ -143,3 +177,94 @@ def test_old_scheme_signature_predicate_rejects_provider_id_starting_with_fp_wit
     with off_db.cursor() as cur:
         cur.execute(f"SELECT item_id FROM score WHERE {sql}", params)
         assert [row[0] for row in cur.fetchall()] == [old_scheme_id]
+
+
+def test_tables_live_in_the_private_schema_not_in_public(off_db):
+    with off_db.cursor() as cur:
+        cur.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = 'score'")
+        assert [row[0] for row in cur.fetchall()] == [_SCHEMA]
+
+
+def test_canonicalize_scheme_predicates_treat_a_provider_id_starting_with_fp_as_legacy_with_strings_off(off_db):
+    from tasks import fingerprint_canonicalize as fc
+    from tasks.simhash import CANONICAL_ID_LEN
+
+    current, decoy, unsignable = _ids()
+    _insert_scores(off_db, [current, decoy, unsignable, "abc"])
+    with off_db.cursor() as cur:
+        cur.execute(f"SELECT s.item_id FROM score s WHERE {fc._CURRENT_SCHEME_SQL} ORDER BY 1", (CANONICAL_ID_LEN,))
+        assert [row[0] for row in cur.fetchall()] == [current]
+        cur.execute(f"SELECT s.item_id FROM score s WHERE {fc._LEGACY_ROW_SQL} ORDER BY 1", (CANONICAL_ID_LEN,))
+        assert [row[0] for row in cur.fetchall()] == ["abc", decoy]
+
+
+def test_catalogue_canonical_id_probe_ignores_a_provider_id_starting_with_fp_with_strings_off(off_db, monkeypatch):
+    import app_helper
+
+    current, decoy, _unsignable = _ids()
+    monkeypatch.setattr(app_helper, "get_db", lambda: off_db)
+    _insert_scores(off_db, [current])
+    assert app_helper.probe_catalogue_canonical_ids() is True
+    with off_db.cursor() as cur:
+        cur.execute("DELETE FROM score")
+    _insert_scores(off_db, [decoy])
+    assert app_helper.probe_catalogue_canonical_ids() is False
+
+
+def test_fingerprint_index_load_registers_only_real_signature_ids_with_strings_off(off_db, monkeypatch):
+    from tasks import simhash
+    from tasks.analysis import helper
+
+    class _Resolver:
+        def __init__(self, **_kw):
+            self.ids = []
+
+        def register(self, item_id, duration=None):
+            self.ids.append(item_id)
+
+    current, decoy, unsignable = _ids()
+    _insert_scores(off_db, [current, decoy, unsignable])
+    monkeypatch.setattr(helper, "get_db", lambda: off_db)
+    monkeypatch.setattr(simhash, "CatalogResolver", _Resolver)
+    monkeypatch.setitem(helper._fingerprint_index_cache, "resolver", None)
+    assert helper.load_fingerprint_index().ids == [current]
+
+
+def test_analysis_legacy_work_scan_keeps_a_provider_id_starting_with_fp_with_strings_off(off_db):
+    from tasks.analysis.helper import _work_sql
+
+    current, decoy, _unsignable = _ids()
+    _insert_scores(off_db, [current, decoy, "abc"])
+    with off_db.cursor() as cur:
+        for item_id in (current, decoy, "abc"):
+            cur.execute("INSERT INTO embedding (item_id) VALUES (%s)", (item_id,))
+        _mapped_sql, legacy_sql = _work_sql(False, False)
+        cur.execute(legacy_sql + " AND s.item_id > %s ORDER BY s.item_id LIMIT %s", ("", 100))
+        assert [row[0] for row in cur.fetchall()] == ["abc", decoy]
+
+
+def _stored_index_predicate_rows(cur, index_name):
+    cur.execute(
+        "SELECT pg_get_expr(i.indpred, i.indrelid) FROM pg_index i "
+        "JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = %s AND c.relname = %s",
+        (_SCHEMA, index_name),
+    )
+    predicate = cur.fetchone()[0]
+    cur.execute(f"SELECT item_id FROM score WHERE {predicate} ORDER BY 1")
+    return [row[0] for row in cur.fetchall()]
+
+
+def test_score_partial_index_predicates_keep_the_escaped_underscore_with_strings_off(off_db):
+    import database
+    from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+
+    current, decoy, unsignable = _ids()
+    old_head = CURRENT_ID_HEAD[:-1] + str(int(CURRENT_ID_HEAD[-1]) - 1)
+    old_scheme = old_head + "0" * (CANONICAL_ID_LEN - len(old_head))
+    _insert_scores(off_db, [current, decoy, unsignable, old_scheme, "abc"])
+    with off_db.cursor() as cur:
+        cur.execute(database._SCORE_LEGACY_ID_INDEX_SQL)
+        cur.execute(database._score_old_scheme_index_sql())
+        assert _stored_index_predicate_rows(cur, "idx_score_legacy_item_id") == ["abc", decoy]
+        assert _stored_index_predicate_rows(cur, "idx_score_old_scheme") == [old_scheme]

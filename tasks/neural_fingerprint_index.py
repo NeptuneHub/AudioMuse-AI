@@ -111,7 +111,7 @@ from tasks import ivf_quant
 from tasks.index_availability import (
     AvailabilityCache, active_availability_scope, build_availability_mask, single_server_mask_unneeded,
 )
-from tasks.index_build_helpers import load_segmented_blob, store_segmented_blob
+from tasks.index_build_helpers import like_escape, load_segmented_blob, store_segmented_blob
 from tasks.neural_fingerprint import (
     CODE_BYTES, DIM, HEADER_BYTES, HOP_SAMPLES, HOP_SECONDS, PQ_CENTROIDS, PQ_SUBDIM, PQ_SUBSPACES, codebook,
     decode_blob, decode_codes, fingerprint_audio, is_available, is_enabled,
@@ -427,7 +427,7 @@ def _delete_cells(conn):
     with conn.cursor() as cur:
         cur.execute(
             f"DELETE FROM {CELL_TABLE} WHERE index_name LIKE %s ESCAPE E'\\\\'",
-            (_CELL_NAMESPACE.replace('_', r'\_') + '%',),
+            (like_escape(_CELL_NAMESPACE) + '%',),
         )
 
 
@@ -898,7 +898,7 @@ def _db_connection():
 
 
 def _read_cell_rows(cell_ids):
-    pattern = _CELL_NAMESPACE.replace('_', r'\_') + '%'
+    pattern = like_escape(_CELL_NAMESPACE) + '%'
     conn, owned = _db_connection()
     try:
         rows = []

@@ -189,12 +189,14 @@ def _partition_into_cells(vectors):
 
 
 def _delete_index(db_conn, server_key):
+    from tasks.index_build_helpers import like_escape, segment_like_pattern
+
     key = server_key or _DEFAULT_SERVER_KEY
     dir_name = _scoped_name(_DIR_PREFIX, key)
     exact = [dir_name, _centroids_name(key)]
-    patterns = [dir_name.replace("_", r"\_") + r"\_%\_%"]
+    patterns = [segment_like_pattern(dir_name)]
     for prefix in (_CELL_PREFIX, _CENTROID_PREFIX, _LEGACY_BAND_PREFIX):
-        patterns.append(_scoped_name(prefix, key).replace("_", r"\_") + r"%")
+        patterns.append(like_escape(_scoped_name(prefix, key)) + "%")
     clause = " OR ".join(["name = %s"] * len(exact) + ["name LIKE %s ESCAPE E'\\\\'"] * len(patterns))
     with db_conn.cursor() as cur:
         cur.execute(f"DELETE FROM ivf_dir WHERE {clause}", tuple(exact + patterns))  # nosec B608 - %s-placeholder template only; values are bound params
@@ -293,9 +295,10 @@ def _load_directory(db_conn, name):
 
 def _scan_index_names():
     from database import get_db
+    from tasks.index_build_helpers import like_escape
 
     prefix = _DIR_PREFIX + "__"
-    like = prefix.replace("_", r"\_") + "%"
+    like = like_escape(prefix) + "%"
     out = set()
     try:
         db_conn = get_db()

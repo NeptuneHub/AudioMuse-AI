@@ -1488,8 +1488,10 @@ def has_paged_ivf(db_conn, index_name: str) -> bool:
 
 
 def paged_ivf_item_count(db_conn, index_name: str) -> Optional[int]:
+    from .index_build_helpers import like_escape
+
     name = f"{index_name}__ivf_dir"
-    first_part = name.replace("_", r"\_") + r"\_1\_%"
+    first_part = like_escape(name) + r"\_1\_%"
     try:
         with db_conn.cursor() as cur:
             cur.execute(
