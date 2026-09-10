@@ -19,6 +19,8 @@ Main Features:
 * A configured library reports the bands from real counts and real headers,
   the lyrics denominator counting only rows that hold a vector
 * A missing table hides every bar and leaves the connection usable afterwards
+* Everything lives in a private schema on the shared instance, so the other
+  modules' tables (and their foreign keys onto score) are never touched
 """
 
 import os
@@ -50,18 +52,27 @@ _DDL = (
 )
 
 
+_SCHEMA = 'wizard_coverage_test'
+
+
 @pytest.fixture
 def wizard_db(shared_pg_dsn):
     admin = psycopg2.connect(shared_pg_dsn)
     admin.autocommit = True
     with admin.cursor() as cur:
-        for table in ('ivf_cell', 'ivf_dir', 'lyrics_embedding', 'score'):
-            cur.execute("DROP TABLE IF EXISTS %s" % table)
+        cur.execute("DROP SCHEMA IF EXISTS %s CASCADE" % _SCHEMA)
+        cur.execute("CREATE SCHEMA %s" % _SCHEMA)
+        cur.execute("SET search_path TO %s" % _SCHEMA)
         for ddl in _DDL:
             cur.execute(ddl)
     request_conn = psycopg2.connect(shared_pg_dsn)
+    with request_conn.cursor() as cur:
+        cur.execute("SET search_path TO %s" % _SCHEMA)
+    request_conn.commit()
     yield admin, request_conn
     request_conn.close()
+    with admin.cursor() as cur:
+        cur.execute("DROP SCHEMA IF EXISTS %s CASCADE" % _SCHEMA)
     admin.close()
 
 
