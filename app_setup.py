@@ -19,6 +19,9 @@ Main Features:
   "keep the stored value" except where blank has its own meaning.
 * Validates enum fields against fixed option sets, tests the media-server
   connection, and lists provider libraries so the wizard can populate itself.
+* Hands the Machine Learning Models section, on every open, the band (0 to 4)
+  of the library each model's index can find right now: two indexed counts plus
+  one directory-header read per index, never an index load, and never a number.
 """
 
 import re
@@ -480,6 +483,59 @@ def _get_allowed_setup_keys():
     return allowed_keys
 
 
+MODEL_COVERAGE_BANDS = (0.2, 0.5, 0.9)
+MODEL_COVERAGE_MODELS = ('musicnn', 'clap', 'lyrics', 'neural-fingerprint')
+
+
+def model_coverage_level(indexed, eligible):
+    if not indexed or not eligible:
+        return 0
+    ratio = indexed / eligible
+    return 1 + sum(1 for edge in MODEL_COVERAGE_BANDS if ratio >= edge)
+
+
+def _count_rows(cur, sql):
+    cur.execute(sql)
+    row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def model_coverage_levels():
+    from database import get_db
+    from tasks.paged_ivf import paged_ivf_item_count
+    from tasks.neural_fingerprint_index import indexed_track_count
+
+    try:
+        db = get_db()
+    except Exception:
+        app.logger.exception('Model coverage could not open the database for the setup wizard')
+        return {}
+    try:
+        with db.cursor() as cur:
+            total_songs = _count_rows(cur, "SELECT COUNT(*) FROM score")
+            songs_with_lyrics = _count_rows(
+                cur, "SELECT COUNT(*) FROM lyrics_embedding WHERE embedding IS NOT NULL"
+            )
+        pairs = {
+            'musicnn': (paged_ivf_item_count(db, config.INDEX_NAME), total_songs),
+            'clap': (paged_ivf_item_count(db, 'clap_index'), total_songs),
+            'lyrics': (paged_ivf_item_count(db, 'lyrics_index'), songs_with_lyrics),
+            'neural-fingerprint': (indexed_track_count() or 0, total_songs),
+        }
+    except Exception:
+        app.logger.exception('Model coverage could not be read for the setup wizard')
+        try:
+            db.rollback()
+        except Exception:
+            app.logger.exception('Model coverage rollback failed for the setup wizard')
+        return {}
+    return {
+        model: model_coverage_level(*pairs[model])
+        for model in MODEL_COVERAGE_MODELS
+        if pairs[model][0] is not None
+    }
+
+
 def _has_admin_user():
     try:
         from app_auth import count_admin_users
@@ -527,7 +583,9 @@ def setup_api():
     description: |
       The GET response separates fields into `basic` and `advanced` lists,
       hides values for inactive media-server types, and masks any field whose
-      name is in SECRET_FIELDS or ends with `_API_KEY`.
+      name is in SECRET_FIELDS or ends with `_API_KEY`. `model_coverage` maps
+      each model to the band (0 to 4) of the library its index can find right
+      now, computed on every request; it never carries a count.
 
       The POST body should contain `{key: value}` pairs for the keys returned
       by GET. Empty strings on secret fields keep the previously stored value;
@@ -615,6 +673,7 @@ def setup_api():
                 'lyrics_api_fields': lyrics_api_data,
                 'setup_saved': not check_setup_needed(),
                 'has_admin_user': _has_admin_user(),
+                'model_coverage': model_coverage_levels(),
             }
         )
 

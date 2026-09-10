@@ -57,7 +57,9 @@ Main Features:
   immutable Pack swapped by a single reference assignment; reload_from_db
   swaps to a new build on the index-reload event and drops the old build's
   cached cells; a directory of an older layout or another codebook is
-  reported as IndexUnavailable with a message that is safe to show
+  reported as IndexUnavailable with a message that is safe to show;
+  indexed_track_count hands the loaded build's track count to the wizard's
+  coverage bar without touching the database
 * Search: each pass first lists the cells its segments probe, fetches the
   ones not cached in one query (every part of each cell, concatenated), then
   scores the segments in parallel threads (NEURAL_FINGERPRINT_QUERY_THREADS,
@@ -739,6 +741,12 @@ def _swap_pack(pack):
 
 def is_loaded():
     return _STATE['pack'] is not None
+
+
+def indexed_track_count():
+    with _LOCK:
+        pack = _STATE['pack']
+        return None if pack is None else pack.live_tracks
 
 
 def _current_pack():

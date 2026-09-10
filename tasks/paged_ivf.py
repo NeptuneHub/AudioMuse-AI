@@ -23,6 +23,9 @@ Main Features:
   with opt-in IVF_PRELOAD_ALL; STORAGE EXTERNAL blobs avoid TOAST compression.
 * Idle mmap page-dropping (Windows and POSIX) and idle callbacks that return
   freed heap to the OS without touching glibc arena tuning.
+* paged_ivf_item_count reads the item count out of the stored directory header
+  alone (one substring of the first row), so the wizard's coverage bar costs no
+  directory load.
 """
 
 from __future__ import annotations
@@ -1482,6 +1485,37 @@ def has_paged_ivf(db_conn, index_name: str) -> bool:
         return size is not None and size >= _HEADER_SIZE
     except Exception:
         return False
+
+
+def paged_ivf_item_count(db_conn, index_name: str) -> Optional[int]:
+    name = f"{index_name}__ivf_dir"
+    first_part = name.replace("_", r"\_") + r"\_1\_%"
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute(
+                f"SELECT substring(blob_data from 1 for {_HEADER_SIZE}) FROM {IVF_DIR_TABLE} "
+                f"WHERE name = %s OR name LIKE %s ESCAPE '\\' LIMIT 1",
+                (name, first_part),
+            )
+            row = cur.fetchone()
+    except Exception:
+        logger.exception("IVF '%s': directory header read failed", index_name)
+        try:
+            db_conn.rollback()
+        except Exception:
+            logger.exception("IVF '%s': rollback after the header read failed", index_name)
+        return None
+    if not row or row[0] is None:
+        return 0
+    header = bytes(row[0])
+    if len(header) < _HEADER_SIZE:
+        return 0
+    magic, version, _metric, _norm, _dtype, _dim, _nlist, n_items = struct.unpack_from(
+        _HEADER_FMT, header, 0
+    )
+    if magic != _MAGIC or version != _VERSION:
+        return 0
+    return int(n_items)
 
 
 def _setup_disk_cell_file(

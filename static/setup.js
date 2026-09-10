@@ -648,6 +648,36 @@ function renderModelSwitches(fields) {
     updateModelSwitchDependencies();
 }
 
+var MODEL_COVERAGE_LABELS = ['No index yet', 'Just started', 'Partial', 'Most songs', 'Ready'];
+var MODEL_COVERAGE_FLAGS = {
+    'musicnn': null,
+    'clap': 'CLAP_ENABLED',
+    'lyrics': 'LYRICS_ENABLED',
+    'neural-fingerprint': 'NEURAL_FINGERPRINT_ENABLED'
+};
+var modelCoverageLevels = {};
+
+function renderModelCoverage(levels) {
+    modelCoverageLevels = levels && typeof levels === 'object' ? levels : {};
+    document.querySelectorAll('#ml-models-section .ml-model-coverage').forEach(function(bar) {
+        var model = bar.dataset.coverage;
+        var level = modelCoverageLevels[model];
+        var flag = MODEL_COVERAGE_FLAGS[model];
+        var checkbox = flag ? modelSwitchFor(flag) : null;
+        var switchOn = flag ? !!(checkbox && checkbox.checked) : true;
+        var known = Number.isInteger(level) && level >= 0 && level < MODEL_COVERAGE_LABELS.length;
+        bar.hidden = !(known && switchOn);
+        if (!known) {
+            return;
+        }
+        bar.dataset.level = String(level);
+        var label = bar.querySelector('.ml-model-coverage-label');
+        if (label) {
+            label.textContent = MODEL_COVERAGE_LABELS[level];
+        }
+    });
+}
+
 ML_MODEL_FLAGS.forEach(function(flag) {
     var checkbox = modelSwitchFor(flag);
     if (!checkbox) {
@@ -659,6 +689,7 @@ ML_MODEL_FLAGS.forEach(function(flag) {
             hidden.value = checkbox.checked ? 'true' : 'false';
         }
         updateModelSwitchDependencies();
+        renderModelCoverage(modelCoverageLevels);
     });
 });
 
@@ -843,6 +874,7 @@ function loadSetupData() {
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
         renderModelSwitches(advancedData);
+        renderModelCoverage(data.model_coverage);
         populateLyricsApiFields(data.lyrics_api_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`

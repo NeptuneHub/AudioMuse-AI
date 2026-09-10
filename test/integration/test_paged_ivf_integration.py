@@ -16,6 +16,9 @@ Main Features:
 * Build/load/query recall, RAM bound, and int8 storage roundtrip.
 * Cross-request cell reuse, global-cache invalidation, and disk mmap paging.
 * Cell segmentation, oversized-cell splitting, and Euclidean metric.
+* The item count the setup wizard shows as a coverage band comes from the
+  directory header alone, for a single-row and a segmented directory, without
+  loading the directory.
 """
 
 import os
@@ -765,6 +768,51 @@ def test_ivf_build_splits_identical_vectors_under_cap(ivf_db, monkeypatch):
     probe_id = n_dupes + 100
     ids, _dists = index.query(x[probe_id], k=10)
     assert probe_id in [int(i) for i in ids]
+
+
+def test_ivf_item_count_reads_the_header_of_a_single_or_segmented_directory_without_loading_it(ivf_db):
+    import time
+
+    from tasks import paged_ivf
+    from tasks.index_build_helpers import load_segmented_blob
+
+    dim = 8
+    centroids = np.random.randn(1, dim).astype(np.float32)
+    cells = [(0, np.arange(3, dtype=np.int32), np.random.randn(3, dim).astype(np.float32))]
+
+    small_n = 23
+    paged_ivf.store_paged_ivf(
+        ivf_db, "smallidx", centroids, np.zeros(small_n, dtype=np.uint32),
+        [f"s{i}" for i in range(small_n)], cells, dim, "angular",
+    )
+    big_n = 400000
+    paged_ivf.store_paged_ivf(
+        ivf_db, "bigidx", centroids, np.zeros(big_n, dtype=np.uint32),
+        [f"id{i}" for i in range(big_n)], cells, dim, "angular", max_part_size_mb=1,
+    )
+    with ivf_db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+            ("bigidx\\_\\_ivf\\_dir\\_%\\_%",),
+        )
+        assert cur.fetchone()[0] >= 2, "the big directory must be segmented for this test to mean anything"
+
+    assert paged_ivf.paged_ivf_item_count(ivf_db, "smallidx") == small_n
+    assert paged_ivf.paged_ivf_item_count(ivf_db, "nosuchindex") == 0
+
+    started = time.perf_counter()
+    assert paged_ivf.paged_ivf_item_count(ivf_db, "bigidx") == big_n
+    header_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    whole = load_segmented_blob(ivf_db, "ivf_dir", "bigidx__ivf_dir")
+    load_seconds = time.perf_counter() - started
+
+    assert len(whole) > 1024 * 1024
+    assert header_seconds < 1.0
+    print(
+        f"header read {header_seconds * 1000:.1f} ms vs whole directory load "
+        f"{load_seconds * 1000:.1f} ms ({len(whole)} bytes in parts)"
+    )
 
 
 if __name__ == "__main__":
