@@ -623,7 +623,7 @@ def test_ivf_directory_is_segmented_under_cap(ivf_db):
 
     with ivf_db.cursor() as cur:
         cur.execute(
-            "SELECT count(*), max(octet_length(blob_data)) FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+            "SELECT count(*), max(octet_length(blob_data)) FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
             ("captest\\_\\_ivf\\_dir%",),
         )
         n_parts, max_blob = cur.fetchone()
@@ -707,7 +707,7 @@ def test_ivf_real_build_all_rows_under_default_cap(ivf_db):
         )
         max_cell = cur.fetchone()[0]
         cur.execute(
-            "SELECT max(octet_length(blob_data)) FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+            "SELECT max(octet_length(blob_data)) FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
             ("capreal\\_\\_ivf\\_dir%",),
         )
         max_blob = cur.fetchone()[0]
@@ -792,7 +792,7 @@ def test_ivf_item_count_reads_the_header_of_a_single_or_segmented_directory_with
     )
     with ivf_db.cursor() as cur:
         cur.execute(
-            "SELECT count(*) FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+            "SELECT count(*) FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
             ("bigidx\\_\\_ivf\\_dir\\_%\\_%",),
         )
         assert cur.fetchone()[0] >= 2, "the big directory must be segmented for this test to mean anything"

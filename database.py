@@ -657,7 +657,7 @@ def load_map_projection(index_name, force_reload=False):
             from tasks.index_build_helpers import reassemble_segmented_id_map
 
             cur.execute(
-                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE '\\'",
+                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE E'\\\\'",
                 (index_name.replace('_', r'\_') + r"\_%\_%",),
             )
             candidates = cur.fetchall()
@@ -1610,14 +1610,14 @@ def init_db():
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
-                "WHERE item_id NOT LIKE 'fp\\_%'"
+                "WHERE item_id NOT LIKE E'fp\\\\_%'"
             )
             from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
             cur.execute("DROP INDEX IF EXISTS idx_score_null_duration")
             cur.execute("DROP INDEX IF EXISTS idx_score_old_scheme")
             cur.execute(
                 "CREATE INDEX idx_score_old_scheme ON score (item_id) "
-                "WHERE item_id LIKE 'fp\\_%%' AND length(item_id) = %d "
+                "WHERE item_id LIKE E'fp\\\\_%%' AND length(item_id) = %d "
                 "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
                 "AND left(item_id, %d) <> '%s'"
                 % (CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD)
@@ -3011,7 +3011,7 @@ def save_map_projection(index_name, id_map, projection_array):
             logger.info(f"Map projection '{index_name}' has no data; clearing existing store.")
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
+                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE E'\\\\'",
                     (index_name, index_name.replace('_', r'\_') + r"\_%\_%"),
                 )
             conn.commit()

@@ -1494,7 +1494,7 @@ def paged_ivf_item_count(db_conn, index_name: str) -> Optional[int]:
         with db_conn.cursor() as cur:
             cur.execute(
                 f"SELECT substring(blob_data from 1 for {_HEADER_SIZE}) FROM {IVF_DIR_TABLE} "
-                f"WHERE name = %s OR name LIKE %s ESCAPE '\\' LIMIT 1",
+                f"WHERE name = %s OR name LIKE %s ESCAPE E'\\\\' LIMIT 1",
                 (name, first_part),
             )
             row = cur.fetchone()

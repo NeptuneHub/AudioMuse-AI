@@ -338,7 +338,7 @@ def store_ivf_index_segmented(
     id_map_json = json.dumps(id_map)
 
     delete_sql = (
-        f"DELETE FROM {target_table} WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'"
+        f"DELETE FROM {target_table} WHERE index_name = %s OR index_name LIKE %s ESCAPE E'\\\\'"
     )
     like_pattern = index_name.replace("_", r"\_") + r"\_%\_%"
 
@@ -411,7 +411,7 @@ def store_segmented_blob(
     mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     max_part_size = mb * 1024 * 1024
 
-    delete_sql = f"DELETE FROM {target_table} WHERE name = %s OR name LIKE %s ESCAPE '\\'"
+    delete_sql = f"DELETE FROM {target_table} WHERE name = %s OR name LIKE %s ESCAPE E'\\\\'"
     like_pattern = name.replace("_", r"\_") + r"\_%\_%"
 
     upsert_sql = (
@@ -464,7 +464,7 @@ def load_segmented_blob(
     _validate_sql_identifier(name, "name")
 
     select_single_sql = f"SELECT blob_data FROM {target_table} WHERE name = %s"
-    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE '\\'"
+    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE E'\\\\'"
     like_pattern = name.replace("_", r"\_") + r"\_%\_%"
     seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
 
@@ -544,7 +544,7 @@ def segmented_blob_length(
 
         cur.execute(
             f"SELECT COALESCE(SUM(octet_length(blob_data)), 0) FROM {target_table} "
-            f"WHERE name LIKE %s ESCAPE '\\'",
+            f"WHERE name LIKE %s ESCAPE E'\\\\'",
             (like_pattern,),
         )
         row = cur.fetchone()
@@ -565,7 +565,7 @@ def segmented_blob_complete(
     select_single_sql = (
         f"SELECT 1 FROM {target_table} WHERE name = %s AND blob_data IS NOT NULL"
     )
-    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE '\\'"
+    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE E'\\\\'"
     like_pattern = name.replace("_", r"\_") + r"\_%\_%"
     seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
 

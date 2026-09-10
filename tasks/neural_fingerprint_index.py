@@ -426,7 +426,7 @@ def _store_part(conn, part, labels, codes, tracks, offsets, n_cells):
 def _delete_cells(conn):
     with conn.cursor() as cur:
         cur.execute(
-            f"DELETE FROM {CELL_TABLE} WHERE index_name LIKE %s ESCAPE '\\'",
+            f"DELETE FROM {CELL_TABLE} WHERE index_name LIKE %s ESCAPE E'\\\\'",
             (_CELL_NAMESPACE.replace('_', r'\_') + '%',),
         )
 
@@ -906,7 +906,7 @@ def _read_cell_rows(cell_ids):
             for start in range(0, len(cell_ids), _CELL_FETCH_BATCH):
                 cur.execute(
                     f"SELECT index_name, cell_id, cell_data FROM {CELL_TABLE} "
-                    "WHERE index_name LIKE %s ESCAPE '\\' AND cell_id = ANY(%s)",
+                    "WHERE index_name LIKE %s ESCAPE E'\\\\' AND cell_id = ANY(%s)",
                     (pattern, list(cell_ids[start:start + _CELL_FETCH_BATCH])),
                 )
                 rows.extend(cur.fetchall())

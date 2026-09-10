@@ -795,7 +795,7 @@ def _scan_tree_cache_blob_names(base_name):
         db_conn = get_db()
         with db_conn.cursor() as cur:
             cur.execute(
-                "SELECT DISTINCT name FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+                "SELECT DISTINCT name FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
                 (like,),
             )
             names = set()
@@ -895,8 +895,8 @@ def _delete_tree_cache_blob():
     skeleton_like = _TREE_SKELETON_BLOB_NAME.replace("_", r"\_") + r"\_%"
     with db_conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE '\\' "
-            "OR name = %s OR name LIKE %s ESCAPE '\\'",
+            "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE E'\\\\' "
+            "OR name = %s OR name LIKE %s ESCAPE E'\\\\'",
             (_TREE_CACHE_BLOB_NAME, like_pattern, _TREE_SKELETON_BLOB_NAME, skeleton_like),
         )
     db_conn.commit()

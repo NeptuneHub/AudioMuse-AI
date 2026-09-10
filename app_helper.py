@@ -150,7 +150,7 @@ def probe_catalogue_canonical_ids():
         conn = get_db()
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
+                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE E'fp\\\\_%%')"
             )
             return bool(cur.fetchone()[0])
     except Exception:

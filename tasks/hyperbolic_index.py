@@ -195,7 +195,7 @@ def _delete_index(db_conn, server_key):
     patterns = [dir_name.replace("_", r"\_") + r"\_%\_%"]
     for prefix in (_CELL_PREFIX, _CENTROID_PREFIX, _LEGACY_BAND_PREFIX):
         patterns.append(_scoped_name(prefix, key).replace("_", r"\_") + r"%")
-    clause = " OR ".join(["name = %s"] * len(exact) + ["name LIKE %s ESCAPE '\\'"] * len(patterns))
+    clause = " OR ".join(["name = %s"] * len(exact) + ["name LIKE %s ESCAPE E'\\\\'"] * len(patterns))
     with db_conn.cursor() as cur:
         cur.execute(f"DELETE FROM ivf_dir WHERE {clause}", tuple(exact + patterns))  # nosec B608 - %s-placeholder template only; values are bound params
 
@@ -301,7 +301,7 @@ def _scan_index_names():
         db_conn = get_db()
         with db_conn.cursor() as cur:
             cur.execute(
-                "SELECT DISTINCT name FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+                "SELECT DISTINCT name FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
                 (like,),
             )
             for (raw,) in cur.fetchall():

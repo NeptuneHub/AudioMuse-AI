@@ -355,7 +355,7 @@ class TestTreeEngine:
                 )
                 single = cur.fetchone()
                 cur.execute(
-                    "SELECT name FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+                    "SELECT name FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
                     (hm._TREE_CACHE_BLOB_NAME.replace("_", r"\_") + r"\_%\_%",),
                 )
                 parts = cur.fetchall()
@@ -435,7 +435,7 @@ class TestTreeEngine:
             hm._persist_tree_cache_blob(payload)
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT COUNT(*) FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+                    "SELECT COUNT(*) FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
                     (hm._TREE_CACHE_BLOB_NAME.replace("_", r"\_") + r"\_%\_%",),
                 )
                 part_count = cur.fetchone()[0]
