@@ -10,12 +10,12 @@
 
 There is no javascript runner in this repo, so the bar that tells a user how
 much of the library a model's index can find is pinned by reading setup.html
-and setup.js as sources: four segments and a word under every model that owns
+and setup.js as sources: five segments and a word under every model that owns
 an index, shown as a band and never as a number, hidden while the model is
 off, colored per band in both themes, with no hover tooltip and no help cursor.
 
 Main Features:
-* Every model but Whisper carries a bar of four segments and a text label
+* Every model but Whisper carries a bar of five segments and a text label
 * Every bar ships hidden at band 0, so a wizard without a database shows nothing
 * The bar carries no tooltip and no help cursor
 * The five labels carry no digit and no percent sign: a band, never a number
@@ -68,11 +68,11 @@ def _bar(section, model):
     return match.group(1), match.group(2)
 
 
-def test_every_model_but_whisper_carries_a_bar_of_four_segments_and_a_label():
+def test_every_model_but_whisper_carries_a_bar_of_five_segments_and_a_label():
     section = _section(_template())
     for model in BAR_MODELS:
         _attrs, body = _bar(section, model)
-        assert body.count('<span class="ml-model-coverage-seg"></span>') == 4, model
+        assert body.count('<span class="ml-model-coverage-seg"></span>') == 5, model
         assert '<span class="ml-model-coverage-label">' in body, model
         assert 'aria-hidden="true"' in body, model
     assert 'data-coverage="whisper"' not in section
@@ -113,7 +113,7 @@ def test_the_labels_are_bands_never_numbers():
     match = re.search(r'var MODEL_COVERAGE_LABELS = \[(.*?)\];', source)
     assert match
     labels = re.findall(r"'([^']*)'", match.group(1))
-    assert len(labels) == 5
+    assert len(labels) == 6
     for label in labels:
         assert not re.search(r'[0-9%]', label), label
     assert labels[0] == 'No index yet'
@@ -142,15 +142,15 @@ def test_the_wizard_renders_the_bands_right_after_the_switches():
 
 def test_one_color_per_band_lights_the_segments_in_both_themes():
     template = _template()
-    for level in ('1', '2', '3', '4'):
+    for level in ('1', '2', '3', '4', '5'):
         light = r'\.ml-model-coverage\[data-level="%s"\] \{ --coverage-color: #[0-9A-Fa-f]{6}; \}' % level
         dark = r'body\.dark-mode ' + light
         assert re.search(light, template), 'no light color for band ' + level
         assert re.search(dark, template), 'no dark color for band ' + level
-    for level, lit in (('1', 1), ('2', 2), ('3', 3)):
+    for level, lit in (('1', 1), ('2', 2), ('3', 3), ('4', 4)):
         rule = '.ml-model-coverage[data-level="%s"] .ml-model-coverage-seg:nth-child(-n+%d)' % (level, lit)
         assert rule in template, rule
-    assert '.ml-model-coverage[data-level="4"] .ml-model-coverage-seg {' in template
+    assert '.ml-model-coverage[data-level="5"] .ml-model-coverage-seg {' in template
 
 
 def test_the_copy_promises_no_refresh_cadence():

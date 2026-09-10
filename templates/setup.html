@@ -233,16 +233,19 @@
     }
     .ml-model-coverage[data-level="1"] { --coverage-color: #F97316; }
     .ml-model-coverage[data-level="2"] { --coverage-color: #EAB308; }
-    .ml-model-coverage[data-level="3"] { --coverage-color: #4ADE80; }
-    .ml-model-coverage[data-level="4"] { --coverage-color: #16A34A; }
+    .ml-model-coverage[data-level="3"] { --coverage-color: #A3E635; }
+    .ml-model-coverage[data-level="4"] { --coverage-color: #4ADE80; }
+    .ml-model-coverage[data-level="5"] { --coverage-color: #16A34A; }
     body.dark-mode .ml-model-coverage[data-level="1"] { --coverage-color: #FB923C; }
     body.dark-mode .ml-model-coverage[data-level="2"] { --coverage-color: #FACC15; }
-    body.dark-mode .ml-model-coverage[data-level="3"] { --coverage-color: #86EFAC; }
-    body.dark-mode .ml-model-coverage[data-level="4"] { --coverage-color: #22C55E; }
+    body.dark-mode .ml-model-coverage[data-level="3"] { --coverage-color: #BEF264; }
+    body.dark-mode .ml-model-coverage[data-level="4"] { --coverage-color: #86EFAC; }
+    body.dark-mode .ml-model-coverage[data-level="5"] { --coverage-color: #22C55E; }
     .ml-model-coverage[data-level="1"] .ml-model-coverage-seg:nth-child(-n+1),
     .ml-model-coverage[data-level="2"] .ml-model-coverage-seg:nth-child(-n+2),
     .ml-model-coverage[data-level="3"] .ml-model-coverage-seg:nth-child(-n+3),
-    .ml-model-coverage[data-level="4"] .ml-model-coverage-seg {
+    .ml-model-coverage[data-level="4"] .ml-model-coverage-seg:nth-child(-n+4),
+    .ml-model-coverage[data-level="5"] .ml-model-coverage-seg {
         background: var(--coverage-color);
     }
     .ml-model-coverage-label {
@@ -468,7 +471,7 @@
                             </span>
                             <small class="ml-model-role">Audio embeddings, mood and genre tags</small>
                             <div class="ml-model-coverage" data-coverage="musicnn" data-level="0" hidden>
-                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
+                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
                         </div>
@@ -492,7 +495,7 @@
                             </label>
                             <small class="ml-model-role">Find songs by describing their sound</small>
                             <div class="ml-model-coverage" data-coverage="clap" data-level="0" hidden>
-                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
+                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
                         </div>
@@ -516,7 +519,7 @@
                             </label>
                             <small class="ml-model-role">Find songs by the meaning of their lyrics</small>
                             <div class="ml-model-coverage" data-coverage="lyrics" data-level="0" hidden>
-                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
+                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
                         </div>
@@ -560,7 +563,7 @@
                             </label>
                             <small class="ml-model-role">Identify a song from a recording</small>
                             <div class="ml-model-coverage" data-coverage="neural-fingerprint" data-level="0" hidden>
-                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
+                                <span class="ml-model-coverage-bar" aria-hidden="true"><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span><span class="ml-model-coverage-seg"></span></span>
                                 <span class="ml-model-coverage-label">No index yet</span>
                             </div>
                         </div>

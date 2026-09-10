@@ -17,7 +17,8 @@ header substring per index, the loaded neural pack, and two indexed counts.
 
 Main Features:
 * A library missing a handful of songs out of 200k is still the top band
-* The bands split at twenty, fifty and ninety percent; nothing indexed is band 0
+* The bands split at twenty, sixty, eighty and ninety-five percent; nothing
+  indexed is band 0
 * An index larger than the catalogue after a cleaning stays in the top band
 * The lyrics denominator is the songs that have lyrics, not the whole catalogue
 * An unloaded neural pack counts as nothing searchable, never as a failure
@@ -82,18 +83,21 @@ def _header_conn(header_bytes, raises=False):
 
 
 def test_a_library_missing_a_handful_of_songs_out_of_200k_is_still_the_top_band():
-    assert app_setup.model_coverage_level(199_900, 200_000) == 4
+    assert app_setup.model_coverage_level(199_900, 200_000) == 5
 
 
-def test_the_bands_split_at_twenty_fifty_and_ninety_percent():
+def test_the_bands_split_at_twenty_sixty_eighty_and_ninety_five_percent():
     assert app_setup.model_coverage_level(1, 100) == 1
     assert app_setup.model_coverage_level(19, 100) == 1
     assert app_setup.model_coverage_level(20, 100) == 2
-    assert app_setup.model_coverage_level(49, 100) == 2
-    assert app_setup.model_coverage_level(50, 100) == 3
-    assert app_setup.model_coverage_level(89, 100) == 3
-    assert app_setup.model_coverage_level(90, 100) == 4
-    assert app_setup.MODEL_COVERAGE_BANDS == (0.2, 0.5, 0.9)
+    assert app_setup.model_coverage_level(59, 100) == 2
+    assert app_setup.model_coverage_level(60, 100) == 3
+    assert app_setup.model_coverage_level(79, 100) == 3
+    assert app_setup.model_coverage_level(80, 100) == 4
+    assert app_setup.model_coverage_level(94, 100) == 4
+    assert app_setup.model_coverage_level(95, 100) == 5
+    assert app_setup.model_coverage_level(100, 100) == 5
+    assert app_setup.MODEL_COVERAGE_BANDS == (0.2, 0.6, 0.8, 0.95)
 
 
 def test_nothing_indexed_or_an_empty_catalogue_is_the_empty_band():
@@ -104,7 +108,7 @@ def test_nothing_indexed_or_an_empty_catalogue_is_the_empty_band():
 
 
 def test_an_index_larger_than_the_catalogue_after_a_cleaning_stays_in_the_top_band():
-    assert app_setup.model_coverage_level(110, 100) == 4
+    assert app_setup.model_coverage_level(110, 100) == 5
 
 
 def test_the_lyrics_denominator_is_the_songs_with_lyrics_not_the_whole_catalogue(monkeypatch):
@@ -116,7 +120,7 @@ def test_the_lyrics_denominator_is_the_songs_with_lyrics_not_the_whole_catalogue
 
     levels = app_setup.model_coverage_levels()
 
-    assert levels == {'musicnn': 4, 'clap': 2, 'lyrics': 4, 'neural-fingerprint': 4}
+    assert levels == {'musicnn': 5, 'clap': 2, 'lyrics': 5, 'neural-fingerprint': 5}
 
 
 def test_an_unloaded_neural_pack_counts_as_nothing_searchable_never_as_a_failure(monkeypatch):
@@ -127,7 +131,7 @@ def test_an_unloaded_neural_pack_counts_as_nothing_searchable_never_as_a_failure
     levels = app_setup.model_coverage_levels()
 
     assert levels['neural-fingerprint'] == 0
-    assert levels['musicnn'] == 4
+    assert levels['musicnn'] == 5
 
 
 def test_a_failed_header_read_leaves_that_model_out_and_the_others_in(monkeypatch):
@@ -141,7 +145,7 @@ def test_a_failed_header_read_leaves_that_model_out_and_the_others_in(monkeypatc
     levels = app_setup.model_coverage_levels()
 
     assert 'clap' not in levels
-    assert levels['musicnn'] == 4
+    assert levels['musicnn'] == 5
 
 
 def test_a_failed_count_or_a_missing_database_hides_every_bar(monkeypatch):
@@ -164,7 +168,7 @@ def test_the_wizard_api_hands_out_bands_only_never_the_counts(monkeypatch):
     levels = app_setup.model_coverage_levels()
 
     assert set(levels) == set(app_setup.MODEL_COVERAGE_MODELS)
-    assert all(isinstance(level, int) and 0 <= level <= 4 for level in levels.values())
+    assert all(isinstance(level, int) and 0 <= level <= 5 for level in levels.values())
     source = _read('app_setup.py')
     assert "'model_coverage': model_coverage_levels()" in source
 

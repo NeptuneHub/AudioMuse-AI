@@ -100,9 +100,9 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 <details>
 <summary>What do the small bars under the Machine Learning Models in the Setup Wizard mean?</summary>
 
-> Each bar shows how much of your library that model's search index can find right now: one lit segment means the index has just started filling, four means it is ready. The bars are read every time you open the Setup Wizard and fill up as the analysis runs, because every analysis run rebuilds the indexes at its end.
+> Each bar shows how much of your library that model's search index can find right now: one lit segment means the index has just started filling, five means it is ready (more than 95 percent of the songs). The bars are read every time you open the Setup Wizard and fill up as the analysis runs, because every analysis run rebuilds the indexes at its end.
 >
-> They are deliberately bands, not percentages. A library of 200,000 songs with a hundred songs not yet indexed is complete for every practical purpose, so it shows as **Ready**. If a bar stays short after the analysis has finished, run the analysis again: the songs it skipped are re-tried. The GTE Lyrics bar only counts the songs that have lyrics, so instrumental tracks never hold it back.
+> They are deliberately bands, not percentages. A library of 200,000 songs with a hundred songs not yet indexed is complete for every practical purpose, so it shows as **Ready**. If a bar stays short after the analysis has finished, run the analysis again: the songs it skipped are re-tried. The GTE Lyrics bar counts the songs whose lyrics stage has run (a song with no words gets an instrumental marker and counts as done), so instrumental tracks never hold it back.
 
 </details>
 

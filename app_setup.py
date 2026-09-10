@@ -483,7 +483,7 @@ def _get_allowed_setup_keys():
     return allowed_keys
 
 
-MODEL_COVERAGE_BANDS = (0.2, 0.5, 0.9)
+MODEL_COVERAGE_BANDS = (0.2, 0.6, 0.8, 0.95)
 MODEL_COVERAGE_MODELS = ('musicnn', 'clap', 'lyrics', 'neural-fingerprint')
 
 

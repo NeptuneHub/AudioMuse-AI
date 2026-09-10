@@ -648,7 +648,7 @@ function renderModelSwitches(fields) {
     updateModelSwitchDependencies();
 }
 
-var MODEL_COVERAGE_LABELS = ['No index yet', 'Just started', 'Partial', 'Most songs', 'Ready'];
+var MODEL_COVERAGE_LABELS = ['No index yet', 'Just started', 'Partial', 'More than half', 'Most songs', 'Ready'];
 var MODEL_COVERAGE_FLAGS = {
     'musicnn': null,
     'clap': 'CLAP_ENABLED',
