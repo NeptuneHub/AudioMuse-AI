@@ -179,10 +179,21 @@ def test_old_scheme_signature_predicate_rejects_provider_id_starting_with_fp_wit
         assert [row[0] for row in cur.fetchall()] == [old_scheme_id]
 
 
-def test_tables_live_in_the_private_schema_not_in_public(off_db):
+def test_every_fixture_table_resolves_into_the_private_schema(off_db):
+    tables = ("ivf_dir", "escape_index", "score", "embedding", "track_server_map")
     with off_db.cursor() as cur:
-        cur.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = 'score'")
-        assert [row[0] for row in cur.fetchall()] == [_SCHEMA]
+        for table in tables:
+            cur.execute(
+                "SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE c.oid = to_regclass(%s)",
+                (table,),
+            )
+            assert cur.fetchall() == [(_SCHEMA,)]
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s ORDER BY 1",
+            (_SCHEMA,),
+        )
+        assert [row[0] for row in cur.fetchall()] == sorted(tables)
 
 
 def test_canonicalize_scheme_predicates_treat_a_provider_id_starting_with_fp_as_legacy_with_strings_off(off_db):
