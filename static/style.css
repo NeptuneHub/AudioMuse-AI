@@ -1255,6 +1255,16 @@ tbody tr:hover {
     vertical-align: middle;
 }
 
+/* A real <button> as the tooltip trigger: keyboard-reachable without tabindex */
+button.info-tooltip {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    line-height: 0;
+}
+
 .info-icon {
     display: inline-flex;
     align-items: center;
@@ -1588,6 +1598,10 @@ html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }
 .toggle-switch input:focus-visible + .toggle-slider {
     outline: 2px solid var(--color-primary);
     outline-offset: 2px;
+}
+.toggle-switch input:disabled + .toggle-slider {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 body.dark-mode .toggle-slider,
 html.dark-mode body .toggle-slider {

@@ -139,7 +139,7 @@ app.add_template_filter(_max_bound_filter, 'max_bound')
 
 @app.context_processor
 def inject_globals():
-    from config import CLAP_ENABLED, LYRICS_ENABLED
+    from config import CLAP_ENABLED, LYRICS_ENABLED, NEURAL_FINGERPRINT_ENABLED
 
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
@@ -183,6 +183,7 @@ def inject_globals():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         lyrics_enabled=LYRICS_ENABLED,
+        neural_enabled=NEURAL_FINGERPRINT_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
@@ -288,10 +289,13 @@ if not _is_worker:
         init_db()
         # Keep app_config aligned with the parameters that config.py still
         # accepts. Valid rows are never rewritten; only retired keys are
-        # removed. Run this before the optional empty-table bootstrap so a
-        # database containing only obsolete keys can be initialized cleanly.
+        # removed, then every parameter that has no row yet is written with
+        # the value this process runs with (environment or config.py default,
+        # SETUP_BOOTSTRAP_EXCLUDED_KEYS stay env-only). From the next start on
+        # the database is the only source of those values, so a changed
+        # default never flips a setting an installation already has.
         setup_manager.prune_obsolete_config_values(config)
-        setup_manager.bootstrap_env_config_if_empty(config)
+        setup_manager.persist_missing_config_values(config)
         # Bootstrap / reconcile the first admin account:
         #   - If audiomuse_users already has an admin, purge any legacy
         #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.
@@ -1058,14 +1062,24 @@ def listen_for_index_reloads():
                     logger.exception("Hyperbolic Poincare index reload failed")
                     hyper_index_success = False
 
+                try:
+                    from tasks.neural_fingerprint_index import reload_from_db
+
+                    logger.info("Reloading the neural fingerprint index...")
+                    neural_success = reload_from_db()
+                except Exception:
+                    logger.exception("Neural fingerprint index reload failed")
+                    neural_success = False
+
                 logger.info(
                     "In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP %s, "
-                    "Lyrics %s, SemGrove %s, Hyperbolic %s, Poincare %s",
+                    "Lyrics %s, SemGrove %s, Hyperbolic %s, Poincare %s, Neural fingerprint %s",
                     'OK' if clap_success else 'X',
                     'OK' if lyrics_success else 'X',
                     'OK' if sg_success else 'X',
                     'OK' if hyper_success else 'X',
                     'OK' if hyper_index_success else 'X',
+                    'OK' if neural_success else 'X',
                 )
             except Exception:
                 logger.exception("Error reloading indexes/maps from background listener")
@@ -1118,6 +1132,7 @@ def _register_blueprints(flask_app):
     from app_sync import sync_bp
     from app_music_servers import music_servers_bp
     from app_hyperbolic import hyperbolic_bp
+    from app_recording_search import recording_search_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
     flask_app.register_blueprint(external_bp, url_prefix='/external')
@@ -1125,7 +1140,7 @@ def _register_blueprints(flask_app):
         clustering_bp, analysis_bp, cron_bp, ivf_bp, sonic_fingerprint_bp, path_bp,
         alchemy_bp, map_bp, artist_similarity_bp, clap_search_bp, lyrics_search_bp,
         sem_grove_bp, backup_bp, migration_bp, dashboard_bp, users_bp, sync_bp,
-        music_servers_bp, hyperbolic_bp,
+        music_servers_bp, hyperbolic_bp, recording_search_bp,
     ):
         flask_app.register_blueprint(blueprint)
 
@@ -1260,6 +1275,22 @@ if not _is_worker:
                 )
         except Exception as e:
             logger.debug(f"Hyperbolic Poincare index not loaded at startup: {e}")
+        # Load the neural fingerprint index directory the worker stored, blocking
+        # like every other index load: it is a few megabytes at any library size,
+        # since the cells are read from ivf_cell per query. A library that has not
+        # built it yet, or whose stored index is unusable, is reported just above.
+        try:
+            from tasks.neural_fingerprint_index import load_at_startup as load_neural_fingerprint_index
+
+            neural_tracks = load_neural_fingerprint_index()
+            if neural_tracks:
+                logger.info("Neural fingerprint index loaded at startup (%d tracks).", neural_tracks)
+            elif not config.NEURAL_FINGERPRINT_ENABLED:
+                logger.info("Neural fingerprint disabled (NEURAL_FINGERPRINT_ENABLED=false); Search by Recording is off.")
+            else:
+                logger.info("Neural fingerprint index not loaded at startup (not built yet, or the analysis must rebuild it).")
+        except Exception:
+            logger.exception("Neural fingerprint index not loaded at startup")
 
         # Every load above streams a large directory blob out of Postgres and
         # discards it once unpacked. Those frees land in the allocator's free
@@ -1298,9 +1329,12 @@ if not _is_worker:
                 lyrics = _lyrics_stats()
                 sg = _sg_stats()
                 hyper = get_hyperbolic_index_stats()
+                from tasks.neural_fingerprint_index import get_status as neural_fingerprint_status
+
+                neural = neural_fingerprint_status()
                 logger.info(
                     "Startup index profile: audio=%d artist=%d map=%d artist_proj=%d clap=%d "
-                    "lyrics=%d semgrove=%d hyper=%d",
+                    "lyrics=%d semgrove=%d hyper=%d neural_fingerprint=%d",
                     audio,
                     artist,
                     map_proj,
@@ -1309,6 +1343,7 @@ if not _is_worker:
                     lyrics.get('song_count', 0),
                     sg.get('song_count', 0),
                     hyper.get('song_count', 0),
+                    neural.get('tracks', 0),
                 )
             except Exception:
                 logger.exception("Startup index profile logging failed")
@@ -1438,4 +1473,12 @@ else:
     logger.info('Running as a queue worker: skipping index loading, the event listener and the cron thread.')
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=8000)
+    from werkzeug.serving import make_server
+
+    from tls_listener import adopt_listener, prepare_tls
+
+    prepare_tls()
+    _server = make_server('0.0.0.0', 8000, app, threaded=True)  # nosec B104 - a self-hosted server must be reachable
+    _server.socket = adopt_listener(_server.socket)
+    logger.info('Serving HTTP and HTTPS on 0.0.0.0:8000')
+    _server.serve_forever()

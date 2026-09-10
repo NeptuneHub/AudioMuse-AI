@@ -113,11 +113,12 @@ def command_from_argv():
 def serve_flask():
     import waitress
     import app as app_module
+    from tls_listener import dual_listener, prepare_tls
 
+    prepare_tls()
     waitress.serve(
         app_module.app,
-        host=FLASK_BIND_HOST,
-        port=FLASK_BIND_PORT,
+        sockets=[dual_listener(FLASK_BIND_HOST, FLASK_BIND_PORT)],
         threads=FLASK_THREADS,
         max_request_body_size=FLASK_MAX_REQUEST_BODY_BYTES,
         channel_timeout=FLASK_CHANNEL_TIMEOUT_SECONDS,

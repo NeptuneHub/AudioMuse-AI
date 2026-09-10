@@ -35,6 +35,7 @@ Each chapter follows the same structure:
 14. [Instant Playlist (Chat)](#14-instant-playlist-chat)
 15. [Database Cleaning](#15-database-cleaning)
 16. [Scheduled Tasks (Cron)](#16-scheduled-tasks-cron)
+17. [Search by Recording](#17-search-by-recording)
 
 ---
 
@@ -242,6 +243,10 @@ least once.
   would leave the other servers' exclusive songs unanalyzed and invisible to
   every other feature.
 - Already analyzed tracks are skipped, so running the analysis again is cheap.
+  A track that lacks one stage only (its DCLAP vector, its lyrics, or the
+  **neural fingerprint** used by Search by Recording, added later) is
+  re-downloaded and gets that stage alone; the album is scheduled as long as
+  one of its tracks needs something.
 - A song that already exists in the catalogue because another server holds the
   same recording is not downloaded again. It only gains a mapping row. See
   [chapter 2](#2-catalogue-identity-and-deduplication).
@@ -318,11 +323,19 @@ is skipped as error 2007 and never fails the album.
 8. **Chromaprint.** If `CHROMAPRINT_COLLECTION_ENABLED` is true, `fpcalc`
    computes an acoustic fingerprint for the file and stores it compressed in the
    `chromaprint` table. It is used only to confirm or refuse a duplicate merge.
-9. **Persistence and plugin hook.** The results are written under the canonical
-   id, and the `song_analyzed` plugin hook fires with the server the song came
-   from. See [PLUGIN](PLUGIN.md).
+9. **Neural fingerprint.** If `neural_fingerprint.onnx` and its codebook
+   `neural_fingerprint_pq.npz` are present, the decoded audio is resampled to
+   8 kHz and the fingerprint encoder produces one 128-vector per half second
+   of the whole track, each stored as a 32-byte product-quantised code in
+   `embedding.neural_fingerprint` (about 14 KB per track, 10 to 25 s of CPU).
+   Search by Recording identifies a clip from any part of a song with it; see
+   [chapter 17](#17-search-by-recording). A track without it is re-analyzed
+   for this stage alone on the next run.
+10. **Persistence and plugin hook.** The results are written under the
+    canonical id, and the `song_analyzed` plugin hook fires with the server the
+    song came from. See [PLUGIN](PLUGIN.md).
 
-Each optional stage (CLAP, lyrics, chromaprint) is best effort. A failure is
+Each optional stage (CLAP, lyrics, chromaprint, neural fingerprint) is best effort. A failure is
 recorded through the error registry and never breaks the track, with one
 exception: a database outage is re-raised so the whole album is retried.
 
@@ -363,6 +376,9 @@ read once, at first boot, to seed the registry.
 - `CLAP_ENABLED`, `CLAP_AUDIO_MODEL_PATH`, `CLAP_EMBEDDING_DIMENSION`: DCLAP
   audio side. Turning CLAP off makes the analysis clearly faster but disables
   Text Search and the six other features.
+- `NEURAL_FINGERPRINT_MODEL_PATH` and `NEURAL_FINGERPRINT_CODEBOOK_PATH`: the
+  fingerprint encoder for Search by Recording and the codebook that stores its
+  vectors as 32 bytes; pointing either at a missing file skips the stage.
 - `LYRICS_ENABLED`: master switch for the lyrics stage.
 - `ENERGY_MIN`, `ENERGY_MAX`, `TEMPO_MIN_BPM`, `TEMPO_MAX_BPM`: normalization
   bounds used everywhere a score vector is built.
@@ -2198,3 +2214,360 @@ Cron reuses the defaults of the tasks it starts:
 - `CRON_RETRY_INTERVAL_MINUTES`: how often the cron thread re-attempts blocked
   scheduled runs.
 - `TZ`: the timezone the expressions are evaluated in.
+
+---
+
+## 17. Search by Recording
+
+Search by Recording turns a few seconds of audio captured outside the library
+(a phone recording of what is playing in a room, an uploaded file) into the
+question "which song is this, and where in it": the clip's neural fingerprint
+is aligned on the fingerprint sequences the analysis stores for every track.
+
+### 17.1. Functional Analysis (High-Level)
+
+**Workflow**
+
+1. The user opens **Search by Recording** and picks one of two tabs. On
+   **Search by Recording** they either click **Record** (the browser records
+   `RECORDING_SEARCH_RECORD_SECONDS` seconds from the microphone and stops
+   by itself) or upload a clip. On **Search by Song** they pick a song of
+   the library with the same picker as the similar-song page, which here
+   offers only the songs in the neural fingerprint index that the selected
+   server has, the way the lyrics page's picker offers only SemGrove songs.
+2. **Search** returns the songs of the selected server, the best match first,
+   each with its match score (the badge turns green when the match is
+   certain), with the same result rows and the same "create a playlist"
+   button as the other search pages. The song tab leaves the chosen song
+   itself out, so what comes back are its other recordings: duplicates,
+   remasters, the same take on a compilation; a playlist made from them
+   starts with the chosen song, like the similar-song page does with its
+   seed. On the recording tab the best match is already the first result.
+
+**Important behaviours**
+
+- In-page recording uses the browser microphone, which every browser allows
+  only over HTTPS or on localhost; section 17.3 explains how the record
+  button gets there on a plain-HTTP LAN address. No server-side code can
+  lift the policy: it is the browser's own.
+- Uploads go up to `RECORDING_SEARCH_MAX_UPLOAD_MB` (1 GB) and any container
+  PyAV decodes is accepted, a video included, of which the sound track is
+  used. The file is streamed to disk and only its first minute is decoded,
+  so a big file costs transfer time, not memory.
+- The match comes from the neural fingerprint the analysis stores for the
+  whole track (the **neural-fingerprint** stage; a library analysed before it
+  exists is re-analysed for that stage alone, one track at a time, on the
+  next analysis run). It works from any part of the song and from a short
+  phone recording, because its encoder was trained on exactly that
+  degradation.
+- Three other modes were built, measured and removed: MusiCNN and DCLAP
+  similarity (a real phone recording ranked its own song 90,803rd in those
+  spaces), a chromaprint alignment over the duplicate detector's fingerprints
+  (only the first two minutes of each track exist there, and it needed a
+  minute of recording for a phone clip), and a Whisper transcript searched in
+  the lyrics index (needs words in the clip). The neural fingerprint
+  identified every real phone clip they failed on.
+- The page is per server: results are filtered and id-translated to the server
+  selected in the sidebar.
+- Practical advice for recordings: hold the phone close to a full-range source
+  in a quiet room. On a real phone recording at -45 dBFS the music sat below
+  the microphone's own noise from 200 Hz up, and no model, denoiser or
+  channel correction could recover the song from it; the level normalisation
+  cannot rescue that either.
+
+### 17.2. Technical Analysis (Algorithm-Level)
+
+1. **Decode.** The upload is streamed to a temporary file (refused past
+   `RECORDING_SEARCH_MAX_UPLOAD_MB` while copying, so it never sits in RAM) and
+   decoded at its native rate by the analysis loader (librosa, then the PyAV
+   fallback that handles the browser's webm/opus). The loader never decodes
+   more than `AUDIO_LOAD_TIMEOUT` seconds; the result is then cut to
+   `RECORDING_SEARCH_MAX_CLIP_SECONDS`.
+2. **Level.** The clip is RMS-normalised to `RECORDING_SEARCH_TARGET_LEVEL_DB`.
+   The mel front ends have no per-clip normalisation, so a recording that is
+   12 dB too quiet lands far from its own song; level is the one degradation
+   the query side can undo exactly.
+3. **Neural fingerprint.** The encoder is the neural music fingerprinter of
+   Araz, Serra and Bogdanov (ISMIR 2025, the NAFP architecture of Chang et
+   al. trained with real room impulse responses, microphone responses and
+   background noise, triplet loss), exported once from its TensorFlow
+   checkpoint to `neural_fingerprint.onnx`, published in the model release
+   and downloaded into the model directory next to the MusiCNN graphs (17.2
+   million parameters, 71 MB) and run through the same ONNX provider chain as
+   MusiCNN and CLAP, CUDA on the GPU images and the CPU everywhere else. The
+   export is
+   `scripts/onnx_export/export_neural_fingerprint_to_onnx.py`, driven by
+   `run_exports.sh` next to it, which clones the source, downloads the
+   checkpoint from Zenodo and checks the graph against TensorFlow. The
+   analysis stage
+   resamples the track it already decoded to 8 kHz, cuts one-second segments
+   every half second, turns each into the model's 256-band mel patch (n_fft
+   1024, hop 256, 160 to 4000 Hz, magnitude in dB relative to the segment's
+   own peak, floored at -80 dB, scaled to [-1, 1]; the numpy front end
+   matches the reference essentia one to 2e-4 on all 33 frames) and stores
+   one L2-normalised 128-vector per segment as a 32-byte product-quantised
+   code in `embedding.neural_fingerprint` (14 KB for an average track, about
+   3 GB for 200k tracks). The codebook `neural_fingerprint_pq.npz` ships next
+   to the model: 32 slices of four numbers, 256 centroids each, trained once
+   on library fingerprints by
+   `scripts/onnx_export/train_neural_fingerprint_codebook.py`; every blob
+   carries the codebook's checksum, so a blob and a codebook that do not
+   belong together are refused with an error in the log. Measured on the
+   123-track test set against the int8 rows it replaces: the four real phone
+   recordings stay identified at 0.46 to 0.66 instead of 0.48 to 0.68, the
+   best wrong candidate stays below 0.32, and 32 bytes is the smallest size
+   that keeps that margin (16 bytes puts the hardest clip on the 0.40
+   threshold). The
+   index over those codes follows the lifecycle of the other similarity
+   indexes: the worker builds it at the rebuild points of the analysis run
+   (every `REBUILD_INDEX_BATCH_SIZE` albums and at the end), stores it in
+   `ivf_dir` in one transaction it commits itself (so a web process syncing
+   at any moment sees the previous build complete or the new one complete,
+   never a directory whose parts are half written), publishes the
+   index-reload event, and the web process loads the directory from `ivf_dir`
+   and reads the cells from `ivf_cell` exactly like the other indexes. The
+   directory holds the quantizer as int8, the track order and lengths and the
+   cell sizes; the cells hold the codes of their rows with the track, the
+   offset in the track and the inverse norm of the decoded vector beside each
+   one, 40 bytes per indexed row. Everything is sized for millions of tracks,
+   because one track is 450 rows rather than one. The index holds every
+   `NEURAL_FINGERPRINT_INDEX_STRIDE`-th stored row of a track (1, every half
+   second, by default; 2 halves the pack and the query work at a recall cost
+   on degraded clips that has to be measured on real recordings first; the
+   blobs keep every row and the alignment check reads them all). The cells,
+   about sqrt(rows) of them and at most 65536, are placed by a two-level
+   k-means trained on at least `NEURAL_FINGERPRINT_TRAIN_ROWS` rows and 20 per
+   cell, sampled 100 per track from random tracks: above 64 cells they are
+   grouped under sqrt(cells) coarse centroids and a row goes to the nearest
+   cell of its nearest group, so assigning a million tracks costs about 300
+   dot products per row instead of tens of thousands (minutes rather than
+   hours), while a query still ranks the flat cell list exactly. The rows
+   are labelled and stored in parts of at most 8M rows, cut at track
+   boundaries, so the worker never holds more than one part: each part
+   writes one `ivf_cell` row per cell under the index name
+   `neural_fingerprint_index/p<part>`, in bulk inserts. A rebuild appends
+   instead of starting over: fingerprints never change and the library only
+   grows, so the worker keeps the quantizer, reads only the tracks
+   fingerprinted since the last build, assigns their rows and adds parts; the
+   quantizer is retrained from scratch when the library has grown
+   `NEURAL_FINGERPRINT_RETRAIN_GROWTH` times since it was trained, when more
+   than a tenth of the indexed tracks are gone, when the largest cell holds
+   more than ten times the average, or when the codebook or the stride
+   changed. The web process loads only the directory, at startup and on the
+   index-reload event, blocking like every other index load and taking
+   seconds at any library size (a few megabytes: the song ids and the
+   centroids); it is held as one immutable object swapped by a single
+   reference assignment, so a query that started before a swap keeps a
+   consistent view. Nothing is copied to local disk. A query first lists the
+   `NEURAL_FINGERPRINT_NPROBE` cells each of its segments probes, fetches the
+   ones it does not have in one query (every part of each cell, a few
+   hundred kilobytes per cell) and keeps them in a RAM cache bounded by
+   `NEURAL_FINGERPRINT_CACHE_MB`, dropped when the recording search has been
+   idle like the encoder; the cells are then scored in parallel threads
+   (`NEURAL_FINGERPRINT_QUERY_THREADS`, one per core by default) through the
+   codebook lookup table, one lookup per byte and a multiply. Every third
+   segment votes first and, when one track already leads the runner-up
+   fourfold with enough votes, the rest of the voting is skipped; the best
+   candidates are then verified against their own blobs, fetched in one
+   query, so a track deleted since the build has no blob and never comes
+   back. Like every other index it holds the union of all servers: a
+   request scoped to a server votes only over that server's tracks through
+   the shared availability mask, cached per server and build for 30 s and
+   dropped when the mappings change. Measured on 13,043
+   real tracks (6.1 million rows, 2,470 cells): a full build takes 43 s (19 s
+   for the centroids, 22 s to assign the rows, which the worker does on the
+   GPU through cupy on the GPU images and on the CPU elsewhere, in blocks of
+   65,536 rows across tracks because per-track matrices ran five times
+   slower), the table holds 28 MB (4.6 bytes per row, about 430 MB at 200k
+   tracks), the web process syncs its 219 MB pack in 5 s, an append of 1,000
+   tracks takes 11 s in the worker and 3 s in the web process, and centroids
+   trained on the first 30 percent of the tracks with the rest appended gave
+   the same ranks and scores as a full build on 28 queries, eight of them the
+   real phone recordings. On the CPU the assignment costs about 1.9 s per
+   65,536 rows at 8,192 cells, so a from-scratch build of a 200k library is
+   about 45 minutes there, paid only when the centroids are retrained; with
+   the fourfold rule the largest retrain during a backfill to 200k happens
+   near 64k tracks and takes about 8 minutes. A query is embedded the same
+   way and scored against the probed rows through the codebook's lookup
+   tables (32 additions per row instead of a 128-wide dot product, seven
+   times faster at the same result); each of its vectors reads
+   `NEURAL_FINGERPRINT_NPROBE` cells, the rows they hold are decoded through
+   the codebook and vote for (track, offset), votes within one hop are
+   pooled, and the twenty best tracks are
+   verified by the mean cosine between the whole clip and the track at that
+   offset, which is the score shown. The best track is identified when its
+   score clears `NEURAL_FINGERPRINT_MIN_SCORE` and leads the next track by
+   `NEURAL_FINGERPRINT_MIN_LEAD`. A first candidate model, a course project
+   trained without room or microphone augmentation, was exported and
+   measured first: it found 40 of 40 clean clips in a 300-track index and 0
+   of 40 phone-like ones, and none of the real recordings, which is why the
+   published, degradation-trained weights are the ones shipped. Measured with
+   those weights in a 202-track index: 30 of 30 clean 20 s clips taken from
+   random positions (scores 0.81 to 0.99), and all four real phone
+   recordings at rank 1 with scores 0.48 to 0.68 and leads 0.33 to 0.51,
+   among them the clip from the end of "Back in Black" that no stored
+   chromaprint could ever match; a synthetic degradation harsher than the
+   phone (ten random resonances, strong early reflections, noise) still gave
+   17 of 30 with no wrong top candidate above 0.26. The thresholds sit
+   between those groups. The same picture through the production path (a
+   throwaway database, the stored blobs, the pack and its cells, nprobe 12,
+   123 tracks): 30 of 30 clean clips identified in about half a second each,
+   20 of 30 of the harsh synthetic ones found first with none flagged wrong,
+   and the four real recordings identified at scores 0.48 to 0.68, still
+   identified when cut to their first 10 seconds (0.56 and 0.58). The offset
+   reported for a song with a repeated section may point at the repeat, not
+   the second the phone heard. Costs to know: about 25 ms of CPU per second of
+   audio to fingerprint (10 to 25 s per track, so a 200k library is weeks of
+   analysis on one worker), 14 KB per track in the database, and the pack on
+   disk is the same size again, read cell by cell.
+4. **Search by Song.** No audio is decoded and no model runs: the chosen
+   song's stored codes are decoded through the codebook, cut into up to
+   three 20-second windows (a fifth, half and four fifths of the way in, so
+   an edit that shares only part of the recording still matches), each
+   window is aligned on the index exactly like a clip with the source track
+   excluded from the vote, and the best score per song is kept. The
+   identified flag and the lead are recomputed on the merged list.
+5. **The chromaprint alternative, measured and removed.** Before the neural
+   fingerprint, the clip was fingerprinted with the duplicate detector's
+   fpcalc and slid across the stored chromaprints with learned per-bit
+   weights, a noise-frame mask, playback-speed and sub-hop phase variants and
+   a lead rule over the next different recording. It reached rank 1 of
+   200,453 on the reference phone clip and found the song first in 50 to 70
+   percent of degraded library queries, but the stored fingerprints cover
+   only the first 120 seconds of each track, a phone clip needed close to a
+   minute, and a clip from the end of "Back in Black" could never match. The
+   neural fingerprint identified all of those clips at 10 to 20 seconds, so
+   the chromaprint path was retired rather than kept as a second tab.
+6. **The index in the web process.** Flask syncs and maps the stored build
+   at startup like the other indexes ("Neural fingerprint index loaded at
+   startup", or "not found" until the analysis has built it once) and keeps
+   it mapped for the life of the process; only the reload event replaces it.
+   The page's warmup call preloads the encoder session so the first search
+   does not pay its load, and that session alone is released after
+   `RECORDING_SEARCH_WARMUP_DURATION` seconds without a query, the same
+   idle-unload pattern as the text-search models.
+
+Measured before building it, on 50 songs against a real 198k-track corpus: a
+clean random 20 s slice retrieves the same neighbourhood as the whole song
+(its median overlap equals a genuinely similar song's), a level error of
+-12 dB alone costs two thirds of that overlap, and a phone in front of a small
+speaker in a noisy room is beyond what the current models recover.
+
+### 17.3. The Record Button on a Plain-HTTP Address
+
+Browsers hand the microphone (`getUserMedia`, `MediaRecorder`) only to pages
+on HTTPS or on localhost; on `http://192.168.x.x:8000` the API does not even
+exist, in Chrome, Safari, Firefox alike, and no script can lift that. A
+self-hosted app is reached exactly that way, and a second port would have to
+be published in every container deployment, so the one port the app already
+binds answers both protocols (`tls_listener.py`). The first byte of a new
+connection tells a TLS handshake (0x16) from an HTTP request line; a sniffing
+thread waits for it on a selector, up to two seconds and for every pending
+connection at once, so an idle browser preconnect never holds the server's
+accept loop, which only pops connections already sorted. An HTTP
+connection is handed to the server untouched; a TLS one is terminated in the
+web process, with a self-signed certificate it creates once into
+`FLASK_HTTPS_CERT_DIR`, on one relay thread that moves bytes between the
+client and a local socket pair, keeping at most a megabyte in flight per
+direction (a client sending faster than the app reads is simply not read
+from until the app catches up), and the server reads plain HTTP from the
+pair's other end with the real client address. Gunicorn, waitress and
+werkzeug therefore need no TLS support of their own: the gunicorn worker hook
+in `gunicorn.conf.py` (read by gunicorn on its own) swaps the accept of the
+sockets the worker inherited, the native builds bind a dual-protocol socket
+for waitress, and `app.run` does the same for the development server. On an
+insecure page a short notice gives the same page's HTTPS address on the same
+host and port (the port the browser reached, so a container port published as
+8080:8000 works); the browser warns once about the certificate and recording
+works on every later visit. That one warning is the only user
+step: a certificate a browser trusts silently needs a domain name and a
+public or private certificate authority, which a raw LAN address cannot have.
+Health probes, reverse proxies and `http://localhost:8000` are untouched;
+behind the relay Flask sees the request as plain HTTP. A reverse proxy that
+terminates TLS (Traefik, an ingress with a Let's Encrypt certificate) keeps
+speaking plain HTTP to port 8000 as before: its connections start with a
+request line, so they are passed through and the built-in certificate never
+enters the picture, and the page, served on the proxy's HTTPS, records
+directly. A proxy that serves plain HTTP cannot expose the same-port HTTPS
+behind it; there HTTPS belongs on the proxy.
+
+Two things make this hold outside the developer's machine. Gunicorn reads
+`./gunicorn.conf.py` only when started from `/app`, so the image also sets
+`GUNICORN_CMD_ARGS="--config /app/gunicorn.conf.py"`; without the hook a TLS
+connection reaching a plain gunicorn hangs until its timeout, which is what a
+record button that "does nothing" looked like. The certificate needs the
+`cryptography` package (now a pinned requirement; the `openssl` binary is the
+fallback) and a writable `FLASK_HTTPS_CERT_DIR`; when that directory cannot
+be written the certificate goes to the temp directory with a warning, so
+HTTPS still runs and only the browser warning returns after a restart.
+
+The record button never fails silently. Every failure of the record flow,
+from a missing API to a refused permission or a recorder that delivered
+nothing, lands in a red box with the exception name and message, and when
+HTTPS is not running the button raises the server's reason (the hook that
+never ran, the certificate that could not be created) instead of doing
+nothing. The notice lists the alternatives: uploading a clip recorded with
+the phone (a video is fine, its sound track is used), Chrome's
+`chrome://flags/#unsafely-treat-insecure-origin-as-secure` for that one
+address, a reverse proxy, or `http://localhost:8000` on the server itself.
+
+### 17.4. Environment Variable Configuration
+
+- `NEURAL_FINGERPRINT_ENABLED` (false): the master switch, like `CLAP_ENABLED`,
+  off by default because the stage costs 10 to 25 s of CPU per track; an
+  installation turns it on from the Machine Learning Models switches of the
+  setup wizard, and a choice saved there survives upgrades because it lives in
+  `app_config` and wins over the default. Like every wizard parameter, the
+  flag is written to `app_config` on the first web start that lacks it (with
+  the environment value or the config default) and read from there
+  afterwards, so a changed default never flips an installation. A library
+  that already holds neural fingerprints counts as having chosen this one on:
+  config infers the flag at import and that first write stores it, so an
+  installation that used the feature keeps it.
+  False skips the fingerprint stage of the analysis and the index build, the
+  web process neither loads nor reloads the index, the Search by Recording
+  entry leaves the menu the way Text Search and Lyrics Search do with their
+  flags (the page itself, opened by its address, says the feature is
+  disabled), and the three API routes answer 503.
+- `NEURAL_FINGERPRINT_MODEL_PATH` (`/app/model/neural_fingerprint.onnx`,
+  downloaded from the model release like the MusiCNN graphs; the native
+  builds point it at their bundled model directory): the fingerprint encoder;
+  a missing file disables the analysis stage and the tab.
+- `NEURAL_FINGERPRINT_CODEBOOK_PATH` (`/app/model/neural_fingerprint_pq.npz`,
+  next to the model): the 32-byte codebook every stored fingerprint is encoded with; keep
+  the one the library was analysed with, a different file makes the stored
+  blobs unreadable.
+- `NEURAL_FINGERPRINT_NPROBE` (12): cells read per query vector.
+- `NEURAL_FINGERPRINT_TRAIN_ROWS` (200000): rows the k-means that places the
+  cells is trained on, sampled 100 per track from random tracks, never fewer
+  than 20 per cell.
+- `NEURAL_FINGERPRINT_RETRAIN_GROWTH` (4): the worker appends new tracks to
+  the existing cells until the library has grown this many times since the
+  centroids were trained, then rebuilds from scratch.
+- `NEURAL_FINGERPRINT_MIN_SCORE` and `NEURAL_FINGERPRINT_MIN_LEAD`: the mean
+  cosine the best track must reach at its alignment, and its lead over the
+  next track, to count as identified.
+- `NEURAL_FINGERPRINT_INDEX_STRIDE` (1): index every n-th stored half-second
+  row; 2 halves the local pack and the query work and must be measured on
+  real recordings first, since it costs recall on degraded clips. Changing it
+  triggers a full rebuild.
+- `NEURAL_FINGERPRINT_QUERY_THREADS` (0 = one per core, at most 8): threads
+  scoring a clip's segments in parallel in the web process.
+- `NEURAL_FINGERPRINT_CACHE_MB` (1024): RAM the web process keeps for the
+  cells read from `ivf_cell` on demand; least recently used cells are dropped
+  past it, and the whole cache goes when the recording search has been idle
+  for `RECORDING_SEARCH_WARMUP_DURATION` seconds.
+- `FLASK_BUILTIN_HTTPS` (true): answer HTTPS on the HTTP port; false switches
+  the relay off and every connection passes through untouched.
+- `FLASK_HTTPS_CERT_DIR` (data dir `tls/`, `/app/tls` in containers): where
+  the self-signed certificate and key are kept, so the browser exception
+  survives restarts.
+
+- `RECORDING_SEARCH_DEFAULT_N_RESULTS` (100): results when the caller sends no
+  count, and the value the page's count box starts on.
+- `RECORDING_SEARCH_RECORD_SECONDS` (20): browser recording length.
+- `RECORDING_SEARCH_MAX_CLIP_SECONDS` (60): longer uploads are cut to this.
+- `RECORDING_SEARCH_MAX_UPLOAD_MB` (1024): upload ceiling.
+- `RECORDING_SEARCH_TARGET_LEVEL_DB` (-14): RMS level the clip is normalised to.
+- `RECORDING_SEARCH_WARMUP_DURATION` (300): idle seconds before the neural
+  fingerprint pack and its encoder session unload from the web process.

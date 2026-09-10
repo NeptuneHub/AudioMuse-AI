@@ -48,6 +48,8 @@ RUN set -eux; \
     urls=( \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_embedding.onnx" \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_prediction.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/neural_fingerprint.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/neural_fingerprint_pq.npz" \
     ); \
     for u in "${urls[@]}"; do \
         n=0; \
@@ -507,7 +509,8 @@ ENV LANG=C.UTF-8 \
     IVF_DISK_CACHE_DIR=/app/ivf_cache \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_DISABLE_XET=1 \
-    HF_XET_DISABLE=1
+    HF_XET_DISABLE=1 \
+    GUNICORN_CMD_ARGS="--config /app/gunicorn.conf.py"
 
 # Note: bundled HuggingFace models (RoBERTa, ...) load with
 # local_files_only=True per call. The gte/whisper/silero ONNX bundles are

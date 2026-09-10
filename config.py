@@ -234,6 +234,28 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'GENRE_SUBGENRE_FILE',
     'PLUGINS_DIR',
     'IVF_DISK_CACHE_DIR',
+    # Locations the native launchers hand every child through the environment
+    # (native-build/native_common/child_env.py) from the install of THIS launch:
+    # the bundled model files, the application data and temp directories and the
+    # embedded database kind. A container reads the same keys from the image
+    # layout. Persisting one launch's answer would pin an old install directory
+    # after the application is moved or upgraded, with no wizard field to fix it.
+    'APP_DATA_DIR',
+    'DATABASE_TYPE',
+    'TEMP_DIR',
+    'EMBEDDING_MODEL_PATH',
+    'PREDICTION_MODEL_PATH',
+    'CLAP_AUDIO_MODEL_PATH',
+    'CLAP_TEXT_MODEL_PATH',
+    'CLAP_SAE_ENCODER_PATH',
+    'CLAP_SAE_MODEL_PATH',
+    'CLAP_SAE_CONCEPTS_PATH',
+    'LYRICS_MODEL_DIR',
+    'LYRICS_WHISPER_MODEL_DIR',
+    'LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR',
+    'CLAP_OTHER_FEATURES_CACHE_DIR',
+    'CLAP_OTHER_FEATURES_CACHE_FILE',
+    'FPCALC_BINARY',
     # The queue guard's task-type set is a correctness constant like the two
     # above it: a stale row from an older version would let a task type that has
     # since become blocking run in parallel with a catalogue job.
@@ -271,10 +293,32 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'LYRICS_AXES_DEFAULT_LIMIT',
     'LYRICS_TEXT_DEFAULT_LIMIT',
     'SEM_GROVE_DEFAULT_LIMIT',
+    # Search by Recording: the page's own knobs, env-only like the defaults above.
+    'RECORDING_SEARCH_DEFAULT_N_RESULTS',
+    'RECORDING_SEARCH_RECORD_SECONDS',
+    'RECORDING_SEARCH_MAX_CLIP_SECONDS',
+    'RECORDING_SEARCH_MAX_UPLOAD_MB',
+    'RECORDING_SEARCH_TARGET_LEVEL_DB',
+    'RECORDING_SEARCH_WARMUP_DURATION',
+    # Built-in HTTPS is process-level plumbing, set from the environment like the
+    # HTTP bind, never from the wizard.
+    'FLASK_BUILTIN_HTTPS',
+    'FLASK_HTTPS_CERT_DIR',
+    # The neural fingerprint model is a file shipped with the image, not a setting.
+    'NEURAL_FINGERPRINT_MODEL_PATH',
+    'NEURAL_FINGERPRINT_CODEBOOK_PATH',
+    'NEURAL_FINGERPRINT_NPROBE',
+    'NEURAL_FINGERPRINT_TRAIN_ROWS',
+    'NEURAL_FINGERPRINT_RETRAIN_GROWTH',
+    'NEURAL_FINGERPRINT_MIN_SCORE',
+    'NEURAL_FINGERPRINT_MIN_LEAD',
+    'NEURAL_FINGERPRINT_INDEX_STRIDE',
+    'NEURAL_FINGERPRINT_QUERY_THREADS',
+    'NEURAL_FINGERPRINT_CACHE_MB',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.5.3"
+APP_VERSION = "v3.6.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -550,6 +594,13 @@ AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
 # only point the readiness poll at a port Flask never answers on.
 FLASK_BIND_PORT = 8000
 FLASK_LOCAL_URL = f"http://127.0.0.1:{FLASK_BIND_PORT}/"
+# Browsers hand the microphone only to pages on HTTPS or localhost, and a self-hosted
+# app is reached as http://<ip>:8000, so the SAME port also answers HTTPS: the first
+# byte of a connection tells a TLS handshake from an HTTP request, TLS is terminated
+# in the web process with a self-signed certificate it generates once into
+# FLASK_HTTPS_CERT_DIR, and the Search by Recording page sends its record button to
+# https://<host>:8000. No extra port, nothing to publish. false switches it off.
+FLASK_BUILTIN_HTTPS = os.environ.get("FLASK_BUILTIN_HTTPS", "true").lower() == "true"
 # How long that wait may take before giving up and continuing anyway.
 FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "180"))
 # Web process idle heap trim: seconds of quiet before freed heap returns to the
@@ -1132,6 +1183,70 @@ CLAP_SAE_CONCEPTS_PATH = os.environ.get(
 # A refinement may stack at most this many concepts; the paper steers one at a
 # time, so beyond a handful the edits start fighting each other.
 CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
+
+# Neural audio fingerprint (Search by Recording, identify from any part of a
+# song): the ONNX encoder exported from the neural music fingerprinter of Araz,
+# Serra and Bogdanov (ISMIR 2025, triplet checkpoint). Like the MusiCNN graphs it
+# is downloaded from the model release into /app/model by the Dockerfiles, and the
+# native builds ship it in their model directory and point this variable there
+# (native-build/native_common/child_env.py). A missing file simply disables the
+# analysis stage and the page.
+# Runs through the same ONNX provider chain as MusiCNN and CLAP: CUDA on the GPU
+# images, the CPU everywhere else.
+# Master switch like CLAP_ENABLED, OFF by default: the stage adds 10 to 25 s of CPU
+# per track, so an installation opts in from the setup wizard (Machine Learning
+# Models) or with this variable. Like every wizard parameter it is written to
+# app_config on the first web start that lacks it and read from there afterwards
+# (setup_manager.persist_missing_config_values), so an upgrade never flips a choice
+# already made; a library that already holds neural fingerprints counts as having
+# chosen this one on (_apply_db_overrides infers it before that write). False skips
+# the neural fingerprint stage of the analysis and its index build, and the Search by
+# Recording page says it is off.
+NEURAL_FINGERPRINT_ENABLED = os.environ.get("NEURAL_FINGERPRINT_ENABLED", "false").lower() == "true"
+NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
+    "NEURAL_FINGERPRINT_MODEL_PATH", "/app/model/neural_fingerprint.onnx"
+)
+# Product-quantisation codebook that turns each 128-number fingerprint vector into
+# 32 bytes (32 slices of 4 numbers, 256 centroids each), trained once on library
+# fingerprints (scripts/onnx_export/train_neural_fingerprint_codebook.py) and shipped
+# next to the model. Every stored blob carries the codebook's checksum: changing the
+# file invalidates the stored fingerprints, so keep the one the library was encoded with.
+NEURAL_FINGERPRINT_CODEBOOK_PATH = os.environ.get(
+    "NEURAL_FINGERPRINT_CODEBOOK_PATH", "/app/model/neural_fingerprint_pq.npz"
+)
+# Coarse cells probed per query vector when the fingerprint index is searched
+# (the index has about sqrt(rows) cells); more cells = better recall, slower query.
+NEURAL_FINGERPRINT_NPROBE = int(os.environ.get("NEURAL_FINGERPRINT_NPROBE", "12"))
+# Rows the k-means that places the cells is trained on, sampled 100 per track from
+# random tracks, and never fewer than 20 per cell (a million tracks gets about 22k
+# cells, so about 440k rows). Every track contributes hundreds of rows, so the cap the
+# other indexes use for whole-track vectors would mean training on the full library.
+NEURAL_FINGERPRINT_TRAIN_ROWS = int(os.environ.get("NEURAL_FINGERPRINT_TRAIN_ROWS", "200000"))
+# Index every n-th stored half-second row of a track: 1 indexes them all, 2 indexes
+# one per second, which halves the local pack (about 19 GB per million tracks at 1)
+# and the query work, at a recall cost on degraded clips that must be measured on
+# real recordings first. The stored fingerprints keep every row and the alignment
+# check reads them all whatever the stride. Changing it triggers a full rebuild.
+NEURAL_FINGERPRINT_INDEX_STRIDE = int(os.environ.get("NEURAL_FINGERPRINT_INDEX_STRIDE", "1"))
+# Threads that score a clip's segments in parallel in the web process; 0 = one per
+# CPU core, at most 8.
+NEURAL_FINGERPRINT_QUERY_THREADS = int(os.environ.get("NEURAL_FINGERPRINT_QUERY_THREADS", "0"))
+# RAM (MB) the web process keeps for fingerprint cells read from the ivf_cell table on
+# demand, like IVF_GLOBAL_CACHE_MB for the other indexes; least recently used cells are
+# dropped past it, and the whole cache is dropped when the recording search has been
+# idle for RECORDING_SEARCH_WARMUP_DURATION seconds. A query touches a few hundred
+# cells; a cell is about 40 bytes per indexed half second of the tracks it holds.
+NEURAL_FINGERPRINT_CACHE_MB = int(os.environ.get("NEURAL_FINGERPRINT_CACHE_MB", "1024"))
+# The worker appends new tracks to the existing cells; the centroids are retrained
+# (a full rebuild) once the library has grown this many times since they were trained.
+NEURAL_FINGERPRINT_RETRAIN_GROWTH = float(os.environ.get("NEURAL_FINGERPRINT_RETRAIN_GROWTH", "4.0"))
+# The best track counts as identified when the clip's segments, aligned on it, reach
+# this mean cosine similarity AND lead the next track by this much. Measured on four
+# real phone recordings: scores 0.48 to 0.68, leads 0.33 to 0.51; on a synthetic
+# degradation harsher than a phone the wrong top candidates stayed below 0.26 with
+# leads under 0.09.
+NEURAL_FINGERPRINT_MIN_SCORE = float(os.environ.get("NEURAL_FINGERPRINT_MIN_SCORE", "0.4"))
+NEURAL_FINGERPRINT_MIN_LEAD = float(os.environ.get("NEURAL_FINGERPRINT_MIN_LEAD", "0.15"))
 # Strength grid (alpha). Each concept mask is L2 normalised, so alpha is a fixed
 # length step in latent space and means the same for every concept. The grid stops
 # at 5: beyond that the edit stops refining the query and starts replacing it, and
@@ -1193,6 +1308,26 @@ CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_D
 # limit. Mirrors the value the CLAP search page ships in its own input box.
 CLAP_SEARCH_DEFAULT_LIMIT = int(os.environ.get("CLAP_SEARCH_DEFAULT_LIMIT", "50"))
 
+# --- Search by Recording ---
+# Result count when /api/recording_search/search is called without one; also the
+# value the page's count box starts on.
+RECORDING_SEARCH_DEFAULT_N_RESULTS = int(os.environ.get("RECORDING_SEARCH_DEFAULT_N_RESULTS", "100"))
+# Seconds the browser records before it stops by itself.
+RECORDING_SEARCH_RECORD_SECONDS = int(os.environ.get("RECORDING_SEARCH_RECORD_SECONDS", "20"))
+# An uploaded clip longer than this is cut to its first seconds before embedding.
+RECORDING_SEARCH_MAX_CLIP_SECONDS = int(os.environ.get("RECORDING_SEARCH_MAX_CLIP_SECONDS", "60"))
+# Upload size ceiling for one clip. The upload is streamed to a temporary file and
+# only the first RECORDING_SEARCH_MAX_CLIP_SECONDS are embedded, so a big file costs
+# transfer time and disk, never RAM.
+RECORDING_SEARCH_MAX_UPLOAD_MB = int(os.environ.get("RECORDING_SEARCH_MAX_UPLOAD_MB", "1024"))
+# RMS level (dBFS) every clip is normalised to before embedding. The mel front ends
+# carry no per-clip normalisation, so a quiet recording lands far from its own song;
+# -14 dBFS is the median level of an analysed library.
+RECORDING_SEARCH_TARGET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_TARGET_LEVEL_DB", "-14.0"))
+# Seconds the neural fingerprint pack and its encoder session stay loaded in the web
+# process after the last recording search before they are unloaded to free RAM.
+RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_DURATION", "300"))
+
 # Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
 # loaded after last use. Auto-unloads after this idle period to free RAM.
 LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "300"))
@@ -1240,6 +1375,15 @@ elif os.path.isdir("/app"):
 else:
     _ivf_disk_cache_default = os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache")
 IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or _ivf_disk_cache_default
+# Where the self-signed certificate of the built-in HTTPS lives; same placement
+# rule as the IVF cache so a native build keeps it across restarts.
+if APP_DATA_DIR:
+    _https_cert_dir_default = os.path.join(APP_DATA_DIR, "tls")
+elif os.path.isdir("/app"):
+    _https_cert_dir_default = "/app/tls"
+else:
+    _https_cert_dir_default = os.path.join(tempfile.gettempdir(), "audiomuse_tls")
+FLASK_HTTPS_CERT_DIR = os.environ.get("FLASK_HTTPS_CERT_DIR", "") or _https_cert_dir_default
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
@@ -1615,13 +1759,39 @@ def _apply_db_overrides():
             _setup_manager.ensure_table()
             _overrides = _setup_manager.get_raw_overrides()
         _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        _unusable_rows = []
         for _key, _value in _overrides.items():
             # Skip any keys that are explicitly excluded from overrides (Postgres)
-            if _key in _excluded_override_keys:
+            if _key in _excluded_override_keys or _key not in globals():
+                continue
+            # A row may only replace a value it can be cast back to. A tuple or set
+            # constant, or the literal 'None' that str(None) leaves behind, would
+            # turn the global into a string (TASK_STATUS_LIVE as a string once broke
+            # every queue SQL at startup): such rows are ignored here and deleted by
+            # the web process in prune_obsolete_config_values.
+            if not _setup_manager.is_persistable_value(globals()[_key]) or (
+                globals()[_key] is None and _value == 'None'
+            ):
+                _unusable_rows.append(_key)
                 continue
             # Read the value from the db and override the variable
-            if _key in globals():
-                globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+            globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+        if _unusable_rows:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Ignoring %d app_config rows that cannot replace their config value: %s",
+                len(_unusable_rows), ", ".join(sorted(_unusable_rows)),
+            )
+
+        # A library that already holds neural fingerprints ran the stage under the
+        # old default: it keeps Search by Recording on until its owner turns it off.
+        # Only an unset flag is inferred (no app_config row, no environment value);
+        # the web process writes every parameter still missing from app_config at
+        # startup (setup_manager.persist_missing_config_values), so this check runs
+        # only on the boots before that row exists, in the worker and in Flask alike.
+        if 'NEURAL_FINGERPRINT_ENABLED' not in _overrides and 'NEURAL_FINGERPRINT_ENABLED' not in os.environ:
+            if _setup_manager.neural_fingerprints_exist():
+                globals()['NEURAL_FINGERPRINT_ENABLED'] = True
 
         # Media-server settings live ONLY in the music_servers registry: project
         # its default row onto the module globals so every legacy config read

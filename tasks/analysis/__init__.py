@@ -42,6 +42,7 @@ _HOMES = {
     'robust_load_audio_with_fallback': 'song',
     'resample_audio': 'song',
     'decode_audio_once': 'song',
+    'musicnn_embedding_for_audio': 'song',
     'make_task_reporter': 'helper',
     '_bind_server_context': 'helper',
 }

@@ -785,17 +785,18 @@ def _scan_tree_cache_blob_names(base_name):
     warm every secondary server tree at startup without touching the registry.
     """
     from database import get_db
+    from tasks.index_build_helpers import like_escape
 
     prefix = base_name + "__"
     # The trailing % must be an UNESCAPED wildcard: prefix's underscores are
     # escaped with backslashes, but the suffix separator is a real LIKE
     # wildcard so "<base>__<server_id>" blobs are discovered.
-    like = prefix.replace("_", r"\_") + "%"
+    like = like_escape(prefix) + "%"
     try:
         db_conn = get_db()
         with db_conn.cursor() as cur:
             cur.execute(
-                "SELECT DISTINCT name FROM ivf_dir WHERE name LIKE %s ESCAPE '\\'",
+                "SELECT DISTINCT name FROM ivf_dir WHERE name LIKE %s ESCAPE E'\\\\'",
                 (like,),
             )
             names = set()
@@ -889,14 +890,15 @@ def _set_empty_tree_cache():
 
 def _delete_tree_cache_blob():
     from database import get_db
+    from tasks.index_build_helpers import like_escape
 
     db_conn = get_db()
-    like_pattern = _TREE_CACHE_BLOB_NAME.replace("_", r"\_") + r"\_%"
-    skeleton_like = _TREE_SKELETON_BLOB_NAME.replace("_", r"\_") + r"\_%"
+    like_pattern = like_escape(_TREE_CACHE_BLOB_NAME) + r"\_%"
+    skeleton_like = like_escape(_TREE_SKELETON_BLOB_NAME) + r"\_%"
     with db_conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE '\\' "
-            "OR name = %s OR name LIKE %s ESCAPE '\\'",
+            "DELETE FROM ivf_dir WHERE name = %s OR name LIKE %s ESCAPE E'\\\\' "
+            "OR name = %s OR name LIKE %s ESCAPE E'\\\\'",
             (_TREE_CACHE_BLOB_NAME, like_pattern, _TREE_SKELETON_BLOB_NAME, skeleton_like),
         )
     db_conn.commit()

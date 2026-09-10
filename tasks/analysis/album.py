@@ -75,11 +75,12 @@ from ..memory_utils import (
     SessionRecycler,
     comprehensive_memory_cleanup,
 )
-from .. import chromaprint
+from .. import chromaprint, neural_fingerprint
 from database import (
     persist_chromaprint,
     get_chromaprint,
     record_analysis_exclusion,
+    save_neural_fingerprint,
 )
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
@@ -274,6 +275,28 @@ def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings,
     return embedding, True
 
 
+def _stage_neural_fingerprint(track_id_str, track_name_full, native_audio, native_sr):
+    if native_audio is None or not native_sr:
+        logger.warning("  - Neural fingerprint skipped for '%s': no decoded audio", track_name_full)
+        return False
+    try:
+        blob = neural_fingerprint.fingerprint_track(native_audio, native_sr, track_name_full)
+    except OperationalError:
+        raise
+    except Exception:
+        logger.exception("  - Neural fingerprint failed for '%s'; retried on the next run", track_name_full)
+        return False
+    if blob is None:
+        return False
+    if not save_neural_fingerprint(track_id_str, blob):
+        logger.warning(
+            "  - Neural fingerprint for '%s' not saved: the track has no embedding row yet", track_name_full
+        )
+        return False
+    logger.info("  - Neural fingerprint saved (%d KB)", len(blob) // 1024)
+    return True
+
+
 def _stage_lyrics(item, path, track_audio, track_sr, track_name_full, top_moods,
                   ensure_download):
     try:
@@ -378,6 +401,11 @@ def _analyze_single_track(
                 native_audio=native_audio, native_sr=native_sr,
             )
             produced = produced or clap_saved
+
+        if plan.neural:
+            produced = _stage_neural_fingerprint(
+                track_id_str, track_name_full, native_audio, native_sr
+            ) or produced
 
         if plan.lyrics:
             if track_audio is None and native_audio is not None and native_sr:
@@ -510,6 +538,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 missing_base_ids_set,
                 clap_label_embeddings,
                 existing_top_moods_by_id,
+                missing_neural_ids_set,
             ) = _ah.build_album_plan(album_name, tracks, top_n_moods, LYRICS_ENABLED)
             analysis_exclusions = _ah.load_album_analysis_exclusions(tracks)
 
@@ -544,12 +573,14 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     missing_lyrics_ids_set,
                     missing_base_ids_set,
                     LYRICS_ENABLED,
+                    missing_neural_ids_set,
                 )
 
                 if not plan.any_stage:
                     tracks_skipped_count += 1
                     status_parts = _ah.build_feature_status_parts(
-                        is_clap_available(), LYRICS_ENABLED, include_check_marks=True
+                        is_clap_available(), LYRICS_ENABLED, include_check_marks=True,
+                        neural_available=neural_fingerprint.is_available(),
                     )
                     logger.info(
                         f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})"

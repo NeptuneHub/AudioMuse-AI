@@ -429,7 +429,7 @@ var ADVANCED_SECTIONS = [
         items: [
             'NUM_RECENT_ALBUMS', 'TOP_N_MOODS', 'ANALYSIS_MONITOR_DB_INTERVAL',
             'ANALYSIS_STALL_TIMEOUT_MINUTES', 'ANALYSIS_MAX_STALL_GIVE_UPS',
-            'CLAP_ENABLED', 'CLAP_PYTHON_MULTITHREADS', 'PER_SONG_MODEL_RELOAD',
+            'CLAP_PYTHON_MULTITHREADS', 'PER_SONG_MODEL_RELOAD',
             'MUSICNN_BATCH_SIZE'
         ]
     },
@@ -549,7 +549,7 @@ var ADVANCED_SECTIONS = [
     {
         title: 'Lyrics & SemGrove Search',
         items: [
-            'LYRICS_ENABLED', 'LYRICS_API_ENABLE', 'LYRICS_ASR_ENABLE', 'LYRICS_MUSICNN_SKIP',
+            'LYRICS_API_ENABLE', 'LYRICS_MUSICNN_SKIP',
             'MUSICSERVER_LYRICS_TIMEOUT', 'VAD_VOICE_RECOGNITION', 'LYRICS_ASR_BEAM_SIZE',
             'LYRICS_ASR_MIN_AVG_LOGPROB', 'LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB',
             'LYRICS_MIN_CHARS_FOR_EMBEDDING', 'LYRICS_TEXT_MAX_COMPRESSION_RATIO',
@@ -595,6 +595,126 @@ var ADVANCED_SECTIONS = [
     }
 ];
 var ADVANCED_OTHER_TITLE = 'Other parameters';
+
+var ML_MODEL_FLAGS = ['CLAP_ENABLED', 'LYRICS_ENABLED', 'LYRICS_ASR_ENABLE', 'NEURAL_FINGERPRINT_ENABLED'];
+
+function normalizeFlagValue(raw, fallback) {
+    var text = String(raw === undefined || raw === null ? '' : raw).trim().toLowerCase();
+    if (text === '1' || text === 'true' || text === 'yes' || text === 'on') {
+        return 'true';
+    }
+    if (text === '0' || text === 'false' || text === 'no' || text === 'off') {
+        return 'false';
+    }
+    return fallback;
+}
+
+function modelSwitchFor(flag) {
+    return document.querySelector('#ml-models-section input[type="checkbox"][data-flag="' + flag + '"]');
+}
+
+function updateModelSwitchDependencies() {
+    var lyrics = modelSwitchFor('LYRICS_ENABLED');
+    var whisper = modelSwitchFor('LYRICS_ASR_ENABLE');
+    if (!lyrics || !whisper) {
+        return;
+    }
+    var lyricsOn = lyrics.checked;
+    whisper.disabled = !lyricsOn;
+    whisper.closest('.ml-model-row')?.classList.toggle('is-locked', !lyricsOn);
+}
+
+function renderModelSwitches(fields) {
+    var byName = {};
+    (fields || []).forEach(function(field) {
+        if (field && field.name) {
+            byName[field.name] = field;
+        }
+    });
+    ML_MODEL_FLAGS.forEach(function(flag) {
+        var hidden = document.getElementById(flag);
+        var checkbox = modelSwitchFor(flag);
+        if (!hidden || !checkbox) {
+            return;
+        }
+        var field = byName[flag];
+        var shipped = normalizeFlagValue(hidden.defaultValue, 'true');
+        var fallback = field ? normalizeFlagValue(field.default, shipped) : shipped;
+        var current = field ? normalizeFlagValue(field.value, fallback) : fallback;
+        hidden.value = current;
+        hidden.dataset.originalValue = current;
+        checkbox.checked = current === 'true';
+    });
+    updateModelSwitchDependencies();
+}
+
+var MODEL_COVERAGE_LABELS = ['No index yet', 'Just started', 'Partial', 'More than half', 'Most songs', 'Ready'];
+var MODEL_COVERAGE_FLAGS = {
+    'musicnn': null,
+    'clap': 'CLAP_ENABLED',
+    'lyrics': 'LYRICS_ENABLED',
+    'neural-fingerprint': 'NEURAL_FINGERPRINT_ENABLED'
+};
+var modelCoverageLevels = {};
+
+function renderModelCoverage(levels) {
+    modelCoverageLevels = levels && typeof levels === 'object' ? levels : {};
+    document.querySelectorAll('#ml-models-section .ml-model-coverage').forEach(function(bar) {
+        var model = bar.dataset.coverage;
+        var level = modelCoverageLevels[model];
+        var flag = MODEL_COVERAGE_FLAGS[model];
+        var checkbox = flag ? modelSwitchFor(flag) : null;
+        var switchOn = flag ? !!(checkbox && checkbox.checked) : true;
+        var known = Number.isInteger(level) && level >= 0 && level < MODEL_COVERAGE_LABELS.length;
+        bar.hidden = !(known && switchOn);
+        if (!known) {
+            return;
+        }
+        bar.dataset.level = String(level);
+        var label = bar.querySelector('.ml-model-coverage-label');
+        if (label) {
+            label.textContent = MODEL_COVERAGE_LABELS[level];
+        }
+    });
+}
+
+ML_MODEL_FLAGS.forEach(function(flag) {
+    var checkbox = modelSwitchFor(flag);
+    if (!checkbox) {
+        return;
+    }
+    checkbox.addEventListener('change', function() {
+        var hidden = document.getElementById(flag);
+        if (hidden) {
+            hidden.value = checkbox.checked ? 'true' : 'false';
+        }
+        updateModelSwitchDependencies();
+        renderModelCoverage(modelCoverageLevels);
+    });
+});
+
+var modelDetailsToggles = Array.prototype.slice.call(
+    document.querySelectorAll('#ml-models-section .ml-model-details-toggle')
+);
+
+function setModelDetailsOpen(button, open) {
+    var panel = document.getElementById(button.getAttribute('aria-controls') || '');
+    if (!panel) {
+        return;
+    }
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    panel.hidden = !open;
+}
+
+modelDetailsToggles.forEach(function(button) {
+    button.addEventListener('click', function() {
+        var open = button.getAttribute('aria-expanded') === 'true';
+        modelDetailsToggles.forEach(function(other) {
+            setModelDetailsOpen(other, false);
+        });
+        setModelDetailsOpen(button, !open);
+    });
+});
 
 function buildAdvancedFieldRow(field) {
     var secret = false;
@@ -755,7 +875,9 @@ function loadSetupData() {
             }
         }
         var visibleAdvancedData = Array.isArray(advancedData)
-            ? advancedData.filter(function(f) { return f && f.name !== 'MUSIC_LIBRARIES'; })
+            ? advancedData.filter(function(f) {
+                return f && f.name !== 'MUSIC_LIBRARIES' && !ML_MODEL_FLAGS.includes(f.name);
+            })
             : advancedData;
         currentSelectedLibraries = splitLibraryList(data.music_libraries);
         originalValues = {};
@@ -774,6 +896,8 @@ function loadSetupData() {
         serverValues = basicData; // keep the full current server-related values
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
+        renderModelSwitches(advancedData);
+        renderModelCoverage(data.model_coverage);
         populateLyricsApiFields(data.lyrics_api_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`

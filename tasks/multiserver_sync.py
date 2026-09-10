@@ -272,16 +272,9 @@ def prune_stale_mappings(db, server_id, present_ids, refused=None):
             )
         db.commit()
         if removed:
-            try:
-                from tasks.paged_ivf import invalidate_availability_cache
-                invalidate_availability_cache(server_id)
-            except Exception:
-                logger.debug("Availability-cache invalidation failed", exc_info=True)
-            try:
-                from tasks.hyperbolic_index import invalidate_availability_cache as invalidate_hyperbolic_availability
-                invalidate_hyperbolic_availability(server_id)
-            except Exception:
-                logger.debug("Hyperbolic availability-cache invalidation failed", exc_info=True)
+            from tasks.index_availability import invalidate_availability_caches
+
+            invalidate_availability_caches(server_id)
         return removed
     finally:
         cur.close()

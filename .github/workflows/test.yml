@@ -75,6 +75,12 @@ jobs:
         echo "Downloading SAE concept steering graphs..."
         curl -L "${sae_url}/dclap_sae_k20_d1024_best_encoder.onnx" -o "test/models/dclap_sae_k20_d1024_best_encoder.onnx"
         curl -L "${sae_url}/dclap_sae_k20_d1024_best_decoder.onnx" -o "test/models/dclap_sae_k20_d1024_best_decoder.onnx"
+        neural_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"
+        echo "Downloading neural fingerprint encoder and codebook..."
+        curl -fL "${neural_url}/neural_fingerprint.onnx" -o "test/models/neural_fingerprint.onnx"
+        curl -fL "${neural_url}/neural_fingerprint_pq.npz" -o "test/models/neural_fingerprint_pq.npz"
+        echo "NEURAL_FINGERPRINT_MODEL_PATH=${GITHUB_WORKSPACE}/test/models/neural_fingerprint.onnx" >> "$GITHUB_ENV"
+        echo "NEURAL_FINGERPRINT_CODEBOOK_PATH=${GITHUB_WORKSPACE}/test/models/neural_fingerprint_pq.npz" >> "$GITHUB_ENV"
         echo "Models downloaded successfully"
         ls -lh test/models/
 

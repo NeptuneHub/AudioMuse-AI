@@ -423,7 +423,7 @@ class TestClapTextSearchGetsTheSameTreatment:
         from tasks.search_shaping import overfetch_size
 
         for source in (
-            inspect.getsource(clap_text_search.search_by_text),
+            inspect.getsource(clap_text_search.search_by_embedding),
             inspect.getsource(lyrics_manager.search_by_text),
             inspect.getsource(lyrics_manager.search_by_axes),
         ):

@@ -10,6 +10,7 @@ venv/
 .venv-macos/
 .venv-linux/
 .venv-windows/
+.venv-tfexport/
 env/
 
 # Linux native build inputs built fresh in CI (not committed; see .github/workflows/build-linux.yml)
@@ -54,6 +55,7 @@ nul
 # Test models (downloaded by CI workflow from GitHub Releases)
 test/models/*.onnx
 test/models/*.onnx.data
+test/models/*.npz
 
 # Student CLAP training artifacts
 student_clap/cache/

@@ -56,6 +56,14 @@ def _validate_sql_identifier(ident: str, kind: str) -> None:
         raise ValueError(f"Invalid SQL {kind}: {ident!r}")
 
 
+def like_escape(name: str) -> str:
+    return name.replace("_", r"\_")
+
+
+def segment_like_pattern(name: str) -> str:
+    return like_escape(name) + r"\_%\_%"
+
+
 def _open_side_connection() -> "psycopg2.extensions.connection":
     conn = psycopg2.connect(
         config.DATABASE_URL,
@@ -338,9 +346,9 @@ def store_ivf_index_segmented(
     id_map_json = json.dumps(id_map)
 
     delete_sql = (
-        f"DELETE FROM {target_table} WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'"
+        f"DELETE FROM {target_table} WHERE index_name = %s OR index_name LIKE %s ESCAPE E'\\\\'"
     )
-    like_pattern = index_name.replace("_", r"\_") + r"\_%\_%"
+    like_pattern = segment_like_pattern(index_name)
 
     upsert_sql = (
         f"INSERT INTO {target_table} "
@@ -411,8 +419,8 @@ def store_segmented_blob(
     mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     max_part_size = mb * 1024 * 1024
 
-    delete_sql = f"DELETE FROM {target_table} WHERE name = %s OR name LIKE %s ESCAPE '\\'"
-    like_pattern = name.replace("_", r"\_") + r"\_%\_%"
+    delete_sql = f"DELETE FROM {target_table} WHERE name = %s OR name LIKE %s ESCAPE E'\\\\'"
+    like_pattern = segment_like_pattern(name)
 
     upsert_sql = (
         f"INSERT INTO {target_table} (name, blob_data, created_at) "
@@ -464,8 +472,8 @@ def load_segmented_blob(
     _validate_sql_identifier(name, "name")
 
     select_single_sql = f"SELECT blob_data FROM {target_table} WHERE name = %s"
-    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE '\\'"
-    like_pattern = name.replace("_", r"\_") + r"\_%\_%"
+    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE E'\\\\'"
+    like_pattern = segment_like_pattern(name)
     seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
 
     with db_conn.cursor() as cur:
@@ -531,7 +539,7 @@ def segmented_blob_length(
     _validate_sql_identifier(target_table, "table")
     _validate_sql_identifier(name, "name")
 
-    like_pattern = name.replace("_", r"\_") + r"\_%\_%"
+    like_pattern = segment_like_pattern(name)
 
     with db_conn.cursor() as cur:
         cur.execute(
@@ -544,7 +552,7 @@ def segmented_blob_length(
 
         cur.execute(
             f"SELECT COALESCE(SUM(octet_length(blob_data)), 0) FROM {target_table} "
-            f"WHERE name LIKE %s ESCAPE '\\'",
+            f"WHERE name LIKE %s ESCAPE E'\\\\'",
             (like_pattern,),
         )
         row = cur.fetchone()
@@ -565,8 +573,8 @@ def segmented_blob_complete(
     select_single_sql = (
         f"SELECT 1 FROM {target_table} WHERE name = %s AND blob_data IS NOT NULL"
     )
-    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE '\\'"
-    like_pattern = name.replace("_", r"\_") + r"\_%\_%"
+    select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE E'\\\\'"
+    like_pattern = segment_like_pattern(name)
     seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
 
     with db_conn.cursor() as cur:

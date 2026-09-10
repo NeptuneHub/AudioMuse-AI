@@ -41,6 +41,8 @@ _TEN_MB = 10 * 1024 * 1024
 REQUIRED = [
     "model/musicnn_embedding.onnx",
     "model/musicnn_prediction.onnx",
+    "model/neural_fingerprint.onnx",
+    "model/neural_fingerprint_pq.npz",
     "model/clap_text_model.onnx",
     "model/model_epoch_36.onnx",
     "model/model_epoch_36.onnx.data",
@@ -117,12 +119,18 @@ def assemble():
     repo = _env("GITHUB_REPOSITORY")
     MODEL.mkdir(parents=True, exist_ok=True)
 
-    print(f"==> musicnn + CLAP text models (from {model_release})")
+    print(f"==> musicnn + neural fingerprint + CLAP text models (from {model_release})")
     _gh_download(
         model_release,
         repo,
         MODEL,
-        ["musicnn_embedding.onnx", "musicnn_prediction.onnx", "clap_text_model.onnx"],
+        [
+            "musicnn_embedding.onnx",
+            "musicnn_prediction.onnx",
+            "neural_fingerprint.onnx",
+            "neural_fingerprint_pq.npz",
+            "clap_text_model.onnx",
+        ],
     )
 
     print(f"==> DCLAP audio model (from {dclap_release} in the -DCLAP repo)")

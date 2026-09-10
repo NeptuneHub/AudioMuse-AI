@@ -654,11 +654,11 @@ def load_map_projection(index_name, force_reload=False):
             proj_blob, id_map_json = row[0], row[1]
         else:
             import re
-            from tasks.index_build_helpers import reassemble_segmented_id_map
+            from tasks.index_build_helpers import reassemble_segmented_id_map, segment_like_pattern
 
             cur.execute(
-                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE '\\'",
-                (index_name.replace('_', r'\_') + r"\_%\_%",),
+                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE E'\\\\'",
+                (segment_like_pattern(index_name),),
             )
             candidates = cur.fetchall()
             if not candidates:
@@ -903,6 +903,43 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         conn.rollback()
         logger.exception(f"Error saving CLAP embedding for {item_id}")
         raise
+    finally:
+        cur.close()
+
+
+def save_neural_fingerprint(item_id, blob):
+    if not blob:
+        return False
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE embedding SET neural_fingerprint = %s WHERE item_id = %s",
+            (psycopg2.Binary(bytes(blob)), item_id),
+        )
+        saved = cur.rowcount > 0
+        conn.commit()
+        return saved
+    except Exception:
+        conn.rollback()
+        logger.exception(f"Error saving the neural fingerprint for {item_id}")
+        raise
+    finally:
+        cur.close()
+
+
+def get_ids_with_neural_fingerprint(item_ids):
+    ids = [str(i) for i in item_ids]
+    if not ids:
+        return set()
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT item_id FROM embedding WHERE item_id = ANY(%s) AND neural_fingerprint IS NOT NULL",
+            (ids,),
+        )
+        return {row[0] for row in cur.fetchall()}
     finally:
         cur.close()
 
@@ -1410,6 +1447,24 @@ def _migrate_artist_mapping_to_server_map(cur):
         logger.info("Dropped the empty legacy artist_mapping table.")
 
 
+_SCORE_LEGACY_ID_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
+    "WHERE item_id NOT LIKE E'fp\\\\_%'"
+)
+
+
+def _score_old_scheme_index_sql():
+    from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+
+    return (
+        "CREATE INDEX idx_score_old_scheme ON score (item_id) "
+        "WHERE item_id LIKE E'fp\\\\_%%' AND length(item_id) = %d "
+        "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
+        "AND left(item_id, %d) <> '%s'"
+        % (CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD)
+    )
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -1571,20 +1626,10 @@ def init_db():
                 "((COALESCE(NULLIF(album_artist, ''), author)), album)"
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
-                "WHERE item_id NOT LIKE 'fp\\_%'"
-            )
-            from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+            cur.execute(_SCORE_LEGACY_ID_INDEX_SQL)
             cur.execute("DROP INDEX IF EXISTS idx_score_null_duration")
             cur.execute("DROP INDEX IF EXISTS idx_score_old_scheme")
-            cur.execute(
-                "CREATE INDEX idx_score_old_scheme ON score (item_id) "
-                "WHERE item_id LIKE 'fp\\_%%' AND length(item_id) = %d "
-                "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
-                "AND left(item_id, %d) <> '%s'"
-                % (CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD)
-            )
+            cur.execute(_score_old_scheme_index_sql())
 
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"
@@ -1678,6 +1723,7 @@ def init_db():
             )
             if not cur.fetchone()[0]:
                 cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
+            cur.execute("ALTER TABLE embedding ADD COLUMN IF NOT EXISTS neural_fingerprint BYTEA")
             cur.execute("DROP TABLE IF EXISTS voyager_index_data")
             cur.execute("DROP TABLE IF EXISTS clap_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_index_data")
@@ -2968,19 +3014,19 @@ def like_contains_pattern(value):
 def save_map_projection(index_name, id_map, projection_array):
     conn = get_db()
     try:
+        from tasks.index_build_helpers import segment_like_pattern, store_ivf_index_segmented
+
         blob = projection_array.astype(np.float32).tobytes()
         if not blob:
             logger.info(f"Map projection '{index_name}' has no data; clearing existing store.")
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                    (index_name, index_name.replace('_', r'\_') + r"\_%\_%"),
+                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE E'\\\\'",
+                    (index_name, segment_like_pattern(index_name)),
                 )
             conn.commit()
             return
         embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
-        from tasks.index_build_helpers import store_ivf_index_segmented
-
         store_ivf_index_segmented(
             conn,
             target_table="map_projection_data",

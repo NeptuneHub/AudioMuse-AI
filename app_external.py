@@ -149,7 +149,8 @@ def get_embedding_endpoint():
         description: Internal server error.
     """
     return _external_row_response(
-        "SELECT * FROM embedding WHERE item_id = %s", 'Embedding', _decode_embedding_bytes
+        "SELECT item_id, embedding, poincare_embedding, hyperbolic_radius FROM embedding WHERE item_id = %s",
+        'Embedding', _decode_embedding_bytes,
     )
 
 

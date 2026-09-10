@@ -1252,6 +1252,7 @@ def search_tracks_unified(
     item_id_filter: set | None = None,
     server_id: str | None = None,
     include_legacy_default: bool = False,
+    extra_where: tuple | None = None,
 ):
     from database import get_db
     from psycopg2.extras import DictCursor
@@ -1299,6 +1300,12 @@ def search_tracks_unified(
             id_filter_sql = f" AND item_id IN ({id_placeholders})"
             id_filter_params = list(item_id_filter)
 
+        extra_sql = ""
+        extra_params: list = []
+        if extra_where:
+            extra_sql = f" AND ({extra_where[0]})"
+            extra_params = list(extra_where[1])
+
         availability_sql = ""
         availability_params: list = []
         if server_id:
@@ -1310,6 +1317,7 @@ def search_tracks_unified(
         all_params = (
             params[: len(tokens)]
             + id_filter_params
+            + extra_params
             + availability_params
             + params[len(tokens) :]
         )
@@ -1317,7 +1325,7 @@ def search_tracks_unified(
         query = f"""
             SELECT item_id, title, author, album, album_artist
             FROM score
-            WHERE {where_sql}{id_filter_sql}{availability_sql}
+            WHERE {where_sql}{id_filter_sql}{extra_sql}{availability_sql}
             ORDER BY ({score_sql}) DESC,
                      title,
                      author,
