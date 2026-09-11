@@ -182,6 +182,10 @@ MEDIASERVER_CONFIG_KEYS = frozenset(
 APP_CONFIG_RUNTIME_KEYS = {
     'PLUGIN_REPOS',
     'PLUGIN_CATALOG_CACHE',
+    # Global Cancel counter (database.GLOBAL_CANCEL_EPOCH_KEY): the migration
+    # planner compares it before and after its claim lock. A live counter, not a
+    # setting, so the startup prune must keep the row.
+    'global_cancel_epoch',
 }
 
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
