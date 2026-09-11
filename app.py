@@ -57,7 +57,7 @@ from app_helper import (
     cancel_job_and_children_recursive,
     sanitize_task_details,
 )
-from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details
+from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details, disable_legacy_ai_chat_role
 from taskqueue.sql import CONTROL_TASK_TYPE
 from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 from config import (
@@ -296,6 +296,18 @@ if not _is_worker:
         # default never flips a setting an installation already has.
         setup_manager.prune_obsolete_config_values(config)
         setup_manager.persist_missing_config_values(config)
+        # One-time legacy cleanup: the retired AI chat role is set NOLOGIN when
+        # it still carries its shipped default password. Never creates a role.
+        try:
+            if disable_legacy_ai_chat_role():
+                app.logger.warning(
+                    "Legacy AI chat database role 'ai_user' still had its default "
+                    "password; its login was disabled."
+                )
+        except Exception:
+            app.logger.exception(
+                "Legacy AI chat database role check failed (will retry next boot)"
+            )
         # Bootstrap / reconcile the first admin account:
         #   - If audiomuse_users already has an admin, purge any legacy
         #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.

@@ -2018,7 +2018,6 @@ def init_db():
             _seed_registry_from_legacy_config(cur)
             _drop_unconfigured_servers(cur)
             _migrate_artist_mapping_to_server_map(cur)
-            _scrub_control_chars_from_map_ids(cur)
             _migrate_playlist_server_column(cur)
             removed_media_keys = purge_media_keys_from_app_config(cur)
             if removed_media_keys:
@@ -2040,24 +2039,83 @@ def init_db():
 
 
 def connect_raw(application_name=None, keepalive_idle_seconds=None,
-                keepalive_interval_seconds=None, keepalive_count=None):
+                keepalive_interval_seconds=None, keepalive_count=None,
+                read_only=False):
     idle = int(keepalive_idle_seconds or 600)
     interval = int(keepalive_interval_seconds or 30)
     count = int(keepalive_count or 3)
+    options = (
+        '{} -c tcp_keepalives_idle={} -c tcp_keepalives_interval={} '
+        '-c tcp_keepalives_count={}'.format(_CONNECT_OPTIONS, idle, interval, count)
+    )
+    if read_only:
+        options += ' -c default_transaction_read_only=on'
     kwargs = {
         'connect_timeout': 30,
         'keepalives': 1,
         'keepalives_idle': idle,
         'keepalives_interval': interval,
         'keepalives_count': count,
-        'options': '{} -c tcp_keepalives_idle={} -c tcp_keepalives_interval={} '
-                   '-c tcp_keepalives_count={}'.format(
-                       _CONNECT_OPTIONS, idle, interval, count
-                   ),
+        'options': options,
     }
     if application_name:
         kwargs['application_name'] = application_name
     return psycopg2.connect(config.DATABASE_URL, **kwargs)
+
+
+_LEGACY_AI_CHAT_ROLE = 'ai_user'
+_LEGACY_AI_CHAT_DEFAULT_PASSWORD = 'ChangeThisSecurePassword123!'
+
+
+def _legacy_ai_chat_role_login_error():
+    try:
+        psycopg2.connect(
+            config.DATABASE_URL,
+            user=_LEGACY_AI_CHAT_ROLE,
+            password=_LEGACY_AI_CHAT_DEFAULT_PASSWORD,
+            connect_timeout=10,
+        ).close()
+    except psycopg2.OperationalError as exc:
+        return ' '.join(str(exc).split())
+    return None
+
+
+def disable_legacy_ai_chat_role():
+    conn = connect_raw(application_name='audiomuse-legacy-role-check')
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rolcanlogin, rolname = current_user FROM pg_roles WHERE rolname = %s",
+                (_LEGACY_AI_CHAT_ROLE,),
+            )
+            row = cur.fetchone()
+            if row is None or not row[0] or row[1]:
+                return False
+            refused = _legacy_ai_chat_role_login_error()
+            if refused is not None:
+                logger.warning(
+                    "Legacy AI chat role %s is still login-enabled and did not accept the "
+                    "shipped default password (%s); left untouched. If it is no longer "
+                    "used, run: ALTER ROLE %s NOLOGIN",
+                    _LEGACY_AI_CHAT_ROLE, refused, _LEGACY_AI_CHAT_ROLE,
+                )
+                return False
+            try:
+                cur.execute(
+                    sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(_LEGACY_AI_CHAT_ROLE))
+                )
+            except psycopg2.errors.InsufficientPrivilege:
+                logger.warning(
+                    "Legacy AI chat role %s still accepts its shipped default password and "
+                    "this database user may not alter roles; run as a superuser: "
+                    "ALTER ROLE %s NOLOGIN",
+                    _LEGACY_AI_CHAT_ROLE, _LEGACY_AI_CHAT_ROLE,
+                )
+                return False
+            return True
+    finally:
+        conn.close()
 
 
 def _migrate_file_path_to_track_server_map(cur):
@@ -2086,57 +2144,6 @@ def _migrate_file_path_to_track_server_map(cur):
             "Moved %d file path(s) onto the default server's map rows and cleared "
             "%d shared score.file_path value(s).", moved, cleared,
         )
-
-
-_MAP_ID_SCRUB_MARKER = 'map_id_c0_scrub_v1'
-
-
-def _scrub_control_chars_from_map_ids(cur):
-    cur.execute("SELECT 1 FROM app_config WHERE key = %s", (_MAP_ID_SCRUB_MARKER,))
-    if cur.fetchone():
-        return
-    controls = ''.join(
-        chr(c) for c in (*range(0x01, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20))
-    )
-    klass = '[' + controls + ']'
-    cur.execute(
-        "DELETE FROM track_server_map t WHERE t.provider_track_id ~ %s AND ("
-        "regexp_replace(t.provider_track_id, %s, '', 'g') = '' "
-        "OR EXISTS (SELECT 1 FROM track_server_map c WHERE c.server_id = t.server_id "
-        "AND c.provider_track_id = regexp_replace(t.provider_track_id, %s, '', 'g')) "
-        "OR t.provider_track_id > (SELECT MIN(d.provider_track_id) FROM track_server_map d "
-        "WHERE d.server_id = t.server_id AND d.provider_track_id ~ %s "
-        "AND regexp_replace(d.provider_track_id, %s, '', 'g') = "
-        "regexp_replace(t.provider_track_id, %s, '', 'g')))",
-        (klass, klass, klass, klass, klass, klass),
-    )
-    dropped = cur.rowcount
-    cur.execute(
-        "UPDATE track_server_map SET provider_track_id = "
-        "regexp_replace(provider_track_id, %s, '', 'g'), updated_at = now() "
-        "WHERE provider_track_id ~ %s",
-        (klass, klass),
-    )
-    rewritten = cur.rowcount
-    cur.execute(
-        "DELETE FROM artist_server_map WHERE artist_name ~ %s OR provider_artist_id ~ %s",
-        (klass, klass),
-    )
-    artist_rows = cur.rowcount
-    cur.execute("DELETE FROM chromaprint WHERE provider_track_id ~ %s", (klass,))
-    chroma_rows = cur.rowcount
-    if dropped or rewritten or artist_rows or chroma_rows:
-        logger.warning(
-            "Scrubbed control characters from legacy map rows: %d track map ids "
-            "rewritten, %d colliding/empty track rows dropped, %d artist rows and "
-            "%d chromaprint rows removed (they re-populate on the next sweep/analysis)",
-            rewritten, dropped, artist_rows, chroma_rows,
-        )
-    cur.execute(
-        "INSERT INTO app_config (key, value) VALUES (%s, %s) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        (_MAP_ID_SCRUB_MARKER, 'done'),
-    )
 
 
 def _ensure_track_server_map_key(cur):

@@ -1164,3 +1164,10 @@ class TestWorkerConfigHydration:
         monkeypatch.setattr(config, 'refresh_config', lambda: None)
 
         assert hydrate_worker_config() is False
+
+
+def test_the_global_cancel_epoch_row_survives_the_startup_prune():
+    import config
+    import database
+
+    assert database.GLOBAL_CANCEL_EPOCH_KEY in config.APP_CONFIG_RUNTIME_KEYS

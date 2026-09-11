@@ -182,6 +182,10 @@ MEDIASERVER_CONFIG_KEYS = frozenset(
 APP_CONFIG_RUNTIME_KEYS = {
     'PLUGIN_REPOS',
     'PLUGIN_CATALOG_CACHE',
+    # Global Cancel counter (database.GLOBAL_CANCEL_EPOCH_KEY): the migration
+    # planner compares it before and after its claim lock. A live counter, not a
+    # setting, so the startup prune must keep the row.
+    'global_cancel_epoch',
 }
 
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
@@ -875,10 +879,6 @@ DISABLE_FLASK_RESTART = os.environ.get("DISABLE_FLASK_RESTART", "false").lower()
 # DATABASE_URL in the environment is deliberately ignored: two config sources for
 # one connection is what broke pg_dump when only one of them was set (#832).
 DATABASE_URL = _DERIVED_DATABASE_URL
-
-# --- AI User for Chat SQL Execution ---
-AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")
-AI_CHAT_DB_USER_PASSWORD = os.environ.get("AI_CHAT_DB_USER_PASSWORD", "ChangeThisSecurePassword123!") # IMPORTANT: Change this default and use environment variables
 
 # --- Classifier Constant ---
 MOOD_LABELS = [
