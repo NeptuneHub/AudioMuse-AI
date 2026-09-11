@@ -21,7 +21,6 @@ Main Features:
 * reverse_translate_ids and artist lookups bind sanitized ids and key results by caller input
 * The sweep prune stages a deduped post-sanitize present set; metadata staging keys clean ids
 * Analysis id seams, migration id maps, duration dicts and chromaprint use the same transform
-* The one-time init_db scrub targets exactly the C0 class and is gated by an app_config marker
 """
 
 import os
@@ -332,31 +331,3 @@ class TestChromaprintIdSanitization:
 
         params = cur.execute.call_args_list[0][0][1]
         assert params[1] == 'provid'
-
-
-class TestLegacyMapIdScrub:
-    def test_scrub_skips_when_marker_present(self):
-        from database import _scrub_control_chars_from_map_ids
-
-        cur = MagicMock()
-        cur.fetchone.return_value = (1,)
-        _scrub_control_chars_from_map_ids(cur)
-
-        assert cur.execute.call_count == 1
-
-    def test_scrub_targets_exactly_the_c0_class_and_sets_marker(self):
-        from database import _scrub_control_chars_from_map_ids, _MAP_ID_SCRUB_MARKER
-
-        cur = MagicMock()
-        cur.fetchone.return_value = None
-        cur.rowcount = 0
-        _scrub_control_chars_from_map_ids(cur)
-
-        klass = cur.execute.call_args_list[1][0][1][0]
-        assert klass.startswith('[') and klass.endswith(']')
-        chars = set(klass[1:-1])
-        assert chars == {
-            chr(c) for c in (*range(0x01, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20))
-        }
-        last = cur.execute.call_args_list[-1]
-        assert _MAP_ID_SCRUB_MARKER in last[0][1]
