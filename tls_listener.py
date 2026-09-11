@@ -42,6 +42,10 @@ Main Features:
 * the relay keeps at most _HIGH_WATER bytes in flight per direction: a client
   sending faster than the app reads is simply not read from until the app
   catches up, so a large upload costs no memory beyond that
+* the relay never closes a connection for being silent: a request the app takes
+  minutes to answer keeps its connection exactly as the plain-HTTP path does,
+  and a peer that vanishes is left to TCP keepalive rather than to an idle
+  timer that cannot tell a dead client from a busy server
 * dual_listener binds one for waitress, adopt_listener turns the socket
   gunicorn or werkzeug already bound into one (the descriptor moves, the port
   does not), and https_status tells the page whether HTTPS answers on the
@@ -72,7 +76,6 @@ logger = logging.getLogger(__name__)
 CERT_FILE = 'audiomuse-https.crt'
 KEY_FILE = 'audiomuse-https.key'
 SNIFF_TIMEOUT = 2.0
-RELAY_IDLE_SECONDS = 300.0
 _VALID_DAYS = 3650
 _COMMON_NAME = 'AudioMuse-AI'
 _TLS_HANDSHAKE = 0x16
@@ -270,6 +273,10 @@ class _TlsRelay:
         self.to_client, self.to_app = bytearray(), bytearray()
         self.handshaken = self.client_done = self.app_done = False
         self.inner_write_closed = self.raw_write_closed = False
+        try:
+            self.raw.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            logger.debug('Could not enable TCP keepalive on a relayed client socket', exc_info=True)
 
     def _handshake(self):
         if self.handshaken:
@@ -316,7 +323,7 @@ class _TlsRelay:
         readers, writers = self._interest()
         if not readers and not writers:
             return None, None
-        ready_r, ready_w, _ = select.select(readers, writers, [], RELAY_IDLE_SECONDS)
+        ready_r, ready_w, _ = select.select(readers, writers, [])
         if not ready_r and not ready_w:
             return None, None
         return ready_r, ready_w

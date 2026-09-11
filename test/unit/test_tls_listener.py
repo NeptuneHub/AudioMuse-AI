@@ -19,6 +19,8 @@ Main Features:
   first byte is awaited off the accept loop
 * the relay stops reading a side once a megabyte waits for the other side,
   and reads it again when the buffer drains
+* a silent relay waits for the app however long it takes, and the client
+  socket it relays is left on TCP keepalive
 * with built-in HTTPS disabled the listener hands every connection through
   untouched and the status says why; a certificate failure is reported, not
   raised
@@ -173,6 +175,39 @@ def test_the_relay_stops_reading_a_side_whose_buffer_is_full():
         assert writers == [raw]
         relay.to_client = bytearray()
         assert relay._interest() == ([raw, inner], [])
+    finally:
+        for sock in (raw, raw_peer, inner, inner_peer):
+            sock.close()
+
+
+def test_a_silent_relay_is_never_closed_while_the_app_works():
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    raw, raw_peer = tls_listener.loopback_pair()
+    inner, inner_peer = tls_listener.loopback_pair()
+    relay = tls_listener._TlsRelay(context, raw, inner, ('127.0.0.1', 1))
+    relay.handshaken = True
+    outcome = {}
+    waiter = threading.Thread(target=lambda: outcome.setdefault('ready', relay._wait()))
+    try:
+        waiter.start()
+        time.sleep(0.5)
+        assert waiter.is_alive(), 'a silent relay must wait for the app instead of timing out'
+        inner_peer.sendall(b'x')
+        waiter.join(timeout=5)
+        assert outcome['ready'] == ([inner], [])
+    finally:
+        for sock in (raw, raw_peer, inner, inner_peer):
+            sock.close()
+        waiter.join(timeout=1)
+
+
+def test_the_relay_puts_the_client_socket_on_tcp_keepalive():
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    raw, raw_peer = tls_listener.loopback_pair()
+    inner, inner_peer = tls_listener.loopback_pair()
+    try:
+        tls_listener._TlsRelay(context, raw, inner, ('127.0.0.1', 1))
+        assert raw.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
     finally:
         for sock in (raw, raw_peer, inner, inner_peer):
             sock.close()
