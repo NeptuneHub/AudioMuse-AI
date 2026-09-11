@@ -374,11 +374,6 @@ class TestPgConnectionArgs:
         monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: None)
         monkeypatch.setitem(
             sys.modules,
-            'tasks.mcp_helper',
-            types.SimpleNamespace(_ensure_ai_chat_db_user=lambda: None),
-        )
-        monkeypatch.setitem(
-            sys.modules,
             'database',
             types.SimpleNamespace(USERS_PASSWORD_CHANGED_AT_DDL='ALTER TABLE users ADD x int'),
         )

@@ -2040,24 +2040,83 @@ def init_db():
 
 
 def connect_raw(application_name=None, keepalive_idle_seconds=None,
-                keepalive_interval_seconds=None, keepalive_count=None):
+                keepalive_interval_seconds=None, keepalive_count=None,
+                read_only=False):
     idle = int(keepalive_idle_seconds or 600)
     interval = int(keepalive_interval_seconds or 30)
     count = int(keepalive_count or 3)
+    options = (
+        '{} -c tcp_keepalives_idle={} -c tcp_keepalives_interval={} '
+        '-c tcp_keepalives_count={}'.format(_CONNECT_OPTIONS, idle, interval, count)
+    )
+    if read_only:
+        options += ' -c default_transaction_read_only=on'
     kwargs = {
         'connect_timeout': 30,
         'keepalives': 1,
         'keepalives_idle': idle,
         'keepalives_interval': interval,
         'keepalives_count': count,
-        'options': '{} -c tcp_keepalives_idle={} -c tcp_keepalives_interval={} '
-                   '-c tcp_keepalives_count={}'.format(
-                       _CONNECT_OPTIONS, idle, interval, count
-                   ),
+        'options': options,
     }
     if application_name:
         kwargs['application_name'] = application_name
     return psycopg2.connect(config.DATABASE_URL, **kwargs)
+
+
+_LEGACY_AI_CHAT_ROLE = 'ai_user'
+_LEGACY_AI_CHAT_DEFAULT_PASSWORD = 'ChangeThisSecurePassword123!'
+
+
+def _legacy_ai_chat_role_login_error():
+    try:
+        psycopg2.connect(
+            config.DATABASE_URL,
+            user=_LEGACY_AI_CHAT_ROLE,
+            password=_LEGACY_AI_CHAT_DEFAULT_PASSWORD,
+            connect_timeout=10,
+        ).close()
+    except psycopg2.OperationalError as exc:
+        return ' '.join(str(exc).split())
+    return None
+
+
+def disable_legacy_ai_chat_role():
+    conn = connect_raw(application_name='audiomuse-legacy-role-check')
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rolcanlogin, rolname = current_user FROM pg_roles WHERE rolname = %s",
+                (_LEGACY_AI_CHAT_ROLE,),
+            )
+            row = cur.fetchone()
+            if row is None or not row[0] or row[1]:
+                return False
+            refused = _legacy_ai_chat_role_login_error()
+            if refused is not None:
+                logger.warning(
+                    "Legacy AI chat role %s is still login-enabled and did not accept the "
+                    "shipped default password (%s); left untouched. If it is no longer "
+                    "used, run: ALTER ROLE %s NOLOGIN",
+                    _LEGACY_AI_CHAT_ROLE, refused, _LEGACY_AI_CHAT_ROLE,
+                )
+                return False
+            try:
+                cur.execute(
+                    sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(_LEGACY_AI_CHAT_ROLE))
+                )
+            except psycopg2.errors.InsufficientPrivilege:
+                logger.warning(
+                    "Legacy AI chat role %s still accepts its shipped default password and "
+                    "this database user may not alter roles; run as a superuser: "
+                    "ALTER ROLE %s NOLOGIN",
+                    _LEGACY_AI_CHAT_ROLE, _LEGACY_AI_CHAT_ROLE,
+                )
+                return False
+            return True
+    finally:
+        conn.close()
 
 
 def _migrate_file_path_to_track_server_map(cur):

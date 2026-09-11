@@ -876,10 +876,6 @@ DISABLE_FLASK_RESTART = os.environ.get("DISABLE_FLASK_RESTART", "false").lower()
 # one connection is what broke pg_dump when only one of them was set (#832).
 DATABASE_URL = _DERIVED_DATABASE_URL
 
-# --- AI User for Chat SQL Execution ---
-AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")
-AI_CHAT_DB_USER_PASSWORD = os.environ.get("AI_CHAT_DB_USER_PASSWORD", "ChangeThisSecurePassword123!") # IMPORTANT: Change this default and use environment variables
-
 # --- Classifier Constant ---
 MOOD_LABELS = [
     'rock', 'pop', 'alternative', 'indie', 'electronic', 'female vocalists', 'dance', '00s', 'alternative rock', 'jazz',

@@ -1632,41 +1632,31 @@ class TestGenreVocabCoverage:
         assert set(config.STRATIFIED_GENRES) <= set(GENRE_VOCAB)
 
 
-class TestAiChatDbUrl:
-    @staticmethod
-    def _build(monkeypatch, database_url, user='ai_user', password='pw'):
+class TestAiChatDbConnection:
+    def test_chat_uses_the_standard_connection_helper_read_only(self, mcp_server_mod):
+        import database
+
+        conn = MagicMock()
+        with patch.object(database, 'connect_raw', return_value=conn) as connect_raw:
+            assert mcp_server_mod.get_db_connection() is conn
+        connect_raw.assert_called_once_with(application_name='audiomuse-ai-chat', read_only=True)
+
+    def test_connect_raw_read_only_adds_the_server_side_session_default(self):
         import config
-        from tasks.mcp_helper import _build_ai_chat_db_url
+        import database
 
-        monkeypatch.setattr(config, 'DATABASE_URL', database_url)
-        monkeypatch.setattr(config, 'AI_CHAT_DB_USER_NAME', user)
-        monkeypatch.setattr(config, 'AI_CHAT_DB_USER_PASSWORD', password)
-        return _build_ai_chat_db_url()
+        with patch.object(database.psycopg2, 'connect', return_value=MagicMock()) as connect:
+            database.connect_raw(application_name='audiomuse-ai-chat', read_only=True)
+        assert connect.call_args.args == (config.DATABASE_URL,)
+        options = connect.call_args.kwargs['options']
+        assert options.startswith(database._CONNECT_OPTIONS)
+        assert options.endswith(' -c default_transaction_read_only=on')
+        assert connect.call_args.kwargs['application_name'] == 'audiomuse-ai-chat'
+        assert connect.return_value.set_session.call_count == 0
 
-    def test_only_the_credentials_are_swapped(self, monkeypatch):
-        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@postgres:5432/audiomusedb')
-        assert url == 'postgresql://ai_user:pw@postgres:5432/audiomusedb'
+    def test_connect_raw_stays_read_write_by_default(self):
+        import database
 
-    def test_ipv6_host_keeps_its_brackets(self, monkeypatch):
-        from psycopg2.extensions import parse_dsn
-
-        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@[::1]:5432/audiomusedb')
-        assert url == 'postgresql://ai_user:pw@[::1]:5432/audiomusedb'
-        assert parse_dsn(url)['host'] == '::1'
-
-    def test_unix_socket_host_survives_percent_encoded(self, monkeypatch):
-        from psycopg2.extensions import parse_dsn
-
-        url = self._build(
-            monkeypatch, 'postgresql://postgres:@%2Fvar%2Flib%2Fpgdata:5432/postgres'
-        )
-        assert parse_dsn(url)['host'] == '/var/lib/pgdata'
-        assert parse_dsn(url)['user'] == 'ai_user'
-
-    def test_uppercase_host_is_not_lowercased(self, monkeypatch):
-        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@PGHost.local:5432/db')
-        assert url == 'postgresql://ai_user:pw@PGHost.local:5432/db'
-
-    def test_no_chat_user_returns_the_primary_url_untouched(self, monkeypatch):
-        url = self._build(monkeypatch, 'postgresql://audiomuse:secret@[::1]:5432/db', user='')
-        assert url == 'postgresql://audiomuse:secret@[::1]:5432/db'
+        with patch.object(database.psycopg2, 'connect', return_value=MagicMock()) as connect:
+            database.connect_raw()
+        assert 'default_transaction_read_only' not in connect.call_args.kwargs['options']

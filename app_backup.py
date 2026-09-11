@@ -396,16 +396,6 @@ def _run_restore_runner(dump_file, log_file):
             _release_restore_lock()
             return 1
 
-        try:
-            from tasks.mcp_helper import _ensure_ai_chat_db_user
-
-            _ensure_ai_chat_db_user()
-            log.write("Ensured AI chat DB role exists before restore.\n")
-            log.flush()
-        except Exception as exc:
-            log.write(f"Could not ensure AI chat DB role exists: {exc}; continuing anyway.\n")
-            log.flush()
-
         restore_cmd = _pg_cmd(
             'psql',
             '-v',

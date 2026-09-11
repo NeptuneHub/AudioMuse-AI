@@ -156,8 +156,6 @@ AI providers:
   `OPENAI_SERVER_URL`, `OPENAI_MODEL_NAME`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
   `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME`,
   `AI_REQUEST_TIMEOUT_SECONDS`, `AI_TOOLCALL_TEMPERATURE`.
-- `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD`: an optional low-privilege
-  PostgreSQL role used by the Instant Playlist queries.
 
 Safety caps:
 
@@ -2022,10 +2020,20 @@ translating the ids and reporting anything unavailable.
 #### Safety
 
 The AI never receives database credentials and never emits SQL. Queries are
-parameterized code paths, and they can run as a dedicated low-privilege
-PostgreSQL role (`AI_CHAT_DB_USER_NAME`) that only has read access. Provider API
-keys stay server-side. Tool failures return a generic message; the real error only
-reaches the container log.
+parameterized code paths that run as the application's own database user through
+the standard connection helper (`database.connect_raw`, read-only variant) with
+the server-side session option `default_transaction_read_only=on`, so the chat's
+own library queries cannot write; no dedicated chat role is configured or
+created. Installs upgraded from a release that created the retired `ai_user`
+role may still carry it: at every Flask start the app tries to log in as that
+role with the shipped default password and, if the login succeeds, sets it
+`NOLOGIN`; otherwise it is left untouched and a warning names it. On a server
+that accepts any password (trust authentication, as in the embedded database of
+the standalone builds) the login always succeeds, so the role is disabled there
+too. Nothing is revoked or dropped; to remove it entirely run `DROP OWNED BY
+ai_user; DROP ROLE ai_user;` as a superuser (a pre-2.0.0 backup that grants to
+it can then no longer be restored). Provider API keys stay server-side. Tool
+failures return a generic message; the real error only reaches the container log.
 
 ### 14.3. Environment Variable Configuration
 
@@ -2040,8 +2048,6 @@ reaches the container log.
 - `AI_TOOLCALL_TEMPERATURE`: sampling temperature for the tool-calling request.
   Do not set it to 0 with Qwen-family models, greedy decoding degrades their tool
   calls.
-- `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD`: the read-only role used for
-  the library queries. The role is created or reset automatically when set.
 - `INSTANT_PLAYLIST_DEFAULT_N_RESULTS`, `INSTANT_PLAYLIST_MAX_N_RESULTS`: how
   many songs the playlist aims for when the caller sends no `n`, and the ceiling
   the chat page puts on its own "Number of songs" box. The maximum is

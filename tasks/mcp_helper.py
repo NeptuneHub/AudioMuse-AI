@@ -9,28 +9,25 @@
 """Database context and connection helpers for the MCP / AI-chat server.
 
 Supplies the MCP server and AI-chat features with a cached, high-level summary
-of the music library and with a connection scoped to an optional least-privilege
-chat DB user. Sits between those callers and Postgres so the AI side reads
-library stats without holding admin credentials.
+of the music library and with a read-only connection to the main database, so
+the AI side reads library data without ever being able to write.
 
 Main Features:
 * get_library_context: single aggregate snapshot (song/artist counts, year span,
   rating coverage, top genres/moods, scales) cached in process until refreshed.
-* get_db_connection with _ensure_ai_chat_db_user: connect as the configured
-  AI_CHAT_DB_USER when set, auto-creating or resetting that role's password, and
-  fall back to the primary DATABASE_URL otherwise.
-* Swapping in those credentials replaces only the userinfo and carries the host
-  part of DATABASE_URL over verbatim: rebuilding it from urlparse's .hostname
-  would drop the brackets of an IPv6 literal, lowercase the host, and mangle the
-  percent-encoded socket directory of the standalone builds.
+* get_db_connection: database.connect_raw(read_only=True), the application's one
+  connection helper (statement timeout, serial plans, keepalives, an
+  application_name) plus the server-side session option
+  default_transaction_read_only=on, so every statement on it, autocommit or not,
+  runs in a READ ONLY transaction and any write fails in Postgres. psycopg2's
+  set_session(readonly=True) is deliberately not used: it only wraps explicit
+  transactions in BEGIN READ ONLY and leaves autocommit statements writable. No
+  dedicated database role is configured or created for the chat.
 """
 
 import logging
 from typing import Dict
-from urllib.parse import quote, urlparse, urlunparse
 
-import psycopg2
-from psycopg2 import OperationalError, sql
 from psycopg2.extras import DictCursor
 
 logger = logging.getLogger(__name__)
@@ -38,88 +35,10 @@ logger = logging.getLogger(__name__)
 _library_context_cache = None
 
 
-def _build_ai_chat_db_url():
-    from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
-
-    if not AI_CHAT_DB_USER_NAME:
-        return DATABASE_URL
-    parsed = urlparse(DATABASE_URL)
-    host = parsed.netloc.rpartition('@')[2]
-    return urlunparse(
-        (
-            parsed.scheme,
-            f"{quote(AI_CHAT_DB_USER_NAME, safe='')}:{quote(AI_CHAT_DB_USER_PASSWORD, safe='')}@{host}",
-            parsed.path or '',
-            parsed.params or '',
-            parsed.query or '',
-            parsed.fragment or '',
-        )
-    )
-
-
-_ai_chat_db_user_configured = False
-
-
-def _ensure_ai_chat_db_user():
-    global _ai_chat_db_user_configured
-    if _ai_chat_db_user_configured:
-        return
-    from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
-
-    if not AI_CHAT_DB_USER_NAME or not AI_CHAT_DB_USER_PASSWORD:
-        return
-    try:
-        with psycopg2.connect(DATABASE_URL) as admin_conn, admin_conn.cursor() as cur:
-            cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (AI_CHAT_DB_USER_NAME,))
-            if cur.fetchone() is None:
-                cur.execute(
-                    sql.SQL('CREATE USER {} WITH LOGIN PASSWORD %s').format(
-                        sql.Identifier(AI_CHAT_DB_USER_NAME)
-                    ),
-                    [AI_CHAT_DB_USER_PASSWORD],
-                )
-            else:
-                try:
-                    psycopg2.connect(_build_ai_chat_db_url()).close()
-                except OperationalError:
-                    cur.execute(
-                        sql.SQL('ALTER USER {} WITH PASSWORD %s').format(
-                            sql.Identifier(AI_CHAT_DB_USER_NAME)
-                        ),
-                        [AI_CHAT_DB_USER_PASSWORD],
-                    )
-            dbname = admin_conn.get_dsn_parameters().get('dbname')
-            if dbname:
-                cur.execute(
-                    sql.SQL('GRANT CONNECT ON DATABASE {} TO {}').format(
-                        sql.Identifier(dbname), sql.Identifier(AI_CHAT_DB_USER_NAME)
-                    )
-                )
-            cur.execute(
-                sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(
-                    sql.Identifier(AI_CHAT_DB_USER_NAME)
-                )
-            )
-            cur.execute(
-                sql.SQL('GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}').format(
-                    sql.Identifier(AI_CHAT_DB_USER_NAME)
-                )
-            )
-            admin_conn.commit()
-            _ai_chat_db_user_configured = True
-    except Exception as exc:
-        logger.warning('AI chat user setup failed: %s', exc)
-
-
 def get_db_connection():
-    from config import AI_CHAT_DB_USER_NAME
+    from database import connect_raw
 
-    if AI_CHAT_DB_USER_NAME:
-        _ensure_ai_chat_db_user()
-        return psycopg2.connect(_build_ai_chat_db_url())
-    from config import DATABASE_URL
-
-    return psycopg2.connect(DATABASE_URL)
+    return connect_raw(application_name='audiomuse-ai-chat', read_only=True)
 
 
 def get_library_context(force_refresh: bool = False) -> Dict:
