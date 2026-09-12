@@ -322,7 +322,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.6.0"
+APP_VERSION = "v3.6.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1362,7 +1362,6 @@ IVF_GLOBAL_CACHE_MB = int(os.environ.get("IVF_GLOBAL_CACHE_MB", "1024"))  # Hard
 IVF_PRELOAD_ALL = os.environ.get("IVF_PRELOAD_ALL", "false").lower() == "true"  # When true, stream every cell into the global cache at load time (in-memory IVF), still bounded by IVF_GLOBAL_CACHE_MB
 IVF_LAZY_LOAD_RETRY_SECONDS = int(os.environ.get("IVF_LAZY_LOAD_RETRY_SECONDS", "60"))  # Only the Flask process loads the indexes at startup; a worker task that queries one (the sonic fingerprint cron) loads it on first query. Minimum seconds between retries when that load finds no index in the database, so a library with no analysis yet is not re-queried per call
 IVF_GLOBAL_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_GLOBAL_CACHE_IDLE_SECONDS", "300"))  # Drop the whole global cell cache after this many seconds with no access (frees idle RAM); 0 = never drop
-AVAILABILITY_CACHE_IDLE_SECONDS = int(os.environ.get("AVAILABILITY_CACHE_IDLE_SECONDS", "300"))  # Drop the cached per-server availability sets/masks after this many seconds with no search (frees idle RAM; the hyperbolic entry holds one id string per catalogue track); next query rebuilds them; 0 = never drop
 IVF_RESULT_CACHE_SECONDS = int(os.environ.get("IVF_RESULT_CACHE_SECONDS", "300"))  # TTL (s) for cached similar-song / max-distance results so repeated identical queries are instant; 0 = disable
 IVF_RESULT_CACHE_MAX = int(os.environ.get("IVF_RESULT_CACHE_MAX", "2048"))  # Max distinct cached query results per result cache
 IVF_MAX_DISTANCE_NPROBE = int(os.environ.get("IVF_MAX_DISTANCE_NPROBE", "256"))  # Farthest cells probed for the max-distance display value (reverse-IVF); 0 or >= nlist = exact full scan

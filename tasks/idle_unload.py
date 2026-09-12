@@ -18,8 +18,11 @@ Main Features:
 * IdleUnloadTimer.arm(duration, on_expire) (re)arms the window and reports
   whether a fresh timer thread was started
 * IdleUnloadTimer.expiry() reads the current expiry for status reporting
-* The worker thread runs on_expire exactly once, then clears the window and
-  exits; an expiring action that raises still clears the window
+* The worker thread runs on_expire, then clears the window and exits; an
+  expiring action that raises still clears the window
+* An on_expire that re-arms the timer (a partial unload with something left to
+  drop later) keeps the SAME worker running for the new window, instead of
+  having its arm erased by the clearing step and stranding what it kept
 """
 
 import threading
@@ -31,6 +34,7 @@ class IdleUnloadTimer:
         self._lock = threading.RLock()
         self._expiry_time = None
         self._timer_thread = None
+        self._generation = 0
 
     def lock(self):
         return self._lock
@@ -39,6 +43,7 @@ class IdleUnloadTimer:
         started = False
         with self._lock:
             self._expiry_time = time.time() + duration
+            self._generation += 1
             if self._timer_thread is None or not self._timer_thread.is_alive():
                 thread = threading.Thread(
                     target=self._worker, args=(on_expire,), daemon=True
@@ -56,14 +61,19 @@ class IdleUnloadTimer:
         while True:
             with self._lock:
                 expiry = self._expiry_time
+                generation = self._generation
                 if expiry is None:
                     break
                 if expiry - time.time() <= 0:
                     try:
                         on_expire()
                     finally:
-                        self._expiry_time = None
-                        self._timer_thread = None
-                    break
+                        rearmed = self._generation != generation
+                        if not rearmed:
+                            self._expiry_time = None
+                            self._timer_thread = None
+                    if not rearmed:
+                        break
+                    continue
                 time_remaining = expiry - time.time()
             time.sleep(min(1.0, max(0.05, time_remaining)))

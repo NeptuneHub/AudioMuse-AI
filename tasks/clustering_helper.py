@@ -1149,16 +1149,7 @@ def _calculate_stratified_quotas(genre_tracks, sample_size, target_per_genre):
 
 
 def _regroup_tracks_by_primary_genre(genre_map):
-    tracks_by_id = {}
-    genre_tracks = defaultdict(list)
-    for genre, tracks in genre_map.items():
-        for track in tracks:
-            track_id = track.get('item_id')
-            if track_id is None or track_id in tracks_by_id:
-                continue
-            tracks_by_id[track_id] = track
-            genre_tracks[genre].append(track)
-    return tracks_by_id, genre_tracks
+    return sum(len(tracks) for tracks in genre_map.values()), genre_map
 
 
 def _select_tracks_for_genre(
@@ -1213,9 +1204,9 @@ def _get_stratified_song_subset(
     prev_ids=None,
     percent_change=0.0,
 ):
-    tracks_by_id, genre_tracks = _regroup_tracks_by_primary_genre(genre_map)
+    unique_track_count, genre_tracks = _regroup_tracks_by_primary_genre(genre_map)
 
-    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), len(tracks_by_id))
+    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), unique_track_count)
     if desired_size == 0:
         return []
 
@@ -1266,9 +1257,13 @@ def _get_track_primary_genre(track_data):
     stratified = _stratified_genre_set()
     mood_scores = {}
     for pair in mood_vector.split(','):
-        label, separator, score_str = pair.partition(':')
-        if separator and label in stratified:
-            mood_scores[label] = float(score_str)
+        parts = pair.split(':', 2)
+        if len(parts) < 2 or parts[0] not in stratified:
+            continue
+        try:
+            mood_scores[parts[0]] = float(parts[1])
+        except ValueError:
+            continue
     return max(
         (g for g in STRATIFIED_GENRES if g in mood_scores),
         key=mood_scores.get,

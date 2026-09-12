@@ -134,7 +134,6 @@ from .mediaserver import registry
 from sklearn.neighbors import NearestNeighbors
 
 from .clustering_helper import (
-    PRIMARY_GENRE_KEY,
     _get_stratified_song_subset,
     _get_track_primary_genre,
     _perform_single_clustering_iteration,
@@ -1346,12 +1345,13 @@ def _cluster_one_server_impl(
 
 def _prepare_genre_map(lightweight_rows):
     genre_map = defaultdict(list)
+    seen_ids = set()
     for row in lightweight_rows:
-        if row.get('mood_vector'):
-            genre = _get_track_primary_genre(row)
-            genre_map[genre].append(
-                {'item_id': row['item_id'], PRIMARY_GENRE_KEY: genre}
-            )
+        item_id = row['item_id'] if row.get('mood_vector') else None
+        if item_id is None or item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        genre_map[_get_track_primary_genre(row)].append({'item_id': item_id})
     return genre_map
 
 

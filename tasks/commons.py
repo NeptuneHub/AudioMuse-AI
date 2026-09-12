@@ -51,7 +51,9 @@ def _label_index_map(labels):
     cached = _LABEL_INDEX_CACHE.get(key)
     if cached is not None and cached[0] is labels and cached[1] == len(labels):
         return cached[2]
-    index_map = {label: position for position, label in enumerate(labels)}
+    index_map = {}
+    for position, label in enumerate(labels):
+        index_map.setdefault(label, position)
     if len(_LABEL_INDEX_CACHE) >= 16:
         _LABEL_INDEX_CACHE.clear()
     _LABEL_INDEX_CACHE[key] = (labels, len(labels), index_map)
