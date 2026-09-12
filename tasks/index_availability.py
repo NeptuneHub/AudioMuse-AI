@@ -26,6 +26,9 @@ Main Features:
   that every index keeps in front of the mask builder, and
   single_server_mask_unneeded the shared rule that skips the mask altogether
   for a lone default server over legacy ids
+* The memo also drops itself after AVAILABILITY_CACHE_IDLE_SECONDS with no
+  query: the 30 s TTL only evicts on the NEXT get, so without the timer the
+  last search parks one id string per catalogue track for the process's life
 """
 
 import importlib
@@ -127,25 +130,57 @@ def single_server_mask_unneeded(server_id, has_canonical_ids):
         return False
 
 
+_CACHE_MISS = object()
+
+
 class AvailabilityCache:
     def __init__(self, ttl_seconds=30.0):
+        from tasks.idle_unload import IdleUnloadTimer
+
         self._ttl = float(ttl_seconds)
         self._lock = threading.Lock()
         self._entries = {}
+        self._idle_timer = IdleUnloadTimer()
 
     def get(self, server_id, scope, build):
         key = (str(server_id), scope)
         now = time.monotonic()
+        cached_value = _CACHE_MISS
         with self._lock:
             cached = self._entries.get(key)
             if cached is not None and now - cached[0] < self._ttl:
-                return cached[1]
+                cached_value = cached[1]
+        if cached_value is not _CACHE_MISS:
+            self._arm_idle_drop()
+            return cached_value
         value = build()
         with self._lock:
             for stale in [k for k, v in self._entries.items() if now - v[0] >= self._ttl]:
                 self._entries.pop(stale, None)
             self._entries[key] = (now, value)
+        self._arm_idle_drop()
         return value
+
+    def _arm_idle_drop(self):
+        import config
+
+        idle_seconds = int(config.AVAILABILITY_CACHE_IDLE_SECONDS or 0)
+        if idle_seconds > 0:
+            self._idle_timer.arm(idle_seconds, self._drop_idle_entries)
+
+    def _drop_idle_entries(self):
+        import config
+
+        with self._lock:
+            dropped = len(self._entries)
+            self._entries.clear()
+        if dropped:
+            logger.info(
+                "Dropped %d idle availability cache entr%s after %ss with no query.",
+                dropped,
+                'y' if dropped == 1 else 'ies',
+                config.AVAILABILITY_CACHE_IDLE_SECONDS,
+            )
 
     def invalidate(self, server_id=None):
         with self._lock:

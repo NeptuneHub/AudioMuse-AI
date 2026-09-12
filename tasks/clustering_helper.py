@@ -78,6 +78,18 @@ from database import (
     get_lyrics_axis_vectors,
 )
 
+PRIMARY_GENRE_KEY = '_primary_genre'
+_GENRE_SET_CACHE = (None, frozenset())
+
+
+def _stratified_genre_set():
+    global _GENRE_SET_CACHE
+    cached_source, cached_set = _GENRE_SET_CACHE
+    if cached_source is not STRATIFIED_GENRES:
+        cached_set = frozenset(STRATIFIED_GENRES)
+        _GENRE_SET_CACHE = (STRATIFIED_GENRES, cached_set)
+    return cached_set
+
 
 def _shuffle_playlist_songs(songs, playlist_name):
     final_songs = songs.copy()
@@ -344,6 +356,7 @@ def _cached_track_rows(item_ids, use_embeddings, tracks_cache):
     missing = [iid for iid in item_ids if iid not in tracks_cache]
     for row_data in _fetch_track_rows(missing, use_embeddings) if missing else []:
         if row_data and row_data.get('item_id') is not None:
+            row_data[PRIMARY_GENRE_KEY] = _get_track_primary_genre(row_data)
             tracks_cache[row_data['item_id']] = row_data
     rows = [tracks_cache[iid] for iid in item_ids if iid in tracks_cache]
     # Evict what this iteration did not ask for: consecutive iterations overlap
@@ -725,15 +738,16 @@ def _format_and_score_iteration_result(
         for i in range(len(valid_tracks))
     ]
 
+    tracks_by_label = defaultdict(list)
+    for t_info in track_info_list:
+        if t_info["distance"] <= MAX_DISTANCE:
+            tracks_by_label[t_info["label"]].append(t_info)
+
     filtered_clusters = defaultdict(list)
     for cid in set(labels):
         if cid == -1:
             continue
-        cluster_tracks_info = [
-            t_info
-            for t_info in track_info_list
-            if t_info["label"] == cid and t_info["distance"] <= MAX_DISTANCE
-        ]
+        cluster_tracks_info = tracks_by_label.get(cid)
         if not cluster_tracks_info:
             continue
 
@@ -909,21 +923,27 @@ def _format_and_score_iteration_result(
             if not top_moods:
                 continue
 
+            mood_columns = []
+            for mood in top_moods:
+                try:
+                    column = 2 + active_moods.index(mood)
+                except ValueError:
+                    continue
+                if column < x_feat_orig.shape[1]:
+                    mood_columns.append(column)
+            if not mood_columns:
+                continue
+
             song_purity_scores = []
             for item_id, _, _ in songs:
                 song_idx = item_id_to_song_index_map.get(item_id)
                 if song_idx is not None and song_idx < x_feat_orig.shape[0]:
                     song_feat_vec = x_feat_orig[song_idx]
                     max_score_for_song = 0.0
-                    for mood in top_moods:
-                        try:
-                            mood_idx = active_moods.index(mood)
-                            if 2 + mood_idx < song_feat_vec.shape[0]:
-                                song_score = song_feat_vec[2 + mood_idx]
-                                if song_score > max_score_for_song:
-                                    max_score_for_song = song_score
-                        except ValueError:
-                            continue
+                    for column in mood_columns:
+                        song_score = song_feat_vec[column]
+                        if song_score > max_score_for_song:
+                            max_score_for_song = song_score
                     if max_score_for_song > 0:
                         song_purity_scores.append(max_score_for_song)
             if song_purity_scores:
@@ -1130,15 +1150,14 @@ def _calculate_stratified_quotas(genre_tracks, sample_size, target_per_genre):
 
 def _regroup_tracks_by_primary_genre(genre_map):
     tracks_by_id = {}
-    for tracks in genre_map.values():
+    genre_tracks = defaultdict(list)
+    for genre, tracks in genre_map.items():
         for track in tracks:
             track_id = track.get('item_id')
-            if track_id is not None and track_id not in tracks_by_id:
-                tracks_by_id[track_id] = track
-
-    genre_tracks = defaultdict(list)
-    for track in tracks_by_id.values():
-        genre_tracks[_get_track_primary_genre(track)].append(track)
+            if track_id is None or track_id in tracks_by_id:
+                continue
+            tracks_by_id[track_id] = track
+            genre_tracks[genre].append(track)
     return tracks_by_id, genre_tracks
 
 
@@ -1238,15 +1257,20 @@ def _get_stratified_song_subset(
 
 
 def _get_track_primary_genre(track_data):
-    if 'mood_vector' in track_data and track_data['mood_vector']:
-        mood_scores = {
-            p.split(':')[0]: float(p.split(':')[1])
-            for p in track_data['mood_vector'].split(',')
-            if ':' in p
-        }
-        return max(
-            (g for g in STRATIFIED_GENRES if g in mood_scores),
-            key=mood_scores.get,
-            default='__other__',
-        )
-    return '__other__'
+    memoized = track_data.get(PRIMARY_GENRE_KEY)
+    if memoized is not None:
+        return memoized
+    mood_vector = track_data.get('mood_vector')
+    if not mood_vector:
+        return '__other__'
+    stratified = _stratified_genre_set()
+    mood_scores = {}
+    for pair in mood_vector.split(','):
+        label, separator, score_str = pair.partition(':')
+        if separator and label in stratified:
+            mood_scores[label] = float(score_str)
+    return max(
+        (g for g in STRATIFIED_GENRES if g in mood_scores),
+        key=mood_scores.get,
+        default='__other__',
+    )
