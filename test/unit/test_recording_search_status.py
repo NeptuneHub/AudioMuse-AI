@@ -2,7 +2,14 @@
 # Copyright (C) 2025 NeptuneHub
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Recording capabilities: authenticated, source-scoped and free of warmup effects."""
+"""Recording capabilities: authenticated, source-scoped and free of warmup effects.
+
+Main Features:
+* Verifies runtime capability fields and selected-server index coverage.
+* Exercises ordinary-user authentication and the existing setup barrier.
+* Checks count caching, invalidation, unknown states and sanitized failures.
+* Rejects model loading, inference and recording warmup during status checks.
+"""
 
 import datetime
 from types import SimpleNamespace
