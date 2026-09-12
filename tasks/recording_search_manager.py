@@ -308,3 +308,27 @@ def get_index_status():
     return _index_summary(
         status['loaded'], status['tracks'], status['cells'], status['cache_mb'], _pack_state(status, 'needs the model file'),
     )
+
+
+def get_recording_search_status(server_id):
+    """Read client capabilities; no encoder/index load or warmup timer changes."""
+    from tasks import neural_fingerprint, neural_fingerprint_index
+
+    enabled = neural_fingerprint.is_enabled()
+    model_available = neural_fingerprint.model_files_available()
+    index = neural_fingerprint_index.get_scoped_status(server_id)
+    return {
+        'api_version': 1,
+        'app_version': config.APP_VERSION,
+        'server_id': server_id,
+        'enabled': enabled,
+        'model_available': model_available,
+        'ready': enabled and model_available and index['state'] == 'ready',
+        'index': index,
+        'recording': {
+            'recommended_seconds': config.RECORDING_SEARCH_RECORD_SECONDS,
+            'max_clip_seconds': config.RECORDING_SEARCH_MAX_CLIP_SECONDS,
+            'max_upload_bytes': config.RECORDING_SEARCH_MAX_UPLOAD_MB * 1024 * 1024,
+            'default_n_results': config.RECORDING_SEARCH_DEFAULT_N_RESULTS,
+        },
+    }
