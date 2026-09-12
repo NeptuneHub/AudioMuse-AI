@@ -17,7 +17,8 @@ Main Features:
 * Routes: `/recording_search` page, `/api/recording_search/search` (multipart:
   the clip and a result count), `/api/recording_search/by_track` (JSON: a
   library song's id and a result count, for the other recordings of that
-  song) and `/api/recording_search/warmup`.
+  song), `/api/recording_search/warmup`, and read-only
+  `/api/recording_search/status` (ordinary authenticated users).
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
@@ -352,3 +353,107 @@ def recording_search_warmup_api():
     except Exception:
         logger.exception('Recording search warmup failed')
         return jsonify({'error': 'Warmup failed.', 'loaded': False}), 500
+
+
+@recording_search_bp.after_app_request
+def recording_status_no_store(response):
+    # App-level hook also covers early setup/auth barrier responses. Other
+    # recording routes retain their existing cache behavior.
+    if request.endpoint == 'recording_search_bp.recording_search_status_api':
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@recording_search_bp.route('/api/recording_search/status', methods=['GET'])
+def recording_search_status_api():
+    """
+    Read recording-search capabilities without warming models or starting analysis.
+    ---
+    tags:
+      - Recording Search
+    summary: Version, feature enablement, selected-server index readiness and recording limits.
+    description: |
+      Uses the same authentication and setup policy as search, including ordinary
+      users. Disabled or unprepared features return 200. Does not load the index
+      or encoder, run analysis, or renew the recording warmup timer. Source counts
+      use the search availability rules and a 30-second cache, invalidated on
+      mapping changes and index swaps. Responses carry Cache-Control: no-store.
+      See docs/recording-search-status-api.md for state and readiness semantics.
+    parameters:
+      - name: server_id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Music-server ID or name; omission selects the default server.
+      - name: server
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Existing alias for server_id; takes precedence when both are provided.
+    responses:
+      200:
+        description: Capability snapshot, including disabled/unavailable states.
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [api_version, app_version, server_id, enabled, model_available, ready, index, recording]
+              properties:
+                api_version:
+                  type: integer
+                  enum: [1]
+                app_version:
+                  type: string
+                server_id:
+                  type: string
+                enabled:
+                  type: boolean
+                model_available:
+                  type: boolean
+                ready:
+                  type: boolean
+                index:
+                  type: object
+                  required: [state, indexed_tracks]
+                  properties:
+                    state:
+                      type: string
+                      enum: [not_loaded, loading, ready, empty, error]
+                    indexed_tracks:
+                      type: integer
+                      minimum: 0
+                      nullable: true
+                recording:
+                  type: object
+                  required: [recommended_seconds, max_clip_seconds, max_upload_bytes, default_n_results]
+                  properties:
+                    recommended_seconds:
+                      type: integer
+                    max_clip_seconds:
+                      type: integer
+                    max_upload_bytes:
+                      type: integer
+                    default_n_results:
+                      type: integer
+      400:
+        description: Invalid server selection.
+      401:
+        description: Authentication required.
+      403:
+        description: Initial setup required, according to the existing setup barrier.
+      500:
+        description: Status could not be determined; no internal details are returned.
+    """
+    from tasks.recording_search_manager import get_recording_search_status
+
+    try:
+        try:
+            server_id, _ = app_server_context.selected_server_scope()
+        except ValueError:
+            return jsonify({'error': 'Invalid server selection.'}), 400
+        return jsonify(get_recording_search_status(server_id))
+    except Exception:
+        logger.exception('Could not determine recording search status')
+        return jsonify({'error': 'Could not determine recording search status.'}), 500
