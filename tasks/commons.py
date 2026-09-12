@@ -20,8 +20,6 @@ Main Features:
 
 import logging
 
-import numpy as np
-
 from config import TEMPO_MAX_BPM, TEMPO_MIN_BPM, ENERGY_MAX, ENERGY_MIN
 
 logger = logging.getLogger(__name__)
@@ -45,51 +43,63 @@ def fetch_track_metadata_map(item_ids):
     return metadata_map
 
 
+_LABEL_INDEX_CACHE = {}
+
+
+def _label_index_map(labels):
+    key = id(labels)
+    cached = _LABEL_INDEX_CACHE.get(key)
+    if cached is not None and cached[0] is labels and cached[1] == len(labels):
+        return cached[2]
+    index_map = {}
+    for position, label in enumerate(labels):
+        index_map.setdefault(label, position)
+    if len(_LABEL_INDEX_CACHE) >= 16:
+        _LABEL_INDEX_CACHE.clear()
+    _LABEL_INDEX_CACHE[key] = (labels, len(labels), index_map)
+    return index_map
+
+
+def _fill_label_scores(text, index_map, vector, base):
+    if not text:
+        return
+    for pair in text.split(","):
+        label, separator, score_str = pair.partition(":")
+        if not separator:
+            continue
+        position = index_map.get(label)
+        if position is None:
+            continue
+        try:
+            vector[base + position] = float(score_str)
+        except ValueError:
+            continue
+
+
 def score_vector(row, mood_labels_list, other_feature_labels_list):
     tempo = float(row['tempo']) if row['tempo'] is not None else 0.0
     energy = float(row['energy']) if row['energy'] is not None else 0.0
-    mood_str = row['mood_vector'] or ""
 
     tempo_range = TEMPO_MAX_BPM - TEMPO_MIN_BPM
     tempo_norm = (tempo - TEMPO_MIN_BPM) / tempo_range if tempo_range > 0 else 0.0
-    tempo_norm = np.clip(tempo_norm, 0.0, 1.0)
+    tempo_norm = min(max(tempo_norm, 0.0), 1.0)
 
     energy_range = ENERGY_MAX - ENERGY_MIN
     energy_norm = (energy - ENERGY_MIN) / energy_range if energy_range > 0 else 0.0
-    energy_norm = np.clip(energy_norm, 0.0, 1.0)
+    energy_norm = min(max(energy_norm, 0.0), 1.0)
 
-    tempo_val = tempo_norm
-    energy_val = energy_norm
+    mood_count = len(mood_labels_list)
+    full_vector = [0.0] * (2 + mood_count + len(other_feature_labels_list))
+    full_vector[0] = tempo_norm
+    full_vector[1] = energy_norm
 
-    mood_scores_for_vector = np.zeros(len(mood_labels_list))
-    if mood_str:
-        for pair in mood_str.split(","):
-            if ":" not in pair:
-                continue
-            label, score_str = pair.split(":")
-            if label in mood_labels_list:
-                try:
-                    mood_scores_for_vector[mood_labels_list.index(label)] = float(score_str)
-                except ValueError:
-                    continue
-
-    other_feature_scores_for_vector = np.zeros(len(other_feature_labels_list))
-    other_features_str = row.get('other_features', "")
-    if other_features_str:
-        for pair in other_features_str.split(","):
-            if ":" not in pair:
-                continue
-            label, score_str = pair.split(":")
-            if label in other_feature_labels_list:
-                try:
-                    other_feature_scores_for_vector[other_feature_labels_list.index(label)] = float(
-                        score_str
-                    )
-                except ValueError:
-                    continue
-    full_vector = (
-        [tempo_val, energy_val]
-        + list(mood_scores_for_vector)
-        + list(other_feature_scores_for_vector)
+    _fill_label_scores(
+        row['mood_vector'] or "", _label_index_map(mood_labels_list), full_vector, 2
+    )
+    _fill_label_scores(
+        row.get('other_features', ""),
+        _label_index_map(other_feature_labels_list),
+        full_vector,
+        2 + mood_count,
     )
     return full_vector

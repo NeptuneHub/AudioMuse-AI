@@ -1345,11 +1345,13 @@ def _cluster_one_server_impl(
 
 def _prepare_genre_map(lightweight_rows):
     genre_map = defaultdict(list)
+    seen_ids = set()
     for row in lightweight_rows:
-        if row.get('mood_vector'):
-            genre_map[_get_track_primary_genre(row)].append(
-                {'item_id': row['item_id'], 'mood_vector': row['mood_vector']}
-            )
+        item_id = row['item_id'] if row.get('mood_vector') else None
+        if item_id is None or item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        genre_map[_get_track_primary_genre(row)].append({'item_id': item_id})
     return genre_map
 
 

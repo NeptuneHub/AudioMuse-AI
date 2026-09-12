@@ -23,9 +23,15 @@ Main Features:
 * invalidate_availability_caches drops the cached masks of every index that
   keeps one, so a mapping change reaches all of them from one call
 * AvailabilityCache is the per-server, per-index-build memo with a 30 s life
-  that every index keeps in front of the mask builder, and
+  kept in front of the mask builder by the hyperbolic and neural-fingerprint
+  indexes (tasks.paged_ivf memoizes its own masks and is NOT covered), and
   single_server_mask_unneeded the shared rule that skips the mask altogether
   for a lone default server over legacy ids
+* That memo also drops itself one TTL after the last query, because the TTL
+  alone only evicts on the NEXT get: without the timer the last search parks
+  one id string per catalogue track for the life of the process. One TTL is
+  the only safe arming window - anything longer keeps entries too stale to
+  ever be served, anything shorter discards entries still inside their TTL
 """
 
 import importlib
@@ -127,25 +133,68 @@ def single_server_mask_unneeded(server_id, has_canonical_ids):
         return False
 
 
+_CACHE_MISS = object()
+
+
 class AvailabilityCache:
     def __init__(self, ttl_seconds=30.0):
+        from tasks.idle_unload import IdleUnloadTimer
+
         self._ttl = float(ttl_seconds)
         self._lock = threading.Lock()
         self._entries = {}
+        self._idle_timer = IdleUnloadTimer()
 
     def get(self, server_id, scope, build):
         key = (str(server_id), scope)
         now = time.monotonic()
+        cached_value = _CACHE_MISS
         with self._lock:
             cached = self._entries.get(key)
             if cached is not None and now - cached[0] < self._ttl:
-                return cached[1]
+                cached_value = cached[1]
+        self._arm_idle_drop()
+        if cached_value is not _CACHE_MISS:
+            return cached_value
         value = build()
+        stored_at = time.monotonic()
         with self._lock:
-            for stale in [k for k, v in self._entries.items() if now - v[0] >= self._ttl]:
+            for stale in [k for k, v in self._entries.items() if stored_at - v[0] >= self._ttl]:
                 self._entries.pop(stale, None)
-            self._entries[key] = (now, value)
+            self._entries[key] = (stored_at, value)
+        self._arm_idle_drop()
         return value
+
+    def _arm_idle_drop(self):
+        self._idle_timer.arm(self._ttl, self._drop_idle_entries)
+
+    def _drop_idle_entries(self):
+        now = time.monotonic()
+        with self._lock:
+            before = len(self._entries)
+            self._entries = {
+                key: entry
+                for key, entry in self._entries.items()
+                if now - entry[0] < self._ttl
+            }
+            kept = len(self._entries)
+        if kept:
+            self._arm_idle_drop()
+        dropped = before - kept
+        if not dropped:
+            return
+        logger.info(
+            "Dropped %d idle availability cache entr%s after %ss with no query.",
+            dropped,
+            'y' if dropped == 1 else 'ies',
+            self._ttl,
+        )
+        try:
+            from tasks.memory_utils import release_memory_to_os
+
+            release_memory_to_os()
+        except Exception:
+            logger.exception("Availability cache idle drop: heap release to the OS failed")
 
     def invalidate(self, server_id=None):
         with self._lock:
