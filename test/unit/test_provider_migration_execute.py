@@ -1370,3 +1370,35 @@ class TestAMigrationConditionNoRetryCanFixFailsOnce:
         with pytest.raises(TaskFailed, match='Incomplete credentials'):
             mig._execute_provider_migration(7, 'mig-1', lambda force=False: None)
         transaction.assert_not_called()
+
+
+class TestDuplicateFileMappings:
+    def test_only_extras_of_bound_songs_on_unused_target_ids_are_kept(self):
+        from tasks import provider_migration_tasks as mig
+
+        state = {'dry_run': {'extra_matches': {'n-2': 'fp_1', 'n-3': 'fp_orphan', 'n-9': 'fp_2', 'n-5': 'fp_2'}}}
+        mapping = {'fp_1': 'n-1', 'fp_2': 'n-9'}
+        assert mig.duplicate_file_mappings(state, mapping) == {'n-2': 'fp_1', 'n-5': 'fp_2'}
+
+    def test_a_session_without_extras_restores_nothing(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        assert mig.duplicate_file_mappings({'dry_run': {}}, {'fp_1': 'n-1'}) == {}
+        assert mig._restore_duplicate_file_maps(cur, {}, {}) == 0
+        cur.execute.assert_not_called()
+
+    def test_extras_are_inserted_on_the_default_server_with_their_own_path(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        cur.rowcount = 2
+        restored = mig._restore_duplicate_file_maps(
+            cur, {'n-2': 'fp_1', 'n-3': 'fp_1'}, {'n-2': {'path': '/new/copy.flac'}}
+        )
+        assert restored == 2
+        sql, params = cur.execute.call_args[0]
+        assert 'INSERT INTO track_server_map' in sql and 's.is_default' in sql
+        assert 'ON CONFLICT (server_id, provider_track_id) DO NOTHING' in sql
+        assert params == ['fp_1', 'n-2', '/new/copy.flac', 'fp_1', 'n-3', None]
+

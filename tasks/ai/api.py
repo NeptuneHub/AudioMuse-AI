@@ -48,6 +48,8 @@ from tasks.ai.prompts import (
 
 logger = logging.getLogger(__name__)
 
+AI_NAMING_SKIPPED = "AI Naming Skipped"
+
 VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
 
 _PLAYLIST_DIMENSION_RULES = {
@@ -213,7 +215,7 @@ def generate_text(
     provider = (ai_config.get("provider") or "NONE").upper()
 
     if provider == "NONE":
-        return "AI Naming Skipped"
+        return AI_NAMING_SKIPPED
     if provider == "OLLAMA":
         return ai_api_openai.generate_text(
             ai_config["ollama_url"],
@@ -450,6 +452,22 @@ def _evaluate_concept(
     return concept, title, problem
 
 
+def _title_feedback(cleaned_name, taken, min_length, max_length):
+    if not min_length <= len(cleaned_name) <= max_length:
+        return (
+            f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was "
+            f"{len(cleaned_name)} characters long. It MUST be between {min_length} and "
+            f"{max_length} characters. Please try again."
+        ), None
+    existing_title = taken.get(cleaned_name.casefold())
+    if existing_title:
+        return (
+            f"\n\nFEEDBACK: The title '{cleaned_name}' is already used by another "
+            "playlist. Give a different title."
+        ), existing_title
+    return None, None
+
+
 def get_ai_playlist_title(
     instructions: str, songs, ai_config: Dict, used_titles: Optional[List[str]] = None
 ) -> Optional[str]:
@@ -474,7 +492,7 @@ def get_ai_playlist_title(
     current_prompt = full_prompt
     for attempt in range(max_attempts):
         name = generate_text(current_prompt, ai_config)
-        if name == "AI Naming Skipped":
+        if name == AI_NAMING_SKIPPED:
             return None
         if not isinstance(name, str) or name.startswith("Error"):
             logger.warning(
@@ -486,37 +504,18 @@ def get_ai_playlist_title(
             )
             continue
         cleaned_name = clean_playlist_name(name)
-        if not min_length <= len(cleaned_name) <= max_length:
-            logger.warning(
-                "AI generated name '%s' (%d chars) outside %d-%d range. Attempt %d/%d",
-                cleaned_name,
-                len(cleaned_name),
-                min_length,
-                max_length,
-                attempt + 1,
-                max_attempts,
-            )
-            current_prompt = full_prompt + (
-                f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was "
-                f"{len(cleaned_name)} characters long. It MUST be between {min_length} and "
-                f"{max_length} characters. Please try again."
-            )
-            continue
-        existing_title = taken.get(cleaned_name.casefold())
-        if existing_title:
-            duplicate_fallback = duplicate_fallback or existing_title
-            logger.warning(
-                "AI generated name '%s' is already used by another playlist. Attempt %d/%d",
-                cleaned_name,
-                attempt + 1,
-                max_attempts,
-            )
-            current_prompt = full_prompt + (
-                f"\n\nFEEDBACK: The title '{cleaned_name}' is already used by another "
-                "playlist. Give a different title."
-            )
-            continue
-        return cleaned_name
+        feedback, existing_title = _title_feedback(cleaned_name, taken, min_length, max_length)
+        if feedback is None:
+            return cleaned_name
+        logger.warning(
+            "AI generated title '%s' was rejected on attempt %d/%d: %s",
+            cleaned_name,
+            attempt + 1,
+            max_attempts,
+            feedback.strip(),
+        )
+        duplicate_fallback = duplicate_fallback or existing_title
+        current_prompt = full_prompt + feedback
     if duplicate_fallback:
         logger.info(
             "AI title naming only produced titles already in use; keeping '%s' so the "
@@ -575,7 +574,7 @@ def get_ai_playlist_name(
             temperature=0.7,
         )
 
-        if raw_response == "AI Naming Skipped":
+        if raw_response == AI_NAMING_SKIPPED:
             return None
         if not isinstance(raw_response, str) or raw_response.startswith("Error"):
             logger.warning(

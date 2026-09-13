@@ -20,6 +20,8 @@ Main Features:
 * Zip-or-sql detection by magic bytes with in-zip .sql extraction for restore.
 * pg_dump/psql connection args come from config.DATABASE_URL, with the password
   moved into PGPASSWORD so it never appears in argv.
+* Every backup and restore timeout is one hour, and a stored old Flask wait
+  cannot shorten the restore's wait for Flask.
 """
 
 import io
@@ -367,6 +369,7 @@ class TestPgConnectionArgs:
             app_backup.restart_manager, 'publish_start_request', lambda **_kwargs: False
         )
         monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
+        monkeypatch.setattr(app_backup, '_wait_for_flask', lambda log=None: False)
         monkeypatch.setattr(app_backup.subprocess, 'Popen', lambda *_a, **_k: _PsqlProcess())
         monkeypatch.setattr(
             app_backup.subprocess, 'run', lambda *_a, **_k: MagicMock(returncode=0)
@@ -477,3 +480,27 @@ class TestRestoreChunkProgress:
         assert body['missing_chunks'] == [3]
         assert (chunks_dir / 'backup_1_of_3.sql').exists()
         assert (chunks_dir / 'backup_2_of_3.sql').exists()
+
+
+def test_every_backup_and_restore_timeout_is_one_hour():
+    from pathlib import Path
+
+    import config
+
+    root = Path(__file__).resolve().parents[2]
+    assert app_backup.BACKUP_RESTORE_TIMEOUT_SECONDS == 3600
+    source = (root / 'app_backup.py').read_text(encoding='utf-8')
+    for stale in ('timeout=600', 'timeout=120', 'timeout=3600', 'after 600 seconds', 'after 3600 seconds'):
+        assert stale not in source, stale
+    assert source.count('timeout=BACKUP_RESTORE_TIMEOUT_SECONDS') == 3
+    assert config.FLASK_READY_TIMEOUT_SECONDS == 3600
+    assert 'config.FLASK_READY_TIMEOUT_SECONDS}' not in source
+    assert 'const RESTORE_MAX_WAIT_SECONDS = 60 * 60;' in (root / 'templates' / 'backup.html').read_text(encoding='utf-8')
+
+
+def test_a_stored_old_flask_wait_cannot_shorten_the_restore_wait(monkeypatch):
+    monkeypatch.setattr(app_backup.config, 'FLASK_READY_TIMEOUT_SECONDS', 180.0)
+    assert app_backup._flask_ready_timeout() == 3600
+    monkeypatch.setattr(app_backup.config, 'FLASK_READY_TIMEOUT_SECONDS', 7200.0)
+    assert app_backup._flask_ready_timeout() == 7200
+

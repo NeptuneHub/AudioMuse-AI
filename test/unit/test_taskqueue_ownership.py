@@ -69,6 +69,34 @@ def stopped(monkeypatch):
     stop = MagicMock()
     monkeypatch.setattr(worker_mod, 'stop_hard', stop)
     return stop
+class TestAStoppingWorkerNeverClaimsTheNextJob:
+
+    def test_claim_returns_nothing_once_a_stop_has_begun(self, monkeypatch):
+        from taskqueue import process as process_mod
+
+        instance = _worker(monkeypatch)
+        claimed = MagicMock()
+        monkeypatch.setattr(worker_mod.sql, 'claim', claimed)
+        monkeypatch.setattr(process_mod, '_STOPPING', ['task t-1 was cancelled'])
+
+        assert instance.claim() is None
+        claimed.assert_not_called()
+
+    def test_the_cancel_check_waits_for_the_claim_lock(self, monkeypatch, stopped):
+        instance = _worker(monkeypatch)
+        instance._held_task_id = 'task-1'
+        seen = []
+        lock = MagicMock()
+        lock.__enter__.side_effect = lambda *a: seen.append('locked')
+        lock.__exit__.side_effect = lambda *a: seen.append('unlocked')
+        instance._claim_txn = lock
+        stopped.side_effect = lambda reason: seen.append('stop')
+
+        instance.on_notify(worker_mod.sql.CHANNEL_CANCEL, 'task-1')
+
+        assert seen == ['locked', 'stop', 'unlocked']
+
+
 class TestAReclaimNoticeIsAddressedToOneGeneration:
 
     def _notice(self, task_id, worker_id, attempts):

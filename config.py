@@ -633,7 +633,7 @@ FLASK_LOCAL_URL = f"http://127.0.0.1:{FLASK_BIND_PORT}/"
 # https://<host>:8000. No extra port, nothing to publish. false switches it off.
 FLASK_BUILTIN_HTTPS = os.environ.get("FLASK_BUILTIN_HTTPS", "true").lower() == "true"
 # How long that wait may take before giving up and continuing anyway.
-FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "180"))
+FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "3600"))
 # Web process idle heap trim: seconds of quiet before freed heap returns to the
 # OS (glibc malloc_trim). 0 disables it.
 FLASK_IDLE_HEAP_TRIM_SECONDS = float(os.environ.get("FLASK_IDLE_HEAP_TRIM_SECONDS", "60"))

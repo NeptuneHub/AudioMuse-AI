@@ -3072,3 +3072,22 @@ class TestPlaylistGrouping:
         assert set(grouped) == {'s1', 's2'}
         assert list(grouped['s1']) == ['Rock']
         assert list(grouped['s2']) == ['Jazz']
+
+
+class TestSweepKeepsDuplicateFiles:
+    def test_write_matches_maps_every_file_of_a_song(self, monkeypatch):
+        from tasks import multiserver_sync
+
+        written = {}
+        monkeypatch.setattr(multiserver_sync.registry, 'upsert_track_maps',
+                            lambda server_id, mapping, conn=None: written.update(mapping) or len(mapping))
+        result = {
+            'matches': {'fp_1': 'n-1'},
+            'match_tiers': {'fp_1': 'path'},
+            'extra_matches': {'n-2': 'fp_1'},
+            'extra_match_tiers': {'n-2': 'path'},
+        }
+        count = multiserver_sync._write_matches(None, 'srv', result, {'n-1': '/a.flac', 'n-2': '/a copy.flac'})
+        assert count == 2
+        assert written == {'n-1': ('fp_1', 'path', '/a.flac'), 'n-2': ('fp_1', 'path', '/a copy.flac')}
+

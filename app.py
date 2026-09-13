@@ -864,6 +864,7 @@ def get_active_tasks_endpoint():
         task_item.pop('start_time', None)
         task_item.pop('end_time', None)
         task_item.pop('timestamp', None)
+        task_item['side_job'] = task_item.get('task_type') in task_types.SIDE_JOB_TASK_TYPES
 
         return jsonify(task_item), 200
     return jsonify({}), 200  # Return empty object if no active main task

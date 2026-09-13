@@ -28,6 +28,8 @@ Main Features:
 * sweep_server / sweep_all_secondary_servers entry points; the catalogue
   helpers are shared with the cleaning task so the two can never drift apart.
 * Zero-download alignment, artist link upserts, and batch metadata refresh.
+  A song held as several files on the new server gets every file whose path
+  matches one it already has elsewhere, so duplicates are never re-analysed.
 * Lean memory: fetched catalogue is condensed into a slim CandidateIndex and the
   local side streams through it in keyset-paginated chunks.
 * A sweep whose worker died is restarted by the queue's own reclaim, and one
@@ -221,6 +223,12 @@ def _write_matches(db, server_id, result, path_by_id=None):
         )
         for item_id, new_id in result['matches'].items()
     }
+    for new_id, item_id in (result.get('extra_matches') or {}).items():
+        mapping.setdefault(new_id, (
+            item_id,
+            (result.get('extra_match_tiers') or {}).get(new_id),
+            paths.get(str(new_id)),
+        ))
     return registry.upsert_track_maps(server_id, mapping, conn=db)
 
 

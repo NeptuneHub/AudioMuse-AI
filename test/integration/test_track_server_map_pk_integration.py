@@ -20,6 +20,8 @@ Main Features:
 * The real provider-migration transaction collapses the duplicate default-server
   rows of one item before it stamps the new provider id, so the relaxed PK is
   never violated, and it leaves every non-default server untouched.
+* A song held as two files keeps both after the migration when the dry run found
+  the second file on the target: it is mapped back under its own path.
 """
 
 import os
@@ -384,6 +386,39 @@ class TestRelaxTrackServerMapPk:
         old_schema_db.commit()
 
         assert rows == [('X', 'srv', 'navi-1', 'default')]
+
+    def test_run_migration_transaction_keeps_both_files_of_one_song(self, old_schema_db):
+        from tasks import provider_migration_tasks as mig
+
+        session_id = _prepare_migration_session(old_schema_db)
+        with old_schema_db.cursor() as cur:
+            for column in ('author TEXT', 'album TEXT', 'album_artist TEXT', 'year INTEGER'):
+                cur.execute('ALTER TABLE score ADD COLUMN IF NOT EXISTS ' + column)
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('X', 'srv', 'provB', 'fingerprint', '/old/copy.flac')"
+            )
+        old_schema_db.commit()
+
+        with old_schema_db.cursor() as cur:
+            mig._run_migration_transaction(
+                cur, {'X': 'navi-1'},
+                {'navi-1': {'path': '/new/a.flac'}, 'navi-2': {'path': '/new/copy.flac'}},
+                'navidrome', {}, session_id,
+                duplicates={'navi-2': 'X', 'navi-ghost': 'NOT-A-SONG'},
+            )
+            cur.execute(
+                "SELECT item_id, server_id, provider_track_id, match_tier, file_path "
+                "FROM track_server_map ORDER BY provider_track_id"
+            )
+            rows = cur.fetchall()
+        old_schema_db.commit()
+
+        assert rows == [
+            ('X', 'srv', 'navi-1', 'default', '/new/a.flac'),
+            ('X', 'srv', 'navi-2', 'default', '/new/copy.flac'),
+        ], 'both files of the song survive, and a duplicate of an unknown song is never inserted'
 
     def test_run_migration_transaction_repoints_every_server_only_on_the_default_one(
         self, old_schema_db

@@ -175,6 +175,29 @@ class TestSessionStart:
         assert not any('DELETE FROM migration_session' in s for s in sqls)
         assert not any('INSERT INTO migration_session' in s for s in sqls)
 
+    def test_refuses_a_target_already_registered_as_a_secondary_server(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        servers = [
+            {'server_id': 'd', 'name': 'Jellyfin', 'server_type': 'jellyfin', 'is_default': True, 'creds': {'url': 'http://jf'}},
+            {'server_id': 's', 'name': 'Home Navidrome', 'server_type': 'navidrome', 'is_default': False,
+             'creds': {'url': 'HTTP://127.0.0.1/'}},
+        ]
+        with patch('tasks.mediaserver.registry.list_servers', return_value=servers):
+            resp = self._start(client)
+
+        assert resp.status_code == 409
+        assert 'Home Navidrome' in resp.get_json()['error']
+        assert 'default server' in resp.get_json()['error']
+        cur.execute.assert_not_called()
+
+    def test_a_secondary_of_another_type_or_address_does_not_block(self, bp_mod, client, fake_db):
+        servers = [
+            {'server_id': 's1', 'name': 'Lyrion', 'server_type': 'lyrion', 'is_default': False, 'creds': {'url': 'http://127.0.0.1'}},
+            {'server_id': 's2', 'name': 'Other', 'server_type': 'navidrome', 'is_default': False, 'creds': {'url': 'http://10.0.0.9'}},
+        ]
+        with patch('tasks.mediaserver.registry.list_servers', return_value=servers):
+            assert bp_mod._registered_secondary_server('navidrome', {'url': 'http://127.0.0.1'}) is None
+
     def test_rejects_unknown_target_type(self, bp_mod, client, fake_db):
         resp = client.post(
             '/api/migration/session/start',
@@ -198,6 +221,21 @@ class TestSessionStart:
         assert resp.status_code == 400
         assert 'Incomplete credentials' in resp.get_json()['error']
         cur.execute.assert_not_called()
+
+
+class TestSessionGetNeverShipsCanonicalIds:
+    def test_both_match_maps_are_stripped_in_sql(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.append((5, 'jellyfin', 'navidrome', 'in_progress', {'dry_run': {'tier_counts': {}}}))
+
+        resp = client.get('/api/migration/session/5')
+
+        assert resp.status_code == 200
+        sql = next(c[0][0] for c in cur.execute.call_args_list if 'FROM migration_session' in c[0][0])
+        assert "#- '{dry_run,matches}'" in sql
+        assert "#- '{dry_run,extra_matches}'" in sql, (
+            'the duplicate-file map holds canonical fp_ ids and must never reach the API'
+        )
 
 
 class TestProbeTest:
@@ -266,16 +304,16 @@ class TestApplySourcePathOverrides:
         )
         assert patched is rows
         assert rows == [
-            {'item_id': 'a', 'file_path': '/music/a.mp3'},
-            {'item_id': 'b', 'file_path': '/music/b.mp3'},
+            {'item_id': 'a', 'file_path': '/music/a.mp3', 'file_paths': ['/music/a.mp3']},
+            {'item_id': 'b', 'file_path': '/music/b.mp3', 'file_paths': ['/music/b.mp3']},
             {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
-        ]
+        ], 'an override replaces every loaded path, or old_paths would still match the stale ones'
 
         untouched = bp_mod._apply_source_path_overrides(rows, {})
         assert untouched is rows
         assert rows == [
-            {'item_id': 'a', 'file_path': '/music/a.mp3'},
-            {'item_id': 'b', 'file_path': '/music/b.mp3'},
+            {'item_id': 'a', 'file_path': '/music/a.mp3', 'file_paths': ['/music/a.mp3']},
+            {'item_id': 'b', 'file_path': '/music/b.mp3', 'file_paths': ['/music/b.mp3']},
             {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
         ]
 

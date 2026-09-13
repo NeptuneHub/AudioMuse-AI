@@ -39,7 +39,7 @@ Main Features:
 
 import json
 import logging
-import random
+import secrets
 import uuid
 
 import config
@@ -130,24 +130,7 @@ def preview_status():
     if not row:
         return {'status': 'idle', 'message': '', 'titles': [], 'done': 0, 'total': 0}
     details = coerce_db_details(row['details']) or {}
-    status = row['status']
-    if status in config.TASK_STATUS_LIVE:
-        ui_status = 'running'
-        message = details.get('message') or PREVIEW_WAITING_MESSAGE
-        if status == config.TASK_STATUS_NEW:
-            message = PREVIEW_WAITING_MESSAGE
-    elif status == config.TASK_STATUS_SUCCESS:
-        ui_status = 'done'
-        message = details.get('preview_message') or details.get('message') or ''
-    else:
-        ui_status = 'failed'
-        if status == config.TASK_STATUS_REVOKED:
-            message = PREVIEW_CANCELLED_MESSAGE
-        else:
-            message = details.get('preview_error') or (
-                PREVIEW_INTERRUPTED_MESSAGE if details.get('error') == WORKER_LOST_ERROR
-                else PREVIEW_FAILED_MESSAGE
-            )
+    ui_status, message = _preview_ui_state(row['status'], details)
     titles = details.get('titles') if isinstance(details.get('titles'), list) else []
     return {
         'task_id': row['task_id'],
@@ -159,6 +142,22 @@ def preview_status():
         'total': details.get('total') or 0,
         'titles': titles,
     }
+
+
+def _preview_ui_state(status, details):
+    if status == config.TASK_STATUS_NEW:
+        return 'running', PREVIEW_WAITING_MESSAGE
+    if status in config.TASK_STATUS_LIVE:
+        return 'running', details.get('message') or PREVIEW_WAITING_MESSAGE
+    if status == config.TASK_STATUS_SUCCESS:
+        return 'done', details.get('preview_message') or details.get('message') or ''
+    if status == config.TASK_STATUS_REVOKED:
+        return 'failed', PREVIEW_CANCELLED_MESSAGE
+    if details.get('preview_error'):
+        return 'failed', details['preview_error']
+    if details.get('error') == WORKER_LOST_ERROR:
+        return 'failed', PREVIEW_INTERRUPTED_MESSAGE
+    return 'failed', PREVIEW_FAILED_MESSAGE
 
 
 def _ai_config():
@@ -291,7 +290,7 @@ def _sample_item_ids():
     )
     item_ids = [track['item_id'] for track in _get_stratified_song_subset(genre_map, target)]
     if len(item_ids) > PREVIEW_MAX_SONGS:
-        item_ids = random.sample(item_ids, PREVIEW_MAX_SONGS)
+        item_ids = secrets.SystemRandom().sample(item_ids, PREVIEW_MAX_SONGS)
     return item_ids, genre_map
 
 

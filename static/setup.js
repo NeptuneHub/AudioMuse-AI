@@ -1221,7 +1221,7 @@ function collectConfigFromForm(testMode) {
         if (!input) {
             return;
         }
-        if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.indexOf(key) !== -1) {
+        if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.includes(key)) {
             return;
         }
         var original = input.dataset.originalValue;
@@ -1468,7 +1468,7 @@ var aiPromptState = {loaded: false, defaultTitlePrompt: '', pollTimer: null, tas
 
 function aiPromptMode() {
     var select = document.getElementById('AI_NAMING_PROMPT_MODE');
-    return select && select.value === 'title' ? 'title' : 'concept';
+    return select?.value === 'title' ? 'title' : 'concept';
 }
 
 function updateAiPromptMode() {
@@ -1505,7 +1505,8 @@ function renderAiPromptPreview(state) {
         stop.disabled = false;
     }
     status.style.display = 'block';
-    status.className = (running ? 'status-pending' : state.status === 'done' ? 'status-success' : 'status-failure')
+    var statusClass = state.status === 'done' ? 'status-success' : 'status-failure';
+    status.className = (running ? 'status-pending' : statusClass)
         + ' inline-feedback';
     var progress = running && state.total ? ' (' + state.done + ' of ' + state.total + ')' : '';
     status.textContent = (state.message || '') + progress;
@@ -1584,7 +1585,7 @@ function startAiPromptPreview() {
     var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
     var status = document.getElementById('ai-prompt-preview-status');
     var button = document.getElementById('ai-prompt-preview-start');
-    if (!status || (button && button.disabled)) { return; }
+    if (!status || button?.disabled) { return; }
     if (button) { button.disabled = true; }
     status.style.display = 'block';
     status.className = 'status-pending inline-feedback';
@@ -1614,7 +1615,7 @@ function startAiPromptPreview() {
 
 function stopAiPromptPreview() {
     var stop = document.getElementById('ai-prompt-preview-stop');
-    if (!aiPromptState.taskId || (stop && stop.disabled)) { return; }
+    if (!aiPromptState.taskId || stop?.disabled) { return; }
     if (stop) { stop.disabled = true; }
     fetch('/api/cancel/' + encodeURIComponent(aiPromptState.taskId), {method: 'POST'})
         .then(readAiPromptResponse)

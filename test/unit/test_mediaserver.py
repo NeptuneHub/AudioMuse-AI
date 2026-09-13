@@ -3056,6 +3056,123 @@ class TestLyrionCreatePlaylistBatched:
         assert _create_playlist_batched('Managed', ['t1']) is None
 
 
+class TestLyrionAddToPlaylist:
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_a_connected_player_keeps_the_v360_load_add_save_method(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist
+
+        calls = []
+
+        def rpc(method, params, player_id="", **kwargs):
+            calls.append((method, list(params), player_id))
+            if method == 'players':
+                return {'players_loop': [{'playerid': 'aa:bb'}]}
+            if method == 'playlists' and params == [0, 999999]:
+                return {'playlists_loop': [{'id': 78, 'playlist': 'Mix'}]}
+            if method == 'playlistcontrol' and params[0] == 'cmd:add':
+                return {'count': 2}
+            if method == 'playlist':
+                return {'__playlist_id': 78}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist(78, ['11', '12']) is True
+        assert ('playlistcontrol', ['cmd:add', 'track_id:11,12'], 'aa:bb') in calls
+        assert not [c for c in calls if c[0] == 'playlists' and c[1][:1] == ['edit']]
+        assert not [c for c in calls if c[0] == 'titles']
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_no_player_fills_the_playlist_by_url_without_any_player(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist
+
+        calls = []
+
+        def rpc(method, params, player_id="", **kwargs):
+            calls.append((method, list(params), player_id))
+            if method == 'players':
+                return {'count': 0}
+            if method == 'titles':
+                return {'titles_loop': [
+                    {'id': 12, 'url': 'file:///music/b.mp3'},
+                    {'id': 11, 'url': 'file:///music/a%20b.mp3'},
+                ]}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': 2}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist(78, ['11', '12']) is True
+        edits = [c for c in calls if c[0] == 'playlists' and c[1][0] == 'edit']
+        assert [c[1] for c in edits] == [
+            ['edit', 'cmd:add', 'playlist_id:78', 'url:file:///music/a%20b.mp3'],
+            ['edit', 'cmd:add', 'playlist_id:78', 'url:file:///music/b.mp3'],
+        ], 'tracks keep the requested order, not the order Lyrion listed them'
+        assert not [c for c in calls if c[0] in ('playlistcontrol', 'playlist')]
+        assert all(player == "" for _m, _p, player in calls)
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_a_track_with_no_url_is_skipped(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist_without_player
+
+        def rpc(method, params, player_id="", **kwargs):
+            if method == 'titles':
+                return {'titles_loop': [{'id': 11, 'url': 'file:///music/a.mp3'}]}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': 1}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist_without_player(78, ['11', '99']) is True
+        edits = [c for c in mock_rpc.call_args_list if c.args[0] == 'playlists' and c.args[1][0] == 'edit']
+        assert len(edits) == 1
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_an_empty_playlist_is_a_failure(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist_without_player
+
+        def rpc(method, params, player_id="", **kwargs):
+            if method == 'titles':
+                return {'titles_loop': []}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': 0}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist_without_player(78, ['11']) is False
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_a_lyrion_error_is_a_failure_not_a_crash(self, mock_rpc):
+        from tasks.mediaserver.lyrion import LyrionAPIError, _add_to_playlist_without_player
+
+        mock_rpc.side_effect = LyrionAPIError('down')
+
+        assert _add_to_playlist_without_player(78, ['11']) is False
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_urls_are_looked_up_in_batches(self, mock_rpc):
+        from tasks.mediaserver import lyrion
+
+        ids = [str(i) for i in range(lyrion.LYRION_PLAYLIST_URL_BATCH + 5)]
+
+        def rpc(method, params, player_id="", **kwargs):
+            if method == 'titles':
+                wanted = params[2].split(':', 1)[1].split(',')
+                return {'titles_loop': [{'id': int(i), 'url': 'file:///m/%s.mp3' % i} for i in wanted]}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': len(ids)}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert lyrion._add_to_playlist_without_player(5, ids) is True
+        lookups = [c for c in mock_rpc.call_args_list if c.args[0] == 'titles']
+        assert [c.args[1][1] for c in lookups] == [lyrion.LYRION_PLAYLIST_URL_BATCH, 5]
+
+
 class TestLyrionCreateOrReplacePlaylist:
     @patch('tasks.mediaserver.lyrion._create_playlist_batched')
     @patch('tasks.mediaserver.lyrion.delete_playlist')

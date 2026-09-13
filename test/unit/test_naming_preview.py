@@ -131,6 +131,22 @@ class TestRegistration:
         )
         assert [row[0]['task_id'] for row in recorded] == ['m']
 
+    def test_a_finished_preview_never_becomes_the_dashboard_status(self):
+        from pathlib import Path
+
+        root = Path(naming_preview.__file__).resolve().parents[1]
+        app_source = (root / 'app.py').read_text(encoding='utf-8')
+        active = app_source.split('def get_active_tasks_endpoint', 1)[1].split('\ndef ', 1)[0]
+        assert "task_item['side_job'] = task_item.get('task_type') in task_types.SIDE_JOB_TASK_TYPES" in active
+        script = (root / 'static' / 'script.js').read_text(encoding='utf-8')
+        check = script[script.index('async function checkActiveTasks'):]
+        check = check[:check.index('\nfunction ')]
+        side = check.index('previousDetails.side_job')
+        assert side < check.index('getTaskStatusEndpointUrl'), (
+            'a finished preview must reload the real last task before any final-status popup'
+        )
+        assert 'fetchAndDisplayOverallLastTask()' in check[side:check.index('getTaskStatusEndpointUrl')]
+
 
 class TestSideJobRules:
     def test_a_finished_side_job_does_not_collapse_the_table(self):

@@ -21,6 +21,10 @@ Main Features:
   the candidate rows so callers can stream their own rows through
   ``match_chunk`` in bounded-memory chunks, with a shared claimed-id set
   keeping one provider track mapped to at most one canonical row.
+* One song held as N files keeps all N: every other known path of a matched
+  row that lands exactly on a target file (path, then path tail) is returned
+  in ``extra_matches``, from the lookups the index already built, so a sweep
+  or a provider migration never collapses duplicate files to one mapping
 """
 
 import re
@@ -282,6 +286,19 @@ class CandidateIndex:
                 )
         return (None, None)
 
+    def _path_siblings(self, old):
+        seen = set()
+        for np in (normalize_path(p) for p in old_paths(old)):
+            if not np or np in seen:
+                continue
+            seen.add(np)
+            if np in self.by_norm_path:
+                yield 'path', self.by_norm_path[np]
+                continue
+            tk = path_tail_key(np)
+            if tk and tk in self.by_tail:
+                yield 'tail', self.by_tail[tk]
+
     def match_chunk(self, old_rows, claimed_new_ids=None):
         """Match ``old_rows`` against the index and return the usual result dict.
 
@@ -328,11 +345,26 @@ class CandidateIndex:
             else:
                 unmatched.append(old)
 
+        extra_matches = {}
+        extra_match_tiers = {}
+        for old in old_rows:
+            primary = matches.get(old['item_id'])
+            if primary is None:
+                continue
+            for tier, sibling in self._path_siblings(old):
+                if sibling == primary or sibling in claimed:
+                    continue
+                extra_matches[sibling] = old['item_id']
+                extra_match_tiers[sibling] = tier
+                claimed[sibling] = self._tier_rank[tier]
+
         return {
             'matches': matches,
             'match_tiers': match_tiers,
             'tier_counts': tier_counts,
             'unmatched': unmatched,
+            'extra_matches': extra_matches,
+            'extra_match_tiers': extra_match_tiers,
         }
 
 

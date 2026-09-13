@@ -22,6 +22,9 @@ Main Features:
   the target.
 * Chromaprint fingerprints are carried onto the target's track ids in the same
   transaction rather than left keyed by dead ids.
+* A song held as several files keeps every file the dry run found on the
+  target: the duplicate rows are collapsed to repoint the ids safely, then the
+  extra files are mapped back to the same song, so none of them is analysed again.
 * Queues a full-refresh alignment of the migrated server, its task row written
   INSIDE the migration transaction so the intent survives a crash; the root task
   stays non-terminal until every worker acknowledges the restart.
@@ -466,6 +469,7 @@ def _execute_provider_migration(session_id, task_id, cancel):
                 f"the dry run."
             )
         new_meta = _load_new_meta_from_table(cur, session_id)
+        duplicates = duplicate_file_mappings(state, mapping)
         selected_libraries = state.get('selected_libraries')
         logger.info(
             "provider migration: %d songs will be repointed at the new provider; "
@@ -495,6 +499,7 @@ def _execute_provider_migration(session_id, task_id, cancel):
                     alignment_task_id=alignment_task_id,
                     exec_task_id=task_id,
                     restart_request_id=restart_request_id,
+                    duplicates=duplicates,
                 )
             conn.commit()
         except Exception:
@@ -641,6 +646,44 @@ def build_mapping(state):
         seen_new[key] = old_id
         deduped[old_id] = new_id
     return deduped, dropped
+
+
+def duplicate_file_mappings(state, mapping):
+    extras = (state.get('dry_run') or {}).get('extra_matches') or {}
+    used = {str(new_id) for new_id in mapping.values()}
+    return {
+        str(new_id): item_id
+        for new_id, item_id in extras.items()
+        if item_id in mapping and str(new_id) not in used
+    }
+
+
+def _restore_duplicate_file_maps(cur, duplicates, new_meta):
+    if not duplicates:
+        return 0
+    rows = []
+    for new_id, item_id in duplicates.items():
+        path = (new_meta.get(new_id) or {}).get('path')
+        rows.append((item_id, _sanitize_text(new_id), _sanitize_text(path) if path else None))
+    restored = 0
+    for i in range(0, len(rows), 1000):
+        chunk = rows[i : i + 1000]
+        placeholders = ",".join(["(%s,%s,%s)"] * len(chunk))
+        flat = [value for row in chunk for value in row]
+        cur.execute(
+            "INSERT INTO track_server_map "
+            "(item_id, server_id, provider_track_id, match_tier, file_path, updated_at) "
+            "SELECT d.item_id, s.server_id, d.new_id, 'default', d.path, now() "
+            "FROM (VALUES " + placeholders + ") AS d(item_id, new_id, path), music_servers s "  # nosec B608 - %s-placeholder string only; values are bound params
+            "WHERE s.is_default AND EXISTS (SELECT 1 FROM score sc WHERE sc.item_id = d.item_id) "
+            "ON CONFLICT (server_id, provider_track_id) DO NOTHING",
+            flat,
+        )
+        restored += cur.rowcount
+    logger.info(
+        "provider migration: kept %d duplicate file(s) mapped to their song", restored
+    )
+    return restored
 
 
 def _merge_mapping(state):
@@ -959,6 +1002,7 @@ def _run_migration_transaction(
     alignment_task_id=None,
     exec_task_id=None,
     restart_request_id=None,
+    duplicates=None,
 ):
     cur.execute(_XACT_LOCK_SQL, (_ADVISORY_LOCK_KEY,))
 
@@ -1008,6 +1052,7 @@ def _run_migration_transaction(
 
     _repoint_chromaprint(cur, chromaprint_staged)
     _apply_new_meta(cur, new_meta)
+    _restore_duplicate_file_maps(cur, duplicates, new_meta)
     _clear_default_server_artist_map(cur)
     _report_playlists_bound_to_default_server(cur)
 

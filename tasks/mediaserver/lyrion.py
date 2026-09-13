@@ -15,6 +15,9 @@ Main Features:
 * Fetches albums/tracks, downloads, and manages playlists over JSON-RPC.
 * Resolves file:// URIs to filesystem paths and raises LyrionAPIError on
   failures so callers can decide how to handle them.
+* Fills playlists through the first connected player exactly as before; a
+  server with no player connected uses the server-side playlists edit command,
+  since the player method has nothing to load the playlist into there
 """
 
 from . import http as requests
@@ -27,6 +30,8 @@ from . import context
 from .helper import detect_path_format, is_auth_error
 
 logger = logging.getLogger(__name__)
+
+LYRION_PLAYLIST_URL_BATCH = 100
 
 REQUESTS_TIMEOUT = 300
 
@@ -203,11 +208,11 @@ def _get_first_player():
                 logger.info(f"Found Lyrion player: {player_id}")
                 return player_id
 
-        logger.warning("No Lyrion players found, using fallback player ID")
-        return "10.42.6.0"
+        logger.warning("No Lyrion players found; playlists are filled without a player")
+        return None
     except Exception:
         logger.exception("Error getting Lyrion player")
-        return "10.42.6.0"
+        return None
 
 
 def _lyrion_base_url(user_creds=None):
@@ -708,6 +713,50 @@ def test_connection(user_creds=None):
     }
 
 
+def _add_to_playlist_without_player(playlist_id, item_ids):
+    requested = [str(track_id) for track_id in item_ids]
+    added = 0
+    try:
+        for start in range(0, len(requested), LYRION_PLAYLIST_URL_BATCH):
+            batch = requested[start : start + LYRION_PLAYLIST_URL_BATCH]
+            response = _jsonrpc_request(
+                "titles", [0, len(batch), f"track_id:{','.join(batch)}", "tags:u"]
+            )
+            urls = {
+                str(row.get("id")): row.get("url")
+                for row in (response or {}).get("titles_loop") or []
+            }
+            for track_id in batch:
+                url = urls.get(track_id)
+                if not url:
+                    logger.warning(
+                        "Lyrion track %s has no file URL; leaving it out of playlist %s",
+                        track_id, playlist_id,
+                    )
+                    continue
+                _jsonrpc_request(
+                    "playlists", ["edit", "cmd:add", f"playlist_id:{playlist_id}", f"url:{url}"]
+                )
+                added += 1
+        stored = _jsonrpc_request("playlists", ["tracks", 0, 1, f"playlist_id:{playlist_id}"])
+    except Exception:
+        logger.exception("Error adding tracks to Lyrion playlist %s without a player", playlist_id)
+        return False
+
+    stored_count = int((stored or {}).get("count") or 0)
+    if stored_count == 0:
+        logger.error(
+            "Lyrion playlist %s is still empty after adding %d of %d tracks",
+            playlist_id, added, len(requested),
+        )
+        return False
+    logger.info(
+        "Lyrion playlist %s now holds %d tracks (%d requested), filled without a player",
+        playlist_id, stored_count, len(requested),
+    )
+    return True
+
+
 def _add_to_playlist(playlist_id, item_ids):
     if not item_ids:
         return True
@@ -716,8 +765,7 @@ def _add_to_playlist(playlist_id, item_ids):
 
     player_id = _get_first_player()
     if not player_id:
-        logger.error("No Lyrion player available for playlist operations.")
-        return False
+        return _add_to_playlist_without_player(playlist_id, item_ids)
 
     try:
         logger.debug("Step 0: Getting original playlist name before operations")

@@ -197,6 +197,18 @@ def _try_ai_name_playlist(
     )
 
 
+def _naming_lyric_axes(item_ids):
+    if not LYRICS_ENABLED:
+        return [], {}
+    try:
+        from lyrics.lyrics_transcriber import axis_columns
+
+        return list(axis_columns()), get_lyrics_axis_vectors(item_ids)
+    except Exception:
+        logger.exception("Could not load lyric axes for playlist naming")
+        return [], {}
+
+
 def _name_playlist_with_ai_config(
     original_name,
     songs,
@@ -233,16 +245,7 @@ def _name_playlist_with_ai_config(
         return original_name
     item_ids = [item_id for item_id, _title, _author in songs]
     score_rows = get_score_data_by_ids(item_ids)
-    axis_blobs = {}
-    columns = []
-    if LYRICS_ENABLED:
-        try:
-            from lyrics.lyrics_transcriber import axis_columns
-
-            columns = list(axis_columns())
-            axis_blobs = get_lyrics_axis_vectors(item_ids)
-        except Exception:
-            logger.exception("Could not load lyric axes for playlist naming")
+    columns, axis_blobs = _naming_lyric_axes(item_ids)
     _end_read_transaction()
 
     context = build_naming_context(

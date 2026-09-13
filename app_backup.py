@@ -23,6 +23,9 @@ Main Features:
   absent, or readable and older than the TTL, lets a new restore start, while one
   that cannot be read counts as held. It also
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
+* pg_dump, the psql replay and the post-restore schema ensure are each bounded
+  by BACKUP_RESTORE_TIMEOUT_SECONDS (one hour), and the wait for Flask after a
+  restore never gives up sooner than that.
 * The restore runs detached, so `/api/backup/restore` answers "started" long
   before the outcome is known. The runner appends a `RESTORE-RESULT:` marker to
   its log for whoever reads it; nothing polls it. The page counts down and
@@ -76,6 +79,13 @@ RESTORE_LOG_DIR = os.environ.get("RESTORE_LOG_DIR", BACKUP_DIR)
 # by the very operation it guards. The timestamp inside makes it self-releasing,
 # so a crash mid-restore cannot block every later attempt forever.
 RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
+
+# Every backup and restore step that runs a Postgres client (pg_dump, the psql
+# replay, the post-restore schema ensure) gets one hour: a large catalogue
+# dumps and replays for many minutes, and a timeout there fails the whole job.
+# The restore's wait for Flask gets at least as long, even when app_config still
+# holds the old 180 second FLASK_READY_TIMEOUT_SECONDS written by an earlier boot.
+BACKUP_RESTORE_TIMEOUT_SECONDS = 60 * 60
 
 # A lock we cannot READ is not an absent one: a uid or permission mismatch on a
 # shared backup volume, or an I/O error on network storage, must refuse the
@@ -270,8 +280,12 @@ def _extract_sql_if_zip(dump_file, log):
         return None, None
 
 
+def _flask_ready_timeout():
+    return max(float(config.FLASK_READY_TIMEOUT_SECONDS), BACKUP_RESTORE_TIMEOUT_SECONDS)
+
+
 def _wait_for_flask(log=None):
-    deadline = time.monotonic() + config.FLASK_READY_TIMEOUT_SECONDS
+    deadline = time.monotonic() + _flask_ready_timeout()
     last_error = None
     while time.monotonic() < deadline:
         try:
@@ -286,7 +300,7 @@ def _wait_for_flask(log=None):
         time.sleep(1)
     if log is not None:
         log.write(
-            f"Flask did not answer within {config.FLASK_READY_TIMEOUT_SECONDS}s"
+            f"Flask did not answer within {_flask_ready_timeout():.0f}s"
             f"{f' (last error: {last_error})' if last_error else ''}\n"
         )
     return False
@@ -433,7 +447,7 @@ def _run_restore_runner(dump_file, log_file):
                     target=_feed_dump, args=(proc.stdin, sql_source, feed_result), daemon=True
                 )
                 feeder.start()
-                ret = proc.wait(timeout=3600)
+                ret = proc.wait(timeout=BACKUP_RESTORE_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 if proc is not None:
                     try:
@@ -443,7 +457,10 @@ def _run_restore_runner(dump_file, log_file):
                     proc.kill()
                     proc.wait()
                 ret = -1
-                log.write("Restore command timed out after 3600 seconds and was killed.\n")
+                log.write(
+                    f"Restore command timed out after {BACKUP_RESTORE_TIMEOUT_SECONDS} seconds "
+                    "and was killed.\n"
+                )
                 log.flush()
             except Exception as exc:
                 log.write(f"Failed to execute restore command: {exc}\n")
@@ -472,7 +489,8 @@ def _run_restore_runner(dump_file, log_file):
                 ensure_ret = -1
                 for attempt in (1, 2):
                     ensure_ret = subprocess.run(
-                        ensure_cmd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120
+                        ensure_cmd, env=env, stdout=log, stderr=subprocess.STDOUT,
+                        timeout=BACKUP_RESTORE_TIMEOUT_SECONDS,
                     ).returncode
                     if ensure_ret == 0:
                         log.write("Ensured users session schema after restore.\n")
@@ -520,7 +538,7 @@ def _run_restore_runner(dump_file, log_file):
                 else:
                     log.write(
                         "WARNING: Flask did not answer within "
-                        f"{config.FLASK_READY_TIMEOUT_SECONDS}s; starting the workers anyway.\n"
+                        f"{_flask_ready_timeout():.0f}s; starting the workers anyway.\n"
                     )
                 log.flush()
 
@@ -604,7 +622,7 @@ def create_backup():
     description: |
       Removes any prior `audiomuse_backup_*` files in BACKUP_DIR, then runs
       `pg_dump --clean --if-exists` and compresses the dump into
-      `audiomuse_backup_<TIMESTAMP>.zip`. pg_dump is bounded by a 600 second
+      `audiomuse_backup_<TIMESTAMP>.zip`. pg_dump is bounded by a 3600 second
       timeout. The archive itself is fetched in a second step via
       GET /api/backup/download/<filename> so the browser can stream it
       natively to disk.
@@ -651,7 +669,8 @@ def create_backup():
     try:
         with open(filepath, 'w') as f:
             result = subprocess.run(
-                cmd, env=_pg_env(), stdout=f, stderr=subprocess.PIPE, text=True, timeout=600
+                cmd, env=_pg_env(), stdout=f, stderr=subprocess.PIPE, text=True,
+                timeout=BACKUP_RESTORE_TIMEOUT_SECONDS,
             )
         if result.returncode != 0:
             logger.error("pg_dump failed: %s", result.stderr)
@@ -671,7 +690,10 @@ def create_backup():
         logger.exception("pg_dump timed out")
         if os.path.exists(filepath):
             os.remove(filepath)
-        err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump timed out after 600 seconds.")
+        err = error_manager.build(
+            ERR_BACKUP_FAILED,
+            f"pg_dump timed out after {BACKUP_RESTORE_TIMEOUT_SECONDS} seconds.",
+        )
         return jsonify({**err, 'error': err['error_message']}), 500
 
     zip_filename = f"audiomuse_backup_{timestamp}.zip"

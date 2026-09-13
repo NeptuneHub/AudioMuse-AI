@@ -2,10 +2,13 @@
 
 {% block headAdditions %}
 <style>
-    label {
+    label, .ai-prompt-block-title {
         display: block;
         margin-bottom: 0.35rem;
         font-weight: 600;
+    }
+    .ai-prompt-block-title {
+        margin-top: 0;
     }
     input[type="text"], input[type="password"], select, textarea {
         width: 100%;
@@ -169,7 +172,7 @@
         font-size: 0.85rem;
         line-height: 1.5;
         white-space: pre-wrap;
-        word-break: break-word;
+        overflow-wrap: anywhere;
         max-height: 18rem;
         overflow-y: auto;
     }
@@ -812,7 +815,7 @@
                         </div>
                         <textarea id="AI_NAMING_TITLE_PROMPT" name="AI_NAMING_TITLE_PROMPT" rows="12" spellcheck="false"></textarea>
 
-                        <label>Added automatically after your prompt</label>
+                        <p class="ai-prompt-block-title">Added automatically after your prompt</p>
                         <p class="ai-prompt-help">
                             You cannot edit this part. For every playlist AudioMuse-AI appends up to
                             <span id="ai-prompt-max-songs">25</span> of its songs. Example:

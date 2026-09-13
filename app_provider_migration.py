@@ -25,6 +25,11 @@ Main Features:
 * Probe, session start and execute all refuse target credentials missing a
   field the registry requires: a provider borrows the live config for a blank
   field, so an empty form would probe fine and then wipe the default server.
+* The dry run matches every file the default server holds for a song, so the
+  extra files of a song kept as duplicates are carried to the target too.
+* A session refuses a target that is already registered as a secondary server:
+  migrating to it would leave two server rows on one library, so every batch
+  task would write it twice. That server is made the default instead.
 """
 
 import csv
@@ -623,6 +628,7 @@ def _apply_source_path_overrides(old_rows, overrides):
         real = overrides.get(r.get('item_id'))
         if real:
             r['file_path'] = real
+            r['file_paths'] = [real]
     return old_rows
 
 
@@ -730,6 +736,16 @@ def session_start():
     creds_error = incomplete_creds_error(target_type, target_creds)
     if creds_error:
         return jsonify({'error': creds_error}), 400
+    registered = _registered_secondary_server(target_type, target_creds)
+    if registered is not None:
+        return jsonify(
+            {
+                'error': (
+                    f"'{registered['name']}' is already added as a server with this address. "
+                    "Make it the default server from the setup page instead of migrating to it."
+                )
+            }
+        ), 409
 
     import config
 
@@ -779,6 +795,29 @@ def session_start():
         row = cur.fetchone()
     db.commit()
     return jsonify({'session_id': row[0]})
+
+
+def _normalized_server_url(url):
+    return str(url or '').strip().rstrip('/').lower()
+
+
+def _registered_secondary_server(target_type, target_creds):
+    from tasks.mediaserver import registry
+
+    wanted = _normalized_server_url((target_creds or {}).get('url'))
+    if not wanted:
+        return None
+    try:
+        servers = registry.list_servers()
+    except Exception:
+        logger.exception("Could not list the registered servers for the migration target check")
+        return None
+    for server in servers:
+        if server.get('is_default') or server.get('server_type') != target_type:
+            continue
+        if _normalized_server_url((server.get('creds') or {}).get('url')) == wanted:
+            return server
+    return None
 
 
 def _source_provider_id_map(canonical_ids):
@@ -864,7 +903,8 @@ def session_get(session_id):
         # and the whole orphan list went out over the API verbatim.
         cur.execute(
             "SELECT id, source_type, target_type, status, "
-            "(state #- '{dry_run,matches}' #- '{source_path_overrides}' "
+            "(state #- '{dry_run,matches}' #- '{dry_run,extra_matches}' "
+            "#- '{source_path_overrides}' "
             "#- '{post_migration,orphans}') "
             "FROM migration_session WHERE id = %s",
             (session_id,),
@@ -1587,6 +1627,7 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
 
     state_dry_run = {
         'matches': result['matches'],
+        'extra_matches': result.get('extra_matches') or {},
         'tier_counts': result['tier_counts'],
         'unmatched_albums': _albums_payload(result['unmatched_by_album']),
         # Full count so the wizard can warn when the rendered list is a sample.
@@ -1616,6 +1657,7 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
     return {
         'tier_counts': result['tier_counts'],
         'matched': len(result['matches']),
+        'duplicate_files': len(result.get('extra_matches') or {}),
         'unmatched': len(result['unmatched']),
         'unmatched_albums_count': len(result['unmatched_by_album']),
     }
@@ -2583,15 +2625,21 @@ def _load_score_rows_as_dicts():
         return [_row_to_score_dict(r) for r in rows]
     with db.cursor() as cur:
         cur.execute(
-            "SELECT s.item_id, (SELECT p.file_path FROM track_server_map p "
+            "SELECT s.item_id, NULL, s.title, s.author, s.album, s.album_artist, "
+            "ARRAY(SELECT p.file_path FROM track_server_map p "
             "WHERE p.item_id = s.item_id AND p.server_id = %s "
-            "AND p.file_path IS NOT NULL LIMIT 1), "
-            "s.title, s.author, s.album, s.album_artist "
+            "AND p.file_path IS NOT NULL ORDER BY p.provider_track_id) "
             "FROM score s WHERE " + registry.availability_sql('s'),
             (default_id, default_id, True),
         )
         rows = cur.fetchall() or []
-    return [_row_to_score_dict(r) for r in rows]
+    loaded = []
+    for r in rows:
+        paths = [p for p in (r[6] or []) if p]
+        row = _row_to_score_dict((r[0], paths[0] if paths else None) + tuple(r[2:6]))
+        row['file_paths'] = paths
+        loaded.append(row)
+    return loaded
 
 
 def _load_score_rows_by_ids(item_ids):
