@@ -519,6 +519,10 @@ def _validate_ai_prompt_values(filtered_values):
         if isinstance(text, str):
             text = text.replace('\r\n', '\n')
             filtered_values['AI_NAMING_TITLE_PROMPT'] = text
+        mode = filtered_values.get('AI_NAMING_PROMPT_MODE', config.AI_NAMING_PROMPT_MODE)
+        if mode == 'concept' and not (text or '').strip():
+            filtered_values.pop('AI_NAMING_TITLE_PROMPT')
+            return None
         return _ai_title_prompt_problem(text)
     return None
 

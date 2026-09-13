@@ -230,6 +230,7 @@ def _name_playlist_with_ai_config(
         if '_' not in name.partition('_automatic')[0]
     ]
     if mode == 'title':
+        _end_read_transaction()
         ai_title = get_ai_playlist_title(
             config.AI_NAMING_TITLE_PROMPT if title_prompt is None else title_prompt,
             songs,

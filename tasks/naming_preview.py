@@ -23,23 +23,23 @@ Main Features:
   queue, which belongs to task parents and control work.
 * It is a side job (task_types.SIDE_JOB_TASK_TYPES): it shows as the running task
   on the dashboard it blocks, but it stays out of the cancel history, never erases
-  the last task recap and never records history. A running server sweep refuses
-  it, as it refuses every batch start.
+  the last task recap and never records history. It is also refused while a
+  server sweep runs, and a sweep is refused while it runs.
 * A preview interrupted by a restart fails instead of silently re-running every AI
   call with an unsaved prompt, and progress writes only update a RUNNING row, so a
   late write can never resurrect a cancelled or deleted preview.
 * Clustering follows a real run's calibration: the same stratified sample, the same
   K bound halved while too few playlists survive, the minimum-size filter and the
   diverse top-N selection, then each playlist is named through the same naming
-  path, used-title list and duplicate-suffix rule as a real run, with the provider
-  settings passed as the one ai_config dict that path reads.
-* The whole job shares one database connection, and expected conditions such as an
-  empty library end as TaskFailed with a readable message, never a crash traceback.
+  path and duplicate-suffix rule as a real run, starting from an empty used-title
+  list, with the provider settings passed as the one ai_config dict that path
+  reads. Every calibration attempt reuses the track rows the first one loaded.
+* Expected conditions such as an empty library end as TaskFailed with a readable
+  message, never a crash traceback.
 """
 
 import json
 import logging
-import secrets
 import uuid
 
 import config
@@ -290,11 +290,11 @@ def _sample_item_ids():
     )
     item_ids = [track['item_id'] for track in _get_stratified_song_subset(genre_map, target)]
     if len(item_ids) > PREVIEW_MAX_SONGS:
-        item_ids = secrets.SystemRandom().sample(item_ids, PREVIEW_MAX_SONGS)
+        item_ids = item_ids[:PREVIEW_MAX_SONGS]
     return item_ids, genre_map
 
 
-def _cluster_once(item_ids, clusters):
+def _cluster_once(item_ids, clusters, tracks_cache=None):
     from tasks.clustering_helper import _perform_single_clustering_iteration
 
     top_n_moods = config.TOP_N_MOODS
@@ -331,6 +331,7 @@ def _cluster_once(item_ids, clusters):
             'other_feature_diversity': 0.0, 'other_feature_purity': 0.0,
         },
         enable_clustering_embeddings=config.ENABLE_CLUSTERING_EMBEDDINGS,
+        tracks_cache=tracks_cache,
     )
 
 
@@ -354,6 +355,7 @@ def _cluster_sample(task_id, state):
 
     clusters, needed = preview_limits(len(item_ids))
     best_result, best_keepers = None, -1
+    tracks_cache = {}
     for attempt in range(max(1, config.CLUSTERING_CALIBRATION_MAX_TRIES)):
         _report(
             task_id,
@@ -361,7 +363,7 @@ def _cluster_sample(task_id, state):
             song_count=len(item_ids),
             message='Clustering %d songs into %d groups with K-Means...' % (len(item_ids), clusters),
         )
-        result = _cluster_once(item_ids, clusters)
+        result = _cluster_once(item_ids, clusters, tracks_cache)
         keepers = _keepers(result)
         if keepers > best_keepers:
             best_result, best_keepers = result, keepers

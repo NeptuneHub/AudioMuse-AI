@@ -69,6 +69,8 @@ def stopped(monkeypatch):
     stop = MagicMock()
     monkeypatch.setattr(worker_mod, 'stop_hard', stop)
     return stop
+
+
 class TestAStoppingWorkerNeverClaimsTheNextJob:
 
     def test_claim_returns_nothing_once_a_stop_has_begun(self, monkeypatch):

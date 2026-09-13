@@ -108,9 +108,12 @@ def incomplete_creds_error(target_type, creds):
     missing = missing_required_creds(target_type, creds if isinstance(creds, dict) else {})
     if not missing:
         return None
-    return 'Incomplete credentials: fill in ' + ', '.join(
-        _CRED_LABELS.get(key, key) for key in missing
-    ) + '.'
+    labels = [_CRED_LABELS.get(key, key) for key in missing if key not in ('user', 'password')]
+    if (target_type or '').strip().lower() == 'navidrome' and {'user', 'password'} <= set(missing):
+        labels.append('Username and Password, or an API key')
+    else:
+        labels.extend(_CRED_LABELS.get(key, key) for key in missing if key in ('user', 'password'))
+    return 'Incomplete credentials: fill in ' + ', '.join(labels) + '.'
 
 
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
@@ -665,23 +668,50 @@ def _restore_duplicate_file_maps(cur, duplicates, new_meta):
     for new_id, item_id in duplicates.items():
         path = (new_meta.get(new_id) or {}).get('path')
         rows.append((item_id, _sanitize_text(new_id), _sanitize_text(path) if path else None))
-    restored = 0
+    cur.execute(
+        "CREATE TEMP TABLE migration_duplicate_files ("
+        " item_id TEXT NOT NULL, new_id TEXT PRIMARY KEY, path TEXT"
+        ") ON COMMIT DROP"
+    )
     for i in range(0, len(rows), 1000):
         chunk = rows[i : i + 1000]
         placeholders = ",".join(["(%s,%s,%s)"] * len(chunk))
         flat = [value for row in chunk for value in row]
         cur.execute(
-            "INSERT INTO track_server_map "
-            "(item_id, server_id, provider_track_id, match_tier, file_path, updated_at) "
-            "SELECT d.item_id, s.server_id, d.new_id, 'default', d.path, now() "
-            "FROM (VALUES " + placeholders + ") AS d(item_id, new_id, path), music_servers s "  # nosec B608 - %s-placeholder string only; values are bound params
-            "WHERE s.is_default AND EXISTS (SELECT 1 FROM score sc WHERE sc.item_id = d.item_id) "
-            "ON CONFLICT (server_id, provider_track_id) DO NOTHING",
+            "INSERT INTO migration_duplicate_files (item_id, new_id, path) VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
             flat,
         )
-        restored += cur.rowcount
+    cur.execute(
+        "INSERT INTO track_server_map "
+        "(item_id, server_id, provider_track_id, match_tier, file_path, updated_at) "
+        "SELECT d.item_id, s.server_id, d.new_id, "
+        "COALESCE((SELECT p.match_tier FROM track_server_map p "
+        "  WHERE p.server_id = s.server_id AND p.item_id = d.item_id "
+        "  ORDER BY p.provider_track_id LIMIT 1), 'default'), d.path, now() "
+        "FROM migration_duplicate_files d, music_servers s "
+        "WHERE s.is_default AND EXISTS (SELECT 1 FROM score sc WHERE sc.item_id = d.item_id) "
+        "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
+    )
+    restored = cur.rowcount
+    fingerprints = 0
+    cur.execute("SELECT to_regclass('public.chromaprint') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute(
+            "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
+            "SELECT DISTINCT ON (d.new_id) s.server_id, d.new_id, c.fingerprint, now() "
+            "FROM migration_duplicate_files d "
+            "JOIN music_servers s ON s.is_default "
+            "JOIN track_server_map p ON p.server_id = s.server_id AND p.item_id = d.item_id "
+            "  AND p.provider_track_id <> d.new_id "
+            "JOIN chromaprint c ON c.server_id = s.server_id "
+            "  AND c.provider_track_id = p.provider_track_id AND c.fingerprint IS NOT NULL "
+            "ORDER BY d.new_id, p.provider_track_id "
+            "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
+        )
+        fingerprints = cur.rowcount
     logger.info(
-        "provider migration: kept %d duplicate file(s) mapped to their song", restored
+        "provider migration: kept %d duplicate file(s) mapped to their song, %d with "
+        "the song's Chromaprint", restored, fingerprints,
     )
     return restored
 

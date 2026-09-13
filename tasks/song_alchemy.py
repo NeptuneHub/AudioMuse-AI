@@ -718,6 +718,8 @@ def song_alchemy(
             comp_idx = int(item_id_parts[1])
             key = f"{artist_id}_{comp_idx}"
             coord = artist_comp_to_coord.get(key)
+            if coord is None:
+                coord = artist_comp_to_coord.get(f"{m.get('author')}_{comp_idx}")
             if coord is not None:
                 pid = f"__{side}_artist_comp__{artist_id}_{comp_idx}"
                 proj_map[pid] = coord
@@ -751,9 +753,14 @@ def song_alchemy(
             if item.get('type') == 'artist':
                 artist_id = item['id']
                 _gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(artist_id)
+                artist_name = registry.artist_names_for_ids(
+                    [artist_id], ms_context.active_server_id()
+                ).get(str(artist_id)) if gmm_weights else None
                 for comp_idx, weight in enumerate(gmm_weights):
                     key = f"{artist_id}_{comp_idx}"
                     c = artist_comp_to_coord.get(key)
+                    if c is None and artist_name:
+                        c = artist_comp_to_coord.get(f"{artist_name}_{comp_idx}")
                     if c is not None:
                         coords.append(np.array(c, dtype=float))
                         weights.append(weight)

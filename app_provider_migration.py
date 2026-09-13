@@ -616,9 +616,10 @@ def _overrides_by_catalogue_id(by_provider_id):
     overrides = {}
     for provider_id in sorted(by_provider_id):
         catalogue_id = canonical_of.get(provider_id, provider_id)
-        if catalogue_id not in overrides:
-            overrides[catalogue_id] = by_provider_id[provider_id]
-    return overrides
+        path = by_provider_id[provider_id]
+        if path and path not in overrides.setdefault(catalogue_id, []):
+            overrides[catalogue_id].append(path)
+    return {catalogue_id: paths for catalogue_id, paths in overrides.items() if paths}
 
 
 def _apply_source_path_overrides(old_rows, overrides):
@@ -626,9 +627,10 @@ def _apply_source_path_overrides(old_rows, overrides):
         return old_rows
     for r in old_rows:
         real = overrides.get(r.get('item_id'))
-        if real:
-            r['file_path'] = real
-            r['file_paths'] = [real]
+        paths = [real] if isinstance(real, str) else [p for p in (real or []) if p]
+        if paths:
+            r['file_path'] = paths[0]
+            r['file_paths'] = paths
     return old_rows
 
 
@@ -738,14 +740,7 @@ def session_start():
         return jsonify({'error': creds_error}), 400
     registered = _registered_secondary_server(target_type, target_creds)
     if registered is not None:
-        return jsonify(
-            {
-                'error': (
-                    f"'{registered['name']}' is already added as a server with this address. "
-                    "Make it the default server from the setup page instead of migrating to it."
-                )
-            }
-        ), 409
+        return jsonify(_registered_server_error(registered)), 409
 
     import config
 
@@ -801,16 +796,36 @@ def _normalized_server_url(url):
     return str(url or '').strip().rstrip('/').lower()
 
 
+def _registered_server_error(registered):
+    return {
+        'error': (
+            f"'{registered['name']}' is already added as a server with this address. "
+            "Make it the default server from the setup page instead of migrating to it."
+        )
+    }
+
+
 def _registered_secondary_server(target_type, target_creds):
     from tasks.mediaserver import registry
 
     wanted = _normalized_server_url((target_creds or {}).get('url'))
     if not wanted:
         return None
+    db = get_db()
     try:
-        servers = registry.list_servers()
+        with db.cursor() as cur:
+            cur.execute("SAVEPOINT migration_target_check")
+        try:
+            servers = list(registry.list_servers(db))
+        except Exception:
+            logger.exception("Could not list the registered servers for the migration target check")
+            with db.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT migration_target_check")
+            return None
+        with db.cursor() as cur:
+            cur.execute("RELEASE SAVEPOINT migration_target_check")
     except Exception:
-        logger.exception("Could not list the registered servers for the migration target check")
+        logger.exception("Could not isolate the migration target check")
         return None
     for server in servers:
         if server.get('is_default') or server.get('server_type') != target_type:
@@ -2044,6 +2059,9 @@ def _execute_locked(db, session_id, confirmation_text):
         return jsonify(
             {'error': f'{creds_error} Discard this migration and start again with every field filled in.'}
         ), 400
+    registered = _registered_secondary_server(target_type, _session_state(raw_creds))
+    if registered is not None:
+        return jsonify(_registered_server_error(registered)), 409
 
     # A migration rewrites track_server_map the same way a sweep does, so it has
     # to keep blocking on a live sweep too, not just the queue-guard types -

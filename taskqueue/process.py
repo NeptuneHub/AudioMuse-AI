@@ -31,9 +31,9 @@ The two layouts put that pid in different fields
 Main Features:
 * stop_hard kills this process tree and exits, on POSIX and Windows
 * stopping_reason tells the job loop that a dead job process was killed by this
-  stop, so it is logged as the stop it is, not as an out-of-memory crash. The
-  outcome stays a retryable failure: the wedged-task nudge sends the same cancel
-  while the row is still RUNNING, and that task must be requeued, not revoked
+  stop, so it is logged as the stop it is, not as an out-of-memory crash, and a
+  stopping worker claims nothing. The worker exits before it writes the row, so a
+  nudged task left RUNNING is requeued by the reclaim that follows, never revoked
 * sweep_stale_temp_dirs clears joblib folders a previous hard kill leaked
 """
 

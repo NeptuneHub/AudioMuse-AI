@@ -393,3 +393,15 @@ class TestClusteringNamingStyles:
         monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', _must_not_run)
         monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', _must_not_run)
         assert _call_helper('Rock_Fast_automatic', provider='NONE') == 'Rock_Fast_automatic'
+
+
+class TestOnlyShownTitlesAreRejected:
+    @patch('tasks.ai.api.generate_text')
+    def test_a_title_used_long_ago_and_not_shown_is_accepted_at_once(self, mock_generate):
+        from tasks.ai.prompts import TITLE_PROMPT_RECENT_TITLES
+
+        old = ['Old Title Number %d' % i for i in range(TITLE_PROMPT_RECENT_TITLES + 5)]
+        mock_generate.return_value = 'Old Title Number 0'
+        title = get_ai_playlist_title('Name it.', SONGS, ai_config(), used_titles=old)
+        assert title == 'Old Title Number 0'
+        assert mock_generate.call_count == 1, 'the model is only refused titles it was shown'

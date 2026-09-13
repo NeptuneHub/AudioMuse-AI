@@ -903,3 +903,40 @@ class TestDuplicateFilesOfOneSong:
         result = CandidateIndex(self._tracks()).match_chunk([old])
         assert result['matches'] == {}
         assert result['extra_matches'] == {}
+
+
+class TestExtrasNeverStealAnotherSong:
+    def test_an_ambiguous_tail_is_never_used_for_an_extra(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'abba', 'path': '/music/ABBA/Greatest Hits/CD1/01.mp3', 'title': 'Waterloo', 'artist': 'ABBA', 'album': 'Greatest Hits', 'album_artist': 'ABBA'},
+            {'id': 'queen', 'path': '/volume2/Queen/Greatest Hits/CD1/01.mp3', 'title': 'Bohemian', 'artist': 'Queen', 'album': 'Greatest Hits', 'album_artist': 'Queen'},
+        ]
+        old = {'item_id': 'fp_q', 'title': 'Bohemian', 'author': 'Queen', 'album': 'Greatest Hits', 'album_artist': 'Queen',
+               'file_path': '/volume2/Queen/Greatest Hits/CD1/01.mp3',
+               'file_paths': ['/volume2/Queen/Greatest Hits/CD1/01.mp3', '/nas2/other/Greatest Hits/CD1/01.mp3']}
+        result = CandidateIndex(tracks).match_chunk([old])
+        assert result['matches'] == {'fp_q': 'queen'}
+        assert result['extra_matches'] == {}, 'a shared tail proves nothing, so ABBA is never bound to Queen'
+
+    def test_a_later_songs_own_match_takes_back_a_file_claimed_as_an_extra(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'n-1', 'path': '/music/A/Album/01 Song.flac', 'title': 'Song', 'artist': 'A', 'album': 'Album', 'album_artist': 'A'},
+            {'id': 'n-4', 'path': '/music/B/Other/02 Tune.flac', 'title': 'Tune', 'artist': 'B', 'album': 'Other', 'album_artist': 'B'},
+        ]
+        greedy = {'item_id': 'fp_1', 'title': 'Song', 'author': 'A', 'album': 'Album', 'album_artist': 'A',
+                  'file_path': '/media/A/Album/01 Song.flac',
+                  'file_paths': ['/media/A/Album/01 Song.flac', '/media/B/Other/02 Tune.flac']}
+        owner = {'item_id': 'fp_9', 'title': 'Tune', 'author': 'B', 'album': 'Other', 'album_artist': 'B',
+                 'file_path': '/media/B/Other/02 Tune.flac'}
+        claimed = {}
+        index = CandidateIndex(tracks)
+        first = index.match_chunk([greedy], claimed)
+        second = index.match_chunk([owner], claimed)
+        assert first['extra_matches'] == {'n-4': 'fp_1'}
+        assert second['matches'] == {'fp_9': 'n-4'}, (
+            'an extra claims below every tier, so the file goes back to the song it really belongs to'
+        )

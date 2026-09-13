@@ -249,7 +249,14 @@ class TestBackendValidation:
         assert values['AI_NAMING_PROMPT_MODE'] == 'title'
 
     def test_an_empty_prompt_is_rejected(self):
-        assert app_setup._validate_ai_prompt_values({'AI_NAMING_TITLE_PROMPT': '  \n '})
+        assert app_setup._validate_ai_prompt_values(
+            {'AI_NAMING_PROMPT_MODE': 'title', 'AI_NAMING_TITLE_PROMPT': '  \n '}
+        )
+
+    def test_saving_word_plus_genre_ignores_an_emptied_hidden_prompt(self):
+        values = {'AI_NAMING_PROMPT_MODE': 'concept', 'AI_NAMING_TITLE_PROMPT': ''}
+        assert app_setup._validate_ai_prompt_values(values) is None
+        assert 'AI_NAMING_TITLE_PROMPT' not in values, 'the stored prompt is kept, not wiped'
 
     def test_an_oversized_prompt_is_rejected(self):
         text = 'x' * (app_setup.AI_TITLE_PROMPT_MAX_CHARS + 1)
@@ -360,3 +367,14 @@ class TestPreviewRoute:
         body, status = self._post({'mode': 'poem'})
         assert status == 202
         assert received['mode'] == 'concept'
+
+
+def test_an_idle_status_re_enables_the_preview_button():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / 'static' / 'setup.js').read_text(encoding='utf-8')
+    render = source[source.index('function renderAiPromptPreview'):]
+    render = render[:render.index('\nfunction ')]
+    idle = render[render.index("state.status === 'idle'"):render.index('var running')]
+    assert 'button.disabled = false' in idle
+    assert 'aiPromptState.taskId = null' in idle

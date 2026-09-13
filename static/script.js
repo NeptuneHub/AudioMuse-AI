@@ -229,7 +229,7 @@ async function checkActiveTasks() {
             const previousDetails = lastPolledTaskDetails[finishedTaskId];
             currentTaskId = null;
 
-            if (previousDetails && previousDetails.side_job) {
+            if (previousDetails?.side_job) {
                 delete lastPolledTaskDetails[finishedTaskId];
                 await fetchAndDisplayOverallLastTask();
                 disableTaskButtons(false);

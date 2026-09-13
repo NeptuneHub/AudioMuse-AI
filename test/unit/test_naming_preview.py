@@ -22,7 +22,7 @@ Main Features:
 * Every side-job rule (recap, cancel history, history, blocking gate, enqueue
   clear) reads SIDE_JOB_TASK_TYPES instead of a hand-kept list, and a running
   preview still shows on the dashboard that it blocks.
-* A running server sweep refuses the preview, as it refuses every batch start.
+* A running server sweep refuses the preview, and a sweep is refused while it runs.
 * A restarted preview fails instead of re-running, progress writes only UPDATE a
   RUNNING row, and expected problems end as TaskFailed.
 * The K bound never divides by zero and is halved while too few playlists survive.
@@ -141,7 +141,7 @@ class TestRegistration:
         script = (root / 'static' / 'script.js').read_text(encoding='utf-8')
         check = script[script.index('async function checkActiveTasks'):]
         check = check[:check.index('\nfunction ')]
-        side = check.index('previousDetails.side_job')
+        side = check.index('previousDetails?.side_job')
         assert side < check.index('getTaskStatusEndpointUrl'), (
             'a finished preview must reload the real last task before any final-status popup'
         )
@@ -460,7 +460,7 @@ class TestSampling:
         )
         item_ids, genre_map = naming_preview._sample_item_ids()
         assert len(item_ids) == naming_preview.PREVIEW_MAX_SONGS == 10000
-        assert len(set(item_ids)) == 10000
+        assert item_ids == [str(i) for i in range(10000)]
         assert db.log and all(sql.upper().startswith('SELECT') for sql, _p in db.log)
         assert db.commits == 1
 
@@ -480,7 +480,8 @@ class TestClusterSample:
         )
         monkeypatch.setattr(naming_preview, 'preview_limits', lambda count: (8, 3))
 
-        def fake_once(item_ids, clusters):
+        def fake_once(item_ids, clusters, tracks_cache=None):
+            calls.setdefault('caches', []).append(tracks_cache)
             calls['k'].append(clusters)
             if calls['results']:
                 return calls['results'].pop(0)
@@ -611,3 +612,15 @@ class TestNamePlaylists:
             ['Velvet Light', 'Velvet Light (2)', 'C_automatic'],
         ]
         assert db.rollbacks == 1
+
+
+def test_every_calibration_attempt_shares_one_track_cache(monkeypatch):
+    from tasks import clustering_helper
+
+    seen = []
+    monkeypatch.setattr(clustering_helper, '_perform_single_clustering_iteration',
+                        lambda **kwargs: seen.append(kwargs.get('tracks_cache')) or {})
+    cache = {}
+    naming_preview._cluster_once(['a', 'b'], 4, cache)
+    naming_preview._cluster_once(['a', 'b'], 2, cache)
+    assert seen[0] is cache and seen[1] is cache

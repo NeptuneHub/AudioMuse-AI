@@ -20,8 +20,9 @@ Main Features:
 * Zip-or-sql detection by magic bytes with in-zip .sql extraction for restore.
 * pg_dump/psql connection args come from config.DATABASE_URL, with the password
   moved into PGPASSWORD so it never appears in argv.
-* Every backup and restore timeout is one hour, and a stored old Flask wait
-  cannot shorten the restore's wait for Flask.
+* Every backup and restore timeout is one hour, the old stored Flask wait default
+  is raised once, a running restore keeps its lock fresh, and a second backup
+  create is refused while one is still dumping.
 """
 
 import io
@@ -485,22 +486,90 @@ class TestRestoreChunkProgress:
 def test_every_backup_and_restore_timeout_is_one_hour():
     from pathlib import Path
 
-    import config
-
     root = Path(__file__).resolve().parents[2]
     assert app_backup.BACKUP_RESTORE_TIMEOUT_SECONDS == 3600
     source = (root / 'app_backup.py').read_text(encoding='utf-8')
     for stale in ('timeout=600', 'timeout=120', 'timeout=3600', 'after 600 seconds', 'after 3600 seconds'):
         assert stale not in source, stale
     assert source.count('timeout=BACKUP_RESTORE_TIMEOUT_SECONDS') == 3
-    assert config.FLASK_READY_TIMEOUT_SECONDS == 3600
-    assert 'config.FLASK_READY_TIMEOUT_SECONDS}' not in source
+    config_source = (root / 'config.py').read_text(encoding='utf-8')
+    assert 'os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "3600")' in config_source
     assert 'const RESTORE_MAX_WAIT_SECONDS = 60 * 60;' in (root / 'templates' / 'backup.html').read_text(encoding='utf-8')
 
 
-def test_a_stored_old_flask_wait_cannot_shorten_the_restore_wait(monkeypatch):
-    monkeypatch.setattr(app_backup.config, 'FLASK_READY_TIMEOUT_SECONDS', 180.0)
-    assert app_backup._flask_ready_timeout() == 3600
-    monkeypatch.setattr(app_backup.config, 'FLASK_READY_TIMEOUT_SECONDS', 7200.0)
-    assert app_backup._flask_ready_timeout() == 7200
+def test_the_restore_waits_for_flask_as_long_as_the_parameter_says(monkeypatch):
+    monkeypatch.setattr(app_backup.config, 'FLASK_READY_TIMEOUT_SECONDS', 120.0)
+    assert app_backup._flask_ready_timeout() == 120.0, 'an admin can still lower the wait'
+
+
+def test_the_old_stored_flask_wait_default_is_raised_once():
+    import database
+
+    cur = MagicMock()
+    cur.fetchone.return_value = (True,)
+    cur.rowcount = 1
+    assert database.upgrade_stored_config_defaults(cur) == 1
+    sql, params = cur.execute.call_args[0]
+    assert sql.startswith('UPDATE app_config SET value = %s WHERE key = %s AND value = ANY(%s)')
+    assert params == ('3600.0', 'FLASK_READY_TIMEOUT_SECONDS', ['180', '180.0']), (
+        'only the untouched old default moves; a value the admin chose is kept'
+    )
+
+
+def test_a_running_restore_keeps_its_lock_fresh(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+    lock = tmp_path / '.restore.lock'
+    lock.write_text('1000.0')
+    assert app_backup._refresh_restore_lock() is True
+    assert float(lock.read_text()) > 1000.0
+    assert app_backup._restore_lock_held()
+    lock.unlink()
+    assert app_backup._refresh_restore_lock() is False
+    assert not lock.exists(), 'a released lock is never recreated by the refresh'
+
+
+def test_the_runner_refreshes_the_lock_while_its_steps_run(monkeypatch):
+    import threading
+
+    beats = []
+    started = threading.Event()
+
+    def fake_keep(stop_event):
+        started.set()
+        stop_event.wait(5)
+        beats.append(stop_event.is_set())
+
+    def fake_steps(dump_file, log_file):
+        assert started.wait(5), 'the lock refresh starts before the restore steps'
+        return 0
+
+    monkeypatch.setattr(app_backup, '_keep_restore_lock_fresh', fake_keep)
+    monkeypatch.setattr(app_backup, '_run_restore_steps', fake_steps)
+    assert app_backup._run_restore_runner('dump.sql', 'restore.log') == 0
+
+
+def test_a_second_backup_create_is_refused_while_one_is_dumping(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+    assert app_backup._acquire_backup_create_lock() is True
+    runs = []
+    monkeypatch.setattr(app_backup.subprocess, 'run', lambda *a, **k: runs.append(a))
+    resp = client.post('/api/backup/create')
+    assert resp.status_code == 409
+    assert 'already being created' in resp.get_json()['error']
+    assert runs == []
+    app_backup._release_backup_create_lock()
+    assert app_backup._acquire_backup_create_lock() is True
+    app_backup._release_backup_create_lock()
+
+
+def test_a_backup_lock_left_by_a_dead_process_expires(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+    lock = tmp_path / '.backup_create.lock'
+    lock.write_text('0')
+    old = 1000.0
+    os.utime(lock, (old, old))
+    assert app_backup._acquire_backup_create_lock() is True
+    app_backup._release_backup_create_lock()
 

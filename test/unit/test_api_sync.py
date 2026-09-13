@@ -514,4 +514,4 @@ class TestRegistryFailureFallback:
         bp_mod.probe_catalogue_canonical_ids = lambda: False
         _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
         resp = client.get('/api/sync?limit=1')
-        assert resp.status_code != 503 or 'retry shortly' not in (resp.get_json() or {}).get('error', '')
+        assert resp.status_code == 200, resp.get_data(as_text=True)[:200]

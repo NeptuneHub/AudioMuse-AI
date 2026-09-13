@@ -3091,3 +3091,14 @@ class TestSweepKeepsDuplicateFiles:
         assert count == 2
         assert written == {'n-1': ('fp_1', 'path', '/a.flac'), 'n-2': ('fp_1', 'path', '/a copy.flac')}
 
+
+class TestSweepRefusesWhileAPreviewRuns:
+    def test_a_running_title_preview_blocks_a_sweep(self, monkeypatch):
+        import app_music_servers
+
+        preview = {'task_id': 'p1', 'task_type': 'naming_preview', 'status': 'RUNNING'}
+        monkeypatch.setattr(
+            app_music_servers, 'get_active_main_task',
+            lambda task_type=None, **k: preview if task_type == 'naming_preview' else None,
+        )
+        assert app_music_servers._task_blocking_a_sweep() == preview

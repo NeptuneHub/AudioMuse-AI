@@ -24,8 +24,8 @@ Main Features:
   that cannot be read counts as held. It also
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
 * pg_dump, the psql replay and the post-restore schema ensure are each bounded
-  by BACKUP_RESTORE_TIMEOUT_SECONDS (one hour), and the wait for Flask after a
-  restore never gives up sooner than that.
+  by BACKUP_RESTORE_TIMEOUT_SECONDS (one hour). A running restore keeps its lock
+  fresh, and a second backup create is refused while one is still dumping.
 * The restore runs detached, so `/api/backup/restore` answers "started" long
   before the outcome is known. The runner appends a `RESTORE-RESULT:` marker to
   its log for whoever reads it; nothing polls it. The page counts down and
@@ -83,9 +83,18 @@ RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
 # Every backup and restore step that runs a Postgres client (pg_dump, the psql
 # replay, the post-restore schema ensure) gets one hour: a large catalogue
 # dumps and replays for many minutes, and a timeout there fails the whole job.
-# The restore's wait for Flask gets at least as long, even when app_config still
-# holds the old 180 second FLASK_READY_TIMEOUT_SECONDS written by an earlier boot.
 BACKUP_RESTORE_TIMEOUT_SECONDS = 60 * 60
+
+# A running restore rewrites its lock timestamp this often, so a restore that
+# outlives RESTORE_LOCK_TTL_SECONDS is never mistaken for an abandoned one. Only
+# a runner that died stops refreshing, and its lock then expires on the TTL.
+RESTORE_LOCK_REFRESH_SECONDS = 60
+
+# Creating a backup runs pg_dump inside the request for up to an hour and deletes
+# the previous backup files first, so a second create started meanwhile (a retry
+# after a proxy timeout) would delete the dump still being written. The lock file
+# refuses that; a lock older than the pg_dump bound belongs to a dead process.
+BACKUP_CREATE_LOCK_TTL_SECONDS = BACKUP_RESTORE_TIMEOUT_SECONDS + 10 * 60
 
 # A lock we cannot READ is not an absent one: a uid or permission mismatch on a
 # shared backup volume, or an I/O error on network storage, must refuse the
@@ -155,6 +164,63 @@ def _release_restore_lock():
         pass
     except OSError:
         logger.exception("Could not release the restore lock; it expires on its own.")
+
+
+def _refresh_restore_lock():
+    try:
+        with open(_restore_lock_path(), 'r+', encoding='utf-8') as fh:
+            fh.seek(0)
+            fh.write(str(time.time()))
+            fh.truncate()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.exception("Could not refresh the restore lock")
+        return False
+
+
+def _keep_restore_lock_fresh(stop_event):
+    while not stop_event.wait(RESTORE_LOCK_REFRESH_SECONDS):
+        if not _refresh_restore_lock():
+            return
+
+
+def _backup_create_lock_path():
+    return os.path.join(BACKUP_DIR, '.backup_create.lock')
+
+
+def _acquire_backup_create_lock():
+    path = _backup_create_lock_path()
+    try:
+        age = time.time() - os.path.getmtime(path)
+        if age > BACKUP_CREATE_LOCK_TTL_SECONDS:
+            logger.warning("Clearing a backup lock left behind %.0fs ago.", age)
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("Could not inspect the backup lock; failing closed.")
+        return False
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(str(time.time()))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        logger.exception("Could not take the backup lock; failing closed.")
+        return False
+
+
+def _release_backup_create_lock():
+    try:
+        os.unlink(_backup_create_lock_path())
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("Could not release the backup lock; it expires on its own.")
 
 
 def _restore_lock_held():
@@ -281,7 +347,7 @@ def _extract_sql_if_zip(dump_file, log):
 
 
 def _flask_ready_timeout():
-    return max(float(config.FLASK_READY_TIMEOUT_SECONDS), BACKUP_RESTORE_TIMEOUT_SECONDS)
+    return float(config.FLASK_READY_TIMEOUT_SECONDS)
 
 
 def _wait_for_flask(log=None):
@@ -343,6 +409,18 @@ def _write_restore_result(log, result, message):
 
 
 def _run_restore_runner(dump_file, log_file):
+    stop_event = threading.Event()
+    heartbeat = threading.Thread(
+        target=_keep_restore_lock_fresh, args=(stop_event,), name='restore-lock-refresh', daemon=True
+    )
+    heartbeat.start()
+    try:
+        return _run_restore_steps(dump_file, log_file)
+    finally:
+        stop_event.set()
+
+
+def _run_restore_steps(dump_file, log_file):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     with open(log_file, 'a', encoding='utf-8', errors='ignore') as log:
         log.write(f"Restore runner started at {datetime.now().isoformat()}\n")
@@ -651,7 +729,17 @@ def create_backup():
                   type: string
     """
     os.makedirs(BACKUP_DIR, exist_ok=True)
+    if not _acquire_backup_create_lock():
+        return jsonify(
+            {'error': 'A backup is already being created. Wait for it to finish, then download it.'}
+        ), 409
+    try:
+        return _create_backup_locked()
+    finally:
+        _release_backup_create_lock()
 
+
+def _create_backup_locked():
     # Remove old backup files
     for old in os.listdir(BACKUP_DIR):
         if old.startswith('audiomuse_backup_') and old.endswith(('.sql', '.zip')):
@@ -905,6 +993,7 @@ def restore_backup():
                             'Restart the upload from chunk 1.'
                         }
                     ), 409
+                _refresh_restore_lock()
 
             chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
 

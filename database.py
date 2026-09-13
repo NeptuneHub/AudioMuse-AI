@@ -1380,6 +1380,25 @@ def purge_media_keys_from_app_config(cur):
     return cur.rowcount or 0
 
 
+_UPGRADED_CONFIG_DEFAULTS = (
+    ('FLASK_READY_TIMEOUT_SECONDS', ('180', '180.0'), '3600.0'),
+)
+
+
+def upgrade_stored_config_defaults(cur):
+    cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return 0
+    upgraded = 0
+    for key, old_values, new_value in _UPGRADED_CONFIG_DEFAULTS:
+        cur.execute(
+            "UPDATE app_config SET value = %s WHERE key = %s AND value = ANY(%s)",
+            (new_value, key, list(old_values)),
+        )
+        upgraded += cur.rowcount or 0
+    return upgraded
+
+
 def missing_required_creds(server_type, creds):
     """Required-but-empty credential keys for ``server_type``."""
     server_type = (server_type or '').strip().lower()
@@ -1968,6 +1987,11 @@ def init_db():
             _drop_unconfigured_servers(cur)
             _migrate_artist_mapping_to_server_map(cur)
             _migrate_playlist_server_column(cur)
+            upgraded_defaults = upgrade_stored_config_defaults(cur)
+            if upgraded_defaults:
+                logger.info(
+                    "Raised %d stored parameter(s) still holding an old default", upgraded_defaults
+                )
             removed_media_keys = purge_media_keys_from_app_config(cur)
             if removed_media_keys:
                 logger.info(
@@ -2244,8 +2268,9 @@ def insert_default_text_search_queries(cur, queries=None):
 
 
 def ensure_text_search_queries_table():
-    db = get_db()
+    db = None
     try:
+        db = get_db()
         with db.cursor() as cur:
             cur.execute(_ADVISORY_LOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
             try:
@@ -2253,17 +2278,21 @@ def ensure_text_search_queries_table():
                 cur.execute(TEXT_SEARCH_QUERIES_RANK_INDEX_DDL)
                 db.commit()
             finally:
-                db.rollback()
-                cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
+                try:
+                    db.rollback()
+                    cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
+                except Exception:
+                    logger.exception("Failed to release the schema advisory lock")
         db.commit()
         logger.info("Ensured text_search_queries table exists")
         return True
     except Exception:
         logger.exception("Failed to create text_search_queries table")
-        try:
-            db.rollback()
-        except Exception:
-            logger.debug("text_search_queries ensure rollback failed", exc_info=True)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                logger.debug("text_search_queries ensure rollback failed", exc_info=True)
         return False
 
 

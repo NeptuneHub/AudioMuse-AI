@@ -739,17 +739,22 @@ def _add_to_playlist_without_player(playlist_id, item_ids):
                 )
                 added += 1
         stored = _jsonrpc_request("playlists", ["tracks", 0, 1, f"playlist_id:{playlist_id}"])
+        stored_count = int((stored or {}).get("count") or 0)
     except Exception:
         logger.exception("Error adding tracks to Lyrion playlist %s without a player", playlist_id)
         return False
 
-    stored_count = int((stored or {}).get("count") or 0)
     if stored_count == 0:
         logger.error(
             "Lyrion playlist %s is still empty after adding %d of %d tracks",
             playlist_id, added, len(requested),
         )
         return False
+    if stored_count < len(requested):
+        logger.warning(
+            "Lyrion playlist %s holds only %d of the %d requested tracks",
+            playlist_id, stored_count, len(requested),
+        )
     logger.info(
         "Lyrion playlist %s now holds %d tracks (%d requested), filled without a player",
         playlist_id, stored_count, len(requested),

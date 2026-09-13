@@ -24,7 +24,9 @@ Main Features:
 * One song held as N files keeps all N: every other known path of a matched
   row that lands exactly on a target file (path, then path tail) is returned
   in ``extra_matches``, from the lookups the index already built, so a sweep
-  or a provider migration never collapses duplicate files to one mapping
+  or a provider migration never collapses duplicate files to one mapping. A
+  path tail two target files share is never used for an extra, and an extra
+  claims its file below every tier, so any song's own match takes it back
 """
 
 import re
@@ -229,6 +231,7 @@ class CandidateIndex:
         self.by_norm_meta = {}
         self.by_title_artist = {}
         self.path_by_id = {}
+        self._ambiguous_tails = set()
         self.size = 0
         for n in new_tracks:
             self.add(n)
@@ -251,6 +254,8 @@ class CandidateIndex:
         tk = path_tail_key(np)
         if tk and tk not in self.by_tail:
             self.by_tail[tk] = slim['id']
+        elif tk and self.by_tail[tk] != slim['id']:
+            self._ambiguous_tails.add(tk)
         ek = _exact_meta_key(slim, _best_artist_new)
         if ek:
             self.by_exact_meta.setdefault(ek, []).append(slim)
@@ -296,7 +301,7 @@ class CandidateIndex:
                 yield 'path', self.by_norm_path[np]
                 continue
             tk = path_tail_key(np)
-            if tk and tk in self.by_tail:
+            if tk and tk in self.by_tail and tk not in self._ambiguous_tails:
                 yield 'tail', self.by_tail[tk]
 
     def match_chunk(self, old_rows, claimed_new_ids=None):
@@ -356,7 +361,7 @@ class CandidateIndex:
                     continue
                 extra_matches[sibling] = old['item_id']
                 extra_match_tiers[sibling] = tier
-                claimed[sibling] = self._tier_rank[tier]
+                claimed[sibling] = len(self.tiers)
 
         return {
             'matches': matches,

@@ -41,6 +41,7 @@ from tasks.ai.providers import (
 )
 from tasks.ai.playlist_namer import GENRE_DISPLAY
 from tasks.ai.prompts import (
+    TITLE_PROMPT_RECENT_TITLES,
     build_mcp_system_prompt,
     build_title_naming_prompt,
     playlist_concept_prompt_template,
@@ -483,7 +484,8 @@ def get_ai_playlist_title(
             max_songs,
         )
     recent_titles = [clean_playlist_name(title) for title in (used_titles or [])]
-    taken = {title.casefold(): title for title in recent_titles if title}
+    shown_titles = [title for title in recent_titles if title][-TITLE_PROMPT_RECENT_TITLES:]
+    taken = {title.casefold(): title for title in shown_titles}
     duplicate_fallback = None
     full_prompt = build_title_naming_prompt(instructions, songs, max_songs, recent_titles)
     provider = (ai_config.get("provider") or "NONE").upper()

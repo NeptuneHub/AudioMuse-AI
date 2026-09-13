@@ -516,6 +516,7 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
     )
 
     written = 0
+    duplicate_files = 0
     processed = 0
     tier_counts = {}
     claimed = {}
@@ -524,7 +525,9 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
         for chunk in _iter_unmapped_local_rows(db, server_id):
             cancel()
             result = index.match_chunk(chunk, claimed)
-            written += _write_matches(db, server_id, result, index.path_by_id)
+            _write_matches(db, server_id, result, index.path_by_id)
+            written += len(result['matches'])
+            duplicate_files += len(result.get('extra_matches') or {})
             processed += len(chunk)
             for tier, count in result['tier_counts'].items():
                 if count:
@@ -555,6 +558,7 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
         'local_tracks': total_local,
         'unmapped': unmapped_count,
         'matched': written,
+        'duplicate_files': duplicate_files,
         'pruned': pruned,
         'prune_refused': bool(prune_refused),
         'artists': artists_written,

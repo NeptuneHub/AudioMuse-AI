@@ -420,6 +420,56 @@ class TestRelaxTrackServerMapPk:
             ('X', 'srv', 'navi-2', 'default', '/new/copy.flac'),
         ], 'both files of the song survive, and a duplicate of an unknown song is never inserted'
 
+    def test_a_kept_duplicate_file_inherits_the_song_tier_and_fingerprint(self, old_schema_db):
+        from tasks import provider_migration_tasks as mig
+
+        session_id = _prepare_migration_session(old_schema_db)
+        with old_schema_db.cursor() as cur:
+            for column in ('author TEXT', 'album TEXT', 'album_artist TEXT', 'year INTEGER'):
+                cur.execute('ALTER TABLE score ADD COLUMN IF NOT EXISTS ' + column)
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS chromaprint (server_id TEXT NOT NULL, "
+                "provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
+                "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+                "PRIMARY KEY (server_id, provider_track_id))"
+            )
+            cur.execute("UPDATE track_server_map SET match_tier = 'analysis' WHERE provider_track_id = 'provA'")
+            cur.execute(
+                "INSERT INTO track_server_map "
+                "(item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('X', 'srv', 'provB', 'analysis', '/old/copy.flac')"
+            )
+            cur.execute(
+                "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint) "
+                "VALUES ('srv', 'provA', %s), ('srv', 'provB', %s)",
+                (b'print-a', b'print-b'),
+            )
+        old_schema_db.commit()
+
+        with old_schema_db.cursor() as cur:
+            mig._run_migration_transaction(
+                cur, {'X': 'navi-1'},
+                {'navi-1': {'path': '/new/a.flac'}, 'navi-2': {'path': '/new/copy.flac'}},
+                'navidrome', {}, session_id,
+                duplicates={'navi-2': 'X'},
+            )
+            cur.execute(
+                "SELECT provider_track_id, match_tier FROM track_server_map ORDER BY provider_track_id"
+            )
+            tiers = cur.fetchall()
+            cur.execute(
+                "SELECT provider_track_id, fingerprint FROM chromaprint ORDER BY provider_track_id"
+            )
+            prints = [(row[0], bytes(row[1])) for row in cur.fetchall()]
+        old_schema_db.commit()
+
+        assert tiers == [('navi-1', 'analysis'), ('navi-2', 'analysis')], (
+            'the unsignable marker belongs to the song, so its kept duplicate file carries it too'
+        )
+        assert prints == [('navi-1', b'print-a'), ('navi-2', b'print-a')], (
+            'the kept duplicate file inherits the song fingerprint instead of losing it'
+        )
+
     def test_run_migration_transaction_repoints_every_server_only_on_the_default_one(
         self, old_schema_db
     ):

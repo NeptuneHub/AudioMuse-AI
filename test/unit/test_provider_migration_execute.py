@@ -1393,12 +1393,27 @@ class TestDuplicateFileMappings:
 
         cur = MagicMock()
         cur.rowcount = 2
+        cur.fetchone.return_value = (True,)
         restored = mig._restore_duplicate_file_maps(
             cur, {'n-2': 'fp_1', 'n-3': 'fp_1'}, {'n-2': {'path': '/new/copy.flac'}}
         )
         assert restored == 2
-        sql, params = cur.execute.call_args[0]
-        assert 'INSERT INTO track_server_map' in sql and 's.is_default' in sql
-        assert 'ON CONFLICT (server_id, provider_track_id) DO NOTHING' in sql
-        assert params == ['fp_1', 'n-2', '/new/copy.flac', 'fp_1', 'n-3', None]
+        calls = [c[0] for c in cur.execute.call_args_list]
+        staged = next(c for c in calls if 'INSERT INTO migration_duplicate_files' in c[0])
+        assert staged[1] == ['fp_1', 'n-2', '/new/copy.flac', 'fp_1', 'n-3', None]
+        maps = next(c[0] for c in calls if 'INSERT INTO track_server_map' in c[0])
+        assert 's.is_default' in maps and 'ON CONFLICT (server_id, provider_track_id) DO NOTHING' in maps
+        assert 'p.match_tier' in maps, 'a duplicate file keeps the tier of its song'
+        prints = next(c[0] for c in calls if 'INSERT INTO chromaprint' in c[0])
+        assert 'c.fingerprint IS NOT NULL' in prints, 'a duplicate file inherits the song fingerprint'
+
+    def test_navidrome_api_key_mode_names_the_real_choice(self):
+        from tasks import provider_migration_tasks as mig
+
+        message = mig.incomplete_creds_error('navidrome', {'url': 'http://nav'})
+        assert message == 'Incomplete credentials: fill in Username and Password, or an API key.'
+        message = mig.incomplete_creds_error('navidrome', {'url': 'http://nav', 'user': 'u'})
+        assert message == 'Incomplete credentials: fill in Password.'
+        message = mig.incomplete_creds_error('jellyfin', {'url': 'http://jf'})
+        assert message == 'Incomplete credentials: fill in User ID, API Token.'
 

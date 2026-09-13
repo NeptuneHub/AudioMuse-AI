@@ -188,7 +188,21 @@ class TestSessionStart:
         assert resp.status_code == 409
         assert 'Home Navidrome' in resp.get_json()['error']
         assert 'default server' in resp.get_json()['error']
-        cur.execute.assert_not_called()
+        sqls = [c[0][0] for c in cur.execute.call_args_list]
+        assert not [s for s in sqls if 'INSERT' in s or 'DELETE' in s]
+
+    def test_a_registry_failure_rolls_back_to_the_savepoint_and_fails_open(self, bp_mod, fake_db):
+        db, cur = fake_db
+
+        def boom(conn=None):
+            raise RuntimeError('statement timeout')
+
+        with patch('tasks.mediaserver.registry.list_servers', side_effect=boom):
+            assert bp_mod._registered_secondary_server('navidrome', {'url': 'http://nav'}) is None
+        sqls = [c[0][0] for c in cur.execute.call_args_list]
+        assert sqls == ['SAVEPOINT migration_target_check', 'ROLLBACK TO SAVEPOINT migration_target_check'], (
+            'the aborted lookup must not poison the transaction the caller keeps using'
+        )
 
     def test_a_secondary_of_another_type_or_address_does_not_block(self, bp_mod, client, fake_db):
         servers = [
@@ -339,7 +353,7 @@ class TestOverridesAreRekeyedOntoCatalogueIds:
             {'prov-1': '/music/a.flac', 'prov-2': '/music/b.flac'}
         )
 
-        assert out == {'fp_3aaa': '/music/a.flac', 'fp_3bbb': '/music/b.flac'}
+        assert out == {'fp_3aaa': ['/music/a.flac'], 'fp_3bbb': ['/music/b.flac']}
 
         rows = [{'item_id': 'fp_3aaa', 'file_path': '/stale/a.flac'}]
         bp_mod._apply_source_path_overrides(rows, out)
@@ -357,12 +371,12 @@ class TestOverridesAreRekeyedOntoCatalogueIds:
 
         out = bp_mod._overrides_by_catalogue_id({'prov-1': '/music/a.flac'})
 
-        assert out == {'prov-1': '/music/a.flac'}
+        assert out == {'prov-1': ['/music/a.flac']}
 
     def test_an_empty_probe_needs_no_registry_call(self, bp_mod):
         assert bp_mod._overrides_by_catalogue_id({}) == {}
 
-    def test_duplicate_files_of_one_song_collapse_deterministically(
+    def test_every_file_of_one_song_is_kept_in_a_deterministic_order(
         self, bp_mod, monkeypatch
     ):
         from tasks.mediaserver import registry
@@ -381,9 +395,14 @@ class TestOverridesAreRekeyedOntoCatalogueIds:
             'prov-a': '/music/a.flac',
         })
 
-        assert forward == reversed_order == {'fp_3same': '/music/a.flac'}, (
-            "the lowest provider id wins, whatever order the provider listed them in"
+        assert forward == reversed_order == {'fp_3same': ['/music/a.flac', '/music/b.flac']}, (
+            "every file of a duplicated song keeps its refreshed path, in provider id order, "
+            "so the dry run can carry the duplicate files to the target"
         )
+        rows = [{'item_id': 'fp_3same', 'file_path': '/stale.flac', 'file_paths': ['/stale.flac']}]
+        bp_mod._apply_source_path_overrides(rows, forward)
+        assert rows[0]['file_path'] == '/music/a.flac'
+        assert rows[0]['file_paths'] == ['/music/a.flac', '/music/b.flac']
 
 
 class TestSourcePathsRefreshRoute:
@@ -418,8 +437,8 @@ class TestSourcePathsRefreshRoute:
         mock_patch.assert_called_once()
         call_kwargs = mock_patch.call_args.kwargs
         assert call_kwargs['source_path_overrides'] == {
-            't1': '/music/rock/a.mp3',
-            't2': '/music/rock/b.mp3',
+            't1': ['/music/rock/a.mp3'],
+            't2': ['/music/rock/b.mp3'],
         }
 
     def test_persisting_overrides_does_not_touch_the_session_status(self, bp_mod):

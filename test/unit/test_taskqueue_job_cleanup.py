@@ -478,3 +478,24 @@ class TestParentSideConfigHydration:
         monkeypatch.setattr('taskqueue.worker.os.pipe', _no_pipe)
         instance._run_in_child(_job('task-x'), {})
         assert calls == ['hydrate']
+
+
+class TestAStopHoldsTheJobPath:
+    def test_run_job_cannot_write_the_row_while_a_stop_holds_the_claim_lock(self, monkeypatch):
+        instance = _worker()
+        instance._fork_jobs = True
+        monkeypatch.setattr(process_mod, '_STOPPING', ['task t-1 was cancelled'])
+        monkeypatch.setattr(instance, 'hydrate_shared', lambda kwargs: kwargs)
+        monkeypatch.setattr(instance, '_run_in_child',
+                            lambda job, kwargs: instance._child_outcome(job['task_id'], 15, b''))
+        monkeypatch.setattr(instance, 'finalize', MagicMock())
+        monkeypatch.setattr(instance, '_requeue_for_retry', MagicMock())
+        instance._claim_txn.acquire()
+        runner = threading.Thread(target=instance.run_job, args=(_job('t-1'),), daemon=True)
+        runner.start()
+        runner.join(1.0)
+        assert runner.is_alive(), 'the stop keeps the lock until the process exits'
+        instance.finalize.assert_not_called()
+        instance._requeue_for_retry.assert_not_called()
+        instance._claim_txn.release()
+        runner.join(5.0)

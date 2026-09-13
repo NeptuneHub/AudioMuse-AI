@@ -1221,7 +1221,7 @@ function collectConfigFromForm(testMode) {
         if (!input) {
             return;
         }
-        if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.includes(key)) {
+        if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.has(key)) {
             return;
         }
         var original = input.dataset.originalValue;
@@ -1460,7 +1460,7 @@ if (advancedCollapseAll) {
 // ---------------------------------------------------------------------------
 // AI Prompt section - clustering naming style and full-title prompt
 // ---------------------------------------------------------------------------
-var AI_PROMPT_FORM_FIELDS = ['AI_NAMING_PROMPT_MODE', 'AI_NAMING_TITLE_PROMPT'];
+var AI_PROMPT_FORM_FIELDS = new Set(['AI_NAMING_PROMPT_MODE', 'AI_NAMING_TITLE_PROMPT']);
 var AI_PROMPT_POLL_MS = 1500;
 var AI_PROMPT_MAX_POLL_FAILURES = 10;
 var AI_PROMPT_POLL_GAVE_UP_MESSAGE = 'Lost track of the preview status. Click Preview titles to check it again.';
@@ -1495,6 +1495,9 @@ function renderAiPromptPreview(state) {
     var stop = document.getElementById('ai-prompt-preview-stop');
     if (!status || !list || !state || state.status === 'idle') {
         if (stop) { stop.style.display = 'none'; }
+        if (button) { button.disabled = false; }
+        aiPromptState.taskId = null;
+        if (status && state && state.status === 'idle') { status.style.display = 'none'; }
         return;
     }
     var running = state.status === 'running';

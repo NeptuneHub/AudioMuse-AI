@@ -31,6 +31,7 @@ import uuid
 from flask import Blueprint, g, jsonify, request
 
 import config
+import task_types
 import taskqueue
 from app_logging import sanitize_log_value
 from database import (
@@ -242,7 +243,7 @@ def _task_blocking_a_sweep():
     # Cleaning and provider migration both rewrite track_server_map, which is
     # exactly what a sweep writes. Migration refuses while a sweep runs; without
     # this the reverse was not true, so a sweep could start mid-repoint.
-    for task_type in ('cleaning', 'provider_migration'):
+    for task_type in ('cleaning', 'provider_migration', task_types.NAMING_PREVIEW_TASK_TYPE):
         active = get_active_main_task(task_type=task_type)
         if active:
             return active
