@@ -463,6 +463,36 @@ def _segment_parts_complete(total_expected, part_numbers):
     )
 
 
+def segment_name_pattern(index_name: str):
+    return re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
+
+
+def collect_segment_names(index_name: str, names, context: str = '') -> Tuple[Optional[int], List[Tuple[int, str]]]:
+    """Parse '<index_name>_<part>_<total>' names into (total_expected, [(part_no, name)]).
+
+    Raises ValueError when two names disagree on the total; names that do not
+    match the pattern are ignored.
+    """
+    pattern = segment_name_pattern(index_name)
+    total_expected: Optional[int] = None
+    parts: List[Tuple[int, str]] = []
+    for name in names:
+        m = pattern.match(name)
+        if not m:
+            continue
+        part_no = int(m.group(1))
+        total = int(m.group(2))
+        if total_expected is None:
+            total_expected = total
+        elif total_expected != total:
+            raise ValueError(
+                f"Segment total mismatch for '{index_name}'{context}: "
+                f"saw {total_expected} and {total}."
+            )
+        parts.append((part_no, name))
+    return total_expected, parts
+
+
 def load_segmented_blob(
     db_conn,
     target_table: str,
@@ -474,7 +504,6 @@ def load_segmented_blob(
     select_single_sql = f"SELECT blob_data FROM {target_table} WHERE name = %s"
     select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE E'\\\\'"
     like_pattern = segment_like_pattern(name)
-    seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
 
     with db_conn.cursor() as cur:
         cur.execute(select_single_sql, (name,))
@@ -489,22 +518,9 @@ def load_segmented_blob(
     if not seg_names:
         return None
 
-    ordered: List[Tuple[int, str]] = []
-    total_expected: Optional[int] = None
-    for row_name in seg_names:
-        m = seg_pattern.match(row_name)
-        if not m:
-            continue
-        part_no = int(m.group(1))
-        total = int(m.group(2))
-        if total_expected is None:
-            total_expected = total
-        elif total_expected != total:
-            raise ValueError(
-                f"Segment total mismatch for '{name}' in {target_table}: "
-                f"saw {total_expected} and {total}."
-            )
-        ordered.append((part_no, row_name))
+    total_expected, ordered = collect_segment_names(
+        name, seg_names, context=f" in {target_table}"
+    )
 
     part_numbers = [part_no for part_no, _ in ordered]
     if total_expected is None or not _segment_parts_complete(total_expected, part_numbers):
@@ -575,7 +591,6 @@ def segmented_blob_complete(
     )
     select_names_sql = f"SELECT name FROM {target_table} WHERE name LIKE %s ESCAPE E'\\\\'"
     like_pattern = segment_like_pattern(name)
-    seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
 
     with db_conn.cursor() as cur:
         cur.execute(select_single_sql, (name,))
@@ -584,23 +599,14 @@ def segmented_blob_complete(
         cur.execute(select_names_sql, (like_pattern,))
         seg_names = [r[0] for r in cur.fetchall()]
 
-    total_expected: Optional[int] = None
-    part_numbers: List[int] = []
-    for row_name in seg_names:
-        m = seg_pattern.match(row_name)
-        if not m:
-            continue
-        part_no = int(m.group(1))
-        total = int(m.group(2))
-        if total_expected is None:
-            total_expected = total
-        elif total_expected != total:
-            return False
-        part_numbers.append(part_no)
+    try:
+        total_expected, parts = collect_segment_names(name, seg_names)
+    except ValueError:
+        return False
 
     if total_expected is None:
         return False
-    return _segment_parts_complete(total_expected, part_numbers)
+    return _segment_parts_complete(total_expected, [part_no for part_no, _ in parts])
 
 
 _ARTIST_META_MAGIC = b"ARMD"

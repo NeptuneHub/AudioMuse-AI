@@ -696,13 +696,8 @@ def song_alchemy(
     missing_ids = []
     missing_vectors = []
     for pid in proj_ids:
-        if isinstance(pid, str) and pid.startswith('__add_id__'):
-            item_id = pid.replace('__add_id__', '')
-            coord = id_to_coord.get(str(item_id))
-            if coord is not None:
-                proj_map[pid] = coord
-        elif isinstance(pid, str) and pid.startswith('__sub_id__'):
-            item_id = pid.replace('__sub_id__', '')
+        if isinstance(pid, str) and pid.startswith(('__add_id__', '__sub_id__')):
+            item_id = pid.replace('__add_id__', '').replace('__sub_id__', '')
             coord = id_to_coord.get(str(item_id))
             if coord is not None:
                 proj_map[pid] = coord
@@ -713,56 +708,34 @@ def song_alchemy(
             if coord is not None:
                 proj_map[pid] = coord
 
-    for m in add_meta:
-        if m.get('is_artist_component'):
+    for meta, side in ((add_meta, 'add'), (sub_meta, 'sub')):
+        for m in meta:
+            if not m.get('is_artist_component'):
+                continue
             item_id_parts = m['item_id'].split('_comp')
-            if len(item_id_parts) == 2:
-                artist_id = item_id_parts[0]
-                comp_idx = int(item_id_parts[1])
-                key = f"{artist_id}_{comp_idx}"
-                coord = artist_comp_to_coord.get(key)
-                if coord is not None:
-                    pid = f"__add_artist_comp__{artist_id}_{comp_idx}"
-                    proj_map[pid] = coord
-                    logger.debug(
-                        f"Added ADD artist component to proj_map: key={key}, pid={pid}, coord={coord}"
-                    )
-                else:
-                    logger.warning(
-                        f"No precomputed projection for ADD artist component: key={key}, available keys={list(artist_comp_to_coord.keys())[:5]}"
-                    )
-
-    for m in sub_meta:
-        if m.get('is_artist_component'):
-            item_id_parts = m['item_id'].split('_comp')
-            if len(item_id_parts) == 2:
-                artist_id = item_id_parts[0]
-                comp_idx = int(item_id_parts[1])
-                key = f"{artist_id}_{comp_idx}"
-                coord = artist_comp_to_coord.get(key)
-                if coord is not None:
-                    pid = f"__sub_artist_comp__{artist_id}_{comp_idx}"
-                    proj_map[pid] = coord
-                    logger.debug(
-                        f"Added SUB artist component to proj_map: key={key}, pid={pid}, coord={coord}"
-                    )
-                else:
-                    logger.warning(
-                        f"No precomputed projection for SUB artist component: key={key}, available keys={list(artist_comp_to_coord.keys())[:5]}"
-                    )
+            if len(item_id_parts) != 2:
+                continue
+            artist_id = item_id_parts[0]
+            comp_idx = int(item_id_parts[1])
+            key = f"{artist_id}_{comp_idx}"
+            coord = artist_comp_to_coord.get(key)
+            if coord is not None:
+                pid = f"__{side}_artist_comp__{artist_id}_{comp_idx}"
+                proj_map[pid] = coord
+                logger.debug(
+                    f"Added {side.upper()} artist component to proj_map: key={key}, pid={pid}, coord={coord}"
+                )
+            else:
+                logger.warning(
+                    f"No precomputed projection for {side.upper()} artist component: key={key}, available keys={list(artist_comp_to_coord.keys())[:5]}"
+                )
 
     def _centroid_from_member_coords(items, is_add=True):
         coords = []
         weights = []
 
         for item in items:
-            if item.get('type') == 'song':
-                mid = item['id']
-                c = id_to_coord.get(str(mid))
-                if c is not None:
-                    coords.append(np.array(c, dtype=float))
-                    weights.append(1.0)
-            elif item.get('type') == 'anchor':
+            if item.get('type') in ('song', 'anchor'):
                 mid = item['id']
                 c = id_to_coord.get(str(mid))
                 if c is not None:
@@ -816,23 +789,11 @@ def song_alchemy(
 
         vec = None
 
-        if isinstance(pid, str) and pid.startswith('__add_id__'):
-            item_id = pid.replace('__add_id__', '')
+        if isinstance(pid, str) and pid.startswith(('__add_id__', '__sub_id__')):
+            item_id = pid.replace('__add_id__', '').replace('__sub_id__', '')
             vec = get_vector_by_id(item_id)
-        elif isinstance(pid, str) and pid.startswith('__sub_id__'):
-            item_id = pid.replace('__sub_id__', '')
-            vec = get_vector_by_id(item_id)
-        elif isinstance(pid, str) and pid.startswith('__add_anchor__'):
-            anchor_id = pid.replace('__add_anchor__', '')
-            from database import get_alchemy_anchor_by_id
-
-            anchor = get_alchemy_anchor_by_id(anchor_id)
-            if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
-                vec = np.array(anchor['centroid'], dtype=float)
-            else:
-                vec = None
-        elif isinstance(pid, str) and pid.startswith('__sub_anchor__'):
-            anchor_id = pid.replace('__sub_anchor__', '')
+        elif isinstance(pid, str) and pid.startswith(('__add_anchor__', '__sub_anchor__')):
+            anchor_id = pid.replace('__add_anchor__', '').replace('__sub_anchor__', '')
             from database import get_alchemy_anchor_by_id
 
             anchor = get_alchemy_anchor_by_id(anchor_id)
@@ -1048,41 +1009,27 @@ def song_alchemy(
     centroid_2d = proj_map.get('__add_centroid__')
     subtract_centroid_2d = proj_map.get('__subtract_centroid__')
 
-    add_points = []
-    for m in add_meta:
-        if m.get('is_artist_component'):
-            pid = f"__add_artist_comp__{m['item_id'].rsplit('_comp', 1)[0]}_{m['item_id'].split('_comp')[1]}"
-            logger.debug(
-                f"Looking for ADD artist component: item_id={m['item_id']}, pid={pid}, found={pid in proj_map}"
-            )
-        elif m.get('is_playlist_component'):
-            pid = f"__add_playlist__{m['item_id']}"
-        elif m.get('type') == 'anchor':
-            pid = f"__add_anchor__{m['item_id']}"
-        elif m.get('type') == 'mood':
-            pid = f"__add_mood__{m['item_id']}"
-        else:
-            pid = f"__add_id__{m['item_id']}"
-        coord = proj_map.get(pid)
-        add_points.append({**m, 'embedding_2d': coord})
+    def _projection_points(meta, side):
+        points = []
+        for m in meta:
+            if m.get('is_artist_component'):
+                pid = f"__{side}_artist_comp__{m['item_id'].rsplit('_comp', 1)[0]}_{m['item_id'].split('_comp')[1]}"
+                logger.debug(
+                    f"Looking for {side.upper()} artist component: item_id={m['item_id']}, pid={pid}, found={pid in proj_map}"
+                )
+            elif m.get('is_playlist_component'):
+                pid = f"__{side}_playlist__{m['item_id']}"
+            elif m.get('type') == 'anchor':
+                pid = f"__{side}_anchor__{m['item_id']}"
+            elif m.get('type') == 'mood':
+                pid = f"__{side}_mood__{m['item_id']}"
+            else:
+                pid = f"__{side}_id__{m['item_id']}"
+            points.append({**m, 'embedding_2d': proj_map.get(pid)})
+        return points
 
-    sub_points = []
-    for m in sub_meta:
-        if m.get('is_artist_component'):
-            pid = f"__sub_artist_comp__{m['item_id'].rsplit('_comp', 1)[0]}_{m['item_id'].split('_comp')[1]}"
-            logger.debug(
-                f"Looking for SUB artist component: item_id={m['item_id']}, pid={pid}, found={pid in proj_map}"
-            )
-        elif m.get('is_playlist_component'):
-            pid = f"__sub_playlist__{m['item_id']}"
-        elif m.get('type') == 'anchor':
-            pid = f"__sub_anchor__{m['item_id']}"
-        elif m.get('type') == 'mood':
-            pid = f"__sub_mood__{m['item_id']}"
-        else:
-            pid = f"__sub_id__{m['item_id']}"
-        coord = proj_map.get(pid)
-        sub_points.append({**m, 'embedding_2d': coord})
+    add_points = _projection_points(add_meta, 'add')
+    sub_points = _projection_points(sub_meta, 'sub')
 
     logger.info(f"Returning {len(add_points)} add_points and {len(sub_points)} sub_points")
     logger.info(

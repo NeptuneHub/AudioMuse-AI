@@ -29,13 +29,13 @@ import logging
 import os
 import threading
 import time
-import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 from cpu_budget import usable_cpu_count
+from .text_quality import compression_ratio as _compression_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -128,15 +128,6 @@ def _no_repeat_banned_tokens(tokens: List[int], n: int) -> Set[int]:
         if tuple(tokens[i : i + n - 1]) == prefix:
             banned.add(tokens[i + n - 1])
     return banned
-
-
-def _compression_ratio(text: str) -> float:
-    if not text:
-        return 0.0
-    encoded = text.encode('utf-8')
-    if not encoded:
-        return 0.0
-    return len(encoded) / max(1, len(zlib.compress(encoded)))
 
 
 def _check_free_ram_or_raise() -> None:

@@ -20,7 +20,8 @@ Main Features:
   ``top_stratified_genre`` enrich API result rows.
 * Shared blueprint helpers: ``index_error_body`` builds the structured API
   error body and ``probe_catalogue_canonical_ids`` probes score for canonical
-  fp_ ids (None on probe failure so callers pick their own fail-closed policy).
+  fp_ ids (None on probe failure so callers pick their own fail-closed policy),
+  and ``catalogue_has_canonical_ids`` memoizes that probe.
 """
 
 import json
@@ -161,6 +162,27 @@ def probe_catalogue_canonical_ids():
             except Exception:
                 logger.exception("Rollback after failed canonical-id probe also failed")
         return None
+
+
+_HAS_CANONICAL_IDS = None
+_HAS_CANONICAL_CHECKED_AT = 0.0
+_HAS_CANONICAL_TTL = 60.0
+
+
+def catalogue_has_canonical_ids():
+    """True when score holds canonical fp_ ids (memoized; fails closed on error,
+    remembering the failure for the TTL so a DB outage does not re-probe on
+    every request)."""
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    if _HAS_CANONICAL_IDS:
+        return True
+    now = time.monotonic()
+    if _HAS_CANONICAL_CHECKED_AT and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
+        return _HAS_CANONICAL_IDS is not False
+    result = probe_catalogue_canonical_ids()
+    _HAS_CANONICAL_IDS = result
+    _HAS_CANONICAL_CHECKED_AT = now
+    return result is not False
 
 
 def sanitize_task_details(details, state, task_type=None):

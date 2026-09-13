@@ -67,6 +67,75 @@ _TERMINAL_STATUSES = list(TASK_STATUS_TERMINAL)
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
+TEXT_SEARCH_QUERIES_DDL = """
+    CREATE TABLE IF NOT EXISTS text_search_queries (
+        id SERIAL PRIMARY KEY,
+        query_text TEXT NOT NULL,
+        score REAL NOT NULL,
+        rank INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(rank)
+    )
+"""
+
+TEXT_SEARCH_QUERIES_RANK_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank "
+    "ON text_search_queries(rank)"
+)
+
+DEFAULT_TEXT_SEARCH_QUERIES = [
+    "female vocal romantic trap",
+    "synth indie pop raspy",
+    "sad hard rock male vocal",
+    "funk falsetto energetic",
+    "groovy sax blues",
+    "classical relaxed piano",
+    "belting jazz happy",
+    "tabla afrobeat fast-paced",
+    "harmonized vocals slow-paced electronica",
+    "autotuned gospel excited",
+    "breathy aggressive house",
+    "smooth folk mid-tempo",
+    "deep voice r&b dark",
+    "punk guitar angry",
+    "metal choir dreamy",
+    "chant reggae trumpet",
+    "high-pitched brass hip-hop",
+    "disco whispered drum machine",
+    "happy whispered indie pop",
+    "synth energetic raspy",
+    "rock slow-paced cello",
+    "falsetto jazz excited",
+    "r&b male vocal romantic",
+    "harmonized vocals dark trap",
+    "smooth blues sax",
+    "high-pitched fast-paced soul",
+    "female vocal sad hip-hop",
+    "congas aggressive soul",
+    "mid-tempo afrobeat autotuned",
+    "belting funk groovy",
+    "angry alternative breathy",
+    "gospel choir steelpan",
+    "viola relaxed folk",
+    "dreamy rhodes metal",
+    "acoustic guitar country chant",
+    "deep voice orchestra reggae",
+    "fast-paced synth progressive rock",
+    "hard rock raspy romantic",
+    "fast-paced electric guitar progressive rock",
+    "hard rock aggressive breathy",
+    "rock high-pitched energetic",
+    "autotuned energetic hip-hop",
+    "raspy fast-paced blues",
+    "belting electronica energetic",
+    "whispered indie pop aggressive",
+    "harmonized vocals aggressive synth",
+    "orchestra whispered romantic",
+    "belting mid-tempo progressive rock",
+    "autotuned pop mid-tempo",
+    "pop energetic synthesizer",
+]
+
 # Serializes the whole check-cleanup-claim sequence every main-task start runs.
 # Session scoped rather than transaction scoped on purpose: clean_up_previous_main_tasks
 # commits in the middle of that sequence, and a transaction lock would be released
@@ -653,8 +722,11 @@ def load_map_projection(index_name, force_reload=False):
         if row and row[0] is not None:
             proj_blob, id_map_json = row[0], row[1]
         else:
-            import re
-            from tasks.index_build_helpers import reassemble_segmented_id_map, segment_like_pattern
+            from tasks.index_build_helpers import (
+                collect_segment_names,
+                reassemble_segmented_id_map,
+                segment_like_pattern,
+            )
 
             cur.execute(
                 "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE E'\\\\'",
@@ -666,23 +738,20 @@ def load_map_projection(index_name, force_reload=False):
                     f"Map projection '{index_name}' not found in the database. Cache will be empty."
                 )
                 return None, None
-            seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
-            parts = []
-            total_expected = None
-            for name, part_blob, part_id_map in candidates:
-                m = seg_pattern.match(name)
-                if not m:
-                    continue
-                part_no = int(m.group(1))
-                total = int(m.group(2))
-                if total_expected is None:
-                    total_expected = total
-                elif total_expected != total:
-                    logger.error(
-                        f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load."
-                    )
-                    return None, None
-                parts.append((part_no, part_blob, part_id_map))
+            try:
+                total_expected, parsed = collect_segment_names(
+                    index_name, [row[0] for row in candidates]
+                )
+            except ValueError:
+                logger.exception(
+                    f"Map projection segment total mismatch for '{index_name}'. Aborting load."
+                )
+                return None, None
+            rows_by_name = {row[0]: row for row in candidates}
+            parts = [
+                (part_no, rows_by_name[part_name][1], rows_by_name[part_name][2])
+                for part_no, part_name in parsed
+            ]
             if total_expected is None or len(parts) != total_expected:
                 logger.error(
                     f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load."
@@ -1465,6 +1534,19 @@ def _score_old_scheme_index_sql():
     )
 
 
+def _ensure_column(cur, table, column, definition):
+    cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = %s AND column_name = %s)",
+        (table, column),
+    )
+    if cur.fetchone()[0]:
+        return False
+    logger.info("Adding '%s' column to '%s' table.", column, table)
+    cur.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+    return True
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -1492,48 +1574,13 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_created_at ON score (created_at)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'energy' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN energy REAL")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'other_features' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN other_features TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'album' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'album_artist' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'year' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'rating' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'file_path' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            _ensure_column(cur, 'score', 'energy', 'energy REAL')
+            _ensure_column(cur, 'score', 'other_features', 'other_features TEXT')
+            _ensure_column(cur, 'score', 'album', 'album TEXT')
+            _ensure_column(cur, 'score', 'album_artist', 'album_artist TEXT')
+            _ensure_column(cur, 'score', 'year', 'year INTEGER')
+            _ensure_column(cur, 'score', 'rating', 'rating INTEGER')
+            _ensure_column(cur, 'score', 'file_path', 'file_path TEXT')
             cur.execute(
                 "ALTER TABLE score ADD COLUMN IF NOT EXISTS duration DOUBLE PRECISION"
             )
@@ -1680,49 +1727,25 @@ def init_db():
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')"
+            _ensure_column(cur, 'embedding', 'embedding', 'embedding BYTEA')
+            _ensure_column(cur, 'embedding', 'poincare_embedding', 'poincare_embedding BYTEA')
+            _ensure_column(
+                cur, 'embedding', 'hyperbolic_radius',
+                'hyperbolic_radius DOUBLE PRECISION',
             )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'poincare_embedding')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE embedding ADD COLUMN poincare_embedding BYTEA")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'hyperbolic_radius')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE embedding ADD COLUMN hyperbolic_radius DOUBLE PRECISION")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')"
+            _ensure_column(cur, 'lyrics_embedding', 'embedding', 'embedding BYTEA')
+            _ensure_column(cur, 'lyrics_embedding', 'axis_vector', 'axis_vector BYTEA')
+            _ensure_column(
+                cur, 'lyrics_embedding', 'updated_at',
+                'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
             )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_vector')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_vector BYTEA")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute(
-                    "ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
-                )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
+            _ensure_column(cur, 'clap_embedding', 'embedding', 'embedding BYTEA')
             cur.execute("ALTER TABLE embedding ADD COLUMN IF NOT EXISTS neural_fingerprint BYTEA")
             cur.execute("DROP TABLE IF EXISTS voyager_index_data")
             cur.execute("DROP TABLE IF EXISTS clap_index_data")
@@ -1848,87 +1871,18 @@ def init_db():
                     PRIMARY KEY (session_id, new_id)
                 )
             """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS text_search_queries (
-                    id SERIAL PRIMARY KEY,
-                    query_text TEXT NOT NULL,
-                    score REAL NOT NULL,
-                    rank INTEGER NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(rank)
-                )
-            """)
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)"
-            )
+            cur.execute(TEXT_SEARCH_QUERIES_DDL)
+            cur.execute(TEXT_SEARCH_QUERIES_RANK_INDEX_DDL)
 
             cur.execute("SELECT COUNT(*) FROM text_search_queries")
             count = cur.fetchone()[0]
 
             if count == 0:
-                default_queries = [
-                    "female vocal romantic trap",
-                    "synth indie pop raspy",
-                    "sad hard rock male vocal",
-                    "funk falsetto energetic",
-                    "groovy sax blues",
-                    "classical relaxed piano",
-                    "belting jazz happy",
-                    "tabla afrobeat fast-paced",
-                    "harmonized vocals slow-paced electronica",
-                    "autotuned gospel excited",
-                    "breathy aggressive house",
-                    "smooth folk mid-tempo",
-                    "deep voice r&b dark",
-                    "punk guitar angry",
-                    "metal choir dreamy",
-                    "chant reggae trumpet",
-                    "high-pitched brass hip-hop",
-                    "disco whispered drum machine",
-                    "happy whispered indie pop",
-                    "synth energetic raspy",
-                    "rock slow-paced cello",
-                    "falsetto jazz excited",
-                    "r&b male vocal romantic",
-                    "harmonized vocals dark trap",
-                    "smooth blues sax",
-                    "high-pitched fast-paced soul",
-                    "female vocal sad hip-hop",
-                    "congas aggressive soul",
-                    "mid-tempo afrobeat autotuned",
-                    "belting funk groovy",
-                    "angry alternative breathy",
-                    "gospel choir steelpan",
-                    "viola relaxed folk",
-                    "dreamy rhodes metal",
-                    "acoustic guitar country chant",
-                    "deep voice orchestra reggae",
-                    "fast-paced synth progressive rock",
-                    "hard rock raspy romantic",
-                    "fast-paced electric guitar progressive rock",
-                    "hard rock aggressive breathy",
-                    "rock high-pitched energetic",
-                    "autotuned energetic hip-hop",
-                    "raspy fast-paced blues",
-                    "belting electronica energetic",
-                    "whispered indie pop aggressive",
-                    "harmonized vocals aggressive synth",
-                    "orchestra whispered romantic",
-                    "belting mid-tempo progressive rock",
-                    "autotuned pop mid-tempo",
-                    "pop energetic synthesizer",
-                ]
-
-                for rank, query in enumerate(default_queries, start=1):
-                    cur.execute(
-                        """
-                        INSERT INTO text_search_queries (query_text, score, rank, created_at)
-                        VALUES (%s, %s, %s, NOW())
-                    """,
-                        (query, 1.0, rank),
-                    )
-
-                logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
+                insert_default_text_search_queries(cur)
+                logger.info(
+                    "Inserted %d default DCLAP search queries",
+                    len(DEFAULT_TEXT_SEARCH_QUERIES),
+                )
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS music_servers (
@@ -1947,12 +1901,7 @@ def init_db():
                 "ON music_servers (is_default) WHERE is_default"
             )
             cur.execute("ALTER TABLE music_servers DROP COLUMN IF EXISTS enabled")
-            cur.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'music_servers' AND column_name = 'track_count'"
-            )
-            if not cur.fetchone():
-                cur.execute("ALTER TABLE music_servers ADD COLUMN track_count INTEGER")
+            _ensure_column(cur, 'music_servers', 'track_count', 'track_count INTEGER')
             cur.execute("SAVEPOINT ms_unique_name")
             try:
                 cur.execute(
@@ -2281,6 +2230,39 @@ def ensure_plugins_table(conn=None):
     finally:
         if own:
             db.close()
+
+
+def insert_default_text_search_queries(cur, queries=None):
+    queries = DEFAULT_TEXT_SEARCH_QUERIES if queries is None else queries
+    for rank, query in enumerate(queries, start=1):
+        cur.execute(
+            "INSERT INTO text_search_queries (query_text, score, rank, created_at) "
+            "VALUES (%s, %s, %s, NOW())",
+            (query, 1.0, rank),
+        )
+    return len(queries)
+
+
+def ensure_text_search_queries_table():
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute(_ADVISORY_LOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
+            try:
+                cur.execute(TEXT_SEARCH_QUERIES_DDL)
+                cur.execute(TEXT_SEARCH_QUERIES_RANK_INDEX_DDL)
+            finally:
+                cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
+        db.commit()
+        logger.info("Ensured text_search_queries table exists")
+        return True
+    except Exception:
+        logger.exception("Failed to create text_search_queries table")
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("text_search_queries ensure rollback failed", exc_info=True)
+        return False
 
 
 _PLUGIN_META_COLUMNS = (

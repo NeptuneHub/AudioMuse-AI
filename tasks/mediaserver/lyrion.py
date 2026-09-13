@@ -107,13 +107,32 @@ def _lyrion_track(item):
     }
 
 
-def _lyrion_titles_response(response):
+def _lyrion_artist(item):
+    for key in ('trackartist', 'contributor', 'artist', 'albumartist', 'band'):
+        value = item.get(key)
+        if value:
+            return value
+    return 'Unknown Artist'
+
+
+def _lyrion_year(item):
+    year = item.get('year')
+    return int(year) if year else None
+
+
+def _lyrion_rating(item):
+    rating = item.get('rating')
+    return int(int(rating) / 20) if rating else None
+
+
+def _lyrion_loop_response(response, *loop_keys):
     if not response:
         return []
     if isinstance(response, dict):
-        titles = response.get('titles_loop')
-        if isinstance(titles, list):
-            return titles
+        for key in loop_keys:
+            loop = response.get(key)
+            if isinstance(loop, list):
+                return loop
         for value in response.values():
             if isinstance(value, list):
                 return value
@@ -121,6 +140,10 @@ def _lyrion_titles_response(response):
     if isinstance(response, list):
         return response
     return []
+
+
+def _lyrion_titles_response(response):
+    return _lyrion_loop_response(response, 'titles_loop')
 
 
 def _get_target_paths_for_filtering():
@@ -142,19 +165,7 @@ def list_libraries(user_creds=None):
     if not response:
         return []
 
-    all_folders = []
-    if isinstance(response, dict):
-        if "folder_loop" in response:
-            all_folders = response["folder_loop"]
-        elif "folders_loop" in response:
-            all_folders = response["folders_loop"]
-        else:
-            for v in response.values():
-                if isinstance(v, list):
-                    all_folders = v
-                    break
-    elif isinstance(response, list):
-        all_folders = response
+    all_folders = _lyrion_loop_response(response, "folder_loop", "folders_loop")
 
     libraries = []
     for folder in all_folders or []:
@@ -254,11 +265,7 @@ def _count_albums(use_sort_new=True, page_size=100):
             logger.warning(f"Unable to count albums (use_sort_new={use_sort_new}): {e}")
             return None
 
-        page_albums = []
-        if isinstance(resp, dict) and "albums_loop" in resp:
-            page_albums = resp["albums_loop"]
-        elif isinstance(resp, list):
-            page_albums = resp
+        page_albums = _albums_page_items(resp)
 
         if not page_albums:
             break
@@ -269,6 +276,57 @@ def _count_albums(use_sort_new=True, page_size=100):
         offset += len(page_albums)
 
     return total
+
+
+def _albums_page_items(response):
+    if isinstance(response, dict) and "albums_loop" in response:
+        return response["albums_loop"]
+    if isinstance(response, list):
+        return response
+    return []
+
+
+def _albums_sort_mode(page_size, context_message):
+    logger.info(context_message)
+    sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
+    unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
+    logger.info(
+        f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}"
+    )
+    if (
+        unsorted_total is not None
+        and sorted_total is not None
+        and unsorted_total > sorted_total
+    ):
+        logger.info(
+            "Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion."
+        )
+        return False
+    return True
+
+
+def _fetch_albums_page(offset, count, use_sort_new):
+    params = [offset, count, "sort:new"] if use_sort_new else [offset, count]
+    page_response = None
+    page_error = None
+    for attempt in range(3):
+        try:
+            page_response = _jsonrpc_request("albums", params)
+            break
+        except LyrionAPIError as e:
+            page_error = e
+            logger.warning(
+                f"albums page fetch failed at offset={offset} (attempt {attempt + 1}/3): {e}"
+            )
+            import time
+
+            time.sleep(1)
+            continue
+    if page_response is None:
+        logger.error(
+            f"Skipping albums page at offset={offset} after repeated failures: {page_error}"
+        )
+    return page_response
 
 
 def download_track(temp_dir, item):
@@ -314,58 +372,20 @@ def _get_all_albums_simple(limit):
 
     use_sort_new = True
     if limit == 0:
-        logger.info(
-            "Counting Lyrion albums with and without 'sort:new' to decide pagination mode..."
+        use_sort_new = _albums_sort_mode(
+            page_size,
+            "Counting Lyrion albums with and without 'sort:new' to decide pagination mode...",
         )
-        sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
-        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
-        logger.info(
-            f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}"
-        )
-        if (
-            unsorted_total is not None
-            and sorted_total is not None
-            and unsorted_total > sorted_total
-        ):
-            logger.info(
-                "Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion."
-            )
-            use_sort_new = False
 
     while True:
         req_count = page_size if (remaining is None or remaining > page_size) else remaining
-        params = [offset, req_count, "sort:new"] if use_sort_new else [offset, req_count]
 
-        page_response = None
-        page_error = None
-        for attempt in range(3):
-            try:
-                page_response = _jsonrpc_request("albums", params)
-                break
-            except LyrionAPIError as e:
-                page_error = e
-                logger.warning(
-                    f"albums page fetch failed at offset={offset} (attempt {attempt + 1}/3): {e}"
-                )
-                import time
-
-                time.sleep(1)
-                continue
-
-        if page_response is None:
-            logger.error(
-                f"Skipping albums page at offset={offset} after repeated failures: {page_error}"
-            )
+        response = _fetch_albums_page(offset, req_count, use_sort_new)
+        if response is None:
             offset += page_size
             continue
 
-        response = page_response
-
-        page_albums = []
-        if isinstance(response, dict) and "albums_loop" in response:
-            page_albums = response["albums_loop"]
-        elif isinstance(response, list):
-            page_albums = response
+        page_albums = _albums_page_items(response)
 
         if not page_albums:
             break
@@ -462,60 +482,23 @@ def get_recent_albums(limit):
 
     use_sort_new = True
     if fetch_all:
-        logger.info(
-            "Counting Lyrion albums with and without 'sort:new' to decide pagination mode (analysis of all albums)..."
+        use_sort_new = _albums_sort_mode(
+            page_size,
+            "Counting Lyrion albums with and without 'sort:new' to decide pagination mode (analysis of all albums)...",
         )
-        sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
-        unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
-        logger.info(
-            f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}"
-        )
-        if (
-            unsorted_total is not None
-            and sorted_total is not None
-            and unsorted_total > sorted_total
-        ):
-            logger.info(
-                "Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion."
-            )
-            use_sort_new = False
 
     while True:
-        params = [offset, page_size, "sort:new"] if use_sort_new else [offset, page_size]
-        page_response = None
-        page_error = None
-        for attempt in range(3):
-            try:
-                page_response = _jsonrpc_request("albums", params)
-                break
-            except LyrionAPIError as e:
-                page_error = e
-                logger.warning(
-                    f"albums page fetch failed at offset={offset} (attempt {attempt + 1}/3): {e}"
-                )
-                import time
-
-                time.sleep(1)
-                continue
-
-        if page_response is None:
-            logger.error(
-                f"Skipping albums page at offset={offset} after repeated failures: {page_error}"
-            )
+        response = _fetch_albums_page(offset, page_size, use_sort_new)
+        if response is None:
             offset += page_size
             continue
 
-        response = page_response
         if not response:
             break
 
         pages_fetched += 1
 
-        page_albums = []
-        if isinstance(response, dict) and "albums_loop" in response:
-            page_albums = response["albums_loop"]
-        elif isinstance(response, list):
-            page_albums = response
+        page_albums = _albums_page_items(response)
 
         if not page_albums:
             break
@@ -604,29 +587,16 @@ def get_all_songs(user_creds=None, apply_filter=True):
         songs = response["titles_loop"]
 
         for song in songs:
-            if song.get('trackartist'):
-                track_artist = song.get('trackartist')
-            elif song.get('contributor'):
-                track_artist = song.get('contributor')
-            elif song.get('artist'):
-                track_artist = song.get('artist')
-            elif song.get('albumartist'):
-                track_artist = song.get('albumartist')
-            elif song.get('band'):
-                track_artist = song.get('band')
-            else:
-                track_artist = 'Unknown Artist'
-
             mapped_song = {
                 'Id': song.get('id'),
                 'Name': song.get('title'),
-                'AlbumArtist': track_artist,
+                'AlbumArtist': _lyrion_artist(song),
                 'OriginalAlbumArtist': song.get('albumartist'),
                 'Album': song.get('album'),
                 'Path': song.get('url'),
                 'url': song.get('url'),
-                'Year': int(song.get('year')) if song.get('year') else None,
-                'Rating': int(int(song.get('rating')) / 20) if song.get('rating') else None,
+                'Year': _lyrion_year(song),
+                'Rating': _lyrion_rating(song),
                 'FilePath': _decode_lyrion_url(song.get('url')),
                 'DurationSeconds': song.get('duration'),
             }
@@ -934,16 +904,7 @@ def get_tracks_from_album(album_id, user_creds=None):
         logger.warning(f"Lyrion API returned empty response for album {album_id}.")
         return []
 
-    if isinstance(response, dict):
-        if "titles_loop" in response and isinstance(response["titles_loop"], list):
-            songs = response["titles_loop"]
-        else:
-            for v in response.values():
-                if isinstance(v, list):
-                    songs = v
-                    break
-    elif isinstance(response, list):
-        songs = response
+    songs = _lyrion_loop_response(response, "titles_loop")
 
     if not songs:
         logger.warning(
@@ -967,14 +928,7 @@ def get_tracks_from_album(album_id, user_creds=None):
         for st in skipped_tracks:
             sk_id = st.get('id') or st.get('Id') or st.get('track_id')
             sk_title = st.get('title') or st.get('name') or st.get('Name')
-            sk_artist = (
-                st.get('trackartist')
-                or st.get('contributor')
-                or st.get('artist')
-                or st.get('albumartist')
-                or st.get('band')
-                or 'Unknown Artist'
-            )
+            sk_artist = _lyrion_artist(st)
             sk_url = st.get('url') or st.get('Path') or st.get('path')
             logger.info(
                 f"Skipped track - id: {sk_id!r}, title: {sk_title!r}, artist: {sk_artist!r}, url/path: {sk_url!r}"
@@ -989,19 +943,7 @@ def get_tracks_from_album(album_id, user_creds=None):
     for s in local_songs:
         id_val = s.get('id') or s.get('Id') or s.get('track_id')
         title = s.get('title') or s.get('name') or s.get('Name')
-
-        if s.get('trackartist'):
-            artist = s.get('trackartist')
-        elif s.get('contributor'):
-            artist = s.get('contributor')
-        elif s.get('artist'):
-            artist = s.get('artist')
-        elif s.get('albumartist'):
-            artist = s.get('albumartist')
-        elif s.get('band'):
-            artist = s.get('band')
-        else:
-            artist = 'Unknown Artist'
+        artist = _lyrion_artist(s)
 
         path = s.get('url') or s.get('Path') or s.get('path') or ''
         mapped.append(
@@ -1013,8 +955,8 @@ def get_tracks_from_album(album_id, user_creds=None):
                 'Album': s.get('album'),
                 'Path': path,
                 'url': path,
-                'Year': int(s.get('year')) if s.get('year') else None,
-                'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+                'Year': _lyrion_year(s),
+                'Rating': _lyrion_rating(s),
                 'FilePath': _decode_lyrion_url(s.get('url')),
             }
         )
@@ -1040,17 +982,7 @@ def get_playlist_track_ids(playlist_id):
         return []
     if not response:
         return []
-    loop = []
-    if isinstance(response, dict):
-        if isinstance(response.get("playlisttracks_loop"), list):
-            loop = response["playlisttracks_loop"]
-        else:
-            for v in response.values():
-                if isinstance(v, list):
-                    loop = v
-                    break
-    elif isinstance(response, list):
-        loop = response
+    loop = _lyrion_loop_response(response, "playlisttracks_loop")
     return [str(t.get("id")) for t in loop if isinstance(t, dict) and t.get("id")]
 
 
@@ -1061,31 +993,17 @@ def get_top_played_songs(limit):
         mapped_songs = []
         for s in songs:
             title = s.get('title', 'Unknown')
-
-            if s.get('trackartist'):
-                track_artist = s.get('trackartist')
-            elif s.get('contributor'):
-                track_artist = s.get('contributor')
-            elif s.get('artist'):
-                track_artist = s.get('artist')
-            elif s.get('albumartist'):
-                track_artist = s.get('albumartist')
-            elif s.get('band'):
-                track_artist = s.get('band')
-            else:
-                track_artist = 'Unknown Artist'
-
             mapped_songs.append(
                 {
                     'Id': s.get('id'),
                     'Name': title,
-                    'AlbumArtist': track_artist,
+                    'AlbumArtist': _lyrion_artist(s),
                     'OriginalAlbumArtist': s.get('albumartist'),
                     'Album': s.get('album'),
                     'Path': s.get('url'),
                     'url': s.get('url'),
-                    'Year': int(s.get('year')) if s.get('year') else None,
-                    'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+                    'Year': _lyrion_year(s),
+                    'Rating': _lyrion_rating(s),
                     'FilePath': _decode_lyrion_url(s.get('url')),
                 }
             )

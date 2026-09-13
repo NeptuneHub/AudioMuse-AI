@@ -297,47 +297,17 @@ def get_cache_stats() -> Dict:
 
 
 def ensure_text_search_queries_table():
-    from database import get_db
+    from database import ensure_text_search_queries_table as _ensure
 
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_lock(726354821)")
-            try:
-                cur.execute(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
-                    ('text_search_queries',),
-                )
-                if not cur.fetchone()[0]:
-                    cur.execute("""
-                        CREATE TABLE text_search_queries (
-                            id SERIAL PRIMARY KEY,
-                            query_text TEXT NOT NULL,
-                            score REAL NOT NULL,
-                            rank INTEGER NOT NULL,
-                            created_at TIMESTAMP DEFAULT NOW(),
-                            UNIQUE(rank)
-                        )
-                    """)
-            finally:
-                cur.execute("SELECT pg_advisory_unlock(726354821)")
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank
-                ON text_search_queries(rank)
-            """)
-            conn.commit()
-            logger.info("Ensured text_search_queries table exists")
-            return True
-    except Exception:
-        logger.exception("Failed to create text_search_queries table")
-        if conn:
-            conn.rollback()
-        return False
+    return _ensure()
 
 
 def load_top_queries_from_db():
-    from database import get_db
+    from database import (
+        DEFAULT_TEXT_SEARCH_QUERIES,
+        get_db,
+        insert_default_text_search_queries,
+    )
 
     ensure_text_search_queries_table()
 
@@ -356,76 +326,15 @@ def load_top_queries_from_db():
                 _TOP_QUERIES_CACHE['ready'] = True
                 logger.info(f"Loaded {len(rows)} top queries from database")
                 return True
-            else:
-                logger.info("No top queries found - inserting default queries")
-                default_queries = [
-                    "female vocal romantic trap",
-                    "synth indie pop raspy",
-                    "sad hard rock male vocal",
-                    "funk falsetto energetic",
-                    "groovy sax blues",
-                    "classical relaxed piano",
-                    "belting jazz happy",
-                    "tabla afrobeat fast-paced",
-                    "harmonized vocals slow-paced electronica",
-                    "autotuned gospel excited",
-                    "breathy aggressive house",
-                    "smooth folk mid-tempo",
-                    "deep voice r&b dark",
-                    "punk guitar angry",
-                    "metal choir dreamy",
-                    "chant reggae trumpet",
-                    "high-pitched brass hip-hop",
-                    "disco whispered drum machine",
-                    "happy whispered indie pop",
-                    "synth energetic raspy",
-                    "rock slow-paced cello",
-                    "falsetto jazz excited",
-                    "r&b male vocal romantic",
-                    "harmonized vocals dark trap",
-                    "smooth blues sax",
-                    "high-pitched fast-paced soul",
-                    "female vocal sad hip-hop",
-                    "congas aggressive soul",
-                    "mid-tempo afrobeat autotuned",
-                    "belting funk groovy",
-                    "angry alternative breathy",
-                    "gospel choir steelpan",
-                    "viola relaxed folk",
-                    "dreamy rhodes metal",
-                    "acoustic guitar country chant",
-                    "deep voice orchestra reggae",
-                    "fast-paced synth progressive rock",
-                    "hard rock raspy romantic",
-                    "fast-paced electric guitar progressive rock",
-                    "hard rock aggressive breathy",
-                    "rock high-pitched energetic",
-                    "autotuned energetic hip-hop",
-                    "raspy fast-paced blues",
-                    "belting electronica energetic",
-                    "whispered indie pop aggressive",
-                    "harmonized vocals aggressive synth",
-                    "orchestra whispered romantic",
-                    "belting mid-tempo progressive rock",
-                    "autotuned pop mid-tempo",
-                    "pop energetic synthesizer",
-                ]
 
-                for rank, query in enumerate(default_queries, start=1):
-                    cur.execute(
-                        """
-                        INSERT INTO text_search_queries (query_text, score, rank, created_at)
-                        VALUES (%s, %s, %s, NOW())
-                    """,
-                        (query, 1.0, rank),
-                    )
+            logger.info("No top queries found - inserting default queries")
+            inserted = insert_default_text_search_queries(cur)
+            conn.commit()
 
-                conn.commit()
-
-                _TOP_QUERIES_CACHE['queries'] = default_queries
-                _TOP_QUERIES_CACHE['ready'] = True
-                logger.info(f"Inserted and loaded {len(default_queries)} default queries")
-                return True
+            _TOP_QUERIES_CACHE['queries'] = list(DEFAULT_TEXT_SEARCH_QUERIES)
+            _TOP_QUERIES_CACHE['ready'] = True
+            logger.info(f"Inserted and loaded {inserted} default queries")
+            return True
     except Exception as e:
         logger.warning(f"Could not load top queries from database: {e}")
         return False
