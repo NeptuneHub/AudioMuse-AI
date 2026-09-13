@@ -54,7 +54,7 @@ import config
 from cpu_budget import usable_cpu_count
 
 from . import ivf_quant as quant
-from .index_availability import active_availability_scope, build_availability_mask
+from .index_availability import AvailabilityCache, active_availability_scope, build_availability_mask
 
 logger = logging.getLogger(__name__)
 
@@ -482,6 +482,7 @@ def get_global_cell_cache() -> _GlobalCellCache:
 
 
 def invalidate_global_cell_cache(index_name: str) -> None:
+    _SCOPED_COUNTS.invalidate()
     cache = _GLOBAL_CELL_CACHE
     if cache is not None:
         cache.invalidate_index(index_name)
@@ -542,12 +543,14 @@ def _pin_blas_single_thread() -> None:
 
 _LIVE_INDEXES: "weakref.WeakSet[PagedIvfIndex]" = weakref.WeakSet()
 _AVAILABILITY_CACHE = {}
+_SCOPED_COUNTS = AvailabilityCache()
 _AVAILABILITY_CACHE_LOCK = threading.Lock()
 _AVAILABILITY_CACHE_TTL = 30.0
 
 
 def invalidate_availability_cache(server_id=None):
     """Invalidate cached per-server index masks after mapping changes."""
+    _SCOPED_COUNTS.invalidate(server_id)
     with _AVAILABILITY_CACHE_LOCK:
         if server_id is None:
             _AVAILABILITY_CACHE.clear()
@@ -1518,6 +1521,31 @@ def paged_ivf_item_count(db_conn, index_name: str) -> Optional[int]:
     if magic != _MAGIC or version != _VERSION:
         return 0
     return int(n_items)
+
+
+def paged_ivf_scoped_item_count(db_conn, index_name: str, server_id: str) -> int:
+    """Count selected-server directory IDs, without loading cells or a search index.
+
+    Cache only the scalar for 30 seconds, invalidated with availability mappings
+    and index replacement. A cold scoped check reads the compact directory, not
+    embeddings or cells; global-only checks still read just the header.
+    """
+    from .index_build_helpers import load_segmented_blob
+
+    if not server_id:
+        raise ValueError('An explicit server is required for scoped coverage')
+
+    def count_available():
+        blob = load_segmented_blob(db_conn, IVF_DIR_TABLE, f'{index_name}__ivf_dir')
+        if not blob:
+            return 0
+        _centroids, _cells, ids, *_metadata = unpack_directory(bytes(blob))
+        mask = build_availability_mask(server_id, ids, lambda: db_conn)
+        if mask is None:
+            raise RuntimeError('Selected-server availability could not be determined')
+        return int(np.count_nonzero(mask))
+
+    return _SCOPED_COUNTS.get(server_id, index_name, count_available)
 
 
 def _setup_disk_cell_file(
