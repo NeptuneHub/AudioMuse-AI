@@ -165,7 +165,19 @@ def list_libraries(user_creds=None):
     if not response:
         return []
 
-    all_folders = _lyrion_loop_response(response, "folder_loop", "folders_loop")
+    all_folders = []
+    if isinstance(response, dict):
+        if "folder_loop" in response:
+            all_folders = response["folder_loop"]
+        elif "folders_loop" in response:
+            all_folders = response["folders_loop"]
+        else:
+            for v in response.values():
+                if isinstance(v, list):
+                    all_folders = v
+                    break
+    elif isinstance(response, list):
+        all_folders = response
 
     libraries = []
     for folder in all_folders or []:
