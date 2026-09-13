@@ -36,12 +36,16 @@ def model_coverage_pairs(db):
 
 
 def _coverage(count, total):
+    if count is None:
+        percentage = None
+    elif total:
+        percentage = round(min(100.0, max(0.0, count * 100.0 / total)), 2)
+    else:
+        percentage = 0.0
     return {
         'count': count,
         'total': total,
-        'percentage': None if count is None else (
-            round(min(100.0, max(0.0, count * 100.0 / total)), 2) if total else 0.0
-        ),
+        'percentage': percentage,
     }
 
 

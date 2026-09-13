@@ -82,7 +82,8 @@ def environment(monkeypatch, tmp_path):
             return (2,)
         if 'COUNT(*)' in sql:
             if params:
-                assert 'EXISTS' in sql and 'left(s.item_id, 3)' in sql
+                assert 'EXISTS' in sql
+                assert 'left(s.item_id, 3)' in sql
                 assert params[1] is (params[0] == 'primary')
             return (totals[params[0] if params else 'global'],)
         return (params[0] == 'primary', None)
@@ -181,7 +182,9 @@ def test_runtime_enablement_and_version_are_separate(client, monkeypatch):
     body = client.get(URL).json
     assert body['models']['musicnn']['enabled'] is True
     assert all(not body['models'][key]['enabled'] for key in ('clap', 'lyrics', 'neural-fingerprint'))
-    assert 'recording' not in body and 'api_version' not in body and 'app_version' not in body
+    assert 'recording' not in body
+    assert 'api_version' not in body
+    assert 'app_version' not in body
     response = client.get('/api/version')
     assert response.json == {'app_version': '3.6.1-rc.2'}
     assert response.headers['Cache-Control'] == 'no-store'
