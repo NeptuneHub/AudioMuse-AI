@@ -41,6 +41,16 @@ Main Features:
   made its parent wait out three backoffs on a failure that would not heal. The
   migration planner gets none, because a silently re-run dry run holds its
   session claimed for a whole extra attempt. None means QUEUE_MAX_ATTEMPTS
+* side_job marks a short read-only batch the user starts from a page, such as the
+  setup wizard naming preview. SIDE_JOB_TASK_TYPES derives every rule it needs in
+  one place: it shows as the running task so the dashboard can stop it, but it
+  never becomes the last task recap and is left out of the cancel history, its
+  start never erases the last task recap, its finish neither collapses the table nor
+  records task history, and it refuses and is refused by every other batch start
+  through get_queue_blocking_task, because only one batch runs at a time
+* BATCH_GATE_TASK_TYPES is every named type that batch admission refuses to
+  start beside: the main types plus the side jobs. server_sweep blocks starts
+  only through the active-task check, never through this gate
 """
 
 ROLE_MAIN = 'main'
@@ -55,7 +65,8 @@ NAMING_PREVIEW_TASK_TYPE = 'naming_preview'
 class TaskType:
     def __init__(self, name, role, queue=None, holds_main_index=False,
                  watched_by_nudge=False, blocks_starts=False,
-                 self_managed=False, is_prefix=False, restarts=None):
+                 self_managed=False, is_prefix=False, restarts=None,
+                 side_job=False):
         self.name = name
         self.role = role
         self.queue = queue
@@ -65,6 +76,7 @@ class TaskType:
         self.self_managed = self_managed
         self.is_prefix = is_prefix
         self.restarts = restarts
+        self.side_job = side_job
 
 
 ALL = (
@@ -84,8 +96,9 @@ ALL = (
     TaskType('worker_control', ROLE_CONTROL, self_managed=True),
     TaskType('provider_migration_planner', ROLE_PLANNER, queue='high',
              self_managed=True, restarts=0),
-    TaskType(NAMING_PREVIEW_TASK_TYPE, ROLE_PLANNER, queue='high',
-             self_managed=True, restarts=0),
+    TaskType(NAMING_PREVIEW_TASK_TYPE, ROLE_PLANNER, queue='default',
+             watched_by_nudge=True, blocks_starts=True, self_managed=True,
+             restarts=0, side_job=True),
     TaskType('album_analysis', ROLE_CHILD, queue='default', restarts=1),
     TaskType('clustering_batch', ROLE_CHILD, queue='default', restarts=1),
     TaskType('index_rebuild', ROLE_CHILD, queue='default', restarts=1),
@@ -133,6 +146,12 @@ QUEUE_BLOCKING_TASK_TYPES = MAIN_TASK_TYPES
 BLOCKING_TASK_TYPE_PREFIXES = tuple(
     entry.name for entry in ALL if entry.blocks_starts and entry.is_prefix
 )
+
+SIDE_JOB_TASK_TYPES = tuple(
+    entry.name for entry in ALL if entry.side_job and not entry.is_prefix
+)
+
+BATCH_GATE_TASK_TYPES = QUEUE_BLOCKING_TASK_TYPES + SIDE_JOB_TASK_TYPES
 
 
 def matches(task_type, names=(), prefixes=()):

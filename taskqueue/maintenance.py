@@ -79,6 +79,7 @@ service_roles.declare_worker_role()
 import config  # noqa: E402
 from . import control  # noqa: E402
 from . import sql  # noqa: E402
+from .errors import WORKER_LOST_ERROR  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,7 @@ def _reclaim_one(conn, task_id):
                         "The worker running this task stopped unexpectedly. "
                         "It was restarted the allowed number of times."
                     ),
-                    'error': 'worker lost',
+                    'error': WORKER_LOST_ERROR,
                 },
             )
         conn.commit()

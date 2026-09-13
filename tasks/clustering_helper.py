@@ -140,6 +140,20 @@ def _compose_name_from_ideas(context, avoid_names):
     return ''
 
 
+def _end_read_transaction():
+    from flask import g, has_app_context
+
+    if not has_app_context():
+        return
+    conn = g.get('db')
+    if conn is None or conn.closed:
+        return
+    try:
+        conn.commit()
+    except Exception:
+        logger.exception("Could not end the naming read transaction before the AI call")
+
+
 def _try_ai_name_playlist(
     original_name,
     songs,
@@ -159,8 +173,6 @@ def _try_ai_name_playlist(
     naming_mode=None,
     title_prompt=None,
 ):
-    if (ai_provider or 'NONE').upper() == 'NONE':
-        return original_name
     ai_config = {
         'provider': ai_provider,
         'ollama_url': ollama_url,
@@ -173,14 +185,44 @@ def _try_ai_name_playlist(
         'mistral_key': mistral_key,
         'mistral_model': mistral_model,
     }
+    return _name_playlist_with_ai_config(
+        original_name,
+        songs,
+        centroids,
+        ai_config,
+        avoid_names=avoid_names,
+        primary_genre=primary_genre,
+        naming_mode=naming_mode,
+        title_prompt=title_prompt,
+    )
+
+
+def _name_playlist_with_ai_config(
+    original_name,
+    songs,
+    centroids,
+    ai_config,
+    avoid_names=None,
+    primary_genre=None,
+    naming_mode=None,
+    title_prompt=None,
+):
+    if (ai_config.get('provider') or 'NONE').upper() == 'NONE':
+        return original_name
     mode = normalize_naming_mode(
         config.AI_NAMING_PROMPT_MODE if naming_mode is None else naming_mode
     )
+    ai_avoid_names = [
+        name
+        for name in (avoid_names or [])
+        if '_' not in name.partition('_automatic')[0]
+    ]
     if mode == 'title':
         ai_title = get_ai_playlist_title(
             config.AI_NAMING_TITLE_PROMPT if title_prompt is None else title_prompt,
             songs,
             ai_config,
+            used_titles=ai_avoid_names,
         )
         if ai_title:
             return ai_title.strip().replace("\n", " ")
@@ -201,6 +243,7 @@ def _try_ai_name_playlist(
             axis_blobs = get_lyrics_axis_vectors(item_ids)
         except Exception:
             logger.exception("Could not load lyric axes for playlist naming")
+    _end_read_transaction()
 
     context = build_naming_context(
         score_rows,
@@ -221,11 +264,6 @@ def _try_ai_name_playlist(
         context['ideas'],
         context['axis_labels'],
     )
-    ai_avoid_names = [
-        name
-        for name in (avoid_names or [])
-        if '_' not in name.partition('_automatic')[0]
-    ]
     naming_dimension = context['naming_dimension']
     naming_evidence = context['naming_evidence']
     if naming_evidence == 'general-purpose listening':

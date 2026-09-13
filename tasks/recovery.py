@@ -547,14 +547,17 @@ RECOVERY = {
     'naming_preview': {
         MAIN_WORKER_DIED: handled(
             'taskqueue.maintenance.reclaim_orphans FAILS it on the first worker '
-            'loss rather than requeueing, because it is enqueued with '
-            'max_attempts=0: a read-only titles preview is cheaper to click again '
-            'than to re-run silently'
+            'loss because its type declares restarts=0, and a deliberate restart '
+            'that requeues it is caught by run_naming_preview_task itself: a row '
+            'that already started fails at once instead of repeating every AI call '
+            'with an unsaved prompt'
         ),
-        MAIN_ROW_SILENT: not_applicable(
-            'it holds no admission index and is in NON_BLOCKING_TASK_TYPES, so '
-            'it refuses no start. A silent preview only stops the wizard from '
-            'starting a second preview, and the global cancel ends it'
+        MAIN_ROW_SILENT: handled(
+            'it blocks every batch start through get_queue_blocking_task, so '
+            'nudge_wedged_main_tasks watches it (watched_by_nudge) and restarts its '
+            'worker after QUEUE_WEDGED_MAIN_TASK_MINUTES unchanged. The preview '
+            'rewrites its row after every playlist, and the wizard Stop button runs '
+            'the global cancel'
         ),
         CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),

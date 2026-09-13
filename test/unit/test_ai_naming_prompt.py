@@ -17,8 +17,9 @@ entry point only takes the new path when the title style is selected.
 Main Features:
 * The default title instructions plus the playlist block hash to the version 2
   template, and render byte-identical to the old song-list format.
-* get_ai_playlist_title keeps the old contract: 5-40 character cleaned titles, length
-  feedback retries, no temperature override, and no retry on a provider error.
+* get_ai_playlist_title keeps the old 5-40 character contract with length feedback
+  and no temperature override, retries a transient provider error, honours
+  AI_NAMING_MAX_ATTEMPTS, and rejects a title another playlist already uses.
 * In the default style the clustering naming path never calls the title function, and
   in the title style it never queries score rows nor calls the word-plus-genre path.
 """
@@ -161,17 +162,65 @@ class TestGetAiPlaylistTitle:
         assert 'FEEDBACK: The previous title you generated' in second_prompt
 
     @patch('tasks.ai.api.generate_text')
-    def test_three_invalid_lengths_give_up(self, mock_generate):
+    def test_invalid_lengths_give_up_after_the_configured_attempts(self, mock_generate, monkeypatch):
+        monkeypatch.setattr(config, 'AI_NAMING_MAX_ATTEMPTS', 4)
         mock_generate.return_value = 'Hi'
         assert get_ai_playlist_title('Name it.', SONGS, ai_config()) is None
-        assert mock_generate.call_count == 3
+        assert mock_generate.call_count == 4
 
-    @pytest.mark.parametrize('response', ['Error: boom', 'AI Naming Skipped', None])
+    @pytest.mark.parametrize('response', ['Error: AI service is currently unavailable.', None])
     @patch('tasks.ai.api.generate_text')
-    def test_a_provider_error_is_not_retried(self, mock_generate, response):
-        mock_generate.return_value = response
+    def test_a_transient_provider_error_is_retried(self, mock_generate, response):
+        mock_generate.side_effect = [response, 'Velvet Morning Light']
+        assert get_ai_playlist_title('Name it.', SONGS, ai_config()) == 'Velvet Morning Light'
+        assert mock_generate.call_count == 2
+
+    @patch('tasks.ai.api.generate_text')
+    def test_persistent_provider_errors_give_up(self, mock_generate):
+        mock_generate.return_value = 'Error: boom'
+        assert get_ai_playlist_title('Name it.', SONGS, ai_config()) is None
+        assert mock_generate.call_count == config.AI_NAMING_MAX_ATTEMPTS
+
+    @patch('tasks.ai.api.generate_text')
+    def test_a_skipped_provider_is_not_retried(self, mock_generate):
+        mock_generate.return_value = 'AI Naming Skipped'
         assert get_ai_playlist_title('Name it.', SONGS, ai_config()) is None
         assert mock_generate.call_count == 1
+
+    @patch('tasks.ai.api.generate_text')
+    def test_an_already_used_title_is_rejected_and_retried(self, mock_generate):
+        mock_generate.side_effect = ['late night drive', 'Velvet Morning Light']
+        title = get_ai_playlist_title('Name it.', SONGS, ai_config(), used_titles=['Late Night Drive'])
+        assert title == 'Velvet Morning Light'
+        second_prompt = mock_generate.call_args_list[1][0][0]
+        assert "The title 'late night drive' is already used" in second_prompt
+
+    @patch('tasks.ai.api.generate_text')
+    def test_only_used_titles_fall_back_to_the_used_spelling_instead_of_the_tag_name(
+        self, mock_generate, monkeypatch
+    ):
+        monkeypatch.setattr(config, 'AI_NAMING_MAX_ATTEMPTS', 3)
+        mock_generate.side_effect = ['late night drive', 'Hi', 'Error: boom']
+        title = get_ai_playlist_title('Name it.', SONGS, ai_config(), used_titles=['Late Night Drive'])
+        assert title == 'Late Night Drive', (
+            'the exact used spelling lets the run add its (2) suffix, like a duplicate '
+            'title did before duplicates were retried'
+        )
+        assert mock_generate.call_count == 3
+
+    @patch('tasks.ai.api.generate_text')
+    def test_used_titles_reach_the_prompt_after_the_songs(self, mock_generate):
+        mock_generate.return_value = 'Velvet Morning Light'
+        get_ai_playlist_title('Name it.', SONGS, ai_config(), used_titles=['Late Night Drive', 'Rainy Days'])
+        prompt = mock_generate.call_args[0][0]
+        assert prompt.endswith('Titles already used, do not reuse them: Late Night Drive | Rainy Days\n\n')
+        assert prompt.index('This is the playlist:') < prompt.index('Titles already used')
+
+    @patch('tasks.ai.api.generate_text')
+    def test_no_used_titles_keep_the_version_2_render(self, mock_generate):
+        mock_generate.return_value = 'Velvet Morning Light'
+        get_ai_playlist_title(config._AI_NAMING_TITLE_PROMPT_DEFAULT, SONGS, ai_config(), used_titles=[])
+        assert 'Titles already used' not in mock_generate.call_args[0][0]
 
     @patch('tasks.ai.api.generate_text')
     def test_the_song_list_is_truncated_to_the_configured_size(
@@ -206,8 +255,9 @@ class TestClusteringNamingStyles:
     ):
         received = {}
 
-        def fake_title(instructions, songs, config_dict):
-            received.update(instructions=instructions, songs=songs, provider=config_dict['provider'])
+        def fake_title(instructions, songs, config_dict, used_titles=None):
+            received.update(instructions=instructions, songs=songs, provider=config_dict['provider'],
+                            used_titles=used_titles)
             return 'Velvet Morning Light\n'
 
         monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'title')
@@ -220,11 +270,12 @@ class TestClusteringNamingStyles:
         assert _call_helper() == 'Velvet Morning Light'
         assert received == {
             'instructions': 'Edited instructions.', 'songs': SONGS, 'provider': 'OLLAMA',
+            'used_titles': [],
         }
 
     def test_title_style_failure_keeps_the_tag_based_name(self, monkeypatch):
         monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'title')
-        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', lambda *_a: None)
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', lambda *_a, **_k: None)
         monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', _must_not_run)
         monkeypatch.setattr(clustering_helper, 'get_score_data_by_ids', _must_not_run)
         assert _call_helper('Rock_Fast_automatic') == 'Rock_Fast_automatic'
@@ -248,7 +299,7 @@ class TestClusteringNamingStyles:
     def test_an_explicit_title_style_and_prompt_override_the_saved_ones(self, monkeypatch):
         received = {}
 
-        def fake_title(instructions, songs, config_dict):
+        def fake_title(instructions, songs, config_dict, used_titles=None):
             received['instructions'] = instructions
             return 'Velvet Morning Light'
 
@@ -279,7 +330,7 @@ class TestClusteringNamingStyles:
     def test_a_title_style_without_an_explicit_prompt_uses_the_saved_one(self, monkeypatch):
         received = {}
 
-        def fake_title(instructions, songs, config_dict):
+        def fake_title(instructions, songs, config_dict, used_titles=None):
             received['instructions'] = instructions
             return 'Velvet Morning Light'
 
@@ -290,6 +341,52 @@ class TestClusteringNamingStyles:
             naming_mode='title',
         )
         assert received == {'instructions': 'Saved instructions.'}
+
+    def test_the_read_transaction_ends_before_the_ai_call(self, monkeypatch):
+        from flask import g
+
+        from flask_app import app
+
+        order = []
+
+        class FakeConn:
+            closed = 0
+
+            def commit(self):
+                order.append('commit')
+
+        monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'concept')
+        monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
+        monkeypatch.setattr(clustering_helper, 'get_score_data_by_ids', lambda ids: order.append('read') or [])
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name',
+                            lambda *a, **k: order.append('ai') or 'Joyful Soul')
+        with app.app_context():
+            g.db = FakeConn()
+            assert _call_helper() == 'Joyful Soul'
+            del g.db
+        assert order == ['read', 'commit', 'ai']
+
+    def test_no_app_context_means_no_transaction_to_end(self, monkeypatch):
+        monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'concept')
+        monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
+        monkeypatch.setattr(clustering_helper, 'get_score_data_by_ids', lambda ids: [])
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', lambda *a, **k: 'Joyful Soul')
+        assert _call_helper() == 'Joyful Soul'
+
+    def test_title_style_passes_the_used_titles_without_tag_names(self, monkeypatch):
+        received = {}
+
+        def fake_title(instructions, songs, config_dict, used_titles=None):
+            received['used_titles'] = used_titles
+            return 'Velvet Morning Light'
+
+        monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'title')
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', fake_title)
+        clustering_helper._try_ai_name_playlist(
+            'Rock_Fast_automatic', SONGS, {}, 'OLLAMA', 'u', 'm', '', '', '', '', '', '', '',
+            ['Late Night Drive', 'Rock_Pop_Fast_automatic', 'Rainy Days'],
+        )
+        assert received['used_titles'] == ['Late Night Drive', 'Rainy Days']
 
     def test_no_provider_skips_both_styles(self, monkeypatch):
         monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'title')

@@ -160,7 +160,7 @@ from . import retry  # noqa: E402
 from . import sql  # noqa: E402
 from .errors import TaskCancelled, TaskFailed  # noqa: E402
 from .listen import Listener  # noqa: E402
-from .process import stop_hard, sweep_stale_temp_dirs  # noqa: E402
+from .process import stop_hard, stopping_reason, sweep_stale_temp_dirs  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -481,7 +481,7 @@ class Worker:
         else:
             self._uncharged.pop(task_id, None)
         verdict = retry.decide(job, outcome)
-        if outcome == retry.FAIL_RETRYABLE and verdict != retry.RETRY:
+        if outcome == retry.FAIL_RETRYABLE and verdict != retry.RETRY and stopping_reason() is None:
             _log_retry_verdict(job, summary, config.TASK_STATUS_FAIL, 0.0)
         try:
             with self._claim_txn:
@@ -556,7 +556,7 @@ class Worker:
                 with self._conn.cursor() as cur:
                     row = sql.current_row(cur, task_id)
                     if not self._still_mine(row):
-                        logger.error(
+                        (logger.error if stopping_reason() is None else logger.info)(
                             "Not retrying %s: its row is no longer this worker's RUNNING "
                             "row (%s), so something else already decided its fate.",
                             task_id, row and row['status'],
@@ -659,6 +659,10 @@ class Worker:
                 if isinstance(outcome, tuple) and len(outcome) == 3:
                     return outcome
                 logger.error("The job process report for %s is malformed", task_id)
+        reason = stopping_reason()
+        if reason is not None:
+            logger.info("Task %s: its job process was stopped by this worker (%s)", task_id, reason)
+            return retry.FAIL_RETRYABLE, f"The job process was stopped by this worker: {reason}", None
         summary = _child_death_summary(status)
         logger.error("Task %s: %s", task_id, summary)
         return retry.FAIL_RETRYABLE, summary, None

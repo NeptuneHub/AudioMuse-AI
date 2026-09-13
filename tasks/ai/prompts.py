@@ -45,8 +45,23 @@ def title_prompt_song_block(songs, max_songs: int) -> str:
     return f'{TITLE_PROMPT_PLAYLIST_HEADER}{lines}\n\n'
 
 
-def build_title_naming_prompt(instructions: str, songs, max_songs: int) -> str:
-    return (instructions or '').rstrip() + '\n\n' + title_prompt_song_block(songs, max_songs)
+TITLE_PROMPT_RECENT_TITLES = 8
+
+
+def title_prompt_used_titles_block(used_titles) -> str:
+    recent = [title for title in (used_titles or []) if title][-TITLE_PROMPT_RECENT_TITLES:]
+    if not recent:
+        return ''
+    return 'Titles already used, do not reuse them: ' + ' | '.join(recent) + '\n\n'
+
+
+def build_title_naming_prompt(instructions: str, songs, max_songs: int, used_titles=None) -> str:
+    return (
+        (instructions or '').rstrip()
+        + '\n\n'
+        + title_prompt_song_block(songs, max_songs)
+        + title_prompt_used_titles_block(used_titles)
+    )
 
 
 playlist_concept_prompt_template = (

@@ -60,7 +60,7 @@ from app_helper import (
 from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details, disable_legacy_ai_chat_role
 from taskqueue.sql import CONTROL_TASK_TYPE
 from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
-from tasks.naming_preview import PREVIEW_TASK_TYPE
+import task_types
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
@@ -84,7 +84,13 @@ from error.error_dictionary import UNKNOWN_ERROR_CODE
 # WRITES them, because a rename that moved only one side left these filters
 # matching nothing: the handshake reappeared as a phantom dashboard task, and a
 # pending restart 409-blocked the next analysis or cleaning start.
-NON_USER_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE, PREVIEW_TASK_TYPE)
+# A side job (the setup wizard title preview) is left out of the last-task recap
+# but still shows as the running task: it refuses every batch start, so the
+# dashboard must show it and let its Stop end it.
+HIDDEN_ACTIVE_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
+NON_USER_TASK_TYPES = (
+    HIDDEN_ACTIVE_TASK_TYPES + task_types.SIDE_JOB_TASK_TYPES
+)
 
 logger = logging.getLogger(__name__)
 
@@ -822,7 +828,7 @@ def get_active_tasks_endpoint():
         ORDER BY timestamp DESC
         LIMIT 1
     """,
-        (non_terminal_statuses, NON_USER_TASK_TYPES),
+        (non_terminal_statuses, HIDDEN_ACTIVE_TASK_TYPES),
     )
     active_main_task_row = cur.fetchone()
     cur.close()

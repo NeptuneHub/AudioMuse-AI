@@ -822,9 +822,11 @@
 
                     <div class="ai-prompt-toolbar">
                         <button type="button" id="ai-prompt-preview-start">Preview titles</button>
+                        <button type="button" id="ai-prompt-preview-stop" style="display:none;">Stop</button>
                         <span class="ai-prompt-help" style="margin:0;">
                             Runs one quick K-Means clustering on up to <span id="ai-prompt-preview-max">10000</span> of your songs
                             and names every playlist with the selected naming style. Nothing is saved.
+                            It runs like any batch task, so it cannot start while another task is running.
                         </span>
                     </div>
                     <p id="ai-prompt-preview-status" class="inline-feedback" style="display:none; margin:0 0 0.75rem;"></p>

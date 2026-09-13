@@ -1234,12 +1234,15 @@ def setup_ai_prompt_preview():
             {'error': 'No AI provider is configured. Select one under AI Provider & Playlist Naming and save first.'}
         ), 400
     try:
-        task_id = naming_preview.start_preview(mode, instructions)
+        task_id, refusal = naming_preview.start_preview(mode, instructions)
     except Exception:
         app.logger.exception('Could not queue the playlist naming preview')
         return jsonify({'error': 'Could not start the preview. Check the container logs.'}), 500
     if not task_id:
-        return jsonify({'error': 'A title preview is already running. Wait for it to finish.'}), 409
+        return jsonify({
+            'error': refusal,
+            'preview_running': refusal == naming_preview.PREVIEW_RUNNING_MESSAGE,
+        }), 409
     return jsonify({'status': 'running', 'task_id': task_id, 'message': naming_preview.PREVIEW_WAITING_MESSAGE,
                     'titles': [], 'done': 0, 'total': 0}), 202
 

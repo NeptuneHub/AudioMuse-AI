@@ -450,10 +450,12 @@ def _evaluate_concept(
     return concept, title, problem
 
 
-def get_ai_playlist_title(instructions: str, songs, ai_config: Dict) -> Optional[str]:
+def get_ai_playlist_title(
+    instructions: str, songs, ai_config: Dict, used_titles: Optional[List[str]] = None
+) -> Optional[str]:
     min_length = 5
     max_length = 40
-    max_retries = 3
+    max_attempts = max(1, int(config.AI_NAMING_MAX_ATTEMPTS))
     songs = list(songs or [])
     max_songs = max(1, int(config.MAX_SONGS_IN_AI_PROMPT))
     if len(songs) > max_songs:
@@ -462,34 +464,66 @@ def get_ai_playlist_title(instructions: str, songs, ai_config: Dict) -> Optional
             len(songs),
             max_songs,
         )
-    full_prompt = build_title_naming_prompt(instructions, songs, max_songs)
+    recent_titles = [clean_playlist_name(title) for title in (used_titles or [])]
+    taken = {title.casefold(): title for title in recent_titles if title}
+    duplicate_fallback = None
+    full_prompt = build_title_naming_prompt(instructions, songs, max_songs, recent_titles)
     provider = (ai_config.get("provider") or "NONE").upper()
     logger.info("Sending playlist title prompt to AI (%s):\n%s", provider, full_prompt)
 
     current_prompt = full_prompt
-    for attempt in range(max_retries):
+    for attempt in range(max_attempts):
         name = generate_text(current_prompt, ai_config)
-        if not isinstance(name, str) or name == "AI Naming Skipped" or name.startswith("Error"):
-            logger.warning("AI title naming returned no usable text from %s: %s", provider, name)
+        if name == "AI Naming Skipped":
             return None
+        if not isinstance(name, str) or name.startswith("Error"):
+            logger.warning(
+                "AI title naming got no usable text from %s on attempt %d/%d: %s",
+                provider,
+                attempt + 1,
+                max_attempts,
+                name,
+            )
+            continue
         cleaned_name = clean_playlist_name(name)
-        if min_length <= len(cleaned_name) <= max_length:
-            return cleaned_name
-        logger.warning(
-            "AI generated name '%s' (%d chars) outside %d-%d range. Attempt %d/%d",
-            cleaned_name,
-            len(cleaned_name),
-            min_length,
-            max_length,
-            attempt + 1,
-            max_retries,
+        if not min_length <= len(cleaned_name) <= max_length:
+            logger.warning(
+                "AI generated name '%s' (%d chars) outside %d-%d range. Attempt %d/%d",
+                cleaned_name,
+                len(cleaned_name),
+                min_length,
+                max_length,
+                attempt + 1,
+                max_attempts,
+            )
+            current_prompt = full_prompt + (
+                f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was "
+                f"{len(cleaned_name)} characters long. It MUST be between {min_length} and "
+                f"{max_length} characters. Please try again."
+            )
+            continue
+        existing_title = taken.get(cleaned_name.casefold())
+        if existing_title:
+            duplicate_fallback = duplicate_fallback or existing_title
+            logger.warning(
+                "AI generated name '%s' is already used by another playlist. Attempt %d/%d",
+                cleaned_name,
+                attempt + 1,
+                max_attempts,
+            )
+            current_prompt = full_prompt + (
+                f"\n\nFEEDBACK: The title '{cleaned_name}' is already used by another "
+                "playlist. Give a different title."
+            )
+            continue
+        return cleaned_name
+    if duplicate_fallback:
+        logger.info(
+            "AI title naming only produced titles already in use; keeping '%s' so the "
+            "duplicate suffix tells the playlists apart",
+            duplicate_fallback,
         )
-        current_prompt = full_prompt + (
-            f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was "
-            f"{len(cleaned_name)} characters long. It MUST be between {min_length} and "
-            f"{max_length} characters. Please try again."
-        )
-    return None
+    return duplicate_fallback
 
 
 def get_ai_playlist_name(

@@ -23,11 +23,15 @@ Main Features:
   parent-side model cleanup there
 * The parent decodes the child's pickled report, and a child that dies without
   reporting fails the job with its signal or exit code
+* A child the worker itself killed on a cancel, reclaim or wedged nudge is logged
+  as that stop, never as an out-of-memory crash, and is still requeued when its
+  row is RUNNING and has restarts left
 * A connectivity failure reported by the child requeues the row uncharged
   instead of failing it
 * A real fork round-trip returns the task result and survives a SIGKILLed child
 """
 
+import logging
 import os
 import pickle
 import signal
@@ -38,6 +42,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import config
+import taskqueue.worker as worker_mod
+from taskqueue import process as process_mod
 from taskqueue import retry
 from taskqueue.worker import Worker, _encode_outcome
 
@@ -263,6 +269,83 @@ class TestChildOutcome:
         instance = _worker()
         outcome = instance._child_outcome('task-5', 0, pickle.dumps(['wrong', 'shape']))
         assert outcome[0] == retry.FAIL_RETRYABLE
+
+    @pytest.mark.skipif(
+        not hasattr(signal, 'SIGTERM'), reason='POSIX wait statuses only'
+    )
+    def test_a_child_this_worker_killed_is_a_stop_not_an_out_of_memory_crash(
+        self, monkeypatch, caplog
+    ):
+        instance = _worker()
+        monkeypatch.setattr(process_mod, '_STOPPING', ['task task-6 was cancelled'])
+        with caplog.at_level(logging.INFO, logger=worker_mod.logger.name):
+            outcome = instance._child_outcome('task-6', signal.SIGTERM, b'')
+        assert outcome[0] == retry.FAIL_RETRYABLE, (
+            'the wedged-task nudge sends this same cancel while the row is still RUNNING; '
+            'a revoked outcome would end that task for good instead of requeueing it'
+        )
+        assert 'was cancelled' in outcome[1]
+        assert 'out of memory' not in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_a_stop_does_not_hide_a_report_the_child_managed_to_send(self, monkeypatch):
+        instance = _worker()
+        monkeypatch.setattr(process_mod, '_STOPPING', ['recycling'])
+        payload = pickle.dumps((config.TASK_STATUS_SUCCESS, None, {'albums': 1}))
+        assert instance._child_outcome('task-7', 0, payload) == (
+            config.TASK_STATUS_SUCCESS, None, {'albums': 1}
+        )
+
+    def _stopped_job_run(self, monkeypatch, job):
+        instance = _worker()
+        instance._fork_jobs = True
+        monkeypatch.setattr(process_mod, '_STOPPING', ['task %s was cancelled' % job['task_id']])
+        monkeypatch.setattr(instance, 'hydrate_shared', lambda kwargs: kwargs)
+        monkeypatch.setattr(
+            instance, '_run_in_child',
+            lambda job, kwargs: instance._child_outcome(job['task_id'], 15, b''),
+        )
+        monkeypatch.setattr(instance, 'finalize', MagicMock())
+        monkeypatch.setattr(instance, '_requeue_for_retry', MagicMock())
+        return instance
+
+    def test_a_nudged_child_with_restarts_left_is_requeued_not_revoked(self, monkeypatch, caplog):
+        job = _job('task-8')
+        instance = self._stopped_job_run(monkeypatch, job)
+        with caplog.at_level(logging.INFO, logger=worker_mod.logger.name):
+            instance.run_job(job)
+        instance._requeue_for_retry.assert_called_once()
+        instance.finalize.assert_not_called()
+        assert 'out of memory' not in caplog.text
+
+    def test_a_stopped_child_with_no_restart_left_finishes_without_an_error_verdict(
+        self, monkeypatch, caplog
+    ):
+        job = dict(_job('task-9'), max_attempts=0)
+        instance = self._stopped_job_run(monkeypatch, job)
+        with caplog.at_level(logging.INFO, logger=worker_mod.logger.name):
+            instance.run_job(job)
+        instance._requeue_for_retry.assert_not_called()
+        instance.finalize.assert_called_once()
+        assert instance.finalize.call_args[0][1] == config.TASK_STATUS_FAIL, (
+            'the terminal write is fenced by the row status: a cancelled row is left '
+            'alone, a nudged RUNNING row with no restart left ends FAIL as before'
+        )
+        assert 'failed on attempt' not in caplog.text
+
+    def test_not_retrying_a_row_a_cancel_already_ended_is_not_an_error(self, monkeypatch, caplog):
+        instance = _worker()
+        monkeypatch.setattr(process_mod, '_STOPPING', ['task task-10 was cancelled'])
+        monkeypatch.setattr(worker_mod.sql, 'current_row', lambda cur, task_id: {
+            'status': config.TASK_STATUS_REVOKED, 'worker_id': instance.identity,
+        })
+        requeue = MagicMock()
+        monkeypatch.setattr(worker_mod.sql, 'requeue_or_fail', requeue)
+        with caplog.at_level(logging.INFO, logger=worker_mod.logger.name):
+            instance._requeue_for_retry(_job('task-10'), 'stopped')
+        requeue.assert_not_called()
+        assert 'Not retrying task-10' in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 class TestEncodeOutcome:

@@ -680,15 +680,14 @@ def song_alchemy(
             if projection is not None and len(component_map) > 0:
                 for idx, comp_info in enumerate(component_map):
                     if idx < len(projection):
-                        artist_id = comp_info['artist_id']
                         comp_idx = comp_info['component_idx']
-                        key = f"{artist_id}_{comp_idx}"
-                        artist_comp_to_coord[key] = (
-                            float(projection[idx][0]),
-                            float(projection[idx][1]),
-                        )
+                        coord = (float(projection[idx][0]), float(projection[idx][1]))
+                        artist_comp_to_coord[f"{comp_info['artist_id']}_{comp_idx}"] = coord
+                        artist_name = comp_info.get('artist_name')
+                        if artist_name:
+                            artist_comp_to_coord.setdefault(f"{artist_name}_{comp_idx}", coord)
                 logger.info(
-                    f"Loaded {len(artist_comp_to_coord)} precomputed artist component projections"
+                    f"Loaded {min(len(component_map), len(projection))} precomputed artist component projections"
                 )
     except Exception as e:
         logger.warning(f"Failed to load artist projection cache: {e}")

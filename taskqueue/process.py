@@ -30,6 +30,10 @@ The two layouts put that pid in different fields
 
 Main Features:
 * stop_hard kills this process tree and exits, on POSIX and Windows
+* stopping_reason tells the job loop that a dead job process was killed by this
+  stop, so it is logged as the stop it is, not as an out-of-memory crash. The
+  outcome stays a retryable failure: the wedged-task nudge sends the same cancel
+  while the row is still RUNNING, and that task must be requeued, not revoked
 * sweep_stale_temp_dirs clears joblib folders a previous hard kill leaked
 """
 
@@ -111,7 +115,15 @@ def _kill_tree_windows(grace):
             logger.debug("Killing child %s failed", child, exc_info=True)
 
 
+_STOPPING = []
+
+
+def stopping_reason():
+    return _STOPPING[0] if _STOPPING else None
+
+
 def stop_hard(reason):
+    _STOPPING.append(reason)
     logger.warning("Stopping this worker and its process tree: %s", reason)
     grace = max(0.0, float(config.QUEUE_KILL_GRACE_SECONDS))
     try:

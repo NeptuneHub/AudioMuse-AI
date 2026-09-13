@@ -38,6 +38,7 @@ import database
 import task_types
 import taskqueue
 from taskqueue.sql import CONTROL_TASK_TYPE
+from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 from database import (
     get_db,
     coerce_db_details,
@@ -696,7 +697,7 @@ def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
             if row['task_id'] in protected_task_ids:
                 continue
             if row['task_type'] in (
-                CONTROL_TASK_TYPE, 'provider_migration_planner', task_types.NAMING_PREVIEW_TASK_TYPE,
+                (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE) + task_types.SIDE_JOB_TASK_TYPES
             ):
                 continue
             _record_one_cancellation(row, now_ts, reason)

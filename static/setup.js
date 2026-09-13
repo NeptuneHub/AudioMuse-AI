@@ -1462,7 +1462,9 @@ if (advancedCollapseAll) {
 // ---------------------------------------------------------------------------
 var AI_PROMPT_FORM_FIELDS = ['AI_NAMING_PROMPT_MODE', 'AI_NAMING_TITLE_PROMPT'];
 var AI_PROMPT_POLL_MS = 1500;
-var aiPromptState = {loaded: false, defaultTitlePrompt: '', pollTimer: null};
+var AI_PROMPT_MAX_POLL_FAILURES = 10;
+var AI_PROMPT_POLL_GAVE_UP_MESSAGE = 'Lost track of the preview status. Click Preview titles to check it again.';
+var aiPromptState = {loaded: false, defaultTitlePrompt: '', pollTimer: null, taskId: null, pollFailures: 0};
 
 function aiPromptMode() {
     var select = document.getElementById('AI_NAMING_PROMPT_MODE');
@@ -1490,9 +1492,18 @@ function renderAiPromptPreview(state) {
     var status = document.getElementById('ai-prompt-preview-status');
     var list = document.getElementById('ai-prompt-preview-titles');
     var button = document.getElementById('ai-prompt-preview-start');
-    if (!status || !list || !state || state.status === 'idle') { return; }
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (!status || !list || !state || state.status === 'idle') {
+        if (stop) { stop.style.display = 'none'; }
+        return;
+    }
     var running = state.status === 'running';
+    aiPromptState.taskId = state.task_id || null;
     if (button) { button.disabled = running; }
+    if (stop) {
+        stop.style.display = running && aiPromptState.taskId ? '' : 'none';
+        stop.disabled = false;
+    }
     status.style.display = 'block';
     status.className = (running ? 'status-pending' : state.status === 'done' ? 'status-success' : 'status-failure')
         + ' inline-feedback';
@@ -1516,27 +1527,65 @@ function renderAiPromptPreview(state) {
     list.style.display = titles.length ? '' : 'none';
 }
 
+function showAiPromptPreviewError(message) {
+    var status = document.getElementById('ai-prompt-preview-status');
+    if (!status) { return; }
+    status.style.display = 'block';
+    status.className = 'status-failure inline-feedback';
+    status.textContent = message;
+}
+
+function readAiPromptResponse(response) {
+    return response.json().catch(function() { return {}; }).then(function(body) {
+        return {ok: response.ok, code: response.status, body: body || {}};
+    });
+}
+
+function releaseAiPromptPreview(message) {
+    var button = document.getElementById('ai-prompt-preview-start');
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (button) { button.disabled = false; }
+    if (stop) { stop.style.display = 'none'; }
+    showAiPromptPreviewError(message);
+}
+
 function pollAiPromptPreview() {
     if (aiPromptState.pollTimer) {
         clearTimeout(aiPromptState.pollTimer);
         aiPromptState.pollTimer = null;
     }
-    fetch('/api/setup/ai-prompt/preview').then(function(response) {
-        return response.json();
-    }).then(function(state) {
-        renderAiPromptPreview(state);
-        if (state && state.status === 'running') {
+    fetch('/api/setup/ai-prompt/preview').then(readAiPromptResponse).then(function(result) {
+        if (!result.ok || !result.body.status) {
+            aiPromptState.pollFailures += 1;
+            showAiPromptPreviewError(result.body.error || 'Could not read the preview status.');
+            if (aiPromptState.pollFailures < AI_PROMPT_MAX_POLL_FAILURES) {
+                aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+            } else {
+                releaseAiPromptPreview(AI_PROMPT_POLL_GAVE_UP_MESSAGE);
+            }
+            return;
+        }
+        aiPromptState.pollFailures = 0;
+        renderAiPromptPreview(result.body);
+        if (result.body.status === 'running') {
             aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS);
         }
     }).catch(function() {
-        aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+        aiPromptState.pollFailures += 1;
+        if (aiPromptState.pollFailures < AI_PROMPT_MAX_POLL_FAILURES) {
+            aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+        } else {
+            releaseAiPromptPreview(AI_PROMPT_POLL_GAVE_UP_MESSAGE);
+        }
     });
 }
 
 function startAiPromptPreview() {
     var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
     var status = document.getElementById('ai-prompt-preview-status');
-    if (!status) { return; }
+    var button = document.getElementById('ai-prompt-preview-start');
+    if (!status || (button && button.disabled)) { return; }
+    if (button) { button.disabled = true; }
     status.style.display = 'block';
     status.className = 'status-pending inline-feedback';
     status.textContent = 'Starting the preview...';
@@ -1544,20 +1593,44 @@ function startAiPromptPreview() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({mode: aiPromptMode(), instructions: area ? area.value : ''})
-    }).then(function(response) {
-        return response.json().then(function(body) { return {ok: response.ok, body: body}; });
-    }).then(function(result) {
+    }).then(readAiPromptResponse).then(function(result) {
         if (!result.ok) {
-            status.className = 'status-failure inline-feedback';
-            status.textContent = (result.body && result.body.error) || 'The preview could not start.';
+            if (button) { button.disabled = false; }
+            showAiPromptPreviewError(result.body.error || 'The preview could not start.');
+            if (result.body.preview_running) {
+                aiPromptState.pollFailures = 0;
+                pollAiPromptPreview();
+            }
             return;
         }
+        aiPromptState.pollFailures = 0;
         renderAiPromptPreview(result.body);
         pollAiPromptPreview();
     }).catch(function() {
-        status.className = 'status-failure inline-feedback';
-        status.textContent = 'The preview request failed. Check that the app is still running.';
+        if (button) { button.disabled = false; }
+        showAiPromptPreviewError('The preview request failed. Check that the app is still running.');
     });
+}
+
+function stopAiPromptPreview() {
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (!aiPromptState.taskId || (stop && stop.disabled)) { return; }
+    if (stop) { stop.disabled = true; }
+    fetch('/api/cancel/' + encodeURIComponent(aiPromptState.taskId), {method: 'POST'})
+        .then(readAiPromptResponse)
+        .then(function(result) {
+            if (!result.ok) {
+                if (stop) { stop.disabled = false; }
+                showAiPromptPreviewError(result.body.error || 'Could not stop the preview.');
+                return;
+            }
+            aiPromptState.pollFailures = 0;
+            pollAiPromptPreview();
+        })
+        .catch(function() {
+            if (stop) { stop.disabled = false; }
+            showAiPromptPreviewError('Could not stop the preview. Check that the app is still running.');
+        });
 }
 
 function populateAiPromptFields(promptData) {
@@ -1595,6 +1668,10 @@ if (_aiPromptReset) {
 var _aiPromptPreviewStart = document.getElementById('ai-prompt-preview-start');
 if (_aiPromptPreviewStart) {
     _aiPromptPreviewStart.addEventListener('click', startAiPromptPreview);
+}
+var _aiPromptPreviewStop = document.getElementById('ai-prompt-preview-stop');
+if (_aiPromptPreviewStop) {
+    _aiPromptPreviewStop.addEventListener('click', stopAiPromptPreview);
 }
 
 // ---------------------------------------------------------------------------

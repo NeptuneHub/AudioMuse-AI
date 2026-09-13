@@ -34,8 +34,9 @@ Main Features:
 * TaskFailed / TaskCancelled are the two things a task may raise to steer the
   queue's verdict: never retry, and revoked. Everything else it raises is retried
 A root enqueue clears the FINISHED rows before inserting itself (the whole
-retention policy); it never touches NEW or RUNNING rows. A read-only side job
-passes clear_finished=False so starting it never erases the last task's recap.
+retention policy); it never touches NEW or RUNNING rows. A side job
+(task_types.SIDE_JOB_TASK_TYPES) skips that clear, so starting it never erases the
+last task's recap.
 """
 
 import importlib
@@ -45,7 +46,7 @@ import time
 import queue_names
 import task_types
 
-from .errors import TaskCancelled, TaskFailed  # noqa: F401
+from .errors import WORKER_LOST_ERROR, TaskCancelled, TaskFailed  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -174,8 +175,7 @@ def _publish_shared(sql, cur, parent_task_id, shared, kwargs):
 
 def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAULT,
             priority=0, parent_task_id=None, sub_type_identifier=None,
-            max_attempts=None, details=None, conn=None, shared=None,
-            clear_finished=True):
+            max_attempts=None, details=None, conn=None, shared=None):
     import psycopg2
 
     if func not in ALLOWED_FUNCS:
@@ -192,7 +192,7 @@ def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAU
             sql.take_start_lock(cur)
         cur.execute("SAVEPOINT audiomuse_enqueue")
         try:
-            if parent_task_id is None and clear_finished:
+            if parent_task_id is None and task_type not in task_types.SIDE_JOB_TASK_TYPES:
                 sql.clear_task_status(cur)
             if shared:
                 _publish_shared(sql, cur, parent_task_id, shared, kwargs)

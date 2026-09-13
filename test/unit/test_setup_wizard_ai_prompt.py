@@ -142,7 +142,7 @@ class TestSectionMarkup:
 
     def test_the_preview_controls_exist(self):
         section = _section()
-        for element_id in ('ai-prompt-reset', 'ai-prompt-preview-start',
+        for element_id in ('ai-prompt-reset', 'ai-prompt-preview-start', 'ai-prompt-preview-stop',
                            'ai-prompt-preview-status', 'ai-prompt-preview-titles'):
             assert 'id="%s"' % element_id in section, element_id
 
@@ -194,6 +194,42 @@ class TestScript:
         toggle = toggle[:toggle.index('\n}')]
         for element_id in ('ai-prompt-concept-help', 'ai-prompt-title-help', 'ai-prompt-title-panel'):
             assert element_id in toggle, element_id
+
+    def test_the_start_button_is_disabled_before_the_request(self):
+        source = _setup_js()
+        start = source[source.index('function startAiPromptPreview'):]
+        start = start[:start.index('\nfunction ')]
+        assert start.index('button.disabled = true') < start.index("fetch('/api/setup/ai-prompt/preview'")
+
+    def test_a_conflict_from_a_running_preview_starts_polling(self):
+        source = _setup_js()
+        start = source[source.index('function startAiPromptPreview'):]
+        start = start[:start.index('\nfunction ')]
+        assert 'result.body.preview_running' in start and 'pollAiPromptPreview()' in start
+
+    def test_polling_checks_the_response_status(self):
+        source = _setup_js()
+        poll = source[source.index('function pollAiPromptPreview'):]
+        poll = poll[:poll.index('\nfunction ')]
+        assert 'readAiPromptResponse' in poll and '!result.ok' in poll
+        assert 'AI_PROMPT_MAX_POLL_FAILURES' in poll
+
+    def test_giving_up_on_polling_re_enables_start_on_both_failure_paths(self):
+        source = _setup_js()
+        poll = source[source.index('function pollAiPromptPreview'):]
+        poll = poll[:poll.index('\nfunction ')]
+        assert poll.count('releaseAiPromptPreview(AI_PROMPT_POLL_GAVE_UP_MESSAGE)') == 2
+        release = source[source.index('function releaseAiPromptPreview'):]
+        release = release[:release.index('\nfunction ')]
+        assert 'button.disabled = false' in release
+        assert "stop.style.display = 'none'" in release
+
+    def test_stop_runs_the_global_cancel_for_the_preview(self):
+        source = _setup_js()
+        stop = source[source.index('function stopAiPromptPreview'):]
+        stop = stop[:stop.index('\nfunction ')]
+        assert "fetch('/api/cancel/' + encodeURIComponent(aiPromptState.taskId)" in stop
+        assert 'id="ai-prompt-preview-stop"' in _section()
 
     def test_titles_are_rendered_as_text_not_html(self):
         source = _setup_js()
@@ -255,18 +291,28 @@ class TestPreviewRoute:
         body, status = self._post({'mode': 'title', 'instructions': '   '})
         assert status == 400
 
-    def test_a_running_preview_returns_conflict(self, monkeypatch):
+    def test_a_running_preview_returns_conflict_and_says_so(self, monkeypatch):
         monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'OLLAMA')
-        monkeypatch.setattr(app_setup.naming_preview, 'start_preview', lambda *a: False)
+        monkeypatch.setattr(app_setup.naming_preview, 'start_preview',
+                            lambda *a: (None, app_setup.naming_preview.PREVIEW_RUNNING_MESSAGE))
         body, status = self._post({'mode': 'title', 'instructions': 'Name it.'})
-        assert status == 409
+        assert status == 409 and body.get_json()['preview_running'] is True
+
+    def test_another_batch_task_returns_conflict_with_the_parallel_rule(self, monkeypatch):
+        monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'OLLAMA')
+        busy = app_setup.naming_preview.PREVIEW_BUSY_MESSAGE.format(task_type='main_clustering')
+        monkeypatch.setattr(app_setup.naming_preview, 'start_preview', lambda *a: (None, busy))
+        body, status = self._post({'mode': 'concept'})
+        payload = body.get_json()
+        assert status == 409 and payload['preview_running'] is False
+        assert 'never runs two batch tasks in parallel' in payload['error']
 
     def _capture_start(self, monkeypatch):
         received = {}
 
         def fake_start(mode, instructions):
             received.update(mode=mode, instructions=instructions)
-            return 'job-1'
+            return 'job-1', None
 
         monkeypatch.setattr(app_setup.naming_preview, 'start_preview', fake_start)
         return received

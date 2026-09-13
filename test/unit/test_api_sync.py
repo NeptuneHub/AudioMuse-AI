@@ -484,3 +484,34 @@ class TestErrorHandling:
         assert body['error_code'] == 4002
         assert 'error' in body
         assert 'simulated DB failure' not in body['error']
+
+
+class TestRegistryFailureFallback:
+    def _fail_registry(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            registry, 'get_default_server', MagicMock(side_effect=RuntimeError('registry query failed'))
+        )
+
+    def test_the_failed_transaction_is_rolled_back_before_the_canonical_probe(
+        self, bp_mod, client, fake_db, monkeypatch
+    ):
+        conn, _cur = fake_db
+        self._fail_registry(monkeypatch)
+        order = []
+        conn.rollback.side_effect = lambda: order.append('rollback')
+        bp_mod.probe_catalogue_canonical_ids = lambda: order.append('probe') or True
+        resp = client.get('/api/sync?limit=1')
+        assert resp.status_code == 503
+        assert order[:2] == ['rollback', 'probe']
+
+    def test_a_catalogue_without_canonical_ids_is_not_refused(
+        self, bp_mod, client, fake_db, monkeypatch
+    ):
+        _conn, cur = fake_db
+        self._fail_registry(monkeypatch)
+        bp_mod.probe_catalogue_canonical_ids = lambda: False
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
+        resp = client.get('/api/sync?limit=1')
+        assert resp.status_code != 503 or 'retry shortly' not in (resp.get_json() or {}).get('error', '')

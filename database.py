@@ -366,7 +366,7 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
         return
     if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
         return
-    if not task_type or task_type in ('unknown', task_types.NAMING_PREVIEW_TASK_TYPE):
+    if not task_type or task_type == 'unknown' or task_type in task_types.SIDE_JOB_TASK_TYPES:
         return
 
     duration_s = None
@@ -394,7 +394,7 @@ def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
         return 0
     from taskqueue.sql import CONTROL_TASK_TYPE, TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD
 
-    if task_type in (CONTROL_TASK_TYPE, task_types.NAMING_PREVIEW_TASK_TYPE):
+    if task_type == CONTROL_TASK_TYPE or task_type in task_types.SIDE_JOB_TASK_TYPES:
         return 0
     try:
         with db.cursor() as cur:
@@ -2713,7 +2713,8 @@ def get_queue_blocking_task(conn=None):
             "AND (task_type = ANY(%s) OR task_type LIKE ANY(%s)) "
             "ORDER BY timestamp DESC LIMIT 1",
             (
-                non_terminal_statuses, list(config.QUEUE_BLOCKING_TASK_TYPES),
+                non_terminal_statuses,
+                list(task_types.BATCH_GATE_TASK_TYPES),
                 _BLOCKING_TASK_TYPE_PATTERNS,
             ),
         )
