@@ -156,6 +156,8 @@ def _try_ai_name_playlist(
     mistral_model,
     avoid_names=None,
     primary_genre=None,
+    naming_mode=None,
+    title_prompt=None,
 ):
     if (ai_provider or 'NONE').upper() == 'NONE':
         return original_name
@@ -171,8 +173,15 @@ def _try_ai_name_playlist(
         'mistral_key': mistral_key,
         'mistral_model': mistral_model,
     }
-    if normalize_naming_mode(config.AI_NAMING_PROMPT_MODE) == 'title':
-        ai_title = get_ai_playlist_title(config.AI_NAMING_TITLE_PROMPT, songs, ai_config)
+    mode = normalize_naming_mode(
+        config.AI_NAMING_PROMPT_MODE if naming_mode is None else naming_mode
+    )
+    if mode == 'title':
+        ai_title = get_ai_playlist_title(
+            config.AI_NAMING_TITLE_PROMPT if title_prompt is None else title_prompt,
+            songs,
+            ai_config,
+        )
         if ai_title:
             return ai_title.strip().replace("\n", " ")
         logger.warning(

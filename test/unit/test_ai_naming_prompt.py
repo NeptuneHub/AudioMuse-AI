@@ -245,6 +245,52 @@ class TestClusteringNamingStyles:
         monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', lambda *a, **k: 'Joyful Soul')
         assert _call_helper() == 'Joyful Soul'
 
+    def test_an_explicit_title_style_and_prompt_override_the_saved_ones(self, monkeypatch):
+        received = {}
+
+        def fake_title(instructions, songs, config_dict):
+            received['instructions'] = instructions
+            return 'Velvet Morning Light'
+
+        monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'concept')
+        monkeypatch.setattr(config, 'AI_NAMING_TITLE_PROMPT', 'Saved instructions.')
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', fake_title)
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', _must_not_run)
+        monkeypatch.setattr(clustering_helper, 'get_score_data_by_ids', _must_not_run)
+        name = clustering_helper._try_ai_name_playlist(
+            'Rock_Fast_automatic', SONGS, {}, 'OLLAMA', 'u', 'm', '', '', '', '', '', '', '',
+            naming_mode='title', title_prompt='Unsaved instructions.',
+        )
+        assert name == 'Velvet Morning Light'
+        assert received == {'instructions': 'Unsaved instructions.'}
+
+    def test_an_explicit_default_style_overrides_a_saved_title_style(self, monkeypatch):
+        monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'title')
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', _must_not_run)
+        monkeypatch.setattr(clustering_helper, 'get_score_data_by_ids', lambda _ids: [])
+        monkeypatch.setattr(clustering_helper, 'LYRICS_ENABLED', False)
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_name', lambda *a, **k: 'Joyful Soul')
+        name = clustering_helper._try_ai_name_playlist(
+            'Rock_Fast_automatic', SONGS, {}, 'OLLAMA', 'u', 'm', '', '', '', '', '', '', '',
+            naming_mode='concept',
+        )
+        assert name == 'Joyful Soul'
+
+    def test_a_title_style_without_an_explicit_prompt_uses_the_saved_one(self, monkeypatch):
+        received = {}
+
+        def fake_title(instructions, songs, config_dict):
+            received['instructions'] = instructions
+            return 'Velvet Morning Light'
+
+        monkeypatch.setattr(config, 'AI_NAMING_TITLE_PROMPT', 'Saved instructions.')
+        monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', fake_title)
+        clustering_helper._try_ai_name_playlist(
+            'Rock_Fast_automatic', SONGS, {}, 'OLLAMA', 'u', 'm', '', '', '', '', '', '', '',
+            naming_mode='title',
+        )
+        assert received == {'instructions': 'Saved instructions.'}
+
     def test_no_provider_skips_both_styles(self, monkeypatch):
         monkeypatch.setattr(config, 'AI_NAMING_PROMPT_MODE', 'title')
         monkeypatch.setattr(clustering_helper, 'get_ai_playlist_title', _must_not_run)

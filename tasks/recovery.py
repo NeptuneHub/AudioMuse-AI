@@ -544,6 +544,22 @@ RECOVERY = {
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
     },
+    'naming_preview': {
+        MAIN_WORKER_DIED: handled(
+            'taskqueue.maintenance.reclaim_orphans FAILS it on the first worker '
+            'loss rather than requeueing, because it is enqueued with '
+            'max_attempts=0: a read-only titles preview is cheaper to click again '
+            'than to re-run silently'
+        ),
+        MAIN_ROW_SILENT: not_applicable(
+            'it holds no admission index and is in NON_BLOCKING_TASK_TYPES, so '
+            'it refuses no start. A silent preview only stops the wizard from '
+            'starting a second preview, and the global cancel ends it'
+        ),
+        CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
+        CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
+        GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
+    },
     'alchemy_radio': {
         MAIN_WORKER_DIED: not_applicable(
             'it never runs on a worker: it is an inline Flask run '

@@ -60,6 +60,7 @@ from app_helper import (
 from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details, disable_legacy_ai_chat_role
 from taskqueue.sql import CONTROL_TASK_TYPE
 from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
+from tasks.naming_preview import PREVIEW_TASK_TYPE
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
@@ -83,7 +84,7 @@ from error.error_dictionary import UNKNOWN_ERROR_CODE
 # WRITES them, because a rename that moved only one side left these filters
 # matching nothing: the handshake reappeared as a phantom dashboard task, and a
 # pending restart 409-blocked the next analysis or cleaning start.
-NON_USER_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
+NON_USER_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE, PREVIEW_TASK_TYPE)
 
 logger = logging.getLogger(__name__)
 

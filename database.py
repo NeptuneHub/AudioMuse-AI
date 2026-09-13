@@ -366,7 +366,7 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
         return
     if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
         return
-    if not task_type or task_type == 'unknown':
+    if not task_type or task_type in ('unknown', task_types.NAMING_PREVIEW_TASK_TYPE):
         return
 
     duration_s = None
@@ -394,7 +394,7 @@ def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
         return 0
     from taskqueue.sql import CONTROL_TASK_TYPE, TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD
 
-    if task_type == CONTROL_TASK_TYPE:
+    if task_type in (CONTROL_TASK_TYPE, task_types.NAMING_PREVIEW_TASK_TYPE):
         return 0
     try:
         with db.cursor() as cur:

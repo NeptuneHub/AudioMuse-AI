@@ -523,21 +523,6 @@ def _validate_ai_prompt_values(filtered_values):
     return None
 
 
-def _preview_ai_config():
-    return {
-        'provider': (config.AI_MODEL_PROVIDER or 'NONE').upper(),
-        'ollama_url': config.OLLAMA_SERVER_URL,
-        'ollama_model': config.OLLAMA_MODEL_NAME,
-        'openai_url': config.OPENAI_SERVER_URL,
-        'openai_model': config.OPENAI_MODEL_NAME,
-        'openai_key': config.OPENAI_API_KEY,
-        'gemini_key': config.GEMINI_API_KEY,
-        'gemini_model': config.GEMINI_MODEL_NAME,
-        'mistral_key': config.MISTRAL_API_KEY,
-        'mistral_model': config.MISTRAL_MODEL_NAME,
-    }
-
-
 def _get_allowed_setup_keys():
     allowed_keys = set()
     for f in setup_manager.get_all_fields(config):
@@ -1229,22 +1214,34 @@ def setup_plex_pin_poll(pin_id):
 @app.route('/api/setup/ai-prompt/preview', methods=['GET', 'POST'])
 def setup_ai_prompt_preview():
     if request.method == 'GET':
-        return jsonify(naming_preview.preview_status()), 200
+        try:
+            return jsonify(naming_preview.preview_status()), 200
+        except Exception:
+            app.logger.exception('Could not read the playlist naming preview status')
+            return jsonify({'error': 'Could not read the preview. Check the container logs.'}), 500
     data = request.get_json(silent=True) or {}
-    instructions = data.get('instructions')
-    if isinstance(instructions, str):
-        instructions = instructions.replace('\r\n', '\n')
-    problem = _ai_title_prompt_problem(instructions)
-    if problem:
-        return jsonify({'error': problem}), 400
-    ai_config = _preview_ai_config()
-    if ai_config['provider'] == 'NONE':
+    mode = ai_prompts.normalize_naming_mode(data.get('mode'))
+    instructions = None
+    if mode == 'title':
+        instructions = data.get('instructions')
+        if isinstance(instructions, str):
+            instructions = instructions.replace('\r\n', '\n')
+        problem = _ai_title_prompt_problem(instructions)
+        if problem:
+            return jsonify({'error': problem}), 400
+    if (config.AI_MODEL_PROVIDER or 'NONE').upper() == 'NONE':
         return jsonify(
             {'error': 'No AI provider is configured. Select one under AI Provider & Playlist Naming and save first.'}
         ), 400
-    if not naming_preview.start_preview(instructions, ai_config):
+    try:
+        task_id = naming_preview.start_preview(mode, instructions)
+    except Exception:
+        app.logger.exception('Could not queue the playlist naming preview')
+        return jsonify({'error': 'Could not start the preview. Check the container logs.'}), 500
+    if not task_id:
         return jsonify({'error': 'A title preview is already running. Wait for it to finish.'}), 409
-    return jsonify(naming_preview.preview_status()), 202
+    return jsonify({'status': 'running', 'task_id': task_id, 'message': naming_preview.PREVIEW_WAITING_MESSAGE,
+                    'titles': [], 'done': 0, 'total': 0}), 202
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])

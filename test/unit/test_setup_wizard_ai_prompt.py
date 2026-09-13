@@ -87,6 +87,41 @@ class TestSectionMarkup:
         select = select[:select.index('</select>')]
         assert re.findall(r'value="(\w+)"', select) == ['concept', 'title']
 
+    def test_the_options_carry_only_a_short_name(self):
+        section = _section()
+        select = section[section.index('id="AI_NAMING_PROMPT_MODE"'):]
+        select = select[:select.index('</select>')]
+        assert re.findall(r'<option value="\w+">([^<]*)</option>', select) == [
+            'Word + genre', 'Full AI title',
+        ]
+
+    def test_each_style_has_its_own_explanation_and_only_the_default_starts_visible(self):
+        section = _section()
+        concept = re.search(r'<p id="ai-prompt-concept-help"([^>]*)>(.*?)</p>', section, re.S)
+        title = re.search(r'<p id="ai-prompt-title-help"([^>]*)>(.*?)</p>', section, re.S)
+        assert concept and title
+        assert 'display:none' not in concept.group(1)
+        assert 'display:none' in title.group(1)
+        assert 'Joyful Soul' in concept.group(2)
+        assert 'Raindrops on the Windshield' in title.group(2)
+
+    def test_the_preview_is_available_for_both_styles(self):
+        section = _section()
+        panel_start = section.index('<div id="ai-prompt-title-panel"')
+        depth = 0
+        panel_end = None
+        for match in re.finditer(r'<div\b|</div>', section[panel_start:]):
+            depth += 1 if match.group(0) == '<div' else -1
+            if depth == 0:
+                panel_end = panel_start + match.end()
+                break
+        panel = section[panel_start:panel_end]
+        assert 'ai-prompt-song-block' in panel
+        for element_id in ('ai-prompt-preview-start', 'ai-prompt-preview-status',
+                           'ai-prompt-preview-titles'):
+            assert 'id="%s"' % element_id not in panel, element_id
+            assert section.index('id="%s"' % element_id) > panel_end
+
     def test_only_the_style_and_title_instructions_are_form_fields(self):
         section = _section()
         names = re.findall(r'\bname="([A-Z_]+)"', section)
@@ -144,13 +179,21 @@ class TestScript:
         reset = reset[:reset.index('\n}')]
         assert 'delete area.dataset.originalValue' in reset
 
-    def test_the_preview_posts_the_unsaved_instructions_and_polls(self):
+    def test_the_preview_posts_the_selected_style_and_unsaved_instructions_and_polls(self):
         source = _setup_js()
         start = source[source.index('function startAiPromptPreview'):]
         start = start[:start.index('\nfunction ')]
         assert "'/api/setup/ai-prompt/preview'" in start
-        assert 'instructions: area.value' in start
+        assert 'mode: aiPromptMode()' in start
+        assert 'area.value' in start
         assert 'pollAiPromptPreview()' in start
+
+    def test_switching_style_toggles_both_explanations(self):
+        source = _setup_js()
+        toggle = source[source.index('function updateAiPromptMode'):]
+        toggle = toggle[:toggle.index('\n}')]
+        for element_id in ('ai-prompt-concept-help', 'ai-prompt-title-help', 'ai-prompt-title-panel'):
+            assert element_id in toggle, element_id
 
     def test_titles_are_rendered_as_text_not_html(self):
         source = _setup_js()
@@ -207,26 +250,67 @@ class TestPreviewRoute:
         body, status = self._post({'instructions': 'Name it.'})
         assert status == 400 and not started
 
-    def test_an_empty_prompt_refuses_to_start(self, monkeypatch):
+    def test_an_empty_prompt_refuses_to_start_the_title_style(self, monkeypatch):
         monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'OLLAMA')
-        body, status = self._post({'instructions': '   '})
+        body, status = self._post({'mode': 'title', 'instructions': '   '})
         assert status == 400
 
     def test_a_running_preview_returns_conflict(self, monkeypatch):
         monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'OLLAMA')
         monkeypatch.setattr(app_setup.naming_preview, 'start_preview', lambda *a: False)
-        body, status = self._post({'instructions': 'Name it.'})
+        body, status = self._post({'mode': 'title', 'instructions': 'Name it.'})
         assert status == 409
 
-    def test_a_start_uses_server_side_credentials_and_normalised_text(self, monkeypatch):
-        monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'ollama')
+    def _capture_start(self, monkeypatch):
         received = {}
 
-        def fake_start(instructions, ai_config):
-            received.update(instructions=instructions, provider=ai_config['provider'])
-            return True
+        def fake_start(mode, instructions):
+            received.update(mode=mode, instructions=instructions)
+            return 'job-1'
 
         monkeypatch.setattr(app_setup.naming_preview, 'start_preview', fake_start)
-        body, status = self._post({'instructions': 'A\r\nB', 'provider': 'GEMINI'})
+        return received
+
+    def test_a_title_start_queues_the_normalised_text_and_never_a_client_provider(self, monkeypatch):
+        monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'ollama')
+        received = self._capture_start(monkeypatch)
+        body, status = self._post({'mode': 'title', 'instructions': 'A\r\nB', 'provider': 'GEMINI'})
         assert status == 202
-        assert received == {'instructions': 'A\nB', 'provider': 'OLLAMA'}
+        assert received == {'mode': 'title', 'instructions': 'A\nB'}
+        assert body.get_json()['task_id'] == 'job-1'
+        assert body.get_json()['status'] == 'running'
+
+    def test_the_default_style_starts_without_a_prompt(self, monkeypatch):
+        monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'OLLAMA')
+        received = self._capture_start(monkeypatch)
+        body, status = self._post({'mode': 'concept', 'instructions': ''})
+        assert status == 202
+        assert received == {'mode': 'concept', 'instructions': None}
+
+    def test_a_queue_error_is_a_generic_500(self, monkeypatch):
+        monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'OLLAMA')
+
+        def boom(mode, instructions):
+            raise RuntimeError('secret database detail')
+
+        monkeypatch.setattr(app_setup.naming_preview, 'start_preview', boom)
+        body, status = self._post({'mode': 'concept'})
+        assert status == 500
+        assert 'secret' not in body.get_json()['error']
+
+    def test_the_status_read_is_a_generic_500_on_error(self, monkeypatch):
+        def boom():
+            raise RuntimeError('secret database detail')
+
+        monkeypatch.setattr(app_setup.naming_preview, 'preview_status', boom)
+        with app_setup.app.test_request_context('/api/setup/ai-prompt/preview', method='GET'):
+            body, status = app_setup.setup_ai_prompt_preview()
+        assert status == 500
+        assert 'secret' not in body.get_json()['error']
+
+    def test_a_missing_or_unknown_style_previews_the_default(self, monkeypatch):
+        monkeypatch.setattr(app_setup.config, 'AI_MODEL_PROVIDER', 'OLLAMA')
+        received = self._capture_start(monkeypatch)
+        body, status = self._post({'mode': 'poem'})
+        assert status == 202
+        assert received['mode'] == 'concept'

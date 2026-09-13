@@ -49,6 +49,8 @@ ROLE_PLANNER = 'planner'
 ROLE_INLINE = 'inline'
 ROLE_CONTROL = 'control'
 
+NAMING_PREVIEW_TASK_TYPE = 'naming_preview'
+
 
 class TaskType:
     def __init__(self, name, role, queue=None, holds_main_index=False,
@@ -81,6 +83,8 @@ ALL = (
     TaskType('alchemy_radio', ROLE_INLINE, self_managed=True),
     TaskType('worker_control', ROLE_CONTROL, self_managed=True),
     TaskType('provider_migration_planner', ROLE_PLANNER, queue='high',
+             self_managed=True, restarts=0),
+    TaskType(NAMING_PREVIEW_TASK_TYPE, ROLE_PLANNER, queue='high',
              self_managed=True, restarts=0),
     TaskType('album_analysis', ROLE_CHILD, queue='default', restarts=1),
     TaskType('clustering_batch', ROLE_CHILD, queue='default', restarts=1),

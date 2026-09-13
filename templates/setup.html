@@ -792,13 +792,17 @@
 
                     <label for="AI_NAMING_PROMPT_MODE">Naming style</label>
                     <select id="AI_NAMING_PROMPT_MODE" name="AI_NAMING_PROMPT_MODE">
-                        <option value="concept">Word + genre, for example "Joyful Soul"</option>
-                        <option value="title">Full title written by the AI, for example "Raindrops on the Windshield"</option>
+                        <option value="concept">Word + genre</option>
+                        <option value="title">Full AI title</option>
                     </select>
 
                     <p id="ai-prompt-concept-help" class="ai-prompt-help">
-                        The AI picks one word from the mood and lyrics of each playlist and AudioMuse-AI adds the genre.
-                        This style has no prompt to edit.
+                        The AI picks one word from the mood and lyrics of each playlist and AudioMuse-AI adds the genre,
+                        for example "Joyful Soul". This style has no prompt to edit.
+                    </p>
+                    <p id="ai-prompt-title-help" class="ai-prompt-help" style="display:none;">
+                        The AI writes the whole playlist title from your prompt and a sample of the playlist songs,
+                        for example "Raindrops on the Windshield".
                     </p>
 
                     <div id="ai-prompt-title-panel" style="display:none;">
@@ -814,17 +818,17 @@
                             <span id="ai-prompt-max-songs">25</span> of its songs. Example:
                         </p>
                         <pre id="ai-prompt-song-block" class="ai-prompt-preview"></pre>
-
-                        <div class="ai-prompt-toolbar">
-                            <button type="button" id="ai-prompt-preview-start">Preview titles</button>
-                            <span class="ai-prompt-help" style="margin:0;">
-                                Runs one quick K-Means clustering on up to <span id="ai-prompt-preview-max">10000</span> of your songs
-                                and names every playlist with the prompt above. Nothing is saved.
-                            </span>
-                        </div>
-                        <p id="ai-prompt-preview-status" class="inline-feedback" style="display:none; margin:0 0 0.75rem;"></p>
-                        <ol id="ai-prompt-preview-titles" class="ai-prompt-titles" style="display:none;"></ol>
                     </div>
+
+                    <div class="ai-prompt-toolbar">
+                        <button type="button" id="ai-prompt-preview-start">Preview titles</button>
+                        <span class="ai-prompt-help" style="margin:0;">
+                            Runs one quick K-Means clustering on up to <span id="ai-prompt-preview-max">10000</span> of your songs
+                            and names every playlist with the selected naming style. Nothing is saved.
+                        </span>
+                    </div>
+                    <p id="ai-prompt-preview-status" class="inline-feedback" style="display:none; margin:0 0 0.75rem;"></p>
+                    <ol id="ai-prompt-preview-titles" class="ai-prompt-titles" style="display:none;"></ol>
                 </div>
             </details>
 

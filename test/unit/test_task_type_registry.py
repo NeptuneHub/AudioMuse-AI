@@ -70,7 +70,7 @@ class TestEveryDerivedTupleMatchesWhatShipped:
         (sql.NUDGE_TASK_TYPES, HISTORICAL_MAIN_TASK_TYPES + ('server_sweep',)),
         (database.SELF_MANAGED_TASK_TYPES,
          ('server_sweep', 'alchemy_radio', 'worker_control',
-          'provider_migration_planner')),
+          'provider_migration_planner', 'naming_preview')),
         (database.SELF_MANAGED_TASK_TYPE_PREFIXES, ('plugin.',)),
         (database.INLINE_FLASK_TASK_TYPES, ('alchemy_radio',)),
         (task_types.NON_WORKER_TASK_TYPES, ('alchemy_radio', 'worker_control')),
@@ -81,6 +81,7 @@ class TestEveryDerivedTupleMatchesWhatShipped:
     def test_the_non_blocking_set_is_identical_though_its_order_is_not_load_bearing(self):
         assert set(database.NON_BLOCKING_TASK_TYPES) == {
             'worker_control', 'alchemy_radio', 'provider_migration_planner',
+            'naming_preview',
         }, (
             'this tuple only ever reaches SQL as a NOT IN list and a set issubset '
             'check, so its ORDER is free, but its membership decides which rows '

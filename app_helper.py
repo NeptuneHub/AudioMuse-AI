@@ -35,6 +35,7 @@ from psycopg2.extras import DictCursor
 import numpy as np
 
 import database
+import task_types
 import taskqueue
 from taskqueue.sql import CONTROL_TASK_TYPE
 from database import (
@@ -694,7 +695,9 @@ def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
         for row in snapshots:
             if row['task_id'] in protected_task_ids:
                 continue
-            if row['task_type'] in (CONTROL_TASK_TYPE, 'provider_migration_planner'):
+            if row['task_type'] in (
+                CONTROL_TASK_TYPE, 'provider_migration_planner', task_types.NAMING_PREVIEW_TASK_TYPE,
+            ):
                 continue
             _record_one_cancellation(row, now_ts, reason)
     except Exception:

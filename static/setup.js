@@ -1472,8 +1472,10 @@ function aiPromptMode() {
 function updateAiPromptMode() {
     var isTitle = aiPromptMode() === 'title';
     var conceptHelp = document.getElementById('ai-prompt-concept-help');
+    var titleHelp = document.getElementById('ai-prompt-title-help');
     var titlePanel = document.getElementById('ai-prompt-title-panel');
     if (conceptHelp) { conceptHelp.style.display = isTitle ? 'none' : ''; }
+    if (titleHelp) { titleHelp.style.display = isTitle ? '' : 'none'; }
     if (titlePanel) { titlePanel.style.display = isTitle ? '' : 'none'; }
 }
 
@@ -1505,7 +1507,7 @@ function renderAiPromptPreview(state) {
         var meta = document.createElement('span');
         meta.className = 'ai-prompt-title-meta';
         meta.textContent = entry.song_count + ' songs'
-            + (entry.from_ai ? '' : ', the AI gave no valid title so the tag name is kept');
+            + (entry.tag_name_kept ? ', no AI title so the tag name is kept' : '');
         item.title = (entry.sample || []).join('\n');
         item.appendChild(name);
         item.appendChild(meta);
@@ -1534,14 +1536,14 @@ function pollAiPromptPreview() {
 function startAiPromptPreview() {
     var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
     var status = document.getElementById('ai-prompt-preview-status');
-    if (!area || !status) { return; }
+    if (!status) { return; }
     status.style.display = 'block';
     status.className = 'status-pending inline-feedback';
     status.textContent = 'Starting the preview...';
     fetch('/api/setup/ai-prompt/preview', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({instructions: area.value})
+        body: JSON.stringify({mode: aiPromptMode(), instructions: area ? area.value : ''})
     }).then(function(response) {
         return response.json().then(function(body) { return {ok: response.ok, body: body}; });
     }).then(function(result) {
