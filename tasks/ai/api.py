@@ -16,6 +16,7 @@ Unicode text hygiene that sibling modules rely on.
 Main Features:
 * validate_ai_config gates each provider (URL shape, key, model) before any call is made.
 * clean_playlist_name repairs mojibake with ftfy + NFKC and strips non-ASCII.
+* get_ai_playlist_title is the classic full-title naming path: the AI writes the whole title from the editable instructions plus a song sample, retrying with length feedback until the cleaned title fits 5-40 characters.
 * get_ai_playlist_name asks small local models for several grounded candidate
   concepts in a single call, then composes and validates the final title in
   code, keeping the first candidate that passes.
@@ -39,7 +40,11 @@ from tasks.ai.providers import (
     openai as ai_api_openai,
 )
 from tasks.ai.playlist_namer import GENRE_DISPLAY
-from tasks.ai.prompts import build_mcp_system_prompt, playlist_concept_prompt_template
+from tasks.ai.prompts import (
+    build_mcp_system_prompt,
+    build_title_naming_prompt,
+    playlist_concept_prompt_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +448,48 @@ def _evaluate_concept(
         concept, concept_tokens, title, naming_dimension, taken
     )
     return concept, title, problem
+
+
+def get_ai_playlist_title(instructions: str, songs, ai_config: Dict) -> Optional[str]:
+    min_length = 5
+    max_length = 40
+    max_retries = 3
+    songs = list(songs or [])
+    max_songs = max(1, int(config.MAX_SONGS_IN_AI_PROMPT))
+    if len(songs) > max_songs:
+        logger.info(
+            "Truncated song list from %d to %d songs for AI prompt to avoid token limits",
+            len(songs),
+            max_songs,
+        )
+    full_prompt = build_title_naming_prompt(instructions, songs, max_songs)
+    provider = (ai_config.get("provider") or "NONE").upper()
+    logger.info("Sending playlist title prompt to AI (%s):\n%s", provider, full_prompt)
+
+    current_prompt = full_prompt
+    for attempt in range(max_retries):
+        name = generate_text(current_prompt, ai_config)
+        if not isinstance(name, str) or name == "AI Naming Skipped" or name.startswith("Error"):
+            logger.warning("AI title naming returned no usable text from %s: %s", provider, name)
+            return None
+        cleaned_name = clean_playlist_name(name)
+        if min_length <= len(cleaned_name) <= max_length:
+            return cleaned_name
+        logger.warning(
+            "AI generated name '%s' (%d chars) outside %d-%d range. Attempt %d/%d",
+            cleaned_name,
+            len(cleaned_name),
+            min_length,
+            max_length,
+            attempt + 1,
+            max_retries,
+        )
+        current_prompt = full_prompt + (
+            f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was "
+            f"{len(cleaned_name)} characters long. It MUST be between {min_length} and "
+            f"{max_length} characters. Please try again."
+        )
+    return None
 
 
 def get_ai_playlist_name(

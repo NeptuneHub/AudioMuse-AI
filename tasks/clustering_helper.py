@@ -47,6 +47,7 @@ except ImportError:
     logger.debug("GPU clustering module not available, using CPU only")
 
 
+import config
 from config import (
     STRATIFIED_GENRES,
     OTHER_FEATURE_LABELS,
@@ -69,7 +70,8 @@ from config import (
 )
 from .commons import score_vector
 
-from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
+from tasks.ai.api import clean_playlist_name, get_ai_playlist_name, get_ai_playlist_title
+from tasks.ai.prompts import normalize_naming_mode
 from tasks.ai.playlist_namer import build_naming_context, evidence_from_cluster_name
 
 from database import (
@@ -169,6 +171,15 @@ def _try_ai_name_playlist(
         'mistral_key': mistral_key,
         'mistral_model': mistral_model,
     }
+    if normalize_naming_mode(config.AI_NAMING_PROMPT_MODE) == 'title':
+        ai_title = get_ai_playlist_title(config.AI_NAMING_TITLE_PROMPT, songs, ai_config)
+        if ai_title:
+            return ai_title.strip().replace("\n", " ")
+        logger.warning(
+            "AI title naming failed for '%s'. Keeping the tag-based cluster name.",
+            original_name,
+        )
+        return original_name
     item_ids = [item_id for item_id, _title, _author in songs]
     score_rows = get_score_data_by_ids(item_ids)
     axis_blobs = {}

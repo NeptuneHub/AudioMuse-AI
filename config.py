@@ -591,6 +591,33 @@ AI_NAMING_CANDIDATES = int(os.environ.get("AI_NAMING_CANDIDATES", "10"))
 # parts first, and a low cap makes them return nothing at all.
 AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
 
+# Playlist naming mode. "concept" (the default) asks the AI for one grounded word and
+# builds the title locally as "<Word> <Genre>". "title" is the classic behaviour: the AI
+# writes the whole title from a sample of the playlist songs, following
+# AI_NAMING_TITLE_PROMPT.
+AI_NAMING_PROMPT_MODE = os.environ.get("AI_NAMING_PROMPT_MODE", "concept").strip().lower()
+
+# Instructions sent in the "title" naming mode. Only these instructions are editable: the
+# playlist song sample, capped by MAX_SONGS_IN_AI_PROMPT, is always appended after them.
+# The _DEFAULT copy keeps a leading underscore so it is never persisted nor overridden by
+# the database, which gives the setup wizard a pristine value to reset to.
+_AI_NAMING_TITLE_PROMPT_DEFAULT = (
+    'You are an expert music collector and MUST give a title to this playlist.\n'
+    'The title MUST represent the mood and the activity of when you are listening to the playlist.\n'
+    "The title MUST use ONLY standard ASCII (a-z, A-Z, 0-9, spaces, and - & ' ! . , ? ( ) [ ]).\n"
+    'The title MUST be within the range of 5 to 40 characters long.\n'
+    'No special fonts or emojis.\n'
+    "* BAD EXAMPLES: 'Ambient Electronic Space - Electric Soundscapes - Emotional Waves' (Too long/descriptive)\n"
+    "* BAD EXAMPLES: 'Blues Rock Fast Tracks' (Too direct/literal, not evocative enough)\n"
+    "* BAD EXAMPLES: '\U0001d5dd\U0001d5c2\U0001d5c8 \U0001d5c2\U0001d5cb\U0001d5c8\U0001d5c7\U0001d5c2 \U0001d5c9\U0001d5cb\U0001d5c8\U0001d5c7\U0001d5c2' (Non-standard characters)\n"
+    '\n'
+    "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n"
+    '\n'
+)
+AI_NAMING_TITLE_PROMPT = os.environ.get(
+    "AI_NAMING_TITLE_PROMPT", _AI_NAMING_TITLE_PROMPT_DEFAULT
+)
+
 # Loopback URL the app answers on. Used by anything that has to wait for Flask to
 # come back after restarting it (the restore runner, the native supervisors).
 # NOT env-tunable: every actual bind (gunicorn in supervisord.conf, app.run, the

@@ -1231,6 +1231,8 @@ audio or lyrics.
   `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`, `DUPLICATE_DISTANCE_CHECK_LOOKBACK`.
 - `AI_MODEL_PROVIDER` and the provider settings, `CLUSTER_NAMING_AI_HISTORY`,
   `PLAYLIST_NAME_HISTORY_ROUNDS`, `MAX_SONGS_IN_AI_PROMPT`.
+- `AI_NAMING_PROMPT_MODE` and `AI_NAMING_TITLE_PROMPT`: the naming style and the
+  editable instructions of the full-title style, set in the setup wizard under AI Prompt.
 
 ---
 

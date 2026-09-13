@@ -899,6 +899,7 @@ function loadSetupData() {
         renderModelSwitches(advancedData);
         renderModelCoverage(data.model_coverage);
         populateLyricsApiFields(data.lyrics_api_fields);
+        populateAiPromptFields(data.ai_prompt_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`
         // for the credential fields), auto-fetch the library list so the
@@ -1220,6 +1221,9 @@ function collectConfigFromForm(testMode) {
         if (!input) {
             return;
         }
+        if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.indexOf(key) !== -1) {
+            return;
+        }
         var original = input.dataset.originalValue;
         if (!testMode) {
             if (original !== undefined && value === original) {
@@ -1451,6 +1455,144 @@ if (advancedExpandAll) {
 var advancedCollapseAll = document.getElementById('advanced-collapse-all');
 if (advancedCollapseAll) {
     advancedCollapseAll.addEventListener('click', function() { setAllAdvancedSections(false); });
+}
+
+// ---------------------------------------------------------------------------
+// AI Prompt section - clustering naming style and full-title prompt
+// ---------------------------------------------------------------------------
+var AI_PROMPT_FORM_FIELDS = ['AI_NAMING_PROMPT_MODE', 'AI_NAMING_TITLE_PROMPT'];
+var AI_PROMPT_POLL_MS = 1500;
+var aiPromptState = {loaded: false, defaultTitlePrompt: '', pollTimer: null};
+
+function aiPromptMode() {
+    var select = document.getElementById('AI_NAMING_PROMPT_MODE');
+    return select && select.value === 'title' ? 'title' : 'concept';
+}
+
+function updateAiPromptMode() {
+    var isTitle = aiPromptMode() === 'title';
+    var conceptHelp = document.getElementById('ai-prompt-concept-help');
+    var titlePanel = document.getElementById('ai-prompt-title-panel');
+    if (conceptHelp) { conceptHelp.style.display = isTitle ? 'none' : ''; }
+    if (titlePanel) { titlePanel.style.display = isTitle ? '' : 'none'; }
+}
+
+function resetAiPromptToDefault() {
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    if (!area || !aiPromptState.defaultTitlePrompt) { return; }
+    area.value = aiPromptState.defaultTitlePrompt;
+    try { delete area.dataset.originalValue; } catch (_) { area.dataset.originalValue = undefined; }
+}
+
+function renderAiPromptPreview(state) {
+    var status = document.getElementById('ai-prompt-preview-status');
+    var list = document.getElementById('ai-prompt-preview-titles');
+    var button = document.getElementById('ai-prompt-preview-start');
+    if (!status || !list || !state || state.status === 'idle') { return; }
+    var running = state.status === 'running';
+    if (button) { button.disabled = running; }
+    status.style.display = 'block';
+    status.className = (running ? 'status-pending' : state.status === 'done' ? 'status-success' : 'status-failure')
+        + ' inline-feedback';
+    var progress = running && state.total ? ' (' + state.done + ' of ' + state.total + ')' : '';
+    status.textContent = (state.message || '') + progress;
+    var titles = state.titles || [];
+    list.innerHTML = '';
+    titles.forEach(function(entry) {
+        var item = document.createElement('li');
+        var name = document.createElement('strong');
+        name.textContent = entry.title;
+        var meta = document.createElement('span');
+        meta.className = 'ai-prompt-title-meta';
+        meta.textContent = entry.song_count + ' songs'
+            + (entry.from_ai ? '' : ', the AI gave no valid title so the tag name is kept');
+        item.title = (entry.sample || []).join('\n');
+        item.appendChild(name);
+        item.appendChild(meta);
+        list.appendChild(item);
+    });
+    list.style.display = titles.length ? '' : 'none';
+}
+
+function pollAiPromptPreview() {
+    if (aiPromptState.pollTimer) {
+        clearTimeout(aiPromptState.pollTimer);
+        aiPromptState.pollTimer = null;
+    }
+    fetch('/api/setup/ai-prompt/preview').then(function(response) {
+        return response.json();
+    }).then(function(state) {
+        renderAiPromptPreview(state);
+        if (state && state.status === 'running') {
+            aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS);
+        }
+    }).catch(function() {
+        aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+    });
+}
+
+function startAiPromptPreview() {
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    var status = document.getElementById('ai-prompt-preview-status');
+    if (!area || !status) { return; }
+    status.style.display = 'block';
+    status.className = 'status-pending inline-feedback';
+    status.textContent = 'Starting the preview...';
+    fetch('/api/setup/ai-prompt/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({instructions: area.value})
+    }).then(function(response) {
+        return response.json().then(function(body) { return {ok: response.ok, body: body}; });
+    }).then(function(result) {
+        if (!result.ok) {
+            status.className = 'status-failure inline-feedback';
+            status.textContent = (result.body && result.body.error) || 'The preview could not start.';
+            return;
+        }
+        renderAiPromptPreview(result.body);
+        pollAiPromptPreview();
+    }).catch(function() {
+        status.className = 'status-failure inline-feedback';
+        status.textContent = 'The preview request failed. Check that the app is still running.';
+    });
+}
+
+function populateAiPromptFields(promptData) {
+    if (!promptData) { return; }
+    var select = document.getElementById('AI_NAMING_PROMPT_MODE');
+    if (select) {
+        select.value = promptData.mode === 'title' ? 'title' : 'concept';
+        select.dataset.originalValue = select.value;
+    }
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    if (area) {
+        area.value = promptData.title_prompt || '';
+        area.dataset.originalValue = area.value;
+    }
+    aiPromptState.defaultTitlePrompt = promptData.title_prompt_default || '';
+    var maxSongs = document.getElementById('ai-prompt-max-songs');
+    if (maxSongs) { maxSongs.textContent = String(promptData.max_songs); }
+    var previewMax = document.getElementById('ai-prompt-preview-max');
+    if (previewMax) { previewMax.textContent = String(promptData.preview_max_songs); }
+    var songBlock = document.getElementById('ai-prompt-song-block');
+    if (songBlock) { songBlock.textContent = promptData.example_song_block || ''; }
+    aiPromptState.loaded = true;
+    updateAiPromptMode();
+    pollAiPromptPreview();
+}
+
+var _aiPromptModeSelect = document.getElementById('AI_NAMING_PROMPT_MODE');
+if (_aiPromptModeSelect) {
+    _aiPromptModeSelect.addEventListener('change', updateAiPromptMode);
+}
+var _aiPromptReset = document.getElementById('ai-prompt-reset');
+if (_aiPromptReset) {
+    _aiPromptReset.addEventListener('click', resetAiPromptToDefault);
+}
+var _aiPromptPreviewStart = document.getElementById('ai-prompt-preview-start');
+if (_aiPromptPreviewStart) {
+    _aiPromptPreviewStart.addEventListener('click', startAiPromptPreview);
 }
 
 // ---------------------------------------------------------------------------
