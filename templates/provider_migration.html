@@ -972,8 +972,9 @@
                 body: JSON.stringify({ type: targetType, creds: targetCreds })
             });
             if (!result.ok) {
-                showError($('mig-probe-result'),
-                    'Connection failed: ' + (result.error || 'unknown'));
+                showError($('mig-probe-result'), result.incomplete_creds
+                    ? result.error
+                    : 'Connection failed: ' + (result.error || 'unknown'));
                 resetFromStep(3);
                 return;
             }

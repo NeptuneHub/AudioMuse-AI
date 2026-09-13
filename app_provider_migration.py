@@ -17,11 +17,14 @@ Main Features:
 * Full wizard flow: session start, probe test, library select, album search,
   source-path refresh, dry-run, manual match/skip, finalize, and execute, with
   status polling for the async queue jobs.
-* Target credentials stay in ``migration_session.target_creds`` (never read
-  from ``config``), so the live provider keeps working throughout; a successful
-  execute writes the new settings to ``app_config`` and restarts via
-  ``restart_manager``. ``provider_probe`` is lazily imported to avoid loading
-  ``tasks/__init__.py`` at module import.
+* Target credentials stay in ``migration_session.target_creds``, so the live
+  provider keeps working throughout; a successful execute writes them as the
+  default ``music_servers`` row and restarts via ``restart_manager``.
+  ``provider_probe`` is lazily imported to avoid loading ``tasks/__init__.py``
+  at module import.
+* Probe, session start and execute all refuse target credentials missing a
+  field the registry requires: a provider borrows the live config for a blank
+  field, so an empty form would probe fine and then wipe the default server.
 """
 
 import csv
@@ -52,6 +55,7 @@ from tasks.provider_migration_tasks import (
     MIGRATION_TASK_TYPE,
     MIGRATION_PLANNER_TASK_TYPE,
     _ADVISORY_LOCK_KEY,
+    incomplete_creds_error,
 )
 import config
 import taskqueue
@@ -708,7 +712,7 @@ def session_start():
                 session_id:
                   type: integer
       400:
-        description: Unsupported target_type.
+        description: Unsupported target_type, or target_creds missing a field the provider requires.
       409:
         description: A migration is queued or executing.
     """
@@ -722,6 +726,10 @@ def session_start():
     ok, reason = _validate_probe_url(target_creds)
     if not ok:
         return jsonify({'error': f'target_creds url is not allowed: {reason}'}), 400
+
+    creds_error = incomplete_creds_error(target_type, target_creds)
+    if creds_error:
+        return jsonify({'error': creds_error}), 400
 
     import config
 
@@ -1052,6 +1060,18 @@ def probe_test():
     if not ok:
         return jsonify(
             {'ok': False, 'error': reason, 'path_format': 'none', 'sample_count': 0, 'warnings': []}
+        ), 200
+    creds_error = incomplete_creds_error(t, creds)
+    if creds_error:
+        return jsonify(
+            {
+                'ok': False,
+                'error': creds_error,
+                'incomplete_creds': True,
+                'path_format': 'none',
+                'sample_count': 0,
+                'warnings': [],
+            }
         ), 200
     try:
         result = provider_probe.test_connection(t, creds)
@@ -1940,14 +1960,14 @@ def _execute_locked(db, session_id, confirmation_text):
             ), 409
         cur.execute(
             "SELECT target_type, status, "
-            "(id = (SELECT MAX(id) FROM migration_session)) "
+            "(id = (SELECT MAX(id) FROM migration_session)), target_creds "
             "FROM migration_session WHERE id = %s",
             (session_id,),
         )
         row = cur.fetchone()
     if not row:
         return jsonify({'error': 'session not found'}), 404
-    target_type, status, is_current_session = row[0], row[1], row[2]
+    target_type, status, is_current_session, raw_creds = row
 
     with db.cursor() as planning:
         if _migration_job_in_flight(planning, keys=_PLANNER_TASK_KEYS):
@@ -1976,6 +1996,11 @@ def _execute_locked(db, session_id, confirmation_text):
                 'error': f'Dry run must be finalized first. Session status is "{status}", '
                 f'expected "dry_run_ready".'
             }
+        ), 400
+    creds_error = incomplete_creds_error(target_type, _session_state(raw_creds))
+    if creds_error:
+        return jsonify(
+            {'error': f'{creds_error} Discard this migration and start again with every field filled in.'}
         ), 400
 
     # A migration rewrites track_server_map the same way a sweep does, so it has
@@ -2072,7 +2097,7 @@ def execute():
                 task_id:
                   type: string
       400:
-        description: Missing backup confirmation, wrong confirmation phrase, or session not in `dry_run_ready` state.
+        description: Missing backup confirmation, wrong confirmation phrase, session not in `dry_run_ready` state, or incomplete target credentials.
       404:
         description: Session not found.
     """

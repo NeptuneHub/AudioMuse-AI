@@ -21,7 +21,9 @@ Main Features:
 * Shared blueprint helpers: ``index_error_body`` builds the structured API
   error body and ``probe_catalogue_canonical_ids`` probes score for canonical
   fp_ ids (None on probe failure so callers pick their own fail-closed policy),
-  and ``catalogue_has_canonical_ids`` memoizes that probe.
+  and ``catalogue_has_canonical_ids`` memoizes that probe (a failure fails
+  closed for the TTL); the map cache build seeds the memo from the ids it just
+  loaded via ``remember_catalogue_canonical_ids``.
 """
 
 import json
@@ -169,10 +171,13 @@ _HAS_CANONICAL_CHECKED_AT = 0.0
 _HAS_CANONICAL_TTL = 60.0
 
 
+def remember_catalogue_canonical_ids(has_canonical):
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    _HAS_CANONICAL_IDS = bool(has_canonical)
+    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+
+
 def catalogue_has_canonical_ids():
-    """True when score holds canonical fp_ ids (memoized; fails closed on error,
-    remembering the failure for the TTL so a DB outage does not re-probe on
-    every request)."""
     global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
     if _HAS_CANONICAL_IDS:
         return True

@@ -17,6 +17,7 @@ Main Features:
 * Dry-run gate returns 409 on bad source paths unless overridden or bypassed
 * Execute gate requires backup confirmation and dry-run-ready state; probe URLs SSRF-validated
 * Execute gate also refuses while a server_sweep is running, not just the queue-guard types
+* Incomplete target credentials are refused for every provider at probe, session start and execute
 """
 
 import os
@@ -27,6 +28,16 @@ import config
 import taskqueue
 from contextlib import contextmanager, nullcontext
 from unittest.mock import MagicMock, patch
+
+_NAV_CREDS = '{"url": "http://nav.local", "user": "u", "password": "p"}'
+
+_COMPLETE_CREDS = {
+    'jellyfin': {'url': 'http://127.0.0.1:8096', 'user_id': 'uid', 'token': 'tok'},
+    'emby': {'url': 'http://127.0.0.1:8096', 'user_id': 'uid', 'token': 'tok'},
+    'navidrome': {'url': 'http://127.0.0.1:4533', 'user': 'u', 'password': 'p'},
+    'lyrion': {'url': 'http://127.0.0.1:9000'},
+    'plex': {'url': 'http://127.0.0.1:32400', 'token': 'tok'},
+}
 
 
 def _load_bp_module():
@@ -174,6 +185,20 @@ class TestSessionStart:
         )
         assert resp.status_code == 400
 
+    @pytest.mark.parametrize('target', sorted(_COMPLETE_CREDS))
+    def test_rejects_incomplete_creds_without_touching_sessions(
+        self, bp_mod, client, fake_db, target
+    ):
+        db, cur = fake_db
+        partial = {k: v for k, v in _COMPLETE_CREDS[target].items() if k != 'url'}
+        resp = client.post(
+            '/api/migration/session/start',
+            json={'target_type': target, 'target_creds': partial},
+        )
+        assert resp.status_code == 400
+        assert 'Incomplete credentials' in resp.get_json()['error']
+        cur.execute.assert_not_called()
+
 
 class TestProbeTest:
     def test_calls_provider_probe_and_returns_shape(self, bp_mod, client):
@@ -197,6 +222,32 @@ class TestProbeTest:
         data = resp.get_json()
         assert data['ok'] is True
         assert data['path_format'] == 'absolute'
+
+    @pytest.mark.parametrize('target', sorted(_COMPLETE_CREDS))
+    def test_any_blank_required_field_is_refused_without_probing(self, bp_mod, client, target):
+        complete = _COMPLETE_CREDS[target]
+        attempts = [{}] + [{k: v for k, v in complete.items() if k != key} for key in complete]
+        with patch.object(bp_mod, 'provider_probe', MagicMock()) as p:
+            for creds in attempts:
+                data = client.post(
+                    '/api/migration/probe/test', json={'type': target, 'creds': creds}
+                ).get_json()
+                assert data['ok'] is False
+                assert data['incomplete_creds'] is True
+                assert 'Incomplete credentials' in data['error']
+        p.test_connection.assert_not_called()
+
+    @pytest.mark.parametrize(
+        'target, creds',
+        sorted(_COMPLETE_CREDS.items())
+        + [('navidrome', {'url': 'http://127.0.0.1:4533', 'api_key': 'k'})],
+    )
+    def test_complete_creds_reach_the_probe(self, bp_mod, client, target, creds):
+        with patch.object(bp_mod, 'provider_probe', MagicMock()) as p:
+            p.test_connection.return_value = {'ok': True, 'sample_count': 1, 'path_format': 'absolute', 'warnings': []}
+            resp = client.post('/api/migration/probe/test', json={'type': target, 'creds': creds})
+        assert resp.get_json()['ok'] is True
+        p.test_connection.assert_called_once_with(target, creds)
 
 
 class TestApplySourcePathOverrides:
@@ -558,7 +609,7 @@ class TestExecuteGate:
     def test_rejects_missing_backup_confirmation(self, bp_mod, client, fake_db):
         db, cur = fake_db
         cur._fetchone_queue.append((True,))
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
         p = self._base_payload()
         p['backup_confirmed'] = False
         resp = client.post('/api/migration/execute', json=p)
@@ -570,7 +621,7 @@ class TestExecuteGate:
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
         p = self._base_payload()
         p['confirmation_text'] = 'LGTM ship it'
         resp = client.post('/api/migration/execute', json=p)
@@ -582,7 +633,7 @@ class TestExecuteGate:
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
-        cur._fetchone_queue.append(('navidrome', 'in_progress', True))
+        cur._fetchone_queue.append(('navidrome', 'in_progress', True, _NAV_CREDS))
         resp = client.post('/api/migration/execute', json=self._base_payload())
         assert resp.status_code == 400
         err = resp.get_json().get('error', '').lower()
@@ -596,7 +647,7 @@ class TestExecuteGate:
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
         sweep = {'task_id': 'sweep-1', 'task_type': 'server_sweep', 'status': 'RUNNING'}
 
         with (
@@ -613,7 +664,7 @@ class TestExecuteGate:
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
         queued = []
 
         with (
@@ -633,6 +684,25 @@ class TestExecuteGate:
             'tasks.provider_migration_tasks.execute_provider_migration'
         )
         assert queued[0]['queue'] == taskqueue.QUEUE_HIGH
+
+    def test_rejects_a_session_whose_stored_creds_are_incomplete(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.extend([(0,), (0,)])
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append((False,))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, '{}'))
+
+        with (
+            patch.object(bp_mod, 'get_active_main_task', return_value=None),
+            patch.object(bp_mod, 'save_task_status') as saved,
+            patch.object(bp_mod.taskqueue, 'enqueue') as enqueue,
+        ):
+            resp = client.post('/api/migration/execute', json=self._base_payload())
+
+        assert resp.status_code == 400
+        assert 'Incomplete credentials' in resp.get_json()['error']
+        saved.assert_not_called()
+        enqueue.assert_not_called()
 
 
 class TestPlannerReservationProtocol:
@@ -789,7 +859,7 @@ class TestExecuteEnqueueResolution:
     @staticmethod
     def _prime_execute(cur):
         cur._fetchone_queue.extend(
-            [(0,), (0,), (True,), (False,), ('navidrome', 'dry_run_ready', True)]
+            [(0,), (0,), (True,), (False,), ('navidrome', 'dry_run_ready', True, _NAV_CREDS)]
         )
 
     def test_cancel_that_wins_the_lock_prevents_execute_enqueue(

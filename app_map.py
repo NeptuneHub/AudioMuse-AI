@@ -30,14 +30,13 @@ Main Features:
 import gc
 import json
 import math
-import time
 import logging
 from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
 from database import get_db, load_map_projection
-from app_helper import catalogue_has_canonical_ids
+from app_helper import catalogue_has_canonical_ids, remember_catalogue_canonical_ids
 import app_server_context
 
 # Try to reuse the shared projection helpers
@@ -134,7 +133,6 @@ def build_map_cache():
     and build cached JSON blobs for 100/75/50/25 percent samples. This should be called
     once at startup inside app.app_context()."""
     global MAP_JSON_CACHE
-    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
     logger = logging.getLogger(__name__)
     logger.info('Building map JSON cache (this reads the DB once).')
 
@@ -214,8 +212,7 @@ def build_map_cache():
     # fp_ id; a rebuild (e.g. after canonicalization) reflects the legacy->fp_ flip
     # exactly here, instead of a reset that re-triggered a score seq-scan on every
     # routine rebuild. Canonicalization is one-way, so this only ever flips to True.
-    _HAS_CANONICAL_IDS = has_canonical
-    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+    remember_catalogue_canonical_ids(has_canonical)
 
     if not full_light:
         # empty cache

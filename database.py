@@ -2251,7 +2251,9 @@ def ensure_text_search_queries_table():
             try:
                 cur.execute(TEXT_SEARCH_QUERIES_DDL)
                 cur.execute(TEXT_SEARCH_QUERIES_RANK_INDEX_DDL)
+                db.commit()
             finally:
+                db.rollback()
                 cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
         db.commit()
         logger.info("Ensured text_search_queries table exists")

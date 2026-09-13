@@ -31,7 +31,7 @@ from flasgger import swag_from
 
 import config
 from database import get_db, load_map_projection
-from app_helper import catalogue_has_canonical_ids
+from app_helper import probe_catalogue_canonical_ids
 from error import error_manager
 from error.error_dictionary import ERR_DB_QUERY
 
@@ -149,7 +149,7 @@ def sync_endpoint():
         # ids at all, where the historical config-default identity feed is
         # still exact (single-server/unit-test compatibility).
         logger.exception("Music-server registry unavailable for sync")
-        if catalogue_has_canonical_ids():
+        if probe_catalogue_canonical_ids() is not False:
             return jsonify(
                 {'error': 'Music-server registry unavailable; retry shortly'}
             ), 503

@@ -468,11 +468,6 @@ def segment_name_pattern(index_name: str):
 
 
 def collect_segment_names(index_name: str, names, context: str = '') -> Tuple[Optional[int], List[Tuple[int, str]]]:
-    """Parse '<index_name>_<part>_<total>' names into (total_expected, [(part_no, name)]).
-
-    Raises ValueError when two names disagree on the total; names that do not
-    match the pattern are ignored.
-    """
     pattern = segment_name_pattern(index_name)
     total_expected: Optional[int] = None
     parts: List[Tuple[int, str]] = []

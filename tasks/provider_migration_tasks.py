@@ -33,8 +33,9 @@ Main Features:
   refuse every catalogue start until reclaim eventually failed it.
 * A condition no retry can change is raised as TaskFailed, so the queue fails the
   row at once instead of spending three backed-off attempts on it: a session
-  that is gone or not in the status the step needs, an empty mapping, and a
-  restart request another recovery has since superseded. The handshake wait
+  that is gone or not in the status the step needs, an empty mapping, target
+  credentials missing a field the registry requires, and a restart request
+  another recovery has since superseded. The handshake wait
   timing out stays a plain raise, because a retry resumes the wait and the
   workers may acknowledge on it.
 """
@@ -87,6 +88,26 @@ _RESTART_PUBLISH_RETRY_SECONDS = 2
 _RESTART_HANDSHAKE_RETRY_SECONDS = 5
 
 _RESTART_RECOVERY_TASK_KEY = 'restart_recovery_task_id'
+
+_CRED_LABELS = {
+    'url': 'Server URL',
+    'user_id': 'User ID',
+    'token': 'API Token',
+    'user': 'Username',
+    'password': 'Password',
+    'api_key': 'API key',
+}
+
+
+def incomplete_creds_error(target_type, creds):
+    from database import missing_required_creds
+
+    missing = missing_required_creds(target_type, creds if isinstance(creds, dict) else {})
+    if not missing:
+        return None
+    return 'Incomplete credentials: fill in ' + ', '.join(
+        _CRED_LABELS.get(key, key) for key in missing
+    ) + '.'
 
 
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
@@ -428,6 +449,13 @@ def _execute_provider_migration(session_id, task_id, cancel):
             raise TaskFailed(
                 f"Cannot execute migration: session {session_id} is in status "
                 f"'{session['status']}', expected 'dry_run_ready'"
+            )
+
+        creds_error = incomplete_creds_error(target_type, target_creds)
+        if creds_error:
+            raise TaskFailed(
+                f"Refusing to execute migration session {session_id}: {creds_error} "
+                f"Saving them as the default server would leave it unreachable."
             )
 
         mapping = _merge_mapping(state)

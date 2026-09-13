@@ -15,6 +15,7 @@ Main Features:
 * Foreign keys are dropped before updates and re-added afterwards
 * Orphan deletion runs before updates and workers are paused before starting
 * app_config music-libraries row is written/deleted from the selected libraries
+* Incomplete target credentials fail the task before the default server is rewritten
 """
 
 import json
@@ -1348,3 +1349,24 @@ class TestAMigrationConditionNoRetryCanFixFailsOnce:
 
         with pytest.raises(TaskFailed):
             mig._execute_provider_migration(7, 'mig-1', lambda force=False: None)
+
+    @pytest.mark.parametrize('target', ['jellyfin', 'emby', 'navidrome', 'lyrion', 'plex'])
+    def test_incomplete_target_creds_fail_before_the_default_server_is_rewritten(
+        self, monkeypatch, target
+    ):
+        from unittest.mock import MagicMock
+
+        import tasks.provider_migration_tasks as mig
+        from taskqueue import TaskFailed
+
+        monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: MagicMock())
+        monkeypatch.setattr(mig, '_load_session', lambda cur, session_id: {
+            'status': 'dry_run_ready', 'state': _session_state({'old_1': 'new_1'}),
+            'target_type': target, 'target_creds': {},
+        })
+        transaction = MagicMock()
+        monkeypatch.setattr(mig, '_run_migration_transaction', transaction)
+
+        with pytest.raises(TaskFailed, match='Incomplete credentials'):
+            mig._execute_provider_migration(7, 'mig-1', lambda force=False: None)
+        transaction.assert_not_called()

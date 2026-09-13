@@ -231,6 +231,9 @@ def _advisory_lock_scope(conn, lock_key):
         cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
         acquired = bool(cur.fetchone()[0])
         yield (cur, db) if acquired else None
+    except Exception:
+        _rollback(db)
+        raise
     finally:
         _release(cur, db, acquired, own_conn, lock_key)
 
@@ -465,11 +468,11 @@ def repair_duplicate_track_maps(conn=None, prefetched_durations=None):
 
 
 def purge_orphan_catalogue_rows(conn=None):
-    with _advisory_lock_scope(conn, _ORPHAN_PURGE_ADVISORY_LOCK) as scope:
-        if scope is None:
-            return {'skipped': 'locked'}
-        cur, db = scope
-        try:
+    try:
+        with _advisory_lock_scope(conn, _ORPHAN_PURGE_ADVISORY_LOCK) as scope:
+            if scope is None:
+                return {'skipped': 'locked'}
+            cur, db = scope
             removed = 0
             while True:
                 cur.execute(
@@ -492,10 +495,9 @@ def purge_orphan_catalogue_rows(conn=None):
                     removed,
                 )
             return {'purged': removed}
-        except Exception:
-            _rollback(db)
-            logger.exception("Migration orphan purge failed; it retries on the next start")
-            return {'error': 'failed'}
+    except Exception:
+        logger.exception("Migration orphan purge failed; it retries on the next start")
+        return {'error': 'failed'}
 
 
 def _same_folder_conflicts(cur):
@@ -512,11 +514,11 @@ def _same_folder_conflicts(cur):
 
 
 def _split_false_merges(conn, advisory_lock, find_conflicts, done_message, failure_message):
-    with _advisory_lock_scope(conn, advisory_lock) as scope:
-        if scope is None:
-            return {'skipped': 'locked'}
-        cur, db = scope
-        try:
+    try:
+        with _advisory_lock_scope(conn, advisory_lock) as scope:
+            if scope is None:
+                return {'skipped': 'locked'}
+            cur, db = scope
             by_server = find_conflicts(cur)
             if not by_server:
                 return {'split': 0, 'removed': 0}
@@ -532,10 +534,9 @@ def _split_false_merges(conn, advisory_lock, find_conflicts, done_message, failu
             db.commit()
             logger.info(done_message, split, removed)
             return {'split': split, 'removed': removed}
-        except Exception:
-            _rollback(db)
-            logger.exception(failure_message)
-            return {'error': 'failed'}
+    except Exception:
+        logger.exception(failure_message)
+        return {'error': 'failed'}
 
 
 def split_same_folder_merges(conn=None):
