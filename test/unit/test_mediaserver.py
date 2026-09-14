@@ -2027,6 +2027,44 @@ class TestLyrionGetTracksFromAlbum:
         assert tracks[0]['Path'] == '/music/song1.mp3', "Missing 'Path' from 'url'"
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_the_artist_id_comes_from_the_same_role_as_the_artist_name(self, mock_request):
+        from tasks.mediaserver.lyrion import get_tracks_from_album
+
+        mock_request.return_value = {
+            'titles_loop': [
+                {'id': 1, 'title': 'A', 'artist': 'Nathan Eckel', 'artist_id': '764', 'url': 'file:///m/a.mp3'},
+                {'id': 2, 'title': 'B', 'trackartist': 'Scroach', 'trackartist_ids': '63',
+                 'artist': 'Other', 'artist_id': '9', 'url': 'file:///m/b.mp3'},
+                {'id': 3, 'title': 'C', 'trackartist': 'X, Y', 'trackartist_ids': '4,5',
+                 'artist': 'X', 'artist_id': '4', 'url': 'file:///m/c.mp3'},
+                {'id': 4, 'title': 'D', 'contributor': 'Someone', 'artist': 'Z', 'artist_id': '8', 'url': 'file:///m/d.mp3'},
+            ]
+        }
+
+        tracks = get_tracks_from_album('842')
+
+        assert 'tags:galduAyRsS' in mock_request.call_args[0][1]
+        assert [(t['AlbumArtist'], t['ArtistId']) for t in tracks] == [
+            ('Nathan Eckel', '764'),
+            ('Scroach', '63'),
+            ('X, Y', None),
+            ('Someone', None),
+        ], 'an id is kept only when it belongs to the artist name AudioMuse stores'
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_the_whole_catalogue_listing_carries_the_artist_id(self, mock_request):
+        from tasks.mediaserver.lyrion import get_all_songs
+
+        mock_request.return_value = {
+            'titles_loop': [{'id': 1, 'title': 'A', 'artist': 'Nathan Eckel', 'artist_id': '764', 'url': 'file:///m/a.mp3'}]
+        }
+
+        songs = get_all_songs(user_creds={'url': 'http://lms:9000'}, apply_filter=False)
+
+        assert 'tags:galduAyRsS' in mock_request.call_args[0][1]
+        assert songs[0]['ArtistId'] == '764'
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_artist_fallback_priority(self, mock_request):
         from tasks.mediaserver.lyrion import get_tracks_from_album
 

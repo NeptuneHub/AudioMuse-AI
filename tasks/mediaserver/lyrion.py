@@ -112,12 +112,31 @@ def _lyrion_track(item):
     }
 
 
+_LYRION_ARTIST_ID_KEYS = {
+    'trackartist': 'trackartist_ids',
+    'artist': 'artist_id',
+    'albumartist': 'albumartist_ids',
+    'band': 'band_ids',
+}
+
+
 def _lyrion_artist(item):
     for key in ('trackartist', 'contributor', 'artist', 'albumartist', 'band'):
         value = item.get(key)
         if value:
             return value
     return 'Unknown Artist'
+
+
+def _lyrion_artist_id(item):
+    for key in ('trackartist', 'contributor', 'artist', 'albumartist', 'band'):
+        if not item.get(key):
+            continue
+        value = item.get(_LYRION_ARTIST_ID_KEYS.get(key, ''))
+        if value is None or value == '' or ',' in str(value):
+            return None
+        return str(value)
+    return None
 
 
 def _lyrion_year(item):
@@ -597,7 +616,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
     target_paths = _get_target_paths_for_filtering() if apply_filter else None
 
     logger.info("Fetching all songs from Lyrion")
-    response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyR"], user_creds=user_creds)
+    response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyRsS"], user_creds=user_creds)
 
     all_songs = []
     if response and "titles_loop" in response:
@@ -608,6 +627,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
                 'Id': song.get('id'),
                 'Name': song.get('title'),
                 'AlbumArtist': _lyrion_artist(song),
+                'ArtistId': _lyrion_artist_id(song),
                 'OriginalAlbumArtist': song.get('albumartist'),
                 'Album': song.get('album'),
                 'Path': song.get('url'),
@@ -957,7 +977,7 @@ def get_tracks_from_album(album_id, user_creds=None):
 
     try:
         response = _jsonrpc_request(
-            "titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyR"], user_creds=user_creds
+            "titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyRsS"], user_creds=user_creds
         )
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
     except Exception:
@@ -1016,6 +1036,7 @@ def get_tracks_from_album(album_id, user_creds=None):
                 'Id': id_val,
                 'Name': title,
                 'AlbumArtist': artist,
+                'ArtistId': _lyrion_artist_id(s),
                 'OriginalAlbumArtist': s.get('albumartist'),
                 'Album': s.get('album'),
                 'Path': path,
@@ -1052,7 +1073,7 @@ def get_playlist_track_ids(playlist_id):
 
 
 def get_top_played_songs(limit):
-    response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduAyR"])
+    response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduAyRsS"])
     if response and "titles_loop" in response:
         songs = response["titles_loop"]
         mapped_songs = []
@@ -1063,6 +1084,7 @@ def get_top_played_songs(limit):
                     'Id': s.get('id'),
                     'Name': title,
                     'AlbumArtist': _lyrion_artist(s),
+                    'ArtistId': _lyrion_artist_id(s),
                     'OriginalAlbumArtist': s.get('albumartist'),
                     'Album': s.get('album'),
                     'Path': s.get('url'),
