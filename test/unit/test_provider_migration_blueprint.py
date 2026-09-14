@@ -191,6 +191,23 @@ class TestSessionStart:
         sqls = [c[0][0] for c in cur.execute.call_args_list]
         assert not [s for s in sqls if 'INSERT' in s or 'DELETE' in s]
 
+    def test_migrating_onto_the_current_default_server_itself_is_allowed(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.extend([(True,), (False,), (123,)])
+        servers = [
+            {'server_id': 'd', 'name': 'Navidrome', 'server_type': 'navidrome', 'is_default': True,
+             'creds': {'url': 'HTTP://127.0.0.1/'}},
+        ]
+        with patch('tasks.mediaserver.registry.list_servers', return_value=servers):
+            assert bp_mod._registered_secondary_server('navidrome', {'url': 'http://127.0.0.1'}) is None, (
+                'the default server is never a "registered secondary", or a same-server migration is refused'
+            )
+            with patch.object(bp_mod, 'get_active_main_task', return_value=None):
+                resp = self._start(client)
+
+        assert resp.status_code == 200
+        assert resp.get_json()['session_id'] == 123
+
     def test_a_registry_failure_rolls_back_to_the_savepoint_and_fails_open(self, bp_mod, fake_db):
         db, cur = fake_db
 
