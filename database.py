@@ -659,12 +659,22 @@ def get_score_data_by_ids(item_ids_list):
         FROM score s
         WHERE s.item_id IN %s
     """
+    guarded = getattr(conn, 'autocommit', False) is False
     try:
+        if guarded:
+            cur.execute("SAVEPOINT score_data_by_ids")
         cur.execute(query, (tuple(item_ids_list),))
         rows = cur.fetchall()
+        if guarded:
+            cur.execute("RELEASE SAVEPOINT score_data_by_ids")
     except Exception:
         logger.exception("Error fetching score data by IDs")
         rows = []
+        if guarded:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT score_data_by_ids")
+            except Exception:
+                logger.exception("Could not roll back to the savepoint after the failed score data fetch")
     finally:
         cur.close()
     return [dict(row) for row in rows]

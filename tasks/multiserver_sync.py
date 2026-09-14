@@ -466,6 +466,7 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
             'matched': 0, 'aligned': True, 'tier_counts': {},
         }
 
+    db.commit()
     report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
     with row_heartbeat(
         task_id,

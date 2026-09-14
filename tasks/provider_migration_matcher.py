@@ -24,9 +24,13 @@ Main Features:
 * One song held as N files keeps all N: every other known path of a matched
   row that lands exactly on a target file (path, then path tail) is returned
   in ``extra_matches``, from the lookups the index already built, so a sweep
-  or a provider migration never collapses duplicate files to one mapping. A
-  path tail two target files share is never used for an extra, and an extra
-  claims its file below every tier, so any song's own match takes it back
+  or a provider migration never collapses duplicate files to one mapping.
+  An extra only takes a file no row has claimed and claims it below every
+  tier, so it never unbinds another song and any song's own match takes it back.
+* Several target files under one path key are told apart by an exact full path,
+  then by the longest shared path suffix; a key still tied is used only when
+  every tied file is the same song (title and artist), otherwise it falls
+  through to the metadata tiers.
 """
 
 import re
@@ -74,6 +78,24 @@ def normalize_path(raw):
     return p.lstrip('/')
 
 
+def _path_parts(raw):
+    if not raw:
+        return []
+    p = str(raw)
+    if p.startswith('file://'):
+        p = unquote(p[len('file://') :])
+    return [part for part in p.replace('\\', '/').lower().split('/') if part]
+
+
+def path_match_strength(old_path, new_path):
+    a = _path_parts(old_path)
+    b = _path_parts(new_path)
+    shared = 0
+    while shared < len(a) and shared < len(b) and a[-1 - shared] == b[-1 - shared]:
+        shared += 1
+    return shared, bool(a) and shared == len(a) == len(b)
+
+
 def path_tail_key(path, n=3):
     if not path:
         return None
@@ -102,6 +124,19 @@ def extract_disc_track(path):
         return (int(m.group(1)), int(m.group(2)))
     except ValueError:
         return None
+
+
+_LEADING_NUMBER_RE = re.compile(r'^(\d+)(?=\D|$)')
+
+
+def extract_track_number(path):
+    disc_track = extract_disc_track(path)
+    if disc_track is not None:
+        return disc_track[1]
+    if not path:
+        return None
+    m = _LEADING_NUMBER_RE.match(str(path).replace('\\', '/').rsplit('/', 1)[-1])
+    return int(m.group(1)) if m else None
 
 
 _META_NOISE_WORDS = (
@@ -207,6 +242,13 @@ def _pick_meta_candidate(old, candidates):
         for c in candidates:
             if extract_disc_track(c.get('path')) == old_dt:
                 return c
+    for path in old_paths(old):
+        old_track = extract_track_number(path)
+        if old_track is None:
+            continue
+        same_number = [c for c in candidates if extract_track_number(c.get('path')) == old_track]
+        if len(same_number) == 1:
+            return same_number[0]
     return candidates[0]
 
 
@@ -231,7 +273,7 @@ class CandidateIndex:
         self.by_norm_meta = {}
         self.by_title_artist = {}
         self.path_by_id = {}
-        self._ambiguous_tails = set()
+        self._slim_by_id = {}
         self.size = 0
         for n in new_tracks:
             self.add(n)
@@ -247,15 +289,12 @@ class CandidateIndex:
         }
         self.size += 1
         if slim['path']:
-            self.path_by_id[str(slim['id'])] = slim['path']
+            key = str(slim['id'])
+            self.path_by_id[key] = slim['path']
+            self._slim_by_id[key] = slim
         np = normalize_path(slim['path'])
-        if np and np not in self.by_norm_path:
-            self.by_norm_path[np] = slim['id']
-        tk = path_tail_key(np)
-        if tk and tk not in self.by_tail:
-            self.by_tail[tk] = slim['id']
-        elif tk and self.by_tail[tk] != slim['id']:
-            self._ambiguous_tails.add(tk)
+        self._add_key(self.by_norm_path, np, slim['id'])
+        self._add_key(self.by_tail, path_tail_key(np), slim['id'])
         ek = _exact_meta_key(slim, _best_artist_new)
         if ek:
             self.by_exact_meta.setdefault(ek, []).append(slim)
@@ -267,15 +306,56 @@ class CandidateIndex:
             if tak:
                 self.by_title_artist.setdefault(tak, []).append(slim)
 
+    @staticmethod
+    def _add_key(lookup, key, new_id):
+        if not key:
+            return
+        held = lookup.get(key)
+        if held is None:
+            lookup[key] = new_id
+        elif type(held) is list:
+            if new_id not in held:
+                held.append(new_id)
+        elif held != new_id:
+            lookup[key] = [held, new_id]
+
+    @staticmethod
+    def _candidates(lookup, key):
+        held = lookup.get(key) if key else None
+        if held is None:
+            return []
+        return held if type(held) is list else [held]
+
+    def _closest(self, old_path, candidates):
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else None
+        scored = [
+            (path_match_strength(old_path, self.path_by_id.get(str(c))), c) for c in candidates
+        ]
+        exact = [c for (_shared, is_exact), c in scored if is_exact]
+        if exact:
+            return exact[0]
+        best = max(shared for (shared, _exact), _c in scored)
+        tied = [c for (shared, _exact), c in scored if shared == best]
+        if len(tied) == 1:
+            return tied[0]
+        songs = {
+            _title_artist_key(self._slim_by_id.get(str(c)) or {}, _best_artist_new) for c in tied
+        }
+        return tied[0] if len(songs) == 1 and None not in songs else None
+
     def _propose(self, old):
-        norm_paths = [p for p in (normalize_path(p) for p in old_paths(old)) if p]
-        for np in norm_paths:
-            if np in self.by_norm_path:
-                return ('path', self.by_norm_path[np])
-        for np in norm_paths:
-            tk = path_tail_key(np)
-            if tk and tk in self.by_tail:
-                return ('tail', self.by_tail[tk])
+        paths = [(raw, normalize_path(raw)) for raw in old_paths(old)]
+        for raw, np in paths:
+            candidates = self._candidates(self.by_norm_path, np)
+            if candidates:
+                chosen = self._closest(raw, candidates)
+                if chosen is not None:
+                    return ('path', chosen)
+        for raw, np in paths:
+            chosen = self._closest(raw, self._candidates(self.by_tail, path_tail_key(np)))
+            if chosen is not None:
+                return ('tail', chosen)
         ek = _exact_meta_key(old, _best_artist_old)
         if ek and ek in self.by_exact_meta:
             return ('exact_meta', _pick_meta_candidate(old, self.by_exact_meta[ek])['id'])
@@ -293,16 +373,19 @@ class CandidateIndex:
 
     def _path_siblings(self, old):
         seen = set()
-        for np in (normalize_path(p) for p in old_paths(old)):
-            if not np or np in seen:
+        for raw in old_paths(old):
+            key = '/'.join(_path_parts(raw))
+            if not key or key in seen:
                 continue
-            seen.add(np)
-            if np in self.by_norm_path:
-                yield 'path', self.by_norm_path[np]
-                continue
-            tk = path_tail_key(np)
-            if tk and tk in self.by_tail and tk not in self._ambiguous_tails:
-                yield 'tail', self.by_tail[tk]
+            seen.add(key)
+            np = normalize_path(raw)
+            candidates = self._candidates(self.by_norm_path, np)
+            if candidates:
+                chosen, tier = self._closest(raw, candidates), 'path'
+            else:
+                chosen, tier = self._closest(raw, self._candidates(self.by_tail, path_tail_key(np))), 'tail'
+            if chosen is not None:
+                yield tier, chosen
 
     def match_chunk(self, old_rows, claimed_new_ids=None):
         """Match ``old_rows`` against the index and return the usual result dict.

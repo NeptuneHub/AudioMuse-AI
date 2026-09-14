@@ -238,3 +238,9 @@ class TestTestConnection:
             with pytest.raises(ValueError):
                 probe.test_connection('spotify', self.CREDS)
         m.assert_not_called()
+
+
+class TestProviderIdsAreText:
+    def test_an_integer_provider_id_becomes_a_string(self, probe):
+        assert probe._normalize_track({'id': 12345, 'title': 'x'})['id'] == '12345'
+        assert probe._normalize_track({'title': 'no id'})['id'] is None

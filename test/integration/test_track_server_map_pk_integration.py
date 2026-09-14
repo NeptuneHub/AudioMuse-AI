@@ -21,7 +21,8 @@ Main Features:
   rows of one item before it stamps the new provider id, so the relaxed PK is
   never violated, and it leaves every non-default server untouched.
 * A song held as two files keeps both after the migration when the dry run found
-  the second file on the target: it is mapped back under its own path.
+  the second file on the target: it is mapped back under its own path, and each
+  file keeps the Chromaprint of its own old file.
 """
 
 import os
@@ -73,7 +74,7 @@ def _drop_all(conn):
     with conn.cursor() as cur:
         cur.execute(
             "DROP TABLE IF EXISTS track_server_map, artist_server_map, "
-            "music_servers, score CASCADE"
+            "music_servers, score, chromaprint CASCADE"
         )
     conn.commit()
 
@@ -466,8 +467,59 @@ class TestRelaxTrackServerMapPk:
         assert tiers == [('navi-1', 'analysis'), ('navi-2', 'analysis')], (
             'the unsignable marker belongs to the song, so its kept duplicate file carries it too'
         )
-        assert prints == [('navi-1', b'print-a'), ('navi-2', b'print-a')], (
-            'the kept duplicate file inherits the song fingerprint instead of losing it'
+        assert prints == [('navi-1', b'print-a'), ('navi-2', b'print-b')], (
+            'each kept file carries the fingerprint of its own old file, never a copy of another one'
+        )
+
+    def test_every_file_of_a_song_keeps_its_own_fingerprint_even_when_the_primary_is_the_second_file(
+        self, old_schema_db
+    ):
+        from tasks import provider_migration_tasks as mig
+
+        session_id = _prepare_migration_session(old_schema_db)
+        with old_schema_db.cursor() as cur:
+            for column in ('author TEXT', 'album TEXT', 'album_artist TEXT', 'year INTEGER'):
+                cur.execute('ALTER TABLE score ADD COLUMN IF NOT EXISTS ' + column)
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS chromaprint (server_id TEXT NOT NULL, "
+                "provider_track_id TEXT NOT NULL, fingerprint BYTEA, "
+                "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+                "PRIMARY KEY (server_id, provider_track_id))"
+            )
+            cur.execute("UPDATE track_server_map SET file_path = '/music/Queen/II/a.flac' WHERE provider_track_id = 'provA'")
+            cur.execute(
+                "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier, file_path) "
+                "VALUES ('X', 'srv', 'provB', 'default', '/music/Queen/II/b.flac')"
+            )
+            cur.execute(
+                "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint) "
+                "VALUES ('srv', 'provA', %s), ('srv', 'provB', %s)",
+                (b'print-a', b'print-b'),
+            )
+        old_schema_db.commit()
+
+        with old_schema_db.cursor() as cur:
+            mig._run_migration_transaction(
+                cur, {'X': 'new-b'},
+                {'new-b': {'path': '/lib/Queen/II/b.flac'}, 'new-a': {'path': '/lib/Queen/II/a.flac'}},
+                'navidrome', {}, session_id,
+                duplicates={'new-a': 'X'},
+            )
+            cur.execute(
+                "SELECT provider_track_id, fingerprint FROM chromaprint WHERE server_id = 'srv' "
+                "ORDER BY provider_track_id"
+            )
+            prints = [(row[0], bytes(row[1])) for row in cur.fetchall()]
+            cur.execute(
+                "SELECT provider_track_id FROM track_server_map WHERE server_id = 'srv' "
+                "ORDER BY provider_track_id"
+            )
+            files = [row[0] for row in cur.fetchall()]
+        old_schema_db.commit()
+
+        assert files == ['new-a', 'new-b']
+        assert prints == [('new-a', b'print-a'), ('new-b', b'print-b')], (
+            'the lowest old id must not hand its fingerprint to a different file'
         )
 
     def test_run_migration_transaction_repoints_every_server_only_on_the_default_one(

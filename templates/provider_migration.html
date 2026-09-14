@@ -639,6 +639,7 @@
 (function() {
     // ---------- State ----------
     let sessionId   = null;
+    let sessionTarget = null;
     let targetType  = '';
     let targetCreds = {};
     let unmatchedAlbums = [];
@@ -988,14 +989,18 @@
             }
             $('mig-probe-result').innerHTML = html;
 
-            // Create/reuse session
-            if (!sessionId) {
+            // Reuse the session only while it targets exactly what was just tested;
+            // a changed provider, URL or credential starts a fresh one.
+            const testedTarget = JSON.stringify([targetType, targetCreds]);
+            if (!sessionId || sessionTarget !== testedTarget) {
+                if (sessionId) resetFromStep(3);
                 const s = await jsonFetch("{{ url_for('migration_bp.session_start') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ target_type: targetType, target_creds: targetCreds })
                 });
                 sessionId = s.session_id;
+                sessionTarget = testedTarget;
             }
             // Populate the library checkbox list once we have a session. Hidden
             // for providers without a listable folder API.

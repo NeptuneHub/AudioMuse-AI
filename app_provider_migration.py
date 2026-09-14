@@ -270,14 +270,16 @@ def _live_planner_job_id(cur):
 def _completed_sessions_safe_to_prune(cur):
     cur.execute(
         "SELECT id, state->>'exec_task_id', "
-        "COALESCE((state->>'restart_acknowledged')::boolean, false) "
+        "COALESCE((state->>'restart_acknowledged')::boolean, false), "
+        "state->>'restart_request_id' "
         "FROM migration_session "
         "WHERE status = 'completed'"
     )
     rows = cur.fetchall() or []
+    legacy = [row[0] for row in rows if not row[1] and not row[3]]
     job_ids = [row[1] for row in rows if row[1]]
     if not job_ids:
-        return []
+        return legacy
     try:
         jobs = _task_statuses_by_id(job_ids)
     except Exception:
@@ -285,10 +287,10 @@ def _completed_sessions_safe_to_prune(cur):
             "COULD NOT CHECK COMPLETED MIGRATION RETRIES. Keeping every completion "
             "tombstone so a delayed retry can still prove the swap was applied"
         )
-        return []
-    return [
+        return legacy
+    return legacy + [
         session_id
-        for session_id, job_id, restart_acknowledged in rows
+        for session_id, job_id, restart_acknowledged, _request_id in rows
         if restart_acknowledged
         and job_id
         and not _task_is_live(jobs.get(job_id))
@@ -576,6 +578,15 @@ def _detect_source_path_format():
 
 def _current_provider_creds():
     import config as cfg
+    from tasks.mediaserver import registry
+
+    try:
+        default = registry.get_default_server()
+    except Exception:
+        logger.exception("Could not read the default server; using the config projection")
+        default = None
+    if default and default.get('server_type'):
+        return default['server_type'].lower(), dict(default.get('creds') or {})
 
     t = (getattr(cfg, 'MEDIASERVER_TYPE', '') or '').lower()
     if t == 'jellyfin':
@@ -1208,11 +1219,10 @@ def libraries_list():
     if session is None:
         return jsonify({'error': 'session not found'}), 404
     target_type, creds = session
-    state = _load_state(session_id) or {}
-    selected = state.get('selected_libraries')
     try:
         result = provider_probe.list_libraries(target_type, creds)
     except Exception as e:
+        selected = (_load_state(session_id) or {}).get('selected_libraries')
         logger.warning("libraries_list failed for session %s: %s", session_id, e, exc_info=True)
         return jsonify(
             {
@@ -1222,6 +1232,7 @@ def libraries_list():
                 'error': 'Failed to list libraries. Check the container logs for details.',
             }
         ), 200
+    selected = (_load_state(session_id) or {}).get('selected_libraries')
     return jsonify(
         {
             'libraries': result.get('libraries', []),
@@ -2605,6 +2616,7 @@ def _fetch_session_creds(session_id, *, require_plannable=False):
             )
         cur.execute(query, (session_id,))
         row = cur.fetchone()
+    db.commit()
     if not row:
         return None
     target_type, creds_raw = row
@@ -2640,6 +2652,7 @@ def _load_score_rows_as_dicts():
         with db.cursor() as cur:
             cur.execute(pgsql.SQL("SELECT {} FROM score").format(_SCORE_COLS))
             rows = cur.fetchall() or []
+        db.commit()
         return [_row_to_score_dict(r) for r in rows]
     with db.cursor() as cur:
         cur.execute(
@@ -2651,6 +2664,7 @@ def _load_score_rows_as_dicts():
             (default_id, default_id, True),
         )
         rows = cur.fetchall() or []
+    db.commit()
     loaded = []
     for r in rows:
         paths = [p for p in (r[6] or []) if p]
@@ -2767,15 +2781,23 @@ def _load_rows_for_album(album_key):
         album_key[0] if album_key else None,
         album_key[1] if album_key and len(album_key) > 1 else None,
     )
+    from tasks.mediaserver import registry
+
     db = get_db()
+    default = registry.get_default_server(db)
+    available = ''
+    params = (target_artist, target_album)
+    if default is not None:
+        available = " AND " + registry.availability_sql('score')
+        params = params + (default['server_id'], True)
     with db.cursor() as cur:
         cur.execute(
             pgsql.SQL(
                 "SELECT {} FROM score "
                 "WHERE COALESCE(NULLIF(album_artist, ''), author) IS NOT DISTINCT FROM %s "
-                "AND album IS NOT DISTINCT FROM %s"
+                "AND album IS NOT DISTINCT FROM %s" + available
             ).format(_SCORE_COLS),
-            (target_artist, target_album),
+            params,
         )
         rows = cur.fetchall() or []
     return [_row_to_score_dict(r) for r in rows]
@@ -2920,8 +2942,17 @@ def _mark_album_skipped(session_id, old_album_key):
 
 
 def _count_score_rows():
+    from tasks.mediaserver import registry
+
     db = get_db()
+    default = registry.get_default_server(db)
     with db.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM score")
+        if default is None:
+            cur.execute("SELECT COUNT(*) FROM score")
+        else:
+            cur.execute(
+                "SELECT COUNT(*) FROM score s WHERE " + registry.availability_sql('s'),
+                (default['server_id'], True),
+            )
         row = cur.fetchone()
     return int(row[0] or 0) if row else 0

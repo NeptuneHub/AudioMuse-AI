@@ -1680,6 +1680,26 @@ class TestNavidromeGetAllSongsApplyFilter:
         mock_request.assert_not_called()
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_a_failed_page_raises_instead_of_returning_a_partial_catalogue(self, mock_request):
+        from tasks.mediaserver.navidrome import get_all_songs
+
+        page = [{'id': str(i), 'title': 't', 'path': f'a/{i}.flac'} for i in range(500)]
+        mock_request.side_effect = [{'searchResult3': {'song': page}}, None]
+
+        with pytest.raises(RuntimeError, match='offset 500'):
+            get_all_songs(user_creds={'url': 'http://nav', 'user': 'u', 'password': 'p'}, apply_filter=False)
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_an_empty_last_page_is_the_normal_end_of_the_listing(self, mock_request):
+        from tasks.mediaserver.navidrome import get_all_songs
+
+        page = [{'id': str(i), 'title': 't', 'path': f'a/{i}.flac'} for i in range(500)]
+        mock_request.side_effect = [{'searchResult3': {'song': page}}, {'searchResult3': {}}]
+
+        songs = get_all_songs(user_creds={'url': 'http://nav', 'user': 'u', 'password': 'p'}, apply_filter=False)
+        assert len(songs) == 500
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_get_target_music_folder_ids_forwards_user_creds(self, mock_request):
         from tasks.mediaserver.navidrome import _get_target_music_folder_ids
 

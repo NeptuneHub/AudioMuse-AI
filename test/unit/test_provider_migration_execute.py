@@ -149,6 +149,10 @@ def _build_sql_handlers(mock_cur, session_row, meta_rows):
             lambda up, params: _set_all([]),
         ),
         (
+            lambda up: up.startswith('SELECT T.ITEM_ID, T.PROVIDER_TRACK_ID, T.FILE_PATH'),
+            lambda up, params: _set_all([]),
+        ),
+        (
             lambda up: _matches(up, 'TO_REGCLASS', 'MUSIC_SERVERS'),
             lambda up, params: _set_one((True,)),
         ),
@@ -522,10 +526,21 @@ class TestMigrationWritesTheRegistryOnly:
 
     def test_target_provider_and_creds_land_in_the_registry(self, mig):
         executed, params = self._write(mig, selected_libraries=['A'])
-        server_type, creds, libraries = self._default_row_update(executed, params)
+        server_type, creds, libraries, taken_name, new_name = self._default_row_update(executed, params)
         assert server_type == 'navidrome'
         assert creds.adapted == {'url': 'http://nav.local', 'user': 'u', 'password': 'p'}
         assert libraries == 'A'
+        assert taken_name == new_name == 'Navidrome'
+
+    def test_only_an_automatic_name_follows_the_new_provider(self, mig):
+        executed, params = self._write(mig, selected_libraries=None)
+        sql = next(s for s in executed if 'UPDATE music_servers' in s and 'is_default' in s)
+        assert 'CASE WHEN lower(m.name) = lower(m.server_type)' in sql, (
+            'a name the user chose is kept; only the automatic provider name is renamed'
+        )
+        assert 'o.server_id <> m.server_id' in sql and 'lower(o.name) = lower(%s)' in sql, (
+            'the unique lower(name) index must never abort the migration transaction'
+        )
 
     def test_none_selection_clears_the_library_filter(self, mig):
         executed, params = self._write(mig, selected_libraries=None)
@@ -1404,8 +1419,67 @@ class TestDuplicateFileMappings:
         maps = next(c[0] for c in calls if 'INSERT INTO track_server_map' in c[0])
         assert 's.is_default' in maps and 'ON CONFLICT (server_id, provider_track_id) DO NOTHING' in maps
         assert 'p.match_tier' in maps, 'a duplicate file keeps the tier of its song'
-        prints = next(c[0] for c in calls if 'INSERT INTO chromaprint' in c[0])
-        assert 'c.fingerprint IS NOT NULL' in prints, 'a duplicate file inherits the song fingerprint'
+        assert not any('INSERT INTO chromaprint' in c[0] for c in calls), (
+            'a duplicate file never receives a copy of another file fingerprint'
+        )
+
+    def test_files_pair_with_their_own_old_file_by_the_longest_shared_path(self):
+        from tasks import provider_migration_tasks as mig
+
+        old_files = [('old-a', '/music/Queen/II/a.flac'), ('old-b', '/music/Queen/II/b.flac'), ('old-c', None)]
+        new_meta = {'new-b': {'path': '/lib/Queen/II/b.flac'}, 'new-a': {'path': '/lib/Queen/II/a.flac'},
+                    'new-x': {'path': '/lib/Other/x.flac'}}
+        pairs = mig._pair_files_by_path(old_files, ['new-b', 'new-a', 'new-x'], new_meta)
+        assert sorted(pairs) == [('old-a', 'new-a'), ('old-b', 'new-b')]
+
+    def test_a_tie_between_old_files_goes_to_the_one_holding_a_fingerprint(self):
+        from tasks import provider_migration_tasks as mig
+
+        old_files = [('old-a', '/x/Song.flac', False), ('old-b', '/y/Song.flac', True)]
+        new_meta = {'new-1': {'path': '/lib/Song.flac'}}
+        assert mig._pair_files_by_path(old_files, ['new-1'], new_meta) == [('old-b', 'new-1')]
+
+    def test_same_server_files_pair_one_to_one(self):
+        from tasks import provider_migration_tasks as mig
+
+        old_files = [('7', '/music/A/01.flac'), ('8', '/data/A/01.flac')]
+        new_meta = {'7': {'path': '/music/A/01.flac'}, '8': {'path': '/data/A/01.flac'}}
+        assert sorted(mig._pair_files_by_path(old_files, ['7', '8'], new_meta)) == [('7', '7'), ('8', '8')]
+
+    def test_only_multi_file_songs_are_paired_and_primaries_fall_back_in_sql(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        cur.fetchall.return_value = [
+            ('fp_1', 'old-a', '/music/Q/a.flac', True),
+            ('fp_1', 'old-b', '/music/Q/b.flac', True),
+        ]
+        pairs = mig._multi_file_carry_pairs(
+            cur, {'fp_1': 'new-b', 'fp_2': 'new-z'}, {'new-a': 'fp_1'},
+            {'new-a': {'path': '/x/Q/a.flac'}, 'new-b': {'path': '/x/Q/b.flac'}},
+        )
+        assert sorted(pairs) == [('old-a', 'new-a'), ('old-b', 'new-b')]
+        sql, params = cur.execute.call_args[0]
+        assert 's.is_default' in sql and params == (['fp_1'],)
+
+    def test_the_fallback_carry_never_reuses_a_paired_file_or_target(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        cur.fetchone.return_value = ('chromaprint',)
+        cur.fetchall.return_value = [('fp_1', 'old-a', '/m/a.flac', True), ('fp_1', 'old-b', '/m/b.flac', False)]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        assert mig._stage_chromaprint_carry(
+            cur, {'fp_1': 'new-b'}, {'new-a': 'fp_1'},
+            {'new-a': {'path': '/n/a.flac'}, 'new-b': {'path': '/n/b.flac'}},
+        ) is True
+        staged = [params for sql, params in executed if 'VALUES' in sql and 'migration_chromaprint_carry' in sql]
+        assert staged and list(zip(staged[0][0::2], staged[0][1::2])) == [('old-a', 'new-a')], (
+            'old-b holds no fingerprint, so its pairing must not block the primary from the song print'
+        )
+        fallback = next(sql for sql, _p in executed if 'DISTINCT ON (m.new_id)' in sql)
+        assert 'k.new_id = m.new_id OR k.provider_track_id = c.provider_track_id' in fallback
 
     def test_navidrome_api_key_mode_names_the_real_choice(self):
         from tasks import provider_migration_tasks as mig
@@ -1417,3 +1491,16 @@ class TestDuplicateFileMappings:
         message = mig.incomplete_creds_error('jellyfin', {'url': 'http://jf'})
         assert message == 'Incomplete credentials: fill in User ID, API Token.'
 
+
+
+class TestCompletionScrubsTheSession:
+    def test_the_completed_session_keeps_no_target_credentials(self, mig):
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        completion = [s for s in executed if s.upper().startswith("UPDATE MIGRATION_SESSION SET STATUS = 'COMPLETED'")]
+        assert completion and "target_creds = '{}'" in completion[0], (
+            'the credentials already live in music_servers; the tombstone must not keep a plaintext copy'
+        )

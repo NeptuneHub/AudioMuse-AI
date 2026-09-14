@@ -211,6 +211,22 @@ class TestRegistryPureHelpers:
         monkeypatch.setattr(config, 'PLEX_TOKEN', 'ptok', raising=False)
         assert registry.creds_from_config('plex') == {'url': 'http://plex', 'token': 'ptok'}
 
+    def test_a_default_row_holding_a_credential_the_config_cannot_carry_is_bound(self, monkeypatch):
+        import config
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'lyrion', raising=False)
+        monkeypatch.setattr(config, 'MUSIC_LIBRARIES', '', raising=False)
+        monkeypatch.setattr(config, 'LYRION_URL', 'http://lms:9000', raising=False)
+        plain = {'server_type': 'lyrion', 'music_libraries': '', 'creds': {'url': 'http://lms:9000'}}
+        assert registry._config_projection_lost(plain) is False
+        protected = {'server_type': 'lyrion', 'music_libraries': '',
+                     'creds': {'url': 'http://lms:9000', 'user': 'admin', 'password': 'secret'}}
+        assert registry._config_projection_lost(protected) is True
+        blank_extra = {'server_type': 'lyrion', 'music_libraries': '',
+                       'creds': {'url': 'http://lms:9000', 'user': '', 'password': ''}}
+        assert registry._config_projection_lost(blank_extra) is False
+
     def test_normalize_row(self):
         from tasks.mediaserver import registry
 
@@ -3102,3 +3118,43 @@ class TestSweepRefusesWhileAPreviewRuns:
             lambda task_type=None, **k: preview if task_type == 'naming_preview' else None,
         )
         assert app_music_servers._task_blocking_a_sweep() == preview
+
+
+class TestSweepReadTransaction:
+    def test_the_read_transaction_ends_before_the_catalogue_fetch(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        db = MagicMock()
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 5)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 3)
+        commits_at_fetch = []
+
+        def fetch(*a, **k):
+            commits_at_fetch.append(db.commit.call_count)
+            raise RuntimeError('stop after the fetch starts')
+
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', fetch)
+        with pytest.raises(RuntimeError, match='stop after the fetch starts'):
+            sync._sweep_one(
+                {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+                db, lambda *a, **k: None, 5, 95, lambda: None,
+            )
+        assert commits_at_fetch and commits_at_fetch[0] >= 1, (
+            'a whole-catalogue fetch takes minutes and must not keep a snapshot open'
+        )
+
+
+class TestProjectionWarning:
+    def test_extra_credentials_bind_the_row_without_the_restart_warning(self, monkeypatch, caplog):
+        import config
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'lyrion', raising=False)
+        monkeypatch.setattr(config, 'MUSIC_LIBRARIES', '', raising=False)
+        monkeypatch.setattr(config, 'LYRION_URL', 'http://lms:9000', raising=False)
+        registry.invalidate_server_cache()
+        row = {'server_id': 'd', 'name': 'Lyrion', 'server_type': 'lyrion', 'music_libraries': '',
+               'creds': {'url': 'http://lms:9000', 'user': 'admin', 'password': 'secret'}}
+        with caplog.at_level('WARNING', logger=registry.logger.name):
+            assert registry._default_context(row) == row
+        assert 'Restart the process' not in caplog.text

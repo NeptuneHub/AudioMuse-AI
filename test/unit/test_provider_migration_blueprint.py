@@ -896,11 +896,12 @@ class TestMigrationMetadataCompletionFence:
     def test_completion_pruning_requires_ack_and_a_terminal_queue_row(self, bp_mod):
         cur = MagicMock()
         cur.fetchall.return_value = [
-            (1, 'live', True),
-            (2, 'done', True),
-            (3, 'unacked', False),
-            (4, None, False),
-            (5, 'missing', True),
+            (1, 'live', True, 'req-1'),
+            (2, 'done', True, 'req-2'),
+            (3, 'unacked', False, 'req-3'),
+            (4, None, False, 'req-4'),
+            (5, 'missing', True, 'req-5'),
+            (6, None, False, None),
         ]
         statuses = {
             'live': config.TASK_STATUS_RUNNING,
@@ -909,7 +910,15 @@ class TestMigrationMetadataCompletionFence:
             'missing': None,
         }
         with patch.object(bp_mod, '_task_statuses_by_id', return_value=statuses):
-            assert bp_mod._completed_sessions_safe_to_prune(cur) == [2, 5]
+            assert bp_mod._completed_sessions_safe_to_prune(cur) == [6, 2, 5], (
+                'a completion from before the restart handshake has no retry to protect'
+            )
+
+    def test_legacy_completions_are_pruned_even_when_the_queue_check_fails(self, bp_mod):
+        cur = MagicMock()
+        cur.fetchall.return_value = [(7, None, False, None), (8, 'job', True, 'req-8')]
+        with patch.object(bp_mod, '_task_statuses_by_id', side_effect=RuntimeError('db down')):
+            assert bp_mod._completed_sessions_safe_to_prune(cur) == [7]
 
 
 class TestExecuteEnqueueResolution:
@@ -1179,3 +1188,52 @@ class TestJobStatusCarriesTheTasksOwnLine:
             "worker restart the migration itself requested; only the row's own "
             'line says so, so it rides along'
         )
+
+
+class TestReadsNeverHoldATransactionAcrossNetworkWork:
+    def test_the_session_credentials_read_ends_its_transaction(self, bp_mod, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.append(('navidrome', '{"url": "http://nav"}'))
+        assert bp_mod._fetch_session_creds(3) == ('navidrome', {'url': 'http://nav'})
+        db.commit.assert_called_once()
+
+    def test_the_catalogue_rows_read_ends_its_transaction(self, bp_mod, fake_db):
+        db, cur = fake_db
+        cur.fetchall.return_value = [('fp_1', None, 't', 'a', 'al', 'aa', ['/m/1.flac'])]
+        with patch('tasks.mediaserver.registry.get_default_server', return_value={'server_id': 'd1'}):
+            rows = bp_mod._load_score_rows_as_dicts()
+        assert rows[0]['file_paths'] == ['/m/1.flac']
+        db.commit.assert_called_once()
+
+
+class TestFinalizeCountsOnlyTheDefaultServerSongs:
+    def test_the_orphan_base_is_the_songs_available_on_the_default_server(self, bp_mod, fake_db):
+        _db, cur = fake_db
+        cur._fetchone_queue.append((7,))
+        with patch('tasks.mediaserver.registry.get_default_server', return_value={'server_id': 'd1'}):
+            assert bp_mod._count_score_rows() == 7
+        sql, params = cur.execute.call_args[0]
+        assert 'availability' in sql and params == ('d1', True), (
+            'songs only a secondary server holds are never orphans of this migration'
+        )
+
+
+class TestWizardSessionFollowsTheTestedTarget:
+    def test_a_changed_target_or_credential_starts_a_new_session(self):
+        import pathlib
+
+        html = (pathlib.Path(__file__).resolve().parents[2] / 'templates' / 'provider_migration.html').read_text(encoding='utf-8')
+        assert "JSON.stringify([targetType, targetCreds])" in html
+        assert 'if (!sessionId || sessionTarget !== testedTarget)' in html
+        assert 'sessionTarget = testedTarget;' in html
+
+
+class TestAlbumRowsFollowTheDefaultServer:
+    def test_manual_album_rows_only_include_songs_on_the_default_server(self, bp_mod, fake_db):
+        _db, cur = fake_db
+        cur.fetchall.return_value = []
+        with patch('tasks.mediaserver.registry.get_default_server', return_value={'server_id': 'd1'}):
+            assert bp_mod._load_rows_for_album(['Artist', 'Album']) == []
+        sql, params = cur.execute.call_args[0]
+        assert 'availability' in repr(sql)
+        assert params == ('Artist', 'Album', 'd1', True)
