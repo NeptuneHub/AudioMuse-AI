@@ -899,6 +899,7 @@ function loadSetupData() {
         renderModelSwitches(advancedData);
         renderModelCoverage(data.model_coverage);
         populateLyricsApiFields(data.lyrics_api_fields);
+        populateAiPromptFields(data.ai_prompt_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`
         // for the credential fields), auto-fetch the library list so the
@@ -1220,6 +1221,9 @@ function collectConfigFromForm(testMode) {
         if (!input) {
             return;
         }
+        if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.has(key)) {
+            return;
+        }
         var original = input.dataset.originalValue;
         if (!testMode) {
             if (original !== undefined && value === original) {
@@ -1451,6 +1455,227 @@ if (advancedExpandAll) {
 var advancedCollapseAll = document.getElementById('advanced-collapse-all');
 if (advancedCollapseAll) {
     advancedCollapseAll.addEventListener('click', function() { setAllAdvancedSections(false); });
+}
+
+// ---------------------------------------------------------------------------
+// AI Prompt section - clustering naming style and full-title prompt
+// ---------------------------------------------------------------------------
+var AI_PROMPT_FORM_FIELDS = new Set(['AI_NAMING_PROMPT_MODE', 'AI_NAMING_TITLE_PROMPT']);
+var AI_PROMPT_POLL_MS = 1500;
+var AI_PROMPT_MAX_POLL_FAILURES = 10;
+var AI_PROMPT_POLL_GAVE_UP_MESSAGE = 'Lost track of the preview status. Click Preview titles to check it again.';
+var aiPromptState = {loaded: false, defaultTitlePrompt: '', pollTimer: null, taskId: null, pollFailures: 0};
+
+function aiPromptMode() {
+    var select = document.getElementById('AI_NAMING_PROMPT_MODE');
+    return select?.value === 'title' ? 'title' : 'concept';
+}
+
+function updateAiPromptMode() {
+    var isTitle = aiPromptMode() === 'title';
+    var conceptHelp = document.getElementById('ai-prompt-concept-help');
+    var titleHelp = document.getElementById('ai-prompt-title-help');
+    var titlePanel = document.getElementById('ai-prompt-title-panel');
+    if (conceptHelp) { conceptHelp.style.display = isTitle ? 'none' : ''; }
+    if (titleHelp) { titleHelp.style.display = isTitle ? '' : 'none'; }
+    if (titlePanel) { titlePanel.style.display = isTitle ? '' : 'none'; }
+}
+
+function resetAiPromptToDefault() {
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    if (!area || !aiPromptState.defaultTitlePrompt) { return; }
+    area.value = aiPromptState.defaultTitlePrompt;
+    try { delete area.dataset.originalValue; } catch (_) { area.dataset.originalValue = undefined; }
+}
+
+function renderAiPromptPreview(state) {
+    var status = document.getElementById('ai-prompt-preview-status');
+    var list = document.getElementById('ai-prompt-preview-titles');
+    var button = document.getElementById('ai-prompt-preview-start');
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (!status || !list || !state || state.status === 'idle') {
+        if (stop) { stop.style.display = 'none'; }
+        if (button) { button.disabled = false; }
+        aiPromptState.taskId = null;
+        if (status && state && state.status === 'idle') { status.style.display = 'none'; }
+        return;
+    }
+    var running = state.status === 'running';
+    aiPromptState.taskId = state.task_id || null;
+    if (button) { button.disabled = running; }
+    if (stop) {
+        stop.style.display = running && aiPromptState.taskId ? '' : 'none';
+        stop.disabled = false;
+    }
+    status.style.display = 'block';
+    var statusClass = state.status === 'done' ? 'status-success' : 'status-failure';
+    status.className = (running ? 'status-pending' : statusClass)
+        + ' inline-feedback';
+    var progress = running && state.total ? ' (' + state.done + ' of ' + state.total + ')' : '';
+    status.textContent = (state.message || '') + progress;
+    var titles = state.titles || [];
+    list.innerHTML = '';
+    titles.forEach(function(entry) {
+        var item = document.createElement('li');
+        var name = document.createElement('strong');
+        name.textContent = entry.title;
+        var meta = document.createElement('span');
+        meta.className = 'ai-prompt-title-meta';
+        meta.textContent = entry.song_count + ' songs'
+            + (entry.tag_name_kept ? ', no AI title so the tag name is kept' : '');
+        item.title = (entry.sample || []).join('\n');
+        item.appendChild(name);
+        item.appendChild(meta);
+        list.appendChild(item);
+    });
+    list.style.display = titles.length ? '' : 'none';
+}
+
+function showAiPromptPreviewError(message) {
+    var status = document.getElementById('ai-prompt-preview-status');
+    if (!status) { return; }
+    status.style.display = 'block';
+    status.className = 'status-failure inline-feedback';
+    status.textContent = message;
+}
+
+function readAiPromptResponse(response) {
+    return response.json().catch(function() { return {}; }).then(function(body) {
+        return {ok: response.ok, code: response.status, body: body || {}};
+    });
+}
+
+function releaseAiPromptPreview(message) {
+    var button = document.getElementById('ai-prompt-preview-start');
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (button) { button.disabled = false; }
+    if (stop) { stop.style.display = 'none'; }
+    showAiPromptPreviewError(message);
+}
+
+function pollAiPromptPreview() {
+    if (aiPromptState.pollTimer) {
+        clearTimeout(aiPromptState.pollTimer);
+        aiPromptState.pollTimer = null;
+    }
+    fetch('/api/setup/ai-prompt/preview').then(readAiPromptResponse).then(function(result) {
+        if (!result.ok || !result.body.status) {
+            aiPromptState.pollFailures += 1;
+            showAiPromptPreviewError(result.body.error || 'Could not read the preview status.');
+            if (aiPromptState.pollFailures < AI_PROMPT_MAX_POLL_FAILURES) {
+                aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+            } else {
+                releaseAiPromptPreview(AI_PROMPT_POLL_GAVE_UP_MESSAGE);
+            }
+            return;
+        }
+        aiPromptState.pollFailures = 0;
+        renderAiPromptPreview(result.body);
+        if (result.body.status === 'running') {
+            aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS);
+        }
+    }).catch(function() {
+        aiPromptState.pollFailures += 1;
+        if (aiPromptState.pollFailures < AI_PROMPT_MAX_POLL_FAILURES) {
+            aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+        } else {
+            releaseAiPromptPreview(AI_PROMPT_POLL_GAVE_UP_MESSAGE);
+        }
+    });
+}
+
+function startAiPromptPreview() {
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    var status = document.getElementById('ai-prompt-preview-status');
+    var button = document.getElementById('ai-prompt-preview-start');
+    if (!status || button?.disabled) { return; }
+    if (button) { button.disabled = true; }
+    status.style.display = 'block';
+    status.className = 'status-pending inline-feedback';
+    status.textContent = 'Starting the preview...';
+    fetch('/api/setup/ai-prompt/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: aiPromptMode(), instructions: area ? area.value : ''})
+    }).then(readAiPromptResponse).then(function(result) {
+        if (!result.ok) {
+            if (button) { button.disabled = false; }
+            showAiPromptPreviewError(result.body.error || 'The preview could not start.');
+            if (result.body.preview_running) {
+                aiPromptState.pollFailures = 0;
+                pollAiPromptPreview();
+            }
+            return;
+        }
+        aiPromptState.pollFailures = 0;
+        renderAiPromptPreview(result.body);
+        pollAiPromptPreview();
+    }).catch(function() {
+        if (button) { button.disabled = false; }
+        showAiPromptPreviewError('The preview request failed. Check that the app is still running.');
+    });
+}
+
+function stopAiPromptPreview() {
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (!aiPromptState.taskId || stop?.disabled) { return; }
+    if (stop) { stop.disabled = true; }
+    fetch('/api/cancel/' + encodeURIComponent(aiPromptState.taskId), {method: 'POST'})
+        .then(readAiPromptResponse)
+        .then(function(result) {
+            if (!result.ok) {
+                if (stop) { stop.disabled = false; }
+                showAiPromptPreviewError(result.body.error || 'Could not stop the preview.');
+                return;
+            }
+            aiPromptState.pollFailures = 0;
+            pollAiPromptPreview();
+        })
+        .catch(function() {
+            if (stop) { stop.disabled = false; }
+            showAiPromptPreviewError('Could not stop the preview. Check that the app is still running.');
+        });
+}
+
+function populateAiPromptFields(promptData) {
+    if (!promptData) { return; }
+    var select = document.getElementById('AI_NAMING_PROMPT_MODE');
+    if (select) {
+        select.value = promptData.mode === 'title' ? 'title' : 'concept';
+        select.dataset.originalValue = select.value;
+    }
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    if (area) {
+        area.value = promptData.title_prompt || '';
+        area.dataset.originalValue = area.value;
+    }
+    aiPromptState.defaultTitlePrompt = promptData.title_prompt_default || '';
+    var maxSongs = document.getElementById('ai-prompt-max-songs');
+    if (maxSongs) { maxSongs.textContent = String(promptData.max_songs); }
+    var previewMax = document.getElementById('ai-prompt-preview-max');
+    if (previewMax) { previewMax.textContent = String(promptData.preview_max_songs); }
+    var songBlock = document.getElementById('ai-prompt-song-block');
+    if (songBlock) { songBlock.textContent = promptData.example_song_block || ''; }
+    aiPromptState.loaded = true;
+    updateAiPromptMode();
+    pollAiPromptPreview();
+}
+
+var _aiPromptModeSelect = document.getElementById('AI_NAMING_PROMPT_MODE');
+if (_aiPromptModeSelect) {
+    _aiPromptModeSelect.addEventListener('change', updateAiPromptMode);
+}
+var _aiPromptReset = document.getElementById('ai-prompt-reset');
+if (_aiPromptReset) {
+    _aiPromptReset.addEventListener('click', resetAiPromptToDefault);
+}
+var _aiPromptPreviewStart = document.getElementById('ai-prompt-preview-start');
+if (_aiPromptPreviewStart) {
+    _aiPromptPreviewStart.addEventListener('click', startAiPromptPreview);
+}
+var _aiPromptPreviewStop = document.getElementById('ai-prompt-preview-stop');
+if (_aiPromptPreviewStop) {
+    _aiPromptPreviewStop.addEventListener('click', stopAiPromptPreview);
 }
 
 // ---------------------------------------------------------------------------

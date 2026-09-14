@@ -166,6 +166,25 @@ def _resolve_target_song_count(data):
     return max(1, n)
 
 
+_CLOUD_KEY_CHECKS = {
+    "OPENAI": ("OpenAI", "openai_key", None),
+    "GEMINI": ("Gemini", "gemini_key", "YOUR-GEMINI-API-KEY-HERE"),
+    "MISTRAL": ("Mistral", "mistral_key", "YOUR-MISTRAL-API-KEY-HERE"),
+}
+
+
+def _missing_cloud_api_key(ai_provider, ai_secrets):
+    display_name, secret_key, placeholder = _CLOUD_KEY_CHECKS.get(
+        ai_provider, (None, None, None)
+    )
+    if display_name is None:
+        return None
+    value = (ai_secrets or {}).get(secret_key)
+    if not value or (placeholder is not None and value == placeholder):
+        return display_name
+    return None
+
+
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
 @swag_from(
     {
@@ -517,49 +536,19 @@ def _run_chat_pipeline(data, log_messages):
     )
 
     # Validate API keys for cloud providers
-    if ai_provider == "OPENAI" and not ai_secrets['openai_key']:
-        error_msg = "Error: OpenAI API key is missing. Please provide a valid API key."
-        log_messages.append(error_msg)
-        return (
-            {
-                "message": "\n".join(log_messages),
-                "original_request": original_user_input,
-                "ai_provider_used": ai_provider,
-                "ai_model_selected": ai_config.get('openai_model'),
-                "executed_query": None,
-                "query_results": None,
-            },
-            400,
+    missing_key_provider = _missing_cloud_api_key(ai_provider, ai_secrets)
+    if missing_key_provider is not None:
+        error_msg = (
+            f"Error: {missing_key_provider} API key is missing. "
+            "Please provide a valid API key."
         )
-
-    if ai_provider == "GEMINI" and (
-        not ai_secrets['gemini_key'] or ai_secrets['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"
-    ):
-        error_msg = "Error: Gemini API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
         return (
             {
                 "message": "\n".join(log_messages),
                 "original_request": original_user_input,
                 "ai_provider_used": ai_provider,
-                "ai_model_selected": ai_config.get('gemini_model'),
-                "executed_query": None,
-                "query_results": None,
-            },
-            400,
-        )
-
-    if ai_provider == "MISTRAL" and (
-        not ai_secrets['mistral_key'] or ai_secrets['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"
-    ):
-        error_msg = "Error: Mistral API key is missing. Please provide a valid API key."
-        log_messages.append(error_msg)
-        return (
-            {
-                "message": "\n".join(log_messages),
-                "original_request": original_user_input,
-                "ai_provider_used": ai_provider,
-                "ai_model_selected": ai_config.get('mistral_model'),
+                "ai_model_selected": ai_config.get(f'{ai_provider.lower()}_model'),
                 "executed_query": None,
                 "query_results": None,
             },

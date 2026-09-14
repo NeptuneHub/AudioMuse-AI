@@ -30,14 +30,13 @@ Main Features:
 import gc
 import json
 import math
-import time
 import logging
 from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
 from database import get_db, load_map_projection
-from app_helper import probe_catalogue_canonical_ids
+from app_helper import catalogue_has_canonical_ids, remember_catalogue_canonical_ids
 import app_server_context
 
 # Try to reuse the shared projection helpers
@@ -67,30 +66,6 @@ MAP_JSON_CACHE = {}
 # request streams precomputed bytes instead of translating the whole catalogue on
 # every call. Built for the default server at cache-build time, lazily for others.
 MAP_SERVER_JSON_CACHE = {}
-
-# Memoized canonical-id probe. Canonicalization is one-way, so a True is sticky
-# forever; a False is re-probed at most once per TTL. This keeps the map fast path
-# from seq-scanning score on every request of a not-yet-canonicalized library.
-_HAS_CANONICAL_IDS = None
-_HAS_CANONICAL_CHECKED_AT = 0.0
-_HAS_CANONICAL_TTL = 60.0
-
-
-def _catalogue_has_canonical_ids():
-    """True when score holds canonical fp_ ids (memoized; fails closed on error,
-    remembering the failure for the TTL so a DB outage does not re-probe on
-    every request)."""
-    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
-    if _HAS_CANONICAL_IDS:
-        return True
-    now = time.monotonic()
-    if _HAS_CANONICAL_CHECKED_AT and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
-        return _HAS_CANONICAL_IDS is not False
-    result = probe_catalogue_canonical_ids()
-    _HAS_CANONICAL_IDS = result
-    _HAS_CANONICAL_CHECKED_AT = now
-    return result is not False
-
 
 def _pick_top_mood(mood_vector_str):
     """Return top mood label from 'label:score,label2:score' string.
@@ -158,7 +133,6 @@ def build_map_cache():
     and build cached JSON blobs for 100/75/50/25 percent samples. This should be called
     once at startup inside app.app_context()."""
     global MAP_JSON_CACHE
-    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
     logger = logging.getLogger(__name__)
     logger.info('Building map JSON cache (this reads the DB once).')
 
@@ -238,8 +212,7 @@ def build_map_cache():
     # fp_ id; a rebuild (e.g. after canonicalization) reflects the legacy->fp_ flip
     # exactly here, instead of a reset that re-triggered a score seq-scan on every
     # routine rebuild. Canonicalization is one-way, so this only ever flips to True.
-    _HAS_CANONICAL_IDS = has_canonical
-    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+    remember_catalogue_canonical_ids(has_canonical)
 
     if not full_light:
         # empty cache
@@ -373,7 +346,7 @@ def _warm_server_buckets():
     from tasks.mediaserver import registry
 
     try:
-        needs = _catalogue_has_canonical_ids() or registry.has_secondary_servers()
+        needs = catalogue_has_canonical_ids() or registry.has_secondary_servers()
     except Exception:
         logger.exception('Map pre-warm scope probe failed; warming defensively')
         needs = True
@@ -566,7 +539,7 @@ def map_api():
     # ids (fp_ dropped) and pre-gzipped, so every request streams bytes rather than
     # re-translating the whole catalogue. ALL configured servers are warmed at build
     # time; a lookup miss (a server added since the last build) builds+caches lazily.
-    if server_id is not None or registry.has_secondary_servers() or _catalogue_has_canonical_ids():
+    if server_id is not None or registry.has_secondary_servers() or catalogue_has_canonical_ids():
         server_key = server_id or '__default__'
         cached = MAP_SERVER_JSON_CACHE.get((server_key, pct))
         if cached is None:

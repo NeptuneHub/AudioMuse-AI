@@ -229,6 +229,14 @@ async function checkActiveTasks() {
             const previousDetails = lastPolledTaskDetails[finishedTaskId];
             currentTaskId = null;
 
+            if (previousDetails?.side_job) {
+                delete lastPolledTaskDetails[finishedTaskId];
+                await fetchAndDisplayOverallLastTask();
+                disableTaskButtons(false);
+                updateCancelButtonState(true);
+                return true;
+            }
+
             try {
                 const finalStatusResponse = await fetch(getTaskStatusEndpointUrl.replace(':taskId:', encodeURIComponent(finishedTaskId)));
                 if (finalStatusResponse.ok) {

@@ -20,7 +20,10 @@ Main Features:
   ``top_stratified_genre`` enrich API result rows.
 * Shared blueprint helpers: ``index_error_body`` builds the structured API
   error body and ``probe_catalogue_canonical_ids`` probes score for canonical
-  fp_ ids (None on probe failure so callers pick their own fail-closed policy).
+  fp_ ids (None on probe failure so callers pick their own fail-closed policy),
+  and ``catalogue_has_canonical_ids`` memoizes that probe (a failure fails
+  closed for the TTL); the map cache build seeds the memo from the ids it just
+  loaded via ``remember_catalogue_canonical_ids``.
 """
 
 import json
@@ -32,8 +35,10 @@ from psycopg2.extras import DictCursor
 import numpy as np
 
 import database
+import task_types
 import taskqueue
 from taskqueue.sql import CONTROL_TASK_TYPE
+from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 from database import (
     get_db,
     coerce_db_details,
@@ -161,6 +166,30 @@ def probe_catalogue_canonical_ids():
             except Exception:
                 logger.exception("Rollback after failed canonical-id probe also failed")
         return None
+
+
+_HAS_CANONICAL_IDS = None
+_HAS_CANONICAL_CHECKED_AT = 0.0
+_HAS_CANONICAL_TTL = 60.0
+
+
+def remember_catalogue_canonical_ids(has_canonical):
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    _HAS_CANONICAL_IDS = bool(has_canonical)
+    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+
+
+def catalogue_has_canonical_ids():
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    if _HAS_CANONICAL_IDS:
+        return True
+    now = time.monotonic()
+    if _HAS_CANONICAL_CHECKED_AT and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
+        return _HAS_CANONICAL_IDS is not False
+    result = probe_catalogue_canonical_ids()
+    _HAS_CANONICAL_IDS = result
+    _HAS_CANONICAL_CHECKED_AT = now
+    return result is not False
 
 
 def sanitize_task_details(details, state, task_type=None):
@@ -667,7 +696,9 @@ def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
         for row in snapshots:
             if row['task_id'] in protected_task_ids:
                 continue
-            if row['task_type'] in (CONTROL_TASK_TYPE, 'provider_migration_planner'):
+            if row['task_type'] in (
+                (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE) + task_types.SIDE_JOB_TASK_TYPES
+            ):
                 continue
             _record_one_cancellation(row, now_ts, reason)
     except Exception:

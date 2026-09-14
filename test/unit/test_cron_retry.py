@@ -248,7 +248,9 @@ def test_get_queue_blocking_task_queries_only_the_guard_task_types():
 
     sql, params = cur.execute.call_args[0]
     assert 'task_type = ANY(%s)' in sql
-    assert set(params[1]) == set(config.QUEUE_BLOCKING_TASK_TYPES)
+    assert params[1] == list(task_types.BATCH_GATE_TASK_TYPES)
+    assert set(params[1]) == set(config.QUEUE_BLOCKING_TASK_TYPES) | set(task_types.SIDE_JOB_TASK_TYPES)
+    assert 'server_sweep' not in params[1], 'a sweep blocks starts through the active-task check only'
     assert 'task_type LIKE ANY(%s)' in sql
     assert params[2] == [
         prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES

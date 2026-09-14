@@ -845,3 +845,367 @@ class TestClaimStealingAcrossChunks:
         assert first['matches'] == {'fp_strong': 'p1'}
         assert second['matches'] == {}
         assert [row['item_id'] for row in second['unmatched']] == ['fp_weak']
+
+
+class TestDuplicateFilesOfOneSong:
+    def _tracks(self):
+        return [
+            {'id': 'n-1', 'path': '/music/Queen/II/01 Procession.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II', 'album_artist': 'Queen'},
+            {'id': 'n-2', 'path': '/music/Queen/II copy/01 Procession.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II', 'album_artist': 'Queen'},
+            {'id': 'n-3', 'path': '/other/Queen/Greatest/01 Procession.mp3', 'title': 'Procession', 'artist': 'Queen', 'album': 'Greatest', 'album_artist': 'Queen'},
+            {'id': 'n-4', 'path': '/music/Other/Song.flac', 'title': 'Song', 'artist': 'Other', 'album': 'X', 'album_artist': 'Other'},
+        ]
+
+    def test_every_known_file_of_the_song_is_mapped(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        old = {
+            'item_id': 'fp_1', 'title': 'Procession', 'author': 'Queen', 'album': 'II', 'album_artist': 'Queen',
+            'file_path': '/media/Queen/II/01 Procession.flac',
+            'file_paths': ['/media/Queen/II/01 Procession.flac', '/media/Queen/II copy/01 Procession.flac',
+                           '/srv/music/Queen/Greatest/01 Procession.mp3'],
+        }
+        result = CandidateIndex(self._tracks()).match_chunk([old])
+        assert result['matches'] == {'fp_1': 'n-1'}
+        assert result['extra_matches'] == {'n-2': 'fp_1', 'n-3': 'fp_1'}
+        assert result['extra_match_tiers'] == {'n-2': 'path', 'n-3': 'tail'}
+
+    def test_a_single_file_song_has_no_extras(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        old = {'item_id': 'fp_1', 'title': 'Procession', 'author': 'Queen', 'album': 'II', 'album_artist': 'Queen',
+               'file_path': '/media/Queen/II/01 Procession.flac'}
+        result = CandidateIndex(self._tracks()).match_chunk([old])
+        assert result['matches'] == {'fp_1': 'n-1'}
+        assert result['extra_matches'] == {}
+
+    def test_a_file_another_song_owns_is_never_taken_as_an_extra(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        owner = {'item_id': 'fp_2', 'title': 'Song', 'author': 'Other', 'album': 'X', 'album_artist': 'Other',
+                 'file_path': '/media/Other/Song.flac'}
+        greedy = {'item_id': 'fp_1', 'title': 'Procession', 'author': 'Queen', 'album': 'II', 'album_artist': 'Queen',
+                  'file_path': '/media/Queen/II/01 Procession.flac',
+                  'file_paths': ['/media/Queen/II/01 Procession.flac', '/media/Other/Song.flac']}
+        claimed = {}
+        index = CandidateIndex(self._tracks())
+        first = index.match_chunk([owner], claimed)
+        second = index.match_chunk([greedy], claimed)
+        assert first['matches'] == {'fp_2': 'n-4'}
+        assert 'n-4' not in second['extra_matches']
+        assert second['matches'] == {'fp_1': 'n-1'}
+
+    def test_an_unmatched_song_contributes_no_extras(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        old = {'item_id': 'fp_9', 'title': 'Missing', 'author': 'Nobody', 'album': 'None', 'album_artist': 'Nobody',
+               'file_path': '/media/nowhere.flac', 'file_paths': ['/media/nowhere.flac']}
+        result = CandidateIndex(self._tracks()).match_chunk([old])
+        assert result['matches'] == {}
+        assert result['extra_matches'] == {}
+
+
+class TestExtrasNeverStealAnotherSong:
+    def test_an_ambiguous_tail_is_never_used_for_an_extra(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'abba', 'path': '/music/ABBA/Greatest Hits/CD1/01.mp3', 'title': 'Waterloo', 'artist': 'ABBA', 'album': 'Greatest Hits', 'album_artist': 'ABBA'},
+            {'id': 'queen', 'path': '/volume2/Queen/Greatest Hits/CD1/01.mp3', 'title': 'Bohemian', 'artist': 'Queen', 'album': 'Greatest Hits', 'album_artist': 'Queen'},
+        ]
+        old = {'item_id': 'fp_q', 'title': 'Bohemian', 'author': 'Queen', 'album': 'Greatest Hits', 'album_artist': 'Queen',
+               'file_path': '/volume2/Queen/Greatest Hits/CD1/01.mp3',
+               'file_paths': ['/volume2/Queen/Greatest Hits/CD1/01.mp3', '/nas2/other/Greatest Hits/CD1/01.mp3']}
+        result = CandidateIndex(tracks).match_chunk([old])
+        assert result['matches'] == {'fp_q': 'queen'}
+        assert result['extra_matches'] == {}, 'a shared tail proves nothing, so ABBA is never bound to Queen'
+
+    def test_a_later_songs_own_match_takes_back_a_file_claimed_as_an_extra(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'n-1', 'path': '/music/A/Album/01 Song.flac', 'title': 'Song', 'artist': 'A', 'album': 'Album', 'album_artist': 'A'},
+            {'id': 'n-4', 'path': '/music/B/Other/02 Tune.flac', 'title': 'Tune', 'artist': 'B', 'album': 'Other', 'album_artist': 'B'},
+        ]
+        greedy = {'item_id': 'fp_1', 'title': 'Song', 'author': 'A', 'album': 'Album', 'album_artist': 'A',
+                  'file_path': '/media/A/Album/01 Song.flac',
+                  'file_paths': ['/media/A/Album/01 Song.flac', '/media/B/Other/02 Tune.flac']}
+        owner = {'item_id': 'fp_9', 'title': 'Tune', 'author': 'B', 'album': 'Other', 'album_artist': 'B',
+                 'file_path': '/media/B/Other/02 Tune.flac'}
+        claimed = {}
+        index = CandidateIndex(tracks)
+        first = index.match_chunk([greedy], claimed)
+        second = index.match_chunk([owner], claimed)
+        assert first['extra_matches'] == {'n-4': 'fp_1'}
+        assert second['matches'] == {'fp_9': 'n-4'}, (
+            'an extra claims below every tier, so the file goes back to the song it really belongs to'
+        )
+
+
+class TestPathKeysSharedBySeveralFiles:
+    def test_copies_under_two_roots_keep_both_on_the_same_server(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'a', 'path': '/music/Queen/II/01 Procession.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II'},
+            {'id': 'b', 'path': '/data/Queen/II/01 Procession.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II'},
+        ]
+        old = {'item_id': 'fp_s', 'title': 'Procession', 'author': 'Queen', 'album': 'II',
+               'file_paths': ['/music/Queen/II/01 Procession.flac', '/data/Queen/II/01 Procession.flac']}
+        result = CandidateIndex(tracks).match_chunk([old])
+        assert result['matches'] == {'fp_s': 'a'}
+        assert result['extra_matches'] == {'b': 'fp_s'}
+
+    def test_two_libraries_with_the_same_layout_keep_both_copies(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'nA', 'path': '/music/A/Queen/II/01.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II'},
+            {'id': 'nB', 'path': '/music/B/Queen/II/01.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II'},
+        ]
+        old = {'item_id': 'fp_s', 'title': 'Procession', 'author': 'Queen', 'album': 'II',
+               'file_paths': ['/mnt/user/Music/A/Queen/II/01.flac', '/mnt/user/Music/B/Queen/II/01.flac']}
+        result = CandidateIndex(tracks).match_chunk([old])
+        assert result['matches'] == {'fp_s': 'nA'}
+        assert result['match_tiers'] == {'fp_s': 'tail'}
+        assert result['extra_matches'] == {'nB': 'fp_s'}
+
+    def test_a_tail_two_songs_share_falls_through_to_metadata(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'abba', 'path': '/music/ABBA/Greatest Hits/CD1/01.mp3', 'title': 'Waterloo', 'artist': 'ABBA', 'album': 'Greatest Hits'},
+            {'id': 'queen', 'path': '/music/Queen/Greatest Hits/CD1/01.mp3', 'title': 'Bohemian', 'artist': 'Queen', 'album': 'Greatest Hits'},
+        ]
+        old = {'item_id': 'fp_q', 'title': 'Bohemian', 'author': 'Queen', 'album': 'Greatest Hits',
+               'file_paths': ['/nas2/Queen Collection/Greatest Hits/CD1/01.mp3']}
+        result = CandidateIndex(tracks).match_chunk([old])
+        assert result['matches'] == {'fp_q': 'queen'}
+        assert result['match_tiers'] == {'fp_q': 'exact_meta'}, 'a tied tail never binds ABBA to Queen'
+
+    def _live_tracks(self):
+        return [
+            {'id': 'F1', 'path': '/music/Queen/II/01 Procession.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II'},
+            {'id': 'F2', 'path': '/music/Queen/II Live/01 Procession.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II Live'},
+        ]
+
+    def _live_rows(self):
+        song = {'item_id': 'fp_a', 'title': 'Procession', 'author': 'Queen', 'album': 'II',
+                'file_paths': ['/media/Queen/II/01 Procession.flac', '/media/Queen/II Live/01 Procession.flac']}
+        guess = {'item_id': 'fp_b', 'title': 'Procession (Live)', 'author': 'Queen', 'album': 'II Live'}
+        return song, guess
+
+    def test_a_path_duplicate_never_takes_another_songs_metadata_match(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        song, guess = self._live_rows()
+        result = CandidateIndex(self._live_tracks()).match_chunk([song, guess])
+        assert result['matches'] == {'fp_a': 'F1', 'fp_b': 'F2'}
+        assert result['extra_matches'] == {}
+
+    def test_a_later_chunk_keeps_a_file_an_earlier_song_matched(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        song, guess = self._live_rows()
+        index = CandidateIndex(self._live_tracks())
+        claimed = {}
+        first = index.match_chunk([guess], claimed)
+        second = index.match_chunk([song], claimed)
+        assert first['matches'] == {'fp_b': 'F2'}
+        assert second['matches'] == {'fp_a': 'F1'}
+        assert second['extra_matches'] == {}
+
+    def test_the_same_title_twice_on_one_album_is_told_apart_by_track_number(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'n3', 'path': '/music/X/Album/03 - Interlude.flac', 'title': 'Interlude', 'artist': 'X', 'album': 'Album'},
+            {'id': 'n9', 'path': '/music/X/Album/09 - Interlude.flac', 'title': 'Interlude', 'artist': 'X', 'album': 'Album'},
+        ]
+        rows = [
+            {'item_id': 'fp_3', 'title': 'Interlude', 'author': 'X', 'album': 'Album', 'file_paths': ['/other/root/X-Album/03 - Interlude.flac']},
+            {'item_id': 'fp_9', 'title': 'Interlude', 'author': 'X', 'album': 'Album', 'file_paths': ['/other/root/X-Album/09 - Interlude.flac']},
+        ]
+        result = CandidateIndex(tracks).match_chunk(rows)
+        assert result['matches'] == {'fp_3': 'n3', 'fp_9': 'n9'}
+
+
+class TestTakeoverEdges:
+    def test_a_path_that_ends_with_another_path_still_maps_both_files_in_any_order(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        short = {'id': 't_short', 'path': '/media/Artist/Album/01.flac', 'title': 'S', 'artist': 'A', 'album': 'B'}
+        long_ = {'id': 't_long', 'path': '/media/media/Artist/Album/01.flac', 'title': 'S', 'artist': 'A', 'album': 'B'}
+        old = {'item_id': 'fp_A', 'title': 'S', 'author': 'A', 'album': 'B',
+               'file_paths': ['/media/Artist/Album/01.flac', '/media/media/Artist/Album/01.flac']}
+        for tracks in ([long_, short], [short, long_]):
+            result = CandidateIndex(tracks).match_chunk([dict(old)])
+            assert result['matches'] == {'fp_A': 't_short'}
+            assert result['extra_matches'] == {'t_long': 'fp_A'}
+
+    def test_an_extra_never_unbinds_the_song_that_owns_the_file(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'queen', 'path': '/music/Queen/Greatest Hits/CD1/01.mp3', 'title': 'Bohemian', 'artist': 'Queen', 'album': 'Greatest Hits'},
+            {'id': 'abba_own', 'path': '/music/ABBA/Gold/Disc 1/01.mp3', 'title': 'Waterloo', 'artist': 'ABBA', 'album': 'Gold'},
+        ]
+        queen = {'item_id': 'fp_q', 'title': 'Bohemian', 'author': 'Queen', 'album': 'Greatest Hits'}
+        abba = {'item_id': 'fp_a', 'title': 'Waterloo', 'author': 'ABBA', 'album': 'Gold',
+                'file_paths': ['/music/ABBA/Gold/Disc 1/01.mp3', '/nas2/ABBA/Greatest Hits/CD1/01.mp3']}
+        for rows in ([queen, abba], [abba, queen]):
+            result = CandidateIndex(tracks).match_chunk([dict(r) for r in rows])
+            assert result['matches'] == {'fp_q': 'queen', 'fp_a': 'abba_own'}
+            assert result['extra_matches'] == {}
+            assert result['unmatched'] == []
+
+    def test_a_songs_own_later_tail_or_metadata_match_takes_back_an_extra(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'n-1', 'path': '/music/X/Album/01 X.flac', 'title': 'X', 'artist': 'X', 'album': 'Album'},
+            {'id': 'n-4', 'path': '/music/Y/Other/04 Y.flac', 'title': 'Y', 'artist': 'Y', 'album': 'Other'},
+        ]
+        greedy = {'item_id': 'fp_x', 'title': 'X', 'author': 'X', 'album': 'Album',
+                  'file_paths': ['/music/X/Album/01 X.flac', '/music/Y/Other/04 Y.flac']}
+        owner = {'item_id': 'fp_y', 'title': 'Y', 'author': 'Y', 'album': 'Other'}
+        index = CandidateIndex(tracks)
+        claimed = {}
+        first = index.match_chunk([greedy], claimed)
+        second = index.match_chunk([owner], claimed)
+        assert first['extra_matches'] == {'n-4': 'fp_x'}
+        assert second['matches'] == {'fp_y': 'n-4'}
+
+    def test_a_tail_tied_between_copies_of_the_same_song_still_matches(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'nA', 'path': '/music/A/Queen/II/01.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II'},
+            {'id': 'nB', 'path': '/music/B/Queen/II/01.flac', 'title': 'Procession', 'artist': 'Queen', 'album': 'II (Remaster 2011)'},
+        ]
+        old = {'item_id': 'fp_s', 'title': 'Procession', 'author': 'Queen', 'album': 'Queen II',
+               'file_paths': ['/mnt/user/Music/Queen/II/01.flac']}
+        result = CandidateIndex(tracks).match_chunk([old])
+        assert result['matches'] == {'fp_s': 'nA'}
+
+    def test_folder_depth_is_not_evidence_for_a_tied_tail(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'abba', 'path': '/music/pop/ABBA/Greatest Hits/CD1/01.mp3', 'title': 'Waterloo', 'artist': 'ABBA', 'album': 'Greatest Hits'},
+            {'id': 'queen', 'path': '/music/Queen/Greatest Hits/CD1/01.mp3', 'title': 'Bohemian', 'artist': 'Queen', 'album': 'Greatest Hits'},
+        ]
+        old = {'item_id': 'fp_q', 'title': 'Bohemian', 'author': 'Queen', 'album': 'Greatest Hits',
+               'file_paths': ['/nas2/x/Queen Collection/Greatest Hits/CD1/01.mp3']}
+        result = CandidateIndex(tracks).match_chunk([old])
+        assert result['matches'] == {'fp_q': 'queen'}
+        assert result['match_tiers'] == {'fp_q': 'exact_meta'}
+
+
+class TestCatalogueOnlyMatchingForSongsWithoutPaths:
+    def test_metadata_folding_matches_the_spellings_servers_disagree_on(self):
+        normalize_meta = _load_matcher().normalize_meta
+
+        assert normalize_meta('The Fall\u2010Off') == normalize_meta('The Fall-Off')
+        assert normalize_meta('We Gotta Groove: The Brother Studio Years') == normalize_meta('We Gotta Groove - The Brother Studio Years')
+        assert normalize_meta('That\u2019s Right Baby') == normalize_meta("That's Right Baby")
+        assert normalize_meta('[Unknown Artist]') == '' and normalize_meta('Unknown Album') == ''
+
+    def test_a_song_whose_album_tag_differs_matches_by_title_artist_and_duration(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'j1', 'path': '/m/Kacey/Deeper Well - Deeper into the Well - 18 - Superbloom.flac', 'title': 'Superbloom',
+             'artist': 'Kacey Musgraves', 'album': 'Deeper Well: Deeper into the Well', 'duration': 182.9},
+            {'id': 'j2', 'path': '/m/MisterWives/SUPERBLOOM - 19 - SUPERBLOOM.mp3', 'title': 'SUPERBLOOM',
+             'artist': 'MisterWives', 'album': 'SUPERBLOOM', 'duration': 213.6},
+        ]
+        old = {'item_id': 'fp_s', 'title': 'Superbloom', 'author': 'Kacey Musgraves', 'album': 'Deeper Well', 'duration': 182.946667}
+        result = CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])
+        assert result['matches'] == {'fp_s': 'j1'}
+        assert result['match_tiers'] == {'fp_s': 'title_duration'}
+
+    def test_unknown_artist_and_album_placeholders_still_match_by_title_and_duration(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [{'id': 'j1', 'path': '/m/Walk/04 - Walk To Work.mp3', 'title': '04 - Walk To Work', 'artist': None, 'album': None, 'duration': 210.7}]
+        old = {'item_id': 'fp_w', 'title': '04 - Walk To Work', 'author': '[Unknown Artist]', 'album': '[Unknown Album]', 'duration': 210.703673}
+        assert CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])['matches'] == {'fp_w': 'j1'}
+
+    def test_a_different_version_with_the_same_title_is_told_apart_by_duration(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 's5', 'path': '/m/Gorillaz/Plastic Beach - 05 - Stylo.flac', 'title': 'Stylo', 'artist': 'Gorillaz', 'album': 'Plastic Beach', 'duration': 262.6},
+            {'id': 's4', 'path': '/m/Gorillaz/Plastic Beach - 04 - Stylo.flac', 'title': 'Stylo', 'artist': 'Gorillaz', 'album': 'Plastic Beach', 'duration': 267.1},
+        ]
+        old = {'item_id': 'fp_st', 'title': 'Stylo', 'author': 'Gorillaz', 'album': 'Plastic Beach', 'duration': 267.119751}
+        result = CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])
+        assert result['matches'] == {'fp_st': 's4'}
+        assert result['extra_matches'] == {}, 'a version 4.5 s longer is another recording, never a duplicate'
+
+    def test_the_same_title_and_duration_by_two_different_artists_is_refused(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'a', 'path': '/m/A/Intro.mp3', 'title': 'Intro', 'artist': 'Artist A', 'album': 'X', 'duration': 60.0},
+            {'id': 'b', 'path': '/m/B/Intro.mp3', 'title': 'Intro', 'artist': 'Artist B', 'album': 'Y', 'duration': 60.2},
+        ]
+        old = {'item_id': 'fp_i', 'title': 'Intro', 'author': '[Unknown Artist]', 'album': '[Unknown Album]', 'duration': 60.1}
+        result = CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])
+        assert result['matches'] == {}
+
+    def test_every_copy_with_the_same_title_artist_and_duration_is_kept_as_a_duplicate(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'flac', 'path': '/m/Brad/After Bach II - 08 - Between Bach.flac', 'title': 'Between Bach', 'artist': 'Brad Mehldau', 'album': 'After Bach II', 'duration': 301.2},
+            {'id': 'mp3', 'path': '/m/Brad (1)/After Bach II - 08 - Between Bach.mp3', 'title': 'Between Bach', 'artist': 'Brad Mehldau', 'album': 'After Bach II (Deluxe)', 'duration': 301.4},
+        ]
+        old = {'item_id': 'fp_b', 'title': 'Between Bach', 'author': 'Brad Mehldau', 'album': 'After Bach II', 'duration': 301.25}
+        result = CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])
+        assert result['matches'] == {'fp_b': 'flac'}
+        assert result['extra_matches'] == {'mp3': 'fp_b'}
+        assert result['extra_match_tiers'] == {'mp3': 'title_duration'}
+
+    def test_duplicate_files_of_already_mapped_songs_only_take_unclaimed_files(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [
+            {'id': 'copy', 'path': '/m/x/Song.mp3', 'title': 'Song', 'artist': 'A', 'album': 'Al', 'duration': 200.0},
+            {'id': 'taken', 'path': '/m/y/Song.flac', 'title': 'Song', 'artist': 'A', 'album': 'Al', 'duration': 200.3},
+        ]
+        mapped = {'item_id': 'fp_m', 'title': 'Song', 'author': 'A', 'album': 'Al', 'duration': 200.1}
+        claimed = {'taken': 2}
+        result = CandidateIndex(tracks, duration_tolerance=1.0).duplicate_files([mapped], claimed)
+        assert result['matches'] == {}
+        assert result['extra_matches'] == {'copy': 'fp_m'}
+        assert claimed['taken'] == 2 and 'copy' in claimed
+
+    def test_a_file_name_title_and_a_longer_artist_credit_still_match(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+        normalize_meta = _load_matcher().normalize_meta
+
+        assert normalize_meta('24 HoliznaCC0 - Ramen.mp3') == normalize_meta('24 HoliznaCC0 - Ramen')
+        tracks = [{'id': 'j1', 'path': '/m/Slash/Apocalyptic Love - 03 - Anastasia.flac', 'title': 'Anastasia',
+                   'artist': 'Slash', 'album': 'Apocalyptic Love (Deluxe)', 'duration': 367.5}]
+        old = {'item_id': 'fp_a', 'title': 'Anastasia', 'author': 'Slash featuring Myles Kennedy and the Conspirators',
+               'album': 'Apocalyptic Love', 'duration': 367.28}
+        assert CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])['matches'] == {'fp_a': 'j1'}
+
+    def test_a_different_artist_credit_on_the_same_album_and_duration_is_the_same_song(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [{'id': 'j1', 'path': '/m/Galantis/Church - 05 - I Found U.flac', 'title': 'I Found U',
+                   'artist': 'Galantis', 'album': 'Church', 'duration': 207.386122}]
+        old = {'item_id': 'fp_f', 'title': 'I Found U', 'author': 'Passion Pit', 'album': 'Church', 'duration': 207.386122}
+        assert CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])['matches'] == {'fp_f': 'j1'}
+
+    def test_a_title_that_is_the_file_name_matches_the_target_file_name(self):
+        CandidateIndex = _load_matcher().CandidateIndex
+
+        tracks = [{'id': 'j1', 'path': '/m/Patrick Davies/12 Patrick Davies - 20 nos da.mp3', 'title': '20 nos da',
+                   'artist': 'Patrick Davies', 'album': 'Sampler', 'duration': 210.8}]
+        old = {'item_id': 'fp_p', 'title': '12 Patrick Davies - 20 nos da.mp3', 'author': '[Unknown Artist]',
+               'album': '[Unknown Album]', 'duration': 210.8129}
+        assert CandidateIndex(tracks, duration_tolerance=1.0).match_chunk([old])['matches'] == {'fp_p': 'j1'}

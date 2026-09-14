@@ -51,8 +51,9 @@ def _resolve_external_id(raw_id):
 
 
 def _decode_embedding_bytes(payload):
-    if payload.get('embedding'):
-        payload['embedding'] = np.frombuffer(payload['embedding'], dtype=np.float32).tolist()
+    for column in ('embedding', 'poincare_embedding'):
+        if payload.get(column):
+            payload[column] = np.frombuffer(payload[column], dtype=np.float32).tolist()
 
 
 def _external_row_response(sql, label, decode=None):

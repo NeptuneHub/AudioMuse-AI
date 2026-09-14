@@ -21,7 +21,14 @@ Main Features:
   metadata, clears the old provider's artist ids, and points the default row at
   the target.
 * Chromaprint fingerprints are carried onto the target's track ids in the same
-  transaction rather than left keyed by dead ids.
+  transaction rather than left keyed by dead ids, file to file: a song with
+  several files pairs each target file with its own old file by path, so no
+  file ever receives another file's fingerprint.
+* A default server still carrying the automatic name of its old provider is
+  renamed after the new one, unless another server already uses that name.
+* A song held as several files keeps every file the dry run found on the
+  target: the duplicate rows are collapsed to repoint the ids safely, then the
+  extra files are mapped back to the same song, so none of them is analysed again.
 * Queues a full-refresh alignment of the migrated server, its task row written
   INSIDE the migration transaction so the intent survives a crash; the root task
   stays non-terminal until every worker acknowledges the restart.
@@ -33,8 +40,9 @@ Main Features:
   refuse every catalogue start until reclaim eventually failed it.
 * A condition no retry can change is raised as TaskFailed, so the queue fails the
   row at once instead of spending three backed-off attempts on it: a session
-  that is gone or not in the status the step needs, an empty mapping, and a
-  restart request another recovery has since superseded. The handshake wait
+  that is gone or not in the status the step needs, an empty mapping, target
+  credentials missing a field the registry requires, and a restart request
+  another recovery has since superseded. The handshake wait
   timing out stays a plain raise, because a retry resumes the wait and the
   workers may acknowledge on it.
 """
@@ -59,6 +67,7 @@ from config import (
 )
 from sanitization import sanitize_string_for_db as _sanitize_text
 
+from .provider_migration_matcher import path_match_strength
 from .recovery import row_heartbeat, slow_step_budget_minutes
 
 logger = logging.getLogger(__name__)
@@ -87,6 +96,29 @@ _RESTART_PUBLISH_RETRY_SECONDS = 2
 _RESTART_HANDSHAKE_RETRY_SECONDS = 5
 
 _RESTART_RECOVERY_TASK_KEY = 'restart_recovery_task_id'
+
+_CRED_LABELS = {
+    'url': 'Server URL',
+    'user_id': 'User ID',
+    'token': 'API Token',
+    'user': 'Username',
+    'password': 'Password',
+    'api_key': 'API key',
+}
+
+
+def incomplete_creds_error(target_type, creds):
+    from database import missing_required_creds
+
+    missing = missing_required_creds(target_type, creds if isinstance(creds, dict) else {})
+    if not missing:
+        return None
+    labels = [_CRED_LABELS.get(key, key) for key in missing if key not in ('user', 'password')]
+    if (target_type or '').strip().lower() == 'navidrome' and {'user', 'password'} <= set(missing):
+        labels.append('Username and Password, or an API key')
+    else:
+        labels.extend(_CRED_LABELS.get(key, key) for key in missing if key in ('user', 'password'))
+    return 'Incomplete credentials: fill in ' + ', '.join(labels) + '.'
 
 
 def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
@@ -430,6 +462,13 @@ def _execute_provider_migration(session_id, task_id, cancel):
                 f"'{session['status']}', expected 'dry_run_ready'"
             )
 
+        creds_error = incomplete_creds_error(target_type, target_creds)
+        if creds_error:
+            raise TaskFailed(
+                f"Refusing to execute migration session {session_id}: {creds_error} "
+                f"Saving them as the default server would leave it unreachable."
+            )
+
         mapping = _merge_mapping(state)
         if not mapping:
             raise TaskFailed(
@@ -438,6 +477,7 @@ def _execute_provider_migration(session_id, task_id, cancel):
                 f"the dry run."
             )
         new_meta = _load_new_meta_from_table(cur, session_id)
+        duplicates = duplicate_file_mappings(state, mapping)
         selected_libraries = state.get('selected_libraries')
         logger.info(
             "provider migration: %d songs will be repointed at the new provider; "
@@ -467,6 +507,7 @@ def _execute_provider_migration(session_id, task_id, cancel):
                     alignment_task_id=alignment_task_id,
                     exec_task_id=task_id,
                     restart_request_id=restart_request_id,
+                    duplicates=duplicates,
                 )
             conn.commit()
         except Exception:
@@ -615,6 +656,55 @@ def build_mapping(state):
     return deduped, dropped
 
 
+def duplicate_file_mappings(state, mapping):
+    extras = (state.get('dry_run') or {}).get('extra_matches') or {}
+    used = {str(new_id) for new_id in mapping.values()}
+    return {
+        str(new_id): item_id
+        for new_id, item_id in extras.items()
+        if item_id in mapping and str(new_id) not in used
+    }
+
+
+def _restore_duplicate_file_maps(cur, duplicates, new_meta):
+    if not duplicates:
+        return 0
+    rows = []
+    for new_id, item_id in duplicates.items():
+        path = (new_meta.get(new_id) or {}).get('path')
+        rows.append((item_id, _sanitize_text(new_id), _sanitize_text(path) if path else None))
+    cur.execute(
+        "CREATE TEMP TABLE migration_duplicate_files ("
+        " item_id TEXT NOT NULL, new_id TEXT PRIMARY KEY, path TEXT"
+        ") ON COMMIT DROP"
+    )
+    for i in range(0, len(rows), 1000):
+        chunk = rows[i : i + 1000]
+        placeholders = ",".join(["(%s,%s,%s)"] * len(chunk))
+        flat = [value for row in chunk for value in row]
+        cur.execute(
+            "INSERT INTO migration_duplicate_files (item_id, new_id, path) VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
+            flat,
+        )
+    cur.execute(
+        "INSERT INTO track_server_map "
+        "(item_id, server_id, provider_track_id, match_tier, file_path, updated_at) "
+        "SELECT d.item_id, s.server_id, d.new_id, "
+        "COALESCE((SELECT p.match_tier FROM track_server_map p "
+        "  WHERE p.server_id = s.server_id AND p.item_id = d.item_id "
+        "  ORDER BY p.provider_track_id LIMIT 1), 'default'), d.path, now() "
+        "FROM migration_duplicate_files d, music_servers s "
+        "WHERE s.is_default AND EXISTS (SELECT 1 FROM score sc WHERE sc.item_id = d.item_id) "
+        "ON CONFLICT (server_id, provider_track_id) DO NOTHING"
+    )
+    restored = cur.rowcount
+    logger.info(
+        "provider migration: kept %d duplicate file(s) mapped to their song; each one "
+        "keeps only the Chromaprint of its own old file", restored,
+    )
+    return restored
+
+
 def _merge_mapping(state):
     deduped, dropped = build_mapping(state)
     if dropped:
@@ -703,7 +793,58 @@ def _stage_unsignable_items(cur):
     return cur.rowcount
 
 
-def _stage_chromaprint_carry(cur):
+def _pair_files_by_path(old_files, new_ids, new_meta):
+    scored = []
+    for old_file in old_files:
+        old_id, old_path = old_file[0], old_file[1]
+        has_print = bool(old_file[2]) if len(old_file) > 2 else True
+        for new_id in new_ids:
+            shared, exact = path_match_strength(old_path, (new_meta.get(new_id) or {}).get('path'))
+            if shared:
+                scored.append((-shared, not exact, not has_print, str(old_id), new_id, has_print))
+    scored.sort()
+    used_old, used_new, pairs = set(), set(), []
+    for _shared, _inexact, _no_print, old_id, new_id, has_print in scored:
+        if old_id in used_old or new_id in used_new:
+            continue
+        used_old.add(old_id)
+        used_new.add(new_id)
+        if has_print:
+            pairs.append((old_id, new_id))
+    return pairs
+
+
+def _multi_file_carry_pairs(cur, mapping, duplicates, new_meta):
+    extra_files = {}
+    for new_id, item_id in (duplicates or {}).items():
+        extra_files.setdefault(item_id, []).append(str(new_id))
+    cur.execute(
+        "SELECT t.item_id, t.provider_track_id, t.file_path, c.fingerprint IS NOT NULL "
+        "FROM track_server_map t "
+        "JOIN music_servers s ON s.is_default AND t.server_id = s.server_id "
+        "JOIN (SELECT m.item_id FROM track_server_map m "
+        "  JOIN music_servers d ON d.is_default AND m.server_id = d.server_id "
+        "  GROUP BY m.item_id HAVING count(*) > 1 "
+        "  UNION SELECT unnest(%s::text[])) multi ON multi.item_id = t.item_id "
+        "LEFT JOIN chromaprint c ON c.server_id = t.server_id "
+        "  AND c.provider_track_id = t.provider_track_id "
+        "ORDER BY t.item_id, t.provider_track_id",
+        (list(extra_files),),
+    )
+    old_files = {}
+    for item_id, provider_id, file_path, has_print in cur.fetchall() or []:
+        old_files.setdefault(item_id, []).append((provider_id, file_path, has_print))
+    pairs = []
+    for item_id, files in old_files.items():
+        primary = mapping.get(item_id)
+        if primary is None:
+            continue
+        new_ids = [str(primary)] + extra_files.get(item_id, [])
+        pairs.extend(_pair_files_by_path(files, new_ids, new_meta or {}))
+    return pairs
+
+
+def _stage_chromaprint_carry(cur, mapping=None, duplicates=None, new_meta=None):
     cur.execute("SELECT to_regclass('public.chromaprint')")
     if cur.fetchone()[0] is None:
         return False
@@ -713,6 +854,14 @@ def _stage_chromaprint_carry(cur):
         " new_id TEXT NOT NULL UNIQUE"
         ") ON COMMIT DROP"
     )
+    pairs = _multi_file_carry_pairs(cur, mapping or {}, duplicates, new_meta) if mapping else []
+    for i in range(0, len(pairs), 1000):
+        chunk = pairs[i : i + 1000]
+        cur.execute(
+            "INSERT INTO migration_chromaprint_carry (provider_track_id, new_id) VALUES "  # nosec B608 - %s-placeholder string only; values are bound params
+            + ",".join(["(%s,%s)"] * len(chunk)),
+            [value for pair in chunk for value in (pair[0], _sanitize_text(pair[1]))],
+        )
     cur.execute(
         "INSERT INTO migration_chromaprint_carry (provider_track_id, new_id) "
         "SELECT DISTINCT ON (m.new_id) c.provider_track_id, m.new_id "
@@ -721,7 +870,10 @@ def _stage_chromaprint_carry(cur):
         "JOIN track_server_map t "
         "  ON t.server_id = c.server_id AND t.provider_track_id = c.provider_track_id "
         "JOIN item_id_migration_map m ON m.old_id = t.item_id "
-        "ORDER BY m.new_id, (c.fingerprint IS NULL), c.provider_track_id"
+        "WHERE NOT EXISTS (SELECT 1 FROM migration_chromaprint_carry k "
+        "  WHERE k.new_id = m.new_id OR k.provider_track_id = c.provider_track_id) "
+        "ORDER BY m.new_id, (c.fingerprint IS NULL), c.provider_track_id "
+        "ON CONFLICT DO NOTHING"
     )
     return True
 
@@ -931,12 +1083,13 @@ def _run_migration_transaction(
     alignment_task_id=None,
     exec_task_id=None,
     restart_request_id=None,
+    duplicates=None,
 ):
     cur.execute(_XACT_LOCK_SQL, (_ADVISORY_LOCK_KEY,))
 
     _populate_migration_map_table(cur, mapping)
     _stage_unsignable_items(cur)
-    chromaprint_staged = _stage_chromaprint_carry(cur)
+    chromaprint_staged = _stage_chromaprint_carry(cur, mapping, duplicates, new_meta)
 
     cur.execute(
         "DELETE FROM track_server_map t USING music_servers s "
@@ -980,6 +1133,7 @@ def _run_migration_transaction(
 
     _repoint_chromaprint(cur, chromaprint_staged)
     _apply_new_meta(cur, new_meta)
+    _restore_duplicate_file_maps(cur, duplicates, new_meta)
     _clear_default_server_artist_map(cur)
     _report_playlists_bound_to_default_server(cur)
 
@@ -994,7 +1148,7 @@ def _run_migration_transaction(
 
     cur.execute(
         "UPDATE migration_session SET status = 'completed', completed_at = NOW(), "
-        "state = %s::jsonb WHERE id = %s RETURNING id",
+        "target_creds = '{}', state = %s::jsonb WHERE id = %s RETURNING id",
         (
             json.dumps(
                 {
@@ -1039,10 +1193,17 @@ def _write_provider_to_default_server(cur, target_type, target_creds, selected_l
         return
     creds = Json(dict(target_creds or {}))
     libraries = _cleaned_libraries_value(selected_libraries)
+    from .mediaserver.registry import _default_server_name
+
+    default_name = _default_server_name(target_type)
     cur.execute(
-        "UPDATE music_servers SET server_type = %s, creds = %s, music_libraries = %s, "
-        "track_count = NULL, updated_at = now() WHERE is_default",
-        (target_type, creds, libraries),
+        "UPDATE music_servers m SET server_type = %s, creds = %s, music_libraries = %s, "
+        "track_count = NULL, updated_at = now(), "
+        "name = CASE WHEN lower(m.name) = lower(m.server_type) AND NOT EXISTS ("
+        "  SELECT 1 FROM music_servers o WHERE o.server_id <> m.server_id "
+        "  AND lower(o.name) = lower(%s)) THEN %s ELSE m.name END "
+        "WHERE m.is_default",
+        (target_type, creds, libraries, default_name, default_name),
     )
     if cur.rowcount:
         logger.info(
@@ -1054,8 +1215,7 @@ def _write_provider_to_default_server(cur, target_type, target_creds, selected_l
         "INSERT INTO music_servers "
         "(server_id, name, server_type, creds, music_libraries, is_default) "
         "VALUES (%s, %s, %s, %s, %s, TRUE)",
-        (_uuid.uuid4().hex, (target_type or 'media server').capitalize(),
-         target_type, creds, libraries),
+        (_uuid.uuid4().hex, default_name, target_type, creds, libraries),
     )
     logger.warning(
         "provider migration: no default server existed; created one for '%s'",

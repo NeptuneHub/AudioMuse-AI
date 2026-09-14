@@ -149,7 +149,11 @@ def sync_endpoint():
         # ids at all, where the historical config-default identity feed is
         # still exact (single-server/unit-test compatibility).
         logger.exception("Music-server registry unavailable for sync")
-        if _catalogue_has_canonical_ids():
+        try:
+            get_db().rollback()
+        except Exception:
+            logger.exception("Could not roll back after the registry failure")
+        if probe_catalogue_canonical_ids() is not False:
             return jsonify(
                 {'error': 'Music-server registry unavailable; retry shortly'}
             ), 503
@@ -226,11 +230,6 @@ def _server_ids_for_rows(rows, server_id):
     except Exception as exc:
         logger.exception("Sync id translation failed")
         raise _IdTranslationError() from exc
-
-
-def _catalogue_has_canonical_ids():
-    result = probe_catalogue_canonical_ids()
-    return True if result is None else result
 
 
 def _availability_sql(alias='s'):

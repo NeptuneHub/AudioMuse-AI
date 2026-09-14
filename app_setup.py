@@ -31,6 +31,8 @@ from flask import request, jsonify, render_template, make_response
 import config
 from flask_app import app
 from tasks.setup_manager import setup_manager
+from tasks import naming_preview
+from tasks.ai import prompts as ai_prompts
 from app_auth import check_setup_needed
 from ssrf_guard import validate_outbound_url
 import restart_manager
@@ -106,12 +108,24 @@ LYRICS_API_CONFIG_FIELDS = [
     'LYRICS_API_2_TIMEOUT',
 ]
 
+AI_PROMPT_CONFIG_FIELDS = [
+    'AI_NAMING_PROMPT_MODE',
+    'AI_NAMING_TITLE_PROMPT',
+]
+AI_TITLE_PROMPT_MAX_CHARS = 20000
+AI_PROMPT_EXAMPLE_SONGS = (
+    ('', 'Do I Wanna Know?', 'Arctic Monkeys'),
+    ('', 'Skinny Love', 'Bon Iver'),
+    ('', 'Vienna', 'Billy Joel'),
+)
+
 # Advanced fields whose value must be one of a fixed set. The wizard renders
 # these as <select> dropdowns and the save path normalizes the value to the
 # canonical casing so legacy free-text entries (e.g. "DBSCAN") are cleaned up.
 ENUM_FIELD_OPTIONS = {
     'AI_MODEL_PROVIDER': ['NONE', 'OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL'],
     'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
+    'AI_NAMING_PROMPT_MODE': ['concept', 'title'],
     'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],
     'IVF_METRIC': ['angular', 'euclidean', 'dot'],
 }
@@ -315,6 +329,10 @@ HIDDEN_ADVANCED_FIELDS = {
     'PATH_AVG_JUMP_SAMPLE_SIZE',
     'PATH_CANDIDATES_PER_STEP',
     'PATH_LCORE_MULTIPLIER',
+    # The clustering naming style and its title prompt are edited in the dedicated
+    # AI Prompt section, so they are kept out of the generic advanced list.
+    'AI_NAMING_PROMPT_MODE',
+    'AI_NAMING_TITLE_PROMPT',
     # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
     'LYRICS_API_1_URL_TEMPLATE',
     'LYRICS_API_1_ARTIST_PARAM',
@@ -469,6 +487,46 @@ def should_show_advanced(name):
     return True
 
 
+def _build_ai_prompt_payload():
+    return {
+        'mode': ai_prompts.normalize_naming_mode(config.AI_NAMING_PROMPT_MODE),
+        'title_prompt': config.AI_NAMING_TITLE_PROMPT,
+        'title_prompt_default': config._AI_NAMING_TITLE_PROMPT_DEFAULT,
+        'max_songs': config.MAX_SONGS_IN_AI_PROMPT,
+        'example_song_block': ai_prompts.title_prompt_song_block(
+            AI_PROMPT_EXAMPLE_SONGS, config.MAX_SONGS_IN_AI_PROMPT
+        ),
+        'preview_max_songs': naming_preview.PREVIEW_MAX_SONGS,
+    }
+
+
+def _ai_title_prompt_problem(text):
+    if not isinstance(text, str) or not text.strip():
+        return 'The title prompt cannot be empty. Use Reset to default to restore it.'
+    if len(text) > AI_TITLE_PROMPT_MAX_CHARS:
+        return 'The title prompt is too long (max %d characters).' % AI_TITLE_PROMPT_MAX_CHARS
+    return None
+
+
+def _validate_ai_prompt_values(filtered_values):
+    if 'AI_NAMING_PROMPT_MODE' in filtered_values:
+        mode = str(filtered_values['AI_NAMING_PROMPT_MODE'] or '').strip().lower()
+        if mode not in ai_prompts.NAMING_MODES:
+            return 'The playlist naming style must be concept or title.'
+        filtered_values['AI_NAMING_PROMPT_MODE'] = mode
+    if 'AI_NAMING_TITLE_PROMPT' in filtered_values:
+        text = filtered_values['AI_NAMING_TITLE_PROMPT']
+        if isinstance(text, str):
+            text = text.replace('\r\n', '\n')
+            filtered_values['AI_NAMING_TITLE_PROMPT'] = text
+        mode = filtered_values.get('AI_NAMING_PROMPT_MODE', config.AI_NAMING_PROMPT_MODE)
+        if mode == 'concept' and not (text or '').strip():
+            filtered_values.pop('AI_NAMING_TITLE_PROMPT')
+            return None
+        return _ai_title_prompt_problem(text)
+    return None
+
+
 def _get_allowed_setup_keys():
     allowed_keys = set()
     for f in setup_manager.get_all_fields(config):
@@ -477,6 +535,7 @@ def _get_allowed_setup_keys():
     # Always allow the lyrics API config fields (hidden from advanced section
     # but still user-editable via the dedicated Lyrics API section).
     allowed_keys.update(LYRICS_API_CONFIG_FIELDS)
+    allowed_keys.update(AI_PROMPT_CONFIG_FIELDS)
     return allowed_keys
 
 
@@ -668,6 +727,7 @@ def setup_api():
                 'advanced_fields': advanced_fields,
                 'music_libraries': music_libraries_value,
                 'lyrics_api_fields': lyrics_api_data,
+                'ai_prompt_fields': _build_ai_prompt_payload(),
                 'setup_saved': not check_setup_needed(),
                 'has_admin_user': _has_admin_user(),
                 'model_coverage': model_coverage_levels(),
@@ -710,6 +770,10 @@ def setup_api():
                 value = filtered_values[key]
                 if value is None or (isinstance(value, str) and not value.strip()):
                     del filtered_values[key]
+
+        prompt_problem = _validate_ai_prompt_values(filtered_values)
+        if prompt_problem:
+            return jsonify({'error': prompt_problem}), 400
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):
@@ -1149,6 +1213,42 @@ def setup_plex_pin_poll(pin_id):
     poll_response = jsonify({'token': payload.get('authToken')})
     poll_response.headers['Cache-Control'] = 'no-store'
     return poll_response, 200
+
+
+@app.route('/api/setup/ai-prompt/preview', methods=['GET', 'POST'])
+def setup_ai_prompt_preview():
+    if request.method == 'GET':
+        try:
+            return jsonify(naming_preview.preview_status()), 200
+        except Exception:
+            app.logger.exception('Could not read the playlist naming preview status')
+            return jsonify({'error': 'Could not read the preview. Check the container logs.'}), 500
+    data = request.get_json(silent=True) or {}
+    mode = ai_prompts.normalize_naming_mode(data.get('mode'))
+    instructions = None
+    if mode == 'title':
+        instructions = data.get('instructions')
+        if isinstance(instructions, str):
+            instructions = instructions.replace('\r\n', '\n')
+        problem = _ai_title_prompt_problem(instructions)
+        if problem:
+            return jsonify({'error': problem}), 400
+    if (config.AI_MODEL_PROVIDER or 'NONE').upper() == 'NONE':
+        return jsonify(
+            {'error': 'No AI provider is configured. Select one under AI Provider & Playlist Naming and save first.'}
+        ), 400
+    try:
+        task_id, refusal = naming_preview.start_preview(mode, instructions)
+    except Exception:
+        app.logger.exception('Could not queue the playlist naming preview')
+        return jsonify({'error': 'Could not start the preview. Check the container logs.'}), 500
+    if not task_id:
+        return jsonify({
+            'error': refusal,
+            'preview_running': refusal == naming_preview.PREVIEW_RUNNING_MESSAGE,
+        }), 409
+    return jsonify({'status': 'running', 'task_id': task_id, 'message': naming_preview.PREVIEW_WAITING_MESSAGE,
+                    'titles': [], 'done': 0, 'total': 0}), 202
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])
