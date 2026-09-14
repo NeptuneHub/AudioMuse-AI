@@ -322,6 +322,9 @@ def _fetch_songs_paged(user_creds, library_id=None):
             "StartIndex": start_index,
             "Limit": limit,
             "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists,RunTimeTicks",
+            "EnableTotalRecordCount": False,
+            "EnableImages": False,
+            "EnableUserData": False,
         }
         if library_id:
             params["ParentId"] = library_id

@@ -3388,6 +3388,10 @@ class TestJellyfinGetAllSongsPagination:
         page2_params = mock_get.call_args_list[1].kwargs['params']
         assert page2_params['StartIndex'] == 500
         assert page2_params['Limit'] == 500
+        assert page2_params['EnableTotalRecordCount'] is False, (
+            'paging stops on a short page, so the whole-library count Jellyfin runs per page is wasted'
+        )
+        assert page2_params['EnableImages'] is False and page2_params['EnableUserData'] is False
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')

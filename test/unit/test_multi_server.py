@@ -1508,15 +1508,15 @@ class TestSweepAlignment:
 
         pages = [
             [
-                ('a1', 't1', 'au1', 'al1', 'aa1', None, ['/srv-b/p1']),
-                ('a2', 't2', 'au2', 'al2', 'aa2', None, []),
+                ('a1', 't1', 'au1', 'al1', 'aa1', None, ['/srv-b/p1'], 213.4),
+                ('a2', 't2', 'au2', 'al2', 'aa2', None, [], None),
             ],
             [
-                ('a3', 't3', 'au3', 'al3', 'aa3', None, []),
-                ('a4', 't4', 'au4', 'al4', 'aa4', None, []),
+                ('a3', 't3', 'au3', 'al3', 'aa3', None, [], None),
+                ('a4', 't4', 'au4', 'al4', 'aa4', None, [], None),
             ],
             [
-                ('a5', 't5', 'au5', 'al5', 'aa5', None, []),
+                ('a5', 't5', 'au5', 'al5', 'aa5', None, [], None),
             ],
             [],
         ]
@@ -1536,7 +1536,7 @@ class TestSweepAlignment:
         assert chunks[0][0] == {
             'item_id': 'a1', 'title': 't1', 'author': 'au1',
             'album': 'al1', 'album_artist': 'aa1', 'file_path': None,
-            'file_paths': ['/srv-b/p1'],
+            'file_paths': ['/srv-b/p1'], 'duration': 213.4,
         }
         assert len(executed) == 4
         assert all('ORDER BY s.item_id LIMIT %s' in sql for sql, _params in executed)
@@ -1774,6 +1774,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
         monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([rows]))
+        monkeypatch.setattr(sync, '_iter_mapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
         written = {}
@@ -1813,6 +1814,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
         monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
+        monkeypatch.setattr(sync, '_iter_mapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
         monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result, paths=None: 0)
@@ -1911,6 +1913,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
         monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 0)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
+        monkeypatch.setattr(sync, '_iter_mapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         seen = {}
 
@@ -1973,6 +1976,7 @@ class TestSweepAlignment:
             return iter([rows])
 
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', fake_iter)
+        monkeypatch.setattr(sync, '_iter_mapped_local_rows', lambda conn, sid, **k: iter([]))
         sync._sweep_one(
             {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
             MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
@@ -1994,6 +1998,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(
             sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([chunk1, chunk2])
         )
+        monkeypatch.setattr(sync, '_iter_mapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
         written = {}
@@ -2364,6 +2369,7 @@ class TestSweepAlignment:
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
         monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
         monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
+        monkeypatch.setattr(sync, '_iter_mapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result, paths=None: 0)
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
@@ -3158,3 +3164,36 @@ class TestProjectionWarning:
         with caplog.at_level('WARNING', logger=registry.logger.name):
             assert registry._default_context(row) == row
         assert 'Restart the process' not in caplog.text
+
+
+class TestSweepKeepsDuplicatesOfMappedSongs:
+    def test_the_sweep_maps_duplicate_copies_of_songs_already_mapped_on_the_server(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        mapped_song = {'item_id': 'fp_1', 'title': 'Song', 'author': 'A', 'album': 'Al', 'album_artist': 'A',
+                       'file_path': None, 'file_paths': [], 'duration': 200.1}
+        target = [
+            {'id': 'known', 'title': 'Song', 'artist': 'A', 'album': 'Al', 'path': '/m/Song.flac', 'duration': 200.0},
+            {'id': 'copy', 'title': 'Song', 'artist': 'A', 'album': 'Al', 'path': '/m/copy/Song.mp3', 'duration': 200.2},
+        ]
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 0)
+        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
+        monkeypatch.setattr(sync, '_iter_mapped_local_rows', lambda conn, sid, **k: iter([[mapped_song]]))
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: {'known'})
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: [dict(t) for t in target])
+        monkeypatch.setattr(sync, 'prune_stale_mappings', lambda *a, **k: 0)
+        monkeypatch.setattr(sync, '_store_server_track_count', lambda *a, **k: None)
+        monkeypatch.setattr(sync, '_stage_track_metadata', lambda *a, **k: None)
+        monkeypatch.setattr(sync, '_refresh_mapped_metadata', lambda *a, **k: 0)
+        monkeypatch.setattr(sync, '_write_artist_maps', lambda *a, **k: 0)
+        written = []
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result, paths=None: written.append(result))
+
+        summary = sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'jellyfin', 'name': 'J', 'creds': {}},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None, full_refresh=True,
+        )
+
+        assert [r['extra_matches'] for r in written] == [{'copy': 'fp_1'}]
+        assert summary['duplicate_files'] == 1

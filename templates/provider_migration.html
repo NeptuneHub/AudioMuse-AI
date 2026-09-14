@@ -658,6 +658,7 @@
         exact_meta:   'via exact metadata',
         title_artist: 'via title + artist only',
         norm_meta:  'via normalized metadata',
+        title_duration: 'via title + artist + duration',
         manual:     'manually re-targeted',
         unknown:    '',
     };
@@ -1146,6 +1147,9 @@
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="tail"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="exact_meta"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="norm_meta"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
+        if (tc.title_duration) {
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_duration"><span class="mig-tier-num">' + tc.title_duration + '</span>matched by title + artist + duration</div>';
+        }
         if ('title_artist' in tc) {
             html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_artist"><span class="mig-tier-num">' + (tc.title_artist || 0) + '</span>matched by title + artist only</div>';
         }

@@ -566,7 +566,8 @@ def translate_ids(item_ids, server_id=None, conn=None):
                 "  CASE match_tier "
                 "    WHEN 'fingerprint' THEN 0 WHEN 'path' THEN 1 WHEN 'tail' THEN 2 "
                 "    WHEN 'exact_meta' THEN 3 WHEN 'default' THEN 4 WHEN 'norm_meta' THEN 5 "
-                "    WHEN 'title_artist' THEN 6 WHEN 'analysis' THEN 7 ELSE 8 END, "
+                "    WHEN 'title_duration' THEN 6 WHEN 'title_artist' THEN 7 WHEN 'analysis' THEN 8 "
+                "    ELSE 9 END, "
                 "  provider_track_id",
                 (target, chunk),
             )

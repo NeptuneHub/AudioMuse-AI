@@ -1649,6 +1649,7 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
         old_rows,
         new_tracks,
         allow_title_artist_only=allow_title_artist_only,
+        duration_tolerance=config.DURATION_TOLERANCE_SECONDS,
     )
 
     state_dry_run = {
@@ -2659,7 +2660,7 @@ def _load_score_rows_as_dicts():
             "SELECT s.item_id, NULL, s.title, s.author, s.album, s.album_artist, "
             "ARRAY(SELECT p.file_path FROM track_server_map p "
             "WHERE p.item_id = s.item_id AND p.server_id = %s "
-            "AND p.file_path IS NOT NULL ORDER BY p.provider_track_id) "
+            "AND p.file_path IS NOT NULL ORDER BY p.provider_track_id), s.duration "
             "FROM score s WHERE " + registry.availability_sql('s'),
             (default_id, default_id, True),
         )
@@ -2670,6 +2671,7 @@ def _load_score_rows_as_dicts():
         paths = [p for p in (r[6] or []) if p]
         row = _row_to_score_dict((r[0], paths[0] if paths else None) + tuple(r[2:6]))
         row['file_paths'] = paths
+        row['duration'] = r[7] if len(r) > 7 else None
         loaded.append(row)
     return loaded
 

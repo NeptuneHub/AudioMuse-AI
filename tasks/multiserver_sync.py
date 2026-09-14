@@ -29,7 +29,11 @@ Main Features:
   helpers are shared with the cleaning task so the two can never drift apart.
 * Zero-download alignment, artist link upserts, and batch metadata refresh.
   A song held as several files on the new server gets every file whose path
-  matches one it already has elsewhere, so duplicates are never re-analysed.
+  matches one it already has elsewhere, or whose title, artist and duration are
+  the song's own, and songs already mapped on the server get the same duplicate
+  check, so duplicates are never re-analysed.
+* A song with no path left anywhere (unbound by an earlier migration) is still
+  matched from the catalogue itself by title, artist and duration.
 * Lean memory: fetched catalogue is condensed into a slim CandidateIndex and the
   local side streams through it in keyset-paginated chunks.
 * A sweep whose worker died is restarted by the queue's own reclaim, and one
@@ -55,7 +59,11 @@ from psycopg2.extras import execute_values
 from psycopg2 import OperationalError
 
 from taskqueue import TaskCancelled, TaskFailed
-from config import SWEEP_PRUNE_MIN_FETCH_RATIO, QUEUE_WEDGED_MAIN_TASK_MINUTES
+from config import (
+    DURATION_TOLERANCE_SECONDS,
+    QUEUE_WEDGED_MAIN_TASK_MINUTES,
+    SWEEP_PRUNE_MIN_FETCH_RATIO,
+)
 from database import (
     connect_raw,
     stage_pending_task_row,
@@ -160,6 +168,14 @@ def unmapped_local_count(conn, server_id):
 
 
 def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
+    return _iter_local_rows(conn, server_id, 'NOT EXISTS', chunk_size)
+
+
+def _iter_mapped_local_rows(conn, server_id, chunk_size=20000):
+    return _iter_local_rows(conn, server_id, 'EXISTS', chunk_size)
+
+
+def _iter_local_rows(conn, server_id, presence, chunk_size):
     last_id = ''
     while True:
         cur = conn.cursor()
@@ -167,8 +183,8 @@ def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
             cur.execute(
                 "SELECT s.item_id, s.title, s.author, s.album, s.album_artist, "
                 "s.file_path, ARRAY(SELECT DISTINCT p.file_path FROM track_server_map p "
-                "WHERE p.item_id = s.item_id AND p.file_path IS NOT NULL) "
-                "FROM score s WHERE s.item_id > %s AND NOT EXISTS ("
+                "WHERE p.item_id = s.item_id AND p.file_path IS NOT NULL), s.duration "
+                "FROM score s WHERE s.item_id > %s AND " + presence + " ("  # nosec B608 - presence is one of two constants
                 "SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id AND m.server_id = %s) "
                 "ORDER BY s.item_id LIMIT %s",
                 (last_id, server_id, chunk_size),
@@ -188,6 +204,7 @@ def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
                 'album_artist': r[4],
                 'file_path': r[5],
                 'file_paths': [p for p in (list(r[6] or []) + [r[5]]) if p],
+                'duration': r[7],
             }
             for r in rows
         ]
@@ -489,7 +506,9 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
             if track.get('id') and _strip_nul(str(track.get('id'))) not in already_mapped:
                 yield track
 
-    index = CandidateIndex(_drain_candidates(target_tracks))
+    index = CandidateIndex(
+        _drain_candidates(target_tracks), duration_tolerance=DURATION_TOLERANCE_SECONDS
+    )
     target_tracks = None
     _store_server_track_count(db, server_id, target_total)
     pruned = 0
@@ -543,13 +562,21 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
                     f"{unmapped_count} checked, {written} matched...",
                     pct,
                 )
+        report(f"Aligning {server['name']}: looking for duplicate files of mapped songs...", base + span * 0.95)
+        for chunk in _iter_mapped_local_rows(db, server_id):
+            cancel()
+            extras = index.duplicate_files(chunk, claimed)
+            if extras['extra_matches']:
+                _write_matches(db, server_id, extras, index.path_by_id)
+                duplicate_files += len(extras['extra_matches'])
     refreshed = _refresh_mapped_metadata(db, server_id)
     artists_written = _write_artist_maps(db, server, artist_maps)
     logger.info(
         "Multi-server sweep for '%s': mapped %d/%d unmapped tracks "
-        "(target=%d, tiers=%s), %d artist links, %d metadata rows refreshed",
+        "(target=%d, tiers=%s), %d duplicate files kept, %d artist links, "
+        "%d metadata rows refreshed",
         server['name'], written, unmapped_count, target_total, tier_counts,
-        artists_written, refreshed,
+        duplicate_files, artists_written, refreshed,
     )
     return {
         'server_id': server_id,
