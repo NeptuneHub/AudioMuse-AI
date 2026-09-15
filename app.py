@@ -81,7 +81,7 @@ from error.error_dictionary import (
     ERR_TASK_CANCEL_FAILED,
     UNKNOWN_ERROR_CODE,
 )
-from error.responses import json_error, json_exception, json_http_exception
+from error.responses import json_error, json_exception, json_http_exception, wants_json_error
 
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
@@ -96,8 +96,6 @@ HIDDEN_ACTIVE_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
 NON_USER_TASK_TYPES = (
     HIDDEN_ACTIVE_TASK_TYPES + task_types.SIDE_JOB_TASK_TYPES
 )
-
-_JSON_ERROR_PATH_PREFIXES = ('/api/', '/chat/api/', '/external/')
 
 _CANCEL_UNCONFIRMED_MESSAGE = (
     "Cancellation could not be fully applied or confirmed; recovery tasks may remain active."
@@ -117,7 +115,7 @@ def handle_audiomuse_error(err):
 @app.errorhandler(Exception)
 def handle_unexpected_error(err):
     if isinstance(err, HTTPException):
-        if request.path.startswith(_JSON_ERROR_PATH_PREFIXES):
+        if wants_json_error(request.path):
             return json_http_exception(err)
         return err
     app.logger.exception("Unhandled exception during request")
@@ -225,7 +223,7 @@ def log_api_request():
 def reject_non_object_json_body():
     if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE') or not request.is_json:
         return None
-    if not request.path.startswith(_JSON_ERROR_PATH_PREFIXES):
+    if not wants_json_error(request.path):
         return None
     body = request.get_json(silent=True)
     if body is None or isinstance(body, dict):

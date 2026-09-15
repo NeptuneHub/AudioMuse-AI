@@ -30,6 +30,7 @@ Main Features:
 """
 
 import re
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -276,6 +277,50 @@ class TestTheTerminalRowTheQueueWrites:
             'a retry keeps the row details, so the record attempt 1 wrote is still there '
             'when attempt 2 dies; the terminal row must blame attempt 2'
         )
+
+    def test_a_record_the_task_wrote_during_this_attempt_beats_the_generic_code(self):
+        index_failure = {'error_code': 3001, 'error_class': 'Index Build Error',
+                         'error_message': 'The similarity index rebuild failed.'}
+        generic = {'error_code': 2001, 'error_class': 'Analysis Error',
+                   'error_message': 'Audio analysis failed.'}
+
+        fresh = worker_mod._terminal_details(
+            config.TASK_STATUS_FAIL, 'rebuild failed', generic,
+            previous={'error': index_failure}, error_at_claim=None,
+        )
+        stale = worker_mod._terminal_details(
+            config.TASK_STATUS_FAIL, 'rebuild failed', generic,
+            previous={'error': index_failure}, error_at_claim=dict(index_failure),
+        )
+
+        assert fresh['error'] == index_failure, (
+            'the union analysis run records ERR_INDEX_BUILD and re-raises; the queue '
+            'classifying the same exception against the analysis code must not bury it'
+        )
+        assert stale['error'] == generic, (
+            'the same record already on the row at claim time was an earlier attempt\'s'
+        )
+
+    def test_the_claim_remembers_the_error_already_on_the_row(self, monkeypatch):
+        instance = worker_mod.Worker.__new__(worker_mod.Worker)
+        instance._claim_txn = threading.Lock()
+        instance._conn = MagicMock()
+        instance.queue = 'default'
+        instance.identity = 'w1'
+        earlier = {'error_code': 2006, 'error_message': 'attempt 1'}
+        monkeypatch.setattr(worker_mod, 'stopping_reason', lambda: None)
+        monkeypatch.setattr(
+            worker_mod.sql, 'claim',
+            lambda cur, queue, now, worker_id=None: {
+                'task_id': 't1', 'parent_task_id': None, 'attempts': 1,
+            },
+        )
+        monkeypatch.setattr(worker_mod.sql, 'current_details', lambda cur, task_id: {'error': earlier})
+        monkeypatch.setattr(worker_mod.sql, 'hold', lambda cur, task_id: None)
+
+        job = instance.claim()
+
+        assert job['error_at_claim'] == earlier
 
     def test_a_permanent_failure_raised_from_a_media_server_error_keeps_its_code(self):
         from taskqueue import TaskFailed

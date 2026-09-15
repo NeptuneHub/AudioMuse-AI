@@ -52,11 +52,11 @@ internal detail leaks to the frontend.
 | 1103 | Music Server Connection Error | A `requests`/`urllib3` `ReadTimeout` / `ConnectTimeout` / `Timeout`, or a builtin `TimeoutError` (#523 slow server) | classify map ([error/error_manager.py](../error/error_manager.py)) | Server is too slow to respond; reduce load, raise client timeouts, or improve the network path. |
 | 1104 | Music Server Authentication Error | A media-server probe fails auth, or any exception in the chain carries an HTTP 401/403 response | [tasks/analysis/main.py](../tasks/analysis/main.py), classify auth check ([error/error_manager.py](../error/error_manager.py)) | Wrong credentials - fix the configured user/token; the server accepted the connection but rejected the login. |
 | 1105 | Music Server Library Error | Analysis runs but the server returns 0 tracks for every album (#552) | [tasks/analysis/main.py](../tasks/analysis/main.py) (no-tracks check) | Verify the library actually contains scannable music and that the configured user/library has read access to the tracks. |
-| 1106 | Music Server Playlist Error | The media server did not create a playlist (instant playlist, chat playlist, alchemy radio) | [app_ivf.py](../app_ivf.py), [app_chat.py](../app_chat.py), [app_alchemy.py](../app_alchemy.py) | Check the media server is reachable and the user may create playlists. |
+| 1106 | Music Server Playlist Error | The media server answered a playlist creation without creating one (it returned no playlist id). A playlist route whose exception is not classified answers 9999 instead, since nothing proves the server was at fault | [app_ivf.py](../app_ivf.py) | Check the media server is reachable and the user may create playlists. |
 | 2001 | Analysis Error | Main analysis task fails for any non-classified reason | [tasks/analysis/main.py](../tasks/analysis/main.py) main except | Inspect the container log for the real cause; this is the catch-all for the analysis run. |
 | 2002 | Analysis Error | A per-album analysis task fails for a **real** reason (download failure, DB error, model crash, track-server map flush failure). Tracks that merely hold no analyzable audio are skipped as 2007 and do NOT fail the album | [tasks/analysis/album.py](../tasks/analysis/album.py) album except | One album failed; check the log for the album/track. The parent run reports `failed_albums` and a sample of child errors, but does **not** fail unless *every* album failed (2005). |
-| 2004 | Model Inference Error | An `onnxruntime` exception (`Fail` / `RuntimeException` / `InvalidArgument` / `NoSuchFile` / `InvalidProtobuf` / `NotImplemented`) that is **not** a memory allocation failure; logged per track by MusiCNN and CLAP | classify map ([error/error_manager.py](../error/error_manager.py)), [tasks/analysis/song.py](../tasks/analysis/song.py), [tasks/clap_analyzer.py](../tasks/clap_analyzer.py) | Not a memory problem: check the model files are intact and read the model error in the container log. |
-| 2008 | Model Out Of Memory | An `onnxruntime` exception whose text reports an allocation failure (`Failed to allocate memory`, `BFCArena`, `CUDA ... out of memory`, `CUBLAS/CUDNN_STATUS_ALLOC_FAILED`, `std::bad_alloc`), anywhere in the cause chain. The GPU session first retries on CPU; 2008 is recorded only when that also fails | classify ([error/error_manager.py](../error/error_manager.py) `is_out_of_memory`), [tasks/onnx_utils.py](../tasks/onnx_utils.py) | Free GPU memory (fewer concurrent models, lower batch), give the worker more RAM, or run on CPU. |
+| 2004 | Model Inference Error | An `onnxruntime` exception (`Fail` / `RuntimeException` / `InvalidArgument` / `NoSuchFile` / `InvalidProtobuf` / `NotImplemented`) whose text was **not** recognised as a memory allocation failure; logged per track by MusiCNN and CLAP | classify map ([error/error_manager.py](../error/error_manager.py)), [tasks/analysis/song.py](../tasks/analysis/song.py), [tasks/clap_analyzer.py](../tasks/clap_analyzer.py) | Check the model files are intact and read the model error in the container log; if it names an allocation failure in a spelling 2008 does not list, report it. |
+| 2008 | Model Out Of Memory | An `onnxruntime` exception whose text reports an allocation failure (`Failed to allocate memory`, `BFCArena`, `out of memory`, `CUDA_ERROR_OUT_OF_MEMORY`, DirectML `E_OUTOFMEMORY`, `CUBLAS/CUDNN_STATUS_ALLOC_FAILED`, MIOpen `miopenStatusAllocFailed`, `std::bad_alloc`, or `OOM` as a whole word), anywhere in the cause chain. The session is freed and the inference first retries on a fresh CPU session; 2008 is recorded only when that also fails. Host RAM running out (`MemoryError`) never takes the CPU retry | classify ([error/error_manager.py](../error/error_manager.py) `is_out_of_memory`, `is_model_out_of_memory`), [tasks/onnx_utils.py](../tasks/onnx_utils.py) | Free GPU memory (fewer concurrent models, lower batch), give the worker more RAM, or run on CPU. |
 | 2005 | Analysis Error | An analysis run reaches the end having launched albums but with **every** one of them failed, so not a single song was analyzed | [tasks/analysis/main.py](../tasks/analysis/main.py) phase end | The run is systematically broken, not merely hitting bad files: check the media server is reachable, the models loaded, and the DB is writable. |
 | 2006 | Analysis Error | A multi-server (union) run finishes with **every** music server failed | [tasks/analysis/main.py](../tasks/analysis/main.py) `run_analysis_task` | Named servers all failed; check their connectivity/credentials. If only *some* servers fail the run still succeeds and lists them in `failed_servers`. |
 | 2007 | Track Skipped | A single track holds no analyzable audio: a silent hidden track, a corrupt/undecodable file, or an instrumental whose lyrics produced nothing | [tasks/analysis/album.py](../tasks/analysis/album.py) `TrackNotAnalyzable` | Informational, logged at WARNING and counted as `tracks_not_analyzable`. **Never fails the album or the run** - a real library always has some of these. |
@@ -83,7 +83,7 @@ internal detail leaks to the frontend.
 | 1201 | Task In Progress | A manual start (analysis, clustering, cleaning, provider migration, sweep, naming preview) is refused because a queue-guard task (analysis, clustering, cleaning, provider migration, sonic fingerprint or any plugin task) is already live | [app_helper.py](../app_helper.py) `queue_busy_response` / `queue_race_response`, [app_music_servers.py](../app_music_servers.py), [app_provider_migration.py](../app_provider_migration.py), [app_setup.py](../app_setup.py) | Wait for the running task to finish, or let the scheduled retry (up to `CRON_RETRY_MAX_MINUTES`) pick it up. |
 | 9001 | Worker Lost | The worker running the task died (reclaimed by maintenance) or this worker stopped the job process itself (restart, cancel, wedged-task nudge) | [taskqueue/maintenance.py](../taskqueue/maintenance.py), [taskqueue/worker.py](../taskqueue/worker.py) | Usually a restart; the task is retried within its budget. The naming preview reports it as "interrupted by a restart". |
 | 9002 | Task Interrupted | A task running inside the web process was left RUNNING when that process stopped | [taskqueue/maintenance.py](../taskqueue/maintenance.py) `fail_stale_inline_rows` | Start it again. |
-| 9003 | Out Of Memory | The job process was SIGKILLed by the kernel out-of-memory killer, or a builtin `MemoryError` escaped. Where the kernel log (`/dev/kmsg`) is readable from the initial pid namespace (native Linux), the victim pid must be this job's; otherwise (a normal container) the worker's own cgroup `oom_kill` counter must have risen while the job ran, and the summary says the container-wide counter cannot name the victim. macOS has no such counter (9005) and Windows runs jobs inline (only `MemoryError`) | [taskqueue/worker.py](../taskqueue/worker.py) `_killed_child_death`, classify | Give the worker more memory or run fewer memory-heavy jobs at once. |
+| 9003 | Out Of Memory | The job process was SIGKILLed by the kernel out-of-memory killer, or a builtin `MemoryError` escaped. Where the kernel log (`/dev/kmsg`) is readable from the initial pid namespace (native Linux), the victim pid must be this job's; otherwise (a normal container, or a kernel log that names no victim because the record rotated out or carries a lagging timestamp) the worker's own cgroup `oom_kill` counter must have risen while the job ran, and the summary says the container-wide counter cannot name the victim. macOS has no such counter (9005) and Windows runs jobs inline (only `MemoryError`) | [taskqueue/worker.py](../taskqueue/worker.py) `_killed_child_death`, classify | Give the worker more memory or run fewer memory-heavy jobs at once. |
 | 9004 | Process Crashed | The job process died on SIGSEGV / SIGBUS / SIGABRT / SIGFPE (a native crash, most often the model runtime during inference) or SIGILL (an instruction set this CPU lacks) | [taskqueue/worker.py](../taskqueue/worker.py) `_child_death` | **Not** an out-of-memory condition. For SIGILL use the image built for CPUs without AVX2; for a segfault check the container log around the crash. |
 | 9005 | Job Process Died | The job process ended without reporting back for any other reason: a non-zero exit, a SIGKILL the kernel did not count as an OOM kill (userspace killers such as systemd-oomd or a Kubernetes eviction, or a manual kill), a SIGKILL while the kernel log shows the out-of-memory killer ended a different process, an unreadable OOM counter, or the worker killing a child whose report pipe broke | [taskqueue/worker.py](../taskqueue/worker.py) | Read the summary: it states which of these happened. |
 | 9999 | Unknown Error | A failed task row that carries no structured error (rows written before structured errors), or an unclassified exception in a route with no feature code | [app_helper.py](../app_helper.py) `sanitize_task_details` via `error_manager.task_error_record`, the global `errorhandler(Exception)` | Open the container log - the generic message intentionally hides specifics from the frontend. |
@@ -94,10 +94,12 @@ internal detail leaks to the frontend.
 to `default_code`. Matching is **module-qualified**: a class name only matches when the
 exception is defined under an allowed import path, so unrelated libraries that reuse a
 common name (e.g. `psycopg2.OperationalError`, builtin `BrokenPipeError`) do NOT
-steal a media-server or database code. Every check walks the exception's
-`__cause__`/`__context__` chain, outermost link first, so a `TaskFailed` or wrapper
-raised `from` a database or media-server error keeps that error's code. The checks run
-in this order:
+steal a media-server or database code. Every check walks the exception chain once,
+outermost link first, the way a traceback prints it: the explicit `__cause__`, else the
+implicit `__context__` unless the raise suppressed it (`raise ... from None`). A
+`TaskFailed` or wrapper raised `from` a database or media-server error keeps that
+error's code, and a deliberately detached exception is judged on its own. The checks
+run in this order:
 
 | Order | Exception (module → name) | Code |
 |-------|---------------------------|------|
@@ -137,8 +139,16 @@ may name its own `http_status`; otherwise the range decides:
 | everything else | 500 Internal Server Error |
 
 A route may pass `http_status` to `json_error` / `json_exception` when its contract with
-the caller needs a specific status (a retryable 503, say); an explicit status always
-wins, a classified exception included.
+the caller needs a specific status (a retryable 503, say); an explicit status wins, a
+classified exception included. A Werkzeug HTTP error the route caught (the 415
+`request.get_json()` raises) keeps its own status but still carries the route's extra
+keys, and an `abort(response)` is passed through untouched.
+
+A route's fallback code names the **feature** that failed (3003 search, 6003
+migration, ...), never a **cause** the route cannot prove: a route whose `try` runs
+more than a media-server or database call falls back to 9999, so a bug in the route
+is not reported as the media server or the database being down. A real media-server
+or database failure is still classified to its own code.
 
 ## How an error flows
 
@@ -157,8 +167,9 @@ wins, a classified exception included.
   `make_response`), and on a `jsonify({'error': ...})` answered with no status.
 - **Uncaught route exceptions** hit the global `errorhandler(Exception)` in
   [app.py](../app.py), which logs the traceback and answers `json_exception(err, 9999)`,
-  so a database outage still reports 4001/503. An HTTP error (404, 405, 413) on an
-  `/api/` path is answered as JSON with the request code whose registry `http_status`
+  so a database outage still reports 4001/503. An HTTP error (404, 405, 413) on a JSON
+  path (`/api/`, `/chat/api/`, `/external/`, `error.responses.JSON_ERROR_PATH_PREFIXES`)
+  is answered as JSON with the request code whose registry `http_status`
   matches (`error_dictionary.request_code_for_status`, 1003 when none does) while
   keeping Werkzeug's status and headers (such as `Allow` on a 405); pages keep the
   HTML error.
@@ -168,9 +179,11 @@ wins, a classified exception included.
   feature code from `taskqueue.TASK_FUNC_ERROR_CODES` (the allow-list is derived from
   that map, so a function cannot be allowed without a code), a job process that died
   is diagnosed from its signal (9001 / 9003 / 9004 / 9005), and a connection lost
-  past the free requeues records 4001. The record this attempt produced replaces any
-  record an earlier attempt left on the row. Tasks that record a more specific code
-  themselves (analysis 2005/2006, index 3001) raise an `AudioMuseError` carrying it.
+  past the free requeues records 4001. The claim remembers the error already on the
+  row: a record the task itself wrote during this attempt (the union analysis run
+  records index 3001 and re-raises) wins over the queue's generic classification,
+  while a record an earlier attempt left there is replaced by this attempt's. Tasks
+  can also raise an `AudioMuseError` carrying their specific code (analysis 2005/2006).
   Maintenance writes 9001 for a reclaimed worker death and 9002 for an interrupted
   inline task, and a parent that gives up on a stalled album child records 2002 on it.
 - **Per-track model failures** (MusiCNN, CLAP) are logged with their code (2008 or
@@ -180,7 +193,11 @@ wins, a classified exception included.
   and the provider migration job status uses the same `error_manager.task_error_record`:
   a failed row without a structured record gets the generic `9999` one.
 - **Pages** show `[code] class: message` through `apiErrorText(body, fallback)` /
-  `formatErrorText` in [static/error_display.js](../static/error_display.js). The
+  `formatErrorText` in [static/error_display.js](../static/error_display.js), which
+  also holds the shared `readJsonBody(response)` (a body that is not JSON reads as
+  `null`). The layout loads it before any page script, so a page's first failed fetch
+  can always use it. The streamed chat error event carries the same fields, with the
+  classified message as its `error` text. The
   message part is the route's own `error` detail when the body carries one (so the
   page reads "[1004] Not Found: Target track not found in index" instead of
   repeating the class sentence) and `error_message` otherwise, as for a task

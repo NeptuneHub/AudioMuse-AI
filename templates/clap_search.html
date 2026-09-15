@@ -947,11 +947,6 @@ document.addEventListener('DOMContentLoaded', function() {
         div.textContent = text;
         return div.innerHTML;
     }
-
-    async function readJsonBody(response) {
-        const text = await response.text();
-        try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
-    }
 });
 </script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>

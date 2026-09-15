@@ -39,3 +39,12 @@ function apiErrorText(body, fallback) {
     }
     return fallback;
 }
+
+async function readJsonBody(response) {
+    var text = await response.text();
+    try {
+        return text ? JSON.parse(text) : null;
+    } catch (e) {
+        return null;
+    }
+}

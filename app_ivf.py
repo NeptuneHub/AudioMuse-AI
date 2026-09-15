@@ -40,6 +40,7 @@ from error.error_dictionary import (
     ERR_MEDIASERVER_PLAYLIST,
     ERR_NOT_FOUND,
     ERR_SEARCH_FAILED,
+    UNKNOWN_ERROR_CODE,
 )
 from tasks.ivf_manager import (
     find_nearest_neighbors_by_id,
@@ -814,6 +815,6 @@ def create_media_server_playlist():
             f"Failed to create media server playlist '{playlist_name}'"
         )
         return json_exception(
-            exc, ERR_MEDIASERVER_PLAYLIST,
+            exc, UNKNOWN_ERROR_CODE,
             "An error occurred while creating the playlist on the media server.",
         )

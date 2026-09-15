@@ -163,9 +163,9 @@ ERROR_REGISTRY = {
     ERR_MODEL_INFERENCE: {
         "error_class": "Model Inference Error",
         "default_message": (
-            "An analysis model failed while running inference. This is not an "
-            "out-of-memory condition: check that the model files are intact and "
-            "read the model error in the container logs."
+            "An analysis model failed while running inference, and the error was not "
+            "recognised as an out-of-memory condition. Check that the model files are "
+            "intact and read the model error in the container logs."
         ),
     },
     ERR_MODEL_OUT_OF_MEMORY: {

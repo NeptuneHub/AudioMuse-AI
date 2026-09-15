@@ -35,9 +35,9 @@ from error.error_dictionary import (
     ERR_CACHE_REFRESH_FAILED,
     ERR_DB_QUERY,
     ERR_INVALID_REQUEST,
-    ERR_MEDIASERVER_PLAYLIST,
     ERR_NOT_FOUND,
     ERR_SEARCH_FAILED,
+    UNKNOWN_ERROR_CODE,
 )
 from error.responses import json_error, json_exception
 
@@ -815,7 +815,7 @@ def run_radio_playlists_endpoint():
         logger.exception('Radio playlist creation failed')
         return json_exception(
             exc,
-            ERR_MEDIASERVER_PLAYLIST,
+            UNKNOWN_ERROR_CODE,
             'Failed to create radio playlists. Check container logs.',
             http_status=500,
         )

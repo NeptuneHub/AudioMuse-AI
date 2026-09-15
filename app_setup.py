@@ -40,15 +40,14 @@ import tasks.mediaserver as mediaserver
 from error import error_manager
 from error.error_manager import AudioMuseError
 from error.error_dictionary import (
-    ERR_CONFIG_INVALID,
     ERR_CONFIG_MEDIASERVER_CREDENTIALS,
     ERR_DB_QUERY,
     ERR_INVALID_REQUEST,
-    ERR_MEDIASERVER_LIBRARY,
     ERR_MEDIASERVER_UNREACHABLE,
     ERR_NAMING_PREVIEW_FAILED,
     ERR_TASK_ENQUEUE_FAILED,
     ERR_TASK_IN_PROGRESS,
+    UNKNOWN_ERROR_CODE,
 )
 from error.responses import json_error, json_exception
 
@@ -973,13 +972,12 @@ def setup_api():
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:
             return json_exception(
-                exc, ERR_MEDIASERVER_UNREACHABLE,
+                exc, UNKNOWN_ERROR_CODE,
                 'Unable to get top player song. Check the server log for details.',
             )
         return json_exception(
-            exc, ERR_CONFIG_INVALID,
+            exc, UNKNOWN_ERROR_CODE,
             'Unable to save configuration. Check the server log for details.',
-            http_status=500,
         )
 
     try:
@@ -1086,7 +1084,7 @@ def setup_provider_libraries_api():
     except Exception as exc:
         app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
         return json_exception(
-            exc, ERR_MEDIASERVER_LIBRARY,
+            exc, UNKNOWN_ERROR_CODE,
             'Unable to list libraries. Check the server log for details.',
         )
 

@@ -23,6 +23,8 @@ Main Features:
 import os
 import sys
 
+import pytest
+
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -229,9 +231,39 @@ class TestOutOfMemoryIsNotEveryInferenceError:
             'it has its own general inference description'
         )
 
-    def test_the_general_inference_message_says_it_is_not_a_memory_problem(self):
-        assert 'not an out-of-memory' in ed.get_default_message(ed.ERR_MODEL_INFERENCE)
+    def test_the_general_inference_message_says_no_memory_problem_was_recognised(self):
+        message = ed.get_default_message(ed.ERR_MODEL_INFERENCE)
+
+        assert 'not recognised as an out-of-memory' in message, (
+            'the text matching only knows the allocation spellings it lists; the message '
+            'must not flatly deny a memory problem it may simply not have recognised'
+        )
         assert 'ran out of memory' in ed.get_default_message(ed.ERR_MODEL_OUT_OF_MEMORY)
+
+    @pytest.mark.parametrize('text', [
+        'CUDA error: CUDA_ERROR_OUT_OF_MEMORY while allocating a tensor',
+        'DmlExecutionProvider: 887A0005 E_OUTOFMEMORY',
+        'MIOpen Error: miopenStatusAllocFailed',
+        'CUBLAS_STATUS_ALLOC_FAILED',
+        'CUDA OOM on device 0',
+    ])
+    def test_every_gpu_allocation_spelling_is_a_model_out_of_memory_error(self, text):
+        fail = _onnxruntime_exception('Fail')
+
+        assert em.classify(fail(text), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_OUT_OF_MEMORY
+        assert em.is_model_out_of_memory(fail(text)) is True
+
+    def test_oom_inside_a_longer_word_is_not_out_of_memory(self):
+        fail = _onnxruntime_exception('Fail')
+
+        assert em.is_out_of_memory(fail('Load model /models/BOOM_v2.onnx failed')) is False
+
+    def test_host_ram_running_out_is_not_a_model_runtime_out_of_memory(self):
+        assert em.is_out_of_memory(MemoryError()) is True
+        assert em.is_model_out_of_memory(MemoryError()) is False, (
+            'the ONNX CPU fallback loads a second session; doing that when the host itself '
+            'is out of RAM only makes the kill worse'
+        )
 
     def test_a_wrapped_runtime_allocation_failure_is_found_through_the_cause(self):
         runtime_exception = _onnxruntime_exception('RuntimeException')
@@ -293,6 +325,34 @@ class TestTheCauseChain:
         wrapper.__cause__ = em.AudioMuseError(ed.ERR_MEDIASERVER_LIBRARY, 'no tracks')
 
         assert em.classify(wrapper, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_LIBRARY
+
+    @staticmethod
+    def _read_timeout():
+        read_timeout = type('ReadTimeout', (Exception,), {})
+        read_timeout.__module__ = 'requests.exceptions'
+        return read_timeout
+
+    def test_a_raise_from_none_is_judged_on_its_own(self):
+        read_timeout = self._read_timeout()
+        try:
+            try:
+                raise read_timeout('slow')
+            except read_timeout:
+                raise KeyError('album') from None
+        except KeyError as exc:
+            detached = exc
+
+        assert em.classify(detached, ed.ERR_SEARCH_FAILED) == ed.ERR_SEARCH_FAILED, (
+            'raise ... from None says the handled timeout is not the cause; classifying '
+            'through it sent the user after a media server that answered fine'
+        )
+
+    def test_an_implicit_context_is_still_followed_like_a_traceback_prints_it(self):
+        read_timeout = self._read_timeout()
+        wrapped = RuntimeError('could not fetch the album list')
+        wrapped.__context__ = read_timeout('slow')
+
+        assert em.classify(wrapped, ed.ERR_SEARCH_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
 
 
 class TestTaskErrorRecord:

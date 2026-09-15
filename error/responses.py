@@ -31,20 +31,27 @@ Main Features:
   traceback.
 * A Werkzeug HTTP error a route's own ``except Exception`` caught (the 415 or
   400 ``request.get_json()`` raises for a body that is not JSON) keeps its
-  status and request code instead of turning into the route's 500.
-* ``http_status``, when a route passes it, is the status in every case, a
-  classified exception included: it is the route's contract with its caller
-  (a retryable 503, say). It is not named ``status`` because several bodies
-  carry a ``status`` key of their own.
+  status and request code instead of turning into the route's 500, and still
+  carries the route's extra keys (``results: []``), which the page reads.
+* ``http_status``, when a route passes it, is the status for everything but a
+  Werkzeug HTTP error, a classified exception included: it is the route's
+  contract with its caller (a retryable 503, say). It is not named ``status``
+  because several bodies carry a ``status`` key of their own.
 * ``json_http_exception`` turns a Werkzeug HTTP error (a routing 404, a 405, a
   413 from the request size cap) into the same JSON body on API paths, carrying
   the request code the registry names for that status, while keeping
-  Werkzeug's own response, so its status and headers (Allow on a 405,
-  WWW-Authenticate on a 401) survive; an HTTPException that carries a response
-  of its own is returned untouched.
+  Werkzeug's own response, so its headers (Allow on a 405, WWW-Authenticate on
+  a 401) survive; an error without a code answers 500, never a JSON error body
+  with 200. An ``abort(response)`` carries a response of its own, which is
+  returned untouched.
+* ``JSON_ERROR_PATH_PREFIXES`` / ``wants_json_error`` name the paths whose
+  callers read JSON: the global handlers and the auth barrier answer them the
+  same way.
 """
 
 from flask import json, jsonify
+
+JSON_ERROR_PATH_PREFIXES = ("/api/", "/chat/api/", "/external/")
 
 
 def _body(payload, alias, extra):
@@ -79,7 +86,7 @@ def json_exception(exc, default_code, detail=None, http_status=None, **extra):
     from error.error_manager import AudioMuseError, build, classify
 
     if isinstance(exc, HTTPException):
-        response = json_http_exception(exc)
+        response = json_http_exception(exc, **extra)
         return response, response.status_code
     if isinstance(exc, AudioMuseError):
         payload = exc.to_dict()
@@ -91,12 +98,16 @@ def json_exception(exc, default_code, detail=None, http_status=None, **extra):
     return _respond(payload, payload["error_message"], http_status, extra)
 
 
-def json_http_exception(err):
+def wants_json_error(path):
+    return str(path or "").startswith(JSON_ERROR_PATH_PREFIXES)
+
+
+def json_http_exception(err, **extra):
     from error import error_dictionary as codes
     from error.error_manager import build
 
     if getattr(err, "response", None) is not None:
-        return err
+        return err.response
     status = getattr(err, "code", None) or 500
     if status >= 500:
         payload = build(codes.UNKNOWN_ERROR_CODE)
@@ -106,6 +117,7 @@ def json_http_exception(err):
         payload = build(codes.request_code_for_status(status), description)
         alias = description or payload["error_message"]
     response = err.get_response()
-    response.set_data(json.dumps(_body(payload, alias, {})))
+    response.status_code = status
+    response.set_data(json.dumps(_body(payload, alias, extra)))
     response.content_type = "application/json"
     return response

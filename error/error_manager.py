@@ -15,8 +15,11 @@ capping message detail so no raw traceback leaks to callers.
 Main Features:
 * ``classify`` / ``from_exception`` map exception types to registry codes using
   module-qualified name matching plus HTTP 401/403 auth detection. Both walk the
-  ``__cause__``/``__context__`` chain, outermost first, so a permanent failure
-  raised ``from`` a database or media-server error keeps that error's code.
+  exception chain once, outermost first, the way a traceback prints it: the
+  explicit ``__cause__``, else the implicit ``__context__`` unless the raise
+  suppressed it (``raise ... from None``). A permanent failure raised ``from`` a
+  database or media-server error keeps that error's code, and a deliberately
+  detached exception is judged on its own.
 * ``task_error_record`` gives a failed task row its structured error: the record
   the row carries, or the generic 9999 one when it carries none.
 * ``is_out_of_memory`` recognises memory exhaustion anywhere in the exception
@@ -24,8 +27,11 @@ Main Features:
   runtime raised it and as a general out-of-memory error otherwise, so an
   ordinary inference failure is never mistaken for one. A runtime reports an
   allocation failure as a generic RuntimeException whose text is the only
-  signal, so that text is matched, but only on exceptions the native runtimes
-  raised: an application message may quote a song title.
+  signal, so that text is matched (the CUDA, cuDNN, cuBLAS, MIOpen and DirectML
+  spellings, and OOM as a whole word), but only on exceptions the native
+  runtimes raised: an application message may quote a song title.
+  ``is_model_out_of_memory`` is true only when the model runtime itself ran out,
+  the one case where freeing its session leaves room for a CPU retry.
 * ``detail_text`` caps a detail before folding it to one line, so a huge
   exception text is never copied whole; ``build`` produces one-line,
   length-bounded messages and ``build_with_detail`` takes a detail that already
@@ -34,6 +40,7 @@ Main Features:
 """
 
 import logging
+import re
 
 from error.error_dictionary import (
     ERROR_REGISTRY,
@@ -96,10 +103,13 @@ _OUT_OF_MEMORY_MARKERS = (
     "failed to allocate memory",
     "bfcarena",
     "out of memory",
-    "cublas_status_alloc_failed",
-    "cudnn_status_alloc_failed",
+    "out_of_memory",
+    "outofmemory",
+    "alloc_failed",
+    "allocfailed",
     "std::bad_alloc",
 )
+_OOM_WORD = re.compile(r"\boom\b")
 
 
 def _one_line(text):
@@ -131,15 +141,20 @@ def build(code, message=None):
 
 def _exception_chain(exc):
     seen = set()
+    links = []
     current = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        yield current
-        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        links.append(current)
+        cause = getattr(current, "__cause__", None)
+        if cause is None and not getattr(current, "__suppress_context__", False):
+            cause = getattr(current, "__context__", None)
+        current = cause
+    return links
 
 
-def _auth_error_code(exc):
-    for link in _exception_chain(exc):
+def _auth_error_code(links):
+    for link in links:
         response = getattr(link, "response", None)
         if getattr(response, "status_code", None) in _AUTH_STATUS_CODES:
             return ERR_MEDIASERVER_AUTH
@@ -157,16 +172,24 @@ def _is_memory_exhaustion(link):
         return False
     if "OutOfMemory" in type(link).__name__:
         return True
-    text = str(link).lower()
-    return any(marker in text for marker in _OUT_OF_MEMORY_MARKERS)
+    text = str(link)[:_DETAIL_SCAN_LIMIT].lower()
+    return any(marker in text for marker in _OUT_OF_MEMORY_MARKERS) or bool(
+        _OOM_WORD.search(text)
+    )
 
 
 def is_out_of_memory(exc):
     return any(_is_memory_exhaustion(link) for link in _exception_chain(exc))
 
 
-def _out_of_memory_code(exc):
-    links = list(_exception_chain(exc))
+def is_model_out_of_memory(exc):
+    return any(
+        _is_memory_exhaustion(link) and _module_of(link).startswith(_MODEL_RUNTIME_MODULES)
+        for link in _exception_chain(exc)
+    )
+
+
+def _out_of_memory_code(links):
     if not any(_is_memory_exhaustion(link) for link in links):
         return None
     if any(_module_of(link).startswith(_MODEL_RUNTIME_MODULES) for link in links):
@@ -187,13 +210,14 @@ def _match_rule(exc):
 def classify(exc, default_code=UNKNOWN_ERROR_CODE):
     if isinstance(exc, AudioMuseError):
         return exc.code
-    auth_code = _auth_error_code(exc)
+    links = _exception_chain(exc)
+    auth_code = _auth_error_code(links)
     if auth_code is not None:
         return auth_code
-    memory_code = _out_of_memory_code(exc)
+    memory_code = _out_of_memory_code(links)
     if memory_code is not None:
         return memory_code
-    for link in _exception_chain(exc):
+    for link in links:
         if isinstance(link, AudioMuseError):
             return link.code
         matched = _match_rule(link)

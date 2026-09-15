@@ -198,10 +198,6 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
-  const readJsonBody = async response => {
-    const text = await response.text();
-    try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
-  };
   const fmt = n => (n == null ? '' : Number(n).toLocaleString());
   const fmtDuration = secs => {
     if (secs == null) return '–';

@@ -547,11 +547,6 @@
             const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
                 (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 
-            const readJsonBody = async (response) => {
-                const text = await response.text();
-                try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
-            };
-
             const showAutocompleteError = (box, response, body) => {
                 box.innerHTML = '';
                 const item = document.createElement('div');

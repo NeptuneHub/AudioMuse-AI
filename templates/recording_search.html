@@ -292,11 +292,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return div.innerHTML;
     }
 
-    async function readJsonBody(response) {
-        const text = await response.text();
-        try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
-    }
-
     async function warmup() {
         try {
             await fetch("{{ url_for('recording_search_bp.recording_search_warmup_api') }}", { method: 'POST' });

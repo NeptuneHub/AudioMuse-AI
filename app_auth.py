@@ -18,8 +18,12 @@ Main Features:
 * The ``check_setup_needed`` / ``check_auth_needed`` / ``check_admin_needed``
   barrier guards and the ``/login``, ``/auth``, ``/logout``, ``/api/users`` routes.
   The barrier still fails closed when the admin count cannot be read, but a lost
-  database connection answers 503 (``ERR_DB_CONNECTION`` on API paths) instead
-  of sending every request to the setup wizard as if the install were new.
+  database connection answers 503 (``ERR_DB_CONNECTION`` as JSON on the paths
+  whose callers read JSON: ``/api/``, ``/chat/api/``, ``/external/``) instead of
+  sending every request to the setup wizard as if the install were new.
+  ``setup_status`` returns the verdict and the outage together, so the barrier
+  reads the failure from the call that saw it; ``check_setup_needed`` is the
+  plain yes/no for everyone else.
 * Sessions validated against the users table on every request: deleting a
   user or changing a password revokes that user's live JWT sessions, and the
   row's role is authoritative over token claims.
@@ -37,7 +41,6 @@ import secrets
 from flask import (
     current_app,
     g,
-    has_request_context,
     jsonify,
     make_response,
     redirect,
@@ -59,7 +62,7 @@ from error.error_dictionary import (
     ERR_UNAUTHORIZED,
 )
 from error.error_manager import classify
-from error.responses import json_error, json_exception
+from error.responses import json_error, json_exception, wants_json_error
 
 logger = logging.getLogger(__name__)
 
@@ -559,31 +562,33 @@ def purge_legacy_admin_config():
 # --- Barrier helpers --------------------------------------------------------
 
 
-def check_setup_needed():
-    """Return True when the install still needs the setup wizard."""
+def setup_status():
     from tasks.setup_manager import SetupManager
     import config as _cfg
 
     sm = SetupManager()
 
     if not sm._is_valid_server_config(_cfg):
-        return True
+        return True, None
 
     auth_enabled = getattr(_cfg, 'AUTH_ENABLED', True)
     if isinstance(auth_enabled, str):
         auth_enabled = auth_enabled.strip().lower() == 'true'
     if not auth_enabled:
-        return False
+        return False, None
 
     try:
-        return count_admin_users() <= 0
+        return count_admin_users() <= 0, None
     except Exception as exc:
         logger.exception(
             "Failed to count admin users while checking setup status"
         )
-        if has_request_context():
-            g.setup_check_error = exc
-        return True
+        return True, exc
+
+
+def check_setup_needed():
+    """Return True when the install still needs the setup wizard."""
+    return setup_status()[0]
 
 
 def _session_from_token(token, jwt_secret):
@@ -833,10 +838,10 @@ def auth_setup_barrier():
     if request.path.startswith('/static/') or request.path == '/api/health':
         return
 
-    if check_setup_needed():
-        outage = g.pop('setup_check_error', None)
+    setup_needed, outage = setup_status()
+    if setup_needed:
         if outage is not None and classify(outage, ERR_DB_QUERY) == ERR_DB_CONNECTION:
-            if request.path.startswith('/api/'):
+            if wants_json_error(request.path):
                 return json_exception(
                     outage, ERR_DB_CONNECTION,
                     "The database is unavailable, so the request cannot be authorised. "

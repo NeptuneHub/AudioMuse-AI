@@ -539,7 +539,7 @@
                             } else if (evt.type === 'error') {
                                 gotError = true;
                                 finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
-                                showErrorBelowStepper(formatErrorText(evt.error) || apiErrorText(evt, 'The request failed.'));
+                                showErrorBelowStepper(apiErrorText(evt, 'The request failed.'));
                                 return;
                             }
                         }

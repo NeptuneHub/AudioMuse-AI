@@ -215,11 +215,6 @@
             const resultsTableWrapper = document.getElementById('results-table-wrapper');
             const playlistStatusDiv = document.getElementById('playlist-status');
 
-            const readJsonBody = async (response) => {
-                const text = await response.text();
-                try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
-            };
-
             const moodSelect = document.getElementById('mood_select');
             const centroidSelect = document.getElementById('centroid_select');
             const modeToggleBtn = document.getElementById('similarity-mode-toggle');

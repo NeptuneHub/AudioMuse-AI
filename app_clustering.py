@@ -79,6 +79,15 @@ logger = logging.getLogger(__name__)
 clustering_bp = Blueprint('clustering_bp', __name__)
 
 
+def _text_param(data, key, default):
+    value = data.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise TypeError(f"{key} must be a string")
+    return value
+
+
 @clustering_bp.route('/api/clustering/start', methods=['POST'])
 def start_clustering_endpoint():
     """
@@ -289,7 +298,7 @@ def start_clustering_endpoint():
             "auto_calibration_param": bool(
                 data.get('auto_parameter_discovery', CLUSTERING_AUTO_CALIBRATION)
             ),
-            "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
+            "clustering_method": _text_param(data, 'clustering_method', CLUSTER_ALGORITHM),
             "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
             "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),
             "dbscan_eps_min": float(data.get('dbscan_eps_min', DBSCAN_EPS_MIN)),
@@ -348,19 +357,21 @@ def start_clustering_endpoint():
             "score_weight_other_feature_purity_param": float(
                 data.get('score_weight_other_feature_purity', SCORE_WEIGHT_OTHER_FEATURE_PURITY)
             ),
-            "ai_model_provider_param": data.get('ai_model_provider', AI_MODEL_PROVIDER).upper(),
-            "ollama_server_url_param": data.get('ollama_server_url', OLLAMA_SERVER_URL),
-            "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
-            "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
-            "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
+            "ai_model_provider_param": _text_param(
+                data, 'ai_model_provider', AI_MODEL_PROVIDER
+            ).upper(),
+            "ollama_server_url_param": _text_param(data, 'ollama_server_url', OLLAMA_SERVER_URL),
+            "ollama_model_name_param": _text_param(data, 'ollama_model_name', OLLAMA_MODEL_NAME),
+            "openai_server_url_param": _text_param(data, 'openai_server_url', OPENAI_SERVER_URL),
+            "openai_model_name_param": _text_param(data, 'openai_model_name', OPENAI_MODEL_NAME),
             # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
             # Any client-supplied *_api_key field is ignored to prevent token
             # exfiltration via the API surface.
             "openai_api_key_param": OPENAI_API_KEY,
             "gemini_api_key_param": GEMINI_API_KEY,
-            "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
+            "gemini_model_name_param": _text_param(data, 'gemini_model_name', GEMINI_MODEL_NAME),
             "mistral_api_key_param": MISTRAL_API_KEY,
-            "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
+            "mistral_model_name_param": _text_param(data, 'mistral_model_name', MISTRAL_MODEL_NAME),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get(
                 'enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS
@@ -369,7 +380,8 @@ def start_clustering_endpoint():
     except (TypeError, ValueError, OverflowError):
         return json_error(
             ERR_INVALID_REQUEST,
-            "Clustering parameters must be numbers. Reload the page and try again.",
+            "Clustering parameters must be numbers, and names and URLs must be text. "
+            "Reload the page and try again.",
         )
 
     # The gate and the claim are one INSERT: the partial unique index allows a

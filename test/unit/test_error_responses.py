@@ -146,6 +146,46 @@ def test_a_werkzeug_error_caught_by_a_route_keeps_its_own_status(app_context):
     assert body['error_code'] == ed.ERR_INVALID_REQUEST
 
 
+def test_a_werkzeug_error_caught_by_a_route_still_carries_the_route_extra_keys(app_context):
+    from werkzeug.exceptions import UnsupportedMediaType
+
+    response, status = json_exception(
+        UnsupportedMediaType(), ed.ERR_SEARCH_FAILED, 'An internal error occurred.', results=[]
+    )
+
+    assert status == 415
+    assert response.get_json()['results'] == [], (
+        'the CLAP page reads data.results; a 415 body without it broke the page render'
+    )
+
+
+def test_an_abort_with_its_own_response_is_passed_through_not_crashed_on(app_context):
+    from flask import abort, make_response
+    from werkzeug.exceptions import HTTPException
+
+    try:
+        abort(make_response('teapot', 418))
+    except HTTPException as exc:
+        aborted = exc
+
+    response, status = json_exception(aborted, ed.ERR_PLUGIN_FAILED, 'plugin failed')
+
+    assert status == 418, (
+        'json_http_exception returned the HTTPException itself, which has no status_code, '
+        'so the route catch-all raised AttributeError and answered 500'
+    )
+    assert response.get_data(as_text=True) == 'teapot'
+
+
+def test_an_http_error_without_a_code_never_answers_200(app_context):
+    from werkzeug.exceptions import HTTPException
+
+    response = json_http_exception(HTTPException(description='odd'))
+
+    assert response.status_code == 500
+    assert response.get_json()['error_code'] == ed.UNKNOWN_ERROR_CODE
+
+
 def test_an_explicit_http_status_wins_even_for_a_classified_exception(app_context):
     _response, status = json_exception(
         _psycopg2_operational_error(), ed.ERR_PROVIDER_MIGRATION_FAILED, 'retry shortly',
@@ -206,4 +246,7 @@ def test_an_http_exception_carrying_its_own_response_is_returned_untouched(app_c
 
     custom = HTTPException(response=Response('custom body', status=418))
 
-    assert json_http_exception(custom) is custom
+    assert json_http_exception(custom) is custom.response, (
+        'the response the error carries is the answer; the HTTPException itself has no '
+        'status_code for json_exception to read'
+    )

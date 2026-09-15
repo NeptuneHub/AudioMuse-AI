@@ -17,6 +17,8 @@ Main Features:
 * Playlist-length resolution from the request `n`, with no API upper bound.
 """
 
+import json
+
 import pytest
 
 import app_chat
@@ -338,3 +340,48 @@ class TestPlaylistLength:
         response = _run_pipeline_with_pool(monkeypatch, songs, {'n': bad_value})
 
         assert len(response['query_results']) == 1
+
+
+class TestStreamingErrorEvent:
+    @staticmethod
+    def _error_event(monkeypatch, failure):
+        from flask import Flask
+
+        def _pipeline(data, log_messages):
+            raise failure
+            yield
+
+        monkeypatch.setattr(app_chat, '_run_chat_pipeline', _pipeline)
+        monkeypatch.setattr(
+            app_chat.app_server_context, 'resolve_request_server_id', lambda data: None
+        )
+        app = Flask(__name__)
+        app.register_blueprint(app_chat.chat_bp, url_prefix='/chat')
+        response = app.test_client().post(
+            '/chat/api/chatPlaylistStream', json={'userInput': 'calm piano'}
+        )
+        events = [
+            json.loads(line[len('data: '):])
+            for line in response.get_data(as_text=True).splitlines()
+            if line.startswith('data: ')
+        ]
+        return next(event for event in events if event['type'] == 'error')
+
+    def test_a_classified_failure_shows_its_own_message_not_the_generic_one(self, monkeypatch):
+        operational_error = type('OperationalError', (Exception,), {'__module__': 'psycopg2'})
+
+        event = self._error_event(monkeypatch, operational_error('server closed'))
+
+        assert event['error_code'] == 4001
+        assert event['error'] == event['error_message'], (
+            'chat.html renders the error alias through apiErrorText; a fixed generic alias '
+            'hid the database outage the event had already classified'
+        )
+        assert 'server closed' not in json.dumps(event)
+
+    def test_an_unclassified_failure_keeps_the_generic_text(self, monkeypatch):
+        event = self._error_event(monkeypatch, KeyError('secret detail'))
+
+        assert event['error_code'] == 9999
+        assert event['error'] == 'An internal error has occurred.'
+        assert 'secret detail' not in json.dumps(event)

@@ -34,6 +34,7 @@ _EXPORTS = {
     "from_exception": "error.error_manager",
     "http_status_for_code": "error.error_manager",
     "is_out_of_memory": "error.error_manager",
+    "is_model_out_of_memory": "error.error_manager",
 }
 
 __all__ = list(_EXPORTS)

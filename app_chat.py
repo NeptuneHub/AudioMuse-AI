@@ -32,7 +32,6 @@ from error import error_manager
 from error.error_dictionary import (
     ERR_CONFIG_INVALID,
     ERR_INVALID_REQUEST,
-    ERR_MEDIASERVER_PLAYLIST,
     UNKNOWN_ERROR_CODE,
 )
 
@@ -410,12 +409,13 @@ def chat_playlist_stream_api():
         except Exception as exc:  # noqa: BLE001 - keep broad catch to protect streaming endpoint
             logger.exception("Streaming chat pipeline failed")
             failure = error_manager.build(error_manager.classify(exc, UNKNOWN_ERROR_CODE))
+            if failure["error_code"] == UNKNOWN_ERROR_CODE:
+                failure["error"] = "An internal error has occurred."
+            else:
+                failure["error"] = failure["error_message"]
             yield (
                 _SSE_DATA_PREFIX
-                + json.dumps(
-                    {"type": "error", **failure, "error": "An internal error has occurred.",
-                     "t": time.time()}
-                )
+                + json.dumps({"type": "error", **failure, "t": time.time()})
                 + "\n\n"
             )
             return
@@ -975,4 +975,4 @@ def create_media_server_playlist_api():
         )
         # Return generic, structured error to client (traceback stays in the log only).
         failed = "An internal error occurred while creating the playlist."
-        return json_exception(e, ERR_MEDIASERVER_PLAYLIST, failed, message=failed)
+        return json_exception(e, UNKNOWN_ERROR_CODE, failed, message=failed)

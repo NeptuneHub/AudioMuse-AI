@@ -317,17 +317,51 @@ class TestChildOutcome:
     @pytest.mark.skipif(
         not hasattr(signal, 'SIGKILL'), reason='POSIX wait statuses only'
     )
-    def test_a_readable_kernel_log_without_an_oom_record_is_not_out_of_memory(self, monkeypatch):
+    def test_a_kernel_log_that_names_no_victim_defers_to_the_cgroup_counter(self, monkeypatch):
         instance = _worker()
-        monkeypatch.setattr(worker_mod, '_oom_kill_count', lambda: 99)
         monkeypatch.setattr(worker_mod, '_kernel_oom_victims', lambda since: set())
+        monkeypatch.setattr(worker_mod, '_oom_kill_count', lambda: 99)
+
+        lost_record = instance._child_outcome(
+            'task-rotated', signal.SIGKILL, b'', {'kills': 1, 'since_usec': 5, 'pid': 6}
+        )
+        evicted = instance._child_outcome(
+            'task-evicted', signal.SIGKILL, b'', {'kills': 99, 'since_usec': 5, 'pid': 7}
+        )
+
+        assert lost_record[2]['error_code'] == ERR_OUT_OF_MEMORY, (
+            'an empty victim set only means no record was found: the kill record can '
+            'rotate out of the ring buffer or carry a timestamp that lags the job start, '
+            'and the cgroup counter still saw the out-of-memory kill'
+        )
+        assert evicted[2]['error_code'] == ERR_JOB_PROCESS_DIED
+        assert 'recorded no out-of-memory kill' in evicted[1]
+
+    def test_an_empty_kernel_log_without_a_readable_counter_is_not_out_of_memory(
+        self, monkeypatch
+    ):
+        instance = _worker()
+        monkeypatch.setattr(worker_mod, '_kernel_oom_victims', lambda since: set())
+        monkeypatch.setattr(worker_mod, '_oom_kill_count', lambda: None)
 
         outcome = instance._child_outcome(
-            'task-evicted', signal.SIGKILL, b'', {'kills': 1, 'since_usec': 5, 'pid': 6}
+            'task-evicted', signal.SIGKILL, b'', {'kills': None, 'since_usec': 5, 'pid': 6}
         )
 
         assert outcome[2]['error_code'] == ERR_JOB_PROCESS_DIED
-        assert 'kernel log records no out-of-memory kill' in outcome[1]
+        assert 'recorded no out-of-memory kill' in outcome[1]
+
+    def test_every_sigkill_summary_ends_by_pointing_at_the_container_logs(self, monkeypatch):
+        instance = _worker()
+        monkeypatch.setattr(worker_mod, '_oom_kill_count', lambda: None)
+        readings = (None, set(), {6}, {8})
+
+        for victims in readings:
+            monkeypatch.setattr(worker_mod, '_kernel_oom_victims', lambda since, v=victims: v)
+            outcome = instance._child_outcome(
+                'task-any', signal.SIGKILL, b'', {'kills': None, 'since_usec': 5, 'pid': 6}
+            )
+            assert outcome[1].endswith('Check the container logs for details.'), victims
 
     @pytest.mark.skipif(
         not hasattr(signal, 'SIGKILL'), reason='POSIX wait statuses only'

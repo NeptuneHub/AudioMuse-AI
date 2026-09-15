@@ -2460,6 +2460,24 @@ def test_a_non_memory_onnx_failure_is_not_retried_on_cpu():
     make_session.assert_not_called()
 
 
+def test_host_ram_running_out_does_not_load_a_second_session():
+    from tasks import onnx_utils
+
+    session = _named_session(None)
+    session.run.side_effect = MemoryError()
+
+    with patch.object(onnx_utils.ort, 'InferenceSession') as make_session:
+        with pytest.raises(MemoryError):
+            onnx_utils.run_inference_with_oom_fallback(
+                session, {'input': np.zeros((2, 3))}, 'output', '/m.onnx', 'embedding', 'a.flac'
+            )
+
+    assert make_session.call_count == 0, (
+        'a MemoryError is the host itself out of RAM: nothing the runtime owns is freed, '
+        'so a CPU session would only load into memory that is already exhausted'
+    )
+
+
 class TestOOMFallback:
     @patch('tasks.analysis.song.ort.InferenceSession')
     @patch('tasks.analysis.song._estimate_key_scale')

@@ -98,16 +98,21 @@ Main Features:
   pid namespace, so the pid means the same thing to both, and only for records
   newer than the job's start), and a kill the log pins on another process is
   ERR_JOB_PROCESS_DIED. Where the log is not readable (a normal container, macOS)
-  the worker's own cgroup oom_kill counter decides, which cannot name the victim
-  and says so; Windows runs jobs inline and never reaches this path,
-  SIGSEGV/SIGBUS/SIGABRT/SIGFPE/SIGILL are ERR_PROCESS_CRASHED (a native crash,
-  typically the model runtime), a stop this worker ordered is ERR_WORKER_LOST and
-  anything else is ERR_JOB_PROCESS_DIED. The record this attempt produced replaces
-  any record on the row, because a retry keeps the row's details and a record an
-  earlier attempt left there would otherwise blame that attempt's cause; a task's
-  own record only stands when the queue has none (a cancel). The record rides in
-  the outcome's third slot, which a success fills with the task's summary, so the
-  child's pickled report keeps its shape
+  or names no victim at all (a record rotated out of the ring buffer, or logged
+  on a clock that lags the job's start), the worker's own cgroup oom_kill counter
+  decides, which cannot name the victim and says so; Windows runs jobs inline and
+  never reaches this path, SIGSEGV/SIGBUS/SIGABRT/SIGFPE/SIGILL are
+  ERR_PROCESS_CRASHED (a native crash, typically the model runtime), a stop this
+  worker ordered is ERR_WORKER_LOST and anything else is ERR_JOB_PROCESS_DIED.
+  One verdict table holds every SIGKILL outcome's code and wording
+* The record rides in the outcome's third slot, which a success fills with the
+  task's summary, so the child's pickled report keeps its shape. A record the
+  task itself wrote during this attempt (a union analysis run records
+  ERR_INDEX_BUILD and then re-raises) wins over the queue's generic
+  classification. A record that was already on the row when the attempt was
+  claimed is an earlier attempt's, because a retry keeps the row's details, so
+  the queue's record for this attempt replaces it. The claim reads the row's
+  error for exactly this comparison
 * A declared verdict's message is the task's own recap line and is kept whole
   (up to _VERDICT_SUMMARY_LIMIT); the text of an unexpected exception is cut at
   _SUMMARY_LIMIT, because a traceback's first line is all the dashboard needs
@@ -202,6 +207,8 @@ logger = logging.getLogger(__name__)
 APPLICATION_NAME_LIMIT = 63
 
 UNCHARGED_REQUEUE_LIMIT = 3
+
+_UNREAD = object()
 
 _OPTIONAL_JOB_MODELS = (
     ('tasks.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
@@ -362,6 +369,7 @@ class Worker:
                 with self._conn.cursor() as cur:
                     job = sql.claim(cur, self.queue, time.time(), worker_id=self.identity)
                     if job is not None:
+                        job['error_at_claim'] = sql.current_details(cur, job['task_id']).get('error')
                         sql.hold(cur, job['task_id'])
                         self._held_task_id = job['task_id']
                         self._held_parent_id = job['parent_task_id']
@@ -767,14 +775,16 @@ class Worker:
             logger.debug("Closing the dead claim connection failed", exc_info=True)
         self._conn = None
 
-    def _write_terminal_row(self, task_id, status, error, result):
+    def _write_terminal_row(self, task_id, status, error, result, error_at_claim=_UNREAD):
         with self._conn.cursor() as cur:
             row = sql.current_row(cur, task_id)
             if row is None or row['status'] != config.TASK_STATUS_RUNNING:
                 _report_foreign_terminal(task_id, status, row)
                 return None
             previous = sql.current_details(cur, task_id)
-            details = _terminal_details(status, error, result, previous=previous)
+            details = _terminal_details(
+                status, error, result, previous=previous, error_at_claim=error_at_claim,
+            )
             written = sql.finish_task(
                 cur, task_id, status, details, time.time(), worker_id=self.identity,
             )
@@ -812,7 +822,10 @@ class Worker:
                         task_id,
                     )
                     self.connect()
-                recap = self._write_terminal_row(task_id, status, error, result)
+                recap = self._write_terminal_row(
+                    task_id, status, error, result,
+                    error_at_claim=job.get('error_at_claim', _UNREAD),
+                )
                 self._conn.commit()
             except Exception:
                 self._safe_rollback()
@@ -1000,7 +1013,7 @@ def _terminal_log(previous_log, status, message):
     return log
 
 
-def _terminal_details(status, error, result, previous=None):
+def _terminal_details(status, error, result, previous=None, error_at_claim=_UNREAD):
     details = dict(previous) if isinstance(previous, dict) else {}
     record = None
     summary = None
@@ -1015,9 +1028,13 @@ def _terminal_details(status, error, result, previous=None):
     message = _final_message(status, error, summary)
     details['message'] = message
     details['status_message'] = message
-    if record is not None:
+    written = details.get('error')
+    written_this_attempt = (
+        isinstance(written, dict) and error_at_claim is not _UNREAD and written != error_at_claim
+    )
+    if record is not None and not written_this_attempt:
         details['error'] = record
-    elif error and not isinstance(details.get('error'), dict):
+    elif error and not isinstance(written, dict):
         details['error'] = error
     details['log'] = _terminal_log(details.get('log'), status, message)
     return details
@@ -1282,57 +1299,61 @@ def _signal_name(signum):
         return f"signal {signum}"
 
 
-def _killed_child_death(signum, baseline):
-    baseline = baseline or {}
-    victims = _kernel_oom_victims(baseline.get('since_usec'))
+_SIGKILL_VERDICTS = {
+    'victim': (
+        ERR_OUT_OF_MEMORY,
+        "by the kernel out-of-memory killer: the system ran out of memory while the job ran.",
+    ),
+    'bystander': (
+        ERR_JOB_PROCESS_DIED,
+        "but the kernel out-of-memory killer ended a different process (pid {victims}) "
+        "while it ran, so something else stopped this job.",
+    ),
+    'counted': (
+        ERR_OUT_OF_MEMORY,
+        "while the kernel recorded an out-of-memory kill in this container: the container "
+        "ran out of memory while the job ran. The counter covers the whole container, so "
+        "the kill is attributed to this job without naming the victim process.",
+    ),
+    'not_counted': (
+        ERR_JOB_PROCESS_DIED,
+        "and the kernel recorded no out-of-memory kill while it ran. A "
+        "userspace memory killer (systemd-oomd, earlyoom, a Kubernetes eviction) or a "
+        "manual kill stopped it.",
+    ),
+    'unconfirmed': (
+        ERR_JOB_PROCESS_DIED,
+        "before it could report back. This is most often an out-of-memory kill, but the "
+        "kernel's out-of-memory records are not readable here to confirm it.",
+    ),
+}
+
+
+def _sigkill_verdict(baseline):
     pid = baseline.get('pid')
-    if victims is not None and pid is not None:
-        if pid in victims:
-            summary = (
-                f"The job process (pid {pid}) was killed on signal {signum} (SIGKILL) by the "
-                "kernel out-of-memory killer: the system ran out of memory while the job ran."
-            )
-            return summary, error_manager.build(ERR_OUT_OF_MEMORY, summary)
-        if victims:
-            summary = (
-                f"The job process was killed on signal {signum} (SIGKILL), but the kernel "
-                "out-of-memory killer ended a different process (pid "
-                f"{', '.join(str(victim) for victim in sorted(victims))}) while it ran, so "
-                "something else stopped this job. Check the container logs for details."
-            )
-            return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
-        summary = (
-            f"The job process was killed on signal {signum} (SIGKILL) and the kernel log "
-            "records no out-of-memory kill while it ran. A userspace memory killer "
-            "(systemd-oomd, earlyoom, a Kubernetes eviction) or a manual kill stopped it. "
-            "Check the container logs for details."
-        )
-        return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+    victims = _kernel_oom_victims(baseline.get('since_usec')) if pid is not None else None
+    if victims and pid in victims:
+        return 'victim', victims
+    if victims:
+        return 'bystander', victims
     kills_before = baseline.get('kills')
     kills_after = _oom_kill_count()
     if kills_before is not None and kills_after is not None:
-        if kills_after > kills_before:
-            summary = (
-                f"The job process was killed on signal {signum} (SIGKILL) while the kernel "
-                "recorded an out-of-memory kill in this container: the container ran out of "
-                "memory while the job ran. The counter covers the whole container, so the "
-                "kill is attributed to this job without naming the victim process."
-            )
-            return summary, error_manager.build(ERR_OUT_OF_MEMORY, summary)
-        summary = (
-            f"The job process was killed on signal {signum} (SIGKILL) and the kernel "
-            "recorded no out-of-memory kill in this container while it ran. A userspace "
-            "memory killer (systemd-oomd, earlyoom, a Kubernetes eviction) or a manual kill "
-            "stopped it. Check the container logs for details."
-        )
-        return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+        return ('counted' if kills_after > kills_before else 'not_counted'), victims
+    return ('unconfirmed' if victims is None else 'not_counted'), victims
+
+
+def _killed_child_death(signum, baseline):
+    baseline = baseline or {}
+    verdict, victims = _sigkill_verdict(baseline)
+    code, clause = _SIGKILL_VERDICTS[verdict]
+    process = f"The job process (pid {baseline['pid']})" if verdict == 'victim' else "The job process"
     summary = (
-        f"The job process was killed on signal {signum} (SIGKILL) before it could "
-        "report back. This is most often an out-of-memory kill, but the kernel's "
-        "out-of-memory counter is not readable here to confirm it. Check the container "
-        "logs for details."
+        f"{process} was killed on signal {signum} (SIGKILL) "
+        f"{clause.format(victims=', '.join(str(victim) for victim in sorted(victims or ())))} "
+        "Check the container logs for details."
     )
-    return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+    return summary, error_manager.build(code, summary)
 
 
 def _child_death(status, oom_baseline=None):
