@@ -1045,22 +1045,19 @@ function updateSongPathButtonState() {
     } catch (e) { console.warn('updateSongPathButtonState failed', e); }
 }
 
-// Append songs (array of objects with id/title/artist) to selection list UI
-function appendSongsToSelectionPanel(songs) {
+// Register minimal metadata for songs (id/title/artist) into the point cache
+// used for panel/tooltip rendering. Does not touch selection order.
+function registerSongMetadata(songs) {
     try {
-        window._plotSelection = window._plotSelection || [];
+        window._plotPointsFull = window._plotPointsFull || [];
         for (const s of songs) {
             if (!s || !s.item_id) continue;
             const sid = String(s.item_id);
-            if (!window._plotSelection.includes(sid)) window._plotSelection.push(sid);
-            // ensure minimal metadata is present in _plotPointsFull for display
-            window._plotPointsFull = window._plotPointsFull || [];
             if (!window._plotPointsFull.find(p => String(p.id) === sid)) {
                 window._plotPointsFull.push({ id: sid, title: s.title || '(unknown)', artist: s.author || s.artist || '', x: (s.embedding_2d && s.embedding_2d[0]) || undefined, y: (s.embedding_2d && s.embedding_2d[1]) || undefined, genre: s.mood_vector ? topGenre(s.mood_vector) : 'unknown' });
             }
         }
-        renderSelectionPanel();
-    } catch (e) { console.warn('appendSongsToSelectionPanel failed', e); }
+    } catch (e) { console.warn('registerSongMetadata failed', e); }
 }
 
 // Draw a polyline on the map for a path (array of items with embedding_2d or fallback coords)
@@ -1277,39 +1274,53 @@ function clearMapOverlays() {
         };
 
             // Song Path button: compute paths between selected songs (consecutive pairs)
+            // and splice each segment's intermediate songs BETWEEN its two endpoints,
+            // so waypoints stay in place (A,1,2,3,B,4,5,6,C) instead of all trailing
+            // after the original selection (A,B,C,1,2,3,4,5,6).
             document.getElementById('song-path-btn').onclick = async () => {
                 try {
                     const sel = (window._plotSelection || []).slice(0, 10); // cap at 10
                     if (!sel || sel.length < 2) { document.getElementById('map-status').textContent = 'Select at least 2 songs (max 10)'; return; }
                     document.getElementById('map-status').textContent = 'Computing paths...';
                     // For each consecutive pair, call /api/find_path?start_song_id=A&end_song_id=B&max_steps=25
-                    const allAppended = [];
+                    const orderedIds = [String(sel[0])];
+                    const seenIds = new Set(orderedIds);
                     for (let i = 0; i < sel.length - 1; i++) {
                         const a = sel[i];
                         const b = sel[i+1];
                         const params = new URLSearchParams({ start_song_id: a, end_song_id: b, max_steps: 25 });
+                        let segment = null;
                         try {
                             const resp = await fetch(`{{ url_for('path_bp.find_path_endpoint') }}?${params}`);
-                            if (!resp.ok) {
+                            if (resp.ok) {
+                                const data = await resp.json();
+                                if (data && Array.isArray(data.path) && data.path.length > 0) segment = data.path;
+                            } else {
                                 const err = await resp.json().catch(() => ({}));
                                 console.warn('find_path failed for', a, b, err);
-                                continue;
-                            }
-                            const data = await resp.json();
-                            if (data && Array.isArray(data.path) && data.path.length > 0) {
-                                // append these songs to inspect list and selection
-                                appendSongsToSelectionPanel(data.path);
-                                // draw the path on the map (use a color per segment)
-                                const color = `rgba(${(i*50)%255}, ${(150 + i*30)%255}, ${(200 - i*20 + 255)%255}, 0.85)`;
-                                drawPathOnMap(data.path, color);
-                                allAppended.push(...data.path.map(p => p.item_id));
                             }
                         } catch (e) {
                             console.warn('Error fetching path for pair', a, b, e);
                         }
+                        if (segment) {
+                            registerSongMetadata(segment);
+                            const color = `rgba(${(i*50)%255}, ${(150 + i*30)%255}, ${(200 - i*20 + 255)%255}, 0.85)`;
+                            drawPathOnMap(segment, color);
+                            // segment is ordered a..b (both endpoints included); splice in only new ids
+                            for (const song of segment) {
+                                if (!song || !song.item_id) continue;
+                                const sid = String(song.item_id);
+                                if (!seenIds.has(sid)) { orderedIds.push(sid); seenIds.add(sid); }
+                            }
+                        } else {
+                            // no path found for this pair: still keep the waypoint itself
+                            const sid = String(b);
+                            if (!seenIds.has(sid)) { orderedIds.push(sid); seenIds.add(sid); }
+                        }
+                        window._plotSelection = orderedIds.slice();
+                        renderSelectionPanel();
                     }
-                    document.getElementById('map-status').textContent = `Appended ${allAppended.length} songs from ${sel.length-1} paths`;
-                    renderSelectionPanel();
+                    document.getElementById('map-status').textContent = `Built path with ${orderedIds.length} songs from ${sel.length-1} segments`;
                     updateSongPathButtonState();
                 } catch (e) {
                     console.error('song-path failed', e);

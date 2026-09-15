@@ -565,52 +565,50 @@ class TestDbscanOversizeSplit:
 
 
 class TestDataPreparationAndScaling:
-    def test_prepare_and_scale_data_with_features(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_with_features(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         x_embed = None
 
-        scaled_data, scaler = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
+        normalized_data = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=False)
 
-        assert scaled_data is not None
-        assert scaler is not None
-        assert scaled_data.shape == x_feat.shape
+        assert normalized_data is not None
+        assert normalized_data.shape == x_feat.shape
 
-        assert np.abs(scaled_data.mean(axis=0)).max() < 0.1
-        assert np.abs(scaled_data.std(axis=0) - 1.0).max() < 0.1
+        assert np.allclose(np.linalg.norm(normalized_data, axis=1), 1.0, atol=1e-6)
 
-    def test_prepare_and_scale_data_with_embeddings(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_with_embeddings(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.array([[1.0, 2.0], [3.0, 4.0]])
         x_embed = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]])
 
-        scaled_data, _ = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=True)
+        normalized_data = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=True)
 
-        assert scaled_data is not None
-        assert scaled_data.shape == x_embed.shape
-        assert scaled_data.shape[1] == 4
+        assert normalized_data is not None
+        assert normalized_data.shape == x_embed.shape
+        assert normalized_data.shape[1] == 4
 
-    def test_prepare_and_scale_data_returns_none_for_empty(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_returns_none_for_empty(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.array([])
         x_embed = None
 
-        result = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
+        result = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=False)
 
-        assert result == (None, None)
+        assert result is None
 
-    def test_prepare_and_scale_data_returns_none_for_zero_rows(self):
-        from tasks.clustering_helper import _prepare_and_scale_data
+    def test_prepare_and_normalize_data_returns_none_for_zero_rows(self):
+        from tasks.clustering_helper import _prepare_and_normalize_data
 
         x_feat = np.empty((0, 5))
         x_embed = None
 
-        result = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
+        result = _prepare_and_normalize_data(x_feat, x_embed, use_embeddings=False)
 
-        assert result == (None, None)
+        assert result is None
 
 
 class TestFeatureCentroidCalculation:
@@ -1367,9 +1365,7 @@ class TestClusterNaming:
         centroid = np.array([0.8, 0.6, 0.9, 0.1, 0.2])
         mood_labels = ['rock', 'pop', 'jazz']
 
-        name, details = _name_cluster(
-            centroid, pca_model=None, pca_enabled=False, mood_labels=mood_labels, scaler=None
-        )
+        name, details = _name_cluster(centroid, mood_labels)
 
         assert isinstance(name, str)
         assert 'Fast' in name
@@ -1382,7 +1378,7 @@ class TestClusterNaming:
         centroid = np.array([0.2, 0.4, 0.5, 0.3, 0.2])
         mood_labels = ['chill', 'relaxed', 'ambient']
 
-        name, _ = _name_cluster(centroid, None, False, mood_labels, None)
+        name, _ = _name_cluster(centroid, mood_labels)
 
         assert 'Slow' in name
 
@@ -1392,7 +1388,7 @@ class TestClusterNaming:
         centroid = np.array([0.5, 0.5, 0.4, 0.4, 0.2])
         mood_labels = ['pop', 'dance', 'electronic']
 
-        name, _ = _name_cluster(centroid, None, False, mood_labels, None)
+        name, _ = _name_cluster(centroid, mood_labels)
 
         assert 'Medium' in name
 
@@ -1402,7 +1398,7 @@ class TestClusterNaming:
         centroid = np.array([0.6, 0.5, 0.9, 0.8, 0.1])
         mood_labels = ['rock', 'pop', 'jazz']
 
-        name, details = _name_cluster(centroid, None, False, mood_labels, None)
+        name, details = _name_cluster(centroid, mood_labels)
 
         assert 'Rock' in name or 'Pop' in name
 
@@ -1493,11 +1489,9 @@ def test_the_persisted_result_drops_the_blobs_nothing_reads():
         'playlist_primary_genres': {'P1': 'rock'},
         'parameters': {'method': 'kmeans'},
         'fitness_score': 9.1,
-        'scaler_details': {'mean': [0.0] * 200, 'scale': [1.0] * 200},
         'pca_model_details': {'components': [[0.0] * 200] * 4},
     })
 
-    assert 'scaler_details' not in kept
     assert 'pca_model_details' not in kept, (
         'the PCA matrix is n_components x EMBEDDING_DIMENSION floats and nothing '
         'reads it once the run is over'
@@ -1537,10 +1531,9 @@ def test_batches_from_an_earlier_server_phase_are_revoked_not_left_to_fail(monke
 
     revoked = []
     monkeypatch.setattr(
-        clustering, 'save_task_status',
-        lambda job_id, *_a, **_k: revoked.append(job_id),
+        clustering.taskqueue, 'end_child',
+        lambda job_id, parent_task_id, status, message: revoked.append(job_id) or True,
     )
-    monkeypatch.setattr(clustering.taskqueue, 'request_cancel', lambda _job_id: None)
     monkeypatch.setattr(
         clustering.taskqueue, 'live_children',
         lambda _parent: [
@@ -1610,29 +1603,40 @@ def test_clustering_batch_parent_check_and_enqueue_share_the_cancel_lock(monkeyp
     ) is True
 
 
+def _revoked_result(fn, **kwargs):
+    from taskqueue import TaskCancelled
+
+    try:
+        return fn(**kwargs)
+    except TaskCancelled:
+        return {'status': 'REVOKED'}
+
+
 def test_batch_start_racing_the_cancel_wipe_never_recreates_a_child_row(monkeypatch):
     import sys
     import types
     from contextlib import nullcontext
     from flask import Flask
     import tasks.clustering as clustering
+    import tasks.task_run as task_run
 
     fake_flask_app = types.ModuleType('flask_app')
     fake_flask_app.app = Flask('cancelled-batch-start')
     monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
     job = Mock(id='parent-1_s0_batch_0', meta={})
     monkeypatch.setattr(clustering.taskqueue, 'current_task_id', lambda: job.id)
-    parent_reads = iter([{'status': 'RUNNING'}, None])
     monkeypatch.setattr(
-        clustering, 'get_task_info_from_db', lambda _task_id: next(parent_reads)
+        clustering, 'get_task_info_from_db', lambda _task_id: {'status': 'RUNNING'}
     )
+    monkeypatch.setattr(task_run, '_read_task_statuses', lambda _conn, _ids: {})
     monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
     writes = []
     monkeypatch.setattr(
-        clustering, 'save_task_status', lambda *a, **k: writes.append((a, k))
+        task_run, 'save_task_status', lambda *a, **k: writes.append((a, k))
     )
 
-    result = clustering.run_clustering_batch_task(
+    result = _revoked_result(
+        clustering.run_clustering_batch_task,
         batch_id_str='Batch_0',
         start_run_idx=0,
         num_iterations_in_batch=1,
@@ -1657,4 +1661,104 @@ def test_batch_start_racing_the_cancel_wipe_never_recreates_a_child_row(monkeypa
     )
 
     assert result['status'] == 'REVOKED'
-    assert writes == []
+    assert writes == [], (
+        'the cancel wiped both rows between the claim and the first write; the '
+        'shared cancel check runs BEFORE the opening write, so nothing recreates '
+        'a child row for a parent that is gone'
+    )
+
+
+def _batch_kwargs():
+    return dict(
+        batch_id_str='Batch_0',
+        start_run_idx=0,
+        num_iterations_in_batch=1,
+        genre_to_lightweight_track_data_map_json='{}',
+        target_songs_per_genre=1,
+        sampling_percentage_change_per_run=0.1,
+        clustering_method='kmeans',
+        active_mood_labels_for_batch=[],
+        num_clusters_min_max_tuple=(2, 3),
+        dbscan_params_ranges_dict={},
+        gmm_params_ranges_dict={},
+        spectral_params_ranges_dict={},
+        pca_params_ranges_dict={'components_min': 2, 'components_max': 3},
+        max_songs_per_cluster=50,
+        parent_task_id='parent-1',
+        score_weights_dict={},
+        elite_solutions_params_list_json='[]',
+        exploitation_probability=0.0,
+        mutation_config_json='{}',
+        initial_subset_track_ids_json='[]',
+        enable_clustering_embeddings_param=True,
+    )
+
+
+def _live_batch_harness(monkeypatch):
+    import sys
+    import types
+    from contextlib import nullcontext
+    from flask import Flask
+    import tasks.clustering as clustering
+    import tasks.task_run as task_run
+
+    fake_flask_app = types.ModuleType('flask_app')
+    fake_flask_app.app = Flask('live-batch')
+    monkeypatch.setitem(sys.modules, 'flask_app', fake_flask_app)
+    monkeypatch.setattr(clustering.taskqueue, 'current_task_id', lambda: 'parent-1_s0_batch_0')
+    monkeypatch.setattr(
+        clustering, 'get_task_info_from_db', lambda _task_id: {'status': 'RUNNING'}
+    )
+    monkeypatch.setattr(task_run, '_open_check_connection', lambda: object())
+    monkeypatch.setattr(
+        task_run, '_read_task_statuses',
+        lambda _conn, ids: {task_id: 'RUNNING' for task_id in ids},
+    )
+    monkeypatch.setattr(clustering, 'main_task_start_lock', nullcontext)
+    monkeypatch.setattr(clustering, 'row_heartbeat', lambda *a, **k: nullcontext())
+    return clustering, task_run
+
+
+def test_a_batch_whose_opening_write_fails_raises_that_error_not_an_unbound_name(monkeypatch):
+    import pytest
+
+    clustering, task_run = _live_batch_harness(monkeypatch)
+
+    def _db_gone(*_a, **_k):
+        raise RuntimeError('db gone')
+
+    monkeypatch.setattr(task_run, 'save_task_status', _db_gone)
+
+    kwargs = _batch_kwargs()
+
+    with pytest.raises(RuntimeError, match='db gone'):
+        clustering.run_clustering_batch_task(**kwargs)
+
+
+def test_a_batch_returns_its_best_result_so_the_queue_row_carries_it(monkeypatch):
+    clustering, task_run = _live_batch_harness(monkeypatch)
+    writes = []
+    monkeypatch.setattr(
+        task_run, 'save_task_status', lambda *a, **k: writes.append(k) or True
+    )
+    monkeypatch.setattr(
+        clustering, '_get_stratified_song_subset', lambda *a, **k: [{'item_id': 'song-1'}]
+    )
+    best = {'fitness_score': 1.5, 'parameters': {'method': 'kmeans'}, 'named_playlists': {}}
+    monkeypatch.setattr(
+        clustering, '_perform_single_clustering_iteration', lambda **k: dict(best)
+    )
+
+    result = clustering.run_clustering_batch_task(**_batch_kwargs())
+
+    assert result['status'] == 'SUCCESS'
+    assert result['iterations_completed_in_batch'] == 1
+    assert result['full_best_result_from_batch']['fitness_score'] == 1.5
+    assert result['final_subset_track_ids'] == ['song-1']
+    assert all(
+        'full_best_result_from_batch' not in (k.get('details') or {}) for k in writes
+    ), (
+        'the winning result rides the dict the batch RETURNS, which the queue writes '
+        'on the terminal row with a retry on a fresh connection; a progress write '
+        'whose return value nobody checks is not a carrier for the whole batch'
+    )

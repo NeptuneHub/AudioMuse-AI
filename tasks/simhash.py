@@ -407,7 +407,7 @@ def is_fingerprint_id(item_id):
 def signature_id_sql(alias=''):
     col = f"{alias}.item_id" if alias else "item_id"
     sql = (
-        f"{col} LIKE 'fp\\_%%' AND length({col}) = %s "
+        f"{col} LIKE E'fp\\\\_%%' AND length({col}) = %s "
         f"AND substring({col} from 4 for 1) BETWEEN '1' AND '9' "
         f"AND left({col}, %s) <> %s"
     )

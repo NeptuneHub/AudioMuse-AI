@@ -10,8 +10,8 @@
 
 Provides a logging handler that keeps the most recent lines at the top of the
 file (so the log reads newest-first) and caps the file at a maximum line count,
-flushing on a timer. Lives under ``macos`` but is imported by all three
-platform supervisors.
+flushing on a timer. Shared by all three platform supervisors, which is why it
+lives in ``native_common`` rather than under any one platform package.
 
 Main Features:
 * Prepends new records and truncates to a bounded line count in memory.

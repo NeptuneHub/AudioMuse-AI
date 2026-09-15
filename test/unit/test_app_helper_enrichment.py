@@ -90,6 +90,24 @@ class TestAttachSongFeaturesEnrichment:
         assert result[0]['album'] == 'Album'
         mock_lookup.assert_called_once_with([1])
 
+    def test_top_mood_from_clap_other_features(self):
+        rows = [{'item_id': 1}]
+        with patch(
+            'app_helper.get_score_data_by_ids',
+            return_value=[make_score(1, other_features='happy:0.9,danceable:0.2')],
+        ):
+            result = attach_song_features(rows)
+        assert result[0]['top_mood'] == 'happy'
+
+    def test_top_mood_none_when_other_features_missing(self):
+        rows = [{'item_id': 1}]
+        with patch(
+            'app_helper.get_score_data_by_ids',
+            return_value=[make_score(1, other_features=None)],
+        ):
+            result = attach_song_features(rows)
+        assert result[0]['top_mood'] is None
+
     def test_empty_score_data_leaves_rows_unenriched(self):
         rows = [{'item_id': 5, 'title': 't'}]
         with patch('app_helper.get_score_data_by_ids', return_value=[]):
@@ -125,3 +143,13 @@ class TestAttachSongFeaturesEnrichment:
         with patch('app_helper.get_score_data_by_ids', return_value=[score]):
             result = attach_song_features(rows)
         assert result[0]['top_genre'] == 'metal'
+
+
+def test_top_clap_mood_picks_highest_clap_label():
+    from app_helper import top_clap_mood
+
+    assert top_clap_mood('danceable:0.4,happy:0.9,sad:0.1') == 'happy'
+    assert top_clap_mood('aggressive:0.7,relaxed:0.2') == 'aggressive'
+    assert top_clap_mood('') is None
+    assert top_clap_mood(None) is None
+    assert top_clap_mood('rock:0.9') is None

@@ -73,8 +73,9 @@ def _normalize_track(item):
         except (TypeError, ValueError):
             year = None
 
+    track_id = _try('Id', 'id', 'track_id')
     return {
-        'id': _try('Id', 'id', 'track_id'),
+        'id': str(track_id) if track_id is not None else None,
         'path': _try('Path', 'path', 'url'),
         'title': _try('Name', 'name', 'title'),
         'artist': _try('AlbumArtist', 'artist', 'author'),

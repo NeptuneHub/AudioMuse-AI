@@ -20,6 +20,12 @@ Main Features:
 * select_diverse_playlists_with_genre_coverage: select a strict Top-N: two
   maximally separated playlists for each of the three most represented genres,
   then four mutually different non-top genres by max-min centroid distance.
+  That centroid distance stays EUCLIDEAN on purpose even though every song
+  level measure is cosine: the rows fed to the clustering model are already
+  L2-normalized, so between unit vectors ||a - b||^2 = 2 - 2*cos(a, b) and the
+  Euclidean spacing IS the cosine spacing; and once PCA has run the space is
+  mean-centred, which preserves Euclidean distance but leaves the origin
+  meaningless, so an angle measured from it would not be a cosine at all.
 """
 
 import logging
@@ -290,9 +296,7 @@ def _dedupe_single_playlist(playlist_name, songs_list, db_conn, log_prefix):
         f"{log_prefix}SORTED ORDER - First 5 titles: {[song[1] for song in songs_sorted_by_title[:5]]}"
     )
 
-    song_results = [
-        {"item_id": item_id} for item_id, title, author in songs_sorted_by_title
-    ]
+    song_results = [{"item_id": song[0]} for song in songs_sorted_by_title]
 
     logger.debug(
         f"{log_prefix}Filtering playlist '{playlist_name}' with {len(song_results)} songs"
@@ -335,7 +339,7 @@ def _restrict_result_metadata(new_result, best_result, kept_names):
 
 def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
     try:
-        from app_helper import get_db
+        from database import get_db
 
         if not best_result or not best_result.get("named_playlists"):
             logger.warning(

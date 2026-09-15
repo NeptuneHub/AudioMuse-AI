@@ -9,9 +9,7 @@
 """App-layer helpers composing the data and queue layers for the web/task tiers.
 
 Orchestration and presentation glue on top of ``database`` and ``taskqueue``.
-This is NOT the database layer: all SQL lives in ``database.py``. It also
-re-exports the most-used ``database`` handles so the many modules doing
-``from app_helper import get_db, save_task_status, ...`` stay untouched.
+This is NOT the database layer: all SQL lives in ``database.py``.
 
 Main Features:
 * ``cancel_job_and_children_recursive`` tombstones every task row and notifies
@@ -22,55 +20,64 @@ Main Features:
   ``top_stratified_genre`` enrich API result rows.
 * Shared blueprint helpers: ``index_error_body`` builds the structured API
   error body and ``probe_catalogue_canonical_ids`` probes score for canonical
-  fp_ ids (None on probe failure so callers pick their own fail-closed policy).
+  fp_ ids (None on probe failure so callers pick their own fail-closed policy),
+  and ``catalogue_has_canonical_ids`` memoizes that probe (a failure fails
+  closed for the TTL); the map cache build seeds the memo from the ids it just
+  loaded via ``remember_catalogue_canonical_ids``.
 """
 
 import json
 import logging
 import time
 
+from flask import jsonify
 from psycopg2.extras import DictCursor
 import numpy as np
 
 import database
+import task_types
 import taskqueue
 from taskqueue.sql import CONTROL_TASK_TYPE
-from database import (  # noqa: F401
+from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
+from database import (
     get_db,
-    close_db,
     coerce_db_details,
     INLINE_FLASK_TASK_TYPES,
     save_task_status,
-    record_task_history,
-    _build_task_note,
     get_score_data_by_ids,
-    load_map_projection,
     get_task_info_from_db,
-    get_task_statuses,
-    main_task_start_lock,
-    get_tracks_by_ids,
-    save_track_analysis_and_embedding,
-    # Used internally by the build_and_store_* projection orchestration below.
     save_map_projection,
     save_artist_projection,
 )
-from config import (  # noqa: F401
+from config import (
     STRATIFIED_GENRES,
+    OTHER_FEATURE_LABELS,
     TASK_STATUS_NEW,
     TASK_STATUS_RUNNING,
-    TASK_STATUS_PENDING,
-    TASK_STATUS_STARTED,
-    TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAIL,
-    TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
 
 from error import error_manager
-from error.error_dictionary import UNKNOWN_ERROR_CODE
+from error.error_dictionary import ERR_TASK_IN_PROGRESS, UNKNOWN_ERROR_CODE
 
 logger = logging.getLogger(__name__)
+
+
+def min_bound(value, floor):
+    try:
+        return floor if float(value) >= float(floor) else value
+    except (TypeError, ValueError):
+        return floor
+
+
+def max_bound(value, ceiling):
+    try:
+        return ceiling if float(value) <= float(ceiling) else value
+    except (TypeError, ValueError):
+        return ceiling
+
 
 
 # The Flask `app` object is intentionally NOT imported here (circular import);
@@ -85,13 +92,70 @@ def index_error_body(code, message):
     return payload
 
 
+def queue_busy_error_body(active_task, action):
+    payload = error_manager.build(
+        ERR_TASK_IN_PROGRESS,
+        f"Another queue job ({active_task['task_type']}) is still running. "
+        f"Wait for it to finish before starting {action}.",
+    )
+    payload["error"] = payload["error_message"]
+    payload["task_id"] = active_task["task_id"]
+    payload["status"] = active_task["status"]
+    return payload
+
+
+def queue_race_error_body(exc_message, active_task):
+    payload = error_manager.build(ERR_TASK_IN_PROGRESS, exc_message)
+    payload["error"] = payload["error_message"]
+    payload["task_id"] = active_task["task_id"] if active_task else None
+    payload["status"] = active_task["status"] if active_task else None
+    return payload
+
+
+def admit_and_enqueue_main_task(
+    *,
+    job_id,
+    task_type,
+    busy_label,
+    error_message,
+    enqueue,
+    blocking_gate=None,
+    race_read=None,
+):
+    # Gate, archive and enqueue are one session-scoped critical section: the
+    # archive REVOKES every live root, so doing it before the gate would let a
+    # start cancel the task that was running and then win the unique index; and
+    # a session lock held across the archive's internal commit stops this start
+    # from retiring a main task another caller enqueued between our gate read
+    # and our archive.
+    with database.main_task_start_lock():
+        active_task = (
+            blocking_gate() if blocking_gate else database.get_queue_blocking_task()
+        )
+        if active_task:
+            return jsonify(queue_busy_error_body(active_task, busy_label)), 409
+
+        database.clean_up_previous_main_tasks()
+        try:
+            enqueue()
+        except taskqueue.TaskAlreadyRunning as exc:
+            active = race_read() if race_read else database.get_active_main_task()
+            return jsonify(queue_race_error_body(exc.user_message, active)), exc.status_code
+        except Exception:
+            logger.exception("Could not queue the %s task", task_type)
+            return jsonify({"error": error_message}), 500
+    return jsonify(
+        {"task_id": job_id, "task_type": task_type, "status": TASK_STATUS_NEW}
+    ), 202
+
+
 def probe_catalogue_canonical_ids():
     conn = None
     try:
         conn = get_db()
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE 'fp\\_%%')"
+                "SELECT EXISTS (SELECT 1 FROM score WHERE item_id LIKE E'fp\\\\_%%')"
             )
             return bool(cur.fetchone()[0])
     except Exception:
@@ -102,6 +166,30 @@ def probe_catalogue_canonical_ids():
             except Exception:
                 logger.exception("Rollback after failed canonical-id probe also failed")
         return None
+
+
+_HAS_CANONICAL_IDS = None
+_HAS_CANONICAL_CHECKED_AT = 0.0
+_HAS_CANONICAL_TTL = 60.0
+
+
+def remember_catalogue_canonical_ids(has_canonical):
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    _HAS_CANONICAL_IDS = bool(has_canonical)
+    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+
+
+def catalogue_has_canonical_ids():
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    if _HAS_CANONICAL_IDS:
+        return True
+    now = time.monotonic()
+    if _HAS_CANONICAL_CHECKED_AT and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
+        return _HAS_CANONICAL_IDS is not False
+    result = probe_catalogue_canonical_ids()
+    _HAS_CANONICAL_IDS = result
+    _HAS_CANONICAL_CHECKED_AT = now
+    return result is not False
 
 
 def sanitize_task_details(details, state, task_type=None):
@@ -177,11 +265,11 @@ def sanitize_task_details(details, state, task_type=None):
     return details
 
 
-def top_stratified_genre(mood_vector):
-    if not mood_vector or not isinstance(mood_vector, str):
+def _top_scored_label(packed, allowed):
+    if not packed or not isinstance(packed, str):
         return None
     scores = {}
-    for part in mood_vector.split(','):
+    for part in packed.split(','):
         label, _, value = part.partition(':')
         label = label.strip()
         if not label:
@@ -190,10 +278,18 @@ def top_stratified_genre(mood_vector):
             scores[label] = float(value)
         except ValueError:
             continue
-    candidates = [g for g in STRATIFIED_GENRES if g in scores]
+    candidates = [name for name in allowed if name in scores]
     if not candidates:
         return None
     return max(candidates, key=scores.get)
+
+
+def top_stratified_genre(mood_vector):
+    return _top_scored_label(mood_vector, STRATIFIED_GENRES)
+
+
+def top_clap_mood(other_features):
+    return _top_scored_label(other_features, OTHER_FEATURE_LABELS)
 
 
 def attach_song_features(rows, id_key='item_id'):
@@ -212,6 +308,7 @@ def attach_song_features(rows, id_key='item_id'):
             r.setdefault('mood_vector', s.get('mood_vector'))
             r.setdefault('other_features', s.get('other_features'))
             r.setdefault('top_genre', top_stratified_genre(s.get('mood_vector')))
+            r.setdefault('top_mood', top_clap_mood(s.get('other_features')))
     return rows
 
 
@@ -242,6 +339,7 @@ def serialize_neighbor_results(
             "mood_vector": info.get('mood_vector'),
             "other_features": info.get('other_features'),
             "top_genre": top_stratified_genre(info.get('mood_vector')),
+            "top_mood": top_clap_mood(info.get('other_features')),
         }
         if include_album_artist:
             row["album_artist"] = info.get('album_artist') or 'unknown'
@@ -598,7 +696,9 @@ def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
         for row in snapshots:
             if row['task_id'] in protected_task_ids:
                 continue
-            if row['task_type'] in (CONTROL_TASK_TYPE, 'provider_migration_planner'):
+            if row['task_type'] in (
+                (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE) + task_types.SIDE_JOB_TASK_TYPES
+            ):
                 continue
             _record_one_cancellation(row, now_ts, reason)
     except Exception:

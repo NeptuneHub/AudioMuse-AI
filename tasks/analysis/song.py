@@ -14,8 +14,25 @@ and OOM-to-CPU retry, the CLAP and lyrics stages, and the DB writes that store
 each result under the canonical catalogue id.
 
 Main Features:
+* musicnn_embedding_for_audio: the MusiCNN embedding of an in-memory 16 kHz
+  clip through the same patches and sessions analysis uses; None when the clip
+  is too short for one patch, RuntimeError when inference itself fails.
 * analyze_track / robust_load_audio_with_fallback: decode a file and produce the
-  MusiCNN moods + embedding; a track that cannot be decoded returns None.
+  MusiCNN moods + embedding; a track that yields no audio at all returns None,
+  while one whose packets are only partly corrupt returns however much decoded
+  cleanly. The PyAV fallback skips undecodable packets rather than abandoning the
+  whole track, and averages the channels itself rather than letting swresample
+  downmix, because swresample is power-preserving (1/sqrt(2) per channel) while librosa is
+  amplitude-preserving ((L+R)/2); the two decoders must agree or the same file
+  yields different embeddings depending on which one opened it.
+* duration_seconds is MEASURED on the audio that actually decoded, never read from
+  the container header, and two consequences follow. AUDIO_LOAD_TIMEOUT caps the
+  decode at 600s, so a track longer than that already stores a truncated duration
+  today. And a partly corrupt file stores a short duration, which makes the
+  identity duration veto (DURATION_TOLERANCE_SECONDS, 1s) split it from an intact
+  copy of the same song on another server. That split is DELIBERATE: a damaged
+  file must not share a catalogue row with a good one, otherwise replacing it with
+  a working copy would reuse the damaged embedding instead of re-analyzing it.
 * run_clap_for_track / run_lyrics_for_track: the optional per-song stages; every
   failure is recorded through the central error registry and never raised past
   the stage (a DB outage is the one exception: it re-raises so the album retries).
@@ -32,13 +49,17 @@ import os
 
 import numpy as np
 import librosa
-import onnxruntime as ort
+
+import onnxruntime as ort  # noqa: F401
 
 from config import (
     AUDIO_LOAD_TIMEOUT,
+    AUDIO_MIN_DECODED_FRACTION,
     MUSICNN_BATCH_SIZE,
     OTHER_FEATURE_LABELS,
     PER_SONG_MODEL_RELOAD,
+    TEMPO_MAX_BPM,
+    TEMPO_MIN_BPM,
 )
 from database import (
     get_db,
@@ -59,6 +80,8 @@ from error.error_dictionary import (
 
 from ..memory_utils import cleanup_cuda_memory, cleanup_onnx_session, comprehensive_memory_cleanup
 
+from ..onnx_utils import create_onnx_session, resolve_providers, run_inference_with_oom_fallback
+
 
 logger = logging.getLogger(__name__)
 
@@ -69,149 +92,8 @@ DEFINED_TENSOR_NAMES = {
 }
 
 
-def _find_onnx_name(candidate, names):
-    if not names:
-        return None
-    stripped = candidate.split(':')[0]
-    for cand in (candidate, stripped, stripped.split('/')[-1], stripped.replace('/', '_')):
-        if cand in names:
-            return cand
-    return names[0]
-
-
-def run_inference(session, feed_dict, output_tensor_name=None):
-    input_names = [i.name for i in session.get_inputs()]
-    mapped = {}
-    for k, v in feed_dict.items():
-        name = _find_onnx_name(k, input_names)
-        if name is None:
-            logger.error(f"Could not map input '{k}' to ONNX inputs {input_names}")
-            return None
-        mapped[name] = v
-    output_names = [o.name for o in session.get_outputs()]
-    default_output = output_names[0] if output_names else None
-    out = (
-        _find_onnx_name(output_tensor_name, output_names)
-        if output_tensor_name
-        else default_output
-    )
-    if out is None:
-        logger.error("No ONNX output name available to run inference.")
-        return None
-    result = session.run([out], mapped)
-    return result[0] if isinstance(result, list) and len(result) > 0 else result
-
-
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
-
-
-# The session labels a plugin can scope an ONNX provider to. Every session that
-# calls resolve_providers passes one of these, so anything else in a plugin's
-# only_models/exclude_models is a typo that would silently match nothing.
-MODEL_LABELS = frozenset({
-    'musicnn',
-    'clap',
-    'clap_text',
-    'whisper_encoder',
-    'whisper_decoder',
-    'gte',
-    'silero_vad',
-})
-
-def _scoped_labels(provider, key):
-    """Return a provider's model scope as a list, warning about unknown labels."""
-    value = provider.get(key)
-    if not value:
-        return None
-    labels = [value] if isinstance(value, str) else list(value)
-    unknown = [name for name in labels if name not in MODEL_LABELS]
-    if unknown:
-        logger.warning(
-            "ONNX provider %s: unknown %s %s - known model labels are %s",
-            provider.get('name'), key, unknown, sorted(MODEL_LABELS),
-        )
-    return labels
-
-
-def _add_plugin_provider(chain, provider, entry):
-    position = provider.get('position') or 'before_cpu'
-    if position == 'before_cuda':
-        chain.insert(0, entry)
-        return
-    if position != 'before_cpu':
-        logger.warning(
-            "ONNX provider %s: unknown position %r - using 'before_cpu'",
-            provider.get('name'), position,
-        )
-    chain.append(entry)
-
-
-def resolve_providers(allow_coreml=False, cuda_options=None, label=None,
-                      cpu_only_default=False):
-    """Build the ONNX provider chain for one session.
-
-    ``label`` names the model (see MODEL_LABELS) so a plugin can offer its
-    accelerator for only the graphs it can compile. ``cpu_only_default`` marks a
-    session that core keeps on CPU: the built-in GPU providers are skipped and a
-    plugin provider is used only when it names the label in ``only_models``.
-    """
-    available = ort.get_available_providers()
-    chain = []
-
-    if not cpu_only_default and 'CUDAExecutionProvider' in available:
-        chain.append(
-            (
-                'CUDAExecutionProvider',
-                cuda_options
-                or {
-                    'device_id': 0,
-                    'arena_extend_strategy': 'kSameAsRequested',
-                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                    'do_copy_in_default_stream': True,
-                },
-            )
-        )
-
-    if not cpu_only_default and allow_coreml and 'CoreMLExecutionProvider' in available:
-        chain.append(
-            (
-                'CoreMLExecutionProvider',
-                {
-                    'MLComputeUnits': 'ALL',
-                    'ModelFormat': 'MLProgram',
-                },
-            )
-        )
-
-    for provider in _plugin_onnx_providers():
-        name = provider.get('name')
-        if not name or name not in available or name in [p[0] for p in chain]:
-            continue
-        # Providers can be scoped to specific models by their session label, so a
-        # plugin can offer an accelerator for the graphs it handles
-        only = _scoped_labels(provider, 'only_models')
-        exclude = _scoped_labels(provider, 'exclude_models')
-        if only and label not in only:
-            continue
-        if exclude and label in exclude:
-            continue
-        # A CPU-by-default session is opt-in: the plugin has to name it.
-        if cpu_only_default and not only:
-            continue
-        _add_plugin_provider(chain, provider, (name, provider.get('options') or {}))
-
-    chain.append(('CPUExecutionProvider', {}))
-    logger.info("ONNX provider chain for %s: %s", label or 'unlabelled', [p[0] for p in chain])
-    return chain
-
-
-def _plugin_onnx_providers():
-    try:
-        from plugin.manager import plugin_manager
-        return plugin_manager.get_onnx_providers()
-    except Exception:
-        return []
 
 
 def analysis_server_identity():
@@ -265,35 +147,6 @@ def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding
         logger.exception('Plugin song-analyzed hook dispatch failed')
 
 
-def _default_sess_options():
-    opts = ort.SessionOptions()
-    opts.enable_cpu_mem_arena = False
-    opts.enable_mem_pattern = False
-    return opts
-
-
-def create_onnx_session(
-    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False
-):
-    opts = provider_options or resolve_providers(allow_coreml=allow_coreml, label=label)
-    if sess_options is None:
-        sess_options = _default_sess_options()
-    try:
-        return ort.InferenceSession(
-            model_path,
-            providers=[p[0] for p in opts],
-            provider_options=[p[1] for p in opts],
-            sess_options=sess_options,
-        )
-    except Exception:
-        logger.warning(f"Failed to load {label or model_path} with GPU - falling back to CPU")
-        return ort.InferenceSession(
-            model_path,
-            providers=['CPUExecutionProvider'],
-            sess_options=sess_options,
-        )
-
-
 def load_musicnn_sessions(model_paths):
     opts = resolve_providers(allow_coreml=False, label='musicnn')
     try:
@@ -338,58 +191,64 @@ def cleanup_optional_models(context=""):
             logger.warning(f"Error cleaning up {label.upper()} model: {e}")
 
 
-def run_inference_with_oom_fallback(
-    session, feed_dict, output_tensor_name, model_path, label, file_basename
-):
-    try:
-        return run_inference(session, feed_dict, output_tensor_name), session
-    except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-        if "Failed to allocate memory" not in str(e):
-            raise
-        logger.warning(
-            f"GPU OOM for {file_basename} during {label} inference - falling back to CPU"
-        )
-        try:
-            try:
-                cleanup_onnx_session(session, label)
-            except Exception:
-                logger.exception("Error cleaning up OOM'd %s session before CPU fallback", label)
-            try:
-                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-            except Exception:
-                logger.exception("Error during memory cleanup before %s CPU fallback", label)
-
-            cpu_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-            result = run_inference(cpu_session, feed_dict, output_tensor_name)
-            if result is None:
-                raise RuntimeError(
-                    f"CPU fallback inference returned None for {label} ({file_basename})"
-                )
-            logger.info(f"Successfully completed {label} inference on CPU after OOM")
-            return result, cpu_session
-        finally:
-            del session
-
-
 _KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
+_KS_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_KS_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 
-_MAJOR = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+
+def _estimate_tempo(audio, sr):
+    if audio is None or audio.size == 0:
+        return 0.0
+    tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
+    tempo = float(np.ravel(tempo)[0])
+    if tempo <= 0:
+        return 0.0
+    if TEMPO_MIN_BPM <= 0 or TEMPO_MAX_BPM < TEMPO_MIN_BPM:
+        return tempo
+    while tempo < TEMPO_MIN_BPM:
+        tempo *= 2.0
+    while tempo > TEMPO_MAX_BPM:
+        tempo /= 2.0
+    return tempo
 
 
-_MINOR = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+def _estimate_energy(audio):
+    if audio is None or audio.size == 0:
+        return 0.0
+    rms = librosa.feature.rms(y=audio)
+    if rms is None or rms.size == 0:
+        return 0.0
+    rms_db = librosa.amplitude_to_db(rms, ref=1.0, top_db=None)
+    energy = np.clip((rms_db + 60.0) / 60.0, 0.0, 1.0)
+    return float(np.mean(energy))
+
+
+def _estimate_key_scale(audio, sr):
+    if audio is None or audio.size == 0:
+        return 'C', 'major'
+    chroma = librosa.feature.chroma_cqt(y=audio, sr=sr)
+    if chroma is None or chroma.size == 0:
+        return 'C', 'major'
+    chroma_mean = np.mean(chroma, axis=1)
+    if chroma_mean.sum() <= 0:
+        return 'C', 'major'
+    c = chroma_mean / (np.linalg.norm(chroma_mean) + 1e-9)
+    maj = np.array([np.dot(c, np.roll(_KS_MAJOR, i)) for i in range(12)])
+    mnr = np.array([np.dot(c, np.roll(_KS_MINOR, i)) for i in range(12)])
+    maj = (maj - maj.mean()) / (maj.std() + 1e-9)
+    mnr = (mnr - mnr.mean()) / (mnr.std() + 1e-9)
+    mi, ni = int(np.argmax(maj)), int(np.argmax(mnr))
+    if maj[mi] > mnr[ni]:
+        return _KEYS[mi], 'major'
+    return _KEYS[ni], 'minor'
 
 
 def extract_basic_features(audio, sr):
-    tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
-    energy = float(np.mean(librosa.feature.rms(y=audio)))
-    chroma_mean = np.mean(librosa.feature.chroma_stft(y=audio, sr=sr), axis=1)
-    maj = np.array([np.corrcoef(chroma_mean, np.roll(_MAJOR, i))[0, 1] for i in range(12)])
-    mnr = np.array([np.corrcoef(chroma_mean, np.roll(_MINOR, i))[0, 1] for i in range(12)])
-    mi, ni = int(np.argmax(maj)), int(np.argmax(mnr))
-    if maj[mi] > mnr[ni]:
-        return float(tempo), energy, _KEYS[mi], 'major'
-    return float(tempo), energy, _KEYS[ni], 'minor'
+    tempo = _estimate_tempo(audio, sr)
+    energy = _estimate_energy(audio)
+    musical_key, scale = _estimate_key_scale(audio, sr)
+    return tempo, energy, musical_key, scale
 
 
 def prepare_spectrogram_patches(audio, sr):
@@ -413,35 +272,105 @@ def prepare_spectrogram_patches(audio, sr):
     return np.array(patches).transpose(0, 2, 1).astype(np.float32)
 
 
+def _frame_to_mono_mean(rframe):
+    arr = rframe.to_ndarray()
+    if arr.ndim > 1:
+        arr = arr.mean(axis=0)
+    else:
+        arr = arr.reshape(-1)
+    return arr.astype(np.float32, copy=False)
+
+
+def _declared_seconds(container):
+    import av
+
+    if not container.duration:
+        return None
+    declared = float(container.duration) / av.time_base
+    if declared <= 0:
+        return None
+    return min(declared, AUDIO_LOAD_TIMEOUT) if AUDIO_LOAD_TIMEOUT else declared
+
+
+def _enough_survived(audio, sr, declared, name):
+    if not declared or not sr or not AUDIO_MIN_DECODED_FRACTION:
+        return True
+    recovered = audio.size / float(sr)
+    if recovered >= declared * AUDIO_MIN_DECODED_FRACTION:
+        return True
+    logger.error(
+        "Only %.1fs of the %.1fs %s declares survived the corrupt packets (%.0f%%, "
+        "minimum %.0f%%); treating it as not decodable.",
+        recovered, declared, name, 100.0 * recovered / declared,
+        100.0 * AUDIO_MIN_DECODED_FRACTION,
+    )
+    return False
+
+
+def _tolerant_frames(container, stream, skipped):
+    import av
+
+    for packet in container.demux(stream):
+        try:
+            frames = list(packet.decode())
+        except av.FFmpegError:
+            skipped[0] += 1
+            continue
+        for frame in frames:
+            yield frame
+
+
 def _decode_audio_with_pyav(file_path, target_sr):
     import av
 
-    resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=target_sr)
-    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if AUDIO_LOAD_TIMEOUT else None
+    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if (AUDIO_LOAD_TIMEOUT and target_sr) else None
     chunks = []
     total = 0
+    actual_sr = target_sr
+    skipped = [0]
+    declared = None
     with av.open(file_path) as container:
         if not container.streams.audio:
-            return np.array([], dtype=np.float32)
+            return np.array([], dtype=np.float32), actual_sr
+        declared = _declared_seconds(container)
         stream = container.streams.audio[0]
-        for frame in container.decode(stream):
+        resampler = av.audio.resampler.AudioResampler(
+            format="fltp", layout=stream.layout, rate=target_sr
+        )
+        for frame in _tolerant_frames(container, stream, skipped):
             for rframe in resampler.resample(frame):
-                arr = rframe.to_ndarray().reshape(-1)
+                if actual_sr is None:
+                    actual_sr = rframe.sample_rate
+                    if AUDIO_LOAD_TIMEOUT:
+                        max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
+                arr = _frame_to_mono_mean(rframe)
                 if arr.size:
                     chunks.append(arr)
                     total += arr.size
             if max_samples and total >= max_samples:
                 break
         for rframe in resampler.resample(None):
-            arr = rframe.to_ndarray().reshape(-1)
+            if actual_sr is None:
+                actual_sr = rframe.sample_rate
+                if AUDIO_LOAD_TIMEOUT:
+                    max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
+            arr = _frame_to_mono_mean(rframe)
             if arr.size:
                 chunks.append(arr)
+    name = os.path.basename(file_path)
+    if skipped[0]:
+        logger.warning(
+            "Skipped %d corrupt audio packet(s) while decoding %s; the recovered "
+            "audio is shorter than the file claims.", skipped[0], name
+        )
     if not chunks:
-        return np.array([], dtype=np.float32)
+        return np.array([], dtype=np.float32), actual_sr
     audio = np.concatenate(chunks).astype(np.float32, copy=False)
     if max_samples:
         audio = audio[:max_samples]
-    return audio
+    if not _enough_survived(audio, actual_sr, declared, name):
+        return np.array([], dtype=np.float32), actual_sr
+    return audio, actual_sr
 
 
 def robust_load_audio_with_fallback(file_path, target_sr=16000):
@@ -455,14 +384,24 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting PyAV fallback.")
 
     try:
-        audio = _decode_audio_with_pyav(file_path, target_sr)
+        audio, sr = _decode_audio_with_pyav(file_path, target_sr)
         if audio is None or audio.size == 0 or not np.any(audio):
             logger.error(f"PyAV fallback resulted in empty/silent audio for {name}.")
             return None, None
-        return audio, target_sr
+        return audio, sr
     except Exception:
         logger.exception(f"PyAV fallback loading also failed for {name}")
         return None, None
+
+
+def resample_audio(audio, orig_sr, target_sr):
+    if orig_sr == target_sr:
+        return audio
+    return librosa.resample(audio, orig_sr=orig_sr, target_sr=target_sr, res_type='soxr_hq')
+
+
+def decode_audio_once(file_path):
+    return robust_load_audio_with_fallback(file_path, target_sr=None)
 
 
 def _patches_for_track(audio, sr, name):
@@ -547,17 +486,34 @@ def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessi
                 logger.warning(f"Error during cleanup: {cleanup_error}")
 
 
+def musicnn_embedding_for_audio(audio, sr, mood_labels_list, model_paths, onnx_sessions=None,
+                                name='clip'):
+    final_patches = _patches_for_track(audio, sr, name)
+    if final_patches is None:
+        return None
+    embedding, _moods = _run_musicnn_models(
+        final_patches, mood_labels_list, model_paths, onnx_sessions, name
+    )
+    if embedding is None:
+        raise RuntimeError(f"MusiCNN inference failed for {name}")
+    return embedding
+
+
 class AudioNotDecodableError(RuntimeError):
     pass
 
 
 def _analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
-                   return_audio=False, raise_on_unreadable=False):
+                   return_audio=False, raise_on_unreadable=False,
+                   native_audio=None, native_sr=None):
     name = os.path.basename(file_path)
     logger.info(f"Starting analysis for: {name}")
     nothing = (None, None, None, None) if return_audio else (None, None)
 
-    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
+    if native_audio is not None and native_sr is not None:
+        audio, sr = resample_audio(native_audio, native_sr, 16000), 16000
+    else:
+        audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
     if audio is None or not np.any(audio) or audio.size == 0:
         logger.warning(
             f"Could not load a valid audio signal for {name} after all attempts. Skipping track."
@@ -596,18 +552,21 @@ def _analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
     return return_values
 
 
-def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
+def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
+                  return_audio=False, native_audio=None, native_sr=None):
     return _analyze_track(
         file_path, mood_labels_list, model_paths, onnx_sessions=onnx_sessions,
-        return_audio=return_audio,
+        return_audio=return_audio, native_audio=native_audio, native_sr=native_sr,
     )
 
 
 def analyze_track_for_album(file_path, mood_labels_list, model_paths,
-                            onnx_sessions=None, return_audio=False):
+                            onnx_sessions=None, return_audio=False,
+                            native_audio=None, native_sr=None):
     return _analyze_track(
         file_path, mood_labels_list, model_paths, onnx_sessions=onnx_sessions,
         return_audio=return_audio, raise_on_unreadable=True,
+        native_audio=native_audio, native_sr=native_sr,
     )
 
 
@@ -636,12 +595,12 @@ def ensure_musicnn_sessions(onnx_sessions, model_paths, session_recycler, album_
     return load_musicnn_sessions(model_paths)
 
 
-def run_clap_for_track(path, track_name_full):
+def run_clap_for_track(path, track_name_full, native_audio=None, native_sr=None):
     logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
     try:
         from ..clap_analyzer import analyze_audio_file
 
-        emb, _, _ = analyze_audio_file(path)
+        emb, _, _ = analyze_audio_file(path, native_audio=native_audio, native_sr=native_sr)
         if PER_SONG_MODEL_RELOAD:
             try:
                 from ..clap_analyzer import unload_clap_audio_only
@@ -726,6 +685,27 @@ def refresh_other_features(item_id, other_features_str):
         return False
 
 
+def refresh_base_features(item_id, tempo, energy, musical_key, scale):
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE score SET tempo = %s, energy = %s, key = %s, scale = %s "
+                "WHERE item_id = %s",
+                (tempo, energy, musical_key, scale, str(item_id)),
+            )
+            updated = cur.rowcount
+            conn.commit()
+        return bool(updated)
+    except OperationalError:
+        raise
+    except Exception as e:
+        error_manager.record(
+            ERR_DB_QUERY, f"Could not refresh base features for {item_id}: {e}",
+            exc=e, logger=logger, level=logging.WARNING,
+        )
+        return False
+
+
 def persist_clap_embedding(item_id, embedding):
     if embedding is None:
         return False
@@ -747,7 +727,7 @@ def _make_lyrics_audio_loader(robust_load_fn, download_fn):
             raise RuntimeError("Failed to download audio for lyrics ASR")
         a, s = robust_load_fn(str(p), target_sr=16000)
         if a is None or a.size == 0 or s is None:
-            raise RuntimeError("Failed to load audio for lyrics ASR")
+            raise AudioNotDecodableError(f"no decodable audio for lyrics ASR of {p}")
         return a, s, str(p)
 
     return audio_loader
@@ -760,7 +740,7 @@ def _prepare_lyrics_audio(path, track_audio, track_sr, robust_load_fn, download_
         logger.info("  - Loading audio from file for lyrics analysis")
         track_audio, track_sr = robust_load_fn(str(path), target_sr=16000)
         if track_audio is None or track_audio.size == 0 or track_sr is None:
-            raise RuntimeError("Failed to load audio for lyrics analysis")
+            raise AudioNotDecodableError(f"no decodable audio for lyrics analysis of {path}")
         return track_audio, track_sr, None
     return track_audio, track_sr, _make_lyrics_audio_loader(robust_load_fn, download_fn)
 
@@ -800,7 +780,7 @@ def run_lyrics_for_track(
         save_lyrics_embedding(catalog_item_id(item), emb, result.get('axis_vector'))
         logger.info("  - Lyrics embedding saved")
         return True
-    except OperationalError:
+    except (OperationalError, AudioNotDecodableError):
         raise
     except Exception as e:
         error_manager.record(

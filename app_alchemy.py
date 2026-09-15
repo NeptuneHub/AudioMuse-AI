@@ -53,7 +53,14 @@ def alchemy_page():
       200:
         description: HTML page rendered.
     """
-    return render_template('alchemy.html', title='AudioMuse-AI - Song Alchemy', active='alchemy')
+    return render_template(
+        'alchemy.html',
+        title='AudioMuse-AI - Song Alchemy',
+        active='alchemy',
+        alchemy_n_results_default=config.ALCHEMY_DEFAULT_N_RESULTS,
+        alchemy_max_n_results=config.ALCHEMY_MAX_N_RESULTS,
+        alchemy_temperature_default=config.ALCHEMY_TEMPERATURE,
+    )
 
 
 @alchemy_bp.route('/api/search_artists', methods=['GET'])
@@ -87,23 +94,9 @@ def search_artists():
               items:
                 type: object
     """
-    from app_artist_similarity import artist_search_response
-    from app_helper import index_error_body
-    from error.error_dictionary import UNKNOWN_ERROR_CODE
+    from app_artist_similarity import artist_search_from_request
 
-    query = request.args.get('query', '', type=str)
-
-    if not query or len(query) < 2:
-        return jsonify([])
-
-    start = request.args.get('start', 0, type=int)
-    end = request.args.get('end', None, type=int)
-
-    try:
-        return artist_search_response(query, start, end, 100)
-    except Exception:
-        logger.exception("Error during artist search")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+    return artist_search_from_request()
 
 
 def _cached_all_playlists(server_id):
@@ -228,7 +221,7 @@ def alchemy_api():
         n = int(payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS))
     except (TypeError, ValueError):
         n = config.ALCHEMY_DEFAULT_N_RESULTS
-    n = max(1, min(n, config.ALCHEMY_MAX_N_RESULTS))
+    n = max(1, n)
     # Temperature parameter for probabilistic sampling (softmax temperature)
     temperature = payload.get('temperature', config.ALCHEMY_TEMPERATURE)
 
@@ -530,13 +523,14 @@ def rename_anchor(anchor_id):
     return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
 
 
-def _parse_radio_settings(payload):
+def _parse_radio_settings(payload, current=None):
+    current = current or {}
     temperature = payload.get('temperature')
     n_results = payload.get('n_results')
     if temperature is None:
-        return None, None, 'Radio temperature is required'
+        temperature = current.get('temperature', config.ALCHEMY_TEMPERATURE)
     if n_results is None:
-        return None, None, 'Radio number of results is required'
+        n_results = current.get('n_results', config.ALCHEMY_DEFAULT_N_RESULTS)
     try:
         temperature = float(temperature)
     except (TypeError, ValueError):
@@ -549,12 +543,8 @@ def _parse_radio_settings(payload):
         return None, None, 'Radio number of results must be an integer'
     if temperature < 0:
         return None, None, 'Radio temperature must be 0 or greater'
-    if n_results < 1 or n_results > config.ALCHEMY_MAX_N_RESULTS:
-        return (
-            None,
-            None,
-            f'Radio number of results must be between 1 and {config.ALCHEMY_MAX_N_RESULTS}',
-        )
+    if n_results < 1:
+        return None, None, 'Radio number of results must be 1 or greater'
     return temperature, n_results, None
 
 
@@ -634,7 +624,7 @@ def create_radio():
         application/json:
           schema:
             type: object
-            required: [anchor_id, temperature, n_results]
+            required: [anchor_id]
             properties:
               anchor_id:
                 type: integer
@@ -694,7 +684,7 @@ def update_radio(radio_id):
         application/json:
           schema:
             type: object
-            required: [temperature, n_results, enabled]
+            required: []
             properties:
               temperature:
                 type: number
@@ -711,13 +701,14 @@ def update_radio(radio_id):
       404:
         description: Radio not found.
     """
-    from database import update_alchemy_radio
+    from database import get_alchemy_radios, update_alchemy_radio
 
     payload = request.get_json() or {}
-    temperature, n_results, error = _parse_radio_settings(payload)
+    current = next((r for r in get_alchemy_radios() if r['id'] == radio_id), None)
+    temperature, n_results, error = _parse_radio_settings(payload, current)
     if error:
         return jsonify({'error': error}), 400
-    enabled = bool(payload.get('enabled', True))
+    enabled = bool(payload.get('enabled', current['enabled'] if current else True))
     radio = update_alchemy_radio(radio_id, temperature, n_results, enabled)
     if not radio:
         return jsonify({'error': 'Radio not found or update failed'}), 404

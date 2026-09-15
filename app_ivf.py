@@ -29,6 +29,7 @@ import app_server_context
 # Import the new config option
 from config import (
     SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
+    SIMILARITY_DEFAULT_N_RESULTS,
     SIMILARITY_RADIUS_DEFAULT,
     MOOD_CENTROIDS_FILE,
 )
@@ -154,8 +155,27 @@ def similarity_page():
               type: string
     """
     return render_template(
-        'similarity.html', title='AudioMuse-AI - Playlist from Similar Song', active='similarity'
+        'similarity.html',
+        title='AudioMuse-AI - Playlist from Similar Song',
+        active='similarity',
+        similarity_n_default=SIMILARITY_DEFAULT_N_RESULTS,
     )
+
+
+def _sem_grove_item_ids():
+    from tasks.sem_grove_manager import get_sem_grove_item_ids
+
+    return get_sem_grove_item_ids()
+
+
+def _neural_fingerprint_where():
+    from tasks.neural_fingerprint_index import picker_where
+
+    return picker_where()
+
+
+_AUTOCOMPLETE_INDEX_IDS = {'sem_grove': _sem_grove_item_ids}
+_AUTOCOMPLETE_INDEX_WHERE = {'neural': _neural_fingerprint_where}
 
 
 @ivf_bp.route('/api/search_tracks', methods=['GET'])
@@ -181,6 +201,12 @@ def search_tracks_endpoint():
         description: (Legacy) Partial or full name of the artist. Used as fallback when search_query is absent.
         schema:
           type: string
+      - name: index
+        in: query
+        description: Restrict the suggestions to the songs of one loaded index. 'musicnn' (default) offers every analysed song of the selected server; 'sem_grove' offers only the songs in the SemGrove index; 'neural' offers only the songs that carry a neural fingerprint (filtered in the database, never by shipping the index's id list); both answer nothing while their index is not loaded.
+        schema:
+          type: string
+          enum: ['musicnn', 'sem_grove', 'neural']
     responses:
       200:
         description: A list of matching tracks.
@@ -216,19 +242,27 @@ def search_tracks_endpoint():
     if len(search_query) < 1:
         return jsonify([])
 
-    # Optional index filter: 'musicnn' (default) or 'sem_grove'
+    # Optional index filter: 'musicnn' (default), 'sem_grove' or 'neural'
     index_param = request.args.get('index', 'musicnn', type=str).strip().lower()
     item_id_filter = None
-    if index_param == 'sem_grove':
+    extra_where = None
+    if index_param in _AUTOCOMPLETE_INDEX_IDS:
         try:
-            from tasks.sem_grove_manager import get_sem_grove_item_ids
-
-            item_id_filter = get_sem_grove_item_ids()
+            item_id_filter = _AUTOCOMPLETE_INDEX_IDS[index_param]()
             if not item_id_filter:
                 # Index not loaded yet - don't fall back to showing all songs
                 return jsonify([])
         except Exception as e:
-            logger.warning(f"Could not load SemGrove item IDs for autocomplete filter: {e}")
+            logger.warning(f"Could not load {index_param} item IDs for autocomplete filter: {e}")
+            return jsonify([])
+    elif index_param in _AUTOCOMPLETE_INDEX_WHERE:
+        try:
+            extra_where = _AUTOCOMPLETE_INDEX_WHERE[index_param]()
+            if extra_where is None:
+                # Index not loaded yet - don't fall back to showing all songs
+                return jsonify([])
+        except Exception as e:
+            logger.warning(f"Could not build the {index_param} autocomplete filter: {e}")
             return jsonify([])
 
     # Pagination: start / end (0-based). Defaults to first 20 results.
@@ -255,6 +289,7 @@ def search_tracks_endpoint():
             item_id_filter=item_id_filter,
             server_id=selected_server_id,
             include_legacy_default=include_legacy,
+            extra_where=extra_where,
         )
         results = []
         for r in raw_results:
@@ -338,7 +373,7 @@ def get_similar_tracks_endpoint():
         description: The number of similar tracks to return.
         schema:
           type: integer
-          default: 10
+          default: 50
       - name: eliminate_duplicates
         in: query
         description: If 'true', limits the number of songs per artist in the results. If 'false', this is disabled. If the parameter is omitted, the server's default behavior is used.
@@ -382,7 +417,7 @@ def get_similar_tracks_endpoint():
     item_id = request.args.get('item_id')
     title = request.args.get('title')
     artist = request.args.get('artist')
-    num_neighbors = request.args.get('n', 10, type=int)
+    num_neighbors = request.args.get('n', SIMILARITY_DEFAULT_N_RESULTS, type=int)
     num_neighbors = max(1, num_neighbors)
 
     # Optional mood centroid parameters
@@ -626,7 +661,7 @@ def get_track_endpoint():
         return jsonify({"error": "Missing 'item_id' parameter."}), 400
 
     try:
-        from app_helper import get_score_data_by_ids
+        from database import get_score_data_by_ids
 
         # Accept either the server's provider id or a canonical id on input, and
         # never echo the internal fp_ id back: scope_results rewrites the response

@@ -71,7 +71,7 @@ _TRACK_KEYED_INDEXES = (
 # re-resolves an existing one; bumping the scheme version (fp_2 -> fp_3) is the
 # duration migration's cheap relabel, not a re-hash from embeddings.
 _CURRENT_SCHEME_SQL = (
-    "(s.item_id LIKE 'fp\\_%%' AND length(s.item_id) = %s "
+    "(s.item_id LIKE E'fp\\\\_%%' AND length(s.item_id) = %s "
     "AND substring(s.item_id from 4 for 1) BETWEEN '1' AND '9')"
 )
 # Analysis deliberately keeps a track whose embedding yields no usable signature
@@ -84,7 +84,7 @@ _CURRENT_SCHEME_SQL = (
 # its server, which used to strip the only evidence and hand the row straight back
 # to this migration as legacy work it can never relabel.
 _UNSIGNABLE_SQL = (
-    "((s.item_id LIKE 'fp\\_0%%' AND length(s.item_id) = "
+    "((s.item_id LIKE E'fp\\\\_0%%' AND length(s.item_id) = "
     + str(simhash.CANONICAL_ID_LEN)
     + ") OR EXISTS (SELECT 1 FROM track_server_map t "
     "WHERE t.item_id = s.item_id AND t.match_tier = 'analysis'))"

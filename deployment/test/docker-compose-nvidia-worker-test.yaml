@@ -5,7 +5,7 @@ services:
       context: ../..
       dockerfile: Dockerfile
       args:
-        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+        BASE_IMAGE: nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04
     image: audiomuse-ai-local-nvidia-worker:latest
     environment:
       SERVICE_TYPE: "worker"

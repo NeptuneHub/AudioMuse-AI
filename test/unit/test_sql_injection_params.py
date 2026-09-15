@@ -59,14 +59,14 @@ def _recording_db():
 
 class TestItemIdEndpointsParameterized:
     def test_score_endpoint_passes_id_as_param(self):
-        import app_helper
+        import database
 
         ext = _import_app_external()
         app = Flask(__name__)
         app.register_blueprint(ext.external_bp)
         app.config['TESTING'] = True
         db, cur = _recording_db()
-        with patch.object(app_helper, 'get_db', return_value=db):
+        with patch.object(database, 'get_db', return_value=db):
             resp = app.test_client().get('/get_score', query_string={'id': EVIL})
         assert resp.status_code == 404
         sql = cur.execute.call_args[0][0]
@@ -76,14 +76,14 @@ class TestItemIdEndpointsParameterized:
         assert EVIL not in sql
 
     def test_embedding_endpoint_passes_id_as_param(self):
-        import app_helper
+        import database
 
         ext = _import_app_external()
         app = Flask(__name__)
         app.register_blueprint(ext.external_bp)
         app.config['TESTING'] = True
         db, cur = _recording_db()
-        with patch.object(app_helper, 'get_db', return_value=db):
+        with patch.object(database, 'get_db', return_value=db):
             resp = app.test_client().get('/get_embedding', query_string={'id': EVIL})
         assert resp.status_code == 404
         sql = cur.execute.call_args[0][0]
@@ -100,9 +100,14 @@ class TestToolImplInClauseParameterized:
         fake_mcp = types.ModuleType('tasks.mcp_helper')
         fake_mcp.get_db_connection = MagicMock()
         stubs = {'tasks.mcp_helper': fake_mcp}
-        for parent in ('tasks', 'tasks.ai'):
+        for parent, package_path in (
+            ('tasks', _repo_path('tasks')),
+            ('tasks.ai', _repo_path('tasks', 'ai')),
+        ):
             if parent not in sys.modules:
-                stubs[parent] = types.ModuleType(parent)
+                mod = types.ModuleType(parent)
+                mod.__path__ = [package_path]
+                stubs[parent] = mod
         with patch.dict(sys.modules, stubs):
             spec = importlib.util.spec_from_file_location(
                 'tasks.ai.tool_impl', _repo_path('tasks', 'ai', 'tool_impl.py')

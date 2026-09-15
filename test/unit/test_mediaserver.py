@@ -1680,6 +1680,37 @@ class TestNavidromeGetAllSongsApplyFilter:
         mock_request.assert_not_called()
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_a_failed_page_raises_instead_of_returning_a_partial_catalogue(self, mock_request):
+        from tasks.mediaserver.navidrome import get_all_songs
+
+        page = [{'id': str(i), 'title': 't', 'path': f'a/{i}.flac'} for i in range(500)]
+        mock_request.side_effect = [{'searchResult3': {'song': page}}, None]
+
+        with pytest.raises(RuntimeError, match='offset 500'):
+            get_all_songs(user_creds={'url': 'http://nav', 'user': 'u', 'password': 'p'}, apply_filter=False)
+
+    @patch('tasks.mediaserver.navidrome._get_target_music_folder_ids', return_value={'1'})
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_a_failed_folder_album_page_raises_instead_of_returning_a_partial_catalogue(self, mock_request, _folders):
+        from tasks.mediaserver.navidrome import get_all_songs
+
+        page = [{'id': f'al{i}', 'name': f'Album {i}'} for i in range(500)]
+        mock_request.side_effect = [{'albumList2': {'album': page}}, None]
+
+        with pytest.raises(RuntimeError, match='folder 1'):
+            get_all_songs(user_creds={'url': 'http://nav', 'user': 'u', 'password': 'p'}, apply_filter=True)
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_an_empty_last_page_is_the_normal_end_of_the_listing(self, mock_request):
+        from tasks.mediaserver.navidrome import get_all_songs
+
+        page = [{'id': str(i), 'title': 't', 'path': f'a/{i}.flac'} for i in range(500)]
+        mock_request.side_effect = [{'searchResult3': {'song': page}}, {'searchResult3': {}}]
+
+        songs = get_all_songs(user_creds={'url': 'http://nav', 'user': 'u', 'password': 'p'}, apply_filter=False)
+        assert len(songs) == 500
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_get_target_music_folder_ids_forwards_user_creds(self, mock_request):
         from tasks.mediaserver.navidrome import _get_target_music_folder_ids
 
@@ -2005,6 +2036,44 @@ class TestLyrionGetTracksFromAlbum:
             "trackartist should be prioritized for AlbumArtist"
         )
         assert tracks[0]['Path'] == '/music/song1.mp3', "Missing 'Path' from 'url'"
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_the_artist_id_comes_from_the_same_role_as_the_artist_name(self, mock_request):
+        from tasks.mediaserver.lyrion import get_tracks_from_album
+
+        mock_request.return_value = {
+            'titles_loop': [
+                {'id': 1, 'title': 'A', 'artist': 'Nathan Eckel', 'artist_id': '764', 'url': 'file:///m/a.mp3'},
+                {'id': 2, 'title': 'B', 'trackartist': 'Scroach', 'trackartist_ids': '63',
+                 'artist': 'Other', 'artist_id': '9', 'url': 'file:///m/b.mp3'},
+                {'id': 3, 'title': 'C', 'trackartist': 'X, Y', 'trackartist_ids': '4,5',
+                 'artist': 'X', 'artist_id': '4', 'url': 'file:///m/c.mp3'},
+                {'id': 4, 'title': 'D', 'contributor': 'Someone', 'artist': 'Z', 'artist_id': '8', 'url': 'file:///m/d.mp3'},
+            ]
+        }
+
+        tracks = get_tracks_from_album('842')
+
+        assert 'tags:galduAyRsS' in mock_request.call_args[0][1]
+        assert [(t['AlbumArtist'], t['ArtistId']) for t in tracks] == [
+            ('Nathan Eckel', '764'),
+            ('Scroach', '63'),
+            ('X, Y', None),
+            ('Someone', None),
+        ], 'an id is kept only when it belongs to the artist name AudioMuse stores'
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_the_whole_catalogue_listing_carries_the_artist_id(self, mock_request):
+        from tasks.mediaserver.lyrion import get_all_songs
+
+        mock_request.return_value = {
+            'titles_loop': [{'id': 1, 'title': 'A', 'artist': 'Nathan Eckel', 'artist_id': '764', 'url': 'file:///m/a.mp3'}]
+        }
+
+        songs = get_all_songs(user_creds={'url': 'http://lms:9000'}, apply_filter=False)
+
+        assert 'tags:galduAyRsS' in mock_request.call_args[0][1]
+        assert songs[0]['ArtistId'] == '764'
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_artist_fallback_priority(self, mock_request):
@@ -3056,6 +3125,123 @@ class TestLyrionCreatePlaylistBatched:
         assert _create_playlist_batched('Managed', ['t1']) is None
 
 
+class TestLyrionAddToPlaylist:
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_a_connected_player_keeps_the_v360_load_add_save_method(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist
+
+        calls = []
+
+        def rpc(method, params, player_id="", **kwargs):
+            calls.append((method, list(params), player_id))
+            if method == 'players':
+                return {'players_loop': [{'playerid': 'aa:bb'}]}
+            if method == 'playlists' and params == [0, 999999]:
+                return {'playlists_loop': [{'id': 78, 'playlist': 'Mix'}]}
+            if method == 'playlistcontrol' and params[0] == 'cmd:add':
+                return {'count': 2}
+            if method == 'playlist':
+                return {'__playlist_id': 78}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist(78, ['11', '12']) is True
+        assert ('playlistcontrol', ['cmd:add', 'track_id:11,12'], 'aa:bb') in calls
+        assert not [c for c in calls if c[0] == 'playlists' and c[1][:1] == ['edit']]
+        assert not [c for c in calls if c[0] == 'titles']
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_no_player_fills_the_playlist_by_url_without_any_player(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist
+
+        calls = []
+
+        def rpc(method, params, player_id="", **kwargs):
+            calls.append((method, list(params), player_id))
+            if method == 'players':
+                return {'count': 0}
+            if method == 'titles':
+                return {'titles_loop': [
+                    {'id': 12, 'url': 'file:///music/b.mp3'},
+                    {'id': 11, 'url': 'file:///music/a%20b.mp3'},
+                ]}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': 2}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist(78, ['11', '12']) is True
+        edits = [c for c in calls if c[0] == 'playlists' and c[1][0] == 'edit']
+        assert [c[1] for c in edits] == [
+            ['edit', 'cmd:add', 'playlist_id:78', 'url:file:///music/a%20b.mp3'],
+            ['edit', 'cmd:add', 'playlist_id:78', 'url:file:///music/b.mp3'],
+        ], 'tracks keep the requested order, not the order Lyrion listed them'
+        assert not [c for c in calls if c[0] in ('playlistcontrol', 'playlist')]
+        assert all(player == "" for _m, _p, player in calls)
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_a_track_with_no_url_is_skipped(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist_without_player
+
+        def rpc(method, params, player_id="", **kwargs):
+            if method == 'titles':
+                return {'titles_loop': [{'id': 11, 'url': 'file:///music/a.mp3'}]}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': 1}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist_without_player(78, ['11', '99']) is True
+        edits = [c for c in mock_rpc.call_args_list if c.args[0] == 'playlists' and c.args[1][0] == 'edit']
+        assert len(edits) == 1
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_an_empty_playlist_is_a_failure(self, mock_rpc):
+        from tasks.mediaserver.lyrion import _add_to_playlist_without_player
+
+        def rpc(method, params, player_id="", **kwargs):
+            if method == 'titles':
+                return {'titles_loop': []}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': 0}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert _add_to_playlist_without_player(78, ['11']) is False
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_a_lyrion_error_is_a_failure_not_a_crash(self, mock_rpc):
+        from tasks.mediaserver.lyrion import LyrionAPIError, _add_to_playlist_without_player
+
+        mock_rpc.side_effect = LyrionAPIError('down')
+
+        assert _add_to_playlist_without_player(78, ['11']) is False
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_without_player_urls_are_looked_up_in_batches(self, mock_rpc):
+        from tasks.mediaserver import lyrion
+
+        ids = [str(i) for i in range(lyrion.LYRION_PLAYLIST_URL_BATCH + 5)]
+
+        def rpc(method, params, player_id="", **kwargs):
+            if method == 'titles':
+                wanted = params[2].split(':', 1)[1].split(',')
+                return {'titles_loop': [{'id': int(i), 'url': 'file:///m/%s.mp3' % i} for i in wanted]}
+            if method == 'playlists' and params[0] == 'tracks':
+                return {'count': len(ids)}
+            return {}
+
+        mock_rpc.side_effect = rpc
+
+        assert lyrion._add_to_playlist_without_player(5, ids) is True
+        lookups = [c for c in mock_rpc.call_args_list if c.args[0] == 'titles']
+        assert [c.args[1][1] for c in lookups] == [lyrion.LYRION_PLAYLIST_URL_BATCH, 5]
+
+
 class TestLyrionCreateOrReplacePlaylist:
     @patch('tasks.mediaserver.lyrion._create_playlist_batched')
     @patch('tasks.mediaserver.lyrion.delete_playlist')
@@ -3213,6 +3399,10 @@ class TestJellyfinGetAllSongsPagination:
         page2_params = mock_get.call_args_list[1].kwargs['params']
         assert page2_params['StartIndex'] == 500
         assert page2_params['Limit'] == 500
+        assert page2_params['EnableTotalRecordCount'] is False, (
+            'paging stops on a short page, so the whole-library count Jellyfin runs per page is wasted'
+        )
+        assert page2_params['EnableImages'] is False and page2_params['EnableUserData'] is False
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')

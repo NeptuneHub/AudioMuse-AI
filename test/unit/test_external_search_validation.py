@@ -15,6 +15,7 @@ Main Features:
 * Missing or explicitly empty search_query returns [] without calling the backend
 * One-character and longer queries pass through to search_tracks_unified verbatim
 * Legacy title/artist params are combined into a single "artist title" query
+* /get_embedding decodes both stored vectors, so the row serializes to JSON
 """
 
 import sys
@@ -91,3 +92,31 @@ class TestSearchQueryValidation:
         assert resp.get_json() == []
         assert backend.call_count == 1
         assert backend.call_args.args[0] == 'Adele Hello'
+
+
+class TestGetEmbeddingDecodesBothVectors:
+    def test_embedding_and_poincare_vectors_come_back_as_float_lists(self, ext, client):
+        import numpy as np
+
+        row = {
+            'item_id': 'fp_2abc',
+            'embedding': memoryview(np.asarray([0.5, -1.0], dtype=np.float32).tobytes()),
+            'poincare_embedding': memoryview(np.asarray([0.25, 0.125], dtype=np.float32).tobytes()),
+            'hyperbolic_radius': 0.3,
+        }
+        cursor = MagicMock()
+        cursor.fetchone.return_value = row
+        db = MagicMock()
+        db.cursor.return_value.__enter__.return_value = cursor
+        fake_database = types.ModuleType('database')
+        fake_database.get_db = lambda: db
+        fake_context = types.ModuleType('app_server_context')
+        fake_context.provider_echo_id = lambda raw_id: raw_id
+        fake_context.resolve_input_item_id = lambda raw_id: 'fp_2abc'
+        with patch.dict(sys.modules, {'database': fake_database, 'app_server_context': fake_context}):
+            resp = client.get('/get_embedding', query_string={'id': 'jellyfin-id'})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body['embedding'] == [0.5, -1.0]
+        assert body['poincare_embedding'] == [0.25, 0.125]
+        assert body['item_id'] == 'jellyfin-id'

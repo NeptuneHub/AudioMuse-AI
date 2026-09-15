@@ -64,7 +64,13 @@ def chat_home():
     """
     Serves the main chat page.
     """
-    return render_template('chat.html', title='AudioMuse-AI - Instant Playlist', active='chat')
+    return render_template(
+        'chat.html',
+        title='AudioMuse-AI - Instant Playlist',
+        active='chat',
+        instant_playlist_n_results_default=config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS,
+        instant_playlist_max_n_results=config.INSTANT_PLAYLIST_MAX_N_RESULTS,
+    )
 
 
 @chat_bp.route('/api/config_defaults', methods=['GET'])
@@ -102,6 +108,14 @@ def chat_home():
                                     'type': 'string',
                                     'example': 'ministral-3b-latest',
                                 },
+                                'instant_playlist_default_n_results': {
+                                    'type': 'integer',
+                                    'example': 50,
+                                },
+                                'instant_playlist_max_n_results': {
+                                    'type': 'integer',
+                                    'example': 200,
+                                },
                             },
                         }
                     }
@@ -126,6 +140,8 @@ def chat_config_defaults_api():
             "openai_server_url": cfg.OPENAI_SERVER_URL,
             "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
             "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
+            "instant_playlist_default_n_results": cfg.INSTANT_PLAYLIST_DEFAULT_N_RESULTS,
+            "instant_playlist_max_n_results": cfg.INSTANT_PLAYLIST_MAX_N_RESULTS,
         }
     ), 200
 
@@ -138,6 +154,34 @@ def _reject_missing_user_input(data):
         or not data['userInput'].strip()
     ):
         return jsonify({"error": "Missing userInput in request"}), 400
+    return None
+
+
+def _resolve_target_song_count(data):
+    raw = (data or {}).get('n', config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS
+    return max(1, n)
+
+
+_CLOUD_KEY_CHECKS = {
+    "OPENAI": ("OpenAI", "openai_key", None),
+    "GEMINI": ("Gemini", "gemini_key", "YOUR-GEMINI-API-KEY-HERE"),
+    "MISTRAL": ("Mistral", "mistral_key", "YOUR-MISTRAL-API-KEY-HERE"),
+}
+
+
+def _missing_cloud_api_key(ai_provider, ai_secrets):
+    display_name, secret_key, placeholder = _CLOUD_KEY_CHECKS.get(
+        ai_provider, (None, None, None)
+    )
+    if display_name is None:
+        return None
+    value = (ai_secrets or {}).get(secret_key)
+    if not value or (placeholder is not None and value == placeholder):
+        return display_name
     return None
 
 
@@ -192,6 +236,12 @@ def _reject_missing_user_input(data):
                             'mistral_api_key': {
                                 'type': 'string',
                                 'description': 'Custom Mistral API key (optional, defaults to server configuration).',
+                            },
+                            'n': {
+                                'type': 'integer',
+                                'description': 'Number of songs the playlist should aim for. Defaults to INSTANT_PLAYLIST_DEFAULT_N_RESULTS. The API applies no upper bound (INSTANT_PLAYLIST_MAX_N_RESULTS only caps the chat page input).',
+                                'example': 50,
+                                'minimum': 1,
                             },
                         },
                     }
@@ -271,7 +321,8 @@ def chat_playlist_api():
     3. search_database - Filter by artist, album, genre, voice, mood, year, tempo, energy, key (ALL filters in ONE call)
     4. knowledge_lookup - Popularity/cultural requests turned into a grounded library recipe
 
-    AI analyzes request -> calls tools -> combines results -> returns 100 songs
+    AI analyzes request -> calls tools -> combines results -> returns the
+    requested number of songs (`n`, default INSTANT_PLAYLIST_DEFAULT_N_RESULTS)
 
     Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
@@ -485,49 +536,19 @@ def _run_chat_pipeline(data, log_messages):
     )
 
     # Validate API keys for cloud providers
-    if ai_provider == "OPENAI" and not ai_secrets['openai_key']:
-        error_msg = "Error: OpenAI API key is missing. Please provide a valid API key."
-        log_messages.append(error_msg)
-        return (
-            {
-                "message": "\n".join(log_messages),
-                "original_request": original_user_input,
-                "ai_provider_used": ai_provider,
-                "ai_model_selected": ai_config.get('openai_model'),
-                "executed_query": None,
-                "query_results": None,
-            },
-            400,
+    missing_key_provider = _missing_cloud_api_key(ai_provider, ai_secrets)
+    if missing_key_provider is not None:
+        error_msg = (
+            f"Error: {missing_key_provider} API key is missing. "
+            "Please provide a valid API key."
         )
-
-    if ai_provider == "GEMINI" and (
-        not ai_secrets['gemini_key'] or ai_secrets['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"
-    ):
-        error_msg = "Error: Gemini API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
         return (
             {
                 "message": "\n".join(log_messages),
                 "original_request": original_user_input,
                 "ai_provider_used": ai_provider,
-                "ai_model_selected": ai_config.get('gemini_model'),
-                "executed_query": None,
-                "query_results": None,
-            },
-            400,
-        )
-
-    if ai_provider == "MISTRAL" and (
-        not ai_secrets['mistral_key'] or ai_secrets['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"
-    ):
-        error_msg = "Error: Mistral API key is missing. Please provide a valid API key."
-        log_messages.append(error_msg)
-        return (
-            {
-                "message": "\n".join(log_messages),
-                "original_request": original_user_input,
-                "ai_provider_used": ai_provider,
-                "ai_model_selected": ai_config.get('mistral_model'),
+                "ai_model_selected": ai_config.get(f'{ai_provider.lower()}_model'),
                 "executed_query": None,
                 "query_results": None,
             },
@@ -539,7 +560,8 @@ def _run_chat_pipeline(data, log_messages):
     # ====================
 
     log_messages.append("\nUsing MCP Agentic Workflow for playlist generation")
-    log_messages.append("Target: 100 songs")
+    target_song_count = _resolve_target_song_count(data)
+    log_messages.append(f"Target: {target_song_count} songs")
 
     # Get MCP tools and library context
     mcp_tools = get_mcp_tools()
@@ -556,10 +578,9 @@ def _run_chat_pipeline(data, log_messages):
 
     yield
 
-    target_song_count = 100
     from config import MAX_SONGS_PER_ARTIST_PLAYLIST
 
-    collection_cap = 1000
+    collection_cap = max(1000, target_song_count * 10)
 
     plan_result = yield from plan_and_execute_once(
         user_message=f'Build a {target_song_count}-song playlist for: "{original_user_input}"',
@@ -619,7 +640,7 @@ def _run_chat_pipeline(data, log_messages):
     # Prepare final results
     if all_songs:
         # NOTE: rating is NOT hard-filtered here. Like every other filter dim it
-        # is applied as a SOFT re-rank inside planner._rerank_pool (rating/5
+        # is applied as a SOFT re-rank inside tasks.ai.rerank (rating/5
         # gradient), so high-rated songs float up but nothing is removed.
 
         # --- Phase 1: Artist Diversity Cap on full collected pool ---

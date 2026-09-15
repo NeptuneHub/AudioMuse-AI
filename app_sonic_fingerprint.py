@@ -26,6 +26,7 @@ from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 from tasks.mediaserver import resolve_emby_jellyfin_user  # Import the new resolver function
 from config import (
     MEDIASERVER_TYPE,
+    SONIC_FINGERPRINT_NEIGHBORS,
     JELLYFIN_USER_ID,
     JELLYFIN_TOKEN,
     EMBY_USER_ID,
@@ -63,6 +64,7 @@ def sonic_fingerprint_page():
             mediaserver_type=MEDIASERVER_TYPE,
             title='AudioMuse-AI - Sonic Fingerprint',
             active='sonic_fingerprint',
+            sonic_fingerprint_n_default=SONIC_FINGERPRINT_NEIGHBORS,
         )
     except Exception:
         logger.exception("Error rendering sonic_fingerprint.html")
@@ -200,7 +202,7 @@ def generate_sonic_fingerprint_endpoint():
         num_results = data.get('n')
         if num_results is not None:
             try:
-                num_results = int(num_results)
+                num_results = max(1, int(num_results))
             except (ValueError, TypeError):
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
 

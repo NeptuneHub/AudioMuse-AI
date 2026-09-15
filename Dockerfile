@@ -1,12 +1,21 @@
 # syntax=docker/dockerfile:1
 # AudioMuse-AI Dockerfile
-# Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04) builds
+# Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04) builds
 #
 # Build examples:
 #   CPU:  docker build -t audiomuse-ai .
-#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
+#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
 
 ARG BASE_IMAGE=ubuntu:24.04
+# Optional: URL of a prebuilt aarch64 onnxruntime-gpu wheel. There is no official
+# linux/aarch64 wheel for onnxruntime-gpu on PyPI or pypi.nvidia.com, so ARM64
+# (DGX Spark / GB10, compute capability sm_121) GPU builds install this URL
+# instead of the onnxruntime-gpu pin in gpu.txt. Both GPU requirement files now
+# target CUDA 13 / cuDNN 9: gpu.txt pins onnxruntime-gpu 1.28.0 (CUDA 13) plus
+# cupy-cuda13x/cuml-cu13, and gpu-arm64.txt uses the same cupy/cuml pins with
+# this prebuilt wheel. When this arg is set, BASE_IMAGE must be a CUDA 13.x image.
+# Example: https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/onnxruntime_gpu-1.25.0-cp312-cp312-linux_aarch64.whl
+ARG ONNXRUNTIME_WHEEL_URL=""
 
 # ============================================================================
 # Stage 1: Download ML models (cached separately for faster rebuilds)
@@ -39,6 +48,8 @@ RUN set -eux; \
     urls=( \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_embedding.onnx" \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_prediction.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/neural_fingerprint.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/neural_fingerprint_pq.npz" \
     ); \
     for u in "${urls[@]}"; do \
         n=0; \
@@ -207,6 +218,37 @@ RUN set -eux; \
     \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
+
+# Download the SAE concept-steering graphs (~2 MB each)
+# The encoder maps a DCLAP embedding to 1024 concept latents, the decoder maps
+# them back. The concept catalogue that names those latents is small and ships
+# inside the repository, so only the two graphs are fetched here.
+RUN set -eux; \
+    sae_url="https://github.com/NeptuneHub/AudioMuse-AI-SAE/releases/download/v1"; \
+    for sae_model in dclap_sae_k20_d1024_best_encoder.onnx dclap_sae_k20_d1024_best_decoder.onnx; do \
+        n=0; \
+        until [ "$n" -ge 5 ]; do \
+            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                -O "/app/model/$sae_model" "$sae_url/$sae_model"; then \
+                echo "SAE model $sae_model downloaded"; \
+                break; \
+            fi; \
+            n=$((n+1)); \
+            echo "Download attempt $n for $sae_model failed - retrying in $((n*n))s"; \
+            sleep $((n*n)); \
+        done; \
+        if [ "$n" -ge 5 ]; then \
+            echo "ERROR: Failed to download $sae_model after 5 attempts"; \
+            exit 1; \
+        fi; \
+        if [ ! -f "/app/model/$sae_model" ]; then \
+            echo "ERROR: $sae_model not created"; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "SAE models downloaded successfully"; \
+    ls -lh /app/model/dclap_sae_k20_d1024_best_encoder.onnx /app/model/dclap_sae_k20_d1024_best_decoder.onnx
 
 # Download Whisper-small ONNX bundle (~570 MB) - HuggingFace optimum export
 # of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
@@ -418,6 +460,7 @@ RUN set -ux; \
 FROM base AS libraries
 
 ARG BASE_IMAGE
+ARG ONNXRUNTIME_WHEEL_URL
 
 WORKDIR /app
 
@@ -431,16 +474,24 @@ COPY requirements/ /app/requirements/
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED; \
     export UV_BREAK_SYSTEM_PACKAGES=1; \
     if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, torch+cuda)"; \
-        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+        if [[ -n "$ONNXRUNTIME_WHEEL_URL" ]]; then \
+            echo "NVIDIA (arm64/CUDA 13) base: installing GPU packages (cupy-cuda13x, cuml-cu13) with prebuilt aarch64 onnxruntime-gpu wheel"; \
+            uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu-arm64.txt -r /app/requirements/common.txt "$ONNXRUNTIME_WHEEL_URL" || exit 1; \
+        else \
+            echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, torch+cuda)"; \
+            uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+        fi \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
     fi \
     && echo "Verifying psycopg2 installation..." \
     && python3 -c "import psycopg2; print('psycopg2 OK')" \
-    && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
-    && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+    && find /usr/local/lib/python3.*/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.*/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete \
+    && PYV=$(python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])') \
+    && mkdir -p /app/site-packages && cp -a /usr/local/lib/$PYV/dist-packages/. /app/site-packages/ \
+    && du -sh /app/site-packages
 
 # ============================================================================
 # Stage 4: Runner - Final production image
@@ -458,7 +509,8 @@ ENV LANG=C.UTF-8 \
     IVF_DISK_CACHE_DIR=/app/ivf_cache \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_DISABLE_XET=1 \
-    HF_XET_DISABLE=1
+    HF_XET_DISABLE=1 \
+    GUNICORN_CMD_ARGS="--config /app/gunicorn.conf.py"
 
 # Note: bundled HuggingFace models (RoBERTa, ...) load with
 # local_files_only=True per call. The gte/whisper/silero ONNX bundles are
@@ -481,7 +533,11 @@ RUN ls -lah /app/.cache/huggingface/ && \
     du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
 
 # Copy Python packages from libraries stage
-COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+COPY --from=libraries /app/site-packages/ /tmp/site-packages/
+RUN PYV=$(python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])') && \
+    mkdir -p /usr/local/lib/$PYV/dist-packages && \
+    cp -a /tmp/site-packages/. /usr/local/lib/$PYV/dist-packages/ && \
+    rm -rf /tmp/site-packages
 # Copy console entrypoints (gunicorn, etc.) from libraries stage
 COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 

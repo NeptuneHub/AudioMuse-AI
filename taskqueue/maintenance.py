@@ -31,13 +31,46 @@ Main Features:
   with their worker, deferring to an in-flight control-plane action instead
 * fail_stale_inline_rows finishes task rows left RUNNING by a web process
   that stopped, skipping any protected migration handshake task
+* nudge_wedged_main_tasks covers the one case reclaim cannot: a main task whose
+  worker is ALIVE but stopped making progress, which holds its advisory lock and
+  so blocks every other main task forever. Cancelling it ends that worker's tree;
+  reclaim then requeues the task and it resumes from its persisted progress - or,
+  on its last attempt, fails it, which still frees the queue. It stands down for
+  an in-flight control action for the same reason reclaim does. The cancel is a
+  NOTIFY, and reaching stop_hard needs the worker's listener thread to run Python:
+  native code holding the GIL never gets there, so a row still silent at
+  QUEUE_WEDGED_ESCALATE_FACTOR x the limit has ignored it (the notify kills a worker that can
+  hear it within seconds) and its worker's BACKENDS are terminated instead. That
+  drops the connection holding the advisory lock, which is what actually frees the
+  queue, and the worker dies on its next statement. The escalation is decided from
+  the ROW's silence, which the one wedged_main_tasks query already returns, not
+  from remembering last pass: any container may win the election, so per-process
+  memory would only escalate when the same one won twice.
+  Without it the same useless NOTIFY re-fired every cycle forever
+* Every retention step runs inside its own guard. They share one connection, so
+  before the guards a single failure in any of them skipped the rest of the
+  cycle, dropped the connection, and burnt one more cycle on the reconnect's
+  settling skip. A lost connection still propagates - that one IS the drop
 * run_cycle elects one maintenance winner per pass and runs reclaim plus the
   slower retention sweeps only when they are due
+* reclaim_blob_space VACUUMs what autovacuum cannot reach, because its threshold
+  counts ROWS and a table of a few huge blobs never gets near it. Plain VACUUM
+  only, so readers and writers are never blocked; it stands down while a task is
+  live or another session holds an old transaction (a backup's pg_dump), and a
+  lock_timeout means it never queues behind anyone. run_cycle does NOT call it
+* start_blob_reclaim_thread runs that hourly sweep in the web process as a
+  daemon thread on its own connection; a restore stops Flask before psql
+  replaces the database, so the thread is already dead before the restore takes
+  its ACCESS EXCLUSIVE locks, and a failed pass reconnects for the next one
 """
 
 import json
 import logging
+import os
+import threading
 import time
+
+import psycopg2
 
 import service_roles
 
@@ -46,6 +79,7 @@ service_roles.declare_worker_role()
 import config  # noqa: E402
 from . import control  # noqa: E402
 from . import sql  # noqa: E402
+from .errors import WORKER_LOST_ERROR  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +163,7 @@ def _reclaim_one(conn, task_id):
                         "The worker running this task stopped unexpectedly. "
                         "It was restarted the allowed number of times."
                     ),
-                    'error': 'worker lost',
+                    'error': WORKER_LOST_ERROR,
                 },
             )
         conn.commit()
@@ -239,6 +273,53 @@ def fail_stale_inline_rows(conn):
     return failed
 
 
+
+def nudge_wedged_main_tasks(conn):
+    minutes = config.QUEUE_WEDGED_MAIN_TASK_MINUTES
+    if minutes <= 0:
+        return []
+    with conn.cursor() as cur:
+        if _control_action_in_flight(cur):
+            conn.commit()
+            logger.info(
+                "A control-plane action is in flight; leaving a main task that has "
+                "gone quiet to its uncharged requeue instead of ending its worker."
+            )
+            return []
+        wedged = sql.wedged_main_tasks(cur, minutes * 60)
+        escalate_after = minutes * 60 * config.QUEUE_WEDGED_ESCALATE_FACTOR
+        terminated = {}
+        for task in wedged:
+            task_id = task['task_id']
+            sql.notify_cancel(cur, task_id)
+            if task['silent_seconds'] >= escalate_after:
+                terminated[task_id] = sql.terminate_wedged_worker_backends(cur, task_id)
+    conn.commit()
+    for task_id, pids in terminated.items():
+        logger.warning(
+            "Main task %s has ignored the cancel for %.0f minutes, so its Postgres "
+            "backend(s) %s were terminated: a worker that can hear the cancel dies "
+            "within seconds, and terminating the backend releases the advisory lock "
+            "reclaim needs whether the worker can hear anything or not.",
+            task_id, minutes * config.QUEUE_WEDGED_ESCALATE_FACTOR, pids or 'none found',
+        )
+    for task in wedged:
+        resumes = (task['attempts'] or 0) + 1 <= (task['max_attempts'] or 0)
+        logger.warning(
+            "Main task %s (%s) has held its worker for %d minutes without changing "
+            "its row. Its worker is still alive, so reclaim cannot take it and it "
+            "would block every other main task forever; ending that worker. %s",
+            task['task_id'], task['task_type'], minutes,
+            "It will be requeued and resume from its persisted progress."
+            if resumes else
+            "It has used attempt %d of %d, so the reclaim that follows will fail it "
+            "for good; that at least frees the queue for the next run." % (
+                task['attempts'] or 0, task['max_attempts'] or 0,
+            ),
+        )
+    return [task['task_id'] for task in wedged]
+
+
 def recover_migration_handshakes():
     try:
         from tasks.provider_migration_tasks import (
@@ -263,6 +344,132 @@ def clear_terminal_shared_payloads(conn):
     return cleared
 
 
+def reclaim_blob_space(conn):
+    previous = conn.autocommit
+    try:
+        conn.autocommit = True
+    except Exception:
+        logger.exception(
+            "Could not put the connection in autocommit; skipping this blob reclaim "
+            "(VACUUM cannot run inside a transaction block)"
+        )
+        return []
+    reclaimed = []
+    try:
+        with conn.cursor() as cur:
+            sql.begin_reclaim_session(cur)
+            if sql.any_live_task(cur):
+                logger.info("Blob reclaim skipped: a task is live")
+                return []
+            if sql.snapshot_holder_blocking_reclaim(cur):
+                logger.info(
+                    "Blob reclaim skipped: another session has held a snapshot for "
+                    "over %ss (a backup's pg_dump looks exactly like this). VACUUM could "
+                    "not remove anything newer than that snapshot anyway.",
+                    config.BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS,
+                )
+                return []
+            targets = sql.blob_tables_autovacuum_cannot_reach(cur)
+            if not targets:
+                logger.info("Blob reclaim passed: found no tables with reclaimable dead rows.")
+                return []
+        for quoted_relname, dead, total in targets:
+            try:
+                with conn.cursor() as cur:
+                    sql.vacuum_table(cur, quoted_relname)
+            except (psycopg2.errors.LockNotAvailable, psycopg2.errors.QueryCanceled):
+                logger.info(
+                    "Blob reclaim left %s alone: it was busy, and this sweep never queues "
+                    "behind another lock. The next pass picks it up.",
+                    quoted_relname,
+                )
+                continue
+            except Exception:
+                logger.exception(
+                    "VACUUM %s failed; sweeping the remaining tables anyway", quoted_relname
+                )
+                continue
+            reclaimed.append(quoted_relname)
+            logger.info(
+                "VACUUM %s reclaimed %d dead row(s) in a %s table. Autovacuum fires on ROW "
+                "count, so a table of a few huge blobs needs ~50 rebuilds to qualify and "
+                "meanwhile every replaced blob stays on disk.",
+                quoted_relname, dead, total,
+            )
+        if reclaimed:
+            logger.info(
+                "Blob reclaim passed: vacuumed %d table(s): %s",
+                len(reclaimed), ", ".join(reclaimed),
+            )
+        else:
+            logger.info(
+                "Blob reclaim passed: %d candidate table(s) found but none were vacuumed.",
+                len(targets),
+            )
+    except Exception:
+        logger.exception("Blob-table space reclaim failed")
+    finally:
+        try:
+            conn.autocommit = previous
+        except Exception:
+            logger.exception("Restoring the connection autocommit mode failed")
+    return reclaimed
+
+
+def _blob_reclaim_loop(application, connect_raw, sleep, reclaim):
+    try:
+        sleep(config.BLOB_RECLAIM_STARTUP_DELAY_SECONDS)
+        conn = None
+        while True:
+            try:
+                if conn is None or conn.closed:
+                    conn = connect_raw(
+                        application_name=f"audiomuse-blob-reclaim-{os.getpid()}"
+                    )
+                reclaim(conn)
+            except Exception:
+                application.logger.exception('blob space reclaim cycle failed')
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        application.logger.exception(
+                            'closing the blob reclaim connection failed'
+                        )
+                conn = None
+            sleep(config.BLOB_RECLAIM_INTERVAL_SECONDS)
+    except Exception:
+        application.logger.exception('blob space reclaim main loop error')
+
+
+def start_blob_reclaim_thread(application):
+    def _loop():
+        from time import sleep
+        from database import connect_raw
+
+        _blob_reclaim_loop(application, connect_raw, sleep, reclaim_blob_space)
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread
+
+
+def _retention_step(conn, name, step, *args):
+    try:
+        return step(*args)
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        raise
+    except Exception:
+        logger.exception(
+            "Maintenance step '%s' failed; the rest of this cycle still runs", name
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            logger.debug("Rollback after a failed step failed", exc_info=True)
+        return None
+
+
 def run_cycle(conn, with_retention=True):
     with conn.cursor() as cur:
         elected = sql.try_maintenance_lock(cur)
@@ -272,9 +479,12 @@ def run_cycle(conn, with_retention=True):
     try:
         reclaim_orphans(conn)
         if with_retention:
-            fail_stale_inline_rows(conn)
-            recover_migration_handshakes()
-            clear_terminal_shared_payloads(conn)
+            _retention_step(conn, 'stale inline rows', fail_stale_inline_rows, conn)
+            _retention_step(conn, 'wedged main tasks', nudge_wedged_main_tasks, conn)
+            _retention_step(conn, 'migration handshakes', recover_migration_handshakes)
+            _retention_step(
+                conn, 'terminal shared payloads', clear_terminal_shared_payloads, conn
+            )
     finally:
         try:
             conn.rollback()

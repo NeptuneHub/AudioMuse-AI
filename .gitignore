@@ -10,6 +10,7 @@ venv/
 .venv-macos/
 .venv-linux/
 .venv-windows/
+.venv-tfexport/
 env/
 
 # Linux native build inputs built fresh in CI (not committed; see .github/workflows/build-linux.yml)
@@ -54,6 +55,7 @@ nul
 # Test models (downloaded by CI workflow from GitHub Releases)
 test/models/*.onnx
 test/models/*.onnx.data
+test/models/*.npz
 
 # Student CLAP training artifacts
 student_clap/cache/
@@ -64,6 +66,9 @@ student_clap/config.local.yaml
 student_clap/models/FMA_SONGS_LICENSE.md
 student_clap/models/FMA_SONGS_2247_LICENSE.md
 
+# bn research prototype artifacts
+query/
+
 # macOS standalone build artifacts (PyInstaller output)
 /build/
 /dist/
@@ -73,3 +78,16 @@ testing_suite/
 analysis.md
 .claude/
 lyrics_model_gte_vnni.tar.gz
+.reasonix/
+metadata/
+
+# SAE sparse-autoencoder workspace: training code, the 4 GB venv, the embedding
+# corpus and checkpoints. None of it belongs in the repo; the training code lives
+# in the AudioMuse-AI-SAE repository instead.
+/SAE/
+
+# The SAE concept-steering graphs are downloaded into model/ from the
+# AudioMuse-AI-SAE release, like the other models. Only the small concept
+# catalogue is committed.
+/dclap_sae_k20_d1024_best_encoder.onnx
+/dclap_sae_k20_d1024_best_decoder.onnx

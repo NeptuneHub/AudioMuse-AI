@@ -16,6 +16,8 @@ Main Features:
 * Source-path override refresh stores overrides and warns on non-absolute paths
 * Dry-run gate returns 409 on bad source paths unless overridden or bypassed
 * Execute gate requires backup confirmation and dry-run-ready state; probe URLs SSRF-validated
+* Execute gate also refuses while a server_sweep is running, not just the queue-guard types
+* Incomplete target credentials are refused for every provider at probe, session start and execute
 """
 
 import os
@@ -26,6 +28,16 @@ import config
 import taskqueue
 from contextlib import contextmanager, nullcontext
 from unittest.mock import MagicMock, patch
+
+_NAV_CREDS = '{"url": "http://nav.local", "user": "u", "password": "p"}'
+
+_COMPLETE_CREDS = {
+    'jellyfin': {'url': 'http://127.0.0.1:8096', 'user_id': 'uid', 'token': 'tok'},
+    'emby': {'url': 'http://127.0.0.1:8096', 'user_id': 'uid', 'token': 'tok'},
+    'navidrome': {'url': 'http://127.0.0.1:4533', 'user': 'u', 'password': 'p'},
+    'lyrion': {'url': 'http://127.0.0.1:9000'},
+    'plex': {'url': 'http://127.0.0.1:32400', 'token': 'tok'},
+}
 
 
 def _load_bp_module():
@@ -163,6 +175,60 @@ class TestSessionStart:
         assert not any('DELETE FROM migration_session' in s for s in sqls)
         assert not any('INSERT INTO migration_session' in s for s in sqls)
 
+    def test_refuses_a_target_already_registered_as_a_secondary_server(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        servers = [
+            {'server_id': 'd', 'name': 'Jellyfin', 'server_type': 'jellyfin', 'is_default': True, 'creds': {'url': 'http://jf'}},
+            {'server_id': 's', 'name': 'Home Navidrome', 'server_type': 'navidrome', 'is_default': False,
+             'creds': {'url': 'HTTP://127.0.0.1/'}},
+        ]
+        with patch('tasks.mediaserver.registry.list_servers', return_value=servers):
+            resp = self._start(client)
+
+        assert resp.status_code == 409
+        assert 'Home Navidrome' in resp.get_json()['error']
+        assert 'default server' in resp.get_json()['error']
+        sqls = [c[0][0] for c in cur.execute.call_args_list]
+        assert not [s for s in sqls if 'INSERT' in s or 'DELETE' in s]
+
+    def test_migrating_onto_the_current_default_server_itself_is_allowed(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.extend([(True,), (False,), (123,)])
+        servers = [
+            {'server_id': 'd', 'name': 'Navidrome', 'server_type': 'navidrome', 'is_default': True,
+             'creds': {'url': 'HTTP://127.0.0.1/'}},
+        ]
+        with patch('tasks.mediaserver.registry.list_servers', return_value=servers):
+            assert bp_mod._registered_secondary_server('navidrome', {'url': 'http://127.0.0.1'}) is None, (
+                'the default server is never a "registered secondary", or a same-server migration is refused'
+            )
+            with patch.object(bp_mod, 'get_active_main_task', return_value=None):
+                resp = self._start(client)
+
+        assert resp.status_code == 200
+        assert resp.get_json()['session_id'] == 123
+
+    def test_a_registry_failure_rolls_back_to_the_savepoint_and_fails_open(self, bp_mod, fake_db):
+        db, cur = fake_db
+
+        def boom(conn=None):
+            raise RuntimeError('statement timeout')
+
+        with patch('tasks.mediaserver.registry.list_servers', side_effect=boom):
+            assert bp_mod._registered_secondary_server('navidrome', {'url': 'http://nav'}) is None
+        sqls = [c[0][0] for c in cur.execute.call_args_list]
+        assert sqls == ['SAVEPOINT migration_target_check', 'ROLLBACK TO SAVEPOINT migration_target_check'], (
+            'the aborted lookup must not poison the transaction the caller keeps using'
+        )
+
+    def test_a_secondary_of_another_type_or_address_does_not_block(self, bp_mod, client, fake_db):
+        servers = [
+            {'server_id': 's1', 'name': 'Lyrion', 'server_type': 'lyrion', 'is_default': False, 'creds': {'url': 'http://127.0.0.1'}},
+            {'server_id': 's2', 'name': 'Other', 'server_type': 'navidrome', 'is_default': False, 'creds': {'url': 'http://10.0.0.9'}},
+        ]
+        with patch('tasks.mediaserver.registry.list_servers', return_value=servers):
+            assert bp_mod._registered_secondary_server('navidrome', {'url': 'http://127.0.0.1'}) is None
+
     def test_rejects_unknown_target_type(self, bp_mod, client, fake_db):
         resp = client.post(
             '/api/migration/session/start',
@@ -172,6 +238,35 @@ class TestSessionStart:
             },
         )
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize('target', sorted(_COMPLETE_CREDS))
+    def test_rejects_incomplete_creds_without_touching_sessions(
+        self, bp_mod, client, fake_db, target
+    ):
+        db, cur = fake_db
+        partial = {k: v for k, v in _COMPLETE_CREDS[target].items() if k != 'url'}
+        resp = client.post(
+            '/api/migration/session/start',
+            json={'target_type': target, 'target_creds': partial},
+        )
+        assert resp.status_code == 400
+        assert 'Incomplete credentials' in resp.get_json()['error']
+        cur.execute.assert_not_called()
+
+
+class TestSessionGetNeverShipsCanonicalIds:
+    def test_both_match_maps_are_stripped_in_sql(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.append((5, 'jellyfin', 'navidrome', 'in_progress', {'dry_run': {'tier_counts': {}}}))
+
+        resp = client.get('/api/migration/session/5')
+
+        assert resp.status_code == 200
+        sql = next(c[0][0] for c in cur.execute.call_args_list if 'FROM migration_session' in c[0][0])
+        assert "#- '{dry_run,matches}'" in sql
+        assert "#- '{dry_run,extra_matches}'" in sql, (
+            'the duplicate-file map holds canonical fp_ ids and must never reach the API'
+        )
 
 
 class TestProbeTest:
@@ -197,6 +292,32 @@ class TestProbeTest:
         assert data['ok'] is True
         assert data['path_format'] == 'absolute'
 
+    @pytest.mark.parametrize('target', sorted(_COMPLETE_CREDS))
+    def test_any_blank_required_field_is_refused_without_probing(self, bp_mod, client, target):
+        complete = _COMPLETE_CREDS[target]
+        attempts = [{}] + [{k: v for k, v in complete.items() if k != key} for key in complete]
+        with patch.object(bp_mod, 'provider_probe', MagicMock()) as p:
+            for creds in attempts:
+                data = client.post(
+                    '/api/migration/probe/test', json={'type': target, 'creds': creds}
+                ).get_json()
+                assert data['ok'] is False
+                assert data['incomplete_creds'] is True
+                assert 'Incomplete credentials' in data['error']
+        p.test_connection.assert_not_called()
+
+    @pytest.mark.parametrize(
+        'target, creds',
+        sorted(_COMPLETE_CREDS.items())
+        + [('navidrome', {'url': 'http://127.0.0.1:4533', 'api_key': 'k'})],
+    )
+    def test_complete_creds_reach_the_probe(self, bp_mod, client, target, creds):
+        with patch.object(bp_mod, 'provider_probe', MagicMock()) as p:
+            p.test_connection.return_value = {'ok': True, 'sample_count': 1, 'path_format': 'absolute', 'warnings': []}
+            resp = client.post('/api/migration/probe/test', json={'type': target, 'creds': creds})
+        assert resp.get_json()['ok'] is True
+        p.test_connection.assert_called_once_with(target, creds)
+
 
 class TestApplySourcePathOverrides:
     def test_patches_matching_ids_only_and_an_empty_map_rewrites_nothing(self, bp_mod):
@@ -214,16 +335,16 @@ class TestApplySourcePathOverrides:
         )
         assert patched is rows
         assert rows == [
-            {'item_id': 'a', 'file_path': '/music/a.mp3'},
-            {'item_id': 'b', 'file_path': '/music/b.mp3'},
+            {'item_id': 'a', 'file_path': '/music/a.mp3', 'file_paths': ['/music/a.mp3']},
+            {'item_id': 'b', 'file_path': '/music/b.mp3', 'file_paths': ['/music/b.mp3']},
             {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
-        ]
+        ], 'an override replaces every loaded path, or old_paths would still match the stale ones'
 
         untouched = bp_mod._apply_source_path_overrides(rows, {})
         assert untouched is rows
         assert rows == [
-            {'item_id': 'a', 'file_path': '/music/a.mp3'},
-            {'item_id': 'b', 'file_path': '/music/b.mp3'},
+            {'item_id': 'a', 'file_path': '/music/a.mp3', 'file_paths': ['/music/a.mp3']},
+            {'item_id': 'b', 'file_path': '/music/b.mp3', 'file_paths': ['/music/b.mp3']},
             {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
         ]
 
@@ -249,7 +370,7 @@ class TestOverridesAreRekeyedOntoCatalogueIds:
             {'prov-1': '/music/a.flac', 'prov-2': '/music/b.flac'}
         )
 
-        assert out == {'fp_3aaa': '/music/a.flac', 'fp_3bbb': '/music/b.flac'}
+        assert out == {'fp_3aaa': ['/music/a.flac'], 'fp_3bbb': ['/music/b.flac']}
 
         rows = [{'item_id': 'fp_3aaa', 'file_path': '/stale/a.flac'}]
         bp_mod._apply_source_path_overrides(rows, out)
@@ -267,12 +388,12 @@ class TestOverridesAreRekeyedOntoCatalogueIds:
 
         out = bp_mod._overrides_by_catalogue_id({'prov-1': '/music/a.flac'})
 
-        assert out == {'prov-1': '/music/a.flac'}
+        assert out == {'prov-1': ['/music/a.flac']}
 
     def test_an_empty_probe_needs_no_registry_call(self, bp_mod):
         assert bp_mod._overrides_by_catalogue_id({}) == {}
 
-    def test_duplicate_files_of_one_song_collapse_deterministically(
+    def test_every_file_of_one_song_is_kept_in_a_deterministic_order(
         self, bp_mod, monkeypatch
     ):
         from tasks.mediaserver import registry
@@ -291,9 +412,14 @@ class TestOverridesAreRekeyedOntoCatalogueIds:
             'prov-a': '/music/a.flac',
         })
 
-        assert forward == reversed_order == {'fp_3same': '/music/a.flac'}, (
-            "the lowest provider id wins, whatever order the provider listed them in"
+        assert forward == reversed_order == {'fp_3same': ['/music/a.flac', '/music/b.flac']}, (
+            "every file of a duplicated song keeps its refreshed path, in provider id order, "
+            "so the dry run can carry the duplicate files to the target"
         )
+        rows = [{'item_id': 'fp_3same', 'file_path': '/stale.flac', 'file_paths': ['/stale.flac']}]
+        bp_mod._apply_source_path_overrides(rows, forward)
+        assert rows[0]['file_path'] == '/music/a.flac'
+        assert rows[0]['file_paths'] == ['/music/a.flac', '/music/b.flac']
 
 
 class TestSourcePathsRefreshRoute:
@@ -328,8 +454,8 @@ class TestSourcePathsRefreshRoute:
         mock_patch.assert_called_once()
         call_kwargs = mock_patch.call_args.kwargs
         assert call_kwargs['source_path_overrides'] == {
-            't1': '/music/rock/a.mp3',
-            't2': '/music/rock/b.mp3',
+            't1': ['/music/rock/a.mp3'],
+            't2': ['/music/rock/b.mp3'],
         }
 
     def test_persisting_overrides_does_not_touch_the_session_status(self, bp_mod):
@@ -557,7 +683,7 @@ class TestExecuteGate:
     def test_rejects_missing_backup_confirmation(self, bp_mod, client, fake_db):
         db, cur = fake_db
         cur._fetchone_queue.append((True,))
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
         p = self._base_payload()
         p['backup_confirmed'] = False
         resp = client.post('/api/migration/execute', json=p)
@@ -569,7 +695,7 @@ class TestExecuteGate:
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
         p = self._base_payload()
         p['confirmation_text'] = 'LGTM ship it'
         resp = client.post('/api/migration/execute', json=p)
@@ -581,18 +707,38 @@ class TestExecuteGate:
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
-        cur._fetchone_queue.append(('navidrome', 'in_progress', True))
+        cur._fetchone_queue.append(('navidrome', 'in_progress', True, _NAV_CREDS))
         resp = client.post('/api/migration/execute', json=self._base_payload())
         assert resp.status_code == 400
         err = resp.get_json().get('error', '').lower()
         assert 'dry' in err or 'status' in err
+
+    def test_rejects_while_a_server_sweep_is_running(self, bp_mod, client, fake_db):
+        # A migration rewrites track_server_map the same way a sweep does, so
+        # it must keep blocking on a live sweep too - the same invariant the
+        # cleaning start already enforces - not just the queue-guard types.
+        db, cur = fake_db
+        cur._fetchone_queue.extend([(0,), (0,)])
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append((False,))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
+        sweep = {'task_id': 'sweep-1', 'task_type': 'server_sweep', 'status': 'RUNNING'}
+
+        with (
+            patch.object(bp_mod, 'get_queue_blocking_task', return_value=None),
+            patch.object(bp_mod, 'get_active_main_task', return_value=sweep),
+        ):
+            resp = client.post('/api/migration/execute', json=self._base_payload())
+
+        assert resp.status_code == 409
+        assert resp.get_json()['task_id'] == 'sweep-1'
 
     def test_happy_path_enqueues_job(self, bp_mod, client, fake_db):
         db, cur = fake_db
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))
         cur._fetchone_queue.append((False,))
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, _NAV_CREDS))
         queued = []
 
         with (
@@ -612,6 +758,25 @@ class TestExecuteGate:
             'tasks.provider_migration_tasks.execute_provider_migration'
         )
         assert queued[0]['queue'] == taskqueue.QUEUE_HIGH
+
+    def test_rejects_a_session_whose_stored_creds_are_incomplete(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.extend([(0,), (0,)])
+        cur._fetchone_queue.append((True,))
+        cur._fetchone_queue.append((False,))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', True, '{}'))
+
+        with (
+            patch.object(bp_mod, 'get_active_main_task', return_value=None),
+            patch.object(bp_mod, 'save_task_status') as saved,
+            patch.object(bp_mod.taskqueue, 'enqueue') as enqueue,
+        ):
+            resp = client.post('/api/migration/execute', json=self._base_payload())
+
+        assert resp.status_code == 400
+        assert 'Incomplete credentials' in resp.get_json()['error']
+        saved.assert_not_called()
+        enqueue.assert_not_called()
 
 
 class TestPlannerReservationProtocol:
@@ -748,11 +913,12 @@ class TestMigrationMetadataCompletionFence:
     def test_completion_pruning_requires_ack_and_a_terminal_queue_row(self, bp_mod):
         cur = MagicMock()
         cur.fetchall.return_value = [
-            (1, 'live', True),
-            (2, 'done', True),
-            (3, 'unacked', False),
-            (4, None, False),
-            (5, 'missing', True),
+            (1, 'live', True, 'req-1'),
+            (2, 'done', True, 'req-2'),
+            (3, 'unacked', False, 'req-3'),
+            (4, None, False, 'req-4'),
+            (5, 'missing', True, 'req-5'),
+            (6, None, False, None),
         ]
         statuses = {
             'live': config.TASK_STATUS_RUNNING,
@@ -761,14 +927,22 @@ class TestMigrationMetadataCompletionFence:
             'missing': None,
         }
         with patch.object(bp_mod, '_task_statuses_by_id', return_value=statuses):
-            assert bp_mod._completed_sessions_safe_to_prune(cur) == [2, 5]
+            assert bp_mod._completed_sessions_safe_to_prune(cur) == [6, 2, 5], (
+                'a completion from before the restart handshake has no retry to protect'
+            )
+
+    def test_legacy_completions_are_pruned_even_when_the_queue_check_fails(self, bp_mod):
+        cur = MagicMock()
+        cur.fetchall.return_value = [(7, None, False, None), (8, 'job', True, 'req-8')]
+        with patch.object(bp_mod, '_task_statuses_by_id', side_effect=RuntimeError('db down')):
+            assert bp_mod._completed_sessions_safe_to_prune(cur) == [7]
 
 
 class TestExecuteEnqueueResolution:
     @staticmethod
     def _prime_execute(cur):
         cur._fetchone_queue.extend(
-            [(0,), (0,), (True,), (False,), ('navidrome', 'dry_run_ready', True)]
+            [(0,), (0,), (True,), (False,), ('navidrome', 'dry_run_ready', True, _NAV_CREDS)]
         )
 
     def test_cancel_that_wins_the_lock_prevents_execute_enqueue(
@@ -1001,3 +1175,82 @@ class TestSessionDiscard:
         assert resp.status_code == 503
         cancel.assert_not_called()
         db.commit.assert_not_called()
+
+
+class TestJobStatusCarriesTheTasksOwnLine:
+    def test_the_progress_line_rides_along_with_the_queue_status(self, client, monkeypatch):
+        import json
+
+        import database
+
+        monkeypatch.setattr(
+            database, 'get_task_info_from_db',
+            lambda task_id: {
+                'task_id': task_id,
+                'status': 'NEW',
+                'details': json.dumps({
+                    'status_message': (
+                        'Provider migration complete: 3 tracks repointed; waiting '
+                        'for the workers to acknowledge their restart.'
+                    ),
+                }),
+            },
+        )
+
+        payload = client.get('/api/migration/status/mig-1').get_json()
+
+        assert payload['status'] == 'NEW'
+        assert payload['message'].startswith('Provider migration complete'), (
+            'the page shows the raw queue status, and NEW after RUNNING is the '
+            "worker restart the migration itself requested; only the row's own "
+            'line says so, so it rides along'
+        )
+
+
+class TestReadsNeverHoldATransactionAcrossNetworkWork:
+    def test_the_session_credentials_read_ends_its_transaction(self, bp_mod, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.append(('navidrome', '{"url": "http://nav"}'))
+        assert bp_mod._fetch_session_creds(3) == ('navidrome', {'url': 'http://nav'})
+        db.commit.assert_called_once()
+
+    def test_the_catalogue_rows_read_ends_its_transaction(self, bp_mod, fake_db):
+        db, cur = fake_db
+        cur.fetchall.return_value = [('fp_1', None, 't', 'a', 'al', 'aa', ['/m/1.flac'])]
+        with patch('tasks.mediaserver.registry.get_default_server', return_value={'server_id': 'd1'}):
+            rows = bp_mod._load_score_rows_as_dicts()
+        assert rows[0]['file_paths'] == ['/m/1.flac']
+        db.commit.assert_called_once()
+
+
+class TestFinalizeCountsOnlyTheDefaultServerSongs:
+    def test_the_orphan_base_is_the_songs_available_on_the_default_server(self, bp_mod, fake_db):
+        _db, cur = fake_db
+        cur._fetchone_queue.append((7,))
+        with patch('tasks.mediaserver.registry.get_default_server', return_value={'server_id': 'd1'}):
+            assert bp_mod._count_score_rows() == 7
+        sql, params = cur.execute.call_args[0]
+        assert 'availability' in sql and params == ('d1', True), (
+            'songs only a secondary server holds are never orphans of this migration'
+        )
+
+
+class TestWizardSessionFollowsTheTestedTarget:
+    def test_a_changed_target_or_credential_starts_a_new_session(self):
+        import pathlib
+
+        html = (pathlib.Path(__file__).resolve().parents[2] / 'templates' / 'provider_migration.html').read_text(encoding='utf-8')
+        assert "JSON.stringify([targetType, targetCreds])" in html
+        assert 'if (!sessionId || sessionTarget !== testedTarget)' in html
+        assert 'sessionTarget = testedTarget;' in html
+
+
+class TestAlbumRowsFollowTheDefaultServer:
+    def test_manual_album_rows_only_include_songs_on_the_default_server(self, bp_mod, fake_db):
+        _db, cur = fake_db
+        cur.fetchall.return_value = []
+        with patch('tasks.mediaserver.registry.get_default_server', return_value={'server_id': 'd1'}):
+            assert bp_mod._load_rows_for_album(['Artist', 'Album']) == []
+        sql, params = cur.execute.call_args[0]
+        assert 'availability' in repr(sql)
+        assert params == ('Artist', 'Album', 'd1', True)

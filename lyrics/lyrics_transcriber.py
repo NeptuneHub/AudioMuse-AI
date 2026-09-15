@@ -33,7 +33,6 @@ import os
 import re
 import signal
 import unicodedata
-import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -66,6 +65,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SAMPLE_RATE = 16000
 MAX_AUDIO_SECONDS = float(os.environ.get('LYRICS_MAX_AUDIO_SECONDS', '240'))
+
+from cpu_budget import usable_cpu_count
+
+from .text_quality import compression_ratio as _compression_ratio
 
 from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as MIN_CHARS_FOR_EMBEDDING
 from config import LYRICS_ASR_MIN_AVG_LOGPROB as ASR_MIN_AVG_LOGPROB
@@ -110,15 +113,6 @@ _NON_LATIN_SCRIPT_LANGS = {
     'ta',
     'te',
 }
-
-
-def _compression_ratio(text: str) -> float:
-    if not text:
-        return 0.0
-    encoded = text.encode('utf-8')
-    if not encoded:
-        return 0.0
-    return len(encoded) / max(1, len(zlib.compress(encoded)))
 
 
 def _text_quality_reject(text: str, lang: str = '') -> Optional[str]:
@@ -192,7 +186,7 @@ MUSIC_ANALYSIS_AXES = {
 
 
 def get_lyrics_threads() -> int:
-    cpus = os.cpu_count() or 2
+    cpus = usable_cpu_count() or os.cpu_count() or 2
     return max(2, cpus // 2)
 
 

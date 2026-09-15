@@ -20,6 +20,7 @@ Main Features:
 
 from flask import Blueprint, jsonify, request, render_template
 import logging
+import config
 
 import app_server_context
 from app_helper import index_error_body
@@ -30,6 +31,19 @@ logger = logging.getLogger(__name__)
 
 # Create Blueprint
 artist_similarity_bp = Blueprint('artist_similarity_bp', __name__, template_folder='templates')
+
+
+def artist_search_from_request():
+    query = request.args.get('query', '', type=str)
+    if not query or len(query) < 2:
+        return jsonify([])
+    start = request.args.get('start', 0, type=int)
+    end = request.args.get('end', None, type=int)
+    try:
+        return artist_search_response(query, start, end, 100)
+    except Exception:
+        logger.exception("Error during artist search")
+        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
 
 
 def artist_search_response(query, start, end, cap):
@@ -72,6 +86,7 @@ def artist_similarity_page():
         'artist_similarity.html',
         title='AudioMuse-AI - Artist Similarity',
         active='artist_similarity',
+        artist_similarity_n_default=config.ARTIST_SIMILARITY_DEFAULT_N_RESULTS,
     )
 
 
@@ -103,19 +118,7 @@ def search_artists_endpoint():
                   track_count:
                     type: integer
     """
-    query = request.args.get('query', '', type=str)
-
-    if not query or len(query) < 2:
-        return jsonify([])
-
-    start = request.args.get('start', 0, type=int)
-    end = request.args.get('end', None, type=int)
-
-    try:
-        return artist_search_response(query, start, end, 100)
-    except Exception:
-        logger.exception("Error during artist search")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+    return artist_search_from_request()
 
 
 @artist_similarity_bp.route('/api/similar_artists', methods=['GET'])
@@ -142,7 +145,7 @@ def get_similar_artists_endpoint():
         description: The number of similar artists to return.
         schema:
           type: integer
-          default: 10
+          default: 50
       - name: ef_search
         in: query
         description: HNSW search parameter (higher = more accurate but slower).
@@ -183,7 +186,8 @@ def get_similar_artists_endpoint():
     """
     artist = request.args.get('artist')
     artist_id = request.args.get('artist_id')
-    n = request.args.get('n', 10, type=int)
+    n = request.args.get('n', config.ARTIST_SIMILARITY_DEFAULT_N_RESULTS, type=int)
+    n = max(1, n)
     ef_search = request.args.get('ef_search', type=int)
     include_component_matches = (
         request.args.get('include_component_matches', 'false').lower() == 'true'

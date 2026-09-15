@@ -656,6 +656,7 @@
 (function() {
     // ---------- State ----------
     let sessionId   = null;
+    let sessionTarget = null;
     let targetType  = '';
     let targetCreds = {};
     let unmatchedAlbums = [];
@@ -674,6 +675,7 @@
         exact_meta:   'via exact metadata',
         title_artist: 'via title + artist only',
         norm_meta:  'via normalized metadata',
+        title_duration: 'via title + artist + duration',
         manual:     'manually re-targeted',
         unknown:    '',
     };
@@ -989,8 +991,9 @@
                 body: JSON.stringify({ type: targetType, creds: targetCreds })
             });
             if (!result.ok) {
-                showError($('mig-probe-result'),
-                    'Connection failed: ' + (result.error || 'unknown'));
+                showError($('mig-probe-result'), result.incomplete_creds
+                    ? result.error
+                    : 'Connection failed: ' + (result.error || 'unknown'));
                 resetFromStep(3);
                 return;
             }
@@ -1004,14 +1007,18 @@
             }
             $('mig-probe-result').innerHTML = html;
 
-            // Create/reuse session
-            if (!sessionId) {
+            // Reuse the session only while it targets exactly what was just tested;
+            // a changed provider, URL or credential starts a fresh one.
+            const testedTarget = JSON.stringify([targetType, targetCreds]);
+            if (!sessionId || sessionTarget !== testedTarget) {
+                if (sessionId) resetFromStep(3);
                 const s = await jsonFetch("{{ url_for('migration_bp.session_start') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ target_type: targetType, target_creds: targetCreds })
                 });
                 sessionId = s.session_id;
+                sessionTarget = testedTarget;
             }
             // Populate the library checkbox list once we have a session. Hidden
             // for providers without a listable folder API.
@@ -1157,6 +1164,9 @@
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="tail"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="exact_meta"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="norm_meta"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
+        if (tc.title_duration) {
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_duration"><span class="mig-tier-num">' + tc.title_duration + '</span>matched by title + artist + duration</div>';
+        }
         if ('title_artist' in tc) {
             html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_artist"><span class="mig-tier-num">' + (tc.title_artist || 0) + '</span>matched by title + artist only</div>';
         }
@@ -1590,7 +1600,8 @@
             try {
                 const res = await jsonFetch(statusUrl);
                 const s = res.status || 'unknown';
-                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
+                statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong>' +
+                    (res.message ? ' - ' + esc(res.message) : '') + '</div>';
                 if (AudioMuseTaskStatus.isSuccess(s)) {
                     const r = res.result || {};
                     const indexNote = r.index_rebuild_needed

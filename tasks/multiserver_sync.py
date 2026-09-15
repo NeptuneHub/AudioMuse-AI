@@ -15,30 +15,55 @@ the server's artist links and a set-based catalogue metadata refresh. It runs
 automatically when a server is added or its matching settings change, and from
 the Align button.
 
-Runs as a high-priority queue job reporting progress into task_status and is
-cancellable. Unmatched tracks are left unmapped; re-sweeps are incremental.
+Runs as a high-priority queue job. Progress goes through the one shared reporter
+and cancellation through the one shared cancel check (tasks.task_run); the queue
+writes the terminal row from what the sweep returns or raises. It used to catch
+every exception, write FAILURE itself and return normally, so the queue recorded
+SUCCESS and never retried a sweep that had merely hit a media server that was
+down for two minutes. Unmatched tracks are left unmapped; re-sweeps are incremental.
 Full-refresh sweeps prune mappings whose provider track is gone (only map rows,
 never analyzed tracks), skipping the prune when a fetch looks partial.
 
 Main Features:
-* sweep_server / sweep_all_secondary_servers entry points with live
-  progress and cooperative cancellation; helpers shared with the cleaning task so
-  the two can never drift apart.
+* sweep_server / sweep_all_secondary_servers entry points; the catalogue
+  helpers are shared with the cleaning task so the two can never drift apart.
 * Zero-download alignment, artist link upserts, and batch metadata refresh.
+  A song held as several files on the new server gets every file whose path
+  matches one it already has elsewhere, or whose title, artist and duration are
+  the song's own, and songs already mapped on the server get the same duplicate
+  check, so duplicates are never re-analysed.
+* A song with no path left anywhere (unbound by an earlier migration) is still
+  matched from the catalogue itself by title, artist and duration.
 * Lean memory: fetched catalogue is condensed into a slim CandidateIndex and the
   local side streams through it in keyset-paginated chunks.
-* A sweep whose worker died is restarted by the queue's own reclaim; an
-  empty-catalogue guard makes first-install sweeps instant no-ops.
+* A sweep whose worker died is restarted by the queue's own reclaim, and one
+  whose worker is ALIVE but wedged is ended by the wedged-main nudge, which
+  watches this task type as well (taskqueue.sql.NUDGE_TASK_TYPES): a live sweep
+  refuses a cleaning start and a provider-migration execute, so a wedged one
+  locked out far more than the next sweep. Its one whole-catalogue fetch per
+  server therefore holds a row_heartbeat, so only a sweep that is really stuck
+  runs the nudge's limit out.
+* prune_stale_mappings invalidates BOTH the paged-IVF and the hyperbolic
+  availability-mask caches whenever it actually removes track_server_map
+  rows, so every index's per-server view corrects itself the moment a
+  server's catalogue changes instead of relying solely on the masks' own
+  30s TTL.
 """
 
 import logging
-import time
 import uuid
 
 from psycopg2 import sql as pgsql
 from psycopg2.extras import execute_values
 
-from config import SWEEP_PRUNE_MIN_FETCH_RATIO
+from psycopg2 import OperationalError
+
+from taskqueue import TaskCancelled, TaskFailed
+from config import (
+    DURATION_TOLERANCE_SECONDS,
+    QUEUE_WEDGED_MAIN_TASK_MINUTES,
+    SWEEP_PRUNE_MIN_FETCH_RATIO,
+)
 from database import (
     connect_raw,
     stage_pending_task_row,
@@ -47,14 +72,11 @@ from sanitization import sanitize_string_for_db
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
 from tasks.provider_migration_matcher import CandidateIndex
+from tasks.recovery import row_heartbeat, slow_step_budget_minutes
 
 logger = logging.getLogger(__name__)
 
 SWEEP_TASK_TYPE = 'server_sweep'
-
-
-class SweepCancelled(Exception):
-    pass
 
 
 def insert_pending_sweep_row(cur, task_id, message):
@@ -124,83 +146,6 @@ def enqueue_server_alignment(server_id=None, message=None, task_id=None,
             logger.debug("Alignment enqueue connection close failed", exc_info=True)
 
 
-def _make_reporter(task_id, label, parent_task_id=None):
-    try:
-        from flask_app import app
-        from app_helper import save_task_status
-        from config import TASK_STATUS_PROGRESS
-    except Exception:
-        app = None
-    last = {'pct': -1}
-
-    def report(message, progress, task_state=None):
-        pct = max(0, min(100, int(progress)))
-        logger.info("[Sweep-%s] %s (%d%%)", label, message, pct)
-        if app is None:
-            return
-        if task_state is None and pct == last['pct']:
-            return
-        last['pct'] = pct
-        details = {'status_message': message, 'message': message}
-        try:
-            with app.app_context():
-                save_task_status(
-                    task_id,
-                    SWEEP_TASK_TYPE,
-                    task_state or TASK_STATUS_PROGRESS,
-                    parent_task_id=parent_task_id,
-                    progress=pct,
-                    details=details,
-                )
-        except Exception:
-            logger.debug("Sweep status update failed (ignored)", exc_info=True)
-
-    return report
-
-
-def make_cancel_check(task_id):
-    import config
-
-    try:
-        check_conn = connect_raw()
-        check_conn.autocommit = True
-    except Exception:
-        check_conn = None
-    state = {'last': 0.0}
-
-    def check():
-        if check_conn is None:
-            return
-        now = time.monotonic()
-        if now - state['last'] < 2.0:
-            return
-        state['last'] = now
-        try:
-            cur = check_conn.cursor()
-            try:
-                cur.execute("SELECT status FROM task_status WHERE task_id = %s", (task_id,))
-                row = cur.fetchone()
-            finally:
-                cur.close()
-        except Exception:
-            logger.debug("Sweep cancel check failed (ignored)", exc_info=True)
-            return
-        if row is None or row[0] == config.TASK_STATUS_REVOKED:
-            raise SweepCancelled()
-
-    def close():
-        if check_conn is not None:
-            try:
-                check_conn.close()
-            except Exception:
-                logger.debug("Sweep cancel-check connection close failed", exc_info=True)
-
-    return check, close
-
-
-_make_cancel_check = make_cancel_check
-
-
 def _resolve_task_id(task_id):
     if task_id:
         return task_id
@@ -223,6 +168,14 @@ def unmapped_local_count(conn, server_id):
 
 
 def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
+    return _iter_local_rows(conn, server_id, 'NOT EXISTS', chunk_size)
+
+
+def _iter_mapped_local_rows(conn, server_id, chunk_size=20000):
+    return _iter_local_rows(conn, server_id, 'EXISTS', chunk_size)
+
+
+def _iter_local_rows(conn, server_id, presence, chunk_size):
     last_id = ''
     while True:
         cur = conn.cursor()
@@ -230,8 +183,8 @@ def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
             cur.execute(
                 "SELECT s.item_id, s.title, s.author, s.album, s.album_artist, "
                 "s.file_path, ARRAY(SELECT DISTINCT p.file_path FROM track_server_map p "
-                "WHERE p.item_id = s.item_id AND p.file_path IS NOT NULL) "
-                "FROM score s WHERE s.item_id > %s AND NOT EXISTS ("
+                "WHERE p.item_id = s.item_id AND p.file_path IS NOT NULL), s.duration "
+                "FROM score s WHERE s.item_id > %s AND " + presence + " ("  # nosec B608 - presence is one of two constants
                 "SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id AND m.server_id = %s) "
                 "ORDER BY s.item_id LIMIT %s",
                 (last_id, server_id, chunk_size),
@@ -251,6 +204,7 @@ def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
                 'album_artist': r[4],
                 'file_path': r[5],
                 'file_paths': [p for p in (list(r[6] or []) + [r[5]]) if p],
+                'duration': r[7],
             }
             for r in rows
         ]
@@ -286,6 +240,12 @@ def _write_matches(db, server_id, result, path_by_id=None):
         )
         for item_id, new_id in result['matches'].items()
     }
+    for new_id, item_id in (result.get('extra_matches') or {}).items():
+        mapping.setdefault(new_id, (
+            item_id,
+            (result.get('extra_match_tiers') or {}).get(new_id),
+            paths.get(str(new_id)),
+        ))
     return registry.upsert_track_maps(server_id, mapping, conn=db)
 
 
@@ -337,11 +297,9 @@ def prune_stale_mappings(db, server_id, present_ids, refused=None):
             )
         db.commit()
         if removed:
-            try:
-                from tasks.paged_ivf import invalidate_availability_cache
-                invalidate_availability_cache(server_id)
-            except Exception:
-                logger.debug("Availability-cache invalidation failed", exc_info=True)
+            from tasks.index_availability import invalidate_availability_caches
+
+            invalidate_availability_caches(server_id)
         return removed
     finally:
         cur.close()
@@ -497,7 +455,9 @@ def fetch_server_catalogue(server):
         return provider_probe.fetch_all_tracks(stype, creds, apply_filter=True)
 
 
-def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
+def _sweep_one(server, db, report, base, span, cancel, task_id=None,
+               full_refresh=False):
+    registry.invalidate_server_cache()
     stype = server['server_type']
     server_id = server['server_id']
     total_local = _local_track_count(db)
@@ -523,8 +483,15 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
             'matched': 0, 'aligned': True, 'tier_counts': {},
         }
 
+    db.commit()
     report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
-    target_tracks = fetch_server_catalogue(server)
+    with row_heartbeat(
+        task_id,
+        f"fetching the whole catalogue of {server['name']}, one call that writes "
+        "no row until it returns",
+        stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+    ):
+        target_tracks = fetch_server_catalogue(server)
     cancel()
 
     target_total = len(target_tracks)
@@ -539,7 +506,9 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
             if track.get('id') and _strip_nul(str(track.get('id'))) not in already_mapped:
                 yield track
 
-    index = CandidateIndex(_drain_candidates(target_tracks))
+    index = CandidateIndex(
+        _drain_candidates(target_tracks), duration_tolerance=DURATION_TOLERANCE_SECONDS
+    )
     target_tracks = None
     _store_server_track_count(db, server_id, target_total)
     pruned = 0
@@ -567,32 +536,47 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
     )
 
     written = 0
+    duplicate_files = 0
     processed = 0
     tier_counts = {}
     claimed = {}
+    last_reported_pct = None
     if index.size:
         for chunk in _iter_unmapped_local_rows(db, server_id):
             cancel()
             result = index.match_chunk(chunk, claimed)
-            written += _write_matches(db, server_id, result, index.path_by_id)
+            _write_matches(db, server_id, result, index.path_by_id)
+            written += len(result['matches'])
+            duplicate_files += len(result.get('extra_matches') or {})
             processed += len(chunk)
             for tier, count in result['tier_counts'].items():
                 if count:
                     tier_counts[tier] = tier_counts.get(tier, 0) + count
             if unmapped_count:
                 pct = base + span * (0.5 + 0.45 * min(1.0, processed / unmapped_count))
+                if int(pct) == last_reported_pct:
+                    continue
+                last_reported_pct = int(pct)
                 report(
                     f"Aligning {server['name']}: {min(processed, unmapped_count)}/"
                     f"{unmapped_count} checked, {written} matched...",
                     pct,
                 )
+        report(f"Aligning {server['name']}: looking for duplicate files of mapped songs...", base + span * 0.95)
+        for chunk in _iter_mapped_local_rows(db, server_id):
+            cancel()
+            extras = index.duplicate_files(chunk, claimed)
+            if extras['extra_matches']:
+                _write_matches(db, server_id, extras, index.path_by_id)
+                duplicate_files += len(extras['extra_matches'])
     refreshed = _refresh_mapped_metadata(db, server_id)
     artists_written = _write_artist_maps(db, server, artist_maps)
     logger.info(
         "Multi-server sweep for '%s': mapped %d/%d unmapped tracks "
-        "(target=%d, tiers=%s), %d artist links, %d metadata rows refreshed",
+        "(target=%d, tiers=%s), %d duplicate files kept, %d artist links, "
+        "%d metadata rows refreshed",
         server['name'], written, unmapped_count, target_total, tier_counts,
-        artists_written, refreshed,
+        duplicate_files, artists_written, refreshed,
     )
     return {
         'server_id': server_id,
@@ -602,6 +586,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
         'local_tracks': total_local,
         'unmapped': unmapped_count,
         'matched': written,
+        'duplicate_files': duplicate_files,
         'pruned': pruned,
         'prune_refused': bool(prune_refused),
         'artists': artists_written,
@@ -611,64 +596,63 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
 
 
 def sweep_server(server_id, task_id=None, conn=None, parent_task_id=None):
-    import config
+    from flask_app import app
+    from .task_run import cancel_guard, make_task_reporter
 
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = None
-    cancel, close_cancel = _make_cancel_check(task_id)
     try:
-        from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
-
-        cancel()
-        report = _make_reporter(task_id, server_id, parent_task_id=parent_task_id)
-        server = registry.get_server(server_id, conn=db)
-        if server is None:
-            report("Server no longer exists; nothing to align.", 100, task_state=TASK_STATUS_SUCCESS)
-            return {'server_id': server_id, 'skipped': 'deleted', 'matched': 0}
-
-        report(f"Starting alignment for {server['name']}...", 2, task_state=TASK_STATUS_STARTED)
-        cancel()
-        summary = _sweep_one(server, db, report, 5, 95, cancel, full_refresh=True)
-        if summary.get('empty_catalogue'):
-            message = "Nothing analyzed yet; alignment runs automatically during the first analysis."
-        elif summary.get('aligned'):
-            message = f"{server['name']} is already aligned; nothing to do."
-        else:
-            message = (
-                f"Alignment complete: {summary['matched']}/{summary['unmapped']} pending tracks "
-                f"matched on {server['name']}"
-                + (f", {summary['pruned']} stale mappings removed." if summary.get('pruned')
-                   else ".")
+        with app.app_context(), cancel_guard(task_id) as cancel:
+            cancel(force=True)
+            report = make_task_reporter(
+                task_id, SWEEP_TASK_TYPE, "Starting alignment...",
+                parent_task_id=parent_task_id, prefix=f"Sweep-{server_id}",
             )
-        report(message, 100, task_state=TASK_STATUS_SUCCESS)
-        return summary
-    except SweepCancelled:
-        if report is not None:
-            report("Alignment cancelled; matches found so far are kept.", 100,
-                   task_state=config.TASK_STATUS_REVOKED)
-        return {'server_id': server_id, 'cancelled': True}
+            server = registry.get_server(server_id, conn=db)
+            if server is None:
+                message = "Server no longer exists; nothing to align."
+                report(message, 100)
+                return {
+                    'server_id': server_id, 'skipped': 'deleted', 'matched': 0,
+                    'message': message,
+                }
+
+            report(f"Starting alignment for {server['name']}...", 2)
+            cancel()
+            summary = _sweep_one(
+                server, db, report, 5, 95, cancel, task_id=task_id, full_refresh=True
+            )
+            if summary.get('empty_catalogue'):
+                message = (
+                    "Nothing analyzed yet; alignment runs automatically during the "
+                    "first analysis."
+                )
+            elif summary.get('aligned'):
+                message = f"{server['name']} is already aligned; nothing to do."
+            else:
+                message = (
+                    f"Alignment complete: {summary['matched']}/{summary['unmapped']} "
+                    f"pending tracks matched on {server['name']}"
+                    + (f", {summary['pruned']} stale mappings removed."
+                       if summary.get('pruned') else ".")
+                )
+            report(message, 100)
+            return {**summary, 'message': message}
     except Exception:
-        logger.exception("Multi-server sweep failed for server %s", server_id)
         try:
             db.rollback()
         except Exception:
             logger.debug("Rollback after failed sweep failed", exc_info=True)
-        report(
-            "Alignment failed; check the container logs for details.",
-            100,
-            task_state=config.TASK_STATUS_FAILURE,
-        )
-        return {'server_id': server_id, 'error': 'sweep failed'}
+        raise
     finally:
-        close_cancel()
         if own_conn:
             db.close()
 
 
 def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_refresh=None):
-    import config
+    from flask_app import app
+    from .task_run import cancel_guard, make_task_reporter
 
     if full_refresh is None:
         full_refresh = server_ids is None
@@ -676,75 +660,73 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
     task_id = _resolve_task_id(task_id)
     own_conn = conn is None
     db = conn or connect_raw()
-    report = None
-    cancel, close_cancel = _make_cancel_check(task_id)
     try:
-        from config import TASK_STATUS_STARTED, TASK_STATUS_SUCCESS
-
-        cancel()
-        report = _make_reporter(task_id, 'all')
-        selected = {str(server_id) for server_id in server_ids} if server_ids is not None else None
-        servers = [
-            s for s in registry.list_servers(conn=db)
-            if selected is None or s['server_id'] in selected
-        ]
-        report(
-            f"Starting alignment for {len(servers)} selected server(s)...",
-            2, task_state=TASK_STATUS_STARTED,
-        )
-        cancel()
-        if not servers:
-            report("No selected servers to align.", 100,
-                   task_state=TASK_STATUS_SUCCESS)
-            return []
-
-        span = 95 / len(servers)
-        results = []
-        for i, server in enumerate(servers):
-            try:
-                results.append(
-                    _sweep_one(
-                        server, db, report, 5 + i * span, span, cancel,
-                        full_refresh=full_refresh,
-                    )
-                )
-            except SweepCancelled:
-                report("Alignment cancelled; matches found so far are kept.", 100,
-                       task_state=config.TASK_STATUS_REVOKED)
-                return results
-            except Exception:
-                logger.exception("Multi-server sweep failed for server %s", server['server_id'])
-                try:
-                    db.rollback()
-                except Exception:
-                    logger.debug("Rollback after failed server sweep failed", exc_info=True)
-                results.append({'server_id': server['server_id'], 'error': 'sweep failed'})
-        if all(r.get('empty_catalogue') for r in results):
-            report(
-                "Nothing analyzed yet; alignment runs automatically during the first analysis.",
-                100, task_state=TASK_STATUS_SUCCESS,
+        with app.app_context(), cancel_guard(task_id) as cancel:
+            cancel(force=True)
+            report = make_task_reporter(
+                task_id, SWEEP_TASK_TYPE, "Starting alignment...", prefix="Sweep-all",
             )
-            return results
-        matched = sum(r.get('matched', 0) for r in results)
-        report(
-            f"Alignment complete for {len(servers)} server(s); {matched} track mappings written.",
-            100, task_state=TASK_STATUS_SUCCESS,
-        )
-        return results
-    except SweepCancelled:
-        if report is not None:
-            report("Alignment cancelled; matches found so far are kept.", 100,
-                   task_state=config.TASK_STATUS_REVOKED)
-        return []
+            selected = (
+                {str(server_id) for server_id in server_ids}
+                if server_ids is not None else None
+            )
+            servers = [
+                s for s in registry.list_servers(conn=db)
+                if selected is None or s['server_id'] in selected
+            ]
+            report(f"Starting alignment for {len(servers)} selected server(s)...", 2)
+            cancel()
+            if not servers:
+                message = "No selected servers to align."
+                report(message, 100)
+                return {'servers': [], 'message': message}
+
+            span = 95 / len(servers)
+            results = []
+            failed = []
+            for i, server in enumerate(servers):
+                try:
+                    results.append(
+                        _sweep_one(
+                            server, db, report, 5 + i * span, span, cancel,
+                            task_id=task_id, full_refresh=full_refresh,
+                        )
+                    )
+                except (TaskCancelled, TaskFailed, OperationalError):
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Multi-server sweep failed for server %s", server['server_id']
+                    )
+                    try:
+                        db.rollback()
+                    except Exception:
+                        logger.debug("Rollback after failed server sweep failed", exc_info=True)
+                    failed.append(server['name'])
+            if failed and not results:
+                raise RuntimeError(
+                    "Alignment failed on every selected server: " + ", ".join(failed)
+                )
+            failed_note = f" Failed: {', '.join(failed)}." if failed else ""
+            if all(r.get('empty_catalogue') for r in results):
+                message = (
+                    "Nothing analyzed yet; alignment runs automatically during the "
+                    "first analysis." + failed_note
+                )
+            else:
+                matched = sum(r.get('matched', 0) for r in results)
+                message = (
+                    f"Alignment complete for {len(results)} of {len(servers)} "
+                    f"server(s); {matched} track mappings written." + failed_note
+                )
+            report(message, 100)
+            return {'servers': results, 'failed_servers': failed, 'message': message}
     except Exception:
-        logger.exception("Multi-server alignment failed")
-        report(
-            "Alignment failed; check the container logs for details.",
-            100,
-            task_state=config.TASK_STATUS_FAILURE,
-        )
-        return []
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after failed alignment failed", exc_info=True)
+        raise
     finally:
-        close_cancel()
         if own_conn:
             db.close()

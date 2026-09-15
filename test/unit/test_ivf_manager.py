@@ -173,33 +173,33 @@ class TestNormalizeString:
 
 class TestIsSameSong:
     def test_exact_match(self):
-        from tasks.ivf_manager import _is_same_song
+        from tasks.search_shaping import is_same_song as _is_same_song
 
         assert _is_same_song("Song Title", "Artist", "Song Title", "Artist") is True
 
     def test_case_insensitive_match(self):
-        from tasks.ivf_manager import _is_same_song
+        from tasks.search_shaping import is_same_song as _is_same_song
 
         assert _is_same_song("SONG TITLE", "ARTIST", "song title", "artist") is True
         assert _is_same_song("Song Title", "Artist Name", "song title", "artist name") is True
 
     def test_whitespace_insensitive(self):
-        from tasks.ivf_manager import _is_same_song
+        from tasks.search_shaping import is_same_song as _is_same_song
 
         assert _is_same_song("  Song Title  ", "  Artist  ", "Song Title", "Artist") is True
 
     def test_different_title_returns_false(self):
-        from tasks.ivf_manager import _is_same_song
+        from tasks.search_shaping import is_same_song as _is_same_song
 
         assert _is_same_song("Song A", "Artist", "Song B", "Artist") is False
 
     def test_different_artist_returns_false(self):
-        from tasks.ivf_manager import _is_same_song
+        from tasks.search_shaping import is_same_song as _is_same_song
 
         assert _is_same_song("Song", "Artist A", "Song", "Artist B") is False
 
     def test_empty_fields(self):
-        from tasks.ivf_manager import _is_same_song
+        from tasks.search_shaping import is_same_song as _is_same_song
 
         assert _is_same_song("", "", "", "") is True
         assert _is_same_song("Song", "", "Song", "") is True
@@ -306,7 +306,7 @@ class TestLoadIVFIndex:
     def test_skips_reload_if_already_loaded(self):
         from tasks.ivf_manager import load_ivf_index_for_querying
 
-        with patch('app_helper.get_db') as mock_get_db:
+        with patch('database.get_db') as mock_get_db:
             load_ivf_index_for_querying(force_reload=False)
 
             mock_get_db.assert_not_called()
@@ -317,7 +317,7 @@ class TestLoadIVFIndex:
     def test_loads_index_from_database(self):
         import tasks.ivf_manager as vm
 
-        with patch('app_helper.get_db') as mock_get_db:
+        with patch('database.get_db') as mock_get_db:
             mock_get_db.return_value = Mock()
             with patch('tasks.paged_ivf.load_paged_ivf_index') as mock_load:
                 mock_index = Mock()
@@ -345,7 +345,7 @@ class TestLoadIVFIndex:
             patch.object(vm, 'reverse_id_map', {'item-1': 0}),
             patch.object(vm, '_neighbor_result_cache', neighbor_cache),
             patch.object(vm, '_max_distance_cache', max_distance_cache),
-            patch('app_helper.get_db', return_value=Mock()),
+            patch('database.get_db', return_value=Mock()),
             patch('tasks.paged_ivf.load_paged_ivf_index', return_value=None) as mock_load,
         ):
             load_ivf_index_for_querying(force_reload=True)
@@ -514,7 +514,7 @@ class TestCreatePlaylistFromIds:
 
 class TestSearchTracksByTitleAndArtist:
     def test_search_with_single_keyword(self):
-        with patch('app_helper.get_db') as mock_get_db:
+        with patch('database.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
@@ -541,7 +541,7 @@ class TestSearchTracksByTitleAndArtist:
             assert {r['item_id'] for r in results} == {"item-1", "item-2"}
 
     def test_search_with_two_keywords(self):
-        with patch('app_helper.get_db') as mock_get_db:
+        with patch('database.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
@@ -569,7 +569,7 @@ class TestSearchTracksByTitleAndArtist:
             assert {r['item_id'] for r in results} == {"item-1", "item-2"}
 
     def test_returns_empty_for_no_query(self):
-        with patch('app_helper.get_db') as mock_get_db:
+        with patch('database.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
@@ -584,7 +584,7 @@ class TestSearchTracksByTitleAndArtist:
 
 class TestGetItemIdByTitleAndArtist:
     def test_finds_exact_match(self):
-        with patch('app_helper.get_db') as mock_get_db:
+        with patch('database.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
@@ -598,7 +598,7 @@ class TestGetItemIdByTitleAndArtist:
             assert result == 'found-item'
 
     def test_returns_none_when_not_found(self):
-        with patch('app_helper.get_db') as mock_get_db:
+        with patch('database.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn

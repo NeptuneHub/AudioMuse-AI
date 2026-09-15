@@ -50,18 +50,17 @@ from flask_app import app
 
 # Import helper functions
 import app_server_context
+from app_helper import max_bound as _max_bound_filter
+from app_helper import min_bound as _min_bound_filter
 from app_helper import (
-    get_db,
-    close_db,
-    get_task_info_from_db,
     revoke_inline_task_row,
     cancel_job_and_children_recursive,
-    coerce_db_details,
     sanitize_task_details,
 )
-from database import init_db
+from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details, disable_legacy_ai_chat_role
 from taskqueue.sql import CONTROL_TASK_TYPE
 from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
+import task_types
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
@@ -85,7 +84,13 @@ from error.error_dictionary import UNKNOWN_ERROR_CODE
 # WRITES them, because a rename that moved only one side left these filters
 # matching nothing: the handshake reappeared as a phantom dashboard task, and a
 # pending restart 409-blocked the next analysis or cleaning start.
-NON_USER_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
+# A side job (the setup wizard title preview) is left out of the last-task recap
+# but still shows as the running task: it refuses every batch start, so the
+# dashboard must show it and let its Stop end it.
+HIDDEN_ACTIVE_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
+NON_USER_TASK_TYPES = (
+    HIDDEN_ACTIVE_TASK_TYPES + task_types.SIDE_JOB_TASK_TYPES
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +140,13 @@ def _get_jwt_secret():
     return _jwt_secret
 
 
+app.add_template_filter(_min_bound_filter, 'min_bound')
+app.add_template_filter(_max_bound_filter, 'max_bound')
+
+
 @app.context_processor
 def inject_globals():
-    from config import CLAP_ENABLED, LYRICS_ENABLED
+    from config import CLAP_ENABLED, LYRICS_ENABLED, NEURAL_FINGERPRINT_ENABLED
 
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
@@ -181,6 +190,7 @@ def inject_globals():
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
         lyrics_enabled=LYRICS_ENABLED,
+        neural_enabled=NEURAL_FINGERPRINT_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
@@ -198,6 +208,33 @@ init_auth(app, setup_manager, _get_jwt_secret)
 def log_api_request():
     if request.path.startswith('/api/') and not request.path.startswith('/static/'):
         app.logger.info('API request: %s %s', request.method, request.path)
+
+
+@app.before_request
+def note_request_start():
+    if _is_worker:
+        return
+    try:
+        from tasks.memory_utils import note_request_started
+
+        g._heap_trim_counted = True
+        note_request_started()
+    except Exception:
+        app.logger.exception("Could not note the request start for the idle heap trim")
+
+
+@app.teardown_request
+def note_request_end(exc=None):
+    if _is_worker:
+        return
+    if not g.pop('_heap_trim_counted', False):
+        return
+    try:
+        from tasks.memory_utils import note_request_finished
+
+        note_request_finished()
+    except Exception:
+        app.logger.exception("Could not note the request finish for the idle heap trim")
 
 
 @app.route('/api/health')
@@ -241,6 +278,13 @@ def teardown_db(e=None):
         end_all_requests()
     except Exception:
         pass
+    if not _is_worker:
+        try:
+            from tasks.memory_utils import arm_idle_heap_trim
+
+            arm_idle_heap_trim()
+        except Exception:
+            logger.exception("Could not arm the idle heap trim")
 
 
 # Initialize the database schema when the application module is loaded.
@@ -252,10 +296,25 @@ if not _is_worker:
         init_db()
         # Keep app_config aligned with the parameters that config.py still
         # accepts. Valid rows are never rewritten; only retired keys are
-        # removed. Run this before the optional empty-table bootstrap so a
-        # database containing only obsolete keys can be initialized cleanly.
+        # removed, then every parameter that has no row yet is written with
+        # the value this process runs with (environment or config.py default,
+        # SETUP_BOOTSTRAP_EXCLUDED_KEYS stay env-only). From the next start on
+        # the database is the only source of those values, so a changed
+        # default never flips a setting an installation already has.
         setup_manager.prune_obsolete_config_values(config)
-        setup_manager.bootstrap_env_config_if_empty(config)
+        setup_manager.persist_missing_config_values(config)
+        # One-time legacy cleanup: the retired AI chat role is set NOLOGIN when
+        # it still carries its shipped default password. Never creates a role.
+        try:
+            if disable_legacy_ai_chat_role():
+                app.logger.warning(
+                    "Legacy AI chat database role 'ai_user' still had its default "
+                    "password; its login was disabled."
+                )
+        except Exception:
+            app.logger.exception(
+                "Legacy AI chat database role check failed (will retry next boot)"
+            )
         # Bootstrap / reconcile the first admin account:
         #   - If audiomuse_users already has an admin, purge any legacy
         #     AUDIOMUSE_USER / AUDIOMUSE_PASSWORD rows from app_config.
@@ -769,7 +828,7 @@ def get_active_tasks_endpoint():
         ORDER BY timestamp DESC
         LIMIT 1
     """,
-        (non_terminal_statuses, NON_USER_TASK_TYPES),
+        (non_terminal_statuses, HIDDEN_ACTIVE_TASK_TYPES),
     )
     active_main_task_row = cur.fetchone()
     cur.close()
@@ -805,6 +864,7 @@ def get_active_tasks_endpoint():
         task_item.pop('start_time', None)
         task_item.pop('end_time', None)
         task_item.pop('timestamp', None)
+        task_item['side_job'] = task_item.get('task_type') in task_types.SIDE_JOB_TASK_TYPES
 
         return jsonify(task_item), 200
     return jsonify({}), 200  # Return empty object if no active main task
@@ -993,15 +1053,67 @@ def listen_for_index_reloads():
                     logger.exception("SemGrove cache reload failed")
                     sg_success = False
 
+                try:
+                    from tasks.hyperbolic_manager import (
+                        is_hyperbolic_tree_cache_loaded,
+                        load_hyperbolic_tree_cache,
+                    )
+
+                    if is_hyperbolic_tree_cache_loaded():
+                        logger.info("Reloading Hyperbolic Explorer tree cache...")
+                        load_hyperbolic_tree_cache()
+                    else:
+                        logger.info(
+                            "Hyperbolic Explorer tree cache is idle; skipping reload "
+                            "(lazy-loads fresh data on next /hyperbolic page open)."
+                        )
+                    hyper_success = True
+                except Exception:
+                    logger.exception("Hyperbolic Explorer cache reload failed")
+                    hyper_success = False
+
+                try:
+                    from tasks.hyperbolic_index import load_hyperbolic_index
+
+                    load_hyperbolic_index(force_reload=True)
+                    logger.info("Reloading Hyperbolic Poincare index...")
+                    hyper_index_success = True
+                except Exception:
+                    logger.exception("Hyperbolic Poincare index reload failed")
+                    hyper_index_success = False
+
+                try:
+                    from tasks.neural_fingerprint_index import reload_from_db
+
+                    logger.info("Reloading the neural fingerprint index...")
+                    neural_success = reload_from_db()
+                except Exception:
+                    logger.exception("Neural fingerprint index reload failed")
+                    neural_success = False
+
                 logger.info(
                     "In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP %s, "
-                    "Lyrics %s, SemGrove %s",
+                    "Lyrics %s, SemGrove %s, Hyperbolic %s, Poincare %s, Neural fingerprint %s",
                     'OK' if clap_success else 'X',
                     'OK' if lyrics_success else 'X',
                     'OK' if sg_success else 'X',
+                    'OK' if hyper_success else 'X',
+                    'OK' if hyper_index_success else 'X',
+                    'OK' if neural_success else 'X',
                 )
             except Exception:
                 logger.exception("Error reloading indexes/maps from background listener")
+            finally:
+                # A reload replaces every index in place, so the whole previous
+                # generation plus each rebuild's scratch is garbage by now. Hand
+                # it back to the kernel instead of letting RSS ratchet up once
+                # per reload for the life of the process.
+                try:
+                    from tasks.memory_utils import release_memory_to_os
+
+                    release_memory_to_os()
+                except Exception:
+                    logger.exception("Index reload: heap release to the OS failed")
 
     listener = Listener(
         (CHANNEL_EVENT,),
@@ -1039,27 +1151,18 @@ def _register_blueprints(flask_app):
     from app_users import users_bp
     from app_sync import sync_bp
     from app_music_servers import music_servers_bp
+    from app_hyperbolic import hyperbolic_bp
+    from app_recording_search import recording_search_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
-    flask_app.register_blueprint(clustering_bp)
-    flask_app.register_blueprint(analysis_bp)
-    flask_app.register_blueprint(cron_bp)
-    flask_app.register_blueprint(ivf_bp)
-    flask_app.register_blueprint(sonic_fingerprint_bp)
-    flask_app.register_blueprint(path_bp)
     flask_app.register_blueprint(external_bp, url_prefix='/external')
-    flask_app.register_blueprint(alchemy_bp)
-    flask_app.register_blueprint(map_bp)
-    flask_app.register_blueprint(artist_similarity_bp)
-    flask_app.register_blueprint(clap_search_bp)
-    flask_app.register_blueprint(lyrics_search_bp)
-    flask_app.register_blueprint(sem_grove_bp)
-    flask_app.register_blueprint(backup_bp)
-    flask_app.register_blueprint(migration_bp)
-    flask_app.register_blueprint(dashboard_bp)
-    flask_app.register_blueprint(users_bp)
-    flask_app.register_blueprint(sync_bp)
-    flask_app.register_blueprint(music_servers_bp)
+    for blueprint in (
+        clustering_bp, analysis_bp, cron_bp, ivf_bp, sonic_fingerprint_bp, path_bp,
+        alchemy_bp, map_bp, artist_similarity_bp, clap_search_bp, lyrics_search_bp,
+        sem_grove_bp, backup_bp, migration_bp, dashboard_bp, users_bp, sync_bp,
+        music_servers_bp, hyperbolic_bp, recording_search_bp,
+    ):
+        flask_app.register_blueprint(blueprint)
 
     try:
         from plugin.blueprint import plugins_bp
@@ -1116,7 +1219,7 @@ if not _is_worker:
             logger.warning(f"Failed to load artist similarity index at startup: {e}")
         # Also try to load precomputed map projection into memory if available
         try:
-            from app_helper import load_map_projection
+            from database import load_map_projection
 
             load_map_projection('main_map')
             logger.info("In-memory map projection loaded at startup.")
@@ -1178,6 +1281,94 @@ if not _is_worker:
                 )
         except Exception as e:
             logger.debug(f"SemGrove cache not loaded at startup: {e}")
+        # Load the Hyperbolic Explorer Poincare index directory (band vectors
+        # stay on disk and are decoded on demand under a memory cap).
+        try:
+            from tasks.hyperbolic_index import load_hyperbolic_index
+
+            hyper_index_servers = load_hyperbolic_index()
+            if hyper_index_servers:
+                logger.info("Hyperbolic Poincare index loaded at startup.")
+            else:
+                logger.info(
+                    "Hyperbolic Poincare index not found at startup (run analysis to build it)."
+                )
+        except Exception as e:
+            logger.debug(f"Hyperbolic Poincare index not loaded at startup: {e}")
+        # Load the neural fingerprint index directory the worker stored, blocking
+        # like every other index load: it is a few megabytes at any library size,
+        # since the cells are read from ivf_cell per query. A library that has not
+        # built it yet, or whose stored index is unusable, is reported just above.
+        try:
+            from tasks.neural_fingerprint_index import load_at_startup as load_neural_fingerprint_index
+
+            neural_tracks = load_neural_fingerprint_index()
+            if neural_tracks:
+                logger.info("Neural fingerprint index loaded at startup (%d tracks).", neural_tracks)
+            elif not config.NEURAL_FINGERPRINT_ENABLED:
+                logger.info("Neural fingerprint disabled (NEURAL_FINGERPRINT_ENABLED=false); Search by Recording is off.")
+            else:
+                logger.info("Neural fingerprint index not loaded at startup (not built yet, or the analysis must rebuild it).")
+        except Exception:
+            logger.exception("Neural fingerprint index not loaded at startup")
+
+        # Every load above streams a large directory blob out of Postgres and
+        # discards it once unpacked. Those frees land in the allocator's free
+        # lists, not back in the kernel, so without this the pod's RSS keeps the
+        # startup peak for the life of the process. One call, after all six.
+        try:
+            from tasks.memory_utils import release_memory_to_os
+
+            release_memory_to_os()
+        except Exception:
+            logger.exception("Startup index load: heap release to the OS failed")
+
+        def _log_startup_index_profile():
+            try:
+                import database as _db
+                import tasks.artist_gmm_manager as _artist_mgr
+                import tasks.ivf_manager as _ivf_mgr
+                from tasks.clap_text_search import get_clap_cache_size
+                from tasks.lyrics_manager import get_cache_stats as _lyrics_stats
+                from tasks.sem_grove_manager import get_sem_grove_stats as _sg_stats
+                from tasks.hyperbolic_index import get_hyperbolic_index_stats
+
+                audio = len(_ivf_mgr.id_map) if _ivf_mgr.id_map else 0
+                artist = len(_artist_mgr.artist_map) if _artist_mgr.artist_map else 0
+                map_proj = (
+                    len(_db.MAP_PROJECTION_CACHE.get('id_map') or ())
+                    if _db.MAP_PROJECTION_CACHE
+                    else 0
+                )
+                artist_proj = (
+                    len(_db.ARTIST_PROJECTION_CACHE.get('component_map') or ())
+                    if _db.ARTIST_PROJECTION_CACHE
+                    else 0
+                )
+                clap = get_clap_cache_size()
+                lyrics = _lyrics_stats()
+                sg = _sg_stats()
+                hyper = get_hyperbolic_index_stats()
+                from tasks.neural_fingerprint_index import get_status as neural_fingerprint_status
+
+                neural = neural_fingerprint_status()
+                logger.info(
+                    "Startup index profile: audio=%d artist=%d map=%d artist_proj=%d clap=%d "
+                    "lyrics=%d semgrove=%d hyper=%d neural_fingerprint=%d",
+                    audio,
+                    artist,
+                    map_proj,
+                    artist_proj,
+                    clap,
+                    lyrics.get('song_count', 0),
+                    sg.get('song_count', 0),
+                    hyper.get('song_count', 0),
+                    neural.get('tracks', 0),
+                )
+            except Exception:
+                logger.exception("Startup index profile logging failed")
+
+        _log_startup_index_profile()
 
         def _start_map_init_background():
             try:
@@ -1186,12 +1377,22 @@ if not _is_worker:
                 logger.info('Starting background map JSON cache build.')
                 with app.app_context():
                     init_map_cache()
+                from tasks.memory_utils import release_memory_to_os
+
+                release_memory_to_os()
                 logger.info('Background map JSON cache build finished.')
             except Exception:
                 logger.exception('Background init_map_cache failed')
 
         t = threading.Thread(target=_start_map_init_background, daemon=True)
         t.start()
+
+        # The Hyperbolic Explorer tree cache is NOT loaded here: unlike the
+        # indexes above it is a fully materialized Python object tree whose RSS
+        # scales with catalogue size, so it lazy-loads on the first /hyperbolic
+        # page open (warmup_hyperbolic_tree_cache, called from the page and from
+        # the tree API) and auto-unloads after HYPERBOLIC_TREE_WARMUP_DURATION
+        # idle seconds instead of staying resident for the life of the process.
 
 # --- Start Background Listener Thread (Flask server only) ---
 if not _is_worker:
@@ -1202,7 +1403,12 @@ if not _is_worker:
     def _cron_manager_loop():
         try:
             import time as _time
-            from app_cron import run_due_cron_jobs, reap_interrupted_inline_runs
+            from app_cron import (
+                run_due_cron_jobs,
+                retry_due_cron_jobs,
+                reap_interrupted_inline_runs,
+                cron_retry_interval_seconds,
+            )
 
             # Inline cron runs (the alchemy radio) live in THIS process and nothing
             # else writes their final status, so a restart mid-run leaves a row that
@@ -1214,10 +1420,14 @@ if not _is_worker:
             except Exception:
                 app.logger.exception('cron manager startup reap failed')
 
+            last_retry_ts = _time.time()
             while True:
                 try:
                     with app.app_context():
                         run_due_cron_jobs()
+                        if _time.time() - last_retry_ts >= cron_retry_interval_seconds():
+                            retry_due_cron_jobs()
+                            last_retry_ts = _time.time()
                 except Exception:
                     app.logger.exception('cron manager failed')
                 # Sleep to the next minute boundary, not a flat 60s. A flat sleep
@@ -1270,8 +1480,25 @@ if not _is_worker:
 
     dashboard_stats_thread = threading.Thread(target=_dashboard_stats_refresher_loop, daemon=True)
     dashboard_stats_thread.start()
+
+    # Reclaim the dead rows autovacuum will never get to (its threshold counts
+    # ROWS, so a table of a few huge blobs never qualifies). Runs in the WEB
+    # process, not the worker: a restore stops Flask before psql replaces the
+    # database, so this daemon thread is already dead by the time a restore takes
+    # its ACCESS EXCLUSIVE locks. Hourly, on its own connection.
+    from taskqueue.maintenance import start_blob_reclaim_thread
+
+    start_blob_reclaim_thread(app)
 else:
     logger.info('Running as a queue worker: skipping index loading, the event listener and the cron thread.')
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=8000)
+    from werkzeug.serving import make_server
+
+    from tls_listener import adopt_listener, prepare_tls
+
+    prepare_tls()
+    _server = make_server('0.0.0.0', 8000, app, threaded=True)  # nosec B104 - a self-hosted server must be reachable
+    _server.socket = adopt_listener(_server.socket)
+    logger.info('Serving HTTP and HTTPS on 0.0.0.0:8000')
+    _server.serve_forever()

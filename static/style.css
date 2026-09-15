@@ -228,7 +228,7 @@ legend {
 
 .param-group {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 1.5rem;
 }
 
@@ -253,6 +253,7 @@ textarea {
     border: 1px solid var(--border-color-darker);
     color: var(--text-title);
     box-sizing: border-box;
+    min-width: 0;
     box-shadow: var(--shadow-input);
     transition: border-color 0.2s, box-shadow 0.2s;
     font-size: 1rem; /* Ensure consistent font size */
@@ -720,7 +721,7 @@ html.dark-mode button:not(.btn):disabled {
 .song-list {
     margin-top: 0.75rem;
     list-style-type: decimal;
-    padding-left: 1.5rem;
+    padding-left: 3rem;
     color: var(--text-muted);
 }
 
@@ -754,7 +755,7 @@ html.dark-mode button:not(.btn):disabled {
 /* --- App Version in Sidebar --- */
 .app-version {
     /* This will now appear directly after the navigation links */
-    padding: 2rem 1rem 1rem 1rem; /* Extra top padding to space it from the last link */
+    padding: 1rem 1rem 0.5rem 1rem; /* Extra top padding to space it from the last link */
     font-size: 0.8rem; /* Smaller font */
     color: #6B7280; /* Grey text color */
     text-align: center;
@@ -1008,8 +1009,12 @@ tbody tr:hover {
     background-color: var(--bg-body);
 }
 
-/* Status messages */
-#status, #playlist-status, #jellyfinResponseArea {
+/* Status messages.
+   display:block is load-bearing, not cosmetic: <output> is inline by default,
+   and vertical margins do not apply to inline boxes, so margin-top silently
+   did nothing and the message overlapped the button above it. */
+#status, #playlist-status, #journey-status, #journey-playlist-status, #jellyfinResponseArea {
+    display: block;
     margin-top: 1rem;
     padding: 0.5rem;
     font-size: 0.875rem;
@@ -1250,6 +1255,16 @@ tbody tr:hover {
     vertical-align: middle;
 }
 
+/* A real <button> as the tooltip trigger: keyboard-reachable without tabindex */
+button.info-tooltip {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    line-height: 0;
+}
+
 .info-icon {
     display: inline-flex;
     align-items: center;
@@ -1281,7 +1296,7 @@ tbody tr:hover {
 
 /* Tooltip text */
 .tooltip-text {
-    visibility: hidden;
+    display: none;
     opacity: 0;
     width: 280px;
     background-color: #1F2937; /* Always dark for tooltips */
@@ -1317,7 +1332,7 @@ tbody tr:hover {
 .info-tooltip:hover .tooltip-text,
 .info-tooltip:focus .tooltip-text,
 .info-tooltip:active .tooltip-text {
-    visibility: visible;
+    display: block;
     opacity: 1;
 }
 
@@ -1583,6 +1598,10 @@ html.dark-mode body .scope-server { background: #1E3A8A; color: #BFDBFE; }
 .toggle-switch input:focus-visible + .toggle-slider {
     outline: 2px solid var(--color-primary);
     outline-offset: 2px;
+}
+.toggle-switch input:disabled + .toggle-slider {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 body.dark-mode .toggle-slider,
 html.dark-mode body .toggle-slider {

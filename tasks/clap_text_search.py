@@ -16,21 +16,25 @@ Manages its own warm-up and idle unload of the text model to bound worker RSS.
 Main Features:
 * build_and_store / load / refresh of the CLAP embedding cache and its IVF index.
 * search_by_text: embed the query and return ranked nearest songs.
+* search_by_embedding: the same ranked lookup for a caller that already holds a
+  512-value CLAP vector (an audio clip embedded by the DCLAP tower, a steered
+  query); search_by_text is a thin wrapper over it.
 * warmup_text_search_model with an idle-unload timer, plus a persisted top-queries
   table (ensure_text_search_queries_table) used to pre-warm popular searches.
 """
 
 import logging
 import sys
-import threading
 import time
 
 import numpy as np
 from psycopg2.extras import DictCursor
-from typing import List, Dict
+from typing import Dict, List, Optional
 import config
 
-from .lyrics_manager import _build_capped_results
+from .idle_unload import IdleUnloadTimer
+from .search_shaping import build_capped_results as _build_capped_results
+from .search_shaping import overfetch_size
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +44,8 @@ _CLAP_INDEX_CACHE = {'index': None, 'id_map': None, 'reverse_id_map': None, 'loa
 
 _TOP_QUERIES_CACHE = {'queries': [], 'ready': False, 'computing': False}
 
-_WARM_CACHE_TIMER = {
-    'expiry_time': None,
-    'timer_thread': None,
-    'lock': threading.RLock(),
-    'duration_seconds': None,
-}
+_WARMUP_DURATION = None
+_TIMER = IdleUnloadTimer()
 
 
 def get_clap_cache_size() -> int:
@@ -61,38 +61,19 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
 
 
 def _load_clap_index_from_db() -> bool:
-    from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
-    from .paged_ivf import load_index_auto
+    from .index_build_helpers import load_index_into_cache
 
-    try:
-        loaded = load_index_auto(
-            get_db(),
-            'clap_index',
-            CLAP_EMBEDDING_DIMENSION,
-            IVF_METRIC,
-            label='CLAP',
-        )
-        if loaded is None:
-            return False
-        loaded_index, id_map, reverse_id_map = loaded
-
-        _CLAP_CACHE['loaded'] = True
-
-        _CLAP_INDEX_CACHE['index'] = loaded_index
-        _CLAP_INDEX_CACHE['id_map'] = id_map
-        _CLAP_INDEX_CACHE['reverse_id_map'] = reverse_id_map
-        _CLAP_INDEX_CACHE['loaded'] = True
-
-        logger.info(f"CLAP index loaded from database with {len(id_map)} items.")
-        return True
-    except Exception:
-        logger.exception("Failed to load CLAP index from DB")
+    if not load_index_into_cache(
+        'clap_index', CLAP_EMBEDDING_DIMENSION, IVF_METRIC, 'CLAP', _CLAP_INDEX_CACHE
+    ):
         return False
+    _CLAP_CACHE['loaded'] = True
+    return True
 
 
 def build_and_store_clap_index(db_conn=None):
-    from app_helper import get_db
+    from database import get_db
     from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
     from .index_build_helpers import build_and_store_index_streaming
 
@@ -111,60 +92,40 @@ def build_and_store_clap_index(db_conn=None):
     )
 
 
-def _unload_timer_worker():
-    while True:
-        with _WARM_CACHE_TIMER['lock']:
-            expiry = _WARM_CACHE_TIMER['expiry_time']
-            if expiry is None:
-                break
-            if expiry - time.time() <= 0:
-                from .clap_analyzer import unload_clap_model, is_clap_text_loaded
+def _unload_expired():
+    from .clap_analyzer import unload_clap_model, is_clap_text_loaded
 
-                if is_clap_text_loaded():
-                    logger.info("Warm cache timer expired - unloading CLAP text model")
-                    unload_clap_model()
-                _WARM_CACHE_TIMER['expiry_time'] = None
-                _WARM_CACHE_TIMER['timer_thread'] = None
-                break
-            time_remaining = expiry - time.time()
-
-        time.sleep(min(1.0, max(0.05, time_remaining)))
+    if is_clap_text_loaded():
+        logger.info("Warm cache timer expired - unloading CLAP text model")
+        unload_clap_model()
 
 
 def warmup_text_search_model():
     from .clap_analyzer import initialize_clap_text_model, is_clap_text_loaded
 
-    if _WARM_CACHE_TIMER['duration_seconds'] is None:
-        _WARM_CACHE_TIMER['duration_seconds'] = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
+    global _WARMUP_DURATION
+    with _TIMER.lock():
+        if _WARMUP_DURATION is None:
+            _WARMUP_DURATION = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
 
-    with _WARM_CACHE_TIMER['lock']:
         if not is_clap_text_loaded():
             logger.info("Warming up CLAP text model for text search (not loading audio model)...")
             success = initialize_clap_text_model()
             if not success:
                 return {'loaded': False, 'expiry_seconds': 0}
 
-        _WARM_CACHE_TIMER['expiry_time'] = time.time() + _WARM_CACHE_TIMER['duration_seconds']
-
-        if (
-            _WARM_CACHE_TIMER['timer_thread'] is None
-            or not _WARM_CACHE_TIMER['timer_thread'].is_alive()
-        ):
-            thread = threading.Thread(target=_unload_timer_worker, daemon=True)
-            thread.start()
-            _WARM_CACHE_TIMER['timer_thread'] = thread
-            logger.info(f"Started warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
+        if _TIMER.arm(_WARMUP_DURATION, _unload_expired):
+            logger.info(f"Started warm cache timer ({_WARMUP_DURATION}s)")
         else:
-            logger.debug(f"Reset warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
+            logger.debug(f"Reset warm cache timer ({_WARMUP_DURATION}s)")
 
-    return {'loaded': True, 'expiry_seconds': _WARM_CACHE_TIMER['duration_seconds']}
+    return {'loaded': True, 'expiry_seconds': _WARMUP_DURATION}
 
 
 def get_warm_cache_status() -> Dict:
     from .clap_analyzer import is_clap_model_loaded
 
-    with _WARM_CACHE_TIMER['lock']:
-        expiry = _WARM_CACHE_TIMER['expiry_time']
+    expiry = _TIMER.expiry()
 
     if expiry is None or not is_clap_model_loaded():
         return {'active': False, 'seconds_remaining': 0}
@@ -211,10 +172,44 @@ def is_clap_cache_loaded() -> bool:
     return _CLAP_CACHE['loaded']
 
 
-def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
-    from .clap_analyzer import get_text_embedding
-    from config import CLAP_ENABLED
+def _query_clap_index(text_embedding, fetch_size, limit, artist_cap):
+    from .paged_ivf import begin_query
 
+    ivf_index = _CLAP_INDEX_CACHE['index']
+    id_map = _CLAP_INDEX_CACHE['id_map'] or {}
+
+    begin_query(ivf_index)
+    num_to_query = min(fetch_size, len(ivf_index))
+    if num_to_query <= 0:
+        logger.warning("CLAP index is loaded but contains no items.")
+        return []
+
+    neighbor_ids, distances = ivf_index.query(text_embedding, k=num_to_query)
+    candidate_item_ids = [id_map.get(int(vec_id)) for vec_id in neighbor_ids]
+    candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
+    metadata_map = _fetch_clap_metadata(candidate_item_ids)
+    return _build_capped_results(
+        ivf_index,
+        id_map,
+        metadata_map,
+        neighbor_ids,
+        distances,
+        limit,
+        artist_cap,
+        dedup_names=True,
+        dup_threshold=config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP,
+        lookback=config.DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+    )
+
+
+def search_by_text(
+    query_text: str, limit: Optional[int] = None, steering: Optional[List[Dict]] = None
+) -> List[Dict]:
+    from .clap_analyzer import get_text_embedding
+    from config import CLAP_ENABLED, CLAP_SEARCH_DEFAULT_LIMIT
+
+    if limit is None:
+        limit = CLAP_SEARCH_DEFAULT_LIMIT
     if not CLAP_ENABLED:
         return []
 
@@ -225,58 +220,50 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         return []
 
     try:
-        with _WARM_CACHE_TIMER['lock']:
+        with _TIMER.lock():
             warmup_text_search_model()
 
             text_embedding = get_text_embedding(query_text)
         if text_embedding is None:
-            logger.error(f"Failed to generate text embedding for: {query_text}")
+            logger.error("Failed to generate the text embedding for a %d-character query", len(query_text))
             return []
 
-        from config import MAX_SONGS_PER_ARTIST
+        if steering:
+            from .clap_steering import apply_steering
 
-        artist_cap = (
-            MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-        )
-        if limit >= 1000:
-            artist_cap = 0
-        fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+            text_embedding, applied = apply_steering(text_embedding, steering)
+            if applied:
+                logger.info(
+                    "Query steered by %s",
+                    ", ".join(f"{t['direction']} {t['term']} x{t['weight']}" for t in applied),
+                )
 
-        if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
-            ivf_index = _CLAP_INDEX_CACHE['index']
-            id_map = _CLAP_INDEX_CACHE['id_map'] or {}
-            from .paged_ivf import begin_query
+        results = search_by_embedding(text_embedding, limit=limit)
+        logger.info("Text search (%d characters): found %d results via CLAP index", len(query_text), len(results))
+        return results
 
-            begin_query(ivf_index)
-            num_to_query = min(fetch_size, len(ivf_index))
+    except Exception:
+        logger.exception("Text search failed for a %d-character query", len(query_text))
+        return []
 
-            if num_to_query <= 0:
-                logger.warning("CLAP index is loaded but contains no items.")
-                return []
 
-            neighbor_ids, distances = ivf_index.query(text_embedding, k=num_to_query)
-            candidate_item_ids = [id_map.get(int(vec_id)) for vec_id in neighbor_ids]
-            candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
+def search_by_embedding(embedding, limit: Optional[int] = None) -> List[Dict]:
+    from config import CLAP_SEARCH_DEFAULT_LIMIT, MAX_SONGS_PER_ARTIST
 
-            metadata_map = _fetch_clap_metadata(candidate_item_ids)
-
-            results = _build_capped_results(
-                ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
-            )
-
-            logger.info(
-                f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})"
-            )
-            return results
-
+    if limit is None:
+        limit = CLAP_SEARCH_DEFAULT_LIMIT
+    if embedding is None:
+        return []
+    if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
         logger.error(
             "CLAP index went unloaded between the entry guard and the query; returning no results."
         )
         return []
 
-    except Exception:
-        logger.exception(f"Text search failed for '{query_text}'")
-        return []
+    artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+    if limit >= 1000:
+        artist_cap = 0
+    return _query_clap_index(embedding, overfetch_size(limit), limit, artist_cap)
 
 
 def get_cache_stats() -> Dict:
@@ -310,47 +297,17 @@ def get_cache_stats() -> Dict:
 
 
 def ensure_text_search_queries_table():
-    from app_helper import get_db
+    from database import ensure_text_search_queries_table as _ensure
 
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_lock(726354821)")
-            try:
-                cur.execute(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
-                    ('text_search_queries',),
-                )
-                if not cur.fetchone()[0]:
-                    cur.execute("""
-                        CREATE TABLE text_search_queries (
-                            id SERIAL PRIMARY KEY,
-                            query_text TEXT NOT NULL,
-                            score REAL NOT NULL,
-                            rank INTEGER NOT NULL,
-                            created_at TIMESTAMP DEFAULT NOW(),
-                            UNIQUE(rank)
-                        )
-                    """)
-            finally:
-                cur.execute("SELECT pg_advisory_unlock(726354821)")
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank
-                ON text_search_queries(rank)
-            """)
-            conn.commit()
-            logger.info("Ensured text_search_queries table exists")
-            return True
-    except Exception:
-        logger.exception("Failed to create text_search_queries table")
-        if conn:
-            conn.rollback()
-        return False
+    return _ensure()
 
 
 def load_top_queries_from_db():
-    from app_helper import get_db
+    from database import (
+        DEFAULT_TEXT_SEARCH_QUERIES,
+        get_db,
+        insert_default_text_search_queries,
+    )
 
     ensure_text_search_queries_table()
 
@@ -369,76 +326,15 @@ def load_top_queries_from_db():
                 _TOP_QUERIES_CACHE['ready'] = True
                 logger.info(f"Loaded {len(rows)} top queries from database")
                 return True
-            else:
-                logger.info("No top queries found - inserting default queries")
-                default_queries = [
-                    "female vocal romantic trap",
-                    "synth indie pop raspy",
-                    "sad hard rock male vocal",
-                    "funk falsetto energetic",
-                    "groovy sax blues",
-                    "classical relaxed piano",
-                    "belting jazz happy",
-                    "tabla afrobeat fast-paced",
-                    "harmonized vocals slow-paced electronica",
-                    "autotuned gospel excited",
-                    "breathy aggressive house",
-                    "smooth folk mid-tempo",
-                    "deep voice r&b dark",
-                    "punk guitar angry",
-                    "metal choir dreamy",
-                    "chant reggae trumpet",
-                    "high-pitched brass hip-hop",
-                    "disco whispered drum machine",
-                    "happy whispered indie pop",
-                    "synth energetic raspy",
-                    "rock slow-paced cello",
-                    "falsetto jazz excited",
-                    "r&b male vocal romantic",
-                    "harmonized vocals dark trap",
-                    "smooth blues sax",
-                    "high-pitched fast-paced soul",
-                    "female vocal sad hip-hop",
-                    "congas aggressive soul",
-                    "mid-tempo afrobeat autotuned",
-                    "belting funk groovy",
-                    "angry alternative breathy",
-                    "gospel choir steelpan",
-                    "viola relaxed folk",
-                    "dreamy rhodes metal",
-                    "acoustic guitar country chant",
-                    "deep voice orchestra reggae",
-                    "fast-paced synth progressive rock",
-                    "hard rock raspy romantic",
-                    "fast-paced electric guitar progressive rock",
-                    "hard rock aggressive breathy",
-                    "rock high-pitched energetic",
-                    "autotuned energetic hip-hop",
-                    "raspy fast-paced blues",
-                    "belting electronica energetic",
-                    "whispered indie pop aggressive",
-                    "harmonized vocals aggressive synth",
-                    "orchestra whispered romantic",
-                    "belting mid-tempo progressive rock",
-                    "autotuned pop mid-tempo",
-                    "pop energetic synthesizer",
-                ]
 
-                for rank, query in enumerate(default_queries, start=1):
-                    cur.execute(
-                        """
-                        INSERT INTO text_search_queries (query_text, score, rank, created_at)
-                        VALUES (%s, %s, %s, NOW())
-                    """,
-                        (query, 1.0, rank),
-                    )
+            logger.info("No top queries found - inserting default queries")
+            inserted = insert_default_text_search_queries(cur)
+            conn.commit()
 
-                conn.commit()
-
-                _TOP_QUERIES_CACHE['queries'] = default_queries
-                _TOP_QUERIES_CACHE['ready'] = True
-                logger.info(f"Inserted and loaded {len(default_queries)} default queries")
-                return True
+            _TOP_QUERIES_CACHE['queries'] = list(DEFAULT_TEXT_SEARCH_QUERIES)
+            _TOP_QUERIES_CACHE['ready'] = True
+            logger.info(f"Inserted and loaded {inserted} default queries")
+            return True
     except Exception as e:
         logger.warning(f"Could not load top queries from database: {e}")
         return False

@@ -34,6 +34,7 @@ from collections import defaultdict
 from joblib import Parallel, delayed
 from sklearn.mixture import GaussianMixture
 
+from cpu_budget import usable_cpu_count
 from config import INDEX_BUILD_WORKERS
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
 
     try:
         all_embeddings = np.vstack(track_embeddings)
+        all_embeddings = _l2_normalize_rows(all_embeddings)
         n_samples, n_features = all_embeddings.shape
 
         if n_samples < 5:
@@ -220,7 +222,7 @@ def _gmm_worker_count(pending: int) -> int:
         return 1
     if INDEX_BUILD_WORKERS > 1:
         return min(INDEX_BUILD_WORKERS, pending)
-    return max(1, min(8, (os.cpu_count() or 2) // 2, pending))
+    return max(1, min(8, (usable_cpu_count() or os.cpu_count() or 2) // 2, pending))
 
 
 def _shutdown_gmm_pool() -> None:
@@ -363,7 +365,7 @@ def _fit_pending_artists(cur, pending, artist_tracks, artist_track_hashes):
 
 def build_and_store_artist_index(db_conn=None):
     if db_conn is None:
-        from app_helper import get_db
+        from database import get_db
 
         db_conn = get_db()
 
@@ -491,7 +493,7 @@ def load_artist_index_for_querying(force_reload=False):
             logger.info("Artist index already loaded in memory")
             return
 
-        from app_helper import get_db
+        from database import get_db
 
         logger.info("Loading artist similarity index from database...")
 
@@ -557,7 +559,7 @@ def load_artist_index_for_querying(force_reload=False):
 def get_representative_songs_for_component(
     artist_name: str, component_index: int, top_k: int = 3
 ) -> List[Dict]:
-    from app_helper import get_db
+    from database import get_db
 
     if artist_gmm_params is None or artist_name not in artist_gmm_params:
         logger.warning(f"No GMM found for artist '{artist_name}'")
@@ -570,7 +572,7 @@ def get_representative_songs_for_component(
         logger.warning(f"Component index {component_index} out of range for artist '{artist_name}'")
         return []
 
-    component_mean = means[component_index]
+    component_mean = _l2_normalize_rows(means[component_index])
 
     conn = get_db()
     cur = conn.cursor()
@@ -594,10 +596,10 @@ def get_representative_songs_for_component(
 
         song_distances = []
         for item_id, title, embedding_bytes in rows:
-            embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
-            distance = np.linalg.norm(embedding - component_mean)
+            embedding = _l2_normalize_rows(np.frombuffer(embedding_bytes, dtype=np.float32))
+            distance = float(np.linalg.norm(embedding - component_mean))
             song_distances.append(
-                {'item_id': item_id, 'title': title, 'distance_to_component': float(distance)}
+                {'item_id': item_id, 'title': title, 'distance_to_component': distance}
             )
 
         song_distances.sort(key=lambda x: x['distance_to_component'])
@@ -754,7 +756,7 @@ def search_artists_by_name(
     if not query:
         return []
 
-    from app_helper import get_db
+    from database import get_db
     from tasks.mediaserver import registry
 
     conn = get_db()
@@ -801,7 +803,7 @@ def search_artists_by_name(
 
 
 def get_artist_tracks(artist_identifier: str) -> List[Dict]:
-    from app_helper import get_db
+    from database import get_db
     from tasks.mediaserver import registry
 
     artist_name = artist_identifier

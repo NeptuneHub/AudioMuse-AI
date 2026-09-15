@@ -19,6 +19,9 @@ Main Features:
   "keep the stored value" except where blank has its own meaning.
 * Validates enum fields against fixed option sets, tests the media-server
   connection, and lists provider libraries so the wizard can populate itself.
+* Hands the Machine Learning Models section, on every open, the band (0 to 4)
+  of the library each model's index can find right now: two indexed counts plus
+  one directory-header read per index, never an index load, and never a number.
 """
 
 import re
@@ -28,6 +31,8 @@ from flask import request, jsonify, render_template, make_response
 import config
 from flask_app import app
 from tasks.setup_manager import setup_manager
+from tasks import naming_preview
+from tasks.ai import prompts as ai_prompts
 from app_auth import check_setup_needed
 from ssrf_guard import validate_outbound_url
 import restart_manager
@@ -77,7 +82,6 @@ SECRET_FIELDS = {
     "AMPACHE_PASSWORD",
     "PLEX_TOKEN",
     "JWT_SECRET",
-    "AI_CHAT_DB_USER_PASSWORD",
     "LYRICS_API_1_APIKEY_VALUE",
     "LYRICS_API_2_APIKEY_VALUE",
 }
@@ -105,17 +109,51 @@ LYRICS_API_CONFIG_FIELDS = [
     'LYRICS_API_2_TIMEOUT',
 ]
 
+AI_PROMPT_CONFIG_FIELDS = [
+    'AI_NAMING_PROMPT_MODE',
+    'AI_NAMING_TITLE_PROMPT',
+]
+AI_TITLE_PROMPT_MAX_CHARS = 20000
+AI_PROMPT_EXAMPLE_SONGS = (
+    ('', 'Do I Wanna Know?', 'Arctic Monkeys'),
+    ('', 'Skinny Love', 'Bon Iver'),
+    ('', 'Vienna', 'Billy Joel'),
+)
+
 # Advanced fields whose value must be one of a fixed set. The wizard renders
 # these as <select> dropdowns and the save path normalizes the value to the
 # canonical casing so legacy free-text entries (e.g. "DBSCAN") are cleaned up.
 ENUM_FIELD_OPTIONS = {
     'AI_MODEL_PROVIDER': ['NONE', 'OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL'],
     'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
+    'AI_NAMING_PROMPT_MODE': ['concept', 'title'],
     'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],
     'IVF_METRIC': ['angular', 'euclidean', 'dot'],
 }
 
 HIDDEN_ADVANCED_FIELDS = {
+    # Internal vocabularies and derived/runtime state that are not settings at
+    # all. They are already in SETUP_BOOTSTRAP_EXCLUDED_KEYS or recomputed on
+    # every import, so editing them in the wizard changes nothing while making
+    # the advanced list look like they are tunable.
+    'QUEUE_BLOCKING_TASK_TYPES',
+    'MEDIASERVER_CONFIG_KEYS',
+    'APP_CONFIG_RUNTIME_KEYS',
+    'QUEUE_CONTROL_ACTION_WINDOW_SECONDS',
+    'DB_OVERRIDES_LOADED',
+    'DB_DEFAULT_SERVER_PROJECTED',
+    # Filesystem locations of bundled data and installed code. They follow the
+    # build layout (bundle root, APP_DATA_DIR) and pointing them elsewhere from
+    # the browser only breaks the install, so they are never user-editable.
+    'GENRE_SUBGENRE_FILE',
+    'PLUGINS_DIR',
+    'EMBEDDING_MODEL_PATH',
+    'PREDICTION_MODEL_PATH',
+    'CLAP_AUDIO_MODEL_PATH',
+    'CLAP_TEXT_MODEL_PATH',
+    'CLAP_SAE_ENCODER_PATH',
+    'CLAP_SAE_MODEL_PATH',
+    'CLAP_SAE_CONCEPTS_PATH',
     'DURATION_TOLERANCE_SECONDS',
     'FPCALC_BINARY',
     'CHROMAPRINT_MAX_ALIGN_OFFSET',
@@ -128,8 +166,6 @@ HIDDEN_ADVANCED_FIELDS = {
     'AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED',
     'AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX',
     'AI_BRAINSTORM_USE_ARTIST_SEEDS',
-    'AI_CHAT_DB_USER_NAME',
-    'AI_CHAT_DB_USER_PASSWORD',
     'AI_FALLBACK_GENRES',
     'AI_NAMING_CANDIDATES',
     'AI_NAMING_MAX_ATTEMPTS',
@@ -148,7 +184,35 @@ HIDDEN_ADVANCED_FIELDS = {
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
     'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
-    'CHROMAPRINT_BACKFILL_REPORT_SECONDS',
+    # Per-endpoint result-count defaults. Each search page renders one of them into
+    # its count input's value= attribute, so they ARE the UI's starting number, and
+    # they are also the fallback for a direct API call that sends no count. Hidden
+    # here and excluded in SETUP_BOOTSTRAP_EXCLUDED_KEYS so they stay env-only: see
+    # the comment there for why half-hiding one would strand it beyond any reach.
+    'SIMILARITY_DEFAULT_N_RESULTS',
+    'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
+    'CLAP_SEARCH_DEFAULT_LIMIT',
+    'RECORDING_SEARCH_DEFAULT_N_RESULTS',
+    'RECORDING_SEARCH_RECORD_SECONDS',
+    'RECORDING_SEARCH_MAX_CLIP_SECONDS',
+    'RECORDING_SEARCH_MAX_UPLOAD_MB',
+    'RECORDING_SEARCH_TARGET_LEVEL_DB',
+    'RECORDING_SEARCH_WARMUP_DURATION',
+    'FLASK_BUILTIN_HTTPS',
+    'FLASK_HTTPS_CERT_DIR',
+    'NEURAL_FINGERPRINT_MODEL_PATH',
+    'NEURAL_FINGERPRINT_CODEBOOK_PATH',
+    'NEURAL_FINGERPRINT_NPROBE',
+    'NEURAL_FINGERPRINT_TRAIN_ROWS',
+    'NEURAL_FINGERPRINT_RETRAIN_GROWTH',
+    'NEURAL_FINGERPRINT_MIN_SCORE',
+    'NEURAL_FINGERPRINT_MIN_LEAD',
+    'NEURAL_FINGERPRINT_INDEX_STRIDE',
+    'NEURAL_FINGERPRINT_QUERY_THREADS',
+    'NEURAL_FINGERPRINT_CACHE_MB',
+    'LYRICS_AXES_DEFAULT_LIMIT',
+    'LYRICS_TEXT_DEFAULT_LIMIT',
+    'SEM_GROVE_DEFAULT_LIMIT',
     'MOOD_LABELS',
     'APP_VERSION',
     'TEMP_DIR',
@@ -215,15 +279,13 @@ HIDDEN_ADVANCED_FIELDS = {
     'RADIUS_INSTRUMENTATION',
     'ENERGY_MIN',
     'ENERGY_MAX',
-    'CLAP_TEXT_SEARCH_WARMUP_DURATION',
     'CLAP_TOP_QUERIES_COUNT',
-    'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR',
-    'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
+    'CLAP_TEXT_SEARCH_WARMUP_DURATION',
     'ALCHEMY_PLAYLIST_MAX_SONGS',
     'ALCHEMY_PLAYLIST_MAX_CENTROIDS',
     'ALCHEMY_MAX_ANCHOR_POINTS',
-    'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
-    'SONIC_FINGERPRINT_CRON_PLAYLIST_NAME',
+    'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR',
+    'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
     # Worker / queue / batch-orchestration infra knobs (operator-level)
     'QUEUE_POLL_INTERVAL_SECONDS',
     'QUEUE_MAX_ATTEMPTS',
@@ -242,6 +304,12 @@ HIDDEN_ADVANCED_FIELDS = {
     'QUEUE_INLINE_STALE_SECONDS',
     'QUEUE_CONTROL_ADVISORY_TIMEOUT_SECONDS',
     'QUEUE_CONTROL_POLL_INTERVAL_SECONDS',
+    'QUEUE_WEDGED_MAIN_TASK_MINUTES',
+    'QUEUE_WEDGED_ESCALATE_FACTOR',
+    'QUEUE_RETRY_BASE_SECONDS',
+    'QUEUE_RETRY_MAX_SECONDS',
+    'QUEUE_CANCEL_CHECK_SECONDS',
+    'CHROMAPRINT_INHERIT_BATCH_SIZE',
     'CONTROL_IPC_TIMEOUT_SECONDS',
     'AUDIO_MUSE_LISTENER_ID',
     'SUPERVISORCTL_CMD',
@@ -262,6 +330,10 @@ HIDDEN_ADVANCED_FIELDS = {
     'PATH_AVG_JUMP_SAMPLE_SIZE',
     'PATH_CANDIDATES_PER_STEP',
     'PATH_LCORE_MULTIPLIER',
+    # The clustering naming style and its title prompt are edited in the dedicated
+    # AI Prompt section, so they are kept out of the generic advanced list.
+    'AI_NAMING_PROMPT_MODE',
+    'AI_NAMING_TITLE_PROMPT',
     # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
     'LYRICS_API_1_URL_TEMPLATE',
     'LYRICS_API_1_ARTIST_PARAM',
@@ -416,6 +488,46 @@ def should_show_advanced(name):
     return True
 
 
+def _build_ai_prompt_payload():
+    return {
+        'mode': ai_prompts.normalize_naming_mode(config.AI_NAMING_PROMPT_MODE),
+        'title_prompt': config.AI_NAMING_TITLE_PROMPT,
+        'title_prompt_default': config._AI_NAMING_TITLE_PROMPT_DEFAULT,
+        'max_songs': config.MAX_SONGS_IN_AI_PROMPT,
+        'example_song_block': ai_prompts.title_prompt_song_block(
+            AI_PROMPT_EXAMPLE_SONGS, config.MAX_SONGS_IN_AI_PROMPT
+        ),
+        'preview_max_songs': naming_preview.PREVIEW_MAX_SONGS,
+    }
+
+
+def _ai_title_prompt_problem(text):
+    if not isinstance(text, str) or not text.strip():
+        return 'The title prompt cannot be empty. Use Reset to default to restore it.'
+    if len(text) > AI_TITLE_PROMPT_MAX_CHARS:
+        return 'The title prompt is too long (max %d characters).' % AI_TITLE_PROMPT_MAX_CHARS
+    return None
+
+
+def _validate_ai_prompt_values(filtered_values):
+    if 'AI_NAMING_PROMPT_MODE' in filtered_values:
+        mode = str(filtered_values['AI_NAMING_PROMPT_MODE'] or '').strip().lower()
+        if mode not in ai_prompts.NAMING_MODES:
+            return 'The playlist naming style must be concept or title.'
+        filtered_values['AI_NAMING_PROMPT_MODE'] = mode
+    if 'AI_NAMING_TITLE_PROMPT' in filtered_values:
+        text = filtered_values['AI_NAMING_TITLE_PROMPT']
+        if isinstance(text, str):
+            text = text.replace('\r\n', '\n')
+            filtered_values['AI_NAMING_TITLE_PROMPT'] = text
+        mode = filtered_values.get('AI_NAMING_PROMPT_MODE', config.AI_NAMING_PROMPT_MODE)
+        if mode == 'concept' and not (text or '').strip():
+            filtered_values.pop('AI_NAMING_TITLE_PROMPT')
+            return None
+        return _ai_title_prompt_problem(text)
+    return None
+
+
 def _get_allowed_setup_keys():
     allowed_keys = set()
     for f in setup_manager.get_all_fields(config):
@@ -424,7 +536,61 @@ def _get_allowed_setup_keys():
     # Always allow the lyrics API config fields (hidden from advanced section
     # but still user-editable via the dedicated Lyrics API section).
     allowed_keys.update(LYRICS_API_CONFIG_FIELDS)
+    allowed_keys.update(AI_PROMPT_CONFIG_FIELDS)
     return allowed_keys
+
+
+MODEL_COVERAGE_BANDS = (0.2, 0.6, 0.8, 0.95)
+MODEL_COVERAGE_MODELS = ('musicnn', 'clap', 'lyrics', 'neural-fingerprint')
+
+
+def model_coverage_level(indexed, eligible):
+    if not indexed or not eligible:
+        return 0
+    ratio = indexed / eligible
+    return 1 + sum(1 for edge in MODEL_COVERAGE_BANDS if ratio >= edge)
+
+
+def _count_rows(cur, sql):
+    cur.execute(sql)
+    row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def model_coverage_levels():
+    from database import get_db
+    from tasks.paged_ivf import paged_ivf_item_count
+    from tasks.neural_fingerprint_index import indexed_track_count
+
+    try:
+        db = get_db()
+    except Exception:
+        app.logger.exception('Model coverage could not open the database for the setup wizard')
+        return {}
+    try:
+        with db.cursor() as cur:
+            total_songs = _count_rows(cur, "SELECT COUNT(*) FROM score")
+            songs_with_lyrics = _count_rows(
+                cur, "SELECT COUNT(*) FROM lyrics_embedding WHERE embedding IS NOT NULL"
+            )
+        pairs = {
+            'musicnn': (paged_ivf_item_count(db, config.INDEX_NAME), total_songs),
+            'clap': (paged_ivf_item_count(db, 'clap_index'), total_songs),
+            'lyrics': (paged_ivf_item_count(db, 'lyrics_index'), songs_with_lyrics),
+            'neural-fingerprint': (indexed_track_count() or 0, total_songs),
+        }
+    except Exception:
+        app.logger.exception('Model coverage could not be read for the setup wizard')
+        try:
+            db.rollback()
+        except Exception:
+            app.logger.exception('Model coverage rollback failed for the setup wizard')
+        return {}
+    return {
+        model: model_coverage_level(*pairs[model])
+        for model in MODEL_COVERAGE_MODELS
+        if pairs[model][0] is not None
+    }
 
 
 def _has_admin_user():
@@ -474,7 +640,9 @@ def setup_api():
     description: |
       The GET response separates fields into `basic` and `advanced` lists,
       hides values for inactive media-server types, and masks any field whose
-      name is in SECRET_FIELDS or ends with `_API_KEY`.
+      name is in SECRET_FIELDS or ends with `_API_KEY`. `model_coverage` maps
+      each model to the band (0 to 4) of the library its index can find right
+      now, computed on every request; it never carries a count.
 
       The POST body should contain `{key: value}` pairs for the keys returned
       by GET. Empty strings on secret fields keep the previously stored value;
@@ -560,8 +728,10 @@ def setup_api():
                 'advanced_fields': advanced_fields,
                 'music_libraries': music_libraries_value,
                 'lyrics_api_fields': lyrics_api_data,
+                'ai_prompt_fields': _build_ai_prompt_payload(),
                 'setup_saved': not check_setup_needed(),
                 'has_admin_user': _has_admin_user(),
+                'model_coverage': model_coverage_levels(),
             }
         )
 
@@ -601,6 +771,10 @@ def setup_api():
                 value = filtered_values[key]
                 if value is None or (isinstance(value, str) and not value.strip()):
                     del filtered_values[key]
+
+        prompt_problem = _validate_ai_prompt_values(filtered_values)
+        if prompt_problem:
+            return jsonify({'error': prompt_problem}), 400
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):
@@ -1040,6 +1214,42 @@ def setup_plex_pin_poll(pin_id):
     poll_response = jsonify({'token': payload.get('authToken')})
     poll_response.headers['Cache-Control'] = 'no-store'
     return poll_response, 200
+
+
+@app.route('/api/setup/ai-prompt/preview', methods=['GET', 'POST'])
+def setup_ai_prompt_preview():
+    if request.method == 'GET':
+        try:
+            return jsonify(naming_preview.preview_status()), 200
+        except Exception:
+            app.logger.exception('Could not read the playlist naming preview status')
+            return jsonify({'error': 'Could not read the preview. Check the container logs.'}), 500
+    data = request.get_json(silent=True) or {}
+    mode = ai_prompts.normalize_naming_mode(data.get('mode'))
+    instructions = None
+    if mode == 'title':
+        instructions = data.get('instructions')
+        if isinstance(instructions, str):
+            instructions = instructions.replace('\r\n', '\n')
+        problem = _ai_title_prompt_problem(instructions)
+        if problem:
+            return jsonify({'error': problem}), 400
+    if (config.AI_MODEL_PROVIDER or 'NONE').upper() == 'NONE':
+        return jsonify(
+            {'error': 'No AI provider is configured. Select one under AI Provider & Playlist Naming and save first.'}
+        ), 400
+    try:
+        task_id, refusal = naming_preview.start_preview(mode, instructions)
+    except Exception:
+        app.logger.exception('Could not queue the playlist naming preview')
+        return jsonify({'error': 'Could not start the preview. Check the container logs.'}), 500
+    if not task_id:
+        return jsonify({
+            'error': refusal,
+            'preview_running': refusal == naming_preview.PREVIEW_RUNNING_MESSAGE,
+        }), 409
+    return jsonify({'status': 'running', 'task_id': task_id, 'message': naming_preview.PREVIEW_WAITING_MESSAGE,
+                    'titles': [], 'done': 0, 'total': 0}), 202
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])

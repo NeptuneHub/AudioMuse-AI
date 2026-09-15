@@ -191,7 +191,7 @@
                             <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
                         </span>
                     </label>
-                    <input type="number" id="axis-limit" name="limit" value="50" min="1" max="500">
+                    <input type="number" id="axis-limit" name="limit" value="{{ lyrics_axes_limit_default }}" min="{{ lyrics_axes_limit_default|min_bound(1) }}" max="{{ lyrics_axes_limit_default|max_bound(200) }}">
                 </div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.axis_loaded %}disabled{% endif %}>
                     🔍 Search by axes
@@ -223,7 +223,7 @@
                             <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches. Try 50 for a full playlist or 10–20 for a tight selection.</span>
                         </span>
                     </label>
-                    <input type="number" id="text-limit" name="limit" value="50" min="1" max="500">
+                    <input type="number" id="text-limit" name="limit" value="{{ lyrics_text_limit_default }}" min="{{ lyrics_text_limit_default|min_bound(1) }}" max="{{ lyrics_text_limit_default|max_bound(200) }}">
                 </div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.index_loaded %}disabled{% endif %}>
                     🔍 Search by text
@@ -277,7 +277,7 @@
                             <span class="tooltip-text">How many songs to return. Higher numbers give more variety but include less-relevant matches.</span>
                         </span>
                     </label>
-                    <input type="number" id="song-limit" name="limit" value="50" min="1" max="500"
+                    <input type="number" id="song-limit" name="limit" value="{{ sem_grove_limit_default }}" min="{{ sem_grove_limit_default|min_bound(1) }}" max="{{ sem_grove_limit_default|max_bound(200) }}"
                            {% if not sem_grove_stats.loaded %}disabled{% endif %}>
                 </div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not sem_grove_stats.loaded %}disabled{% endif %}>
@@ -372,7 +372,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
 
-        const limit = parseInt(document.getElementById('axis-limit').value, 10) || 50;
+        const limit = parseInt(document.getElementById('axis-limit').value, 10) || {{ lyrics_axes_limit_default }};
         await runSearch("{{ url_for('lyrics_search_bp.lyrics_search_axes_api') }}",
                         { targets, limit }, '');
     });
@@ -467,7 +467,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 alert('Please select a song from the autocomplete list first.');
                 return;
             }
-            const limit = parseInt(document.getElementById('song-limit').value, 10) || 50;
+            const limit = parseInt(document.getElementById('song-limit').value, 10) || {{ sem_grove_limit_default }};
             const seedText = document.getElementById('sg-selected-title-display').textContent || item_id;
             await runSearch("{{ url_for('sem_grove_bp.sem_grove_search_api') }}",
                             { item_id, limit }, seedText);
@@ -482,7 +482,7 @@ document.addEventListener('DOMContentLoaded', function () {
             alert('Please enter at least 1 character.');
             return;
         }
-        const limit = parseInt(document.getElementById('text-limit').value, 10) || 50;
+        const limit = parseInt(document.getElementById('text-limit').value, 10) || {{ lyrics_text_limit_default }};
         await runSearch("{{ url_for('lyrics_search_bp.lyrics_search_text_api') }}",
                         { query, limit }, query);
     });

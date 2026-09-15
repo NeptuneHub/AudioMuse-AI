@@ -30,6 +30,9 @@ import numpy as np
 
 import config
 
+from .search_shaping import build_capped_results as _build_capped_results
+from .search_shaping import overfetch_size
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +66,7 @@ def _axis_columns_from_axes() -> List[tuple]:
 
 
 def build_and_store_lyrics_index(db_conn=None) -> bool:
-    from app_helper import get_db
+    from database import get_db
     from config import LYRICS_ENABLED, LYRICS_EMBEDDING_DIMENSION, IVF_METRIC
     from .index_build_helpers import build_and_store_index_streaming
 
@@ -88,7 +91,7 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
 
 
 def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
-    from app_helper import get_db
+    from database import get_db
     from config import LYRICS_ENABLED
     from .index_build_helpers import build_and_store_index_streaming
 
@@ -119,36 +122,16 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
 
 
 def _load_lyrics_index_from_db() -> bool:
-    from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, IVF_METRIC
-    from .paged_ivf import load_index_auto
+    from .index_build_helpers import load_index_into_cache
 
-    try:
-        loaded = load_index_auto(
-            get_db(),
-            'lyrics_index',
-            LYRICS_EMBEDDING_DIMENSION,
-            IVF_METRIC,
-            label='lyrics',
-        )
-        if loaded is None:
-            return False
-        loaded_index, id_map, reverse_id_map = loaded
-
-        _LYRICS_INDEX_CACHE['index'] = loaded_index
-        _LYRICS_INDEX_CACHE['id_map'] = id_map
-        _LYRICS_INDEX_CACHE['reverse_id_map'] = reverse_id_map
-        _LYRICS_INDEX_CACHE['loaded'] = True
-
-        logger.info(f"Lyrics index loaded from database with {len(id_map)} items.")
-        return True
-    except Exception:
-        logger.exception("Failed to load lyrics index from DB")
-        return False
+    return load_index_into_cache(
+        'lyrics_index', LYRICS_EMBEDDING_DIMENSION, IVF_METRIC, 'lyrics', _LYRICS_INDEX_CACHE
+    )
 
 
 def _load_lyrics_axes_index_from_db() -> bool:
-    from app_helper import get_db
+    from database import get_db
     from .paged_ivf import load_index_auto
 
     columns = _axis_columns_from_axes()
@@ -283,9 +266,17 @@ def get_axes_definition() -> Dict:
     }
 
 
-def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
-    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
+def search_by_axes(targets: Dict[str, str], limit: Optional[int] = None) -> List[Dict]:
+    from config import (
+        LYRICS_ENABLED,
+        LYRICS_AXES_DEFAULT_LIMIT,
+        MAX_SONGS_PER_ARTIST,
+        DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS,
+        DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+    )
 
+    if limit is None:
+        limit = LYRICS_AXES_DEFAULT_LIMIT
     if not LYRICS_ENABLED:
         return []
     if not _LYRICS_AXIS_CACHE['loaded'] or _LYRICS_AXIS_CACHE['index'] is None:
@@ -322,8 +313,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     begin_query(ivf_index)
 
     artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-    fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
-    num_to_query = min(fetch_size, len(ivf_index))
+    num_to_query = min(overfetch_size(limit), len(ivf_index))
     if num_to_query <= 0:
         return []
 
@@ -333,77 +323,23 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
         logger.exception("Lyrics axes ivf query failed")
         return []
 
-    results: List[Dict] = []
-    artist_counts: Dict[str, int] = {}
-    seen: set = set()
-    for vid, dist in zip(neighbor_ids, distances):
-        if len(results) >= limit:
-            break
-        item_id = id_map.get(int(vid))
-        # Two slots can name the same track (a migration merges duplicate
-        # recordings into one row), and their vectors are near-identical, so the
-        # same song would otherwise come back twice.
-        if not item_id or item_id in seen:
-            continue
-        seen.add(item_id)
-        meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
-        author = meta.get('author', '') or ''
-        if artist_cap and author:
-            an = author.strip().lower()
-            if artist_counts.get(an, 0) >= artist_cap:
-                continue
-            artist_counts[an] = artist_counts.get(an, 0) + 1
-        similarity = ivf_index.distance_to_similarity(dist)
-        results.append(
-            {
-                'item_id': item_id,
-                'title': meta.get('title', ''),
-                'author': author,
-                'album': meta.get('album', ''),
-                'similarity': similarity,
-            }
-        )
+    results = _build_capped_results(
+        ivf_index,
+        id_map,
+        metadata_map,
+        neighbor_ids,
+        distances,
+        limit,
+        artist_cap,
+        dedup_names=True,
+        dup_threshold=DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS,
+        lookback=DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+    )
 
     logger.info(
         f"Lyrics axis search ({len(selected_pairs)} selections): {len(results)} results "
         f"(artist cap: {artist_cap or 'disabled'})"
     )
-    return results
-
-
-def _build_capped_results(
-    ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
-) -> List[Dict]:
-    results: List[Dict] = []
-    artist_counts: Dict[str, int] = {}
-    seen: set = set()
-    for vid, dist in zip(neighbor_ids, distances):
-        if len(results) >= limit:
-            break
-        item_id = id_map.get(int(vid))
-        # Two slots can name the same track (a migration merges duplicate
-        # recordings into one row), and their vectors are near-identical, so the
-        # same song would otherwise come back twice.
-        if not item_id or item_id in seen:
-            continue
-        seen.add(item_id)
-        meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
-        author = meta.get('author', '') or ''
-        if artist_cap and author:
-            an = author.strip().lower()
-            if artist_counts.get(an, 0) >= artist_cap:
-                continue
-            artist_counts[an] = artist_counts.get(an, 0) + 1
-        similarity = ivf_index.distance_to_similarity(dist)
-        results.append(
-            {
-                'item_id': item_id,
-                'title': meta.get('title', ''),
-                'author': author,
-                'album': meta.get('album', ''),
-                'similarity': similarity,
-            }
-        )
     return results
 
 
@@ -417,10 +353,18 @@ def _embed_text_query(query_text: str):
 
 
 def search_by_text(
-    query_text: str, limit: int = 50, artist_cap: Optional[int] = None
+    query_text: str, limit: Optional[int] = None, artist_cap: Optional[int] = None
 ) -> List[Dict]:
-    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
+    from config import (
+        LYRICS_ENABLED,
+        LYRICS_TEXT_DEFAULT_LIMIT,
+        MAX_SONGS_PER_ARTIST,
+        DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT,
+        DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+    )
 
+    if limit is None:
+        limit = LYRICS_TEXT_DEFAULT_LIMIT
     if not LYRICS_ENABLED:
         return []
     if not _LYRICS_INDEX_CACHE['loaded'] or _LYRICS_INDEX_CACHE['index'] is None:
@@ -440,7 +384,7 @@ def search_by_text(
         if artist_cap is None:
             artist_cap = MAX_SONGS_PER_ARTIST
         artist_cap = artist_cap if artist_cap and artist_cap > 0 else 0
-        fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+        fetch_size = overfetch_size(limit)
 
         ivf_index = _LYRICS_INDEX_CACHE['index']
         id_map = _LYRICS_INDEX_CACHE['id_map'] or {}
@@ -457,7 +401,16 @@ def search_by_text(
         metadata_map = _fetch_lyrics_metadata(candidate_item_ids)
 
         results = _build_capped_results(
-            ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+            ivf_index,
+            id_map,
+            metadata_map,
+            neighbor_ids,
+            distances,
+            limit,
+            artist_cap,
+            dedup_names=True,
+            dup_threshold=DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT,
+            lookback=DUPLICATE_DISTANCE_CHECK_LOOKBACK,
         )
 
         logger.info(

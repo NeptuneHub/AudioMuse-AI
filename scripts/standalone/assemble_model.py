@@ -14,7 +14,7 @@ fold a complete, offline model set into the platform bundle. Verifies every
 required model file is present before the build proceeds.
 
 Main Features:
-* Fetches and extracts DCLAP/model release assets by tag.
+* Fetches and extracts DCLAP/SAE/model release assets by tag.
 * Trims the HuggingFace cache and materializes symlinks into real files, since
   PyInstaller and zip archives drop symlinks on Windows.
 """
@@ -29,14 +29,25 @@ from pathlib import Path
 
 MODEL = Path("model")
 DCLAP_REPO = "NeptuneHub/AudioMuse-AI-DCLAP"
+SAE_REPO = "NeptuneHub/AudioMuse-AI-SAE"
+# Only the two graphs come from the release; the concept catalogue that names
+# their latents ships inside the repository.
+SAE_ASSETS = [
+    "dclap_sae_k20_d1024_best_encoder.onnx",
+    "dclap_sae_k20_d1024_best_decoder.onnx",
+]
 _TEN_MB = 10 * 1024 * 1024
 
 REQUIRED = [
     "model/musicnn_embedding.onnx",
     "model/musicnn_prediction.onnx",
+    "model/neural_fingerprint.onnx",
+    "model/neural_fingerprint_pq.npz",
     "model/clap_text_model.onnx",
     "model/model_epoch_36.onnx",
     "model/model_epoch_36.onnx.data",
+    "model/dclap_sae_k20_d1024_best_encoder.onnx",
+    "model/dclap_sae_k20_d1024_best_decoder.onnx",
     "model/silero_vad.onnx",
     "model/gte-multilingual-base-int8.onnx",
     "model/whisper-small-onnx/encoder_model.onnx",
@@ -104,21 +115,31 @@ def _materialize_hf_symlinks():
 def assemble():
     model_release = _env("MODEL_RELEASE")
     dclap_release = _env("DCLAP_RELEASE")
+    sae_release = os.environ.get("SAE_RELEASE", "v1")
     repo = _env("GITHUB_REPOSITORY")
     MODEL.mkdir(parents=True, exist_ok=True)
 
-    print(f"==> musicnn + CLAP text models (from {model_release})")
+    print(f"==> musicnn + neural fingerprint + CLAP text models (from {model_release})")
     _gh_download(
         model_release,
         repo,
         MODEL,
-        ["musicnn_embedding.onnx", "musicnn_prediction.onnx", "clap_text_model.onnx"],
+        [
+            "musicnn_embedding.onnx",
+            "musicnn_prediction.onnx",
+            "neural_fingerprint.onnx",
+            "neural_fingerprint_pq.npz",
+            "clap_text_model.onnx",
+        ],
     )
 
     print(f"==> DCLAP audio model (from {dclap_release} in the -DCLAP repo)")
     _gh_download(
         dclap_release, DCLAP_REPO, MODEL, ["model_epoch_36.onnx", "model_epoch_36.onnx.data"]
     )
+
+    print(f"==> SAE concept steering (from {sae_release} in the -SAE repo)")
+    _gh_download(sae_release, SAE_REPO, MODEL, SAE_ASSETS)
 
     print("==> HuggingFace cache (roberta/bert/bart) -- HF_HOME points at model/huggingface")
     tmp_hf = Path(tempfile.mkdtemp())

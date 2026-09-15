@@ -119,6 +119,7 @@ All of this is enforced by CI (`.github/workflows/lint-*.yml`), so run it locall
 * **flake8 + ruff:** `flake8 --select=E9,F,W605,E711,E712,E713,E714,E722,E401` catches syntax errors and pyflakes issues. Test it before raising a PR.
 * **codespell:** must pass repo-wide; fix real typos, and add genuine false positives (with a short reason) to `.codespellrc`.
 * **LF line endings & mypy:** every file must use LF line endings (no CRLF).
+* **Backslashes in SQL:** a pattern passed as a `%s` parameter needs nothing, psycopg2 quotes it for the server. A backslash written inside the SQL text itself (an `ESCAPE` clause or an inline `LIKE` pattern) must be an E-prefixed literal, so `ESCAPE E'\\'` reaches the server and reads the same with `standard_conforming_strings` on or off (#901). Enforced by `test/unit/test_no_backslash_escape_clause_in_source.py`.
 * **Repo-wide unit and integration test:** beyond the lint tools above, `pytest test/unit/` and `pytest test/integration/` introduce unit and integration test.
 * **Exeternal tools:** Sonarcloud and eventually AI review will run on PR.
 

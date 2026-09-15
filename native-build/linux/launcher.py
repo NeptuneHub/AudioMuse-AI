@@ -34,36 +34,8 @@ from native_common import frozen_children
 WEB_URL = "http://127.0.0.1:8000"
 
 
-def _role_from_argv():
-    for arg in sys.argv[1:]:
-        if arg.startswith("--role="):
-            return arg.split("=", 1)[1]
-    return None
-
-
-def _command_from_argv():
-    for arg in sys.argv[1:]:
-        if not arg.startswith("-"):
-            return arg
-    return None
-
-
-def _run_flask():
-    import waitress
-    import app as app_module
-
-    waitress.serve(
-        app_module.app,
-        host="0.0.0.0",
-        port=8000,
-        threads=8,
-        max_request_body_size=6 * 1024 * 1024 * 1024,
-        channel_timeout=300,
-    )
-
-
 def _run_role(role):
-    service_roles.run_role(role, _run_flask)
+    service_roles.run_role(role, service_roles.serve_flask)
 
 
 _INSTANCE_LOCK = None
@@ -221,21 +193,10 @@ def _refuse_root_for_stack():
 
 
 def main():
-    if frozen_children.run_frozen_child():
+    if frozen_children.dispatch_child_invocation(_run_role):
         return
 
-    if "--run-restore" in sys.argv:
-        i = sys.argv.index("--run-restore")
-        from app_backup import _run_restore_runner
-
-        sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
-
-    role = _role_from_argv()
-    if role:
-        _run_role(role)
-        return
-
-    command = _command_from_argv()
+    command = service_roles.command_from_argv()
     if command in (None, "start"):
         _refuse_root_for_stack()
         open_browser = os.environ.get("AUDIOMUSE_OPEN_BROWSER", "1") != "0"

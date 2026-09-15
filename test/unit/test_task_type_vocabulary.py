@@ -27,7 +27,7 @@ whole Flask bootstrap, ``init_db`` included, which no unit test does.
 
 Main Features:
 * app, app_helper and app_music_servers import the spellings they filter on
-* None of the three re-spells one as a bare literal
+* None of the three re-spells one as a bare literal, the migration planner's included
 * database's self-managed and non-blocking lists still hold the right spellings
 * The collapse exemption compares against the constant, not a literal
 """
@@ -40,10 +40,11 @@ import pytest
 
 import database
 from taskqueue import sql
+from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-RESPELLABLE = (sql.CONTROL_TASK_TYPE, sql.SWEEP_TASK_TYPE)
+RESPELLABLE = (sql.CONTROL_TASK_TYPE, sql.SWEEP_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
 
 FILTERING_MODULES = ('app.py', 'app_helper.py', 'app_music_servers.py')
 
@@ -51,6 +52,7 @@ EXPECTED_IMPORTS = (
     ('app.py', 'taskqueue.sql', 'CONTROL_TASK_TYPE'),
     ('app.py', 'tasks.provider_migration_tasks', 'MIGRATION_PLANNER_TASK_TYPE'),
     ('app_helper.py', 'taskqueue.sql', 'CONTROL_TASK_TYPE'),
+    ('app_helper.py', 'tasks.provider_migration_tasks', 'MIGRATION_PLANNER_TASK_TYPE'),
     ('app_music_servers.py', 'taskqueue.sql', 'SWEEP_TASK_TYPE'),
 )
 
@@ -109,6 +111,6 @@ class TestDatabaseKeepsTheSameVocabulary:
 
     def test_the_collapse_exemption_reads_the_constant_not_a_literal(self):
         source = (REPO_ROOT / 'database.py').read_text(encoding='utf-8')
-        body = source.split('def _collapse_finished_task', 1)[1].split('\ndef ', 1)[0]
+        body = source.split('def collapse_finished_task', 1)[1].split('\ndef ', 1)[0]
         assert 'CONTROL_TASK_TYPE' in body
         assert re.search(r"==\s*'worker_control'", body) is None

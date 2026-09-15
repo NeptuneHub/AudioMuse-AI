@@ -16,6 +16,7 @@ Unicode text hygiene that sibling modules rely on.
 Main Features:
 * validate_ai_config gates each provider (URL shape, key, model) before any call is made.
 * clean_playlist_name repairs mojibake with ftfy + NFKC and strips non-ASCII.
+* get_ai_playlist_title is the classic full-title naming path: the AI writes the whole title from the editable instructions plus a song sample, retrying with length feedback until the cleaned title fits 5-40 characters.
 * get_ai_playlist_name asks small local models for several grounded candidate
   concepts in a single call, then composes and validates the final title in
   code, keeping the first candidate that passes.
@@ -39,9 +40,16 @@ from tasks.ai.providers import (
     openai as ai_api_openai,
 )
 from tasks.ai.playlist_namer import GENRE_DISPLAY
-from tasks.ai.prompts import build_mcp_system_prompt, playlist_concept_prompt_template
+from tasks.ai.prompts import (
+    TITLE_PROMPT_RECENT_TITLES,
+    build_mcp_system_prompt,
+    build_title_naming_prompt,
+    playlist_concept_prompt_template,
+)
 
 logger = logging.getLogger(__name__)
+
+AI_NAMING_SKIPPED = "AI Naming Skipped"
 
 VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
 
@@ -208,7 +216,7 @@ def generate_text(
     provider = (ai_config.get("provider") or "NONE").upper()
 
     if provider == "NONE":
-        return "AI Naming Skipped"
+        return AI_NAMING_SKIPPED
     if provider == "OLLAMA":
         return ai_api_openai.generate_text(
             ai_config["ollama_url"],
@@ -445,6 +453,80 @@ def _evaluate_concept(
     return concept, title, problem
 
 
+def _title_feedback(cleaned_name, taken, min_length, max_length):
+    if not min_length <= len(cleaned_name) <= max_length:
+        return (
+            f"\n\nFEEDBACK: The previous title you generated ('{cleaned_name}') was "
+            f"{len(cleaned_name)} characters long. It MUST be between {min_length} and "
+            f"{max_length} characters. Please try again."
+        ), None
+    existing_title = taken.get(cleaned_name.casefold())
+    if existing_title:
+        return (
+            f"\n\nFEEDBACK: The title '{cleaned_name}' is already used by another "
+            "playlist. Give a different title."
+        ), existing_title
+    return None, None
+
+
+def get_ai_playlist_title(
+    instructions: str, songs, ai_config: Dict, used_titles: Optional[List[str]] = None
+) -> Optional[str]:
+    min_length = 5
+    max_length = 40
+    max_attempts = max(1, int(config.AI_NAMING_MAX_ATTEMPTS))
+    songs = list(songs or [])
+    max_songs = max(1, int(config.MAX_SONGS_IN_AI_PROMPT))
+    if len(songs) > max_songs:
+        logger.info(
+            "Truncated song list from %d to %d songs for AI prompt to avoid token limits",
+            len(songs),
+            max_songs,
+        )
+    recent_titles = [clean_playlist_name(title) for title in (used_titles or [])]
+    shown_titles = [title for title in recent_titles if title][-TITLE_PROMPT_RECENT_TITLES:]
+    taken = {title.casefold(): title for title in shown_titles}
+    duplicate_fallback = None
+    full_prompt = build_title_naming_prompt(instructions, songs, max_songs, recent_titles)
+    provider = (ai_config.get("provider") or "NONE").upper()
+    logger.info("Sending playlist title prompt to AI (%s):\n%s", provider, full_prompt)
+
+    current_prompt = full_prompt
+    for attempt in range(max_attempts):
+        name = generate_text(current_prompt, ai_config)
+        if name == AI_NAMING_SKIPPED:
+            return None
+        if not isinstance(name, str) or name.startswith("Error"):
+            logger.warning(
+                "AI title naming got no usable text from %s on attempt %d/%d: %s",
+                provider,
+                attempt + 1,
+                max_attempts,
+                name,
+            )
+            continue
+        cleaned_name = clean_playlist_name(name)
+        feedback, existing_title = _title_feedback(cleaned_name, taken, min_length, max_length)
+        if feedback is None:
+            return cleaned_name
+        logger.warning(
+            "AI generated title '%s' was rejected on attempt %d/%d: %s",
+            cleaned_name,
+            attempt + 1,
+            max_attempts,
+            feedback.strip(),
+        )
+        duplicate_fallback = duplicate_fallback or existing_title
+        current_prompt = full_prompt + feedback
+    if duplicate_fallback:
+        logger.info(
+            "AI title naming only produced titles already in use; keeping '%s' so the "
+            "duplicate suffix tells the playlists apart",
+            duplicate_fallback,
+        )
+    return duplicate_fallback
+
+
 def get_ai_playlist_name(
     genre_word: str,
     naming_dimension: str,
@@ -494,7 +576,7 @@ def get_ai_playlist_name(
             temperature=0.7,
         )
 
-        if raw_response == "AI Naming Skipped":
+        if raw_response == AI_NAMING_SKIPPED:
             return None
         if not isinstance(raw_response, str) or raw_response.startswith("Error"):
             logger.warning(

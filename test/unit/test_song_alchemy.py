@@ -48,7 +48,7 @@ class TestSongAlchemy:
             patch('tasks.song_alchemy.find_nearest_neighbors_by_id') as mock_find_nn_id,
             patch('tasks.song_alchemy.get_score_data_by_ids') as mock_get_score,
             patch('tasks.song_alchemy._filter_by_distance') as mock_filter_dist,
-            patch('app_helper.get_db') as mock_get_db,
+            patch('database.get_db') as mock_get_db,
             patch('tasks.song_alchemy.load_map_projection') as mock_load_proj,
             patch('tasks.song_alchemy.config') as mock_config,
         ):

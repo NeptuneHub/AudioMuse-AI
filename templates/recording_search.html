@@ -1,0 +1,631 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .search-container {
+        max-width: 800px;
+        margin: 0 auto;
+    }
+
+    .search-container .param-group {
+        margin-bottom: 1.5rem;
+    }
+
+    .search-container label {
+        display: block;
+        margin-bottom: 0.5rem;
+    }
+
+    .cache-stats {
+        background: var(--bg-code);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+    }
+
+    .cache-stats strong {
+        color: var(--color-primary);
+    }
+
+    .loading-spinner {
+        text-align: center;
+        padding: 2rem;
+        font-size: 1.2rem;
+        color: var(--text-muted);
+    }
+
+    .error-message {
+        background: var(--status-failure-bg);
+        color: var(--status-failure-text);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+    }
+
+    .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.25rem;
+        border-bottom: 2px solid var(--border-color);
+        flex-wrap: wrap;
+    }
+
+    .tab-btn {
+        padding: 0.6rem 1.2rem;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: var(--text-muted);
+        transition: all 0.2s;
+    }
+
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+        font-weight: 600;
+    }
+
+    .tab-btn:hover {
+        color: var(--color-primary);
+    }
+
+    .capture-row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-bottom: 1rem;
+    }
+
+    .capture-row .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+    }
+
+    .capture-or {
+        color: var(--text-muted);
+    }
+
+    .countdown {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        min-width: 3rem;
+    }
+
+    .countdown:empty {
+        display: none;
+    }
+
+    .clip-info,
+    .warning-message {
+        background: var(--bg-code);
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 0.9rem;
+    }
+
+    .warning-message {
+        border-left: 4px solid var(--color-primary);
+    }
+
+    .file-btn {
+        cursor: pointer;
+    }
+
+    .file-btn input {
+        display: none;
+    }
+
+    .mic-notice code {
+        background: var(--bg-card);
+        padding: 0 0.3rem;
+        border-radius: 4px;
+    }
+
+    .capture-error {
+        margin-top: 0;
+        margin-bottom: 1rem;
+    }
+
+    #song-panel .autocomplete-container {
+        margin-bottom: 1rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Search by Recording</h1>
+        <p>Record {{ record_seconds }} seconds of whatever is playing around you, upload a clip, or pick a song from your library, and find which songs in your library it is.</p>
+    </header>
+
+    {% if not neural_enabled %}
+    <div class="error-message">
+        <strong>Search by Recording is disabled.</strong>
+        <p>To enable it, turn on Neural Fingerprint in the setup wizard (Machine Learning Models) or set <code>NEURAL_FINGERPRINT_ENABLED=true</code>, then run the analysis: it computes the neural fingerprint of every song and builds the index.</p>
+    </div>
+    {% else %}
+    {% if index_status.loaded %}
+    <div class="cache-stats">
+        <strong>Neural fingerprint index</strong> |
+        <strong>{{ index_status.song_count }}</strong> songs indexed |
+        {{ index_status.cells }} cells |
+        {{ index_status.cache_mb }} MB of cells in memory
+    </div>
+    {% else %}
+    <div class="cache-stats">
+        <strong>Neural fingerprint index</strong> {{ index_status.state }}
+    </div>
+    {% endif %}
+
+    <div class="search-container">
+        <div class="tabs" role="tablist">
+            <button type="button" class="tab-btn active" data-mode="recording" role="tab" aria-selected="true">Search by Recording</button>
+            <button type="button" class="tab-btn" data-mode="song" role="tab" aria-selected="false">Search by Song</button>
+        </div>
+
+        <div id="recording-panel">
+            <div class="capture-row">
+                <button type="button" class="btn btn-primary" id="record-btn">Record {{ record_seconds }} s</button>
+                <span class="countdown" id="countdown" aria-live="polite"></span>
+                <span class="capture-or">or</span>
+                <label class="btn btn-ghost file-btn">Upload a clip<input type="file" id="clip-file" accept="audio/*,video/*"></label>
+            </div>
+            <div id="mic-notice" class="warning-message mic-notice hidden"></div>
+            <div id="capture-error" class="error-message capture-error hidden" role="alert"></div>
+            <div id="clip-info" class="clip-info hidden"></div>
+        </div>
+
+        <div id="song-panel" class="hidden">
+            <div class="autocomplete-container">
+                <label for="song-query">Song, artist or album name:</label>
+                <input type="text" id="song-query" placeholder="Start typing..." autocomplete="off"
+                       role="combobox" aria-expanded="false" aria-controls="song-suggestions" aria-autocomplete="list">
+                <div id="song-suggestions" class="autocomplete-results hidden" role="listbox" aria-label="Song suggestions"></div>
+            </div>
+            <div id="song-selected" class="clip-info hidden"></div>
+        </div>
+
+        <div class="param-group">
+            <div class="label-with-tooltip">
+                <label for="n-results">Number of results:</label>
+                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="n-results-help">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text" id="n-results-help">How many songs to return, best match first.</span>
+                </button>
+            </div>
+            <input type="number" id="n-results" name="n_results" value="{{ n_results_default }}" min="{{ n_results_default|min_bound(1) }}" max="{{ n_results_default|max_bound(200) }}">
+        </div>
+
+        <button type="button" class="btn btn-primary btn-block" id="search-btn" disabled>Search</button>
+    </div>
+</section>
+
+<section id="results-container" class="hidden">
+    <h2>Results</h2>
+    <div id="result-count" style="margin-bottom: 1rem; font-weight: 600;"></div>
+    <div id="results-list"></div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Create a Playlist from Results</h3>
+    <form id="playlist-form">
+        <div class="param-group">
+            <label for="playlist_name">Playlist Name:</label>
+            <input type="text" id="playlist_name" name="playlist_name" placeholder="My Recording Playlist" required>
+        </div>
+        <button type="submit" class="btn btn-success btn-block">Create Playlist on Media Server</button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const RECORD_SECONDS = {{ record_seconds }};
+    const MAX_UPLOAD_MB = {{ max_upload_mb }};
+    const DEFAULT_RESULTS = {{ n_results_default }};
+    const HTTPS_PORT = {{ https_port|int }};
+    const HTTPS_ERROR = {{ https_error|tojson }};
+    const SUGGESTIONS = 20;
+
+    function neuralBadge(song) {
+        if (typeof song.score !== 'number') return null;
+        return { text: song.score.toFixed(2), cls: song.identified ? 'badge-high' : (song.score >= 0.4 ? 'badge-medium' : 'badge-low') };
+    }
+
+    const recordBtn = document.getElementById('record-btn');
+    const countdownEl = document.getElementById('countdown');
+    const clipFile = document.getElementById('clip-file');
+    const micNotice = document.getElementById('mic-notice');
+    const captureError = document.getElementById('capture-error');
+    const clipInfo = document.getElementById('clip-info');
+    const nResults = document.getElementById('n-results');
+    const searchBtn = document.getElementById('search-btn');
+    const resultsContainer = document.getElementById('results-container');
+    const resultsList = document.getElementById('results-list');
+    const resultCount = document.getElementById('result-count');
+    const playlistCreator = document.getElementById('playlist-creator');
+    const playlistForm = document.getElementById('playlist-form');
+    const recordingPanel = document.getElementById('recording-panel');
+    const songPanel = document.getElementById('song-panel');
+    const songQuery = document.getElementById('song-query');
+    const songSuggestions = document.getElementById('song-suggestions');
+    const songSelected = document.getElementById('song-selected');
+
+    let mode = 'recording';
+    let currentClip = null;
+    let selectedSong = null;
+    let currentResults = [];
+    let currentSeedId = null;
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    async function warmup() {
+        try {
+            await fetch("{{ url_for('recording_search_bp.recording_search_warmup_api') }}", { method: 'POST' });
+        } catch (error) {
+            console.error('Warmup failed:', error);
+        }
+    }
+
+    function resetResults() {
+        resultCount.textContent = '';
+        playlistCreator.classList.add('hidden');
+    }
+
+    function showError(message) {
+        resultsContainer.classList.remove('hidden');
+        resultsList.innerHTML = `<div class="error-message">${escapeHtml(message)}</div>`;
+        resetResults();
+    }
+
+    function refreshSearchButton() {
+        searchBtn.disabled = mode === 'recording' ? !currentClip : !selectedSong;
+    }
+
+    function setMode(next) {
+        mode = next;
+        document.querySelectorAll('.tab-btn').forEach(button => {
+            const active = button.dataset.mode === next;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        recordingPanel.classList.toggle('hidden', next !== 'recording');
+        songPanel.classList.toggle('hidden', next !== 'song');
+        refreshSearchButton();
+    }
+
+    document.querySelectorAll('.tab-btn').forEach(button => {
+        button.addEventListener('click', () => setMode(button.dataset.mode));
+    });
+
+    function setClip(blob, name, label) {
+        currentClip = { blob, name };
+        clipInfo.textContent = `${label}: ${name} (${Math.round(blob.size / 1024)} KB)`;
+        clipInfo.classList.remove('hidden');
+        refreshSearchButton();
+    }
+
+    clipFile.addEventListener('change', () => {
+        const file = clipFile.files && clipFile.files[0];
+        clipFile.value = '';
+        if (!file) return;
+        clearCaptureError();
+        if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+            showError(`The file is larger than ${MAX_UPLOAD_MB} MB.`);
+            return;
+        }
+        setClip(file, file.name, 'Uploaded clip');
+    });
+
+    let suggestTimer = null;
+    let activeSuggestion = -1;
+
+    function hideSuggestions() {
+        songSuggestions.classList.add('hidden');
+        songQuery.setAttribute('aria-expanded', 'false');
+        songQuery.removeAttribute('aria-activedescendant');
+        activeSuggestion = -1;
+    }
+
+    function selectSong(track) {
+        selectedSong = track;
+        songSelected.textContent = `Selected: ${track.title || 'Unknown'}, ${track.author || 'Unknown'}${track.album ? ` (${track.album})` : ''}`;
+        songSelected.classList.remove('hidden');
+        songQuery.value = `${track.title || ''}${track.author ? ` - ${track.author}` : ''}`;
+        hideSuggestions();
+        refreshSearchButton();
+    }
+
+    function showSuggestions(tracks) {
+        songSuggestions.innerHTML = '';
+        activeSuggestion = -1;
+        if (!tracks.length) {
+            songSuggestions.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
+        }
+        tracks.forEach((track, index) => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+            item.setAttribute('role', 'option');
+            item.id = `song-option-${index}`;
+            item.innerHTML = `<div class="title">${escapeHtml(track.title || 'N/A')}</div>`
+                + `<div class="artist">${escapeHtml(track.author || 'N/A')}</div>`
+                + `<div class="album">Album: ${escapeHtml(track.album || 'Unknown')}</div>`;
+            item.addEventListener('click', () => selectSong(track));
+            songSuggestions.appendChild(item);
+        });
+        songSuggestions.classList.remove('hidden');
+        songQuery.setAttribute('aria-expanded', 'true');
+    }
+
+    function highlightSuggestion(index) {
+        const options = songSuggestions.querySelectorAll('[role="option"]');
+        if (!options.length) return;
+        activeSuggestion = ((index % options.length) + options.length) % options.length;
+        options.forEach((option, i) => option.classList.toggle('active', i === activeSuggestion));
+        options[activeSuggestion].scrollIntoView({ block: 'nearest' });
+        songQuery.setAttribute('aria-activedescendant', options[activeSuggestion].id);
+    }
+
+    songQuery.addEventListener('input', () => {
+        clearTimeout(suggestTimer);
+        selectedSong = null;
+        songSelected.classList.add('hidden');
+        refreshSearchButton();
+        const query = songQuery.value.trim();
+        if (!query) {
+            hideSuggestions();
+            return;
+        }
+        suggestTimer = setTimeout(async () => {
+            try {
+                const params = new URLSearchParams({ search_query: query, start: 0, end: SUGGESTIONS, index: 'neural' });
+                const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
+                showSuggestions(await response.json());
+            } catch (error) {
+                console.error('Song search failed:', error);
+                hideSuggestions();
+            }
+        }, 300);
+    });
+
+    songQuery.addEventListener('keydown', event => {
+        const open = !songSuggestions.classList.contains('hidden');
+        if (event.key === 'ArrowDown' && open) {
+            event.preventDefault();
+            highlightSuggestion(activeSuggestion + 1);
+        } else if (event.key === 'ArrowUp' && open) {
+            event.preventDefault();
+            highlightSuggestion(activeSuggestion - 1);
+        } else if (event.key === 'Enter' && open && activeSuggestion >= 0) {
+            event.preventDefault();
+            songSuggestions.querySelectorAll('[role="option"]')[activeSuggestion].click();
+        } else if (event.key === 'Escape') {
+            hideSuggestions();
+        }
+    });
+
+    document.addEventListener('click', event => {
+        if (!songSuggestions.contains(event.target) && event.target !== songQuery) hideSuggestions();
+    });
+
+    class RecordingBlocked extends Error {
+        constructor(message) {
+            super(message);
+            this.name = 'RecordingBlocked';
+        }
+    }
+
+    const samePort = window.location.port || '80';
+    const secureUrl = `https://${window.location.hostname}:${samePort}${window.location.pathname}${window.location.search}`;
+
+    function micAvailable() {
+        return !!(window.isSecureContext && navigator.mediaDevices
+            && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    }
+
+    function micHelp() {
+        if (window.isSecureContext) {
+            return 'This browser has no microphone recorder on this page: upload a clip instead.';
+        }
+        if (HTTPS_PORT > 0 && !HTTPS_ERROR) {
+            return `Most browsers allow recording only on HTTPS. Reopen this page as <a href="${escapeHtml(secureUrl)}">${escapeHtml(secureUrl)}</a>: `
+                + 'AudioMuse-AI uses a self-signed certificate, accept the browser warning once.';
+        }
+        return `Most browsers allow recording only on HTTPS. Reopen this page over HTTPS (built-in HTTPS: ${escapeHtml(HTTPS_ERROR || 'not running')}).`;
+    }
+
+    function showMicNotice() {
+        micNotice.innerHTML = micHelp();
+        micNotice.classList.remove('hidden');
+    }
+
+    function showCaptureError(title, error) {
+        const name = (error && error.name) || 'Error';
+        const message = (error && error.message) || String(error);
+        captureError.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(name)}: ${escapeHtml(message)}`;
+        captureError.classList.remove('hidden');
+    }
+
+    function clearCaptureError() {
+        captureError.classList.add('hidden');
+        captureError.innerHTML = '';
+    }
+
+    if (!micAvailable()) {
+        showMicNotice();
+    }
+
+    async function startRecording() {
+        clearCaptureError();
+        if (!window.isSecureContext) {
+            showMicNotice();
+            throw new RecordingBlocked('Recording needs HTTPS on this browser; see the notice above.');
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new RecordingBlocked('navigator.mediaDevices.getUserMedia does not exist in this browser, so it cannot record here. Upload a clip instead.');
+        }
+        if (!window.MediaRecorder) {
+            throw new RecordingBlocked('MediaRecorder does not exist in this browser, so it cannot record here '
+                + '(an older iPhone enables it under Settings, Safari, Advanced, Experimental Features). Upload a clip instead.');
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
+        });
+        micNotice.classList.add('hidden');
+        const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+            .find(type => MediaRecorder.isTypeSupported(type)) || '';
+        const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        const chunks = [];
+        recorder.addEventListener('dataavailable', event => {
+            if (event.data && event.data.size) chunks.push(event.data);
+        });
+        recorder.addEventListener('error', event => {
+            showCaptureError('The recorder stopped with an error', event.error || new Error('MediaRecorder error'));
+        });
+        recorder.addEventListener('stop', () => {
+            stream.getTracks().forEach(track => track.stop());
+            const type = recorder.mimeType || mimeType || 'audio/webm';
+            const ext = type.includes('mp4') ? 'mp4' : (type.includes('ogg') ? 'ogg' : 'webm');
+            recordBtn.disabled = false;
+            countdownEl.textContent = '';
+            if (!chunks.length) {
+                showCaptureError('The recorder produced no audio', new Error(`MediaRecorder (${type}) delivered no data in ${RECORD_SECONDS} s`));
+                return;
+            }
+            setClip(new Blob(chunks, { type }), `recording.${ext}`, 'Recorded clip');
+        });
+        recordBtn.disabled = true;
+        searchBtn.disabled = true;
+        let remaining = RECORD_SECONDS;
+        countdownEl.textContent = `${remaining}s`;
+        recorder.start();
+        const timer = setInterval(() => {
+            remaining -= 1;
+            countdownEl.textContent = `${remaining}s`;
+            if (remaining <= 0) {
+                clearInterval(timer);
+                if (recorder.state !== 'inactive') recorder.stop();
+            }
+        }, 1000);
+    }
+
+    recordBtn.addEventListener('click', async () => {
+        try {
+            await startRecording();
+        } catch (error) {
+            recordBtn.disabled = false;
+            countdownEl.textContent = '';
+            let title = 'Recording could not start';
+            if (error && error.name === 'NotAllowedError') title = 'The browser refused the microphone (permission denied or dismissed)';
+            if (error && error.name === 'NotFoundError') title = 'No microphone was found';
+            if (error && error.name === 'NotReadableError') title = 'The microphone is busy or blocked by the system';
+            showCaptureError(title, error);
+        }
+    });
+
+    async function searchByClip(limit) {
+        const form = new FormData();
+        form.append('clip', currentClip.blob, currentClip.name);
+        form.append('n_results', String(limit));
+        const response = await fetch("{{ url_for('recording_search_bp.recording_search_api') }}", { method: 'POST', body: form });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Search failed');
+        return { data, seedId: null, summary: `${(data.results || []).length} songs for a ${data.clip_seconds}s clip` };
+    }
+
+    async function searchBySong(limit) {
+        const response = await fetch("{{ url_for('recording_search_bp.recording_search_by_track_api') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Search failed');
+        return { data, seedId: selectedSong.item_id, summary: `${(data.results || []).length} songs for "${selectedSong.title || 'this song'}"` };
+    }
+
+    searchBtn.addEventListener('click', async () => {
+        if (mode === 'recording' ? !currentClip : !selectedSong) return;
+        const limit = Math.max(1, parseInt(nResults.value, 10) || DEFAULT_RESULTS);
+        resultsContainer.classList.remove('hidden');
+        resultsList.innerHTML = `<div class="loading-spinner">${mode === 'recording' ? 'Listening to the clip...' : 'Comparing the song...'}</div>`;
+        resetResults();
+        searchBtn.disabled = true;
+        try {
+            const { data, seedId, summary } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
+            currentResults = data.results || [];
+            currentSeedId = seedId;
+            displayResults(currentResults, summary);
+        } catch (error) {
+            showError(error.message);
+        } finally {
+            refreshSearchButton();
+        }
+    });
+
+    function displayResults(results, summary) {
+        if (!results.length) {
+            resultsList.innerHTML = '<p>No results.</p>';
+            resultCount.textContent = '';
+            return;
+        }
+        resultCount.textContent = summary;
+        resultsList.innerHTML = renderSongList(results, { metric: neuralBadge });
+        playlistCreator.classList.remove('hidden');
+    }
+
+    playlistForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const playlistStatusDiv = document.getElementById('playlist-status');
+        playlistStatusDiv.className = '';
+        if (currentResults.length === 0) {
+            playlistStatusDiv.textContent = 'No results to create playlist from';
+            playlistStatusDiv.className = 'status-error';
+            return;
+        }
+        const playlistName = document.getElementById('playlist_name').value.trim();
+        if (!playlistName) {
+            playlistStatusDiv.textContent = 'Please enter a playlist name';
+            playlistStatusDiv.className = 'status-error';
+            return;
+        }
+        const trackIds = currentResults.map(r => r.item_id).filter(id => id !== currentSeedId);
+        if (currentSeedId) trackIds.unshift(currentSeedId);
+        playlistStatusDiv.textContent = 'Creating playlist...';
+        try {
+            const response = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ playlist_name: playlistName, track_ids: trackIds })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            playlistStatusDiv.textContent = data.message;
+            playlistStatusDiv.className = 'status-success';
+        } catch (error) {
+            playlistStatusDiv.textContent = `Error: ${error.message}`;
+            playlistStatusDiv.className = 'status-error';
+            console.error('Playlist creation error:', error);
+        }
+    });
+
+    setMode('recording');
+    warmup();
+});
+</script>
+{% endif %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}
