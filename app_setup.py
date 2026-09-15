@@ -40,10 +40,17 @@ import tasks.mediaserver as mediaserver
 from error import error_manager
 from error.error_manager import AudioMuseError
 from error.error_dictionary import (
-    ERR_MEDIASERVER_UNREACHABLE,
+    ERR_CONFIG_INVALID,
     ERR_CONFIG_MEDIASERVER_CREDENTIALS,
     ERR_DB_QUERY,
+    ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_LIBRARY,
+    ERR_MEDIASERVER_UNREACHABLE,
+    ERR_NAMING_PREVIEW_FAILED,
+    ERR_TASK_ENQUEUE_FAILED,
+    ERR_TASK_IN_PROGRESS,
 )
+from error.responses import json_error, json_exception
 
 BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     field for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values() for field in fields
@@ -737,7 +744,7 @@ def setup_api():
     data = request.get_json(silent=True) or {}
     config_values = data.get('config')
     if not isinstance(config_values, dict):
-        return jsonify({'error': 'Missing config data'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing config data')
 
     allowed_setup_keys = _get_allowed_setup_keys()
     filtered_values = {}
@@ -749,16 +756,16 @@ def setup_api():
     is_test_connection = bool(data.get('test_connection', False))
     navidrome_auth_mode = _normalize_navidrome_auth_mode(data.get('navidrome_auth_mode'))
     if not filtered_values and not is_test_connection:
-        return jsonify({'error': 'No valid configuration values were provided'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'No valid configuration values were provided')
 
     if not is_test_connection:
         for key, value in filtered_values.items():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == SECRET_PLACEHOLDER:
-                return jsonify(
-                    {
-                        'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'
-                    }
-                ), 400
+                return json_error(
+                    ERR_INVALID_REQUEST,
+                    'Placeholder secret values are not accepted on save. '
+                    'Enter the real secret or leave the field blank.',
+                )
 
         # A blank secret means "keep the stored value" so re-saving the wizard
         # (e.g. to add an API token) never wipes an already-configured
@@ -773,7 +780,7 @@ def setup_api():
 
         prompt_problem = _validate_ai_prompt_values(filtered_values)
         if prompt_problem:
-            return jsonify({'error': prompt_problem}), 400
+            return json_error(ERR_INVALID_REQUEST, prompt_problem)
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):
@@ -783,9 +790,10 @@ def setup_api():
                 if url_val:
                     is_safe, reason = validate_outbound_url(url_val)
                     if not is_safe:
-                        return jsonify(
-                            {'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}
-                        ), 400
+                        return json_error(
+                            ERR_INVALID_REQUEST,
+                            f'Lyrics API slot {slot} URL is not allowed: {reason}',
+                        )
 
     try:
         if is_test_connection:
@@ -843,7 +851,9 @@ def setup_api():
             simulated.NAVIDROME_API_KEY = ''
 
         if not setup_manager._is_valid_server_config(simulated):
-            return jsonify({'error': 'Cannot save: media server configuration is incomplete.'}), 400
+            return json_error(
+                ERR_INVALID_REQUEST, 'Cannot save: media server configuration is incomplete.'
+            )
 
         # If auth will remain enabled we need an admin after the save. That
         # admin must either already exist in audiomuse_users or be provided
@@ -861,15 +871,13 @@ def setup_api():
                 existing_admins = count_admin_users()
             except Exception as exc:
                 app.logger.exception('Failed to count admin users during setup save')
-                err, status = error_manager.error_response(
-                    error_manager.classify(exc, ERR_DB_QUERY)
-                )
-                return jsonify(err), status
+                return json_exception(exc, ERR_DB_QUERY)
             provided_admin = bool(new_admin_user and new_admin_password)
             if existing_admins <= 0 and not provided_admin:
-                return jsonify(
-                    {'error': 'Cannot save: auth is enabled but no admin account was provided.'}
-                ), 400
+                return json_error(
+                    ERR_INVALID_REQUEST,
+                    'Cannot save: auth is enabled but no admin account was provided.',
+                )
 
         # Validation passed - apply changes to the database
         if obsolete_fields:
@@ -890,21 +898,24 @@ def setup_api():
         elif new_admin_user and new_admin_password:
             try:
                 if count_admin_users() > 0:
-                    return jsonify({'error': 'Cannot save: an admin account already exists.'}), 400
+                    return json_error(
+                        ERR_INVALID_REQUEST, 'Cannot save: an admin account already exists.'
+                    )
             except Exception as exc:
                 app.logger.error(
                     'Unable to verify existing admin accounts before setup save: %s',
                     exc,
                     exc_info=True,
                 )
-                return jsonify(
-                    {
-                        'error': 'Unable to verify existing admin accounts. Check the server log and try again later.'
-                    }
-                ), 500
+                return json_exception(
+                    exc,
+                    ERR_DB_QUERY,
+                    'Unable to verify existing admin accounts. '
+                    'Check the server log and try again later.',
+                )
             ok, err = upsert_admin_user(new_admin_user, new_admin_password)
             if not ok:
-                return jsonify({'error': err or 'Failed to save admin account.'}), 400
+                return json_error(ERR_INVALID_REQUEST, err or 'Failed to save admin account.')
 
         # Media-server settings go to the music_servers registry, their ONLY
         # persistent home; everything else still lands in app_config. The
@@ -957,16 +968,19 @@ def setup_api():
             )
     except AudioMuseError as ae:
         app.logger.error('Setup media server check failed: %s', ae, exc_info=ae.cause)
-        return jsonify(ae.to_dict()), error_manager.http_status_for_code(ae.code)
+        return json_exception(ae, ae.code)
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:
-            return jsonify(
-                {'error': 'Unable to get top player song. Check the server log for details.'}
-            ), 500
-        return jsonify(
-            {'error': 'Unable to save configuration. Check the server log for details.'}
-        ), 500
+            return json_exception(
+                exc, ERR_MEDIASERVER_UNREACHABLE,
+                'Unable to get top player song. Check the server log for details.',
+            )
+        return json_exception(
+            exc, ERR_CONFIG_INVALID,
+            'Unable to save configuration. Check the server log for details.',
+            http_status=500,
+        )
 
     try:
         # The timer is delayed, so arming it now still lets this response leave
@@ -1057,7 +1071,7 @@ def setup_provider_libraries_api():
     data = request.get_json(silent=True) or {}
     config_values = data.get('config') or {}
     if not isinstance(config_values, dict):
-        return jsonify({'error': 'Missing config data'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing config data')
 
     navidrome_auth_mode = _normalize_navidrome_auth_mode(data.get('navidrome_auth_mode'))
     allowed_setup_keys = _get_allowed_setup_keys()
@@ -1071,9 +1085,10 @@ def setup_provider_libraries_api():
         result = _list_provider_libraries(filtered_values, navidrome_auth_mode)
     except Exception as exc:
         app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
-        return jsonify(
-            {'error': 'Unable to list libraries. Check the server log for details.'}
-        ), 500
+        return json_exception(
+            exc, ERR_MEDIASERVER_LIBRARY,
+            'Unable to list libraries. Check the server log for details.',
+        )
 
     return jsonify(
         {
@@ -1128,7 +1143,7 @@ def setup_plex_pin_create():
     data = request.get_json(silent=True) or {}
     client_id = str(data.get('client_id') or '').strip()
     if not client_id:
-        return jsonify({'error': 'client_id is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'client_id is required')
 
     try:
         resp = requests.post(
@@ -1139,14 +1154,17 @@ def setup_plex_pin_create():
         )
         resp.raise_for_status()
         payload = resp.json()
-    except Exception:
+    except Exception as exc:
         app.logger.exception('Plex PIN creation failed')
-        return jsonify({'error': 'Unable to reach Plex to start linking. Check the server log.'}), 502
+        return json_exception(
+            exc, ERR_MEDIASERVER_UNREACHABLE,
+            'Unable to reach Plex to start linking. Check the server log.',
+        )
 
     pin_id = payload.get('id')
     code = payload.get('code')
     if not pin_id or not code:
-        return jsonify({'error': 'Plex did not return a linking code.'}), 502
+        return json_error(ERR_MEDIASERVER_UNREACHABLE, 'Plex did not return a linking code.')
     return jsonify({'id': pin_id, 'code': code}), 200
 
 
@@ -1191,10 +1209,10 @@ def setup_plex_pin_poll(pin_id):
     """
     client_id = str(request.args.get('client_id') or '').strip()
     if not client_id:
-        return jsonify({'error': 'client_id is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'client_id is required')
     # PIN ids are numeric; reject anything else so it can't alter the plex.tv path.
     if not str(pin_id).isdigit():
-        return jsonify({'error': 'Invalid PIN id'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid PIN id')
 
     try:
         resp = requests.get(
@@ -1204,9 +1222,11 @@ def setup_plex_pin_poll(pin_id):
         )
         resp.raise_for_status()
         payload = resp.json()
-    except Exception:
+    except Exception as exc:
         app.logger.exception('Plex PIN poll failed')
-        return jsonify({'error': 'Unable to reach Plex while checking link status.'}), 502
+        return json_exception(
+            exc, ERR_MEDIASERVER_UNREACHABLE, 'Unable to reach Plex while checking link status.'
+        )
 
     # The browser polls this URL repeatedly; no-store stops it serving a stale
     # "token is still null" response from cache once linking completes.
@@ -1220,9 +1240,13 @@ def setup_ai_prompt_preview():
     if request.method == 'GET':
         try:
             return jsonify(naming_preview.preview_status()), 200
-        except Exception:
+        except Exception as exc:
             app.logger.exception('Could not read the playlist naming preview status')
-            return jsonify({'error': 'Could not read the preview. Check the container logs.'}), 500
+            return json_exception(
+                exc,
+                ERR_NAMING_PREVIEW_FAILED,
+                'Could not read the preview. Check the container logs.',
+            )
     data = request.get_json(silent=True) or {}
     mode = ai_prompts.normalize_naming_mode(data.get('mode'))
     instructions = None
@@ -1232,21 +1256,26 @@ def setup_ai_prompt_preview():
             instructions = instructions.replace('\r\n', '\n')
         problem = _ai_title_prompt_problem(instructions)
         if problem:
-            return jsonify({'error': problem}), 400
+            return json_error(ERR_INVALID_REQUEST, problem)
     if (config.AI_MODEL_PROVIDER or 'NONE').upper() == 'NONE':
-        return jsonify(
-            {'error': 'No AI provider is configured. Select one under AI Provider & Playlist Naming and save first.'}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            'No AI provider is configured. '
+            'Select one under AI Provider & Playlist Naming and save first.',
+        )
     try:
         task_id, refusal = naming_preview.start_preview(mode, instructions)
-    except Exception:
+    except Exception as exc:
         app.logger.exception('Could not queue the playlist naming preview')
-        return jsonify({'error': 'Could not start the preview. Check the container logs.'}), 500
+        return json_exception(
+            exc, ERR_TASK_ENQUEUE_FAILED, 'Could not start the preview. Check the container logs.'
+        )
     if not task_id:
-        return jsonify({
-            'error': refusal,
-            'preview_running': refusal == naming_preview.PREVIEW_RUNNING_MESSAGE,
-        }), 409
+        return json_error(
+            ERR_TASK_IN_PROGRESS,
+            refusal,
+            preview_running=refusal == naming_preview.PREVIEW_RUNNING_MESSAGE,
+        )
     return jsonify({'status': 'running', 'task_id': task_id, 'message': naming_preview.PREVIEW_WAITING_MESSAGE,
                     'titles': [], 'done': 0, 'total': 0}), 202
 
@@ -1315,12 +1344,12 @@ def setup_lyrics_api_analyze():
     data = request.get_json(silent=True) or {}
     example_url = str(data.get('example_url') or '').strip()
     if not example_url:
-        return jsonify({'error': 'example_url is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'example_url is required')
 
     # Validate scheme and destination safety (SSRF guard)
     is_safe_url, unsafe_reason = validate_outbound_url(example_url)
     if not is_safe_url:
-        return jsonify({'error': unsafe_reason}), 400
+        return json_error(ERR_INVALID_REQUEST, unsafe_reason)
 
     # Parse query params
     try:
@@ -1328,7 +1357,7 @@ def setup_lyrics_api_analyze():
         qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         flat_params = {k: v[0] if len(v) == 1 else ','.join(v) for k, v in qs.items()}
     except Exception:
-        return jsonify({'error': 'Invalid URL'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid URL')
 
     # Auto-detect likely roles for each query param
     _ARTIST = {'artist', 'artist_name', 'artistname', 'ar', 'singer', 'performer', 'band'}

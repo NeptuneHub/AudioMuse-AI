@@ -66,16 +66,6 @@
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
     }
-    /* Below this breakpoint tables stop shrinking and instead scroll so
-       content stays readable on phones. */
-    @media (max-width: 600px) {
-        .dash-table {
-            min-width: 560px;
-            table-layout: auto;
-        }
-        .dash-table td, .dash-table th { white-space: nowrap !important; }
-        .dash-table td code { white-space: nowrap !important; }
-    }
     .dash-table {
         width: 100%;
         border-collapse: collapse;
@@ -144,6 +134,40 @@
     .workers-table td:nth-child(6) {
         word-break: break-all;
         overflow-wrap: anywhere;
+    }
+    /* Below this breakpoint tables stop shrinking and instead scroll so
+       content stays readable on phones. */
+    @media (max-width: 600px) {
+        .dash-table,
+        #music-servers-status-table {
+            min-width: 0;
+            table-layout: auto;
+        }
+        .dash-table td, .dash-table th,
+        .workers-table td, .workers-table th {
+            white-space: nowrap !important;
+            word-break: normal;
+            overflow-wrap: normal;
+        }
+        .dash-table td code {
+            white-space: nowrap !important;
+            word-break: normal;
+            max-width: none;
+        }
+        #recent-tasks-table td:nth-child(5) {
+            white-space: normal !important;
+            overflow-wrap: break-word;
+            min-width: 16rem;
+        }
+        .dash-table td[colspan] { white-space: normal !important; }
+        .dash-table th,
+        .dash-stat-card h3,
+        .dash-table .badge { font-size: 0.75rem; }
+        .dash-stat-link {
+            display: inline-block;
+            padding: 6px 8px;
+            margin: -6px -8px;
+        }
     }
 
     .badge {
@@ -249,7 +273,7 @@
                     <th class="col-medium">Unique in catalogue</th>
                     <th class="col-narrow">Duplicate files</th>
                 </tr></thead>
-                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="5" class="muted" data-placeholder>Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -275,7 +299,7 @@
                     <th>Current Task</th>
                     <th>Current Job</th>
                 </tr></thead>
-                <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="6" class="muted" data-placeholder>Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -299,7 +323,7 @@
                     <th>When</th>
                     <th>Note</th>
                 </tr></thead>
-                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="5" class="muted" data-placeholder>Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -365,7 +389,7 @@
                     <th class="col-narrow">Enabled</th>
                     <th>Last Triggered</th>
                 </tr></thead>
-                <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="5" class="muted" data-placeholder>Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -830,10 +854,25 @@
         });
     }
 
+    function showLoadError(message) {
+        const caption = 'Could not load: ' + (message || 'check the container log.');
+        FAST_CAPTIONS.concat(CHARTS_CAPTIONS).concat(LIVE_CAPTIONS)
+            .forEach(id => setText(id, caption));
+        ['music-servers-status-table', 'workers-table', 'recent-tasks-table', 'cron-table'].forEach(id => {
+            const cell = document.querySelector('#' + id + ' tbody td[data-placeholder]');
+            if (!cell) return;
+            cell.textContent = caption;
+            cell.className = 'status-failure';
+        });
+    }
+
     async function loadDashboard() {
         try {
             const res = await fetch('/api/dashboard/summary', { credentials: 'same-origin' });
-            if (!res.ok) throw new Error('HTTP ' + res.status);
+            if (!res.ok) {
+                const body = await res.json().catch(() => null);
+                throw new Error(apiErrorText(body, 'HTTP ' + res.status));
+            }
             const d = await res.json();
             // A snapshot written by an older version carries no music_servers
             // key. Treat that as "not in this snapshot yet", not as "no servers".
@@ -870,8 +909,7 @@
             LIVE_CAPTIONS.forEach(id => setText(id, live));
         } catch (e) {
             console.error('Dashboard load failed', e);
-            FAST_CAPTIONS.concat(CHARTS_CAPTIONS).concat(LIVE_CAPTIONS)
-                .forEach(id => setText(id, 'Could not load - check the container log.'));
+            showLoadError(e && e.message);
         }
     }
 

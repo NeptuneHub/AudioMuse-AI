@@ -1,5 +1,31 @@
 {% extends "includes/layout.html" %}
 
+{% block headAdditions %}
+<style>
+    .cron-enable {
+        display: inline;
+        margin: 0;
+        font-size: inherit;
+        font-weight: inherit;
+        color: inherit;
+    }
+    @media (max-width: 768px) {
+        .cron-enable {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-height: 44px;
+            cursor: pointer;
+        }
+        .cron-enable input[type="checkbox"] {
+            width: 22px;
+            height: 22px;
+            margin: 0;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div id="main-content-inner">
     <section>
@@ -24,7 +50,7 @@
                 </span>
             </label>
             <input id="analysis-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 0-5)">
-            <div style="margin-top:.5rem;"><input id="analysis-enabled" type="checkbox"> Enable</div>
+            <div style="margin-top:.5rem;"><label class="cron-enable"><input id="analysis-enabled" type="checkbox"> Enable</label></div>
 
             <hr style="margin:1rem 0;">
 
@@ -36,7 +62,7 @@
                 </span>
             </label>
             <input id="clustering-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 2 * * 6)">
-            <div style="margin-top:.5rem;"><input id="clustering-enabled" type="checkbox"> Enable</div>
+            <div style="margin-top:.5rem;"><label class="cron-enable"><input id="clustering-enabled" type="checkbox"> Enable</label></div>
 
             <hr style="margin:1rem 0;">
 
@@ -48,7 +74,7 @@
                 </span>
             </label>
             <input id="sonic-fingerprint-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 1 * * 6)">
-            <div style="margin-top:.5rem;"><input id="sonic-fingerprint-enabled" type="checkbox"> Enable</div>
+            <div style="margin-top:.5rem;"><label class="cron-enable"><input id="sonic-fingerprint-enabled" type="checkbox"> Enable</label></div>
 
             <hr style="margin:1rem 0;">
 
@@ -60,7 +86,7 @@
                 </span>
             </label>
             <input id="alchemy-radio-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 3 * * 6)">
-            <div style="margin-top:.5rem;"><input id="alchemy-radio-enabled" type="checkbox"> Enable</div>
+            <div style="margin-top:.5rem;"><label class="cron-enable"><input id="alchemy-radio-enabled" type="checkbox"> Enable</label></div>
 
             <div id="plugin-cron-section" style="display:none;">
                 <hr style="margin:1rem 0;">
@@ -117,7 +143,8 @@
             try{
                 const res = await fetch("{{ url_for('cron_bp.get_cron_entries') }}");
                 if(!res.ok){
-                    alert('Could not load the current schedules. Reload the page before saving.');
+                    const body = await res.json().catch(() => null);
+                    alert('Could not load the current schedules (' + apiErrorText(body, 'HTTP ' + res.status) + '). Reload the page before saving.');
                     return;
                 }
                 const rows = await res.json();
@@ -141,7 +168,7 @@
                 saveBtn.disabled = false;
             }catch(e){
                 console.error(e);
-                alert('Could not load the current schedules. Reload the page before saving.');
+                alert('Could not load the current schedules (' + ((e && e.message) || 'request failed') + '). Reload the page before saving.');
             }
         }
 
@@ -171,7 +198,8 @@
                     input.value = row ? row.cron_expr : '';
                     const controls = document.createElement('div');
                     controls.style.cssText = 'margin-top:.5rem;display:flex;gap:1rem;align-items:center;';
-                    const enableWrap = document.createElement('span');
+                    const enableWrap = document.createElement('label');
+                    enableWrap.className = 'cron-enable';
                     const enable = document.createElement('input');
                     enable.type = 'checkbox';
                     enable.checked = !!(row && row.enabled);
@@ -242,15 +270,18 @@
                         : {name:t.task_type, task_type:t.task_type, cron_expr:expr, enabled:fields.enable.checked}));
                 }
                 const results = await Promise.all(saves);
-                if(results.some(r=>!r.ok)){ throw new Error('One or more schedules failed to save'); }
+                const failed = results.find(r=>!r.ok);
+                if(failed){
+                    const body = await failed.json().catch(() => null);
+                    throw new Error(apiErrorText(body, 'One or more schedules failed to save (HTTP ' + failed.status + ')'));
+                }
 
                 // refresh cached rows after saving
                 await load();
                 alert('Saved')
             }catch(e){
                 console.error('Failed to save cron entries', e);
-                alert('Failed to save');
-            } finally{
+                alert('Failed to save: ' + ((e && e.message) || 'request failed'));
                 saveBtn.disabled = false;
             }
         })

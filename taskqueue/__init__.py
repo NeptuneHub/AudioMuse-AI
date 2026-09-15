@@ -14,9 +14,11 @@ Admission is enforced by the database - a partial unique index allows one live
 main task, so a concurrent second start raises TaskAlreadyRunning.
 
 ALLOWED_FUNCS is a security boundary: func is read back from a row and called,
-so it is matched against this frozen set before importlib ever sees it. Every
-import below is deferred into function bodies to keep the eager chains under
-MAX_CHAIN.
+so it is matched against this frozen set before importlib ever sees it. The set
+is the key set of TASK_FUNC_ERROR_CODES, which names the error code a failure of
+each function records, so a function cannot be allowed without one. Every
+project import below except the leaf error-code registry is deferred into
+function bodies to keep the eager chains under MAX_CHAIN.
 
 Main Features:
 * enqueue writes the job row and the wake-up notification in one transaction,
@@ -45,6 +47,18 @@ import time
 
 import queue_names
 import task_types
+from error.error_dictionary import (
+    ERR_ALBUM_ANALYSIS_FAILED,
+    ERR_ANALYSIS_FAILED,
+    ERR_CLEANING_FAILED,
+    ERR_CLUSTERING_FAILED,
+    ERR_INDEX_BUILD,
+    ERR_NAMING_PREVIEW_FAILED,
+    ERR_PLUGIN_FAILED,
+    ERR_PROVIDER_MIGRATION_FAILED,
+    ERR_SERVER_SYNC_FAILED,
+    ERR_SONIC_FINGERPRINT_FAILED,
+)
 
 from .errors import WORKER_LOST_ERROR, TaskCancelled, TaskFailed  # noqa: F401
 
@@ -56,23 +70,29 @@ PRIORITY_FRONT = queue_names.PRIORITY_FRONT
 CANCEL_ALL = queue_names.CANCEL_ALL
 
 
-ALLOWED_FUNCS = frozenset((
-    'tasks.analysis.run_analysis_task',
-    'tasks.analysis.analyze_album_task',
-    'tasks.analysis.rebuild_all_indexes_task',
-    'tasks.cleaning.identify_and_clean_orphaned_albums_task',
-    'tasks.clustering.run_clustering_task',
-    'tasks.clustering.run_clustering_batch_task',
-    'tasks.multiserver_sync.sweep_server',
-    'tasks.multiserver_sync.sweep_all_secondary_servers',
-    'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
-    'tasks.provider_migration_tasks.execute_provider_migration',
-    'tasks.provider_migration_tasks.dry_run_provider_migration',
-    'tasks.provider_migration_tasks.source_refresh_provider_migration',
-    'tasks.provider_migration_tasks.resume_provider_migration_restart',
-    'tasks.naming_preview.run_naming_preview_task',
-    'plugin.manager.run_plugin_task',
-))
+TASK_FUNC_ERROR_CODES = {
+    'tasks.analysis.run_analysis_task': ERR_ANALYSIS_FAILED,
+    'tasks.analysis.analyze_album_task': ERR_ALBUM_ANALYSIS_FAILED,
+    'tasks.analysis.rebuild_all_indexes_task': ERR_INDEX_BUILD,
+    'tasks.cleaning.identify_and_clean_orphaned_albums_task': ERR_CLEANING_FAILED,
+    'tasks.clustering.run_clustering_task': ERR_CLUSTERING_FAILED,
+    'tasks.clustering.run_clustering_batch_task': ERR_CLUSTERING_FAILED,
+    'tasks.multiserver_sync.sweep_server': ERR_SERVER_SYNC_FAILED,
+    'tasks.multiserver_sync.sweep_all_secondary_servers': ERR_SERVER_SYNC_FAILED,
+    'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task': ERR_SONIC_FINGERPRINT_FAILED,
+    'tasks.provider_migration_tasks.execute_provider_migration': ERR_PROVIDER_MIGRATION_FAILED,
+    'tasks.provider_migration_tasks.dry_run_provider_migration': ERR_PROVIDER_MIGRATION_FAILED,
+    'tasks.provider_migration_tasks.source_refresh_provider_migration': (
+        ERR_PROVIDER_MIGRATION_FAILED
+    ),
+    'tasks.provider_migration_tasks.resume_provider_migration_restart': (
+        ERR_PROVIDER_MIGRATION_FAILED
+    ),
+    'tasks.naming_preview.run_naming_preview_task': ERR_NAMING_PREVIEW_FAILED,
+    'plugin.manager.run_plugin_task': ERR_PLUGIN_FAILED,
+}
+
+ALLOWED_FUNCS = frozenset(TASK_FUNC_ERROR_CODES)
 
 _current_task_id = None
 
@@ -230,17 +250,22 @@ def reap_finished_children(parent_task_id, conn=None):
     return _with_cursor(lambda sql, cur: sql.reap_children(cur, parent_task_id), conn)
 
 
-def end_child(task_id, parent_task_id, status, message, conn=None):
+def end_child(task_id, parent_task_id, status, message, conn=None, error_code=None):
     import config
 
     if status not in (config.TASK_STATUS_FAIL, config.TASK_STATUS_REVOKED):
         raise ValueError(f"a parent may end its child as FAIL or REVOKED, not {status!r}")
     if not parent_task_id:
         raise ValueError('end_child needs the parent that owns the child')
+    details = {'message': message}
+    if error_code is not None:
+        from error import error_manager
+
+        details['error'] = error_manager.build(error_code, message)
 
     def _end(sql, cur):
         ended = sql.end_child(
-            cur, task_id, parent_task_id, status, {'message': message}, time.time(),
+            cur, task_id, parent_task_id, status, details, time.time(),
         )
         sql.notify_cancel(cur, str(task_id))
         return ended

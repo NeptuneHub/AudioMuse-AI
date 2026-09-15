@@ -330,6 +330,30 @@
         margin-top: 0.5rem;
     }
 
+    @media (max-width: 768px) {
+        .example-queries {
+            margin-top: 1rem;
+        }
+
+        .refine-toggle button {
+            min-height: 36px;
+            padding: 0.4rem 0.9rem;
+        }
+
+        .refine-remove {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 36px;
+            min-height: 36px;
+            margin-left: auto;
+        }
+
+        .refine-strength input[type="range"] {
+            min-height: 32px;
+        }
+    }
+
     @media (max-width: 600px) {
         .latent-panel {
             padding: 0.75rem;
@@ -721,7 +745,7 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
         
         const query = searchQuery.value.trim();
-        const limit = parseInt(document.getElementById('limit').value);
+        const limit = parseInt(document.getElementById('limit').value, 10) || {{ clap_search_limit_default }};
         const steering = selectedTerms.map(t => ({
             term: t.term,
             weight: t.weight,
@@ -747,10 +771,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     : { query, limit })
             });
             
-            const data = await response.json();
-            
-            if (!response.ok) {
-                throw new Error(data.error || 'Search failed');
+            const data = await readJsonBody(response);
+
+            if (!response.ok || data === null) {
+                throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
             }
             
             currentResults = data.results || [];
@@ -761,7 +785,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
         } catch (error) {
-            resultsList.innerHTML = `<div class="error-message">❌ ${error.message}</div>`;
+            resultsList.innerHTML = `<div class="error-message">❌ ${escapeHtml(error.message)}</div>`;
         }
     });
     
@@ -906,9 +930,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 })
             });
             
-            const data = await response.json();
-            
-            if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            const data = await readJsonBody(response);
+
+            if (!response.ok || data === null) throw new Error(apiErrorText(data, `Server returned an error (HTTP ${response.status})`));
             playlistStatusDiv.textContent = data.message;
             playlistStatusDiv.className = 'status-success';
         } catch (error) {
@@ -922,6 +946,11 @@ document.addEventListener('DOMContentLoaded', function() {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    async function readJsonBody(response) {
+        const text = await response.text();
+        try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
     }
 });
 </script>

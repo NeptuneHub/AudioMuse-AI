@@ -16,7 +16,8 @@
             if (theme === 'dark' || (!theme && prefersDark)) {
                 document.documentElement.classList.add('dark-mode');
             }
-            if (localStorage.getItem('menuOpen') === 'true') {
+            var isPhone = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+            if (localStorage.getItem('menuOpen') === 'true' && !isPhone) {
                 document.documentElement.classList.add('sidebar-open');
             }
         })();

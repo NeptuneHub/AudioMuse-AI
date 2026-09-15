@@ -31,6 +31,15 @@ from tasks.song_alchemy import song_alchemy
 from app_helper import attach_song_features
 import app_server_context
 import config
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_DB_QUERY,
+    ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_PLAYLIST,
+    ERR_NOT_FOUND,
+    ERR_SEARCH_FAILED,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +149,7 @@ def search_playlists():
             playlists = _cached_all_playlists(server_id)
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     except Exception:
         logger.exception("Playlist search failed")
         return jsonify([]), 200
@@ -215,8 +224,10 @@ def alchemy_api():
         app_server_context.resolve_request_server_id(payload)
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     items = payload.get('items', [])
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        return json_error(ERR_INVALID_REQUEST, '"items" must be a list of objects')
     try:
         n = int(payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS))
     except (TypeError, ValueError):
@@ -312,10 +323,10 @@ def alchemy_api():
     except ValueError:
         # Log the validation error server-side but do not expose internal error text to clients
         logger.exception("Alchemy validation failure")
-        return jsonify({"error": "Invalid request"}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, "Invalid request")
+    except Exception as exc:
         logger.exception("Alchemy failure")
-        return jsonify({"error": "Internal error"}), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, "Internal error")
 
 
 @alchemy_bp.route('/api/anchors', methods=['GET'])
@@ -352,9 +363,11 @@ def list_anchors():
         anchors = get_alchemy_anchors()
         # no centroid returned here (name-only list)
         return jsonify({'anchors': [{'id': a['id'], 'name': a['name']} for a in anchors]})
-    except Exception:
+    except Exception as exc:
         logger.exception('Failed to list anchors')
-        return jsonify({'anchors': [], 'error': 'Unable to retrieve anchors at this time.'}), 500
+        return json_exception(
+            exc, ERR_DB_QUERY, 'Unable to retrieve anchors at this time.', anchors=[]
+        )
 
 
 def _parse_anchor_exclusions(payload):
@@ -440,15 +453,15 @@ def create_anchor():
     name = raw_name.strip() if isinstance(raw_name, str) else ''
     centroid = payload.get('centroid')
     if not name:
-        return jsonify({'error': 'Anchor name is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Anchor name is required')
     if not centroid or not isinstance(centroid, list):
-        return jsonify({'error': 'Anchor centroid is required and must be a list'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Anchor centroid is required and must be a list')
     exclusions, exclusions_error = _parse_anchor_exclusions(payload)
     if exclusions_error:
-        return jsonify({'error': exclusions_error}), 400
+        return json_error(ERR_INVALID_REQUEST, exclusions_error)
     anchor = save_alchemy_anchor(name, centroid, exclusions)
     if not anchor:
-        return jsonify({'error': 'Failed to save anchor'}), 500
+        return json_error(ERR_DB_QUERY, 'Failed to save anchor', http_status=500)
     return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
 
 
@@ -475,7 +488,7 @@ def remove_anchor(anchor_id):
 
     ok = delete_alchemy_anchor(anchor_id)
     if not ok:
-        return jsonify({'error': 'Anchor not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'Anchor not found')
     return jsonify({'deleted': True})
 
 
@@ -516,10 +529,10 @@ def rename_anchor(anchor_id):
     raw_name = payload.get('name')
     name = raw_name.strip() if isinstance(raw_name, str) else ''
     if not name:
-        return jsonify({'error': 'Anchor name is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Anchor name is required')
     anchor = update_alchemy_anchor_name(anchor_id, name)
     if not anchor:
-        return jsonify({'error': 'Anchor not found or rename failed'}), 404
+        return json_error(ERR_NOT_FOUND, 'Anchor not found or rename failed')
     return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
 
 
@@ -605,9 +618,11 @@ def list_radios():
                 ]
             }
         )
-    except Exception:
+    except Exception as exc:
         logger.exception('Failed to list radios')
-        return jsonify({'radios': [], 'error': 'Unable to retrieve radios at this time.'}), 500
+        return json_exception(
+            exc, ERR_DB_QUERY, 'Unable to retrieve radios at this time.', radios=[]
+        )
 
 
 @alchemy_bp.route('/api/radios', methods=['POST'])
@@ -652,16 +667,17 @@ def create_radio():
     try:
         anchor_id = int(anchor_id)
     except (TypeError, ValueError):
-        return jsonify({'error': 'Radio anchor is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Radio anchor is required')
     temperature, n_results, error = _parse_radio_settings(payload)
     if error:
-        return jsonify({'error': error}), 400
+        return json_error(ERR_INVALID_REQUEST, error)
     enabled = bool(payload.get('enabled', True))
     radio = create_alchemy_radio(anchor_id, temperature, n_results, enabled)
     if not radio:
-        return jsonify(
-            {'error': 'Failed to save radio. Check that the anchor exists and has no radio yet.'}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            'Failed to save radio. Check that the anchor exists and has no radio yet.',
+        )
     return jsonify({'radio': radio})
 
 
@@ -707,11 +723,11 @@ def update_radio(radio_id):
     current = next((r for r in get_alchemy_radios() if r['id'] == radio_id), None)
     temperature, n_results, error = _parse_radio_settings(payload, current)
     if error:
-        return jsonify({'error': error}), 400
+        return json_error(ERR_INVALID_REQUEST, error)
     enabled = bool(payload.get('enabled', current['enabled'] if current else True))
     radio = update_alchemy_radio(radio_id, temperature, n_results, enabled)
     if not radio:
-        return jsonify({'error': 'Radio not found or update failed'}), 404
+        return json_error(ERR_NOT_FOUND, 'Radio not found or update failed')
     return jsonify({'radio': radio})
 
 
@@ -738,7 +754,7 @@ def remove_radio(radio_id):
 
     ok = delete_alchemy_radio(radio_id)
     if not ok:
-        return jsonify({'error': 'Radio not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'Radio not found')
     return jsonify({'deleted': True})
 
 
@@ -790,14 +806,19 @@ def run_radio_playlists_endpoint():
         server_id = app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning('Invalid server selection.', exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     try:
         summary = run_radio_playlists(server_scope=server_id or 'default')
         return jsonify(summary)
-    except Exception:
+    except Exception as exc:
         logger.exception('Radio playlist creation failed')
-        return jsonify({'error': 'Failed to create radio playlists. Check container logs.'}), 500
+        return json_exception(
+            exc,
+            ERR_MEDIASERVER_PLAYLIST,
+            'Failed to create radio playlists. Check container logs.',
+            http_status=500,
+        )
 
 
 @alchemy_bp.route('/api/artist_projections', methods=['GET'])
@@ -848,7 +869,7 @@ def artist_projections_api():
         server_id = app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     try:
         if not ARTIST_PROJECTION_CACHE:
@@ -887,15 +908,12 @@ def artist_projections_api():
                 )
 
         return jsonify({'components': components, 'count': len(components)})
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to retrieve artist projections")
-        return jsonify(
-            {
-                'components': [],
-                'count': 0,
-                'error': 'Unable to retrieve artist projections at this time.',
-            }
-        ), 500
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, 'Unable to retrieve artist projections at this time.',
+            components=[], count=0,
+        )
 
 
 @alchemy_bp.route('/api/build_artist_projection', methods=['POST'])
@@ -939,17 +957,11 @@ def build_artist_projection_endpoint():
                 }
             )
         else:
-            return jsonify(
-                {
-                    'status': 'error',
-                    'message': 'Artist projection build returned no data (no GMM parameters found?)',
-                }
-            ), 400
-    except Exception:
+            no_data = 'Artist projection build returned no data (no GMM parameters found?)'
+            return json_error(ERR_INVALID_REQUEST, no_data, status='error', message=no_data)
+    except Exception as exc:
         logger.exception("Failed to build artist projection")
-        return jsonify(
-            {
-                'status': 'error',
-                'message': 'Failed to build artist projection. Please try again later.',
-            }
-        ), 500
+        failed = 'Failed to build artist projection. Please try again later.'
+        return json_exception(
+            exc, ERR_CACHE_REFRESH_FAILED, failed, status='error', message=failed
+        )

@@ -203,8 +203,10 @@ def run_inference_with_oom_fallback(
 ):
     try:
         return run_inference(session, feed_dict, output_tensor_name), session
-    except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-        if "Failed to allocate memory" not in str(e):
+    except Exception as e:
+        from error.error_manager import is_out_of_memory
+
+        if not is_out_of_memory(e):
             raise
         logger.warning(
             f"GPU OOM for {file_basename} during {label} inference - falling back to CPU"

@@ -155,9 +155,17 @@ def _preview_ui_state(status, details):
         return 'failed', PREVIEW_CANCELLED_MESSAGE
     if details.get('preview_error'):
         return 'failed', details['preview_error']
-    if details.get('error') == WORKER_LOST_ERROR:
+    if _worker_was_lost(details.get('error')):
         return 'failed', PREVIEW_INTERRUPTED_MESSAGE
     return 'failed', PREVIEW_FAILED_MESSAGE
+
+
+def _worker_was_lost(error):
+    from error.error_dictionary import ERR_TASK_INTERRUPTED, ERR_WORKER_LOST
+
+    if isinstance(error, dict):
+        return error.get('error_code') in (ERR_WORKER_LOST, ERR_TASK_INTERRUPTED)
+    return error == WORKER_LOST_ERROR
 
 
 def _ai_config():

@@ -42,6 +42,17 @@
         gap: 0.2rem !important;
     }
 
+    @media (max-width: 768px) {
+        .suggestion-btn {
+            padding: 0.45rem 0.5rem !important;
+            min-height: 36px;
+        }
+
+        .suggestions-container {
+            gap: 0.35rem !important;
+        }
+    }
+
     .pipeline-stepper {
         margin-bottom: 1.25rem;
     }
@@ -339,14 +350,15 @@
                 try {
                     const response = await fetch("{{ url_for('chat_bp.chat_config_defaults_api') }}"); // Changed to new chat-specific config endpoint
                     if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                        const errorData = await response.json().catch(() => null);
+                        throw new Error(apiErrorText(errorData, `HTTP ${response.status}`));
                     }
                     globalConfig = await response.json();
                     populateAIConfigSelectors();
                     updateAIProviderVisibility(); // Call this after populating
                 } catch (error) {
                     console.error("Failed to fetch config:", error);
-                    showError('Error: Could not load AI configuration.');
+                    showError('Could not load AI configuration: ' + (error.message || 'request failed'));
                 }
             }
 
@@ -447,7 +459,7 @@
                     await streamChat(payload);
                 } catch (error) {
                     console.error('Error submitting chat:', error);
-                    showError(`Error: ${error.message}`);
+                    showError(error.message || 'The request failed.');
                 } finally {
                     setLoadingState(false);
                 }
@@ -527,8 +539,7 @@
                             } else if (evt.type === 'error') {
                                 gotError = true;
                                 finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
-                                const structured = (typeof formatErrorText === 'function' && evt.error && typeof evt.error === 'object') ? formatErrorText(evt.error) : evt.error;
-                                showErrorBelowStepper('Error: ' + structured);
+                                showErrorBelowStepper(formatErrorText(evt.error) || apiErrorText(evt, 'The request failed.'));
                                 return;
                             }
                         }
@@ -561,9 +572,7 @@
                 });
                 if (!response.ok) {
                     const errorData = await response.json().catch(() => ({}));
-                    const structured = (typeof formatErrorText === 'function' && errorData && errorData.error_code) ? formatErrorText(errorData) : '';
-                    const detail = structured || errorData.error || errorData.message || errorData.detail || "Failed to get details";
-                    throw new Error(`API Error: ${response.status} - ${detail}`);
+                    throw new Error(apiErrorText(errorData, errorData.message || errorData.detail || `Request failed (HTTP ${response.status})`));
                 }
                 const data = await response.json();
                 renderResponse(data.response);
@@ -1145,8 +1154,11 @@
             function showError(message) {
                 if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
                 responseArea.innerHTML = '';
-                responseArea.classList.add('text-red-600');
-                responseArea.textContent = message;
+                const p = document.createElement('p');
+                p.className = 'text-red-600';
+                p.style.margin = '0';
+                p.textContent = message;
+                responseArea.appendChild(p);
             }
 
             /**
@@ -1184,11 +1196,12 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
                     });
-                    const data = await response.json();
-                    mediaServerResponseArea.textContent = data.message;
+                    const data = await response.json().catch(() => ({}));
                     if(response.ok) {
+                        mediaServerResponseArea.textContent = data.message || 'Playlist created.';
                         mediaServerResponseArea.className = 'status-success';
                     } else {
+                        mediaServerResponseArea.textContent = apiErrorText(data, data.message || `Request failed (HTTP ${response.status})`);
                         mediaServerResponseArea.className = 'status-error';
                     }
                 } catch (error) {

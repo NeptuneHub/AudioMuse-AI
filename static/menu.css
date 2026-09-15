@@ -172,6 +172,148 @@ html.sidebar-open .main-content {
     margin-left: 250px;
 }
 
+.sidebar-catcher {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .sidebar {
+        width: min(250px, 85vw);
+        padding-top: 0;
+        font-size: 1rem;
+        line-height: 1.25;
+    }
+
+    #sidebar .sidebar-nav li a,
+    #sidebar .sidebar-nav li button,
+    #sidebar .submenu li a {
+        font-size: 1rem;
+        line-height: 1.25;
+    }
+
+    #sidebar .submenu-arrow {
+        font-size: 1.1rem;
+    }
+
+    #sidebar .server-selector {
+        font-size: 1rem;
+        line-height: 1.25;
+    }
+
+    #sidebar .donate-button {
+        font-size: 0.85rem;
+        line-height: 1.25;
+    }
+
+    #sidebar .app-version {
+        font-size: 0.8rem;
+        line-height: 1.25;
+    }
+
+    #sidebar .donate-heart,
+    #sidebar .github-icon {
+        width: 14px;
+        height: 14px;
+    }
+
+    .sidebar::before {
+        content: '';
+        display: block;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        height: 4rem;
+        margin: 0 -1.5rem;
+        background: inherit;
+    }
+
+    .sidebar-nav {
+        margin-top: 0;
+    }
+
+    .main-content {
+        padding: 4.25rem 0.75rem 1rem;
+    }
+
+    .main-content.sidebar-open,
+    html.sidebar-open .main-content {
+        margin-left: 0;
+    }
+
+    .main-content > .container {
+        transition: transform 0.3s ease-in-out;
+    }
+
+    html.sidebar-open .main-content > .container {
+        transform: translateX(min(250px, 85vw));
+    }
+
+    html.sidebar-open,
+    html.sidebar-open body {
+        overflow: hidden;
+    }
+
+    html.sidebar-open .page-container {
+        overflow-x: hidden;
+        overflow-x: clip;
+    }
+
+    html.sidebar-open .sidebar-catcher {
+        display: block;
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: min(250px, 85vw);
+        right: 0;
+        z-index: 999;
+        background-color: rgb(0 0 0 / 0.06);
+        touch-action: none;
+    }
+
+    .menu-toggle {
+        top: 0.75rem;
+        left: 0.75rem;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        box-shadow: var(--shadow-card);
+        transition: color 0.3s, background-color 0.3s;
+    }
+
+    .sidebar.open + .main-content .menu-toggle {
+        background-color: #111827;
+        border-color: #374151;
+        box-shadow: none;
+    }
+
+    body.dark-mode .sidebar.open + .main-content .menu-toggle,
+    html.dark-mode .sidebar.open + .main-content .menu-toggle {
+        background-color: var(--bg-card);
+        border-color: var(--border-color);
+    }
+}
+
+@media (max-width: 640px) {
+    .main-content {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+    }
+}
+
+@media (max-width: 768px) and (prefers-reduced-motion: reduce) {
+    .sidebar,
+    .main-content > .container {
+        transition: none;
+    }
+}
+
 /* Dark mode sidebar adjustments */
 body.dark-mode .sidebar,
 html.dark-mode .sidebar {

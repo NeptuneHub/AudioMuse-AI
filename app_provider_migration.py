@@ -44,7 +44,7 @@ from psycopg2 import sql as pgsql
 # App-level singletons (the DB connection and the task queue). Importing here keeps
 # the blueprint file self-contained - the rest of the app doesn't need to hand
 # anything in.
-from app_helper import cancel_job_and_children_recursive, queue_busy_error_body
+from app_helper import cancel_job_and_children_recursive, queue_busy_response
 from app_logging import sanitize_log_value
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 from database import (
@@ -67,6 +67,18 @@ import taskqueue
 from database import coerce_db_details
 from ssrf_guard import validate_outbound_url
 from tasks.mediaserver.helper import detect_path_format as _detect_path_format
+from error.error_dictionary import (
+    ERR_CONFLICT,
+    ERR_DB_QUERY,
+    ERR_GONE,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_PROVIDER_MIGRATION_FAILED,
+    ERR_TASK_ENQUEUE_FAILED,
+    ERR_TASK_IN_PROGRESS,
+)
+from error import error_manager
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -740,18 +752,20 @@ def session_start():
     target_creds = payload.get('target_creds') or {}
 
     if target_type not in _SUPPORTED_TARGETS:
-        return jsonify({'error': f'target_type must be one of {sorted(_SUPPORTED_TARGETS)}'}), 400
+        return json_error(
+            ERR_INVALID_REQUEST, f'target_type must be one of {sorted(_SUPPORTED_TARGETS)}'
+        )
 
     ok, reason = _validate_probe_url(target_creds)
     if not ok:
-        return jsonify({'error': f'target_creds url is not allowed: {reason}'}), 400
+        return json_error(ERR_INVALID_REQUEST, f'target_creds url is not allowed: {reason}')
 
     creds_error = incomplete_creds_error(target_type, target_creds)
     if creds_error:
-        return jsonify({'error': creds_error}), 400
+        return json_error(ERR_INVALID_REQUEST, creds_error)
     registered = _registered_secondary_server(target_type, target_creds)
     if registered is not None:
-        return jsonify(_registered_server_error(registered)), 409
+        return json_error(ERR_CONFLICT, _registered_server_error(registered))
 
     import config
 
@@ -767,12 +781,11 @@ def session_start():
         # lock; inspecting/clearing it first could otherwise erase the fresh claim
         # immediately after its transaction commits.
         if not _no_migration_executing(guard) or _migration_job_in_flight(guard):
-            return jsonify(
-                {
-                    'error': 'A migration job is queued or running. Wait for it to '
-                             'finish before starting a new one.'
-                }
-            ), 409
+            return json_error(
+                ERR_TASK_IN_PROGRESS,
+                'A migration job is queued or running. Wait for it to '
+                'finish before starting a new one.',
+            )
     with db.cursor() as cur:
         # Starting a session discards every idle/abandoned session, and ON DELETE
         # CASCADE takes its potentially huge migration_target_meta rows with it.
@@ -808,12 +821,15 @@ def _normalized_server_url(url):
 
 
 def _registered_server_error(registered):
-    return {
-        'error': (
-            f"'{registered['name']}' is already added as a server with this address. "
-            "Make it the default server from the setup page instead of migrating to it."
-        )
-    }
+    return (
+        f"'{registered['name']}' is already added as a server with this address. "
+        "Make it the default server from the setup page instead of migrating to it."
+    )
+
+
+def _planning_claim_response(exc):
+    code = ERR_NOT_FOUND if exc.status_code == 404 else ERR_TASK_IN_PROGRESS
+    return json_error(code, exc.user_message, http_status=exc.status_code)
 
 
 def _registered_secondary_server(target_type, target_creds):
@@ -937,7 +953,7 @@ def session_get(session_id):
         )
         row = cur.fetchone()
     if not row:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
     _id, source_type, target_type, status, state = row
     if isinstance(state, str):
         try:
@@ -1003,9 +1019,9 @@ def session_discard(session_id):
         )
         row = cur.fetchone()
         if not row:
-            return jsonify({'error': 'session not found'}), 404
+            return json_error(ERR_NOT_FOUND, 'session not found')
         if row[0] in ('completed', 'failed'):
-            return jsonify({'error': 'cannot discard a finished session'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'cannot discard a finished session')
         # A session stays 'dry_run_ready' throughout the execute, so the status
         # check above cannot tell a running migration from an idle wizard. Deleting
         # it mid-execute strands a repointed catalogue with no completion marker,
@@ -1014,12 +1030,11 @@ def session_discard(session_id):
         # auto-cancelled here.
         exec_live = _migration_job_in_flight(cur, keys=('exec_task_id',))
         if not _no_migration_executing(cur) or exec_live:
-            return jsonify(
-                {
-                    'error': 'A migration job is currently running against this '
-                             'session. Wait for it to finish.'
-                }
-            ), 409
+            return json_error(
+                ERR_TASK_IN_PROGRESS,
+                'A migration job is currently running against this '
+                'session. Wait for it to finish.',
+            )
         # A live dry-run/source-refresh, unlike execute above, is a pure fetch
         # with no external side effects - so cancel it (same global cancel the
         # Analysis & Clustering Cancel button uses) instead of leaving the
@@ -1027,17 +1042,17 @@ def session_discard(session_id):
         # killing the worker outright.
         try:
             planner_job_id = _live_planner_job_id(cur)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Could not check for a live migration planner job; refusing to "
                 "discard session %s", session_id,
             )
-            return jsonify(
-                {
-                    'error': 'Could not verify the migration planner job. Try '
-                             'again when the database is available.',
-                }
-            ), 503
+            return json_exception(
+                exc, ERR_DB_QUERY,
+                'Could not verify the migration planner job. Try '
+                'again when the database is available.',
+                http_status=503,
+            )
 
     if planner_job_id:
         # cancel_job_and_children_recursive commits internally, which ends the
@@ -1057,12 +1072,8 @@ def session_discard(session_id):
 
     with db.cursor() as cur:
         if not _no_migration_executing(cur) or _migration_job_in_flight(cur):
-            return jsonify(
-                {
-                    'error': 'A migration job started while the previous one was '
-                             'being discarded. Try again.'
-                }
-            ), 409
+            return json_error(ERR_CONFLICT, 'A migration job started while the previous one was '
+                             'being discarded. Try again.')
         # The status was read above, but execute could have committed since. The
         # predicate makes the check and the delete one act, so a migration that
         # finished in that window keeps the completed marker its retry needs.
@@ -1213,11 +1224,11 @@ def libraries_list():
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
     if session_id is None:
-        return jsonify({'error': 'session_id is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'session_id is required')
 
     session = _fetch_session_creds(session_id)
     if session is None:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
     target_type, creds = session
     try:
         result = provider_probe.list_libraries(target_type, creds)
@@ -1289,11 +1300,11 @@ def libraries_select():
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
     if session_id is None:
-        return jsonify({'error': 'session_id is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'session_id is required')
 
     libraries = payload.get('libraries')
     if libraries is not None and not isinstance(libraries, list):
-        return jsonify({'error': 'libraries must be a list of names or null'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'libraries must be a list of names or null')
 
     if isinstance(libraries, list):
         cleaned = [str(name).strip() for name in libraries if str(name).strip()]
@@ -1301,7 +1312,7 @@ def libraries_select():
         # ',' at scan time, so a name containing a comma would silently
         # corrupt the round-trip into multiple bogus fragments.
         if any(',' in name for name in cleaned):
-            return jsonify({'error': 'Library names cannot contain commas.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Library names cannot contain commas.')
         selected = cleaned or None
     else:
         selected = None
@@ -1353,13 +1364,16 @@ def search_albums():
 
     session = _fetch_session_creds(session_id)
     if session is None:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
     target_type, creds = session
     try:
         albums = provider_probe.search_albums(target_type, creds, query)
-    except Exception:
+    except Exception as exc:
         logger.warning("search_albums failed for session %s", session_id, exc_info=True)
-        return jsonify({'error': 'Album search failed. Check the container logs for details.'}), 500
+        return json_exception(
+            exc, ERR_PROVIDER_MIGRATION_FAILED,
+            'Album search failed. Check the container logs for details.',
+        )
     return jsonify({'albums': albums})
 
 
@@ -1419,18 +1433,15 @@ def source_paths_refresh():
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
     if session_id is None:
-        return jsonify({'error': 'session_id is required'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'session_id is required')
 
     # Cheap support check (reads config) stays in the request; the full
     # source-catalog fetch is offloaded to a queue worker like the dry-run.
     source_type, _ = _current_provider_creds()
     if not source_type:
-        return jsonify(
-            {
-                'ok': False,
-                'error': 'The current provider does not support path refresh.',
-            }
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST, 'The current provider does not support path refresh.', ok=False
+        )
 
     try:
         job_id, reused = _claim_and_enqueue_planner(
@@ -1445,14 +1456,16 @@ def source_paths_refresh():
             get_db().rollback()
         except Exception:
             pass
-        return jsonify({'error': exc.user_message}), exc.status_code
-    except Exception:
+        return _planning_claim_response(exc)
+    except Exception as exc:
         logger.exception("Could not reserve or enqueue the source-path refresh")
         try:
             get_db().rollback()
         except Exception:
             pass
-        return jsonify({'error': 'Could not enqueue the refresh. Check the logs.'}), 500
+        return json_exception(
+            exc, ERR_TASK_ENQUEUE_FAILED, 'Could not enqueue the refresh. Check the logs.'
+        )
     return jsonify({'task_id': job_id, 'async': True, 'reused': reused})
 
 
@@ -1558,7 +1571,7 @@ def dry_run():
 
     session = _fetch_session_creds(session_id, require_plannable=True)
     if session is None:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
 
     # Gate on source path quality (cheap - samples 100 rows). Stays in the
     # request so the UI can prompt for a refresh. Skip if the user has already
@@ -1569,19 +1582,19 @@ def dry_run():
         source_format = _detect_source_path_format()
         if source_format != 'absolute':
             source_type, _ = _current_provider_creds()
-            return jsonify(
-                {
-                    'needs_source_refresh': True,
-                    'current_source_type': source_type,
-                    'path_format': source_format,
-                    'hint': (
-                        'Your score.file_path values are not absolute filesystem '
-                        'paths. Automatic path-based matching will fall back to '
-                        'metadata only. Refresh source paths, or proceed with '
-                        'metadata-only matching.'
-                    ),
-                }
-            ), 409
+            hint = (
+                'Your score.file_path values are not absolute filesystem '
+                'paths. Automatic path-based matching will fall back to '
+                'metadata only. Refresh source paths, or proceed with '
+                'metadata-only matching.'
+            )
+            return json_error(
+                ERR_CONFLICT, hint,
+                needs_source_refresh=True,
+                current_source_type=source_type,
+                path_format=source_format,
+                hint=hint,
+            )
 
     # The heavy work (fetch the whole target catalog + match every score row +
     # persist) can take minutes on 100k+ libraries - far past the gunicorn
@@ -1598,14 +1611,16 @@ def dry_run():
             get_db().rollback()
         except Exception:
             pass
-        return jsonify({'error': exc.user_message}), exc.status_code
-    except Exception:
+        return _planning_claim_response(exc)
+    except Exception as exc:
         logger.exception("Could not reserve or enqueue the dry run")
         try:
             get_db().rollback()
         except Exception:
             pass
-        return jsonify({'error': 'Could not enqueue the dry run. Check the logs.'}), 500
+        return json_exception(
+            exc, ERR_TASK_ENQUEUE_FAILED, 'Could not enqueue the dry run. Check the logs.'
+        )
     return jsonify({'task_id': job_id, 'async': True, 'reused': reused})
 
 
@@ -1752,16 +1767,17 @@ def match_album():
 
     session = _fetch_session_creds(session_id)
     if session is None:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
     target_type, creds = session
 
     try:
         new_tracks = provider_probe.get_album_tracks(target_type, creds, new_album_id)
-    except Exception:
+    except Exception as exc:
         logger.warning("get_album_tracks failed for session %s", session_id, exc_info=True)
-        return jsonify(
-            {'error': 'Failed to fetch album tracks. Check the container logs for details.'}
-        ), 500
+        return json_exception(
+            exc, ERR_PROVIDER_MIGRATION_FAILED,
+            'Failed to fetch album tracks. Check the container logs for details.',
+        )
 
     import importlib
 
@@ -1923,7 +1939,7 @@ def finalize_dry_run():
 
     state = _load_state(session_id)
     if state is None:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
 
     dry = state.get('dry_run') or {}
 
@@ -2017,16 +2033,12 @@ def _execute_locked(db, session_id, confirmation_text):
         # TRY avoids tying up a web worker behind the long migration transaction.
         cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
         if not cur.fetchone()[0]:
-            return jsonify(
-                {'error': 'A migration is already running. Wait for it to finish.'}
-            ), 409
+            return json_error(
+                ERR_TASK_IN_PROGRESS, 'A migration is already running. Wait for it to finish.'
+            )
         if _restart_handshake_pending(cur):
-            return jsonify(
-                {
-                    'error': 'The committed provider swap is still waiting for '
-                    'worker restart acknowledgement.'
-                }
-            ), 409
+            return json_error(ERR_CONFLICT, 'The committed provider swap is still waiting for '
+                    'worker restart acknowledgement.')
         cur.execute(
             "SELECT target_type, status, "
             "(id = (SELECT MAX(id) FROM migration_session)), target_creds "
@@ -2035,52 +2047,51 @@ def _execute_locked(db, session_id, confirmation_text):
         )
         row = cur.fetchone()
     if not row:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
     target_type, status, is_current_session, raw_creds = row
 
     with db.cursor() as planning:
         if _migration_job_in_flight(planning, keys=_PLANNER_TASK_KEYS):
-            return jsonify(
-                {
-                    'error': 'A dry run is still building the plan. Wait for it to '
-                    'finish, then confirm the numbers again.'
-                }
-            ), 409
+            return json_error(
+                ERR_TASK_IN_PROGRESS,
+                'A dry run is still building the plan. Wait for it to '
+                'finish, then confirm the numbers again.',
+            )
     if not is_current_session:
-        return jsonify(
-            {
-                'error': 'This is not the current migration session. Start again from '
-                'the wizard so the plan matches what you reviewed.'
-            }
-        ), 409
+        return json_error(
+            ERR_CONFLICT,
+            'This is not the current migration session. Start again from '
+            'the wizard so the plan matches what you reviewed.',
+        )
 
     expected = f"I want to migrate to {target_type} and unbind unmatched tracks"
     if confirmation_text != expected:
-        return jsonify(
-            {'error': f'Confirmation text does not match. Expected exactly: "{expected}"'}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f'Confirmation text does not match. Expected exactly: "{expected}"',
+        )
     if status != 'dry_run_ready':
-        return jsonify(
-            {
-                'error': f'Dry run must be finalized first. Session status is "{status}", '
-                f'expected "dry_run_ready".'
-            }
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f'Dry run must be finalized first. Session status is "{status}", '
+            f'expected "dry_run_ready".',
+        )
     creds_error = incomplete_creds_error(target_type, _session_state(raw_creds))
     if creds_error:
-        return jsonify(
-            {'error': f'{creds_error} Discard this migration and start again with every field filled in.'}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f'{creds_error} Discard this migration and start again with every field filled in.',
+        )
     registered = _registered_secondary_server(target_type, _session_state(raw_creds))
     if registered is not None:
-        return jsonify(_registered_server_error(registered)), 409
+        return json_error(ERR_CONFLICT, _registered_server_error(registered))
 
     # A migration rewrites track_server_map the same way a sweep does, so it has
     # to keep blocking on a live sweep too, not just the queue-guard types -
     # the same reasoning the cleaning start already applies.
     active = get_queue_blocking_task() or get_active_main_task(task_type='server_sweep')
     if active:
-        return jsonify(queue_busy_error_body(active, 'the provider migration')), 409
+        return queue_busy_response(active, 'the provider migration')
 
     job_id = str(uuid.uuid4())
     save_task_status(
@@ -2100,9 +2111,11 @@ def _execute_locked(db, session_id, confirmation_text):
             job_id,
             MIGRATION_TASK_TYPE,
             TASK_STATUS_FAILURE,
-            details={'error': 'Could not persist the migration reservation.'},
+            details={'error': error_manager.build(
+                ERR_TASK_ENQUEUE_FAILED, 'Could not persist the migration reservation.'
+            )},
         )
-        return jsonify({'error': 'Could not reserve the migration task.'}), 500
+        return json_error(ERR_TASK_ENQUEUE_FAILED, 'Could not reserve the migration task.')
 
     try:
         taskqueue.enqueue(
@@ -2120,9 +2133,11 @@ def _execute_locked(db, session_id, confirmation_text):
             job_id,
             MIGRATION_TASK_TYPE,
             TASK_STATUS_FAILURE,
-            details={'error': 'Could not queue the migration task.'},
+            details={'error': error_manager.build(
+                ERR_TASK_ENQUEUE_FAILED, 'Could not queue the migration task.'
+            )},
         )
-        return jsonify({'error': 'Could not queue the migration. Check the logs.'}), 500
+        return json_error(ERR_TASK_ENQUEUE_FAILED, 'Could not queue the migration. Check the logs.')
 
     return jsonify({'task_id': job_id})
 
@@ -2179,7 +2194,7 @@ def execute():
     confirmation_text = payload.get('confirmation_text') or ''
 
     if not backup_confirmed:
-        return jsonify({'error': 'You must confirm the backup checkbox'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'You must confirm the backup checkbox')
 
     db = get_db()
     cancel_epoch = _global_cancel_epoch(db)
@@ -2188,12 +2203,8 @@ def execute():
         # must not publish an invisible post-cancel root.  Requests begun after the
         # cancellation are intentional and snapshot its new tombstone id.
         if _global_cancel_epoch(db) != cancel_epoch:
-            return jsonify(
-                {
-                    'error': 'A global cancellation completed while this migration '
-                    'was waiting. Start it again if you still want to run it.'
-                }
-            ), 409
+            return json_error(ERR_CONFLICT, 'A global cancellation completed while this migration '
+                    'was waiting. Start it again if you still want to run it.')
         return _execute_locked(db, session_id, confirmation_text)
 
 
@@ -2269,7 +2280,7 @@ def job_status(task_id):
 
         row = get_task_info_from_db(task_id)
         if not row:
-            return jsonify({'error': 'Job not found.'}), 404
+            return json_error(ERR_NOT_FOUND, 'Job not found.')
         status = row.get('status')
         details = coerce_db_details(row.get('details')) or {}
         restart_scheduled = False
@@ -2299,25 +2310,26 @@ def job_status(task_id):
                     logger.warning("post-migration Flask restart scheduling failed: %s", _e)
             else:
                 restart_scheduled = True
-        return jsonify(
-            {
-                'id': task_id,
-                'status': status,
-                'message': details.get('status_message') or details.get('message'),
-                'result': (
-                    details.get('final_summary_details')
-                    or details.get('result')
-                    or _execute_summary_from_details(details)
-                ),
-                'error': 'Job failed. Check the container logs for details.'
-                if status == config.TASK_STATUS_FAIL
-                else None,
-                'restart_scheduled': restart_scheduled,
-            }
-        )
+        body = {
+            'id': task_id,
+            'status': status,
+            'message': details.get('status_message') or details.get('message'),
+            'result': (
+                details.get('final_summary_details')
+                or details.get('result')
+                or _execute_summary_from_details(details)
+            ),
+            'error': None,
+            'restart_scheduled': restart_scheduled,
+        }
+        if status == config.TASK_STATUS_FAIL:
+            failure = error_manager.task_error_record(details)
+            body.update(failure)
+            body['error'] = failure['error_message']
+        return jsonify(body)
     except Exception:
         logger.warning("migration job status fetch failed for task %s", task_id, exc_info=True)
-        return jsonify({'error': 'Job not found.'}), 404
+        return json_error(ERR_NOT_FOUND, 'Job not found.')
 
 
 @migration_bp.route('/api/migration/dry-run-report/<int:session_id>', methods=['GET'])
@@ -2361,7 +2373,7 @@ def dry_run_report(session_id):
         )
         row = cur.fetchone()
     if row is None:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
 
     status, state = row[0], row[1]
     if isinstance(state, str):
@@ -2381,12 +2393,8 @@ def dry_run_report(session_id):
         # failure for a migration that fully succeeded.
         post_migration = state.get('post_migration') or {}
         if 'orphans' not in post_migration:
-            return jsonify(
-                {
-                    'error': 'This migration ran before orphan snapshots were '
-                             'recorded, so its report is no longer available.'
-                }
-            ), 410
+            return json_error(ERR_GONE, 'This migration ran before orphan snapshots were '
+                             'recorded, so its report is no longer available.')
         matches = {}
         manual_matches = {}
         new_meta = {}
@@ -2441,9 +2449,12 @@ def dry_run_report(session_id):
             old_id_provider_map = registry.translate_ids(
                 [str(old['item_id']) for old in old_rows if old.get('item_id')], None
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Dry-run report source id translation failed")
-            return jsonify({'error': 'Report generation failed; retry shortly.'}), 503
+            return json_exception(
+                exc, ERR_PROVIDER_MIGRATION_FAILED, 'Report generation failed; retry shortly.',
+                http_status=503,
+            )
 
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -2541,7 +2552,7 @@ def matched_albums(session_id):
     # map, or the whole score table. Load only those rows + their target meta.
     found, manual_matches = _read_state_key(session_id, 'manual_matches')
     if not found:
-        return jsonify({'error': 'session not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'session not found')
     manual_matches = manual_matches or {}
     if not manual_matches:
         return jsonify({'albums': []})

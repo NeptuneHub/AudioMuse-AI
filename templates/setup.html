@@ -376,6 +376,92 @@
     .ml-model-row.is-locked .ml-model-name {
         opacity: 0.6;
     }
+    @media (max-width: 640px) {
+        input[type="text"], input[type="password"], select, textarea {
+            font-size: 1rem;
+        }
+        #setup-form input[type="radio"],
+        #ms-make-default,
+        #ms-libraries-boxes input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+        }
+        #setup-form button.ml-model-details-toggle {
+            min-height: 32px;
+            margin-top: 0.25rem;
+        }
+        #advanced-config > summary,
+        #lyrics-api-config > summary,
+        #ai-prompt-config > summary {
+            padding: 0.55rem 0;
+        }
+        .ml-model-state,
+        .ml-model-coverage {
+            font-size: 0.75rem;
+        }
+        #music-servers-table {
+            min-width: 0 !important;
+        }
+        #music-servers-table,
+        #music-servers-table tbody {
+            display: block;
+            width: 100%;
+        }
+        #music-servers-table thead {
+            display: none;
+        }
+        #music-servers-table tbody tr {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            column-gap: 0.75rem;
+            row-gap: 0.2rem;
+            padding: 0.65rem 0;
+        }
+        #music-servers-table td {
+            display: block;
+            padding: 0 !important;
+            border: 0;
+            white-space: normal;
+            text-align: left !important;
+            overflow-wrap: anywhere;
+        }
+        #music-servers-table td.ms-cell-name {
+            grid-column: 1;
+            grid-row: 1;
+            font-weight: 600;
+        }
+        #music-servers-table td.ms-cell-type {
+            grid-column: 1;
+            grid-row: 2;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        #music-servers-table td.ms-cell-default {
+            grid-column: 2;
+            grid-row: 1;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        #music-servers-table td.ms-cell-default:not(:empty)::before {
+            content: attr(data-label) ": ";
+        }
+        #music-servers-table td.ms-cell-actions {
+            grid-column: 1 / -1;
+            grid-row: 3;
+            margin-top: 0.45rem;
+        }
+        #music-servers-table td.ms-cell-actions > div {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            white-space: normal !important;
+        }
+        #setup-form #music-servers-table td.ms-cell-actions button {
+            flex: 1 1 auto;
+            width: auto;
+            margin-right: 0 !important;
+        }
+    }
 </style>
 {% endblock %}
 

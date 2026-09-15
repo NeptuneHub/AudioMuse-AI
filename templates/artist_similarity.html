@@ -127,8 +127,88 @@
         .component-match-header {
             font-size: 0.9rem;
         }
+
+        #results-table-wrapper .results-table {
+            display: block;
+            min-width: 0;
+        }
+
+        #results-table-wrapper .results-table thead {
+            display: none;
+        }
+
+        #results-table-wrapper .results-table tbody {
+            display: block;
+        }
+
+        #results-table-wrapper .results-table tr.artist-row {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.4rem 0.5rem;
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        #results-table-wrapper .results-table tr.artist-row > td {
+            display: block;
+            padding: 0;
+            border: 0;
+            max-width: none;
+            overflow: visible;
+            text-overflow: clip;
+            white-space: normal;
+        }
+
+        #results-table-wrapper .results-table tr.artist-row > td:first-child {
+            grid-column: 1 / -1;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-title);
+            overflow-wrap: anywhere;
+        }
+
+        #results-table-wrapper .results-table tr.artist-row > td:nth-child(2) {
+            grid-column: 1 / -1;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        #results-table-wrapper .results-table tr.artist-row > td:nth-child(2)::before {
+            content: "Similarity Score: ";
+        }
+
+        #results-table-wrapper .results-table tr.artist-row > td:nth-child(3):last-child {
+            grid-column: 1 / -1;
+        }
+
+        #results-table-wrapper .results-table .btn-sm {
+            width: 100%;
+            min-height: 36px;
+            padding: 0.4rem 0.5rem;
+            font-size: 0.85rem;
+            line-height: 1.2;
+            white-space: normal;
+        }
+
+        #results-table-wrapper .results-table tr.track-list-container {
+            display: block;
+        }
+
+        #results-table-wrapper .results-table tr.track-list-container > td {
+            display: block;
+            padding: 0 0.25rem;
+            max-width: none;
+            overflow: visible;
+            white-space: normal;
+        }
+
+        #results-table-wrapper .track-list-item,
+        #results-table-wrapper .song-item,
+        #results-table-wrapper .component-match-header {
+            overflow-wrap: anywhere;
+        }
     }
-    
+
     @media (max-width: 480px) {
         .track-list {
             padding: 0.5rem;
@@ -273,6 +353,11 @@
         let autocompleteQuery = '';
         let isLoadingMore = false;
 
+        const readJsonBody = async (response) => {
+            const text = await response.text();
+            try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
+        };
+
         const handleSearchInput = () => {
             clearTimeout(searchTimeout);
             searchTimeout = setTimeout(async () => {
@@ -289,7 +374,11 @@
                 try {
                     const params = new URLSearchParams({ query: query, start: 0, end: PAGE_SIZE });
                     const response = await fetch(`{{ url_for('artist_similarity_bp.search_artists_endpoint') }}?${params}`);
-                    const artists = await response.json();
+                    const artists = await readJsonBody(response);
+                    if (!response.ok || !Array.isArray(artists)) {
+                        showAutocompleteError(apiErrorText(artists, 'Search failed (HTTP ' + response.status + ')'));
+                        return;
+                    }
                     autocompleteOffset = artists.length;
                     showAutocomplete(artists, false);
                 } catch (error) {
@@ -305,7 +394,12 @@
             try {
                 const params = new URLSearchParams({ query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
                 const response = await fetch(`{{ url_for('artist_similarity_bp.search_artists_endpoint') }}?${params}`);
-                const artists = await response.json();
+                const artists = await readJsonBody(response);
+                if (!response.ok || !Array.isArray(artists)) {
+                    const sentinel = autocompleteResults.querySelector('.autocomplete-load-more');
+                    if (sentinel) sentinel.textContent = apiErrorText(artists, 'Search failed (HTTP ' + response.status + ')');
+                    return;
+                }
                 if (artists.length > 0) {
                     autocompleteOffset += artists.length;
                     showAutocomplete(artists, true);
@@ -349,6 +443,17 @@
                     observer.observe(sentinel);
                 }
             }
+            autocompleteResults.classList.remove('hidden');
+        };
+
+        const showAutocompleteError = (message) => {
+            autocompleteResults.innerHTML = '';
+            const itemDiv = document.createElement('div');
+            itemDiv.className = 'autocomplete-item';
+            const em = document.createElement('em');
+            em.textContent = message;
+            itemDiv.appendChild(em);
+            autocompleteResults.appendChild(itemDiv);
             autocompleteResults.classList.remove('hidden');
         };
 
@@ -437,9 +542,9 @@
                     include_component_matches: showComponentMatches
                 });
                 const response = await fetch(`{{ url_for('artist_similarity_bp.get_similar_artists_endpoint') }}?${params}`);
-                const data = await response.json();
+                const data = await readJsonBody(response);
 
-                if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+                if (!response.ok || data === null) throw new Error(apiErrorText(data, `Server returned an error (HTTP ${response.status})`));
 
                 if (data.length === 0) {
                     statusDiv.textContent = 'No similar artists found.';
@@ -465,7 +570,7 @@
                         <tbody>
                             ${data.map((item, idx) => `
                                 <tr class="artist-row" data-artist="${escapeHtml(item.artist)}" data-index="${idx}">
-                                    <td>${escapeHtml(item.artist)}</td>
+                                    <td title="${escapeHtml(item.artist)}">${escapeHtml(item.artist)}</td>
                                     <td>${item.divergence.toFixed(4)}</td>
                                     <td>
                                         <button class="btn btn-primary btn-sm expand-btn" data-artist="${escapeHtml(item.artist)}" data-mode="full">
@@ -538,15 +643,20 @@
             }
         });
 
+        const narrowResults = window.matchMedia('(max-width: 768px)');
+        function resetResultsScroll() {
+            if (narrowResults.matches) resultsTableWrapper.scrollLeft = 0;
+        }
+
         // --- Load Artist Tracks (Full or Component Matches) ---
         async function loadArtistTracks(artistName, mode = 'full') {
             try {
                 // Fetch tracks
                 const params = new URLSearchParams({ artist: artistName });
                 const response = await fetch(`{{ url_for('artist_similarity_bp.get_artist_tracks_endpoint') }}?${params}`);
-                const tracks = await response.json();
+                const tracks = await readJsonBody(response);
 
-                if (!response.ok) throw new Error(tracks.error || 'Failed to fetch tracks');
+                if (!response.ok || tracks === null) throw new Error(apiErrorText(tracks, `Failed to fetch tracks (HTTP ${response.status})`));
 
                 selectedArtist = artistName;
                 selectedArtistTracks = tracks;
@@ -577,6 +687,7 @@
                     const colspan = document.getElementById('show_component_matches').checked ? '4' : '3';
                     tr.innerHTML = `<td colspan="${colspan}">${trackListHTML}</td>`;
                     selectedRow.parentNode.insertBefore(tr, selectedRow.nextSibling);
+                    resetResultsScroll();
                 }
 
             } catch (error) {
@@ -688,6 +799,7 @@
                     const colspan = document.getElementById('show_component_matches').checked ? '4' : '3';
                     tr.innerHTML = `<td colspan="${colspan}">${matchHTML}</td>`;
                     selectedRow.parentNode.insertBefore(tr, selectedRow.nextSibling);
+                    resetResultsScroll();
                 }
 
             } catch (error) {
@@ -748,8 +860,8 @@
                         track_ids: finalTrackIds
                     }),
                 });
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                const result = await readJsonBody(response);
+                if (!response.ok || result === null) throw new Error(apiErrorText(result, `Server returned an error (HTTP ${response.status})`));
                 playlistStatusDiv.textContent = result.message;
                 playlistStatusDiv.className = 'status-success';
             } catch (error) {

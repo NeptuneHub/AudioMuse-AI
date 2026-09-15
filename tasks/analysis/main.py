@@ -111,6 +111,7 @@ from psycopg2 import InterfaceError, OperationalError
 
 from error import error_manager
 from error.error_dictionary import (
+    ERR_ALBUM_ANALYSIS_FAILED,
     ERR_ANALYSIS_FAILED,
     ERR_ANALYSIS_NO_TRACKS_ANALYZED,
     ERR_ANALYSIS_SERVER_FAILED,
@@ -510,7 +511,8 @@ def _run_analysis_server_task_impl(
 
             def _end_child(job_id, message):
                 return taskqueue.end_child(
-                    job_id, current_task_id, TASK_STATUS_FAILURE, message
+                    job_id, current_task_id, TASK_STATUS_FAILURE, message,
+                    error_code=ERR_ALBUM_ANALYSIS_FAILED,
                 )
 
             supervisor = ChildDrainSupervisor(

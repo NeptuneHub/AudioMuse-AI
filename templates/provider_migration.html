@@ -322,6 +322,15 @@
             transform: scale(1.15);
         }
         .mig-checkbox-row label { font-size: 1rem; }
+        .mig-loose-label { min-height: 44px; }
+        #mig-loose-match {
+            width: 22px;
+            height: 22px;
+            min-width: 22px;
+            flex: 0 0 auto;
+            margin: 0;
+            accent-color: var(--color-primary, #3b82f6);
+        }
         #main-content-inner,
         .mig-card,
         .mig-card * {
@@ -517,7 +526,7 @@
                 &ldquo;Report Real Path&rdquo; setting).
             </p>
             <div class="mig-row" style="align-items:center;">
-                <label style="display:flex; align-items:center; gap:0.4rem; margin:0;">
+                <label class="mig-loose-label" style="display:flex; align-items:center; gap:0.4rem; margin:0;">
                     <input type="checkbox" id="mig-loose-match">
                     <span id="mig-loose-match-label">Also match by title + artist (ignore album)</span>
                 </label>
@@ -705,7 +714,7 @@
             // raw HTML is unreadable in dark mode. Surface a short summary.
             data = { error: 'Server error (HTTP ' + res.status + '). Check the server logs for details.' };
         }
-        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        if (!res.ok) throw new Error(apiErrorText(data, 'Request failed: ' + res.status));
         return data;
     }
 
@@ -976,7 +985,7 @@
             if (!result.ok) {
                 showError($('mig-probe-result'), result.incomplete_creds
                     ? result.error
-                    : 'Connection failed: ' + (result.error || 'unknown'));
+                    : 'Connection failed: ' + apiErrorText(result, 'unknown'));
                 resetFromStep(3);
                 return;
             }
@@ -1055,7 +1064,7 @@
             renderSourceRefreshPanel(data);
             throw new Error('__source_refresh__');  // caught below, message discarded
         }
-        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        if (!res.ok) throw new Error(apiErrorText(data, 'Request failed: ' + res.status));
         // The heavy fetch+match runs in a queue worker now; poll for the result.
         if (data.task_id) {
             return await pollMigrationJob(data.task_id);
@@ -1077,7 +1086,7 @@
                 return r;
             }
             if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
-                throw new Error(res.error || 'Background job failed. Check the container logs for details.');
+                throw new Error(apiErrorText(res, 'Background job failed. Check the container logs for details.'));
             }
             await new Promise(r => setTimeout(r, 2000));
         }
@@ -1626,7 +1635,7 @@
                 if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
                     showError(statusEl,
                         '<strong>Migration failed.</strong><br>' +
-                        (res.error || 'Unknown error') +
+                        apiErrorText(res, 'Unknown error') +
                         '<br><br>Your database is unchanged (transaction rolled back). ' +
                         'Fix the issue and re-run the wizard. If you see corruption, ' +
                         'restore from the backup you made in step 1.'

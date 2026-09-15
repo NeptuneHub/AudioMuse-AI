@@ -32,8 +32,12 @@ from flasgger import swag_from
 import config
 from database import get_db, load_map_projection
 from app_helper import probe_catalogue_canonical_ids
-from error import error_manager
-from error.error_dictionary import ERR_DB_QUERY
+from error.error_dictionary import (
+    ERR_DB_CONNECTION,
+    ERR_DB_QUERY,
+    ERR_INVALID_REQUEST,
+)
+from error.responses import json_error, json_exception
 
 
 logger = logging.getLogger(__name__)
@@ -139,7 +143,7 @@ def sync_endpoint():
         server_id = resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({"error": "Invalid server selection."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Invalid server selection.")
     try:
         server = registry.get_server(server_id) if server_id else registry.get_default_server()
     except Exception:
@@ -154,9 +158,9 @@ def sync_endpoint():
         except Exception:
             logger.exception("Could not roll back after the registry failure")
         if probe_catalogue_canonical_ids() is not False:
-            return jsonify(
-                {'error': 'Music-server registry unavailable; retry shortly'}
-            ), 503
+            return json_error(
+                ERR_DB_CONNECTION, 'Music-server registry unavailable; retry shortly'
+            )
         logger.warning(
             "Registry unavailable but the catalogue has no canonical ids; "
             "using the config default"
@@ -194,7 +198,9 @@ def sync_endpoint():
                 cur, page, limit, include_embeddings, id_filter, server_id, provider_type
             )
     except _IdTranslationError:
-        return jsonify({'error': 'Track id translation failed; check container logs'}), 503
+        return json_error(
+            ERR_DB_QUERY, 'Track id translation failed; check container logs', http_status=503
+        )
     except Exception as e:
         logger.exception(
             "GET /api/sync failed (manifest=%s ids=%s page=%s limit=%s)",
@@ -203,8 +209,7 @@ def sync_endpoint():
             page,
             limit,
         )
-        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
-        return jsonify(err), status
+        return json_exception(e, ERR_DB_QUERY)
 
 
 def _server_ids_for_rows(rows, server_id):

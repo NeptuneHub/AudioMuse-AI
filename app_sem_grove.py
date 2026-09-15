@@ -21,6 +21,13 @@ import logging
 import config
 
 from flask import Blueprint, jsonify, request
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_SEARCH_FAILED,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -97,14 +104,15 @@ def sem_grove_search_api():
 
     try:
         data = request.get_json() or {}
-        item_id = (data.get("item_id") or "").strip()
+        item_id = data.get("item_id") or ""
+        item_id = item_id.strip() if isinstance(item_id, str) else ""
         if not item_id:
-            return jsonify({"error": 'Missing "item_id".'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Missing "item_id".')
 
         try:
             limit = int(data.get("limit", config.SEM_GROVE_DEFAULT_LIMIT))
         except (TypeError, ValueError):
-            return jsonify({"error": 'Invalid "limit" value.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Invalid "limit" value.')
         limit = max(1, limit)
 
         import app_server_context
@@ -114,24 +122,19 @@ def sem_grove_search_api():
         # results[0] is always the seed itself; if that's the only entry, no similar songs were found
         similar_count = sum(1 for r in results if not r.get("is_seed"))
         if not results or similar_count == 0:
-            return jsonify(
-                {
-                    "error": "No similar songs found. "
+            return json_error(ERR_NOT_FOUND, "No similar songs found. "
                     "The song may not be in the SemGrove index yet "
-                    "(requires both lyrics and audio analysis).",
-                    "results": [],
-                }
-            ), 404
+                    "(requires both lyrics and audio analysis).", results=[])
 
         attach_song_features(results)
         results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({"results": results, "count": len(results)})
 
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, str(exc))
+    except Exception as exc:
         logger.exception("SemGrove search failed")
-        return jsonify({"error": "An internal error occurred."}), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, "An internal error occurred.")
 
 
 @sem_grove_bp.route("/api/sem_grove/cache/refresh", methods=["POST"])
@@ -162,9 +165,9 @@ def sem_grove_refresh_api():
     try:
         success = refresh_sem_grove_cache()
         return jsonify({"success": success, "stats": get_sem_grove_stats()})
-    except Exception:
+    except Exception as exc:
         logger.exception("SemGrove cache refresh failed")
-        return jsonify({"success": False, "error": "Internal error."}), 500
+        return json_exception(exc, ERR_CACHE_REFRESH_FAILED, "Internal error.", success=False)
 
 
 @sem_grove_bp.route("/api/sem_grove/stats", methods=["GET"])

@@ -41,6 +41,13 @@ import logging
 
 import config
 from flask import Blueprint, jsonify, render_template, request
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_INVALID_REQUEST,
+    ERR_SEARCH_FAILED,
+    UNKNOWN_ERROR_CODE,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -188,16 +195,19 @@ def hyperbolic_similar_api():
 
     try:
         data = request.get_json() or {}
-        item_id = (data.get("item_id") or "").strip()
+        item_id = data.get("item_id") or ""
+        item_id = item_id.strip() if isinstance(item_id, str) else ""
         if not item_id:
-            return jsonify({"error": 'Missing "item_id".'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Missing "item_id".')
         mode = (data.get("mode") or "similar").strip().lower()
         if mode not in ("similar", "roots", "niche"):
-            return jsonify({"error": 'Invalid "mode"; use "similar", "roots" or "niche".'}), 400
+            return json_error(
+                ERR_INVALID_REQUEST, 'Invalid "mode"; use "similar", "roots" or "niche".'
+            )
         try:
             limit = int(data.get("limit", config.HYPERBOLIC_DEFAULT_LIMIT))
         except (TypeError, ValueError):
-            return jsonify({"error": 'Invalid "limit" value.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Invalid "limit" value.')
         limit = max(1, limit)
 
         radial_spread = data.get("radial_spread")
@@ -207,9 +217,11 @@ def hyperbolic_similar_api():
             try:
                 radial_spread = float(radial_spread)
             except (TypeError, ValueError):
-                return jsonify({"error": 'Invalid "radial_spread" value.'}), 400
+                return json_error(ERR_INVALID_REQUEST, 'Invalid "radial_spread" value.')
             if not (0.0 <= radial_spread <= 0.99):
-                return jsonify({"error": '"radial_spread" must be between 0 and 0.99.'}), 400
+                return json_error(
+                    ERR_INVALID_REQUEST, '"radial_spread" must be between 0 and 0.99.'
+                )
 
         canonical_id = app_server_context.resolve_input_item_id(item_id, data)
         server_id = app_server_context.resolve_request_server_id(data)
@@ -233,10 +245,10 @@ def hyperbolic_similar_api():
         })
 
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, str(exc))
+    except Exception as exc:
         logger.exception("Hyperbolic similar search failed")
-        return jsonify({"error": _INTERNAL_ERROR_MSG}), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, _INTERNAL_ERROR_MSG)
 
 
 def _attach_title_author(results):
@@ -391,10 +403,14 @@ def hyperbolic_journey_api():
 
     try:
         data = request.get_json() or {}
-        start_item_id = (data.get("start_item_id") or "").strip()
-        end_item_id = (data.get("end_item_id") or "").strip()
+        start_item_id = data.get("start_item_id") or ""
+        end_item_id = data.get("end_item_id") or ""
+        start_item_id = start_item_id.strip() if isinstance(start_item_id, str) else ""
+        end_item_id = end_item_id.strip() if isinstance(end_item_id, str) else ""
         if not start_item_id or not end_item_id:
-            return jsonify({"error": 'Both "start_item_id" and "end_item_id" are required.'}), 400
+            return json_error(
+                ERR_INVALID_REQUEST, 'Both "start_item_id" and "end_item_id" are required.'
+            )
 
         canonical_start = app_server_context.resolve_input_item_id(start_item_id, data)
         canonical_end = app_server_context.resolve_input_item_id(end_item_id, data)
@@ -422,10 +438,10 @@ def hyperbolic_journey_api():
         return jsonify(journey)
 
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, str(exc))
+    except Exception as exc:
         logger.exception("Hyperbolic geodesic journey failed")
-        return jsonify({"error": _INTERNAL_ERROR_MSG}), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, _INTERNAL_ERROR_MSG)
 
 
 @hyperbolic_bp.route("/api/hyperbolic/tree", methods=["GET"])
@@ -516,10 +532,10 @@ def hyperbolic_tree_api():
         return jsonify({"node": node})
 
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, str(exc))
+    except Exception as exc:
         logger.exception("Hyperbolic tree browse failed")
-        return jsonify({"error": _INTERNAL_ERROR_MSG}), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, _INTERNAL_ERROR_MSG)
 
 
 @hyperbolic_bp.route("/api/hyperbolic/warmup", methods=["POST"])
@@ -546,9 +562,9 @@ def hyperbolic_warmup_api():
 
     try:
         return jsonify(warmup_hyperbolic_tree_cache())
-    except Exception:
+    except Exception as exc:
         logger.exception("Hyperbolic tree cache warmup failed")
-        return jsonify({"error": _INTERNAL_ERROR_MSG, "loaded": False}), 500
+        return json_exception(exc, ERR_CACHE_REFRESH_FAILED, _INTERNAL_ERROR_MSG, loaded=False)
 
 
 @hyperbolic_bp.route("/api/hyperbolic/warmup/status", methods=["GET"])
@@ -616,9 +632,11 @@ def hyperbolic_cache_status():
             "node_count": len(nodes),
             "track_count": _TREE_CACHE.get("track_count") or 0,
         }), 200
-    except Exception:
+    except Exception as exc:
         logger.exception("hyperbolic_cache_status failed")
-        return jsonify({"ok": False, "reason": "exception", "error": "Internal server error"}), 500
+        return json_exception(
+            exc, UNKNOWN_ERROR_CODE, "Internal server error", ok=False, reason="exception"
+        )
 
 
 def _tree_subtree_ids(node_id, nodes, flat_ids):

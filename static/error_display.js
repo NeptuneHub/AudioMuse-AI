@@ -19,10 +19,23 @@ function renderTaskError(task) {
 
 function formatErrorText(errObj) {
     if (errObj && typeof errObj === 'object' && errObj.error_code) {
-        return '[' + errObj.error_code + '] ' + (errObj.error_class || 'Error') + ': ' + (errObj.error_message || '');
+        var message = (typeof errObj.error === 'string' && errObj.error) ? errObj.error : (errObj.error_message || '');
+        return '[' + errObj.error_code + '] ' + (errObj.error_class || 'Error') + ': ' + message;
     }
     if (typeof errObj === 'string') {
         return errObj;
     }
     return '';
+}
+
+function apiErrorText(body, fallback) {
+    if (body && typeof body === 'object') {
+        if (body.error_code) {
+            return formatErrorText(body);
+        }
+        if (typeof body.error === 'string' && body.error) {
+            return body.error;
+        }
+    }
+    return fallback;
 }

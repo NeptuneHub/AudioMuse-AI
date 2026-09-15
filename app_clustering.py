@@ -69,6 +69,8 @@ import taskqueue
 
 # App helper functions
 from app_helper import admit_and_enqueue_main_task
+from error.error_dictionary import ERR_INVALID_REQUEST
+from error.responses import json_error
 
 
 logger = logging.getLogger(__name__)
@@ -274,95 +276,101 @@ def start_clustering_endpoint():
                         status:
                             type: string
     """
-    data = request.json
+    data = request.json or {}
     job_id = str(uuid.uuid4())
 
     # Clustering is a BATCH task, so like analysis and cleaning it always runs
     # against every configured server, one server at a time. It used to cluster
     # only the server picked in the sidebar, which silently left the other
     # servers without playlists and made it inconsistent with the other batches.
-    clustering_kwargs = {  # Pass all arguments as a dictionary
-        "output_server_scope": 'all',
-        "auto_calibration_param": bool(
-            data.get('auto_parameter_discovery', CLUSTERING_AUTO_CALIBRATION)
-        ),
-        "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
-        "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
-        "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),
-        "dbscan_eps_min": float(data.get('dbscan_eps_min', DBSCAN_EPS_MIN)),
-        "dbscan_eps_max": float(data.get('dbscan_eps_max', DBSCAN_EPS_MAX)),
-        "dbscan_min_samples_min": int(data.get('dbscan_min_samples_min', DBSCAN_MIN_SAMPLES_MIN)),
-        "dbscan_min_samples_max": int(data.get('dbscan_min_samples_max', DBSCAN_MIN_SAMPLES_MAX)),
-        "gmm_n_components_min": int(data.get('gmm_n_components_min', GMM_N_COMPONENTS_MIN)),
-        "gmm_n_components_max": int(data.get('gmm_n_components_max', GMM_N_COMPONENTS_MAX)),
-        "spectral_n_clusters_min": int(
-            data.get('spectral_n_clusters_min', SPECTRAL_N_CLUSTERS_MIN)
-        ),
-        "spectral_n_clusters_max": int(
-            data.get('spectral_n_clusters_max', SPECTRAL_N_CLUSTERS_MAX)
-        ),
-        "pca_components_min": int(data.get('pca_components_min', PCA_COMPONENTS_MIN)),
-        "pca_components_max": int(data.get('pca_components_max', PCA_COMPONENTS_MAX)),
-        "num_clustering_runs": int(data.get('clustering_runs', CLUSTERING_RUNS)),
-        "max_songs_per_cluster_val": int(data.get('max_songs_per_cluster', MAX_SONGS_PER_CLUSTER)),
-        # min_clustering_top and top_n_playlists are the two legacy spellings of the
-        # same field and are still what older saved cron jobs and external callers
-        # send; dropping them silently sent those callers the default instead of the
-        # number they asked for. config.py resolves the same three for the env var.
-        "top_n_playlists_param": int(
-            data.get(
-                'top_n_clustering_playlist',
+    try:
+        clustering_kwargs = {  # Pass all arguments as a dictionary
+            "output_server_scope": 'all',
+            "auto_calibration_param": bool(
+                data.get('auto_parameter_discovery', CLUSTERING_AUTO_CALIBRATION)
+            ),
+            "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
+            "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
+            "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),
+            "dbscan_eps_min": float(data.get('dbscan_eps_min', DBSCAN_EPS_MIN)),
+            "dbscan_eps_max": float(data.get('dbscan_eps_max', DBSCAN_EPS_MAX)),
+            "dbscan_min_samples_min": int(data.get('dbscan_min_samples_min', DBSCAN_MIN_SAMPLES_MIN)),
+            "dbscan_min_samples_max": int(data.get('dbscan_min_samples_max', DBSCAN_MIN_SAMPLES_MAX)),
+            "gmm_n_components_min": int(data.get('gmm_n_components_min', GMM_N_COMPONENTS_MIN)),
+            "gmm_n_components_max": int(data.get('gmm_n_components_max', GMM_N_COMPONENTS_MAX)),
+            "spectral_n_clusters_min": int(
+                data.get('spectral_n_clusters_min', SPECTRAL_N_CLUSTERS_MIN)
+            ),
+            "spectral_n_clusters_max": int(
+                data.get('spectral_n_clusters_max', SPECTRAL_N_CLUSTERS_MAX)
+            ),
+            "pca_components_min": int(data.get('pca_components_min', PCA_COMPONENTS_MIN)),
+            "pca_components_max": int(data.get('pca_components_max', PCA_COMPONENTS_MAX)),
+            "num_clustering_runs": int(data.get('clustering_runs', CLUSTERING_RUNS)),
+            "max_songs_per_cluster_val": int(data.get('max_songs_per_cluster', MAX_SONGS_PER_CLUSTER)),
+            # min_clustering_top and top_n_playlists are the two legacy spellings of the
+            # same field and are still what older saved cron jobs and external callers
+            # send; dropping them silently sent those callers the default instead of the
+            # number they asked for. config.py resolves the same three for the env var.
+            "top_n_playlists_param": int(
                 data.get(
-                    'min_clustering_top',
-                    data.get('top_n_playlists', TOP_N_CLUSTERING_PLAYLIST),
-                ),
-            )
-        ),
-        "min_songs_per_genre_for_stratification_param": int(
-            data.get(
-                'min_songs_per_genre_for_stratification', MIN_SONGS_PER_GENRE_FOR_STRATIFICATION
-            )
-        ),
-        "stratified_sampling_target_percentile_param": int(
-            data.get('stratified_sampling_target_percentile', STRATIFIED_SAMPLING_TARGET_PERCENTILE)
-        ),
-        "score_weight_diversity_param": float(
-            data.get('score_weight_diversity', SCORE_WEIGHT_DIVERSITY)
-        ),
-        "score_weight_silhouette_param": float(
-            data.get('score_weight_silhouette', SCORE_WEIGHT_SILHOUETTE)
-        ),
-        "score_weight_davies_bouldin_param": float(
-            data.get('score_weight_davies_bouldin', SCORE_WEIGHT_DAVIES_BOULDIN)
-        ),
-        "score_weight_calinski_harabasz_param": float(
-            data.get('score_weight_calinski_harabasz', SCORE_WEIGHT_CALINSKI_HARABASZ)
-        ),
-        "score_weight_purity_param": float(data.get('score_weight_purity', SCORE_WEIGHT_PURITY)),
-        "score_weight_other_feature_diversity_param": float(
-            data.get('score_weight_other_feature_diversity', SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY)
-        ),
-        "score_weight_other_feature_purity_param": float(
-            data.get('score_weight_other_feature_purity', SCORE_WEIGHT_OTHER_FEATURE_PURITY)
-        ),
-        "ai_model_provider_param": data.get('ai_model_provider', AI_MODEL_PROVIDER).upper(),
-        "ollama_server_url_param": data.get('ollama_server_url', OLLAMA_SERVER_URL),
-        "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
-        "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
-        "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
-        # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
-        # Any client-supplied *_api_key field is ignored to prevent token
-        # exfiltration via the API surface.
-        "openai_api_key_param": OPENAI_API_KEY,
-        "gemini_api_key_param": GEMINI_API_KEY,
-        "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
-        "mistral_api_key_param": MISTRAL_API_KEY,
-        "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
-        "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
-        "enable_clustering_embeddings_param": data.get(
-            'enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS
-        ),
-    }
+                    'top_n_clustering_playlist',
+                    data.get(
+                        'min_clustering_top',
+                        data.get('top_n_playlists', TOP_N_CLUSTERING_PLAYLIST),
+                    ),
+                )
+            ),
+            "min_songs_per_genre_for_stratification_param": int(
+                data.get(
+                    'min_songs_per_genre_for_stratification', MIN_SONGS_PER_GENRE_FOR_STRATIFICATION
+                )
+            ),
+            "stratified_sampling_target_percentile_param": int(
+                data.get('stratified_sampling_target_percentile', STRATIFIED_SAMPLING_TARGET_PERCENTILE)
+            ),
+            "score_weight_diversity_param": float(
+                data.get('score_weight_diversity', SCORE_WEIGHT_DIVERSITY)
+            ),
+            "score_weight_silhouette_param": float(
+                data.get('score_weight_silhouette', SCORE_WEIGHT_SILHOUETTE)
+            ),
+            "score_weight_davies_bouldin_param": float(
+                data.get('score_weight_davies_bouldin', SCORE_WEIGHT_DAVIES_BOULDIN)
+            ),
+            "score_weight_calinski_harabasz_param": float(
+                data.get('score_weight_calinski_harabasz', SCORE_WEIGHT_CALINSKI_HARABASZ)
+            ),
+            "score_weight_purity_param": float(data.get('score_weight_purity', SCORE_WEIGHT_PURITY)),
+            "score_weight_other_feature_diversity_param": float(
+                data.get('score_weight_other_feature_diversity', SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY)
+            ),
+            "score_weight_other_feature_purity_param": float(
+                data.get('score_weight_other_feature_purity', SCORE_WEIGHT_OTHER_FEATURE_PURITY)
+            ),
+            "ai_model_provider_param": data.get('ai_model_provider', AI_MODEL_PROVIDER).upper(),
+            "ollama_server_url_param": data.get('ollama_server_url', OLLAMA_SERVER_URL),
+            "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
+            "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
+            "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
+            # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
+            # Any client-supplied *_api_key field is ignored to prevent token
+            # exfiltration via the API surface.
+            "openai_api_key_param": OPENAI_API_KEY,
+            "gemini_api_key_param": GEMINI_API_KEY,
+            "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
+            "mistral_api_key_param": MISTRAL_API_KEY,
+            "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
+            "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
+            "enable_clustering_embeddings_param": data.get(
+                'enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS
+            ),
+        }
+    except (TypeError, ValueError, OverflowError):
+        return json_error(
+            ERR_INVALID_REQUEST,
+            "Clustering parameters must be numbers. Reload the page and try again.",
+        )
 
     # The gate and the claim are one INSERT: the partial unique index allows a
     # single live main task, so two starts cannot both see "nothing running".

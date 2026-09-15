@@ -26,17 +26,16 @@ from flask import Blueprint, jsonify, render_template, request
 
 import app_server_context
 from app_helper import attach_song_features
-from error import error_manager
-from error.error_dictionary import ERR_LYRICS_FAILED
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_INVALID_REQUEST,
+    ERR_LYRICS_FAILED,
+    ERR_NOT_FOUND,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
-
-def _lyrics_error_body(message, **extra):
-    payload = error_manager.build(ERR_LYRICS_FAILED)
-    payload["error"] = message
-    payload.update(extra)
-    return payload
 
 lyrics_search_bp = Blueprint('lyrics_search_bp', __name__, template_folder='../templates')
 
@@ -140,7 +139,7 @@ def lyrics_search_axes_api():
     from tasks.lyrics_manager import search_by_axes
 
     if not LYRICS_ENABLED:
-        return jsonify({'error': 'Lyrics search is disabled.', 'results': []}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Lyrics search is disabled.', results=[])
 
     # Validate the optional 'server' selection up front so an unknown or
     # disabled server answers 400 with a clear message.
@@ -148,13 +147,13 @@ def lyrics_search_axes_api():
         app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     try:
         data = request.get_json() or {}
         targets_raw = data.get('targets') or {}
         if not isinstance(targets_raw, dict) or not targets_raw:
-            return jsonify({'error': 'Missing or empty "targets" object.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Missing or empty "targets" object.')
 
         # Accept only {axis: label_str}; reject anything else.
         targets: dict = {}
@@ -162,23 +161,23 @@ def lyrics_search_axes_api():
             if isinstance(value, str) and value.strip():
                 targets[axis_name] = value.strip()
         if not targets:
-            return jsonify({'error': 'No valid axis selections supplied.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'No valid axis selections supplied.')
 
         try:
             limit = int(data.get('limit', LYRICS_AXES_DEFAULT_LIMIT))
         except (TypeError, ValueError):
-            return jsonify({'error': 'Invalid "limit" value.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Invalid "limit" value.')
         limit = max(1, limit)
 
         results = search_by_axes(targets, limit=limit)
         if not results:
-            return jsonify({'error': 'No lyrics found.', 'results': []}), 404
+            return json_error(ERR_NOT_FOUND, 'No lyrics found.', results=[])
         attach_song_features(results)
         results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({'results': results, 'count': len(results)})
-    except Exception:
+    except Exception as exc:
         logger.exception("Lyrics axis search failed")
-        return jsonify(_lyrics_error_body('An internal error occurred.')), 500
+        return json_exception(exc, ERR_LYRICS_FAILED, 'An internal error occurred.')
 
 
 @lyrics_search_bp.route('/api/lyrics/search/text', methods=['POST'])
@@ -235,7 +234,7 @@ def lyrics_search_text_api():
     from tasks.lyrics_manager import search_by_text
 
     if not LYRICS_ENABLED:
-        return jsonify({'error': 'Lyrics search is disabled.', 'results': []}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Lyrics search is disabled.', results=[])
 
     # Validate the optional 'server' selection up front so an unknown or
     # disabled server answers 400 with a clear message.
@@ -243,31 +242,31 @@ def lyrics_search_text_api():
         app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     try:
         data = request.get_json() or {}
         query = (data.get('query') or '').strip()
         if not query:
-            return jsonify({'error': 'Missing "query".'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Missing "query".')
         if len(query) < 1:
-            return jsonify({'error': 'Query must be at least 1 character.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Query must be at least 1 character.')
 
         try:
             limit = int(data.get('limit', LYRICS_TEXT_DEFAULT_LIMIT))
         except (TypeError, ValueError):
-            return jsonify({'error': 'Invalid "limit" value.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Invalid "limit" value.')
         limit = max(1, limit)
 
         results = search_by_text(query, limit=limit)
         if not results:
-            return jsonify({'error': 'No lyrics found.', 'query': query, 'results': []}), 404
+            return json_error(ERR_NOT_FOUND, 'No lyrics found.', query=query, results=[])
         attach_song_features(results)
         results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({'query': query, 'results': results, 'count': len(results)})
-    except Exception:
+    except Exception as exc:
         logger.exception("Lyrics text search failed")
-        return jsonify(_lyrics_error_body('An internal error occurred.')), 500
+        return json_exception(exc, ERR_LYRICS_FAILED, 'An internal error occurred.')
 
 
 @lyrics_search_bp.route('/api/lyrics/warmup', methods=['POST'])
@@ -290,15 +289,15 @@ def lyrics_warmup_api():
     from config import LYRICS_ENABLED
 
     if not LYRICS_ENABLED:
-        return jsonify({'error': 'Lyrics search is disabled.', 'loaded': False}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Lyrics search is disabled.', loaded=False)
 
     try:
         from tasks.gte_warm_cache import warmup_gte_model
 
         return jsonify(warmup_gte_model())
-    except Exception:
+    except Exception as exc:
         logger.exception("Lyrics model warmup failed")
-        return jsonify(_lyrics_error_body('Warmup failed.', loaded=False)), 500
+        return json_exception(exc, ERR_LYRICS_FAILED, 'Warmup failed.', loaded=False)
 
 
 @lyrics_search_bp.route('/api/lyrics/warmup/status', methods=['GET'])
@@ -356,14 +355,14 @@ def lyrics_refresh_cache_api():
     from tasks.lyrics_manager import get_cache_stats, refresh_lyrics_cache
 
     if not LYRICS_ENABLED:
-        return jsonify({'error': 'Lyrics is disabled.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Lyrics is disabled.')
 
     try:
         success = refresh_lyrics_cache()
         return jsonify({'success': success, 'stats': get_cache_stats()})
-    except Exception:
+    except Exception as exc:
         logger.exception("Lyrics cache refresh failed")
-        return jsonify(_lyrics_error_body('Internal error.', success=False)), 500
+        return json_exception(exc, ERR_CACHE_REFRESH_FAILED, 'Internal error.', success=False)
 
 
 @lyrics_search_bp.route('/api/lyrics/stats', methods=['GET'])

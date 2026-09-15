@@ -238,6 +238,99 @@ class TestTheTerminalRowTheQueueWrites:
             'reclaim; a value JSON cannot encode is stored as its text instead'
         )
 
+    def test_a_failure_record_from_the_worker_becomes_the_row_error(self):
+        record = {'error_code': 6003, 'error_class': 'Provider Migration Error',
+                  'error_message': 'The provider migration failed. target refused'}
+        details = worker_mod._terminal_details(
+            config.TASK_STATUS_FAIL, 'target refused', record, previous={'log': []},
+        )
+
+        assert details['error'] == record
+        assert 'final_summary_details' not in details, (
+            'on a failure the third slot is the error record, never a task summary'
+        )
+        assert details['status_message'] == 'target refused'
+
+    def test_every_task_function_has_a_domain_error_code(self):
+        import taskqueue
+        from error.error_dictionary import ERROR_REGISTRY, UNKNOWN_ERROR_CODE
+
+        assert taskqueue.ALLOWED_FUNCS == frozenset(taskqueue.TASK_FUNC_ERROR_CODES), (
+            'the allow-list is derived from the code map, so a task function cannot be '
+            'allowed without the code its failures record'
+        )
+        for func, code in taskqueue.TASK_FUNC_ERROR_CODES.items():
+            assert code in ERROR_REGISTRY and code != UNKNOWN_ERROR_CODE, func
+
+    def test_this_attempts_record_replaces_one_an_earlier_attempt_left_on_the_row(self):
+        stale = {'error_code': 2006, 'error_class': 'Analysis Error',
+                 'error_message': 'attempt 1: every server failed'}
+        crash = {'error_code': 9004, 'error_class': 'Process Crashed',
+                 'error_message': 'attempt 2 crashed on SIGSEGV'}
+
+        details = worker_mod._terminal_details(
+            config.TASK_STATUS_FAIL, 'crashed on SIGSEGV', crash, previous={'error': stale},
+        )
+
+        assert details['error'] == crash, (
+            'a retry keeps the row details, so the record attempt 1 wrote is still there '
+            'when attempt 2 dies; the terminal row must blame attempt 2'
+        )
+
+    def test_a_permanent_failure_raised_from_a_media_server_error_keeps_its_code(self):
+        from taskqueue import TaskFailed
+
+        refused = type('ConnectionError', (Exception,), {'__module__': 'requests.exceptions'})
+        instance = worker_mod.Worker.__new__(worker_mod.Worker)
+        try:
+            try:
+                raise refused('refused')
+            except refused as cause:
+                raise TaskFailed('the target server refused every call') from cause
+        except TaskFailed as exc:
+            failure = exc
+
+        outcome, _summary, record = instance._failure(
+            {'task_id': 'm-3', 'func': 'tasks.provider_migration_tasks.execute_provider_migration'},
+            failure,
+        )
+
+        assert outcome == retry.FAIL_PERMANENT
+        assert record['error_code'] == 1102
+
+    def test_a_media_server_refusal_in_a_migration_is_classified_not_unknown(self):
+        refused = type('ConnectionError', (Exception,), {'__module__': 'requests.exceptions'})
+        job = {'task_id': 'm-1',
+               'func': 'tasks.provider_migration_tasks.execute_provider_migration'}
+        instance = worker_mod.Worker.__new__(worker_mod.Worker)
+
+        outcome, _summary, record = instance._failure(job, refused('refused'))
+
+        assert outcome == retry.FAIL_RETRYABLE
+        assert record['error_code'] == 1102
+
+    def test_an_unclassified_migration_failure_gets_the_migration_code(self):
+        job = {'task_id': 'm-2',
+               'func': 'tasks.provider_migration_tasks.execute_provider_migration'}
+        instance = worker_mod.Worker.__new__(worker_mod.Worker)
+
+        _outcome, _summary, record = instance._failure(job, KeyError('album'))
+
+        assert record['error_code'] == 6003
+
+    def test_a_cancel_carries_no_error_record(self):
+        from taskqueue import TaskCancelled
+
+        instance = worker_mod.Worker.__new__(worker_mod.Worker)
+
+        outcome, _summary, record = instance._failure(
+            {'task_id': 'c-1', 'func': 'tasks.cleaning.identify_and_clean_orphaned_albums_task'},
+            TaskCancelled('stopped'),
+        )
+
+        assert outcome == retry.REVOKED_BY_TASK
+        assert record is None
+
     def test_a_revoked_row_says_so(self):
         details = worker_mod._terminal_details(
             config.TASK_STATUS_REVOKED, 'task t was revoked', None,
@@ -428,7 +521,9 @@ class TestASharedPayloadThatCannotComeBackIsPermanent:
             'waiting for'
         )
         assert 'gone' in summary
-        assert result is None
+        assert set(result) == {'error_code', 'error_class', 'error_message'}, (
+            'a failure outcome carries the structured error record the terminal row stores'
+        )
 
 
 class TestNoProgressReportRegressesATerminalRow:

@@ -118,6 +118,10 @@
         color: var(--text-muted);
     }
     .axes-intro-text { font-style: italic; }
+
+    @media (max-width: 768px) {
+        .axis-block select { font-size: 16px; }
+    }
 </style>
 {% endblock %}
 
@@ -398,6 +402,17 @@ document.addEventListener('DOMContentLoaded', function () {
             sgHide();
         };
 
+        const sgShowError = (message) => {
+            sgResults.innerHTML = '';
+            const d = document.createElement('div');
+            d.className = 'autocomplete-item';
+            const em = document.createElement('em');
+            em.textContent = message;
+            d.appendChild(em);
+            sgResults.appendChild(d);
+            sgResults.classList.remove('hidden');
+        };
+
         const sgShow = (tracks, append) => {
             if (!append) sgResults.innerHTML = '';
             const sentinel = sgResults.querySelector('.autocomplete-load-more');
@@ -425,8 +440,16 @@ document.addEventListener('DOMContentLoaded', function () {
                             sgLoadingMore = true;
                             const p = new URLSearchParams({ search_query: sgQuery, start: sgOffset, end: sgOffset + PAGE_SIZE, index: 'sem_grove' });
                             fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${p}`)
-                                .then(r => r.json())
-                                .then(ts => { sgOffset += ts.length; sgShow(ts, true); })
+                                .then(async r => {
+                                    const ts = await readJsonBody(r);
+                                    if (!r.ok || !Array.isArray(ts)) {
+                                        more.textContent = apiErrorText(ts, 'Search failed (HTTP ' + r.status + ')');
+                                        return;
+                                    }
+                                    sgOffset += ts.length;
+                                    sgShow(ts, true);
+                                })
+                                .catch(err => { console.error('Load more error:', err); })
                                 .finally(() => { sgLoadingMore = false; });
                         }
                     }, { root: sgResults });
@@ -445,7 +468,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 try {
                     const p = new URLSearchParams({ search_query: q, start: 0, end: PAGE_SIZE, index: 'sem_grove' });
                     const r = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${p}`);
-                    const ts = await r.json();
+                    const ts = await readJsonBody(r);
+                    if (!r.ok || !Array.isArray(ts)) {
+                        sgShowError(apiErrorText(ts, 'Search failed (HTTP ' + r.status + ')'));
+                        return;
+                    }
                     sgOffset = ts.length;
                     sgShow(ts, false);
                 } catch (err) { sgHide(); }
@@ -497,12 +524,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Search failed');
+            const data = await readJsonBody(response);
+            if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
             currentResults = data.results || [];
             displayResults(currentResults, queryLabel);
         } catch (err) {
-            resultsList.innerHTML = `<div class="error-message">❌ ${err.message}</div>`;
+            resultsList.innerHTML = `<div class="error-message">❌ ${escapeHtml(err.message)}</div>`;
         }
     }
 
@@ -547,8 +574,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     track_ids: currentResults.map(r => r.item_id),
                 }),
             });
-            const data = await resp.json();
-            if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+            const data = await readJsonBody(resp);
+            if (!resp.ok || data === null) throw new Error(apiErrorText(data, `Server returned an error (HTTP ${resp.status})`));
             statusDiv.textContent = data.message;
             statusDiv.className = 'status-success';
         } catch (err) {
@@ -561,6 +588,11 @@ document.addEventListener('DOMContentLoaded', function () {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    async function readJsonBody(response) {
+        const text = await response.text();
+        try { return text ? JSON.parse(text) : null; } catch (e) { return null; }
     }
 });
 </script>

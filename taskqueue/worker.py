@@ -87,6 +87,27 @@ Main Features:
   func outside ALLOWED_FUNCS never resolves: both are permanent failures, not
   three wasted retries. A verdict the task declared (TaskFailed, TaskCancelled)
   is logged as one line; the traceback is kept for the exceptions it did not
+* Every FAIL the queue writes carries a structured error record (error_code,
+  error_class, error_message) built by error.error_manager: the exception is
+  classified against the task function's own domain code
+  (taskqueue.TASK_FUNC_ERROR_CODES), and a connection lost past the free passes
+  records ERR_DB_CONNECTION. A job child that dies without reporting is diagnosed
+  from its signal instead of being called an out-of-memory crash: SIGKILL is
+  ERR_OUT_OF_MEMORY when the kernel log names this job's pid as the
+  out-of-memory victim (read only where /dev/kmsg is readable from the initial
+  pid namespace, so the pid means the same thing to both, and only for records
+  newer than the job's start), and a kill the log pins on another process is
+  ERR_JOB_PROCESS_DIED. Where the log is not readable (a normal container, macOS)
+  the worker's own cgroup oom_kill counter decides, which cannot name the victim
+  and says so; Windows runs jobs inline and never reaches this path,
+  SIGSEGV/SIGBUS/SIGABRT/SIGFPE/SIGILL are ERR_PROCESS_CRASHED (a native crash,
+  typically the model runtime), a stop this worker ordered is ERR_WORKER_LOST and
+  anything else is ERR_JOB_PROCESS_DIED. The record this attempt produced replaces
+  any record on the row, because a retry keeps the row's details and a record an
+  earlier attempt left there would otherwise blame that attempt's cause; a task's
+  own record only stands when the queue has none (a cancel). The record rides in
+  the outcome's third slot, which a success fills with the task's summary, so the
+  child's pickled report keeps its shape
 * A declared verdict's message is the task's own recap line and is kept whole
   (up to _VERDICT_SUMMARY_LIMIT); the text of an unexpected exception is cut at
   _SUMMARY_LIMIT, because a traceback's first line is all the dashboard needs
@@ -96,10 +117,12 @@ Main Features:
   package, and importing its sibling would lengthen the eager import chain
 """
 
+import errno
 import inspect
 import logging
 import os
 import pickle
+import re
 import signal
 import sys
 import threading
@@ -109,6 +132,15 @@ import queue_names
 import service_roles
 
 from cpu_budget import detect_cpu_count
+from error import error_manager
+from error.error_dictionary import (
+    ERR_DB_CONNECTION,
+    ERR_JOB_PROCESS_DIED,
+    ERR_OUT_OF_MEMORY,
+    ERR_PROCESS_CRASHED,
+    ERR_WORKER_LOST,
+    UNKNOWN_ERROR_CODE,
+)
 
 _QUEUE_FLAG = '--queue'
 
@@ -359,7 +391,10 @@ class Worker:
             return self._forget_abandoned(task_id)
         status = sql.requeue_or_fail(
             cur, task_id, time.time(),
-            _terminal_details(config.TASK_STATUS_FAIL, _LOST_CONNECTION_SUMMARY, None),
+            _terminal_details(
+                config.TASK_STATUS_FAIL, _LOST_CONNECTION_SUMMARY,
+                error_manager.build(ERR_DB_CONNECTION, _LOST_CONNECTION_SUMMARY),
+            ),
         )
         if status == config.TASK_STATUS_NEW:
             logger.error(
@@ -496,7 +531,7 @@ class Worker:
                 set_current_task_id(None)
                 self._clear_held()
                 if verdict == retry.RETRY:
-                    self._requeue_for_retry(job, summary)
+                    self._requeue_for_retry(job, summary, result)
                 try:
                     with self._conn.cursor() as cur:
                         sql.release(cur, task_id)
@@ -511,10 +546,10 @@ class Worker:
         try:
             kwargs = self.hydrate_shared(job['kwargs'])
         except sql.SharedPayloadUnavailable as exc:
-            return self._failure(task_id, TaskFailed(str(exc)))
+            return self._failure(job, TaskFailed(str(exc)))
         except Exception as exc:
             _log_raised(task_id, exc)
-            return self._failure(task_id, exc)
+            return self._failure(job, exc)
         if self._fork_jobs:
             return self._run_in_child(job, kwargs)
         try:
@@ -531,10 +566,11 @@ class Worker:
             result = func(*job['args'], **kwargs)
         except Exception as exc:
             _log_raised(task_id, exc)
-            return self._failure(task_id, exc)
+            return self._failure(job, exc)
         return config.TASK_STATUS_SUCCESS, None, result
 
-    def _failure(self, task_id, exc):
+    def _failure(self, job, exc):
+        task_id = job['task_id']
         if _is_connectivity_error(exc):
             logger.warning(
                 "Task %s lost its database connection; putting its row back "
@@ -544,17 +580,18 @@ class Worker:
         if isinstance(exc, TaskCancelled):
             logger.info("Task %s stopped at its cancel check: %s", task_id, exc)
             return retry.REVOKED_BY_TASK, _error_summary(exc), None
+        record = _error_record(job, exc)
         if isinstance(exc, TaskFailed):
             logger.error(
                 "Task %s failed permanently and will not be retried: %s", task_id, exc
             )
-            return retry.FAIL_PERMANENT, _error_summary(exc), None
-        return retry.FAIL_RETRYABLE, _error_summary(exc), None
+            return retry.FAIL_PERMANENT, _error_summary(exc), record
+        return retry.FAIL_RETRYABLE, _error_summary(exc), record
 
-    def _requeue_for_retry(self, job, summary):
+    def _requeue_for_retry(self, job, summary, record=None):
         task_id = job['task_id']
         delay = retry.backoff_seconds(job['attempts'] + 1)
-        details = _terminal_details(config.TASK_STATUS_FAIL, summary, None)
+        details = _terminal_details(config.TASK_STATUS_FAIL, summary, record)
         for attempt in (1, 2):
             try:
                 if self._conn is None or self._conn.closed:
@@ -606,6 +643,7 @@ class Worker:
             logger.exception("Could not open the report pipe for %s", task_id)
             return retry.FAIL_RETRYABLE, _error_summary(exc), None
         parent_pid = os.getpid()
+        oom_baseline = _oom_baseline()
         try:
             pid = os.fork()
         except OSError as exc:
@@ -615,8 +653,10 @@ class Worker:
             return retry.FAIL_RETRYABLE, _error_summary(exc), None
         if pid == 0:
             self._child_main(job, kwargs, read_fd, write_fd, parent_pid)
+        oom_baseline['pid'] = pid
         os.close(write_fd)
         payload = b''
+        killed_by_worker = False
         try:
             with os.fdopen(read_fd, 'rb') as pipe:
                 payload = pipe.read()
@@ -624,6 +664,7 @@ class Worker:
             logger.exception("Reading the job process report for %s failed", task_id)
             try:
                 os.kill(pid, signal.SIGKILL)
+                killed_by_worker = True
             except Exception:
                 logger.debug("SIGKILL to the job process failed", exc_info=True)
         try:
@@ -631,7 +672,9 @@ class Worker:
         except OSError:
             logger.exception("Could not reap the job process for %s", task_id)
             status = 0
-        return self._child_outcome(task_id, status, payload)
+        return self._child_outcome(
+            task_id, status, payload, oom_baseline, killed_by_worker=killed_by_worker,
+        )
 
     def _child_main(self, job, kwargs, read_fd, write_fd, parent_pid):
         exit_code = 1
@@ -655,7 +698,8 @@ class Worker:
         finally:
             os._exit(exit_code)
 
-    def _child_outcome(self, task_id, status, payload):
+    def _child_outcome(self, task_id, status, payload, oom_baseline=None,
+                       killed_by_worker=False):
         if payload:
             try:
                 outcome = pickle.loads(payload)
@@ -668,10 +712,18 @@ class Worker:
         reason = stopping_reason()
         if reason is not None:
             logger.info("Task %s: its job process was stopped by this worker (%s)", task_id, reason)
-            return retry.FAIL_RETRYABLE, f"The job process was stopped by this worker: {reason}", None
-        summary = _child_death_summary(status)
+            summary = f"The job process was stopped by this worker: {reason}"
+            return retry.FAIL_RETRYABLE, summary, error_manager.build(ERR_WORKER_LOST, summary)
+        if killed_by_worker:
+            summary = (
+                "The worker killed its job process because the job's report could not be "
+                "read. Check the container logs for details."
+            )
+            record = error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+        else:
+            summary, record = _child_death(status, oom_baseline)
         logger.error("Task %s: %s", task_id, summary)
-        return retry.FAIL_RETRYABLE, summary, None
+        return retry.FAIL_RETRYABLE, summary, record
 
     def _unload_job_models(self):
         if not self._unload_resident_models():
@@ -950,19 +1002,34 @@ def _terminal_log(previous_log, status, message):
 
 def _terminal_details(status, error, result, previous=None):
     details = dict(previous) if isinstance(previous, dict) else {}
+    record = None
+    summary = None
     if status == config.TASK_STATUS_SUCCESS:
         details.pop('error', None)
-    summary = result if isinstance(result, dict) else None
+        summary = result if isinstance(result, dict) else None
+    elif isinstance(result, dict) and 'error_code' in result:
+        record = result
     if summary:
         details.update({key: value for key, value in summary.items() if key != 'status'})
         details['final_summary_details'] = summary
     message = _final_message(status, error, summary)
     details['message'] = message
     details['status_message'] = message
-    if error and not isinstance(details.get('error'), dict):
+    if record is not None:
+        details['error'] = record
+    elif error and not isinstance(details.get('error'), dict):
         details['error'] = error
     details['log'] = _terminal_log(details.get('log'), status, message)
     return details
+
+
+def _error_record(job, exc):
+    from . import TASK_FUNC_ERROR_CODES
+
+    if isinstance(exc, error_manager.AudioMuseError):
+        return exc.to_dict()
+    default = TASK_FUNC_ERROR_CODES.get(job.get('func'), UNKNOWN_ERROR_CODE)
+    return error_manager.build(error_manager.classify(exc, default), _error_summary(exc))
 
 
 _LOST_CONNECTION_SUMMARY = (
@@ -1120,18 +1187,185 @@ def _watch_parent_death(parent_pid):
     ).start()
 
 
-def _child_death_summary(status):
-    code = os.waitstatus_to_exitcode(status)
-    if code < 0:
-        return (
-            f"The job process died on signal {-code} before it could report back. "
-            "This usually means the system ran out of memory. "
+_OOM_KILL_COUNTER_FILES = (
+    '/sys/fs/cgroup/memory.events',
+    '/sys/fs/cgroup/memory/memory.oom_control',
+)
+
+_NATIVE_CRASH_SIGNALS = ('SIGSEGV', 'SIGBUS', 'SIGABRT', 'SIGFPE')
+
+_INITIAL_PID_NAMESPACE_INODE = 0xEFFFFFFC
+
+_KERNEL_OOM_VICTIM = re.compile(r'(?:Killed process |oom-kill:.*\bpid=)(\d+)')
+
+
+def _own_cgroup_counter_files():
+    files = []
+    try:
+        with open('/proc/self/cgroup', encoding='ascii') as membership:
+            for line in membership:
+                hierarchy, controllers, path = line.rstrip('\n').split(':', 2)
+                path = path.rstrip('/')
+                if hierarchy == '0' and not controllers:
+                    files.append(f'/sys/fs/cgroup{path}/memory.events')
+                elif 'memory' in controllers.split(','):
+                    files.append(f'/sys/fs/cgroup/memory{path}/memory.oom_control')
+    except (OSError, ValueError):
+        return _OOM_KILL_COUNTER_FILES
+    return tuple(dict.fromkeys(files + list(_OOM_KILL_COUNTER_FILES)))
+
+
+def _oom_kill_count():
+    for path in _own_cgroup_counter_files():
+        try:
+            with open(path, encoding='ascii') as counters:
+                for line in counters:
+                    name, _, value = line.partition(' ')
+                    if name == 'oom_kill':
+                        return int(value)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _monotonic_usec():
+    clock = getattr(time, 'CLOCK_MONOTONIC', None)
+    if clock is None:
+        return None
+    return time.clock_gettime_ns(clock) // 1000
+
+
+def _oom_baseline():
+    return {'kills': _oom_kill_count(), 'since_usec': _monotonic_usec(), 'pid': None}
+
+
+def _kernel_oom_victims(since_usec):
+    if since_usec is None:
+        return None
+    try:
+        if os.stat('/proc/self/ns/pid').st_ino != _INITIAL_PID_NAMESPACE_INODE:
+            return None
+        kmsg = os.open('/dev/kmsg', os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    victims = set()
+    try:
+        while True:
+            try:
+                record = os.read(kmsg, 8192)
+            except BlockingIOError:
+                break
+            except OSError as exc:
+                if exc.errno == errno.EPIPE:
+                    continue
+                break
+            if not record:
+                break
+            header, _, message = record.decode('utf-8', 'replace').partition(';')
+            fields = header.split(',')
+            try:
+                logged_usec = int(fields[2])
+            except (IndexError, ValueError):
+                continue
+            match = _KERNEL_OOM_VICTIM.search(message)
+            if match and logged_usec >= since_usec:
+                victims.add(int(match.group(1)))
+    finally:
+        os.close(kmsg)
+    return victims
+
+
+def _signal_name(signum):
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"signal {signum}"
+
+
+def _killed_child_death(signum, baseline):
+    baseline = baseline or {}
+    victims = _kernel_oom_victims(baseline.get('since_usec'))
+    pid = baseline.get('pid')
+    if victims is not None and pid is not None:
+        if pid in victims:
+            summary = (
+                f"The job process (pid {pid}) was killed on signal {signum} (SIGKILL) by the "
+                "kernel out-of-memory killer: the system ran out of memory while the job ran."
+            )
+            return summary, error_manager.build(ERR_OUT_OF_MEMORY, summary)
+        if victims:
+            summary = (
+                f"The job process was killed on signal {signum} (SIGKILL), but the kernel "
+                "out-of-memory killer ended a different process (pid "
+                f"{', '.join(str(victim) for victim in sorted(victims))}) while it ran, so "
+                "something else stopped this job. Check the container logs for details."
+            )
+            return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+        summary = (
+            f"The job process was killed on signal {signum} (SIGKILL) and the kernel log "
+            "records no out-of-memory kill while it ran. A userspace memory killer "
+            "(systemd-oomd, earlyoom, a Kubernetes eviction) or a manual kill stopped it. "
             "Check the container logs for details."
         )
-    return (
-        f"The job process exited with code {code} without reporting back. "
+        return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+    kills_before = baseline.get('kills')
+    kills_after = _oom_kill_count()
+    if kills_before is not None and kills_after is not None:
+        if kills_after > kills_before:
+            summary = (
+                f"The job process was killed on signal {signum} (SIGKILL) while the kernel "
+                "recorded an out-of-memory kill in this container: the container ran out of "
+                "memory while the job ran. The counter covers the whole container, so the "
+                "kill is attributed to this job without naming the victim process."
+            )
+            return summary, error_manager.build(ERR_OUT_OF_MEMORY, summary)
+        summary = (
+            f"The job process was killed on signal {signum} (SIGKILL) and the kernel "
+            "recorded no out-of-memory kill in this container while it ran. A userspace "
+            "memory killer (systemd-oomd, earlyoom, a Kubernetes eviction) or a manual kill "
+            "stopped it. Check the container logs for details."
+        )
+        return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+    summary = (
+        f"The job process was killed on signal {signum} (SIGKILL) before it could "
+        "report back. This is most often an out-of-memory kill, but the kernel's "
+        "out-of-memory counter is not readable here to confirm it. Check the container "
+        "logs for details."
+    )
+    return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+
+
+def _child_death(status, oom_baseline=None):
+    code = os.waitstatus_to_exitcode(status)
+    if code >= 0:
+        summary = (
+            f"The job process exited with code {code} without reporting back. "
+            "Check the container logs for details."
+        )
+        return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
+    signum = -code
+    name = _signal_name(signum)
+    if name == 'SIGKILL':
+        return _killed_child_death(signum, oom_baseline)
+    if name == 'SIGILL':
+        summary = (
+            f"The job process crashed on signal {signum} (SIGILL), an illegal CPU "
+            "instruction: a native library such as the model runtime uses an instruction "
+            "set this CPU does not have. This is not an out-of-memory condition."
+        )
+        return summary, error_manager.build(ERR_PROCESS_CRASHED, summary)
+    if name in _NATIVE_CRASH_SIGNALS:
+        summary = (
+            f"The job process crashed on signal {signum} ({name}) inside native code, "
+            "most often the model runtime during inference. This is a crash, not an "
+            "out-of-memory condition. Check the container logs for details."
+        )
+        return summary, error_manager.build(ERR_PROCESS_CRASHED, summary)
+    summary = (
+        f"The job process died on signal {signum} ({name}) before it could report back. "
         "Check the container logs for details."
     )
+    return summary, error_manager.build(ERR_JOB_PROCESS_DIED, summary)
 
 
 def main():

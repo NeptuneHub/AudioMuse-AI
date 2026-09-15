@@ -35,6 +35,13 @@ import restart_manager
 from plugin import net
 from ssrf_guard import validate_outbound_url
 from plugin.manager import plugin_manager, version_ge, _parse_version, _download_url as _download
+from error.error_dictionary import (
+    ERR_CONFLICT,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_PLUGIN_FAILED,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -362,9 +369,9 @@ def api_catalog():
         installed = {p['id']: p.get('version') for p in database.list_plugins()}
         for entry in plugins:
             entry['installed_version'] = installed.get(entry.get('id'))
-    except Exception:
+    except Exception as exc:
         logger.exception('Failed to serve plugin catalog')
-        return jsonify({'error': _GENERIC_ERROR}), 500
+        return json_exception(exc, ERR_PLUGIN_FAILED, _GENERIC_ERROR)
     return jsonify({
         'plugins': plugins,
         'repos': _get_repos(),
@@ -452,14 +459,14 @@ def api_install():
     data = request.get_json(silent=True) or {}
     plugin_id = data.get('id')
     if not plugin_id:
-        return jsonify({'error': 'Missing required field: id'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing required field: id')
     requested_version = data.get('version')
     try:
         source_url, checksum, source_repo, install_meta = _resolve_install_source(
             plugin_id, requested_version
         )
         if not source_url:
-            return jsonify({'error': 'Plugin not found in any configured repository'}), 404
+            return json_error(ERR_NOT_FOUND, 'Plugin not found in any configured repository')
         package = _download(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
         manifest, deps_ok, deps_error = plugin_manager.install_package(
             package, install_meta, source_url=source_url, source_repo=source_repo,
@@ -478,15 +485,15 @@ def api_install():
             response['deps_error'] = deps_error
         return jsonify(response)
     except VersionUnavailableError as exc:
-        return jsonify({'error': str(exc)}), 409
+        return json_error(ERR_CONFLICT, str(exc))
     except net.DownloadError as exc:
         logger.warning('Plugin download failed for %s: %s', plugin_id, exc)
-        return jsonify({'error': str(exc)}), 502
+        return json_error(ERR_PLUGIN_FAILED, str(exc), http_status=502)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, str(exc))
+    except Exception as exc:
         logger.exception('Plugin install failed')
-        return jsonify({'error': _GENERIC_ERROR}), 500
+        return json_exception(exc, ERR_PLUGIN_FAILED, _GENERIC_ERROR)
 
 
 @plugins_bp.route('/api/plugins/uninstall', methods=['POST'])
@@ -495,13 +502,13 @@ def api_uninstall():
     plugin_id = data.get('id')
     purge_data = bool(data.get('purge_data'))
     if not plugin_id:
-        return jsonify({'error': 'Missing plugin id'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing plugin id')
     try:
         plugin_manager.uninstall(plugin_id, purge_data=purge_data)
         return jsonify({'status': 'ok', 'restart_required': True})
-    except Exception:
+    except Exception as exc:
         logger.exception('Plugin uninstall failed for %s', plugin_id)
-        return jsonify({'error': _GENERIC_ERROR}), 500
+        return json_exception(exc, ERR_PLUGIN_FAILED, _GENERIC_ERROR)
 
 
 @plugins_bp.route('/api/plugins/enable', methods=['POST'])
@@ -518,32 +525,32 @@ def _set_enabled(enabled):
     data = request.get_json(silent=True) or {}
     plugin_id = data.get('id')
     if not plugin_id:
-        return jsonify({'error': 'Missing plugin id'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing plugin id')
     try:
         plugin_manager.set_enabled(plugin_id, enabled)
         return jsonify({'status': 'ok', 'restart_required': True})
-    except Exception:
+    except Exception as exc:
         logger.exception('Plugin enable/disable failed for %s', plugin_id)
-        return jsonify({'error': _GENERIC_ERROR}), 500
+        return json_exception(exc, ERR_PLUGIN_FAILED, _GENERIC_ERROR)
 
 
 @plugins_bp.route('/api/plugins/settings/<plugin_id>', methods=['GET', 'POST'])
 def api_settings(plugin_id):
     plugin = database.get_plugin(plugin_id)
     if not plugin:
-        return jsonify({'error': 'Plugin not found'}), 404
+        return json_error(ERR_NOT_FOUND, 'Plugin not found')
     if request.method == 'GET':
         return jsonify({'id': plugin_id, 'settings': plugin['settings'], 'manifest': plugin['manifest']})
     data = request.get_json(silent=True) or {}
     settings = data.get('settings')
     if not isinstance(settings, dict):
-        return jsonify({'error': 'settings must be an object'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'settings must be an object')
     try:
         database.set_plugin_settings(plugin_id, settings)
         return jsonify({'status': 'ok'})
-    except Exception:
+    except Exception as exc:
         logger.exception('Failed to save settings for plugin %s', plugin_id)
-        return jsonify({'error': _GENERIC_ERROR}), 500
+        return json_exception(exc, ERR_PLUGIN_FAILED, _GENERIC_ERROR)
 
 
 @plugins_bp.route('/api/plugins/repos', methods=['GET', 'POST', 'DELETE'])
@@ -553,10 +560,10 @@ def api_repos():
     data = request.get_json(silent=True) or {}
     url = (data.get('url') or '').strip()
     if not url:
-        return jsonify({'error': 'Missing repository url'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing repository url')
     ok, message = validate_outbound_url(url)
     if not ok:
-        return jsonify({'error': f'URL rejected: {message}'}), 400
+        return json_error(ERR_INVALID_REQUEST, f'URL rejected: {message}')
     repos = [r for r in _get_repos() if r != config.PLUGIN_DEFAULT_REPO_URL]
     if request.method == 'POST':
         if url not in repos:
@@ -581,6 +588,6 @@ def api_apply():
             'workers_restart_published': bool(workers_published),
             'flask_restart_scheduled': bool(flask_scheduled),
         })
-    except Exception:
+    except Exception as exc:
         logger.exception('Failed to trigger plugin apply restart')
-        return jsonify({'error': _GENERIC_ERROR}), 500
+        return json_exception(exc, ERR_PLUGIN_FAILED, _GENERIC_ERROR)

@@ -23,9 +23,14 @@ import logging
 import config
 
 import app_server_context
-from app_helper import index_error_body
-from error.error_dictionary import ERR_INDEX_EMPTY, UNKNOWN_ERROR_CODE
+from error.error_dictionary import (
+    ERR_INDEX_EMPTY,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_SEARCH_FAILED,
+)
 from tasks.artist_gmm_manager import find_similar_artists, search_artists_by_name, get_artist_tracks
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +46,9 @@ def artist_search_from_request():
     end = request.args.get('end', None, type=int)
     try:
         return artist_search_response(query, start, end, 100)
-    except Exception:
+    except Exception as exc:
         logger.exception("Error during artist search")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")
 
 
 def artist_search_response(query, start, end, cap):
@@ -59,7 +64,7 @@ def artist_search_response(query, start, end, cap):
         server_id, include_legacy = app_server_context.selected_server_scope()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     results = search_artists_by_name(
         query,
         limit=limit,
@@ -198,10 +203,10 @@ def get_similar_artists_endpoint():
         server_id = app_server_context.resolve_request_server_id()
         query_artist = artist or app_server_context.resolve_artist_identifier(artist_id)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return json_error(ERR_INVALID_REQUEST, str(exc))
 
     if not query_artist:
-        return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Missing 'artist' or 'artist_id' parameter")
 
     # Overfetch only when the per-server availability filter can drop rows;
     # single-server installs keep the exact requested n.
@@ -222,11 +227,10 @@ def get_similar_artists_endpoint():
 
         similar_artists = app_server_context.scope_artist_results(similar_artists, n)
         if not similar_artists:
-            return jsonify(
-                {
-                    "error": f"Artist '{query_artist}' not found in index or no similar artists found."
-                }
-            ), 404
+            return json_error(
+                ERR_NOT_FOUND,
+                f"Artist '{query_artist}' not found in index or no similar artists found.",
+            )
 
         # scope_artist_results only rewrites the top-level artist_id; the nested
         # representative-song lists carry canonical item_ids, so translate those to
@@ -262,16 +266,14 @@ def get_similar_artists_endpoint():
         logger.exception(
             f"Runtime error finding similar artists for '{query_artist}'"
         )
-        return jsonify(
-            index_error_body(
-                ERR_INDEX_EMPTY, "The artist similarity search service is currently unavailable."
-            )
-        ), 503
-    except Exception:
+        return json_error(
+            ERR_INDEX_EMPTY, "The artist similarity search service is currently unavailable."
+        )
+    except Exception as exc:
         logger.exception(
             f"Unexpected error finding similar artists for '{query_artist}'"
         )
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, "An unexpected error occurred.")
 
 
 @artist_similarity_bp.route('/api/artist_tracks', methods=['GET'])
@@ -318,19 +320,17 @@ def get_artist_tracks_endpoint():
     try:
         query_artist = artist or app_server_context.resolve_artist_identifier(artist_id)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return json_error(ERR_INVALID_REQUEST, str(exc))
 
     if not query_artist:
-        return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Missing 'artist' or 'artist_id' parameter")
 
     try:
         tracks = get_artist_tracks(query_artist)
         tracks = app_server_context.scope_results(tracks, None, id_key='item_id')
         return jsonify(tracks)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, str(exc))
+    except Exception as exc:
         logger.exception(f"Error getting tracks for artist '{query_artist}'")
-        return jsonify(
-            index_error_body(UNKNOWN_ERROR_CODE, "An error occurred while fetching tracks.")
-        ), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred while fetching tracks.")

@@ -101,6 +101,21 @@ class TestStartClustering:
 
         assert queued[0]['kwargs']['output_server_scope'] == 'all'
 
+    @pytest.mark.parametrize('field,value', [
+        ('clustering_runs', None), ('num_clusters_min', 'abc'), ('dbscan_eps_max', [1]),
+    ])
+    def test_a_non_numeric_parameter_answers_400_and_queues_nothing(
+        self, client, queued, field, value
+    ):
+        response = _start(client, **{field: value})
+
+        assert response.status_code == 400, (
+            'a form whose config failed to load posts null fields; int(None) used to '
+            'escape as a 500 instead of telling the user to reload'
+        )
+        assert response.get_json()['error_code'] == 1003
+        assert queued == []
+
     def test_auto_calibration_defaults_on(self, client, queued):
         _start(client)
 

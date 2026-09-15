@@ -164,15 +164,23 @@
         users.forEach(function (u) {
             const tr = document.createElement('tr');
             const tdName = document.createElement('td');
+            tdName.className = 'users-cell-name';
+            tdName.setAttribute('data-label', 'Username');
             tdName.style.padding = '0.5rem';
             tdName.textContent = u.username;
             const tdRole = document.createElement('td');
+            tdRole.className = 'users-cell-role';
+            tdRole.setAttribute('data-label', 'Role');
             tdRole.style.padding = '0.5rem';
             tdRole.textContent = roleLabel(u.role);
             const tdCreated = document.createElement('td');
+            tdCreated.className = 'users-cell-created';
+            tdCreated.setAttribute('data-label', 'Created');
             tdCreated.style.padding = '0.5rem';
             tdCreated.textContent = formatDate(u.created_at);
             const tdAct = document.createElement('td');
+            tdAct.className = 'users-cell-actions';
+            tdAct.setAttribute('data-label', 'Actions');
             tdAct.style.padding = '0.5rem';
             tdAct.style.textAlign = 'right';
 
@@ -220,8 +228,10 @@
     function loadUsers() {
         fetch('/api/users', { credentials: 'same-origin' })
             .then(function (r) {
-                if (!r.ok) throw new Error('Failed to load users (' + r.status + ').');
-                return r.json();
+                if (r.ok) return r.json();
+                return r.json().catch(function () { return null; }).then(function (data) {
+                    throw new Error(apiErrorText(data, 'Failed to load users (' + r.status + ').'));
+                });
             })
             .then(function (data) { renderUsers((data && data.users) || []); })
             .catch(function (err) { showPageFeedback(err.message || 'Failed to load users.', 'error'); });
@@ -259,10 +269,10 @@
             })
         })
             .then(function (r) {
-                return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+                return r.json().catch(function () { return null; }).then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
             })
             .then(function (res) {
-                if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to create user (' + res.status + ').'));
+                if (!res.ok) throw new Error(apiErrorText(res.data, 'Failed to create user (' + res.status + ').'));
                 closeAddPanel();
                 showPageFeedback('User "' + username + '" created.', 'success');
                 loadUsers();
@@ -291,10 +301,10 @@
             body: JSON.stringify({ current_password: currentPw })
         })
             .then(function (r) {
-                return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+                return r.json().catch(function () { return null; }).then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
             })
             .then(function (res) {
-                if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to delete user (' + res.status + ').'));
+                if (!res.ok) throw new Error(apiErrorText(res.data, 'Failed to delete user (' + res.status + ').'));
                 closeDeletePanel();
                 showPageFeedback('User "' + targetName + '" deleted.', 'success');
                 loadUsers();
@@ -333,10 +343,10 @@
             body: JSON.stringify({ password: newPw, current_password: currentPw })
         })
             .then(function (r) {
-                return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+                return r.json().catch(function () { return null; }).then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
             })
             .then(function (res) {
-                if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to update password (' + res.status + ').'));
+                if (!res.ok) throw new Error(apiErrorText(res.data, 'Failed to update password (' + res.status + ').'));
                 showPwFeedback('Password for "' + targetName + '" updated.', 'success');
                 if (pwNew) pwNew.value = '';
                 if (pwConfirm) pwConfirm.value = '';
@@ -374,5 +384,9 @@
         submitOnEnter(el, savePassword);
     });
     submitOnEnter(delCurrent, deleteUser);
-    loadUsers();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadUsers);
+    } else {
+        loadUsers();
+    }
 })();

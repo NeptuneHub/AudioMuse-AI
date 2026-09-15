@@ -518,6 +518,45 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             assert app_auth.auth_setup_barrier() == ('unauthorized-sentinel', 401)
         assert calls == ['auth']
 
+    def _unreadable_admin_count(self, monkeypatch, error):
+        import config as _cfg
+        from tasks.setup_manager import SetupManager
+
+        monkeypatch.setattr(SetupManager, '_is_valid_server_config', lambda self, cfg: True)
+        monkeypatch.setattr(_cfg, 'AUTH_ENABLED', True)
+
+        def _count():
+            raise error
+
+        monkeypatch.setattr(app_auth, 'count_admin_users', _count)
+
+    def test_a_lost_database_answers_503_not_setup_required(self, app, monkeypatch):
+        operational_error = type('OperationalError', (Exception,), {'__module__': 'psycopg2'})
+        self._unreadable_admin_count(monkeypatch, operational_error('server closed the connection'))
+
+        with app.test_request_context('/api/last_task'):
+            response, status = app_auth.auth_setup_barrier()
+            body = response.get_json()
+        with app.test_request_context('/dashboard'):
+            page = app_auth.auth_setup_barrier()
+
+        assert status == 503 and body['error_code'] == 4001, (
+            'a database outage used to answer every API call with 403 "Setup required" and '
+            'send every page to the setup wizard, as if the install had been wiped'
+        )
+        assert 'server closed' not in str(body)
+        assert page.status_code == 503 and page.mimetype == 'text/plain'
+
+    def test_a_missing_users_table_still_opens_the_setup_wizard(self, app, monkeypatch):
+        from flask import g
+
+        database_error = type('DatabaseError', (Exception,), {'__module__': 'psycopg2'})
+        self._unreadable_admin_count(monkeypatch, database_error('relation does not exist'))
+
+        with app.test_request_context('/api/servers'):
+            assert app_auth.auth_setup_barrier() is None
+            assert g.setup_needed is True
+
     def test_admin_rejection_is_returned_when_auth_passes(self, app, monkeypatch):
         monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
         monkeypatch.setattr(app_auth, '_jwt_secret_getter', lambda: 'jwt-secret-abc')
